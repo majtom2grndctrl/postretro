@@ -51,6 +51,9 @@ pub(super) fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
                 .unwrap();
             }
         }
+        TypeShape::Alias { luau, .. } => {
+            writeln!(out, "export type {} = {luau}", ty.name).unwrap();
+        }
         TypeShape::Struct { fields } => {
             let any_doc = fields.iter().any(|f| !f.doc.is_empty());
             if !any_doc {

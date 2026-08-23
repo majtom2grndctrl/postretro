@@ -162,8 +162,8 @@ mod tests {
 
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_entities::{
-        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
-        EntityTypeDescriptor, FallParams, FireMode, GroundParams, HealthDescriptor,
+        AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+        CapsuleParams, EntityTypeDescriptor, FallParams, FireMode, GroundParams, HealthDescriptor,
         ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
         PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
     };
@@ -333,18 +333,20 @@ mod tests {
 
     fn behavior_descriptor() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: BTreeMap::from([(
-                "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            )]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                )]),
+                transitions: BTreeMap::new(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),
@@ -671,6 +673,9 @@ mod tests {
             IrNode::Ge { a: _, b: _ } => {}
             IrNode::Eq { a: _, b: _ } => {}
             IrNode::Ne { a: _, b: _ } => {}
+            IrNode::And { a: _, b: _ } => {}
+            IrNode::Or { a: _, b: _ } => {}
+            IrNode::Not { x: _ } => {}
             IrNode::Select {
                 cond: _,
                 a: _,

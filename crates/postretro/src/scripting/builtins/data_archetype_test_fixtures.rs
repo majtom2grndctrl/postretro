@@ -12,8 +12,8 @@ use glam::Vec3;
 use crate::scripting::map_entity::MapEntity;
 use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 use postretro_scripting_core::data_descriptors::{
-    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor,
-    EntityTypeDescriptor, MotionVerb, TransitionDescriptor,
+    ActionVerb, AttackParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+    BehaviorGraphEnvelope, EntityTypeDescriptor, GuardedRow, MotionVerb,
 };
 
 /// A `MapEntity` placement with the given classname and raw KVP bag. Origin is a
@@ -97,41 +97,46 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
 /// (`validate_brain_animation_states`).
 fn sample_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
-        initial: "idle".to_string(),
-        states: BTreeMap::from([
-            (
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: BTreeMap::from([
+                (
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+                (
+                    "attack".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("attack".to_string()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: Some(ActionVerb::Attack("claw".to_string())),
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                ),
+            ]),
+            transitions: BTreeMap::from([(
                 "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: vec![TransitionDescriptor {
-                        to: "attack".to_string(),
-                        when: IrNode::Le {
-                            a: Box::new(IrNode::Input {
-                                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
-                                owner: None,
-                            }),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(16.0),
-                            }),
-                        },
-                    }],
-                    on_enter: None,
-                },
-            ),
-            (
-                "attack".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "attack".to_string(),
-                    motion: MotionVerb::ChaseTarget,
-                    action: Some(ActionVerb::Attack("claw".to_string())),
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-        ]),
-        interrupts: Vec::new(),
+                vec![GuardedRow {
+                    to: "attack".to_string(),
+                    when: IrNode::Le {
+                        a: Box::new(IrNode::Input {
+                            name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                            owner: None,
+                        }),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(16.0),
+                        }),
+                    },
+                }],
+            )]),
+        },
         candidate_filter: None,
         patrol: None,
         attacks: BTreeMap::from([(

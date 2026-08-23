@@ -1,83 +1,62 @@
-// Parse-time advisory diagnostics for authored behavior graphs.
-// See: context/lib/entity_model.md §7c (brain lifecycle) · context/lib/scripting.md §11 (guard IR)
+// Parse-time advisory diagnostics for authored behavior statecharts.
 
-use crate::brain::BRAIN_HAS_TARGET_INPUT;
 use crate::data_descriptors::types::behavior::{
-    BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    BehaviorGraphDescriptor, BehaviorLayerDescriptor, unreachable_activities,
 };
 
-/// An advisory finding about a graph's ability to stand down after engagement.
-///
-/// These findings are deliberately not descriptor validation errors: a graph
-/// that pursues forever may be an intentional authored behavior.
+/// An advisory finding about an envelope's declared activities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BehaviorLint {
     pub kind: BehaviorLintKind,
-    /// Engaging states relevant to this finding, in `states` map-key order.
-    pub states: Vec<String>,
+    /// The wire-cased envelope path containing the reported activities.
+    pub envelope_path: String,
+    /// Activity names in deterministic map-key order.
+    pub activities: Vec<String>,
 }
 
-/// The closed vocabulary of behavior-graph advisory findings.
+/// The closed vocabulary of behavior-statechart advisory findings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BehaviorLintKind {
-    /// No engaging state has a state-local transition to a non-engaging state.
-    LevelWidePursuer,
-    /// No graph interrupt reads the `@brain.hasTarget` fact.
-    NoHasTargetInterrupt,
+    /// Activities have no incoming row and are not the envelope's initial one.
+    UnreachableActivity,
 }
 
-/// Inspect an authored graph for likely missing disengagement behavior.
+/// Inspect every recursive envelope for activities that cannot be entered from
+/// the envelope's declared `initial` or any of its transition rows.
 ///
-/// This is a descriptor-time analysis only. Callers run it after structural
-/// validation, so state-local targets are known to resolve; interrupts do not
-/// satisfy the `LevelWidePursuer` escape condition because they are a separate
-/// authoring mechanism from state-local transitions.
+/// This deliberately is not a transitive graph-reachability proof. An author
+/// may be staging an unreachable source row, but any activity referenced by a
+/// row is still declared reachable in the lint's simple authoring sense.
 pub fn inspect(graph: &BehaviorGraphDescriptor) -> Vec<BehaviorLint> {
-    let engaging_states = graph
-        .states
-        .iter()
-        .filter(|(_, state)| is_engaging(state))
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    if engaging_states.is_empty() {
-        return Vec::new();
-    }
-
-    let has_state_local_disengagement = graph.states.iter().any(|(_, state)| {
-        is_engaging(state)
-            && state.transitions.iter().any(|transition| {
-                graph
-                    .states
-                    .get(&transition.to)
-                    .is_some_and(|target| !is_engaging(target))
-            })
-    });
-    let has_target_interrupt = graph.interrupts.iter().any(|interrupt| {
-        interrupt
-            .when
-            .dispatch_input_names()
-            .iter()
-            .any(|name| name == BRAIN_HAS_TARGET_INPUT)
-    });
-
     let mut lints = Vec::new();
-    if !has_state_local_disengagement {
-        lints.push(BehaviorLint {
-            kind: BehaviorLintKind::LevelWidePursuer,
-            states: engaging_states.clone(),
-        });
-    }
-    if !has_target_interrupt {
-        lints.push(BehaviorLint {
-            kind: BehaviorLintKind::NoHasTargetInterrupt,
-            states: engaging_states,
-        });
-    }
+    inspect_envelope(&graph.envelope, "components.behavior", &mut lints);
     lints
 }
 
-fn is_engaging(state: &BehaviorStateDescriptor) -> bool {
-    state.motion == MotionVerb::ChaseTarget || state.action.is_some()
+fn inspect_envelope(
+    envelope: &crate::data_descriptors::types::behavior::BehaviorGraphEnvelope,
+    path: &str,
+    lints: &mut Vec<BehaviorLint>,
+) {
+    let activities = unreachable_activities(envelope);
+    if !activities.is_empty() {
+        lints.push(BehaviorLint {
+            kind: BehaviorLintKind::UnreachableActivity,
+            envelope_path: path.to_string(),
+            activities,
+        });
+    }
+    for (activity_name, activity) in &envelope.activities {
+        for (layer_name, layer) in &activity.layers {
+            if let BehaviorLayerDescriptor::Graph(nested) = layer {
+                inspect_envelope(
+                    nested,
+                    &format!("{path}.activities.{activity_name}.layers.{layer_name}"),
+                    lints,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -85,43 +64,40 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::data_descriptors::types::behavior::{ActionVerb, TransitionDescriptor};
+    use crate::data_descriptors::types::behavior::{
+        BehaviorActivityDescriptor, BehaviorGraphEnvelope, GuardedRow,
+    };
     use crate::ir::{IrNode, IrValue};
 
-    fn always() -> IrNode {
-        IrNode::Const {
-            value: IrValue::Bool(true),
-        }
-    }
-
-    fn has_target() -> IrNode {
-        IrNode::Select {
-            cond: Box::new(IrNode::Input {
-                name: BRAIN_HAS_TARGET_INPUT.to_string(),
-                owner: None,
-            }),
-            a: Box::new(always()),
-            b: Box::new(IrNode::Const {
-                value: IrValue::Bool(false),
-            }),
-        }
-    }
-
-    fn state(motion: MotionVerb, action: Option<ActionVerb>) -> BehaviorStateDescriptor {
-        BehaviorStateDescriptor {
-            animation: "state".to_string(),
-            motion,
-            action,
-            transitions: Vec::new(),
+    fn leaf() -> BehaviorActivityDescriptor {
+        BehaviorActivityDescriptor {
+            animation: Some("idle".to_string()),
+            motion: None,
+            action: None,
             on_enter: None,
+            layers: BTreeMap::new(),
         }
     }
 
-    fn graph(states: BTreeMap<String, BehaviorStateDescriptor>) -> BehaviorGraphDescriptor {
+    fn graph() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states,
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "initial".to_string(),
+                activities: BTreeMap::from([
+                    ("initial".to_string(), leaf()),
+                    ("reachable".to_string(), leaf()),
+                    ("orphan".to_string(), leaf()),
+                ]),
+                transitions: BTreeMap::from([(
+                    "initial".to_string(),
+                    vec![GuardedRow {
+                        when: IrNode::Const {
+                            value: IrValue::Bool(true),
+                        },
+                        to: "reachable".to_string(),
+                    }],
+                )]),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: BTreeMap::new(),
@@ -131,76 +107,14 @@ mod tests {
     }
 
     #[test]
-    fn reports_level_wide_pursuer_in_btree_state_order() {
-        let mut graph = graph(BTreeMap::from([
-            ("zeta".to_string(), state(MotionVerb::Hold, None)),
-            (
-                "attack".to_string(),
-                state(
-                    MotionVerb::Hold,
-                    Some(ActionVerb::Attack("claw".to_string())),
-                ),
-            ),
-            ("chase".to_string(), state(MotionVerb::ChaseTarget, None)),
-        ]));
-        graph.states.get_mut("attack").unwrap().transitions = vec![TransitionDescriptor {
-            to: "chase".to_string(),
-            when: always(),
-        }];
-        graph.states.get_mut("chase").unwrap().transitions = vec![TransitionDescriptor {
-            to: "attack".to_string(),
-            when: always(),
-        }];
-        graph.interrupts = vec![TransitionDescriptor {
-            to: "zeta".to_string(),
-            when: has_target(),
-        }];
-
+    fn reports_an_activity_without_initial_or_incoming_row() {
         assert_eq!(
-            inspect(&graph),
+            inspect(&graph()),
             vec![BehaviorLint {
-                kind: BehaviorLintKind::LevelWidePursuer,
-                states: vec!["attack".to_string(), "chase".to_string()],
-            }],
-            "an interrupt never substitutes for a state-local disengagement edge"
-        );
-    }
-
-    #[test]
-    fn reports_missing_has_target_interrupt() {
-        let mut graph = graph(BTreeMap::from([
-            ("idle".to_string(), state(MotionVerb::Hold, None)),
-            ("chase".to_string(), state(MotionVerb::ChaseTarget, None)),
-        ]));
-        graph.states.get_mut("chase").unwrap().transitions = vec![TransitionDescriptor {
-            to: "idle".to_string(),
-            when: always(),
-        }];
-
-        assert_eq!(
-            inspect(&graph),
-            vec![BehaviorLint {
-                kind: BehaviorLintKind::NoHasTargetInterrupt,
-                states: vec!["chase".to_string()],
+                kind: BehaviorLintKind::UnreachableActivity,
+                envelope_path: "components.behavior".to_string(),
+                activities: vec!["orphan".to_string()],
             }]
         );
-    }
-
-    #[test]
-    fn no_lint_is_reported_when_both_disengagement_paths_are_authored() {
-        let mut graph = graph(BTreeMap::from([
-            ("idle".to_string(), state(MotionVerb::Hold, None)),
-            ("chase".to_string(), state(MotionVerb::ChaseTarget, None)),
-        ]));
-        graph.states.get_mut("chase").unwrap().transitions = vec![TransitionDescriptor {
-            to: "idle".to_string(),
-            when: always(),
-        }];
-        graph.interrupts = vec![TransitionDescriptor {
-            to: "idle".to_string(),
-            when: has_target(),
-        }];
-
-        assert!(inspect(&graph).is_empty());
     }
 }

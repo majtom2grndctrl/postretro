@@ -89,8 +89,8 @@ use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, Mesh
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::components::touchable::TouchableComponent;
 use postretro_entities::data_descriptors::{
-    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
-    TouchMode, TouchableDescriptor, TransitionDescriptor,
+    ActionVerb, AttackParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+    BehaviorGraphEnvelope, GuardedRow, MotionVerb, TouchMode, TouchableDescriptor,
 };
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -148,18 +148,20 @@ fn perfect_link() -> LinkConfig {
 /// `BrainComponent` keeps the fixture honest.
 fn brain() -> BrainComponent {
     BrainComponent::from_graph(&BehaviorGraphDescriptor {
-        initial: "idle".to_string(),
-        states: std::collections::BTreeMap::from([(
-            "idle".to_string(),
-            BehaviorStateDescriptor {
-                animation: "idle".to_string(),
-                motion: MotionVerb::Hold,
-                action: None,
-                transitions: Vec::new(),
-                on_enter: None,
-            },
-        )]),
-        interrupts: Vec::new(),
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorActivityDescriptor {
+                    animation: Some("idle".to_string()),
+                    motion: Some(MotionVerb::Hold),
+                    action: None,
+                    on_enter: None,
+                    layers: Default::default(),
+                },
+            )]),
+            transitions: Default::default(),
+        },
         candidate_filter: None,
         patrol: None,
         attacks: Default::default(),
@@ -324,41 +326,46 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 
 fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
-        initial: "idle".to_string(),
-        states: std::collections::BTreeMap::from([
-            (
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: std::collections::BTreeMap::from([
+                (
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: Default::default(),
+                    },
+                ),
+                (
+                    "attack".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: Some("attack".to_string()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: Some(ActionVerb::Attack("attack".to_string())),
+                        on_enter: None,
+                        layers: Default::default(),
+                    },
+                ),
+            ]),
+            transitions: std::collections::BTreeMap::from([(
                 "idle".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "idle".to_string(),
-                    motion: MotionVerb::Hold,
-                    action: None,
-                    transitions: vec![TransitionDescriptor {
-                        to: "attack".to_string(),
-                        when: IrNode::Le {
-                            a: Box::new(IrNode::Input {
-                                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
-                                owner: None,
-                            }),
-                            b: Box::new(IrNode::Const {
-                                value: IrValue::Number(16.0),
-                            }),
-                        },
-                    }],
-                    on_enter: None,
-                },
-            ),
-            (
-                "attack".to_string(),
-                BehaviorStateDescriptor {
-                    animation: "attack".to_string(),
-                    motion: MotionVerb::ChaseTarget,
-                    action: Some(ActionVerb::Attack("attack".to_string())),
-                    transitions: Vec::new(),
-                    on_enter: None,
-                },
-            ),
-        ]),
-        interrupts: Vec::new(),
+                vec![GuardedRow {
+                    to: "attack".to_string(),
+                    when: IrNode::Le {
+                        a: Box::new(IrNode::Input {
+                            name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                            owner: None,
+                        }),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(16.0),
+                        }),
+                    },
+                }],
+            )]),
+        },
         candidate_filter: None,
         patrol: None,
         attacks: std::collections::BTreeMap::from([(

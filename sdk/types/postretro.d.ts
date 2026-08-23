@@ -221,7 +221,7 @@ declare module "postretro" {
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
     health?: HealthDescriptor | null;
-    /** Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards. */
+    /** Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn. */
     behavior?: BehaviorGraphDescriptor | null;
   };
 
@@ -425,7 +425,7 @@ declare module "postretro" {
     zoneMultipliers?: { readonly [tag: string]: number };
   };
 
-  /** What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`. */
+  /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`. */
   export type MotionVerb =
     /** Steer toward the selected target's combat slot. */
     | "chaseTarget"
@@ -438,9 +438,9 @@ declare module "postretro" {
     /** Touch neither destination nor steering — terminal presentation. */
     | "freeze";
 
-  /** What a behavior-graph state does besides moving. Omit the key for a state that takes no action. */
+  /** What a behavior activity does besides moving. Omit the key for an activity with no action. */
   export type ActionVerb = {
-    /** Name of the graph-wide contact attack this state fires. */
+    /** Name of the root graph contact attack this activity fires. */
     attack: string;
   };
 
@@ -471,41 +471,73 @@ declare module "postretro" {
     mode: PatrolMode;
   };
 
-  /** One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins. */
-  export type TransitionDescriptor = {
-    /** Destination state name. Must name a state declared in the same `states` map. */
+  /** One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins. */
+  export type GuardedRow = {
+    /** Destination activity name. Must name an activity declared in the same envelope. */
     to: string;
     /** Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse. */
     when: RuntimeValue;
   };
 
-  /** One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions. */
-  export type BehaviorStateDescriptor = {
-    /** Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept. */
-    animation: string;
-    /** What this state does with steering. */
-    motion: MotionVerb;
-    /** Optional action performed while this state is current. `{ attack: "name" }` must name an entry in the graph's `attacks` map. Must be omitted when `motion` is `"moveToAnchor"` or `"patrol"`; position goals are non-engaged. */
+  /** One selector row. In a `move` layer it supplies `when` and `motion`; in an `offense` layer it supplies `when` and `action`. */
+  export type BehaviorSelectorRow = {
+    /** Optional boolean guard. `action:` leaf sugar lowers to one unconditional offense row; authored selector rows supply a guard. */
+    when?: RuntimeValue;
+    /** Motion selected when this row wins in a `move` layer. */
+    motion?: MotionVerb;
+    /** Root-attack action selected when this row wins in an `offense` layer. */
     action?: ActionVerb;
-    /** State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none. */
-    transitions?: ReadonlyArray<TransitionDescriptor>;
-    /** Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it. */
-    onEnter?: string;
   };
 
-  /** Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, fresh-acquisition policy, its states, and ordered guards, including retained-target stand-down. */
-  export type BehaviorGraphDescriptor = {
-    /** State entered at spawn. Must name a declared state. It is also forced when the aggro gate closes, so it should be rest-appropriate. Having no target does not force this state; guards still evaluate. */
+  /** Activities declared by one behavior envelope, keyed by author-chosen name. */
+  export type BehaviorActivities = { readonly [activity: string]: BehaviorActivityDescriptor };
+
+  /** Source-keyed adjacency rows. The `"*"` key applies while the enclosing composite is active. */
+  export type BehaviorTransitions = { readonly [source: string]: ReadonlyArray<GuardedRow> };
+
+  /** A layer is either a selector list or a nested behavior envelope. */
+  export type BehaviorLayerDescriptor = ReadonlyArray<BehaviorSelectorRow | MotionVerb> | BehaviorGraphEnvelope;
+
+  /** Orthogonal layers owned by a composite activity. A move selector is statically required to end in its MotionVerb fallback. */
+  export type BehaviorLayers = { readonly move?: readonly [...BehaviorSelectorRow[], MotionVerb]; readonly offense?: ReadonlyArray<BehaviorSelectorRow> | BehaviorGraphEnvelope; readonly [layer: string]: BehaviorLayerDescriptor | undefined };
+
+  /** A behavior activity. A leaf supplies a required animation plus optional `motion`/`action` sugar; a composite supplies `layers` and may carry a locomotion animation. */
+  export type BehaviorActivityDescriptor = {
+    /** Leaf animation (required when no layers) or optional composite locomotion animation. Mesh names resolve at spawn. */
+    animation?: string;
+    /** Leaf sugar for a single-entry `move` layer. */
+    motion?: MotionVerb;
+    /** Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map. */
+    action?: ActionVerb;
+    /** Optional named event fired when a leaf activity is entered. */
+    onEnter?: string;
+    /** Composite-only orthogonal layers. */
+    layers?: BehaviorLayers;
+  };
+
+  /** Recursive behavior graph envelope used by the root brain and nested graph layers. It carries no graph-wide gameplay fields. */
+  export type BehaviorGraphEnvelope = {
+    /** Initial activity name. Must resolve in this envelope's `activities` map. */
     initial: string;
-    /** Declared states keyed by author-chosen name. Must be non-empty. */
-    states: { readonly [state: string]: BehaviorStateDescriptor };
-    /** Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none. */
-    interrupts?: ReadonlyArray<TransitionDescriptor>;
+    /** Declared same-level activities. Must be non-empty. */
+    activities: { readonly [activity: string]: BehaviorActivityDescriptor };
+    /** Source-keyed ordered adjacency rows; `"*"` is the enclosing scope-all key. */
+    transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
+  };
+
+  /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
+  export type BehaviorGraphDescriptor = {
+    /** Root initial activity. It is also forced when the aggro gate closes. */
+    initial: string;
+    /** Root activities, keyed by author-chosen name. Must be non-empty. */
+    activities: { readonly [activity: string]: BehaviorActivityDescriptor };
+    /** Root source-keyed ordered adjacency rows. `"*"` applies at root scope. */
+    transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
     /** Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target. */
     candidateFilter?: RuntimeValue;
-    /** Optional anchor-relative patrol route. Required with at least one point when any state uses `"patrol"` motion. */
+    /** Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion. */
     patrol?: PatrolDescriptor;
-    /** Named contact-attack vocabulary. A state action `{ attack: "name" }` must name one of these entries; omit for an attackless graph. */
+    /** Named contact-attack vocabulary. Any leaf or offense-layer action `{ attack: "name" }` must name one of these entries; omit for an attackless graph. */
     attacks?: { readonly [attack: string]: AttackParams };
     /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0. */
     moveSpeed: number;
@@ -1633,6 +1665,12 @@ declare module "postretro" {
   export type RuntimeEq = { op: "eq"; a: RuntimeValue; b: RuntimeValue };
   /** Inequality comparison (boolean). */
   export type RuntimeNe = { op: "ne"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean conjunction. */
+  export type RuntimeAnd = { op: "and"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean disjunction. */
+  export type RuntimeOr = { op: "or"; a: RuntimeValue; b: RuntimeValue };
+  /** Boolean inversion. */
+  export type RuntimeNot = { op: "not"; x: RuntimeValue };
   /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
   export type RuntimeSelect = { op: "select"; cond: RuntimeValue; a: RuntimeValue; b: RuntimeValue };
 
@@ -1654,11 +1692,29 @@ declare module "postretro" {
     | RuntimeGe
     | RuntimeEq
     | RuntimeNe
+    | RuntimeAnd
+    | RuntimeOr
+    | RuntimeNot
     | RuntimeSelect;
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
   type RuntimeOperand = RuntimeValue | ComputedRef<unknown> | number | boolean;
+
+  /** A pre-wrapped behavior-guard node. Fluent methods build IR nodes and are
+   * inherited rather than serialized, so a guard remains plain descriptor data. */
+  export type RuntimeGuardNode = RuntimeValue & {
+    le(other: RuntimeOperand): RuntimeGuardNode;
+    ge(other: RuntimeOperand): RuntimeGuardNode;
+    lt(other: RuntimeOperand): RuntimeGuardNode;
+    gt(other: RuntimeOperand): RuntimeGuardNode;
+    eq(other: RuntimeOperand): RuntimeGuardNode;
+    ne(other: RuntimeOperand): RuntimeGuardNode;
+    between(lo: RuntimeOperand, hi: RuntimeOperand): RuntimeGuardNode;
+    and(other: RuntimeOperand): RuntimeGuardNode;
+    or(other: RuntimeOperand): RuntimeGuardNode;
+    not(): RuntimeGuardNode;
+  };
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -1694,6 +1750,12 @@ declare module "postretro" {
     eq(a: RuntimeOperand, b: RuntimeOperand): RuntimeEq;
     /** `a != b` (boolean). */
     ne(a: RuntimeOperand, b: RuntimeOperand): RuntimeNe;
+    /** Boolean conjunction. Prefer this over native `&&` on a node. */
+    and(a: RuntimeOperand, b: RuntimeOperand): RuntimeAnd;
+    /** Boolean disjunction. Prefer this over native `||` on a node. */
+    or(a: RuntimeOperand, b: RuntimeOperand): RuntimeOr;
+    /** Boolean inversion. Prefer this over native `!` on a node. */
+    not(x: RuntimeOperand): RuntimeNot;
     /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
     select(cond: RuntimeOperand, a: RuntimeOperand, b: RuntimeOperand): RuntimeSelect;
   }
@@ -1713,31 +1775,33 @@ declare module "postretro" {
    * is an IR input leaf, usable anywhere a `runtime` builder takes an operand. */
   export interface BrainInputs {
     /** `true` while the enemy has a selected target this tick. This is the only authoritative target-presence test (boolean). */
-    readonly hasTarget: RuntimeRead;
+    readonly hasTarget: RuntimeGuardNode;
     /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
-    readonly targetDistance: RuntimeRead;
-    /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
-    readonly timeInStateMs: RuntimeRead;
-    /** Milliseconds remaining on the current state's named attack timer; zero for a non-attack state or missing attack-map entry. Guard reads are pre-transition (number). */
-    readonly attackCooldownMs: RuntimeRead;
+    readonly targetDistance: RuntimeGuardNode;
+    /** Milliseconds since the currently evaluated activity was entered. Parent and nested activity rows read their own clocks. A commitment window is a guard over this, not an engine mechanism (number). */
+    readonly timeInActivityMs: RuntimeGuardNode;
+    /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
+    readonly attackCooldownMs: RuntimeGuardNode;
     /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
-    readonly acquisitionDue: RuntimeRead;
+    readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
-    readonly health: RuntimeRead;
+    readonly health: RuntimeGuardNode;
     /** The enemy's maximum hit points (number). */
-    readonly maxHealth: RuntimeRead;
+    readonly maxHealth: RuntimeGuardNode;
     /** The selected target's current hit points, or zero with no target or no health component (number). */
-    readonly targetHealth: RuntimeRead;
+    readonly targetHealth: RuntimeGuardNode;
     /** The selected target's maximum hit points, or zero with no target or no health component (number). */
-    readonly targetMaxHealth: RuntimeRead;
+    readonly targetMaxHealth: RuntimeGuardNode;
     /** `true` once the selected target's death sweep has handled it; false with no target (boolean). */
-    readonly targetDied: RuntimeRead;
+    readonly targetDied: RuntimeGuardNode;
     /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
-    readonly distanceFromAnchor: RuntimeRead;
+    readonly distanceFromAnchor: RuntimeGuardNode;
     /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
-    readonly targetHostile: RuntimeRead;
+    readonly targetHostile: RuntimeGuardNode;
     /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
-    readonly targetReachable: RuntimeRead;
+    readonly targetReachable: RuntimeGuardNode;
+    /** Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number). */
+    readonly attacksFiredInActivity: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -1746,20 +1810,20 @@ declare module "postretro" {
   /** Facts about one offered target, evaluated during acquisition. */
   export interface CandidateInputs {
     /** XZ distance from the evaluating enemy (number). */
-    readonly distance: RuntimeRead;
+    readonly distance: RuntimeGuardNode;
     /** Current hit points, or zero when absent (number). */
-    readonly health: RuntimeRead;
+    readonly health: RuntimeGuardNode;
     /** Maximum hit points, or zero when absent (number). */
-    readonly maxHealth: RuntimeRead;
+    readonly maxHealth: RuntimeGuardNode;
     /** `true` once the death sweep has handled this candidate (boolean). */
-    readonly died: RuntimeRead;
+    readonly died: RuntimeGuardNode;
   }
 
   /** Pre-wrapped leaves for graph candidate eligibility. */
   export const candidate: CandidateInputs;
 
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
-  export function state(name: string): RuntimeRead;
+  export function state(name: string): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

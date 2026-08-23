@@ -594,7 +594,11 @@ mod tests {
         let target_visible = bind_read(BRAIN_TARGET_VISIBLE_INPUT, &scope);
 
         for visible in [true, false] {
-            let shared_verdict = fire_gate(Some(EnemyTargetPerception { visible }));
+            let shared_verdict = fire_gate(Some(EnemyTargetPerception {
+                visible,
+                enemy_eye: glam::Vec3::ZERO,
+                target_aim: glam::Vec3::ZERO,
+            }));
             scope.refresh(
                 &registry,
                 enemy,

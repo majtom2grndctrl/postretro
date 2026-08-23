@@ -65,6 +65,17 @@ bake into vertices"), the compensation must be baked into the weapon's vertices
 7. Reports verify metrics: `barrel·+Z` (1.0 = forward), `barrel·+Y` (0 = level),
    `up·+Y` (1.0 = not rolled).
 
+Compose semantics follow from step 3. Because `socket_dump` detects the barrel
+GEOMETRICALLY off the loaded (already-baked) mesh, its delta `D` is a RESIDUAL, so
+step 6 composes it onto the current bake's euler to print the TOTAL for re-baking
+from raw. The promoted tool's DECLARED-axes path builds `G` from author-declared
+axes rather than measured geometry, so its `D` is a FULL from-raw solve emitted
+directly — no compose (stateless). Compose is thus the geometric-ASSIST path's
+behavior only; see `index.md` Task 2 and AC #6. The change of basis
+`C: (x,y,z) -> (x,-z,y)` (`c_map`, `C = [X, Z, -Y]` columns) is a two-sided
+similarity on the corrective rotation (`d_b = C·d_gltf·Cᵀ`); check mode inverts it
+(`R_gltf = Cᵀ·R_blender·C`) to bring the applied Blender euler back to glTF frame.
+
 This is the solve to promote. Split the ENGINE-frame parts (steps 1-4, 7) from
 the BLENDER-adapter parts (steps 5-6): the Blender-XYZ mapping is authoring-tool
 specific and belongs at the tool layer, per the format-adapter philosophy above.

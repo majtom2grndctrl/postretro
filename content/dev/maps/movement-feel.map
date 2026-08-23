@@ -787,6 +787,14 @@
 "_tags" "enemy pose_fixture"
 "_tb_group" "9"
 }
+// Limitator — ranged enemy holding the AR_4 rifle (hand_r attachment).
+{
+"classname" "limitator"
+"origin" "-216 900 192"
+"angles" "0 90 0"
+"_tags" "enemy limitator"
+"_tb_group" "9"
+}
 // entity 32
 {
 "classname" "func_group"

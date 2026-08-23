@@ -279,3 +279,10 @@
 ( 176 224 0 ) ( 176 288 64 ) ( 176 288 0 ) concrete_pavement_036 0 0 0 1 1
 }
 }
+// Limitator — ranged enemy holding the AR_4 rifle (hand_r attachment).
+{
+"classname" "limitator"
+"origin" "560 256 16"
+"angles" "0 180 0"
+"_tags" "enemy limitator"
+}

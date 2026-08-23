@@ -84,6 +84,33 @@ only known after resolution. The firing-origin question rides here too: a hitsca
 origin, and a visible ranged shot (beam, muzzle flash, traveling projectile) needs a posed
 weapon-socket origin rather than the hitbox center a bare occlusion/self-exclusion ray can use.
 
+## AI prerequisites surfaced by the limitator experiment
+
+An experimental ranged enemy (`content/dev/scripts/limitator.ts` — a rifleman authored on the
+shipped melee `attacks` / behavior-graph substrate) exercised the AI floor ahead of this spec and
+surfaced two gaps a functional ranged enemy needs closed. Both are AI-layer (Epic 10 lineage), but
+each bites only a hold-at-standoff enemy, so they are recorded here rather than re-derived later.
+
+- **Combat positioning must seat a ranged enemy inside its own fire threshold.** E10 combat
+  positioning (`crates/postretro/src/combat_positioning.rs`) scores slots by
+  `|slot_to_target − engagement_radius|`, so the preferred slot sits at *exactly* `engagement_radius`
+  from the target and grounding preserves that XZ distance. An enemy whose fire guard is
+  `targetDistance ≤ engagement_radius` therefore settles just *outside* the guard (the steering
+  hard-stop lands it at `engagement_radius` plus a fraction of the agent radius) and never crosses
+  into firing range — it stands at the ring playing its locomotion clip until the target closes the
+  gap. A melee enemy hides this because its contact guard sits well inside its slot ring. Ranged
+  standoff needs positioning that targets a firing distance strictly *inside* the fire threshold — a
+  standoff band, or hysteresis on the guard — not the ring radius itself. Content can work around it
+  today (author `engagementRadius` below the guard distance), but a first-class ranged enemy should
+  not require the author to reverse-engineer the slot-scoring interaction.
+- **Facing must track the target through a committed aim, and the shot must gate on facing.** A
+  committed aim activity (hold motion, no steering `engages_path` contribution) freezes the enemy's
+  facing for the aim duration, and the fire tick applies damage regardless of where the muzzle
+  points — so a ranged enemy can deal damage while visibly aimed away from its target during the yaw
+  slew. Melee windups hide this (short, and contact is omnidirectional); a long rifle aim does not. A
+  ranged attack wants the aim phase to keep slewing toward the target and the fire resolution to gate
+  on — or originate from — the posed weapon socket's forward direction.
+
 ## Ownership
 
 Enemy ranged / hitscan attacks — the `weapon`-referencing entry kind, nearest-of ray resolution,

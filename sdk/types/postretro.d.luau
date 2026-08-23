@@ -259,16 +259,46 @@ export type ProjectileDescriptor = {
   radius: number,
   --- The longest time the projectile may exist, in milliseconds. For example, `2000` means two seconds. Use a finite number greater than 0; the weapon's `range` can end the flight sooner.
   lifetimeMs: number,
-  --- What players see while the projectile flies: one required body and an optional cosmetic trail. These settings do not change damage or hit detection.
+  --- What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.
   visual: ProjectileVisual,
 }
 
---- The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.
+--- The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation.
 export type ProjectileVisual = {
   --- The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.
   body: ProjectileBodyVisual,
   --- Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.
   trail: ProjectileTrailVisual?,
+  --- Optional dynamic point light that travels with the body. It affects nearby surfaces only; it never changes damage or hit detection.
+  light: ProjectileLight?,
+  --- Optional stationary point light at a resolved impact. It fades locally and never changes damage or hit detection.
+  impactLight: ProjectileImpactLight?,
+}
+
+--- A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows.
+export type ProjectileLight = {
+  --- Linear RGB multiplier as exactly three finite numbers.
+  color: {number},
+  --- Brightness multiplier. Use a finite number of 0 or greater.
+  intensity: number,
+  --- How far the light reaches in metres. Use a finite number greater than 0.
+  falloffRange: number,
+  --- Distance attenuation model. Omit for the inverse-square default.
+  falloffModel: FalloffKind?,
+}
+
+--- A transient point light spawned at a projectile impact. It always fades over `fadeMs` and casts no entity shadows.
+export type ProjectileImpactLight = {
+  --- Linear RGB multiplier as exactly three finite numbers.
+  color: {number},
+  --- Brightness multiplier. Use a finite number of 0 or greater.
+  intensity: number,
+  --- Starting falloff radius in metres. Use a finite number greater than 0.
+  radius: number,
+  --- Optional final falloff radius in metres. When present it must be at least `radius` and expands the flash while it fades.
+  peakRadius: number?,
+  --- How long the flash fades in milliseconds. Use a finite number greater than 0.
+  fadeMs: number,
 }
 
 --- The settings used when `body.kind` is `sprite`. A sprite is a flat image that always turns to face the camera.
@@ -283,6 +313,10 @@ export type ProjectileSpriteBodyVisual = {
   rotation: number?,
   --- A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly.
   tint: {number}?,
+  --- Additive self-lit strength for this sprite. `0` keeps the normal scene-lit appearance; values around `2` to `4` make a full-bright HDR bolt that can bloom. Use a finite number of 0 or greater.
+  emissive: number?,
+  --- How long to hold each numbered sprite frame, in milliseconds. Leave it out to keep frame zero static, even when `sprite` names a multi-frame collection. Use a finite number greater than 0.
+  frameDurationMs: number?,
 }
 
 --- The settings used when `body.kind` is `model`. The model is a rigid 3D object: it does not play an animation while flying.

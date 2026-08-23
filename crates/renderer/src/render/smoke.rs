@@ -203,18 +203,20 @@ pub struct SpriteSheet {
     pub frame_count: u32,
 }
 
-/// Pack `SpriteDrawParams` bytes for a (frame_count, spec_intensity, lifetime) tuple.
+/// Pack `SpriteDrawParams` bytes for a
+/// (frame_count, spec_intensity, lifetime, emissive) tuple.
 fn build_draw_params(
     frame_count: u32,
     spec_intensity: f32,
     lifetime: f32,
+    emissive: f32,
 ) -> [u8; SPRITE_DRAW_PARAMS_SIZE] {
     let mut bytes = [0u8; SPRITE_DRAW_PARAMS_SIZE];
     // params.x = bitcast<f32>(frame_count)
     bytes[0..4].copy_from_slice(&frame_count.to_ne_bytes());
     bytes[4..8].copy_from_slice(&spec_intensity.to_ne_bytes());
     bytes[8..12].copy_from_slice(&lifetime.to_ne_bytes());
-    // pad at 12..16 stays zero
+    bytes[12..16].copy_from_slice(&emissive.to_ne_bytes());
     bytes
 }
 
@@ -493,8 +495,12 @@ impl SmokePass {
 
     /// Register a sprite sheet collection. Uploads the stitched strip as a
     /// single horizontal-strip RGBA8 texture and creates the per-collection
-    /// bind group (group 1). Does nothing if the collection was already
-    /// registered, or if the frame list is empty or contains mismatched sizes.
+    /// bind group (group 1). Reports and rejects duplicate collection calls, or
+    /// unusable frame lists, so caller ordering cannot silently replace a draw
+    /// contract.
+    // This mirrors the renderer-facing collection registration contract; a
+    // parameter object here would only obscure the one forwarding call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_collection(
         &mut self,
         device: &wgpu::Device,
@@ -503,8 +509,12 @@ impl SmokePass {
         frames: &[SpriteFrame],
         spec_intensity: f32,
         lifetime: f32,
+        emissive: f32,
     ) {
         if self.sheets.contains_key(collection) {
+            log::warn!(
+                "[Smoke] duplicate collection '{collection}' rejected; level installation must resolve one draw contract"
+            );
             return;
         }
         let Some((strip_data, strip_w, strip_h, frame_count)) = stitch_frames_to_strip(frames)
@@ -547,7 +557,7 @@ impl SmokePass {
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let params_bytes = build_draw_params(frame_count, spec_intensity, lifetime);
+        let params_bytes = build_draw_params(frame_count, spec_intensity, lifetime, emissive);
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Sprite Draw Params: {collection}")),
             contents: &params_bytes,
@@ -770,7 +780,7 @@ mod tests {
 
     #[test]
     fn draw_params_layout() {
-        let bytes = build_draw_params(8, 0.3, 3.0);
+        let bytes = build_draw_params(8, 0.3, 3.0, 2.5);
         assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
         let count = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
         assert_eq!(count, 8);
@@ -778,6 +788,50 @@ mod tests {
         assert!((spec - 0.3).abs() < 1e-6);
         let lifetime = f32::from_ne_bytes(bytes[8..12].try_into().unwrap());
         assert!((lifetime - 3.0).abs() < 1e-6);
+        let emissive = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+        assert!((emissive - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_emissive_draw_params_keep_the_former_padding_bytes_zero() {
+        let bytes = build_draw_params(8, 0.3, 3.0, 0.0);
+        assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
+        assert_eq!(bytes[12..16], [0; 4]);
+    }
+
+    #[test]
+    fn billboard_fragment_adds_emissive_without_a_light_term_mask_gate() {
+        let fragment = include_str!("../shaders/billboard.wgsl")
+            .split("@fragment\nfn fs_main")
+            .nth(1)
+            .expect("billboard shader must define fs_main");
+
+        assert!(
+            fragment.contains(
+                "let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;"
+            )
+        );
+        assert!(fragment.contains("(lit_rgb + emissive_rgb) * sprite_sample.a"));
+        assert!(
+            !fragment.contains("light_term_mask") && !fragment.contains("light_terms"),
+            "self-only emissive must not be gated by LightTermMask"
+        );
+    }
+
+    #[test]
+    fn billboard_emissive_obeys_instance_opacity() {
+        // Regression: emissive RGB survived at full strength when opacity was zero,
+        // even though the billboard's alpha and scene-lit contribution vanished.
+        let fragment = include_str!("../shaders/billboard.wgsl")
+            .split("@fragment\nfn fs_main")
+            .nth(1)
+            .expect("billboard shader must define fs_main");
+        assert!(
+            fragment.contains(
+                "let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;"
+            ),
+            "billboard emissive must use the same instance opacity as scene-lit RGB"
+        );
     }
 
     #[test]

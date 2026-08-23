@@ -49,11 +49,15 @@ pub fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
             // so direct serialization yields the script-facing key shape.
             let mut comp =
                 serde_json::to_value(&h.component).expect("LightComponent always serializes");
-            // `animated_slot` is renderer-routing metadata, not part of the
-            // authored LightComponent surface. Keep it in engine storage but
-            // remove it from the read snapshot handed to either script host.
+            // `animated_slot` and `follow_transform` are bridge-routing
+            // metadata, not part of the authored LightComponent surface. Keep
+            // them in engine storage but remove them from script snapshots.
             if let Value::Object(fields) = &mut comp {
                 fields.remove("animatedSlot");
+                fields.remove("followTransform");
+                if let Some(Value::Object(animation)) = fields.get_mut("animation") {
+                    animation.remove("radius");
+                }
             }
             let mut obj = Map::with_capacity(5);
             obj.insert("id".to_string(), Value::from(h.id.to_raw()));
@@ -84,6 +88,13 @@ fn validate_and_normalize(
             reason: format!("periodMs must be > 0 (got {})", anim.period_ms),
         });
     }
+    if anim.radius.is_some() {
+        return Err(ScriptError::InvalidArgument {
+            reason:
+                "radius animation is engine-internal and cannot be authored by setLightAnimation"
+                    .into(),
+        });
+    }
     if let Some(ref b) = anim.brightness
         && b.is_empty()
     {
@@ -97,18 +108,10 @@ fn validate_and_normalize(
                 reason: "color channel present but empty (use null to omit)".into(),
             });
         }
-        // Task 1b: relax the previous `is_dynamic` gate. The geometry-axis
-        // redefinition of `is_dynamic` (Task 1b spec) plus the
-        // animated-baked compose path (Task 2c) means script-driven
-        // intensity/color on a static light no longer drifts from the SH
-        // bake — animated-baked lights route their per-frame radiance
-        // through the compose pass, which fuses the per-frame dominant
-        // direction and feeds the SDF shadow trace. The old "color
-        // animation requires dynamic" rule is incompatible with that
-        // path; remove it. Brightness-only animation on a now-static
-        // light is admitted unchanged.
-        //
-        // Historical source: context/plans/done/sdf-static-occluder-shadows/.
+        // Static lights with an animated compose slot route per-frame radiance
+        // through the baked compose path, including dominant direction and SDF
+        // visibility. Rejecting brightness or color by `is_dynamic` would confuse
+        // bake participation with animation support and block that valid path.
     }
     if let Some(ref mut dirs) = anim.direction {
         if dirs.is_empty() {
@@ -406,6 +409,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )
@@ -465,6 +469,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic: true,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )
@@ -513,6 +518,40 @@ mod tests {
     }
 
     #[test]
+    fn world_query_snapshot_omits_engine_internal_radius_animation() {
+        // Regression: rejecting radius in setLightAnimation was insufficient because
+        // an engine-created impact light still exposed that channel through queries.
+        let (ctx, id) = test_ctx_with_light(true, Some("impact_flash"));
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .expect("fixture light exists")
+                .clone();
+            component.animation = Some(LightAnimation {
+                period_ms: 100.0,
+                phase: None,
+                play_count: Some(1),
+                start_active: None,
+                brightness: Some(vec![1.0, 0.0]),
+                color: None,
+                direction: None,
+                radius: Some(vec![2.0, 8.0]),
+            });
+            registry
+                .set_component(id, component)
+                .expect("fixture light updates");
+        }
+
+        let json = handles_to_json(collect_light_handles(&ctx, Some("impact_flash")));
+        let animation = json[0]["component"]["animation"]
+            .as_object()
+            .expect("query retains author-visible animation channels");
+        assert!(!animation.contains_key("radius"));
+        assert!(animation.contains_key("brightness"));
+    }
+
+    #[test]
     fn set_light_animation_updates_registry() {
         let (ctx, id) = test_ctx_with_light(true, None);
         apply_light_animation(
@@ -526,6 +565,7 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -549,6 +589,7 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -592,6 +633,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap_err();
@@ -612,18 +654,15 @@ mod tests {
                 brightness: Some(vec![]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap_err();
         assert!(matches!(err, ScriptError::InvalidArgument { .. }));
     }
 
-    /// Task 1b: brightness-only animation on a now-static
-    /// (`is_dynamic == false`) script-driven-intensity light is admitted —
-    /// the previous `is_dynamic` gate was incompatible with the
-    /// animated-baked compose path. AC: "`setLightAnimation` accepts
-    /// brightness-only animation on a now-static script-driven-intensity
-    /// light without error."
+    /// Brightness animation is valid for a static light because the animated
+    /// baked-compose path owns its per-frame radiance.
     #[test]
     fn set_light_animation_accepts_brightness_on_static_script_driven_light() {
         let (ctx, id) = test_ctx_with_light(false, None);
@@ -638,15 +677,14 @@ mod tests {
                 brightness: Some(vec![0.1, 0.9]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .expect("brightness-only on a static light must be admitted");
     }
 
-    /// Task 1b: the previous "color animation requires dynamic" gate is
-    /// retired alongside the geometry-axis redefinition of `is_dynamic`.
-    /// Color animation routes through the animated-baked compose path
-    /// (Task 2c), which fuses per-frame radiance — no SH bake drift.
+    /// Color animation is valid for a static light because the animated
+    /// baked-compose path fuses its per-frame radiance without SH bake drift.
     #[test]
     fn set_light_animation_accepts_color_on_static_light_after_task_1b() {
         let (ctx, id) = test_ctx_with_light(false, None);
@@ -661,6 +699,7 @@ mod tests {
                 brightness: None,
                 color: Some(vec![Vec3Lit([1.0, 0.0, 0.0])]),
                 direction: None,
+                radius: None,
             }),
         )
         .expect("color animation on a static light is admitted post-1b");
@@ -680,6 +719,7 @@ mod tests {
                 brightness: Some(vec![0.1, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -709,6 +749,7 @@ mod tests {
                 brightness: None,
                 color: None,
                 direction: Some(vec![Vec3Lit([2.0, 0.0, 0.0]), Vec3Lit([0.0, 3.0, 4.0])]),
+                radius: None,
             }),
         )
         .unwrap();
@@ -744,6 +785,7 @@ mod tests {
                 brightness: None,
                 color: None,
                 direction: Some(vec![Vec3Lit([0.0, 0.0, 0.0])]),
+                radius: None,
             }),
         )
         .unwrap_err();
@@ -796,6 +838,7 @@ mod tests {
                 brightness: Some(vec![0.0, 1.0]),
                 color: None,
                 direction: None,
+                radius: None,
             }),
         )
         .unwrap();
@@ -831,8 +874,8 @@ mod tests {
         );
     }
 
-    /// Task 1b: sequenced path mirrors the script-side relaxation —
-    /// color animation on a static light is admitted.
+    /// Sequenced dispatch uses the same static-light animation contract as the
+    /// direct primitive path.
     #[test]
     fn sequenced_set_light_animation_accepts_color_on_static_light_after_task_1b() {
         let (ctx, id) = test_ctx_with_light(false, None);

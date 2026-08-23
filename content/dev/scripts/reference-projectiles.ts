@@ -22,9 +22,23 @@ export const referencePlasmaBoltEntity = defineEntity({
         visual: {
           body: {
             kind: "sprite",
-            sprite: "projectiles/plasma_blue_orb.png",
+            sprite: "plasma_bolt",
             size: 0.35,
             tint: [0.2, 0.7, 1.0],
+            emissive: 3.0,
+            frameDurationMs: 60.0,
+          },
+          light: {
+            color: [0.2, 0.7, 1.0],
+            intensity: 2.5,
+            falloffRange: 6.0,
+          },
+          // A brief static blue-white contact pop.
+          impactLight: {
+            color: [0.55, 0.85, 1.0],
+            intensity: 4.0,
+            radius: 5.0,
+            fadeMs: 180.0,
           },
         },
       },
@@ -52,6 +66,19 @@ export const referenceRocketEntity = defineEntity({
           // The existing SMG dev model is the model-body fixture;
           // the trailing smoke makes the separate body + trail forms obvious.
           body: { kind: "model", model: WORLD_PICKUP_MODEL },
+          light: {
+            color: [1.0, 0.65, 0.25],
+            intensity: 3.0,
+            falloffRange: 8.0,
+          },
+          // A larger warm shockwave expands as it fades.
+          impactLight: {
+            color: [1.0, 0.5, 0.18],
+            intensity: 7.0,
+            radius: 8.0,
+            peakRadius: 18.0,
+            fadeMs: 340.0,
+          },
           trail: {
             sprite: "smoke_puff/smoke_puff_00.png",
             rate: 36.0,

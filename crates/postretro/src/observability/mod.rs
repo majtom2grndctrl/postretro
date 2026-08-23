@@ -221,6 +221,7 @@ mod tests {
                 cone_direction: None,
                 is_dynamic: false,
                 animated_slot: None,
+                follow_transform: false,
                 animation: None,
             }),
             ComponentKind::BillboardEmitter => {
@@ -406,6 +407,9 @@ mod tests {
                 owner_weapon: EntityId::from_raw(2),
                 spawned: false,
                 predicted_shot_id: None,
+                elapsed_flight_age: 0.0,
+                flipbook_active: false,
+                impact_light: None,
             }),
         }
     }

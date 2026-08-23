@@ -17,13 +17,17 @@ fn clear_kinematic_mover_frame_state(
 }
 
 impl Renderer {
-    /// First caller's `spec_intensity` and `lifetime` win — per-collection, not per-emitter.
+    /// Upload one draw contract per collection. Level installation resolves every
+    /// emitter and projectile consumer before this boundary; duplicate calls are
+    /// reported and rejected by the smoke pass rather than silently overriding an
+    /// accepted descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,
         frames: &[SpriteFrame],
         spec_intensity: f32,
         lifetime: f32,
+        emissive: f32,
     ) {
         let Self {
             device,
@@ -41,6 +45,7 @@ impl Renderer {
             frames,
             spec_intensity,
             lifetime,
+            emissive,
         );
     }
 

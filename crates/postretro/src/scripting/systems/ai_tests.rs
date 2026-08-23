@@ -1159,12 +1159,39 @@ fn bind_candidate_filter_for_test(node: IrNode) -> BoundProgram<CandidateScope> 
     .expect("candidate filter binds")
 }
 
+/// Direct targeting unit tests exercise the same due-tick offer/eligibility
+/// seam as the AI tick without adding collision fixtures. The retired `visible`
+/// argument is intentionally ignored: LOS belongs only to the engine-floor
+/// eligibility closure passed by the live caller, never upstream of offers.
+fn select_target_for_test(
+    registry: &EntityRegistry,
+    from: Vec3,
+    enemy_faction: f32,
+    retained_target: Option<EntityId>,
+    _visible: Option<&dyn Fn(EntityId) -> bool>,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
+) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
+    let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
+    let offers = target_offers(registry, from, enemy_faction, retained_target);
+    let nearest = offers.nearest;
+    let selected = select_target(
+        retained,
+        &offers,
+        registry,
+        candidate_filter,
+        candidate_scope,
+        &|_| true,
+    );
+    (nearest, selected)
+}
+
 #[test]
 fn select_target_returns_single_player_pawn() {
     let mut reg = EntityRegistry::new();
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1186,7 +1213,7 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     reg.mark_local_player_pawn(local).unwrap();
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1210,7 +1237,7 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let slightly_nearer = spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1235,7 +1262,7 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let closer = spawn_player(&mut reg, Vec3::new(8.5, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1260,7 +1287,7 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     reg.remove_component::<PlayerMovementComponent>(retained)
         .unwrap();
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1300,7 +1327,7 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
             value: IrValue::Bool(true),
         }),
     });
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &registry,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1326,7 +1353,7 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
         }),
     });
     let mut candidate_scope = CandidateScope::for_validation();
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &registry,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1362,7 +1389,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     });
     let mut inside = EntityRegistry::new();
     let inside_pawn = spawn_player(&mut inside, Vec3::new(RANGE - EPSILON, 0.0, 0.0));
-    let (_, selected) = select_target(
+    let (_, selected) = select_target_for_test(
         &inside,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1378,7 +1405,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
 
     let mut outside = EntityRegistry::new();
     spawn_player(&mut outside, Vec3::new(RANGE + EPSILON, 0.0, 0.0));
-    let (_, selected) = select_target(
+    let (_, selected) = select_target_for_test(
         &outside,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -7542,6 +7569,225 @@ fn latched_firing_leaf_rechecks_blocked_los_and_fires_once_when_clear() {
         "one firing-leaf dwell lands at most one shot"
     );
     assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn occluded_fresh_offer_prices_stride_but_is_not_acquired() {
+    // P6: raw nearest-hostile distance still determines the stride, while the
+    // due-tick eligibility path rejects the same candidate for blocked LOS.
+    let graph = test_behavior_graph!({
+        initial: "rest".to_string(),
+        activities: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+            (
+                "due".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+        ]),
+        transitions: BTreeMap::from([(
+            "rest".to_string(),
+            vec![edge("due", brain_input(BRAIN_ACQUISITION_DUE_INPUT))],
+        )]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let mut registry = EntityRegistry::new();
+    let candidate_position = Vec3::new(35.0, 0.0, 0.0);
+    let candidate = spawn_player(&mut registry, candidate_position);
+    let mut brain = authored_brain(&graph, "rest");
+    brain.think_stride_counter = 0;
+    let stride = think_stride_for_distance(distance_xz(candidate_position, Vec3::ZERO));
+    assert!(stride > 1, "fixture must use the far raw-offer band");
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let wall = wall_world(17.0, -1.0, 2.0);
+    let mut runtime = AiRuntime::new();
+
+    for tick in 1..stride {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+        assert_eq!(
+            enemy_state_name(&registry, enemy),
+            "rest",
+            "tick {tick} must remain off the raw-distance stride",
+        );
+        assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    }
+
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "due",
+        "the raw nearest hostile reaches its unchanged stride boundary",
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "the blocked hostile remains ineligible even on its raw-distance due tick",
+    );
+    assert_ne!(enemy_acquired_target(&registry, enemy), Some(candidate));
+}
+
+#[test]
+fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
+    // P7: only fresh candidacy uses raw LOS. A target selected while clear stays
+    // retained, and the existing debounced fire verdict alone controls shots.
+    let graph = test_behavior_graph!({
+        initial: "fire_a".to_string(),
+        activities: BTreeMap::from([
+            (
+                "fire_a".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("attack".to_string())),
+                ),
+            ),
+            (
+                "fire_b".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("attack".to_string())),
+                ),
+            ),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "fire_a".to_string(),
+                vec![edge(
+                    "fire_b",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                )],
+            ),
+            (
+                "fire_b".to_string(),
+                vec![edge(
+                    "fire_a",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                )],
+            ),
+        ]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                damage: TEST_ATTACK_DAMAGE,
+                max_range: TEST_ATTACK_RANGE,
+                cooldown_ms: 0.0,
+                engagement_radius: None,
+                standoff_distance: None,
+            },
+        )]),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let wall = wall_world(0.5, -1.0, 2.0);
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+
+    for grace_tick in 1..=perception::LOS_GRACE_TICKS {
+        let events =
+            run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+        assert_eq!(
+            events,
+            vec![ENEMY_ATTACK_EVENT],
+            "covered tick {grace_tick} remains inside the selected target's loss grace",
+        );
+        assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+    }
+
+    let events = run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert!(
+        events.is_empty(),
+        "the active attack state holds once the debounced verdict has expired",
+    );
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+}
+
+#[test]
+fn retained_target_does_not_switch_to_a_closer_occluded_candidate_on_due_tick() {
+    // P8: a due rescan can replace the incumbent only with an eligible fresh
+    // candidate. LOS must gate this branch too, without LOS-gating A itself.
+    let graph = pursuit_graph();
+    let mut registry = EntityRegistry::new();
+    let retained_position = Vec3::new(10.0, 0.0, 30.0);
+    let retained = spawn_player(&mut registry, retained_position);
+    let occluded = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.acquired_target = Some(retained);
+    let retained_stride = think_stride_for_distance(distance_xz(retained_position, Vec3::ZERO));
+    assert!(
+        retained_stride > 1,
+        "fixture must rescan on a retained due tick"
+    );
+    brain.think_stride_counter = retained_stride - 1;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    // The narrow wall catches B's ray at z=0 but A's ray crosses its x-plane at
+    // z=1.5, beyond the wall edge, so the incumbent is still plainly visible.
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(retained));
+    assert_ne!(enemy_acquired_target(&registry, enemy), Some(occluded));
+}
+
+#[test]
+fn fully_disengaged_enemy_does_not_reacquire_a_nearby_occluded_target() {
+    // P9: standing down clears the retained id. Re-arming reaches the pure
+    // fresh scan, whose raw LOS gate prevents the nearby covered target waking
+    // the enemy back up.
+    let graph = pursuit_graph();
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.acquired_target = Some(target);
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    set_enemy_aggro_armed(&mut registry, enemy, false);
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+
+    set_enemy_aggro_armed(&mut registry, enemy, true);
+    let wall = wall_world(0.5, -1.0, 2.0);
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "rest",
+        "the fresh scan must not reacquire a nearby hostile through cover",
+    );
 }
 
 #[test]

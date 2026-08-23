@@ -142,8 +142,9 @@ pub struct BrainComponent {
     /// entry pass. This is consumed by the AI tick after timers are zeroed.
     #[serde(default)]
     pub entry_pending: bool,
-    /// First depth entered by the pending edge. An inner transition must not
-    /// re-fire an action selected by a still-active outer activity.
+    /// Earliest depth whose entry action has not been consumed. A same-tick
+    /// inner transition preserves an earlier parent entry without re-firing a
+    /// parent whose entry was already consumed.
     #[serde(default)]
     pub entry_pending_start_depth: usize,
     /// Whether the pending entry should emit the entered leaf's `onEnter`.
@@ -362,7 +363,11 @@ impl BrainComponent {
         if depth >= MAX_BEHAVIOR_NESTING_DEPTH {
             return false;
         }
-        let entry_start_depth = depth;
+        let entry_start_depth = self
+            .entry_pending
+            .then_some(self.entry_pending_start_depth)
+            .map_or(depth, |pending_depth| pending_depth.min(depth));
+        let emit_event = self.entry_event_pending || emit_event;
         self.entry_pending = false;
         self.entry_event_pending = false;
         self.active_activity_path_len = depth;

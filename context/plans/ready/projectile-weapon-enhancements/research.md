@@ -183,32 +183,38 @@ sequenceDiagram
     Bridge->>Bridge: absorb_dynamic_lights picks up the new Light id (consumes RESERVE)
     loop each frame while in flight
         Stage->>Stage: cur = prev + dir*speed*dt (moves Transform)
-        Bridge->>Bridge: follow_transform → position/influence from INTERPOLATED render pose; mark dirty if moved
+        Bridge->>Bridge: follow_transform → position/influence from body-matched pose (raw Transform for sprite, interpolated for model); mark dirty if moved
         Bridge->>GPU: repack moving light
     end
     Stage->>Stage: impact or travel-bound → despawn projectile (LightComponent gone)
-    Bridge->>GPU: tracked light disappeared → one tombstone upload (zeroed slot)
-    Note over Bridge: reserve-slot RECLAIM is the prerequisite spec, not this path
+    Bridge->>GPU: tracked light disappeared → one tombstone upload (zeroed slot); free-list reclaims the slot
 ```
 
-Two corrections the review forced. **(1) The tombstone zeroes the GPU slot but does
-NOT reclaim the reserve entry.** `update`'s failed-`get_component` branch emits one
-zeroing upload but leaves the dead-generation `EntityId` in `entity_ids` forever
-("Despawned entries remain as tombstone slots"; no compaction anywhere), and
-`absorb_dynamic_lights` bounds new lights on `entity_ids.len() - authored_light_count`
-— so every runtime light ever spawned counts against the 256-slot reserve
-permanently. Projectile lights (up to 2 per hitting shot, short-lived) are the first
-high-churn runtime lights and exhaust it in seconds. Reserve reclamation is a
-SEPARATE PREREQUISITE spec (`light-bridge-runtime-light-reclamation`) this one
-depends on; this spec must not claim the tombstone frees the slot. **(2) The
-follow-Transform light reads the INTERPOLATED render pose** (`interpolated_transform`
-at render alpha), not the raw tick Transform — so it stays locked to a model-body
-(rocket) projectile that renders interpolated. That is new plumbing: the bridge's
-per-id loop reads only `LightComponent` today (not the `Transform`), and it lacks the
-render-alpha + interpolated accessor; it must gain both, plus override BOTH the
-packed position (`cached_origins_f64` via `component_to_map_light`) and the influence
-center (`component.origin` via `component_to_influence` — a different stale source)
-from the interpolated pose.
+Three points the review settled (updated for merged `main`). **(1) Reserve-slot
+reclamation is SHIPPED** (`light-bridge-runtime-light-reclamation`, PR #401, now in
+`context/plans/done/`). The `update` tombstone branch still zeroes the GPU slot; the
+merged bridge additionally pushes the freed runtime slot to `LightBridge.free_slots`
+(guarded by a per-slot `MapLightShape.reclaimed`), and `absorb_dynamic_lights` reuses
+it via `free_slots.pop()` and bounds new lights on `entity_ids.len() -
+authored_light_count - free_slots.len()` — a **live** count, not cumulative. So the
+projectile lights' churn no longer exhausts the 256 reserve. This spec consumes that
+shipped behavior; it does not implement reclamation. **(2) The follow-Transform light
+reads the pose that MATCHES ITS BODY's render path** — a **sprite** body from the
+**raw** `Transform` (the un-interpolated value `pack_sprite_instance` packs), a
+**model** body from `interpolated_transform(id, alpha)` (the value `mesh_render`
+packs at the frame alpha). "Always interpolated" was wrong for sprite bodies (the
+reference plasma bolt): a smooth light on a stuttering billboard trails by up to
+(1−alpha)·speed·tick_dt. The accessor is not missing — `interpolated_transform` is on
+`EntityRegistry` (which `update` already holds), and `frame_result.alpha` is in scope
+at the `main.rs` bridge call site; the only new wiring is an `alpha` param on
+`update`. The genuinely-new work is the per-id pose read (the loop reads only
+`LightComponent` today) + a dirty-on-move comparison, overriding BOTH the packed
+position (`cached_origins_f64` via `component_to_map_light`) and the influence center
+(`cached_influences[idx]`, seeded once at enrollment via `component_to_influence`)
+from the body-matched pose. **(3) `absorb_dynamic_lights` is host-only** (`main.rs`
+host/SP tick block); the connected-client branch skips it, so client-side predicted /
+presentation / impact lights need a new client-path `absorb` call before the frame's
+`update` or they never enroll.
 
 ## The impact flash — reuses the impact chokepoint
 
@@ -270,9 +276,9 @@ Same visual state observed from three vantages. "Free" claims carry warrants.
 
 | Vantage | Emissive | Flipbook | Travel light | Impact flash |
 |---|---|---|---|---|
-| **SP / listen-host** (local gameplay projectile) | draw-param on the registered collection → billboard term | body gets advancing age from the advance stage → animates | `LightComponent` attached at spawn; bridge follows the interpolated render pose | impact branch spawns the flash at the hit point (`origin = point`; static or expanding via the radius channel) |
+| **SP / listen-host** (local gameplay projectile) | draw-param on the registered collection → billboard term | body gets advancing age from the advance stage → animates | `LightComponent` attached at spawn; bridge follows the body-matched pose (raw Transform for sprite, interpolated for model) | impact branch spawns the flash at the hit point (`origin = point`; static or expanding via the radius channel) |
 | **Connected client — own shot** (predicted local projectile) | same registered collection, same draw-param → **same** as SP (warrant: identical `register_smoke_collection` path, keyed by collection name) | predicted advance feeds age the same way (warrant: `advance_predicted` reuses the advance body per E16) → animates | client attaches the `LightComponent` locally; the host suppresses this client's **presentation** copy, so no doubled light | the predicted projectile's own impact spawns the flash locally (a local effect, like a muzzle flash) |
-| **Remote peer** (host-spawned presentation projectile) | **same** collection draw-param (warrant: the presentation body renders through the same `ParticleRenderCollector`/registered collection) → **free** | **not free** — the presentation arm also packs **age 0.0** (`particle_render.rs`); needs the same age feed → Task 2 covers both projectile columns | `projectile_presentation.rs::attach_projectile_visual_components` (which `remote_materialize.rs` delegates to) attaches a `LightComponent{follow_transform}` client-side from the shared descriptor (like the body/trail); it tracks the interpolated pose | the presentation projectile spawns a flash at its **despawn point** (`projectile_presentation.rs::advance`, threading the config via `PresentationFlight`) (approximate — deterministic straight-line, not the exact resolved hit); in scope, an accepted presentation-only asymmetry (per the shipped remote-observer aim precedent) |
+| **Remote peer** (host-spawned presentation projectile) | **same** collection draw-param (warrant: the presentation body renders through the same `ParticleRenderCollector`/registered collection) → **free** | **not free** — the presentation arm also packs **age 0.0** (`particle_render.rs`); needs the same age feed → Task 2 covers both projectile columns | `projectile_presentation.rs::attach_projectile_visual_components` (which `remote_materialize.rs` delegates to) attaches a `LightComponent{follow_transform}` client-side from the shared descriptor (like the body/trail); it tracks the body-matched pose and needs the new client-side `absorb_dynamic_lights` call to enroll at all (absorb is host-only today) | the presentation projectile spawns a flash at its **despawn point** (`projectile_presentation.rs::advance`, threading the config via `PresentationFlight`) (approximate — deterministic straight-line, not the exact resolved hit); in scope, an accepted presentation-only asymmetry (per the shipped remote-observer aim precedent) |
 
 ## Orderings that actually occur
 

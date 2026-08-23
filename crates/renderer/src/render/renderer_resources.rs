@@ -17,13 +17,17 @@ fn clear_kinematic_mover_frame_state(
 }
 
 impl Renderer {
-    /// First caller's `spec_intensity` and `lifetime` win — per-collection, not per-emitter.
+    /// First caller's draw parameters win — they are per-collection, not per-emitter.
+    /// A particle emitter sharing a projectile's sprite name therefore inherits
+    /// the chosen collection emissive; normal content registers projectile
+    /// sprites separately.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,
         frames: &[SpriteFrame],
         spec_intensity: f32,
         lifetime: f32,
+        emissive: f32,
     ) {
         let Self {
             device,
@@ -41,6 +45,7 @@ impl Renderer {
             frames,
             spec_intensity,
             lifetime,
+            emissive,
         );
     }
 

@@ -148,7 +148,7 @@ struct SpriteDrawParams {
     // x = animation frame count (u32 in f32 bits — reinterpret).
     // y = spec_intensity (f32).
     // z = lifetime (f32, seconds).
-    // w = pad.
+    // w = additive emissive strength (f32).
     params: vec4<f32>,
 };
 @group(1) @binding(2) var<uniform> draw_params: SpriteDrawParams;
@@ -531,9 +531,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // is constant across the quad and the interpolated value equals the prior
     // per-fragment result. See `vs_main` / `VertexOutput.lighting`.
     let lighting = in.lighting;
-    let rgb = sprite_sample.rgb * lighting * in.opacity;
+    let lit_rgb = sprite_sample.rgb * lighting * in.opacity;
+    // Emissive is self-only: it intentionally does not use LightTermMask.
+    let emissive_rgb = sprite_sample.rgb * draw_params.params.w;
     // Alpha channel is used as the additive blend factor; driver expects
     // straight color. The pipeline's blend state is set to additive
     // (src=ONE, dst=ONE) so the alpha here is not consumed for blending.
-    return vec4<f32>(rgb * sprite_sample.a, sprite_sample.a * in.opacity);
+    return vec4<f32>((lit_rgb + emissive_rgb) * sprite_sample.a, sprite_sample.a * in.opacity);
 }

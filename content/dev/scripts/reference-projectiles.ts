@@ -25,6 +25,7 @@ export const referencePlasmaBoltEntity = defineEntity({
             sprite: "projectiles/plasma_blue_orb.png",
             size: 0.35,
             tint: [0.2, 0.7, 1.0],
+            emissive: 3.0,
           },
         },
       },

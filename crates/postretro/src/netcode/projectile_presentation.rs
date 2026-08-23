@@ -300,6 +300,7 @@ pub(super) fn attach_projectile_visual_components(
             opacity,
             rotation,
             tint,
+            ..
         } => {
             let _ = registry.set_component(
                 id,
@@ -368,6 +369,7 @@ mod tests {
                     opacity: 1.0,
                     rotation: 0.0,
                     tint: [0.4, 0.8, 1.0],
+                    emissive: 0.0,
                 },
                 trail: None,
             },

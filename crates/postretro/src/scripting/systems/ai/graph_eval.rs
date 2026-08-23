@@ -124,18 +124,6 @@ pub(super) fn action_for_path<'a>(
     action_for_path_from_depth(bound, scope, brain, 0)
 }
 
-/// Resolve an action only from the suffix entered by the current edge. A
-/// transition inside a nested graph leaves its parent active, so a selector on
-/// that parent is not an entry action and must not fire again.
-pub(super) fn action_for_entry_path<'a>(
-    bound: &'a BrainEntityPrograms,
-    scope: &mut BrainScope,
-    brain: &'a BrainComponent,
-    entry_start_depth: usize,
-) -> Option<&'a ActionVerb> {
-    action_for_path_from_depth(bound, scope, brain, entry_start_depth)
-}
-
 fn action_for_path_from_depth<'a>(
     bound: &'a BrainEntityPrograms,
     scope: &mut BrainScope,

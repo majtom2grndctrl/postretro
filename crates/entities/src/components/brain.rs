@@ -132,19 +132,20 @@ pub struct BrainComponent {
     #[serde(default = "default_activity_timers")]
     pub time_in_activity_ms: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// Successful attack fires observed while the matching active activity has
-    /// been active. The evaluator re-points
+    /// been active. The fire latch uses the active leaf's count to allow the
+    /// first open dwell tick and suppress every later one. The evaluator re-points
     /// `@brain.attacksFiredInActivity` at one entry before it walks that
     /// envelope's rows. This host-only state does not alter snapshot payloads.
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// An initial descent, transition, gate reset, or graph reseat seats a path
-    /// atomically and marks its newly entered suffix for one edge-triggered
-    /// entry pass. This is consumed by the AI tick after timers are zeroed.
+    /// atomically and marks its newly entered suffix for one entry-dependent
+    /// presentation pass. This is consumed by the AI tick after timers are zeroed.
     #[serde(default)]
     pub entry_pending: bool,
-    /// Earliest depth whose entry action has not been consumed. A same-tick
-    /// inner transition preserves an earlier parent entry without re-firing a
-    /// parent whose entry was already consumed.
+    /// Earliest depth whose entry presentation has not been consumed. A same-tick
+    /// inner transition preserves an earlier parent entry without re-announcing
+    /// a parent whose entry was already consumed.
     #[serde(default)]
     pub entry_pending_start_depth: usize,
     /// Whether the pending entry should emit the entered leaf's `onEnter`.
@@ -414,9 +415,9 @@ impl BrainComponent {
         true
     }
 
-    /// Consume the atomic-entry latch after the tick has considered exactly one
-    /// action edge. A newly seated path is therefore never re-fired by a long
-    /// hold in its action activity.
+    /// Consume the atomic-entry latch after the tick captures entry-dependent
+    /// animation and event state. Firing independently re-checks every active
+    /// leaf dwell tick through `attacks_fired_in_activity`.
     pub fn take_entry_pending(&mut self) -> Option<usize> {
         let pending = self
             .entry_pending
@@ -425,8 +426,8 @@ impl BrainComponent {
         pending
     }
 
-    /// Consume the event half of entry bookkeeping. Entry animation and action
-    /// work remain independent so a fresh spawn can seat and fire without
+    /// Consume the event half of entry bookkeeping. Entry animation and fire
+    /// latch work remain independent so a fresh spawn can seat and fire without
     /// publishing an authored transition event.
     pub fn take_entry_event_pending(&mut self) -> bool {
         let pending = self.entry_event_pending;

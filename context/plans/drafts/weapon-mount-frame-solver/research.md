@@ -90,7 +90,7 @@ author **declare** the weapon-local barrel/up axes (intent they can see), use
 geometry only as an assist, and verify against the declared forward — not just
 self-consistency.
 
-## The "how many bakes" question (deliberately unresolved)
+## The "how many bakes" question (settled — index Decision 3)
 
 `content/dev/scripts/limitator.ts` comment: the AR_4 rifle mounts "with its
 grip-relative orientation re-tuned for this skeleton bake." The correction is
@@ -98,10 +98,12 @@ computed per `(weapon, socket joint frame at reference pose)`. Whether one weapo
 bake serves multiple characters depends on whether their socket joint frames
 (in model space) agree. All humanoids share the Mixamo rig (memory:
 character-model-provenance), but `mixamo_to_gltf.py --yaw` rotates the whole
-skeleton (including the hand joint's model-space frame), so two characters baked
-at different yaws could need different corrections. Not asserting one bake serves
-all — the tool makes it empirical: run the solve against each target socket and
-compare the emitted eulers. Left as an open question, not a warrant.
+skeleton about vertical Z (including the hand joint's model-space frame), so two
+characters baked at different yaws could need different corrections. Decision 3
+settles the design call: default to one bake per weapon, keep it empirically
+verifiable (solve against each target socket and compare the emitted eulers), and
+document a per-character corrective — a separate baked weapon file per target, each
+with its own `extras.mount.euler` — as the escape hatch if socket frames diverge.
 
 Also pose-dependence: `socket_matrix` varies per `(clip, time)`. A rigid bake is
 exact only at the reference pose. Poses that reorient the wrist (the limitator's
@@ -132,6 +134,34 @@ weapon, not a better bake. Out of scope.
   It is the mesh-vertex-baking authority (Blender owns the transform apply). The
   solver should feed it a computed `--rotate-euler`, not reimplement vertex
   rotation + re-export in Rust.
+
+## `extras` persistence grounding (index Decision 1)
+
+The single-source-of-truth `extras.mount` contract in Decision 1 reuses two
+existing mechanisms, verified in source:
+
+- **Write side — `tools/prop_to_gltf.py` `postprocess_gltf`.** After the glTF
+  export, it re-opens the `.gltf` JSON and, for each `--socket NAME=NODE`, finds
+  the node by name and merges the tag into that node's `extras`
+  (`extras = node.get("extras") or {}; extras["socket"] = socket_name; node["extras"] = extras`),
+  then rewrites the file. This is exactly the node-`extras` write Decision 1
+  extends with a `--mount-axes` flag writing `extras.mount = {barrel, up, euler}`
+  onto the mesh node; `euler` is the `--rotate-euler` value the same run applied
+  (`rotate_mesh`). No new export machinery — one more key in the same post-process.
+- **Read side — `crates/model/src/gltf_extras.rs`.** Per-node metadata readers
+  (`read_socket_name`, `read_joint_zone`, `read_pose_masks`) each take a node's
+  `gltf::json::Extras`, deserialize with `serde_json`, and degrade to `None`/
+  default on any error — author metadata never fails the load. `mixamo_to_gltf.py`
+  writes the skeleton's `socket`/`hitZone`/`poseMask` extras the same way. The new
+  `read_mount_axes` mirrors `read_socket_name`: read the mesh node's `extras.mount`,
+  return raw-source-frame `barrel`/`up` plus optional `euler`, degrade to `None`.
+
+Frame note: the persisted `barrel`/`up` are raw-source-frame (the intent),
+frame-invariant across re-bakes, so they persist correctly even though the baked
+weapon they live on is rotated; CHECK composes the persisted `euler` onto them to
+reach the baked frame. The CLI `--barrel`/`--up`/`--current-euler` remain as the
+first-author bootstrap (extras absent) and override path (CLI wins, re-persisted at
+the next bake).
 
 ## Fixtures
 

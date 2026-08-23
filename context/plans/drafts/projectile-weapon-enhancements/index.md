@@ -46,9 +46,11 @@ anchor its exact seam (free-list, live-count bound) against the merged
   remote-observer bodies.
 - **Attached dynamic point light.** An optional `ProjectileLight` on the
   projectile visual. Spawn attaches a `LightComponent` (point, dynamic,
-  `follow_transform`) so the light illuminates nearby surfaces and **tracks the
-  projectile's interpolated render pose** each frame (locked to a model body's
-  interpolated render); it despawns with the projectile.
+  `follow_transform`) so the light illuminates nearby surfaces and tracks its
+  body's render pose each frame — the **raw** tick `Transform` for a sprite body
+  (matching the un-interpolated billboard), the **interpolated** pose for a model
+  body (matching the mesh) — so the light stays locked to whichever body renders;
+  it despawns with the projectile.
   Teaches the light bridge a follow-Transform contract (it is origin-cached
   today). Consumes `RUNTIME_DYNAMIC_LIGHT_RESERVE`; does not cast entity shadows.
 - **Light radius-animation channel (engine-floor).** `LightAnimation` gains a
@@ -219,9 +221,9 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   pinned to frame 0.
 - [ ] A projectile weapon authored with a `light` illuminates nearby world
   surfaces and entities as it travels: the lit area moves with the projectile
-  (position tracks the projectile's **interpolated render pose** each frame —
-  locked to a model body's rendered pose, not a fixed spawn point or a stale tick
-  pose), and the light disappears the frame the projectile despawns (impact or
+  (position tracks its body's render pose each frame — raw tick `Transform` for
+  a sprite body, interpolated pose for a model body — so the lit area stays on
+  the bolt, not a fixed spawn point), and the light disappears the frame the projectile despawns (impact or
   travel-bound) — no light persists after despawn (its reserve slot reclaimed by
   the prerequisite).
 - [ ] A projectile light is a dynamic point light that casts no entity shadows,
@@ -235,7 +237,9 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   range **and** its influence-volume cull radius both track the current value (so
   a growing light is never wrongly culled as it expands, and a shrinking one stops
   lighting beyond its current reach). A light with no radius curve is unchanged
-  (static range, byte-identical to today).
+  (static range, byte-identical to today). A finite (`play_count`-bounded) radius
+  curve settles its final value into the packed range at completion (the
+  `check_play_count_completion` radius branch).
 - [ ] A projectile weapon authored with an `impactLight` spawns a stationary
   point light at the **hit point** on a real contact — with the authored color,
   intensity, and radius — that fades over the authored duration and
@@ -260,8 +264,9 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   flipbook-animated + casts a travel light + a modest impact pop, and the reference
   rocket casts a travel light + a larger **expanding** impact shockwave.
 - [ ] Tests: emissive-off and single-frame regressions are byte-identical to
-  current output; a projectile light tracks the projectile's interpolated render
-  pose and is removed on despawn (slot reclaimed by the prerequisite); the
+  current output; a projectile light tracks its body's render pose (raw `Transform`
+  for a sprite body, interpolated pose for a model body) and is removed on despawn
+  (slot reclaimed by the prerequisite); the
   reserve-exhaustion path degrades gracefully; a radius curve drives
   both the packed range and the influence cull radius each frame (and a no-radius
   light is unchanged); an impact flash spawns on contact (not on expiry), expands
@@ -385,24 +390,31 @@ add a `follow_transform: bool` to `LightComponent` (internal routing, `#[serde(
 default)]` = false, omitted from world-query snapshots like `animated_slot`), and
 teach `crates/postretro/src/scripting/systems/light_bridge.rs` that a tracked
 runtime light with `follow_transform` resolves its position and influence center
-from the entity's **interpolated render pose** (`interpolated_transform(id,
-alpha)` at the render alpha, so the light stays locked to a model body that
-renders interpolated), NOT the cached spawn data. This is genuinely new
-plumbing: the bridge's per-id loop reads only `LightComponent` today (not the
-`Transform`), so add (a) a new interpolated-pose read per follow light plus a
-cached-pose comparison that sets `self.dirty` on movement, and (b) two separate
-origin overrides in the pack loop — the packed **position** (today from
-`cached_origins_f64[idx]` via `component_to_map_light`) AND the influence
-**center** (today from `component.origin` via `component_to_influence` — a
-*different* stale source) must both come from the interpolated pose, not the
-caches. The bridge must gain the render alpha + interpolated-transform accessor
-it lacks today. Non-follow lights are unchanged (they still read
+from the pose that MATCHES ITS BODY's render path: a **sprite** body from the
+**raw** `Transform` (the value `pack_sprite_instance` packs), a **model** body
+from `interpolated_transform(id, alpha)` (the value `mesh_render` packs at the
+frame alpha) — the interpolated read is correct ONLY for a model body; a sprite
+body must use the raw `Transform` or the light trails the un-interpolated
+billboard. `interpolated_transform(id, alpha)` already exists on `EntityRegistry`
+(which `update` already holds `&mut` to), and `frame_result.alpha` is already in
+scope at the `main.rs` bridge call site, so the only new wiring is adding an
+`alpha` param to `update` and passing it. The genuinely-new work: the per-id loop
+reads only `LightComponent` today (not the `Transform`), so add (a) a body-matched
+pose read per follow light plus a cached-pose comparison that sets `self.dirty` on
+movement, and (b) two overrides in the pack loop — the packed **position** (today
+`cached_origins_f64[idx]` via `component_to_map_light`) AND the influence **center**
+(today `cached_influences[idx]`, seeded once at enrollment via
+`component_to_influence(component.origin)`) must both come from the body-matched
+pose, not the caches. Non-follow lights are unchanged (they still read
 `component.origin`).
 **Cleanup:** the light despawns with the projectile — the projectile entity's
 removal drops its `LightComponent`, and the bridge's existing tombstone path (a
 tracked id whose component read fails forces one zeroing upload) zeroes its GPU
 slot; the reserve slot itself is reclaimed by the prerequisite
-(`light-bridge-runtime-light-reclamation`). Confirm the follow-Transform light is
+(`light-bridge-runtime-light-reclamation`) — the shipped free-list
+`LightBridge.free_slots` + per-slot `MapLightShape.reclaimed`, with the
+live-count bound `entity_ids.len() - authored_light_count - free_slots.len()`.
+Confirm the follow-Transform light is
 enrolled so the zeroing fires. Projectile
 lights inherit the runtime-light default `casts_entity_shadows = false`
 (`component_to_map_light`), so they never enter the shadow pool. **Co-op:** on the
@@ -415,7 +427,13 @@ shared descriptor** in
 — the same site that already materializes the `SpriteVisual`/`MeshComponent`
 body) so it tracks the replicated/interpolated Transform — adding no wire
 field. The host's existing per-client presentation suppression stops the firer
-seeing a doubled light for its own shot. **SDK + reference:** typedef the `light`
+seeing a doubled light for its own shot. **Client enrollment (new plumbing):**
+`absorb_dynamic_lights` runs only in the host/SP tick block today (`main.rs`);
+the connected-client branch skips it. Add a client-path `absorb_dynamic_lights`
+call — in the connected-client tick branch or the post-loop client fire/
+materialization path — that runs BEFORE the frame's `light_bridge.update`, so
+the client's predicted, presentation, and impact-flash `LightComponent`s enroll
+and render. Without it none of the client-side lights appear. **SDK + reference:** typedef the `light`
 union (TS + Luau) and make **both** reference weapons cast a travel light — the
 plasma bolt a small blue light, the rocket a warm exhaust light. AC: the lit area
 moves with the projectile and vanishes on despawn; the light casts no entity
@@ -531,8 +549,9 @@ ticks (so the shader's frame index advances) on the local, predicted, and
 presentation collector arms — the presentation arm is the regression that used to
 pin age 0.0. **Travel light:** assert a projectile with a `light` attaches a
 `follow_transform` `LightComponent` at spawn; that the light bridge packs its
-position from the interpolated render pose (step the projectile, assert the packed
-light position moved to match the interpolated pose) rather than the spawn origin;
+position from its body's render pose (step the projectile, assert the packed light
+position moved to match the body — raw `Transform` for a sprite body, interpolated
+pose for a model body) rather than the spawn origin;
 that despawn tombstones (zeroes) the slot with the reserve entry reclaimed by the
 prerequisite (no leaked light); that exceeding `RUNTIME_DYNAMIC_LIGHT_RESERVE` warns once and
 drops surplus lights without disturbing the others; that projectile lights carry
@@ -550,7 +569,10 @@ with no `impactLight` spawns none. **Ordering pins:** assert the impact light's
 packed `GpuLight` position equals the hit `point` (not the world origin — the
 `origin = point` requirement); assert a model-body travel light's packed position
 equals the interpolated pose at a fractional render alpha (not the raw tick
-pose); assert the flipbook frame index matches across the local, predicted, and
+pose); assert a **sprite**-body travel light packs from the raw `Transform`
+(matching the billboard), not the interpolated pose; assert that on a
+connected-client path the predicted/presentation/impact `LightComponent`s
+enroll (the client-side `absorb` fires) and render; assert the flipbook frame index matches across the local, predicted, and
 presentation arms after K ticks (same clock basis + spawn-tick offset); assert a
 sub-frame `fadeMs` (below one tick) yields a one-frame pop with no visible
 expansion; assert the `check_play_count_completion` radius write-back sets
@@ -624,9 +646,9 @@ constant changes on the authority path.
 | **Emissive-off is byte-identical** to current billboard output (default strength 0, additive term contributes zero) | Task 1 | a non-zero default; folding emissive into the existing `× lighting` multiply instead of an additive term | AC 1; Task 6 emissive-0 regression |
 | **Single-frame flipbook is byte-identical** to current (frame 0), and advancing age never changes a `frame_count == 1` body | Task 2 | packing a non-zero age changing a single-frame body; dividing by a zero frame count/duration | AC 3; Task 6 single-frame regression |
 | **Flipbook animates on all three bodies** (local, predicted, presentation) — none pinned to age 0.0 | Task 2 | the presentation arm keeping its hard-coded 0.0; the predicted path not advancing age | AC 4; Task 6 presentation-age assertion |
-| **Travel light tracks the live Transform** (position + influence from the interpolated render pose each frame, not the cached spawn origin or the raw tick pose) | Task 3 (follow-Transform bridge contract) | the bridge reading `cached_origins_f64` / `component.origin`; a stale influence center; reading the raw tick pose so a model body's light lags its interpolated render | AC 5; Task 6 moving-light assertion |
+| **Travel light tracks its body's render pose** (position + influence from the body-matched pose each frame — raw `Transform` for a sprite body, interpolated pose for a model body — not the cached spawn origin) | Task 3 (follow-Transform bridge contract) | the bridge reading `cached_origins_f64` / `component.origin`; a stale influence center; reading the interpolated pose for a sprite body (or raw for a model body) so light and bolt diverge; a stale cached origin/influence | AC 5; Task 6 moving-light assertion |
 | **Travel light despawns with its projectile** — no leaked light after impact/expiry; reserve slot reclaimed by the prerequisite | Task 3 (enroll for the bridge tombstone path) | a follow light not enrolled, so no tombstone fires; a presentation light outliving its shot | AC 5; Task 6 despawn-tombstone assertion |
-| **Radius curve drives range AND influence in lockstep** — a growing light's cull radius tracks its lit radius; `None` = static range unchanged | Task 4 (CPU per-frame eval → `pack_light` range + `component_to_influence`) | packing the animated range but leaving the influence at the static `falloff_range` (a growing light culled before it reaches) | AC 7; Task 6 radius-channel assertion |
+| **Radius curve drives range AND influence in lockstep** — a growing light's cull radius tracks its lit radius; `None` = static range unchanged | Task 4 (CPU per-frame eval → `pack_light` range + the `cached_influences[idx]` push (both overridden per frame from the animated radius)) | packing the animated range but leaving the influence at the static `falloff_range` (a growing light culled before it reaches) | AC 7; Task 6 radius-channel assertion |
 | **Impact flash spawns only on contact, expands (if peak), fades, and self-despawns** — no light lingers, its reserve slot is reclaimed by the prerequisite; a travel-bound expiry spawns none | Task 5 (impact-branch spawn + one-shot brightness/radius curves + `DeferredEffect` despawn) | spawning on expiry; the fade settle preceding the despawn by ~1 tick (accepted: the settled light is intensity-0/invisible; the slot is reclaimed on despawn) | AC 8; Task 6 impact-flash spawn/expand/despawn assertion |
 | **Projectile lights cast no entity shadows** and consume `RUNTIME_DYNAMIC_LIGHT_RESERVE`, with reclamation of despawned slots (prerequisite) so churn does not cumulatively exhaust; degrading gracefully on genuine concurrent exhaustion | Task 3 (travel), Task 5 (impact) — runtime-light `casts_entity_shadows = false`; reserve bound | a projectile light entering the shadow pool; reserve overflow crashing or corrupting other lights | AC 6; Task 6 reserve-exhaustion + no-shadow assertions |
 | **No wire-format change** (emissive/flipbook are descriptor content; lights are client-materialized; age/flag/fade/radius are internal) | Tasks 1–5 (descriptor + client materialization), Task 6 (assert) | a new replicated field/message; a version-constant bump; serializing the flag, age, or curves | AC 9; Task 6 no-constant-changed assertion |
@@ -641,7 +663,10 @@ constant changes on the authority path.
 | Flipbook age exceeds one loop period | age ≥ `lifetime` | Wraps via `% frame_count`; loops continuously while travelling. |
 | Projectile with a travel light despawns on the impact tick | despawn precedes the next bridge pack | Same-frame bridge sees the `LightComponent` gone → one tombstone upload zeroes the slot; no light persists; reserve slot reclaimed (prerequisite). |
 | N simultaneous projectile lights (travel + impact), N > `RUNTIME_DYNAMIC_LIGHT_RESERVE` | absorb order | Bridge warns once; surplus lights do not render; authored + other dynamic lights unaffected; no crash. |
+| Slot freed in frame F, reused later | free pushes to `free_slots` in `update` (end of frame F); that same `update` emits the zeroed `GpuLight` for the still-in-`entity_ids` slot; `absorb` pops `free_slots` only in a later tick | Zero-before-reuse holds structurally: a reclaimed slot is always GPU-zeroed the frame it frees and cannot be re-popped until a later frame's `absorb`, so a new light never inherits stale slot data. |
+| Impact flash spawns the same tick the travel light despawns | tick N: impact branch spawns flash + despawns projectile(+travel light) → `absorb` (same tick) enrolls the flash → post-loop `update` frees the travel-light slot | The flash does NOT reuse the travel light's slot this tick (it is not in `free_slots` until `update`, after `absorb`); the travel-light slot is zeroed that `update` and reusable only from tick N+1. |
 | Connected client fires a light projectile | predicted (local) + presentation (host, per peer) | Firer sees one moving light (its predicted copy; host suppresses the firer's presentation copy); other peers see the presentation light. No doubled light. |
+| Connected client fires a projectile carrying a `light`/`impactLight` | client tick branch `continue`s without `absorb`; only `update` runs per frame | Requires the new client-side `absorb` call (Task 3); without it the predicted/presentation/impact lights never enroll → never render on the client. |
 | Projectile reaches its travel bound (no contact) | expiry precedes despawn | Travel light removed with the projectile; **no impact flash spawned** (flash is contact-only). |
 | Projectile hits a target/wall | contact → `spawn_impact_effect_at` + impact-light spawn → projectile despawn | Impact flash spawns at the hit point, fades over its duration (and expands start→peak if a peak radius is authored), then self-despawns (slot reclaimed by prerequisite); the travel light dies with the projectile the same tick. |
 | Impact flash with a peak radius, over the fade | each frame while animating the bridge re-packs range + influence | Range grows start→peak; the influence cull radius grows with it, so the expanding light is never culled before it reaches; brightness fades to 0 over the same window. |
@@ -649,10 +674,10 @@ constant changes on the authority path.
 | Emissive default (0) / flipbook default (single frame) / no light / no impactLight | steady state | Byte-identical to current output (regression rows). |
 | Level unload with lit/animated projectiles and live impact flashes | registry teardown | Projectiles and all their lights (travel + impact) cleared with the registry; the bridge clears its tracking (`LightBridge::clear`); no dangling light next level. |
 | Impact light spawned with a `Transform` but default `LightComponent.origin` | non-follow bridge reads `component.origin`, ignores the `Transform` | Renders at the world origin — WRONG. Requires `origin = point`. |
-| Model-body (rocket) travel light between ticks (render alpha 0.5) | mesh renders interpolated; light packed once per frame | Light position = the interpolated pose, locked to the rendered rocket — not the raw tick pose. |
-| Tick that spawns a remote presentation projectile + light | `absorb_dynamic_lights` runs before `host_spawn_projectile_presentations`; body collected this frame, light enrolled next | Pin: the presentation body may show for one frame without its travel light (light enrolls tick N+1). Accepted, or fix by enrolling before the frame's `update`. |
+| Model-body (rocket) travel light between ticks (render alpha 0.5) | mesh renders interpolated; light packed once per frame | Light position = the interpolated pose, locked to the rendered rocket — not the raw tick pose; a **sprite**-body light packs from the **raw** `Transform` (matching the un-interpolated billboard) — the pose source matches the body kind, so light and bolt never diverge. |
+| Tick that spawns a remote presentation projectile + light | `absorb_dynamic_lights` runs before `host_spawn_projectile_presentations`; body collected this frame, light enrolled next | Accepted as an untested approximation (like the presentation-flash location): the presentation body may show for one frame without its travel light (the host enrolls it tick N+1). |
 | Flipbook frame index after K ticks, all three bodies | local/predicted age from `ProjectileComponent` (fixed tick); presentation age from `now − spawn_time` | Identical frame index — pinned by using the same fixed-tick clock basis and spawn-tick offset (Task 2). |
-| `impactLight.fadeMs` below one frame | settle fires the frame after spawn; radius curve never sampled mid-way | One-frame pop at base radius; expansion not observable. Accepted (validation still requires fade > 0). |
+| `impactLight.fadeMs` below one tick | settle fires the tick after spawn; radius curve never sampled mid-way | One-frame pop at base radius; expansion not observable. Accepted (validation still requires fade > 0). |
 
 ## Rough sketch
 
@@ -670,8 +695,9 @@ calls `spawn_impact_effect_at`); `spawn_projectile` (`weapon_stage/commands.rs`)
 (`light_bridge.rs`); `LightComponent` / `LightAnimation` (`entities/.../light.rs`; the new `radius`
 channel mirrors `brightness`); the bridge's per-frame `effective_brightness` eval
 and `sample_brightness_at`/`_at_open` CPU Catmull-Rom mirrors (the pattern the
-radius eval follows); `pack_light` range + `component_to_influence` (the radius
-channel's two pack targets); `DeferredEffectKind::Despawn` (the chosen
+radius eval follows); `pack_light` range + the `cached_influences[idx]` push
+(the radius channel's two pack targets, both overridden per frame);
+`DeferredEffectKind::Despawn` (the chosen
 transient-despawn); `remote_materialize.rs`. Reserve constant:
 `RUNTIME_DYNAMIC_LIGHT_RESERVE` (`postretro_renderer`). Bloom: rendering §7.8,
 `BLOOM_THRESHOLD`, `POSTRETRO_BLOOM=0`.

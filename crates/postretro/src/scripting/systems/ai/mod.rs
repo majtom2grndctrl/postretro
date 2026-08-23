@@ -68,7 +68,7 @@ use postretro_entities::{
 use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
     TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance,
+    target_distance, target_offers,
 };
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
@@ -518,7 +518,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
-                .and_then(|entity| target_candidate(registry, entity, snap.position, None));
+                .and_then(|entity| target_candidate(registry, entity, snap.position));
             let (target, evaluate_acquisition) = if let Some(retained) = retained {
                 // A retained target alone prices the stride from its raw
                 // distance. A due tick may still run the normal hysteresis scan
@@ -528,44 +528,66 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 let target = if evaluate_acquisition {
                     let (candidate_filter, candidate_scope) =
                         programs.candidate_filter_context(snap.id);
-                    select_target(
+                    let offers = target_offers(
                         registry,
                         snap.position,
                         enemy_faction,
                         Some(retained.target.entity),
-                        None,
+                    );
+                    let enemy_eye =
+                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                    let candidate_visible = |candidate| {
+                        perception::raw_target_visible(
+                            registry,
+                            enemy_eye,
+                            candidate,
+                            collision_world,
+                        )
+                    };
+                    select_target(
+                        Some(retained),
+                        &offers,
+                        registry,
                         candidate_filter,
                         candidate_scope,
+                        &candidate_visible,
                     )
-                    .1
                 } else {
                     Some(retained.target)
                 };
                 (target, evaluate_acquisition)
             } else {
+                let offers = target_offers(registry, snap.position, enemy_faction, None);
+                let evaluate_acquisition =
+                    acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
                 let (candidate_filter, candidate_scope) =
                     programs.candidate_filter_context(snap.id);
-                let (nearest_for_stride, nearest_selection) = select_target(
-                    registry,
-                    snap.position,
-                    enemy_faction,
-                    None,
-                    None,
-                    candidate_filter,
-                    candidate_scope,
-                );
-                let evaluate_acquisition = acquisition_due(
-                    &brain,
-                    nearest_for_stride.map(|candidate| candidate.distance),
-                );
                 // The raw nearest hostile offer prices the stride. A
-                // graph-filtered selection becomes a target only on a due
-                // tick; otherwise `BrainFacts` stay untargeted rather than
-                // borrowing it.
-                (
-                    evaluate_acquisition.then_some(nearest_selection).flatten(),
-                    evaluate_acquisition,
-                )
+                // graph- and LOS-filtered selection becomes a target only on a
+                // due tick; otherwise `BrainFacts` stay untargeted rather than
+                // borrowing it. The offer set avoids a second registry walk
+                // while keeping exact candidate raycasts off non-due ticks.
+                let target = evaluate_acquisition.then(|| {
+                    let enemy_eye =
+                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                    let candidate_visible = |candidate| {
+                        perception::raw_target_visible(
+                            registry,
+                            enemy_eye,
+                            candidate,
+                            collision_world,
+                        )
+                    };
+                    select_target(
+                        None,
+                        &offers,
+                        registry,
+                        candidate_filter,
+                        candidate_scope,
+                        &candidate_visible,
+                    )
+                });
+                (target.flatten(), evaluate_acquisition)
             };
             (target, evaluate_acquisition)
         } else {

@@ -69,6 +69,23 @@ pub(super) fn target_aim(registry: &EntityRegistry, target: TargetPawn) -> Optio
     Some(target.position + Vec3::Y * movement.capsule.eye_height)
 }
 
+/// Raw (undebounced) static-world LOS for a fresh candidate. This uses the same
+/// canonical pawn-eye helper as selected-target perception; a missing aim point
+/// fails candidacy rather than admitting a target the fire gate cannot describe.
+/// A missing collision world remains clear, matching the selected-target path.
+pub(super) fn raw_target_visible(
+    registry: &EntityRegistry,
+    enemy_eye: Vec3,
+    target: TargetPawn,
+    collision_world: Option<&CollisionWorld>,
+) -> bool {
+    target_aim(registry, target).is_some_and(|target_aim| {
+        collision_world
+            .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+            .unwrap_or(true)
+    })
+}
+
 /// Compute this tick's one enemy-to-selected-target perception result. A
 /// missing collision world intentionally means clear sight, preserving
 /// headless and no-world ticks from before LOS existed.

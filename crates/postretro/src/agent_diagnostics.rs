@@ -69,12 +69,14 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
             .get_component::<BrainComponent>(id)
             .ok()
             .and_then(|brain| {
-                let state_name = brain.state_name()?;
-                let firing_attack = brain.graph.states.get(state_name).and_then(|state| {
-                    let ActionVerb::Attack(name) = state.action.as_ref()?;
-                    Some(name.clone())
-                });
-                Some((state_name.to_string(), firing_attack))
+                active_behavior_path_label(brain).map(|state_path| {
+                    let firing_attack = (0..brain.active_depth()).rev().find_map(|depth| {
+                        let (_, activity) = brain.activity_at_depth(depth)?;
+                        let ActionVerb::Attack(name) = activity.action.as_ref()?;
+                        Some(name.clone())
+                    });
+                    (state_path, firing_attack)
+                })
             })
             .map_or((None, None), |(state, attack)| (Some(state), attack));
         let xz_speed = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
@@ -102,6 +104,30 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
         });
     }
     (geometry, labels)
+}
+
+/// Presentation-only recursive path walk. Activity names are interleaved with
+/// their stateful layer name so operators can tell `engage/offense/commit`
+/// from a hypothetical sibling selector without inspecting the descriptor.
+fn active_behavior_path_label(
+    brain: &postretro_entities::components::brain::BrainComponent,
+) -> Option<String> {
+    use postretro_foundation::BehaviorLayerDescriptor;
+
+    let mut segments = Vec::with_capacity(brain.active_depth().saturating_mul(2));
+    for depth in 0..brain.active_depth() {
+        let (name, activity) = brain.activity_at_depth(depth)?;
+        segments.push(name.to_string());
+        if depth + 1 < brain.active_depth()
+            && let Some((layer_name, _)) = activity
+                .layers
+                .iter()
+                .find(|(_, layer)| matches!(layer, BehaviorLayerDescriptor::Graph(_)))
+        {
+            segments.push(layer_name.clone());
+        }
+    }
+    (!segments.is_empty()).then(|| segments.join("/"))
 }
 
 fn agent_overlay_world_to_screen(
@@ -488,7 +514,7 @@ mod tests {
     #[test]
     fn agent_overlay_label_names_the_current_firing_attack() {
         let label = assemble_agent_overlay_label(
-            Some("attack_slam"),
+            Some("engage/offense/commit"),
             Some("slam"),
             0.0,
             AgentOverlayLabelFlags {
@@ -500,7 +526,7 @@ mod tests {
 
         assert_eq!(
             label,
-            "state:attack_slam attack:slam speed:0.00 arrived:false blocked:false has_path:false"
+            "state:engage/offense/commit attack:slam speed:0.00 arrived:false blocked:false has_path:false"
         );
     }
 

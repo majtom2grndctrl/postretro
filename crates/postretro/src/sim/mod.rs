@@ -1454,7 +1454,6 @@ mod tests {
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     use postretro_entities::components::agent::AgentComponent;
-    use postretro_entities::components::brain::graph_state_index;
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
@@ -1462,7 +1461,7 @@ mod tests {
     };
     use postretro_entities::components::touchable::TouchableComponent;
     use postretro_entities::data_descriptors::{
-        BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+        BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope, MotionVerb,
     };
     use postretro_entities::{
         DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
@@ -1471,30 +1470,32 @@ mod tests {
     /// A direct-graph brain staged directly into its `alert` state.
     fn alert_brain(move_speed: f32) -> BrainComponent {
         let graph = BehaviorGraphDescriptor {
-            initial: "idle".to_string(),
-            states: BTreeMap::from([
-                (
-                    "idle".to_string(),
-                    BehaviorStateDescriptor {
-                        animation: "idle".to_string(),
-                        motion: MotionVerb::Hold,
-                        action: None,
-                        transitions: Vec::new(),
-                        on_enter: None,
-                    },
-                ),
-                (
-                    "alert".to_string(),
-                    BehaviorStateDescriptor {
-                        animation: "walk".to_string(),
-                        motion: MotionVerb::ChaseTarget,
-                        action: None,
-                        transitions: Vec::new(),
-                        on_enter: None,
-                    },
-                ),
-            ]),
-            interrupts: Vec::new(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: BTreeMap::from([
+                    (
+                        "idle".to_string(),
+                        BehaviorActivityDescriptor {
+                            animation: Some("idle".to_string()),
+                            motion: Some(MotionVerb::Hold),
+                            action: None,
+                            on_enter: None,
+                            layers: BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "alert".to_string(),
+                        BehaviorActivityDescriptor {
+                            animation: Some("walk".to_string()),
+                            motion: Some(MotionVerb::ChaseTarget),
+                            action: None,
+                            on_enter: None,
+                            layers: BTreeMap::new(),
+                        },
+                    ),
+                ]),
+                transitions: BTreeMap::new(),
+            },
             candidate_filter: None,
             patrol: None,
             attacks: Default::default(),
@@ -1502,8 +1503,18 @@ mod tests {
             move_speed,
         };
         let mut brain = BrainComponent::from_graph(&graph);
-        brain.state_index =
-            graph_state_index(&brain.graph, "alert").expect("the graph declares `alert`");
+        assert!(
+            brain.enter_activity_at(
+                0,
+                brain
+                    .graph
+                    .envelope
+                    .activities
+                    .keys()
+                    .position(|name| name == "alert")
+                    .expect("the graph declares `alert`"),
+            )
+        );
         brain
     }
     use postretro_entities::{

@@ -30,9 +30,13 @@ pub const BRAIN_INPUT_PREFIX: &str = "@brain.";
 pub const BRAIN_HAS_TARGET_INPUT: &str = "@brain.hasTarget";
 /// Distance to the selected target, or [`BRAIN_NO_TARGET_DISTANCE`] with none.
 pub const BRAIN_TARGET_DISTANCE_INPUT: &str = "@brain.targetDistance";
-/// Milliseconds since the brain entered its current graph state.
-pub const BRAIN_TIME_IN_STATE_MS_INPUT: &str = "@brain.timeInStateMs";
-/// Milliseconds remaining on the attack cooldown; `0.0` once it has elapsed.
+/// Milliseconds since the currently-evaluated activity was entered.
+///
+/// Nested behavior envelopes evaluate their own rows against their own clock,
+/// so this slot is re-pointed by the statechart evaluator before every level.
+pub const BRAIN_TIME_IN_ACTIVITY_MS_INPUT: &str = "@brain.timeInActivityMs";
+/// Milliseconds remaining on the selected offense action's cooldown; `0.0`
+/// with no selected action or once it has elapsed.
 pub const BRAIN_ATTACK_COOLDOWN_MS_INPUT: &str = "@brain.attackCooldownMs";
 /// `true` on the think-stride ticks where the engine re-evaluates acquisition.
 pub const BRAIN_ACQUISITION_DUE_INPUT: &str = "@brain.acquisitionDue";
@@ -65,6 +69,13 @@ pub const BRAIN_TARGET_HOSTILE_INPUT: &str = "@brain.targetHostile";
 /// not a ground-truth reachability oracle: it inherits the pathfinder's current
 /// routing limitations.
 pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
+/// Successful attacks fired while the currently-evaluated activity has been
+/// active.
+///
+/// Nested behavior envelopes evaluate their own rows against their own count,
+/// so this slot is re-pointed by the statechart evaluator before every level.
+/// A fire on the current tick becomes observable only after the next refresh.
+pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInActivity";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -83,8 +94,9 @@ pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// its travel animation for one of those ticks) when its last target
 /// despawned. A disengagement edge that must be robust to target loss has to
 /// gate on [`BRAIN_HAS_TARGET_INPUT`] directly, or be authored as an
-/// any-state interrupt that stands the brain down when `hasTarget` is false.
-/// The IR has no `not` opcode; negate with `select(cond, false, true)`.
+/// root wildcard row that stands the brain down when `hasTarget` is false.
+/// Use the explicit `not` opcode for inversion. The older
+/// `select(cond, false, true)` spelling remains equivalent.
 pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 
 /// The fixed brain input namespace, in handle order. Each entry is a
@@ -95,10 +107,10 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 13] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 14] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
-    (BRAIN_TIME_IN_STATE_MS_INPUT, IrType::Number),
+    (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
     (BRAIN_ATTACK_COOLDOWN_MS_INPUT, IrType::Number),
     (BRAIN_ACQUISITION_DUE_INPUT, IrType::Bool),
     (BRAIN_HEALTH_INPUT, IrType::Number),
@@ -109,6 +121,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 13] = [
     (BRAIN_DISTANCE_FROM_ANCHOR_INPUT, IrType::Number),
     (BRAIN_TARGET_HOSTILE_INPUT, IrType::Bool),
     (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
+    (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -255,6 +268,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[12],
             (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn attacks_fired_in_activity_appends_at_fixed_slot_thirteen() {
+        assert_eq!(
+            BRAIN_INPUTS[13],
+            (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

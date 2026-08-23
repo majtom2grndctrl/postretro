@@ -103,6 +103,9 @@ pub enum BoundNode<H> {
 
     Eq(Box<BoundNode<H>>, Box<BoundNode<H>>),
     Ne(Box<BoundNode<H>>, Box<BoundNode<H>>),
+    And(Box<BoundNode<H>>, Box<BoundNode<H>>),
+    Or(Box<BoundNode<H>>, Box<BoundNode<H>>),
+    Not(Box<BoundNode<H>>),
 
     Select {
         cond: Box<BoundNode<H>>,
@@ -254,6 +257,12 @@ fn bind_node<S: BindingScope>(
 
         IrNode::Eq { a, b } => bind_equality(scope, a, b, "eq", BoundNode::Eq),
         IrNode::Ne { a, b } => bind_equality(scope, a, b, "ne", BoundNode::Ne),
+        IrNode::And { a, b } => bind_boolean(scope, a, b, "and", BoundNode::And),
+        IrNode::Or { a, b } => bind_boolean(scope, a, b, "or", BoundNode::Or),
+        IrNode::Not { x } => Ok((
+            BoundNode::Not(Box::new(bind_expect(scope, x, IrType::Bool, "not.x")?)),
+            IrType::Bool,
+        )),
 
         IrNode::Select { cond, a, b } => {
             let cond = bind_expect(scope, cond, IrType::Bool, "select.cond")?;
@@ -329,6 +338,19 @@ fn bind_equality<S: BindingScope>(
     Ok((build(Box::new(a), Box::new(b)), IrType::Bool))
 }
 
+/// Bind a boolean operation: both operands boolean, result boolean.
+fn bind_boolean<S: BindingScope>(
+    scope: &S,
+    a: &IrNode,
+    b: &IrNode,
+    op: &'static str,
+    build: BinaryCtor<S::InputHandle>,
+) -> Result<(BoundNode<S::InputHandle>, IrType), BindError> {
+    let a = bind_expect(scope, a, IrType::Bool, operand_context(op, 'a'))?;
+    let b = bind_expect(scope, b, IrType::Bool, operand_context(op, 'b'))?;
+    Ok((build(Box::new(a), Box::new(b)), IrType::Bool))
+}
+
 /// Bind a child and require it to have `expected` type, else a `TypeMismatch`
 /// tagged with `context`.
 fn bind_expect<S: BindingScope>(
@@ -369,6 +391,10 @@ fn operand_context(op: &'static str, operand: char) -> &'static str {
         ("gt", 'b') => "gt.b",
         ("ge", 'a') => "ge.a",
         ("ge", 'b') => "ge.b",
+        ("and", 'a') => "and.a",
+        ("and", 'b') => "and.b",
+        ("or", 'a') => "or.a",
+        ("or", 'b') => "or.b",
         // Unreachable for the fixed op/operand set above; a generic label keeps
         // the function total without an allocation.
         _ => "operand",
@@ -564,6 +590,50 @@ mod tests {
                 found: "number",
             }
         );
+    }
+
+    #[test]
+    fn bind_rejects_numeric_not_operand() {
+        let scope = StubScope::new();
+        let baked = read_only(IrNode::Not { x: num(1.0) });
+        assert_eq!(
+            bind(&baked, &scope).unwrap_err(),
+            BindError::TypeMismatch {
+                context: "not.x",
+                expected: "boolean",
+                found: "number",
+            }
+        );
+    }
+
+    #[test]
+    fn bind_boolean_ops_require_boolean_operands() {
+        let scope = StubScope::new();
+        for (node, context) in [
+            (
+                IrNode::And {
+                    a: boolean(true),
+                    b: num(1.0),
+                },
+                "and.b",
+            ),
+            (
+                IrNode::Or {
+                    a: num(1.0),
+                    b: boolean(false),
+                },
+                "or.a",
+            ),
+        ] {
+            assert_eq!(
+                bind(&read_only(node), &scope).unwrap_err(),
+                BindError::TypeMismatch {
+                    context,
+                    expected: "boolean",
+                    found: "number",
+                }
+            );
+        }
     }
 
     #[test]

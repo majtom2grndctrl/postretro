@@ -307,7 +307,7 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
     //   Luau: `op: "const",`  (comma-separated struct field)
     const OPCODES: &[&str] = &[
         "const", "input", "add", "sub", "mul", "div", "clamp", "lerp", "select", "lt", "le", "gt",
-        "ge", "eq", "ne",
+        "ge", "eq", "ne", "and", "or", "not",
     ];
     for op in OPCODES {
         let ts_discriminant = format!("op: \"{op}\";");

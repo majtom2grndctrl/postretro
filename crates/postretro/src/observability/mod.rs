@@ -153,12 +153,12 @@ mod tests {
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::components::weapon::WeaponComponent;
     use postretro_entities::{
-        ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorGraphDescriptor,
-        BehaviorStateDescriptor, CapsuleParams, ComponentValue, DescriptorProvenance,
-        DescriptorSpawnPath, EntityId, FallParams, FireMode, FogVolumeComponent, GroundParams,
-        KinematicMoverComponent, KinematicMoverMode, MotionVerb, MoverCommand,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
+        ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorActivityDescriptor,
+        BehaviorGraphDescriptor, BehaviorGraphEnvelope, CapsuleParams, ComponentValue,
+        DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams, FireMode,
+        FogVolumeComponent, GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb,
+        MoverCommand, PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform,
+        TriggerActivation, TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
     };
     use std::collections::{BTreeSet, HashMap};
 
@@ -313,18 +313,20 @@ mod tests {
             ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
             ComponentKind::Brain => {
                 ComponentValue::Brain(BrainComponent::from_graph(&BehaviorGraphDescriptor {
-                    initial: "idle".to_string(),
-                    states: std::collections::BTreeMap::from([(
-                        "idle".to_string(),
-                        BehaviorStateDescriptor {
-                            animation: "idle".to_string(),
-                            motion: MotionVerb::Hold,
-                            action: Some(ActionVerb::Attack("attack".to_string())),
-                            transitions: Vec::new(),
-                            on_enter: None,
-                        },
-                    )]),
-                    interrupts: Vec::new(),
+                    envelope: BehaviorGraphEnvelope {
+                        initial: "idle".to_string(),
+                        activities: std::collections::BTreeMap::from([(
+                            "idle".to_string(),
+                            BehaviorActivityDescriptor {
+                                animation: Some("idle".to_string()),
+                                motion: Some(MotionVerb::Hold),
+                                action: Some(ActionVerb::Attack("attack".to_string())),
+                                on_enter: None,
+                                layers: Default::default(),
+                            },
+                        )]),
+                        transitions: Default::default(),
+                    },
                     candidate_filter: None,
                     patrol: None,
                     attacks: std::collections::BTreeMap::from([(

@@ -744,7 +744,7 @@ pub(crate) fn refuse_local_switch(
 mod projectile_spawn_tests {
     use super::*;
     use postretro_foundation::{
-        ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight,
+        ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight, ProjectileLight,
         ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual,
     };
 
@@ -860,6 +860,49 @@ mod projectile_spawn_tests {
         assert!(
             rendered_forward.distance(launch.direction) <= 1.0e-6,
             "a rigid projectile model faces the aim direction captured at fire time"
+        );
+    }
+
+    #[test]
+    fn projectile_spawn_attaches_a_following_dynamic_point_light() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let visual = ProjectileVisual {
+            body: ProjectileBodyVisual::Sprite {
+                sprite: "sprites/plasma.png".to_string(),
+                size: 0.4,
+                opacity: 0.9,
+                rotation: 0.25,
+                tint: [0.2, 0.8, 1.0],
+                emissive: 0.0,
+                frame_duration_ms: None,
+            },
+            trail: None,
+            light: Some(ProjectileLight {
+                color: [0.2, 0.7, 1.0],
+                intensity: 2.5,
+                falloff_range: 6.0,
+                falloff_model: postretro_foundation::FalloffKind::InverseDistance,
+            }),
+            impact_light: None,
+        };
+
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+            .expect("projectile spawns");
+        let light = registry
+            .get_component::<LightComponent>(projectile)
+            .expect("descriptor light materializes with its projectile");
+        assert_eq!(light.light_type, LightKind::Point);
+        assert!(light.is_dynamic);
+        assert!(light.follow_transform);
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(1.0, 2.0, 3.0)) <= 1.0e-6);
+        assert!(Vec3::from_array(light.color).distance(Vec3::new(0.2, 0.7, 1.0)) <= 1.0e-6);
+        assert!((light.intensity - 2.5).abs() <= f32::EPSILON);
+        assert!((light.falloff_range - 6.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            light.falloff_model,
+            postretro_foundation::FalloffKind::InverseDistance
         );
     }
 

@@ -1323,6 +1323,22 @@ mod tests {
         f32::from_ne_bytes(update.lights_bytes[44..48].try_into().unwrap())
     }
 
+    fn packed_dynamic_position(bytes: &[u8]) -> glam::Vec3 {
+        glam::Vec3::new(
+            f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+        )
+    }
+
+    fn packed_dynamic_influence_center(bytes: &[u8]) -> glam::Vec3 {
+        glam::Vec3::new(
+            f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+        )
+    }
+
     fn packed_dynamic_influence_radius(update: &LightBridgeUpdate) -> f32 {
         f32::from_ne_bytes(update.influence_bytes[12..16].try_into().unwrap())
     }
@@ -1491,6 +1507,114 @@ mod tests {
             update.lights_bytes.len(),
             0,
             "lights_bytes empty when not dirty"
+        );
+    }
+
+    #[test]
+    fn follow_transform_uses_raw_sprite_pose_and_interpolated_model_pose() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[], &mut registry, 0);
+
+        let sprite = registry.spawn(Transform {
+            position: glam::Vec3::new(1.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                sprite,
+                postretro_entities::components::sprite_visual::SpriteVisual {
+                    sprite: "sprites/projectiles/bolt.png".to_string(),
+                    size: 0.4,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                },
+            )
+            .unwrap();
+        registry.snapshot_transform(sprite);
+        registry
+            .set_component(
+                sprite,
+                Transform {
+                    position: glam::Vec3::new(9.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        let mut sprite_light = runtime_component([-10.0, 0.0, 0.0], 5.0, None);
+        sprite_light.follow_transform = true;
+        registry.set_component(sprite, sprite_light).unwrap();
+
+        let model = registry.spawn(Transform {
+            position: glam::Vec3::new(2.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                model,
+                postretro_entities::components::mesh::MeshComponent::stateless(
+                    "models/projectiles/rocket.gltf".to_string(),
+                ),
+            )
+            .unwrap();
+        registry.snapshot_transform(model);
+        registry
+            .set_component(
+                model,
+                Transform {
+                    position: glam::Vec3::new(10.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        let mut model_light = runtime_component([-20.0, 0.0, 0.0], 5.0, None);
+        model_light.follow_transform = true;
+        registry.set_component(model, model_light).unwrap();
+
+        bridge.absorb_dynamic_lights(&registry);
+        let update = bridge
+            .update(&mut registry, 0.0, 0.25)
+            .expect("follow lights are enrolled and packed");
+        assert_eq!(update.lights_bytes.len(), 2 * GPU_LIGHT_SIZE);
+        assert_eq!(update.influence_bytes.len(), 2 * 16);
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes[..GPU_LIGHT_SIZE])
+                .distance(glam::Vec3::new(9.0, 0.0, 0.0))
+                <= 1.0e-6,
+            "sprite lights use the raw billboard Transform rather than their spawn origin"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes[..16])
+                .distance(glam::Vec3::new(9.0, 0.0, 0.0))
+                <= 1.0e-6,
+            "the sprite influence sphere follows the same raw pose"
+        );
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes[GPU_LIGHT_SIZE..])
+                .distance(glam::Vec3::new(4.0, 0.0, 0.0))
+                <= 1.0e-6,
+            "model lights use the mesh's 25%-interpolated render pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes[16..])
+                .distance(glam::Vec3::new(4.0, 0.0, 0.0))
+                <= 1.0e-6,
+            "the model influence sphere follows the interpolated render pose"
+        );
+    }
+
+    #[test]
+    fn runtime_light_conversion_disables_entity_shadows() {
+        let component = runtime_component([1.0, 2.0, 3.0], 5.0, None);
+        let converted = component_to_map_light(&component, [1.0, 2.0, 3.0], true, u32::MAX);
+
+        assert!(converted.is_dynamic);
+        assert!(
+            !converted.casts_entity_shadows,
+            "projectile runtime lights must stay outside the entity-shadow pool"
         );
     }
 
@@ -2758,6 +2882,53 @@ mod tests {
         bridge.absorb_dynamic_lights(&registry);
         assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
         assert!(bridge.entity_ids.contains(&overflow));
+    }
+
+    #[test]
+    fn runtime_reserve_overflow_warns_once_without_disturbing_enrolled_lights() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[], &mut registry, 0);
+        let ids: Vec<_> = (0..=RUNTIME_DYNAMIC_LIGHT_RESERVE)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            bridge.absorb_dynamic_lights(&registry);
+            bridge.absorb_dynamic_lights(&registry);
+        });
+        let warnings = captured
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn && message.contains("runtime dynamic-light reserve")
+            })
+            .count();
+        assert_eq!(warnings, 1, "reserve exhaustion has one actionable warning");
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert_eq!(
+            bridge.entity_for_map_index(RUNTIME_DYNAMIC_LIGHT_RESERVE - 1),
+            Some(ids[RUNTIME_DYNAMIC_LIGHT_RESERVE - 1]),
+            "the last admitted light retains its stable slot"
+        );
+        assert!(
+            !bridge
+                .entity_ids
+                .contains(&ids[RUNTIME_DYNAMIC_LIGHT_RESERVE]),
+            "the surplus light is dropped without corrupting admitted lights"
+        );
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("enrolled runtime lights pack normally");
+        assert_eq!(
+            update.lights_bytes.len(),
+            RUNTIME_DYNAMIC_LIGHT_RESERVE * GPU_LIGHT_SIZE
+        );
     }
 
     #[test]

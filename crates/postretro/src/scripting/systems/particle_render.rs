@@ -633,6 +633,43 @@ mod tests {
     }
 
     #[test]
+    fn collect_keeps_single_and_multi_frame_bodies_static_without_cadence() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        let cases = [
+            "sprites/projectiles/single-frame.png",
+            "sprites/projectiles/multi-frame-collection",
+        ];
+        for (index, sprite) in cases.iter().enumerate() {
+            collector.register_sprite(sprite);
+            let projectile =
+                spawn_projectile_sprite(&mut registry, Vec3::new(index as f32, 0.0, 0.0), sprite);
+            let mut component = registry
+                .get_component::<ProjectileComponent>(projectile)
+                .unwrap()
+                .clone();
+            component.elapsed_flight_age = 0.18;
+            // A collection name alone must not opt a body into flipbook playback.
+            component.flipbook_active = false;
+            registry.set_component(projectile, component).unwrap();
+        }
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        for sprite in cases {
+            let bytes = collector
+                .buffers
+                .get(sprite)
+                .expect("registered body is collected");
+            let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
+            assert_eq!(
+                age.to_bits(),
+                0.0_f32.to_bits(),
+                "{sprite} remains on frame zero until frameDurationMs is authored"
+            );
+        }
+    }
+
+    #[test]
     fn collect_packs_remote_projectile_age_from_its_local_presentation_stamp() {
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
@@ -700,6 +737,79 @@ mod tests {
             .1;
         let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert!((age - 0.18).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_matches_flipbook_age_across_local_predicted_and_presentation_bodies() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        const SPRITE: &str = "sprites/projectiles/animated-plasma";
+        const ELAPSED: f32 = 0.18;
+        collector.register_sprite(SPRITE);
+
+        let local = spawn_projectile_sprite(&mut registry, Vec3::ZERO, SPRITE);
+        let predicted = spawn_projectile_sprite(&mut registry, Vec3::X, SPRITE);
+        for (id, predicted_shot_id) in [(local, None), (predicted, Some(9))] {
+            let mut component = registry
+                .get_component::<ProjectileComponent>(id)
+                .unwrap()
+                .clone();
+            component.elapsed_flight_age = ELAPSED;
+            component.flipbook_active = true;
+            component.predicted_shot_id = predicted_shot_id;
+            registry.set_component(id, component).unwrap();
+        }
+
+        let presentation = registry.spawn(Transform {
+            position: Vec3::new(2.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                presentation,
+                postretro_entities::provenance::DescriptorProvenance {
+                    canonical_name: "reference_plasma_bolt".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::ProjectilePresentation,
+                },
+            )
+            .unwrap();
+        registry
+            .set_component(
+                presentation,
+                SpriteVisual {
+                    sprite: SPRITE.to_string(),
+                    size: 0.4,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0; 3],
+                },
+            )
+            .unwrap();
+        registry
+            .set_projectile_presentation_age(
+                presentation,
+                postretro_entities::components::projectile::ProjectilePresentationAge {
+                    spawn_time: 1.0,
+                    flipbook_active: true,
+                },
+            )
+            .unwrap();
+
+        collector.collect_at_time(&registry, None, &VisibleCells::DrawAll, 1.0 + ELAPSED);
+        let bytes = collector
+            .buffers
+            .get(SPRITE)
+            .expect("all three bodies share the animated collection");
+        assert_eq!(bytes.len(), 3 * SPRITE_INSTANCE_SIZE);
+        for instance in bytes.chunks_exact(SPRITE_INSTANCE_SIZE) {
+            let age = f32::from_ne_bytes(instance[12..16].try_into().unwrap());
+            assert!(
+                (age - ELAPSED).abs() < 1e-6,
+                "all three vantage paths must produce the same flipbook frame clock"
+            );
+        }
     }
 
     #[test]

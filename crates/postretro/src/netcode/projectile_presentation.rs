@@ -435,8 +435,8 @@ mod tests {
     };
     use postretro_entities::{ComponentKind, EntityTypeDescriptor};
     use postretro_foundation::{
-        FireMode, ProjectileBodyVisual, ProjectileImpactLight, ProjectileVisual, ResolutionMode,
-        WeaponDescriptor,
+        FireMode, ProjectileBodyVisual, ProjectileImpactLight, ProjectileLight, ProjectileVisual,
+        ResolutionMode, WeaponDescriptor,
     };
 
     const FIRING_CLIENT: u64 = 7;
@@ -663,6 +663,30 @@ mod tests {
             },
             FIRING_CLIENT,
         );
+        let mut projectile = descriptor();
+        let ProjectileBodyVisual::Sprite {
+            emissive,
+            frame_duration_ms,
+            ..
+        } = &mut projectile.visual.body
+        else {
+            unreachable!("the shared remote fixture starts with a sprite body");
+        };
+        *emissive = 3.0;
+        *frame_duration_ms = Some(60.0);
+        projectile.visual.light = Some(ProjectileLight {
+            color: [0.2, 0.7, 1.0],
+            intensity: 2.5,
+            falloff_range: 6.0,
+            falloff_model: postretro_foundation::FalloffKind::InverseSquared,
+        });
+        projectile.visual.impact_light = Some(ProjectileImpactLight {
+            color: [0.55, 0.85, 1.0],
+            intensity: 4.0,
+            radius: 5.0,
+            peak_radius: Some(9.0),
+            fade_ms: 180.0,
+        });
         let launch = RemoteProjectilePresentationLaunch {
             owner_client_id: FIRING_CLIENT,
             shot_id,
@@ -670,7 +694,7 @@ mod tests {
             direction: Vec3::NEG_Z,
             range: 12.0,
             descriptor_class: "test_remote_projectile".to_string(),
-            projectile: descriptor(),
+            projectile: projectile.clone(),
         };
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
@@ -746,10 +770,16 @@ mod tests {
                 panic!("observer baseline requests one descriptor-backed materialization");
             };
             assert_eq!(remote.network_id, visual_network_id);
+            let mut descriptor = projectile_visual_descriptor();
+            descriptor
+                .weapon
+                .as_mut()
+                .expect("test descriptor carries a weapon")
+                .projectile = Some(projectile.clone());
             assert!(
                 super::super::remote_materialize::materialize_armed_remote_projectile(
                     remote,
-                    &[projectile_visual_descriptor()],
+                    &[descriptor],
                     &mut observer_registry,
                     0.0,
                 )
@@ -762,6 +792,19 @@ mod tests {
                 .get_component::<SpriteVisual>(observer_visual)
                 .is_ok()
         );
+        let observer_light = observer_registry
+            .get_component::<LightComponent>(observer_visual)
+            .expect("observer materializes the descriptor travel light locally");
+        assert!(observer_light.is_dynamic);
+        assert!(observer_light.follow_transform);
+        assert!(
+            Vec3::from_array(observer_light.color).distance(Vec3::new(0.2, 0.7, 1.0)) <= 1.0e-6
+        );
+        let observer_timing = observer_registry
+            .projectile_presentation_age(observer_visual)
+            .expect("observer records the cadence-owned presentation clock");
+        assert!(observer_timing.flipbook_active);
+        assert!(observer_timing.spawn_time.abs() <= f32::EPSILON);
         for kind in [
             ComponentKind::Projectile,
             ComponentKind::Health,
@@ -784,10 +827,11 @@ mod tests {
         let mut collector =
             crate::scripting_systems::particle_render::ParticleRenderCollector::new();
         collector.register_sprite("sprites/projectiles/remote-bolt.png");
-        collector.collect(
+        collector.collect_at_time(
             &observer_registry,
             None,
             &postretro_visibility::VisibleCells::DrawAll,
+            0.18,
         );
         let collected = collector.iter_collections().collect::<Vec<_>>();
         assert_eq!(collected.len(), 1);
@@ -796,6 +840,22 @@ mod tests {
             collected[0].1.len(),
             postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE,
             "visual-only remote materialization is eligible for the sprite collector"
+        );
+        let packed_age = f32::from_ne_bytes(collected[0].1[12..16].try_into().unwrap());
+        assert!(
+            (packed_age - 0.18).abs() < 1.0e-6,
+            "the remote flipbook uses its local presentation clock rather than frame zero"
+        );
+        let mut observer_bridge = crate::scripting_systems::light_bridge::LightBridge::new();
+        observer_bridge.populate_from_level(&[], &mut observer_registry, 0);
+        observer_bridge.absorb_dynamic_lights(&observer_registry);
+        let observer_lights = observer_bridge
+            .update(&mut observer_registry, 0.18, 1.0)
+            .expect("the client-side absorb path enrolls presentation lights");
+        assert_eq!(
+            observer_lights.lights_bytes.len(),
+            postretro_lighting::GPU_LIGHT_SIZE,
+            "one observer presentation produces one dynamic light record"
         );
         let observer_ack = observer_outcome
             .ack

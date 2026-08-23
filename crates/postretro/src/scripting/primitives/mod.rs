@@ -333,6 +333,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("rotation?", "f32", "How far to turn the flat sprite, in radians. `0` leaves it upright; about `1.57` is a quarter turn. The default is `0`; use a finite number.")
         .field("tint?", "[f32; 3]", "A color multiplier written as exactly three numbers: `[red, green, blue]`. `[1, 1, 1]` means white/no tint and is the default. Each number must be finite. This value is stored today but the billboard renderer does not yet apply sprite tint visibly.")
         .field("emissive?", "f32", "Additive self-lit strength for this sprite. `0` keeps the normal scene-lit appearance; values around `2` to `4` make a full-bright HDR bolt that can bloom. Use a finite number of 0 or greater.")
+        .field("frameDurationMs?", "f32", "How long to hold each numbered sprite frame, in milliseconds. Leave it out to keep frame zero static, even when `sprite` names a multi-frame collection. Use a finite number greater than 0.")
         .finish();
     registry
         .register_type("ProjectileModelBodyVisual")

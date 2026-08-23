@@ -46,6 +46,12 @@ impl From<RegistryError> for ScriptError {
                 kind: format!("{kind:?}"),
             },
             RegistryError::GenerationMismatch(id) => ScriptError::GenerationMismatch(id),
+            RegistryError::ProjectilePresentationAgeNotFound { id } => {
+                ScriptError::ComponentNotFound {
+                    id,
+                    kind: "ProjectilePresentationAge".to_string(),
+                }
+            }
         }
     }
 }

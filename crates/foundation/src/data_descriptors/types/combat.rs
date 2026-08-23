@@ -92,6 +92,10 @@ pub enum ProjectileBodyVisual {
         /// the billboard output on its existing scene-lit path.
         #[serde(default)]
         emissive: f32,
+        /// Uniform hold duration for each numbered collection frame. Omission
+        /// keeps the body pinned to frame zero, even for a multi-frame source.
+        #[serde(default, rename = "frameDurationMs")]
+        frame_duration_ms: Option<f32>,
     },
     Model {
         model: String,
@@ -399,6 +403,7 @@ fn validate_projectile_descriptor(
             rotation,
             tint,
             emissive,
+            frame_duration_ms,
         } => {
             validate_projectile_asset_path("body.sprite", sprite)?;
             for (field, value) in [
@@ -430,6 +435,15 @@ fn validate_projectile_descriptor(
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
                         "`components.weapon.projectile.visual.body.emissive` must be finite and >= 0.0, got {emissive}"
+                    ),
+                });
+            }
+            if let Some(frame_duration_ms) = frame_duration_ms
+                && (!frame_duration_ms.is_finite() || *frame_duration_ms <= 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.projectile.visual.body.frameDurationMs` must be finite and > 0.0, got {frame_duration_ms}"
                     ),
                 });
             }
@@ -732,6 +746,7 @@ mod tests {
                     rotation: 0.0,
                     tint: [1.0, 1.0, 1.0],
                     emissive: 0.0,
+                    frame_duration_ms: None,
                 },
                 trail: None,
                 light: None,
@@ -935,11 +950,81 @@ mod tests {
             "sprite": "sprites/projectiles/bolt.png",
         }))
         .expect("sprite body should deserialize with defaults");
-        let ProjectileBodyVisual::Sprite { emissive, .. } = body else {
+        let ProjectileBodyVisual::Sprite {
+            emissive,
+            frame_duration_ms,
+            ..
+        } = body
+        else {
             unreachable!();
         };
 
         assert!(emissive.abs() < f32::EPSILON);
+        assert!(frame_duration_ms.is_none());
+    }
+
+    #[test]
+    fn projectile_sprite_frame_duration_deserializes_from_camel_case_authoring_key() {
+        let body: ProjectileBodyVisual = serde_json::from_value(serde_json::json!({
+            "kind": "sprite",
+            "sprite": "sprites/projectiles/bolt.png",
+            "frameDurationMs": 60.0,
+        }))
+        .expect("sprite body should deserialize authored cadence");
+        let ProjectileBodyVisual::Sprite {
+            frame_duration_ms, ..
+        } = body
+        else {
+            unreachable!();
+        };
+
+        assert_eq!(frame_duration_ms, Some(60.0));
+    }
+
+    #[test]
+    fn projectile_sprite_frame_duration_requires_finite_positive_value_when_present() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
+
+        for frame_duration_ms in [f32::NAN, 0.0, -0.01] {
+            let mut invalid = descriptor.clone();
+            let ProjectileBodyVisual::Sprite {
+                frame_duration_ms: cadence,
+                ..
+            } = &mut invalid
+                .projectile
+                .as_mut()
+                .expect("projectile is present")
+                .visual
+                .body
+            else {
+                unreachable!();
+            };
+            *cadence = Some(frame_duration_ms);
+
+            let error = invalid
+                .validate()
+                .expect_err("invalid sprite cadence must be rejected");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(reason.contains("frameDurationMs"), "{reason}");
+        }
+
+        let ProjectileBodyVisual::Sprite {
+            frame_duration_ms, ..
+        } = &mut descriptor
+            .projectile
+            .as_mut()
+            .expect("projectile is present")
+            .visual
+            .body
+        else {
+            unreachable!();
+        };
+        *frame_duration_ms = Some(60.0);
+        assert!(descriptor.validate().is_ok());
     }
 
     #[test]

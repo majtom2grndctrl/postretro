@@ -889,6 +889,7 @@ pub(crate) fn client_receive_and_apply(
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
+    script_time: f32,
     mover_target_tick: Option<u32>,
     host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
     host_tuning: Option<&TuningPayload>,
@@ -1024,6 +1025,7 @@ pub(crate) fn client_receive_and_apply(
                     remote,
                     descriptors,
                     registry,
+                    script_time,
                 )
             } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
                 let player_locomotion = descriptor.and_then(|descriptor| {

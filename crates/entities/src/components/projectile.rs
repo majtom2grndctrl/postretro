@@ -31,4 +31,26 @@ pub struct ProjectileComponent {
     /// use `None`; this distinction never crosses the network wire.
     #[serde(default)]
     pub predicted_shot_id: Option<u64>,
+    /// Fixed-tick flight time used by a cadence-enabled sprite body. Bodies
+    /// without cadence leave this at exactly zero so their packed instance stays
+    /// byte-identical to the static billboard path.
+    #[serde(default)]
+    pub elapsed_flight_age: f32,
+    /// Resolved once from the descriptor at spawn. The render collector must not
+    /// infer animation from collection frame count: a multi-frame directory is
+    /// still static until its descriptor authors a cadence.
+    #[serde(default)]
+    pub flipbook_active: bool,
+}
+
+/// Presentation-only timing for a projectile replicated as a visual entity.
+///
+/// This deliberately lives in [`EntityRegistry`](crate::registry::EntityRegistry)'s
+/// non-replicated side data instead of `ComponentKind`: the shared descriptor
+/// determines cadence, while the local presentation clock determines elapsed age.
+/// Adding it to the replicated component vocabulary would change the wire format.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectilePresentationAge {
+    pub spawn_time: f32,
+    pub flipbook_active: bool,
 }

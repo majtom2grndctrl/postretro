@@ -55,6 +55,7 @@ impl HostProjectilePresentations {
         replicable: &mut ReplicableSet,
         replication: &mut ServerReplication,
         launch: &RemoteProjectilePresentationLaunch,
+        script_time: f32,
     ) {
         let Some(id) = spawn_presentation_entity(
             registry,
@@ -68,6 +69,7 @@ impl HostProjectilePresentations {
             },
             &launch.descriptor_class,
             Some(&launch.projectile),
+            script_time,
         ) else {
             return;
         };
@@ -99,13 +101,15 @@ impl HostProjectilePresentations {
         allocator: &mut NetworkIdAllocator,
         replicable: &mut ReplicableSet,
         projectile_id: EntityId,
+        script_time: f32,
     ) {
         let Some((transform, descriptor_class)) =
             local_projectile_presentation_source(registry, projectile_id)
         else {
             return;
         };
-        let Some(id) = spawn_presentation_entity(registry, transform, &descriptor_class, None)
+        let Some(id) =
+            spawn_presentation_entity(registry, transform, &descriptor_class, None, script_time)
         else {
             return;
         };
@@ -266,6 +270,7 @@ fn spawn_presentation_entity(
     transform: Transform,
     descriptor_class: &str,
     visual: Option<&ProjectileDescriptor>,
+    script_time: f32,
 ) -> Option<EntityId> {
     let Some(id) = registry.try_spawn(transform, &[]) else {
         log::warn!("[Net] entity registry exhausted; dropping projectile presentation");
@@ -281,7 +286,7 @@ fn spawn_presentation_entity(
         },
     );
     if let Some(visual) = visual {
-        attach_projectile_visual_components(registry, id, visual);
+        attach_projectile_visual_components(registry, id, visual, script_time);
     }
     Some(id)
 }
@@ -293,6 +298,7 @@ pub(super) fn attach_projectile_visual_components(
     registry: &mut EntityRegistry,
     id: EntityId,
     projectile: &ProjectileDescriptor,
+    script_time: f32,
 ) {
     match &projectile.visual.body {
         ProjectileBodyVisual::Sprite {
@@ -367,6 +373,26 @@ pub(super) fn attach_projectile_visual_components(
             },
         );
     }
+
+    // This state is presentation-local: the body cadence comes from shared
+    // descriptor content, while elapsed age is derived from this peer's level
+    // clock. Keeping it in the registry side table avoids a replicated field.
+    if registry.projectile_presentation_age(id).is_err() {
+        let flipbook_active = matches!(
+            &projectile.visual.body,
+            ProjectileBodyVisual::Sprite {
+                frame_duration_ms: Some(_),
+                ..
+            }
+        );
+        let _ = registry.set_projectile_presentation_age(
+            id,
+            postretro_entities::components::projectile::ProjectilePresentationAge {
+                spawn_time: script_time,
+                flipbook_active,
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -395,6 +421,7 @@ mod tests {
                     rotation: 0.0,
                     tint: [0.4, 0.8, 1.0],
                     emissive: 0.0,
+                    frame_duration_ms: None,
                 },
                 trail: None,
                 light: None,
@@ -480,6 +507,7 @@ mod tests {
             &mut replicable,
             &mut replication,
             &launch,
+            0.0,
         );
         let visual = *presentations
             .flights
@@ -565,6 +593,7 @@ mod tests {
                 &remote,
                 &[model_projectile_visual_descriptor()],
                 &mut observer_registry,
+                0.0,
             )
         );
         let observer_transform = observer_registry
@@ -621,6 +650,7 @@ mod tests {
             &mut replicable,
             &mut replication,
             &launch,
+            0.0,
         );
 
         let visuals = presentations.flights.keys().copied().collect::<Vec<_>>();
@@ -686,6 +716,7 @@ mod tests {
                     remote,
                     &[projectile_visual_descriptor()],
                     &mut observer_registry,
+                    0.0,
                 )
             );
             remote.entity_id
@@ -857,6 +888,7 @@ mod tests {
             &mut replicable,
             &mut replication,
             &launch,
+            0.0,
         );
         let visual = *presentations
             .flights

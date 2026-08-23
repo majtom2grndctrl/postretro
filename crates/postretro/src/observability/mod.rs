@@ -407,6 +407,8 @@ mod tests {
                 owner_weapon: EntityId::from_raw(2),
                 spawned: false,
                 predicted_shot_id: None,
+                elapsed_flight_age: 0.0,
+                flipbook_active: false,
             }),
         }
     }

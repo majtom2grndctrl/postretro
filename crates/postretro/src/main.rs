@@ -2879,6 +2879,7 @@ impl ApplicationHandler for App {
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
                             &tick_events.local_projectile_spawns,
+                            self.script_time as f32,
                         );
                         if self.host_flush_pending_hit_declarations() {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
@@ -3686,10 +3687,11 @@ impl ApplicationHandler for App {
                         // frame's visible-cell set so off-screen / adjacent-room
                         // smoke is never packed for drawing. `visible_cells` is
                         // still live here (reclaimed after the frame).
-                        session.particle_render.collect(
+                        session.particle_render.collect_at_time(
                             &registry,
                             self.level.as_ref(),
                             &visible_cells,
+                            self.script_time as f32,
                         );
                     }
                     let particle_collections: Vec<(&str, &[u8])> =
@@ -6325,6 +6327,7 @@ impl App {
                         gravity,
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
+                        self.script_time as f32,
                         mover_target_tick,
                         tuning
                             .as_deref()
@@ -7161,6 +7164,7 @@ impl App {
         registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
         remote_launches: &[sim::RemoteProjectilePresentationLaunch],
         local_projectile_spawns: &[postretro_entities::EntityId],
+        script_time: f32,
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
@@ -7183,6 +7187,7 @@ impl App {
                 replicable,
                 replication,
                 launch,
+                script_time,
             );
         }
         for &projectile in local_projectile_spawns {
@@ -7191,6 +7196,7 @@ impl App {
                 allocator,
                 replicable,
                 projectile,
+                script_time,
             );
         }
     }

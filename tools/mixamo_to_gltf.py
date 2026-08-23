@@ -7,6 +7,7 @@ Usage:
         --output path/to/output/model.gltf \
         [--base "Exo Red.fbx"] \
         [--scale 0.01] \
+        [--yaw 90] \
         [--no-tag] \
         [--strip-face] \
         [--fix-eyes]
@@ -15,9 +16,14 @@ The --base file is treated as the base mesh + armature.  If omitted, the
 first FBX alphabetically is used (which may be an animation-only file —
 pass --base to be explicit).  All other FBXs contribute their animation
 as named Actions (derived from the filename, e.g. "Idle.fbx" -> "idle").
+Actions the base file ships beyond its own rest pose (e.g. control-rig
+MCH_* driver tracks) are dropped; real animation comes from the clips.
+
+Use --yaw when a model was exported facing a non-standard direction (it
+rotates about the vertical axis on top of the standard facing flip).
 
 After export the script tags the Mixamo skeleton with engine extras
-(poseMask, aimBendWeight, socket) and sets the skin skeleton root.
+(poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
 Pass --no-tag to skip.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
@@ -77,6 +83,19 @@ SOCKETS = {
     "LeftHand": "hand_l",
 }
 
+# Skeletal hit zones (bone -> `hitZone` tag). A descriptor's `zoneMultipliers`
+# key matches a joint's zone tag by string, so without this tag the head/leg
+# multipliers are silently dead. Radius is omitted; the engine applies its
+# DEFAULT_ZONE_RADIUS (see scripting/systems/hit_zones.rs). Feet are left
+# untagged (small, ground-level); the thigh+shin carry the "leg" zone.
+HIT_ZONES = {
+    "Head": "head",
+    "LeftUpLeg": "leg",
+    "LeftLeg": "leg",
+    "RightUpLeg": "leg",
+    "RightLeg": "leg",
+}
+
 
 def parse_args():
     argv = sys.argv
@@ -104,6 +123,15 @@ def parse_args():
         "--scale", type=float, default=None,
         help="Import scale override (default: let Blender auto-convert units). "
              "Use 0.01 if your model appears 100x too large after import."
+    )
+    parser.add_argument(
+        "--yaw", type=float, default=0.0,
+        metavar="DEGREES",
+        help="Extra rotation about the vertical axis, applied with the "
+             "standard 180-deg facing flip. Use when a model was exported "
+             "facing a different way than the engine's +Z-forward convention "
+             "(e.g. --yaw 90 for a model turned a quarter-turn). Default 0 "
+             "(no extra rotation), correct for standard Mixamo exports."
     )
     parser.add_argument(
         "--no-tag", action="store_true",
@@ -204,7 +232,40 @@ def fcurve_bone_name(data_path):
     return data_path[len(prefix):data_path.index('"]')]
 
 
-def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
+def strip_non_bone_fcurves(action):
+    """Remove object-level (non-`pose.bones`) F-curves from an action.
+
+    FBX exports from Blender control rigs (Rigify/MCH, etc.) frequently
+    animate the armature OBJECT's own transform (location/rotation/scale)
+    alongside the pose bones. The engine consumes only skeletal (`pose.bones`)
+    animation, so these channels are dead weight — and, critically,
+    EVALUATING an object-scale channel during re-bake overwrites the FBX
+    importer's unit conversion on the armature (e.g. resets the 0.01 cm->m
+    object scale to 1.0), which corrupts the baked output size. Vanilla Mixamo
+    downloads carry no such channels, so this is a no-op for them.
+
+    Returns the number of F-curves removed.
+    """
+    fcurves = get_action_fcurves(action)
+    doomed = [fc for fc in list(fcurves) if fcurve_bone_name(fc.data_path) is None]
+    removed = 0
+    for fc in doomed:
+        data_path = fc.data_path
+        try:
+            fcurves.remove(fc)
+            removed += 1
+        except (RuntimeError, ReferenceError, TypeError) as exc:
+            # A survivor here is not benign: an object-scale channel that
+            # outlives this pass gets evaluated in Phase 2 and clobbers the
+            # armature's import scale, corrupting the baked output size. Never
+            # swallow it silently.
+            print(f"  WARNING: could not strip object-level channel "
+                  f"'{data_path}' from '{action.name}' ({exc}); "
+                  f"baked output size may be corrupted")
+    return removed
+
+
+def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None, yaw=0.0):
     """Import all FBX files, keeping one armature+mesh and collecting actions."""
     if not Path(input_dir).is_dir():
         print(f"ERROR: Input directory not found: {input_dir}")
@@ -245,12 +306,24 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         sys.exit(1)
 
     seen_names = set()
+    base_action = None
     if base_armature.animation_data and base_armature.animation_data.action:
         base_action = base_armature.animation_data.action
         base_action.name = action_name_from_filename(base_file)
         base_action.use_fake_user = True
         seen_names.add(base_action.name)
         print(f"  Action: {base_action.name}")
+
+    # Drop any OTHER actions the base file shipped. The base file contributes
+    # geometry plus its single rest/bind pose (kept above as `base_action`);
+    # real animation comes from the clip files. Blender control-rig exports
+    # leave extra driver-baked actions here (e.g. MCH_* mechanism tracks) that
+    # would otherwise export as junk clips. A vanilla Mixamo base has only its
+    # one action, so this removes nothing for clean input.
+    for action in list(bpy.data.actions):
+        if action is not base_action:
+            print(f"  Dropping base-file leftover action: '{action.name}'")
+            bpy.data.actions.remove(action)
 
     base_bones = set(bone.name for bone in base_armature.data.bones)
 
@@ -310,6 +383,35 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
             if obj not in base_objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
 
+    # --- Cleanup: strip control-rig leftovers ------------------------------
+    # Blender-rig FBX exports (Rigify/MCH, etc.) leave two artifacts that
+    # corrupt the bake. Neither exists in a vanilla Mixamo download, so every
+    # step below is a no-op for clean input. This must run BEFORE Phase 2:
+    # once Phase 2 assigns an action and steps frames, an object-scale channel
+    # would clobber the armature's import scale (see strip_non_bone_fcurves).
+    #
+    # 1. Non-deforming control objects left beside the character (helper
+    #    empties, mechanism armatures). The mesh and the chosen base armature
+    #    are the only objects the engine consumes.
+    for obj in list(bpy.data.objects):
+        if obj is base_armature or obj.type == "MESH":
+            continue
+        print(f"  Removing non-deforming object: {obj.type} '{obj.name}'")
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    # 2. Object-level F-curves that would clobber the armature's import scale,
+    #    then any action left with no channels targeting the base skeleton
+    #    (e.g. clips authored purely against absent control bones).
+    for action in list(bpy.data.actions):
+        stripped = strip_non_bone_fcurves(action)
+        if stripped:
+            print(f"  Stripped {stripped} object-level channel(s) from '{action.name}'")
+    for action in list(bpy.data.actions):
+        fcurves = get_action_fcurves(action)
+        if not any(fcurve_bone_name(fc.data_path) in base_bones for fc in fcurves):
+            print(f"  Dropping action with no base-skeleton channels: '{action.name}'")
+            bpy.data.actions.remove(action)
+
     # --- Phase 2: Sample armature-space bone poses for every action --------
     # Before we transform the armature, evaluate each action on the base
     # armature and record each bone's LOCAL transform (relative to parent)
@@ -363,7 +465,14 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # wrong way for the engine's +Z-forward convention (pose_modifier.rs,
     # mesh_pass.rs). Confirmed empirically: without this flip the whole model
     # (body and feet) renders facing away from its movement direction.
-    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
+    #
+    # `--yaw` adds a further rotation about the same vertical (Z) axis for
+    # models exported facing a non-standard direction; it folds into flip_z so
+    # every downstream use (armature bake, mesh bake, root-bone re-bake in
+    # Phase 4) stays consistent. Default yaw 0 leaves the flip unchanged.
+    flip_z = Matrix.Rotation(math.pi + math.radians(yaw), 4, 'Z')
+    if yaw:
+        print(f"  Applying extra yaw: {yaw} deg (about vertical axis)")
 
     arm_world = base_armature.matrix_world.copy()
     baked_transform = flip_z @ arm_world
@@ -854,6 +963,9 @@ def tag_gltf_skeleton(gltf_path):
         if short in SOCKETS:
             extras["socket"] = SOCKETS[short]
 
+        if short in HIT_ZONES:
+            extras["hitZone"] = HIT_ZONES[short]
+
         if extras:
             node["extras"] = extras
             tagged += 1
@@ -872,6 +984,7 @@ def tag_gltf_skeleton(gltf_path):
     print(f"\nTagged {tagged} bones with engine extras")
     mask_counts = {}
     socket_count = 0
+    hit_zone_counts = {}
     for node in nodes:
         extras = node.get("extras")
         if not extras:
@@ -882,10 +995,15 @@ def tag_gltf_skeleton(gltf_path):
                 mask_counts[m] = mask_counts.get(m, 0) + 1
         if "socket" in extras:
             socket_count += 1
+        hz = extras.get("hitZone")
+        if hz:
+            hit_zone_counts[hz] = hit_zone_counts.get(hz, 0) + 1
     for mask, count in sorted(mask_counts.items()):
         print(f"  poseMask '{mask}': {count} bone(s)")
     if socket_count:
         print(f"  sockets: {socket_count}")
+    for zone, count in sorted(hit_zone_counts.items()):
+        print(f"  hitZone '{zone}': {count} bone(s)")
     weights_str = ", ".join(f"{n}={w}" for n, w in sorted(AIM_SPINE_WEIGHTS.items()))
     print(f"  aimBendWeight: {weights_str}")
     if hips_idx is not None:
@@ -899,7 +1017,7 @@ def main():
     print("=" * 60)
 
     clean_scene()
-    merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes)
+    merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes, args.yaw)
     if args.fix_eyes:
         flip_eye_geometry(inset=args.eye_inset)
     if args.strip_face:

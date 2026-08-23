@@ -35,6 +35,10 @@ pub(super) struct LosGraceState {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EnemyTargetPerception {
     pub(super) visible: bool,
+    /// The shared endpoints Task 1 derived for this enemy/target pair. Combat
+    /// positioning receives these values rather than deriving a second ray.
+    pub(super) enemy_eye: Vec3,
+    pub(super) target_aim: Vec3,
 }
 
 /// Derive the one enemy eye point used by LOS consumers. An authored health
@@ -90,7 +94,11 @@ pub(super) fn perceive_target(
         .unwrap_or(true);
     let visible = debounce_los(grace, enemy, target.entity, raw_visible);
 
-    Some(EnemyTargetPerception { visible })
+    Some(EnemyTargetPerception {
+        visible,
+        enemy_eye,
+        target_aim,
+    })
 }
 
 /// The engine-floor fire gate. It intentionally has no graph or cooldown

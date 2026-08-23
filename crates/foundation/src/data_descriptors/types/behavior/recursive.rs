@@ -209,6 +209,20 @@ impl BehaviorGraphDescriptor {
         }
     }
 
+    /// Combat-slot distance for the selected action. A per-attack standoff is
+    /// explicit; otherwise retain the action-relative engagement-radius
+    /// behavior so an attack override remains the positioning default.
+    pub fn standoff_distance_for_action(&self, action: Option<&ActionVerb>) -> f32 {
+        match action {
+            Some(ActionVerb::Attack(name)) => self
+                .attacks
+                .get(name)
+                .and_then(|attack| attack.standoff_distance)
+                .unwrap_or_else(|| self.engagement_radius_for_action(action)),
+            None => self.engagement_radius_for_action(None),
+        }
+    }
+
     /// Shared validation used after both JS and Luau conversion paths.
     pub fn validate(mut self) -> Result<Self, DescriptorError> {
         validate_positive("moveSpeed", self.move_speed)?;
@@ -620,6 +634,12 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
                 });
             }
         }
+        if let Some(standoff_distance) = attack.standoff_distance {
+            validate_positive(
+                &format!("attacks.{name}.standoffDistance"),
+                standoff_distance,
+            )?;
+        }
     }
     Ok(())
 }
@@ -670,6 +690,66 @@ pub(crate) fn unreachable_activities(envelope: &BehaviorGraphEnvelope) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {
+        let graph = BehaviorGraphDescriptor {
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: BTreeMap::new(),
+                transitions: BTreeMap::new(),
+            },
+            candidate_filter: None,
+            patrol: None,
+            attacks: BTreeMap::from([(
+                "slam".to_string(),
+                AttackParams {
+                    damage: 1.0,
+                    max_range: 4.0,
+                    cooldown_ms: 1.0,
+                    engagement_radius: Some(3.0),
+                    standoff_distance: None,
+                },
+            )]),
+            engagement_radius: Some(2.0),
+            move_speed: 1.0,
+        };
+        let action = ActionVerb::Attack("slam".to_string());
+
+        assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
+        assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);
+
+        let mut explicit_standoff = graph.clone();
+        explicit_standoff
+            .attacks
+            .get_mut("slam")
+            .expect("fixture attack exists")
+            .standoff_distance = Some(1.5);
+        assert_eq!(
+            explicit_standoff.standoff_distance_for_action(Some(&action)),
+            1.5
+        );
+    }
+
+    #[test]
+    fn validate_attacks_rejects_non_positive_standoff_distance() {
+        let attacks = BTreeMap::from([(
+            "slam".to_string(),
+            AttackParams {
+                damage: 1.0,
+                max_range: 4.0,
+                cooldown_ms: 1.0,
+                engagement_radius: None,
+                standoff_distance: Some(0.0),
+            },
+        )]);
+
+        let error = validate_attacks(&attacks).expect_err("zero standoff must reject");
+        assert!(
+            error.to_string().contains("attacks.slam.standoffDistance"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn nested_graph_and_selector_wire_shapes_deserialize() {

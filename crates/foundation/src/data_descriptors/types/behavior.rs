@@ -52,6 +52,8 @@ pub struct AttackParams {
     pub cooldown_ms: f32,
     #[serde(default)]
     pub engagement_radius: Option<f32>,
+    #[serde(default)]
+    pub standoff_distance: Option<f32>,
 }
 
 /// How an authored patrol route moves when it reaches an endpoint.

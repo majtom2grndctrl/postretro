@@ -1431,6 +1431,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 max_range: 2.0,
                 cooldown_ms: 1000.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: None,

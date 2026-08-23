@@ -479,7 +479,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("damage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
         .field("maxRange", "f32", "Maximum distance within which the attack lands, in metres. Must be finite and > 0.")
         .field("cooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
-        .field("engagementRadius?", "f32", "Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.")
+        .field("engagementRadius?", "f32", "Optional action-specific engagement radius. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.")
+        .field("standoffDistance?", "f32", "Optional combat-slot standoff for a state firing this attack. Must be finite and > 0; defaults to that action's resolved engagement radius.")
         .finish();
     registry
         .register_enum("PatrolMode")

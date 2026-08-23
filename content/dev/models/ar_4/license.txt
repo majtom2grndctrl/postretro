@@ -1,0 +1,21 @@
+Model Information:
+* title:	Modular Sci-Fi Guns — AR_4
+* source:	https://quaternius.com/ (Modular Sci Fi Guns, Nov 2021)
+* author:	Quaternius (https://www.patreon.com/quaternius)
+
+Model License:
+* license type:	CC0 1.0 Universal — Public Domain Dedication
+* url:	https://creativecommons.org/publicdomain/zero/1.0/
+* requirements:	None. Public domain; free for any use, commercial or personal.
+                	Attribution is appreciated but not legally required.
+
+Packaging notes (PostRetro):
+* AR_4 extracted from Quaternius "Modular Sci Fi Guns" (Nov 2021) and converted to
+  the engine's external glTF layout (model.gltf + model.bin + textures) via
+  prop_to_gltf.py: gun + magazine joined into one mesh node, scaled x0.5 (~0.9 m
+  long), origin relocated to the grip for hand_r socket attachment.
+* The source materials are flat baseColorFactor colors with no textures or UVs.
+  Each was baked to a 4x4 solid-color PNG (linear -> sRGB) and wired as that
+  material's base-color texture, so the engine's texture-based model loader
+  reproduces the intended colors (a mesh without UVs samples every vertex at
+  texture coordinate (0,0), which is uniform for a solid color).

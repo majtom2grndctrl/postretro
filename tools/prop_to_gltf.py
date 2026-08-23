@@ -24,6 +24,7 @@ Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
 import bpy
 import sys
 import json
+import math
 import argparse
 from pathlib import Path
 from mathutils import Vector
@@ -62,6 +63,15 @@ def parse_args():
         "--scale", type=float, default=None,
         help="Uniform scale factor applied after import "
              "(e.g. 0.01 to convert centimeters to meters)"
+    )
+    parser.add_argument(
+        "--rotate-euler", type=float, nargs=3, metavar=("X", "Y", "Z"),
+        help="Rotate the mesh about its origin by these XYZ Euler degrees, "
+             "applied AFTER --grip (so the rotation pivots around the grip "
+             "point). Use to orient a hand-held weapon so it points correctly "
+             "when mounted on a skeleton socket: the engine mounts an "
+             "attachment at the raw joint matrix with no per-socket offset, so "
+             "any orientation fix must be baked into the model here."
     )
     parser.add_argument(
         "--socket", action="append", metavar="NAME=NODE",
@@ -192,6 +202,23 @@ def relocate_origin(mesh, grip_point):
     bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
 
     print(f"  Origin relocated to grip point: ({grip_point[0]}, {grip_point[1]}, {grip_point[2]})")
+
+
+def rotate_mesh(mesh, euler_deg):
+    """Rotate the mesh about its origin by XYZ Euler degrees and bake it in.
+
+    Applied after the origin sits at the grip, so the rotation pivots around the
+    grip. This is how a hand-held weapon is oriented to point correctly once the
+    engine mounts it at a skeleton socket (which uses the raw joint matrix with
+    no per-socket offset — see attachments.rs)."""
+    bpy.ops.object.select_all(action="DESELECT")
+    mesh.select_set(True)
+    bpy.context.view_layer.objects.active = mesh
+    mesh.rotation_mode = "XYZ"
+    mesh.rotation_euler = tuple(math.radians(a) for a in euler_deg)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+    print(f"  Rotated mesh by XYZ Euler degrees: "
+          f"({euler_deg[0]}, {euler_deg[1]}, {euler_deg[2]})")
 
 
 def apply_all_transforms(mesh):
@@ -472,6 +499,9 @@ def main():
 
     if args.grip:
         relocate_origin(mesh, args.grip)
+
+    if args.rotate_euler:
+        rotate_mesh(mesh, args.rotate_euler)
 
     validate_model(mesh)
     export_gltf(args.output)

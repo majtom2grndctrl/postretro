@@ -5112,25 +5112,20 @@ fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
         50.0,
     );
 
-    // Regression: a newly seated initial activity is observable for its entry
-    // tick even when its first transition guard is already true.
+    // Regression: fresh seating does not latch guard evaluation off. The
+    // initial activity remains event-silent even when its first edge fires.
     let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
-    assert_eq!(enemy_state_name(&reg, enemy), "rest");
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
     assert!(
         first.is_empty(),
         "initial seating drives presentation but does not emit onEnter"
     );
-    assert_eq!(enemy_animation(&reg, enemy), "idle");
-
-    let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
-    assert_eq!(enemy_state_name(&reg, enemy), "charge");
-    assert!(second.is_empty(), "`charge` announces nothing");
     assert_eq!(enemy_animation(&reg, enemy), "idle", "stopped travel rests");
 
-    let third = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "strike");
     assert_eq!(
-        third,
+        second,
         vec![
             Cow::Owned("gruntSwings".to_string()),
             Cow::Borrowed(ENEMY_ATTACK_EVENT),
@@ -5145,10 +5140,10 @@ fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
     );
 
     // Entering is what raises `on_enter`: staying does not re-raise it.
-    let fourth = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    let third = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert_eq!(enemy_state_name(&reg, enemy), "strike");
     assert!(
-        fourth.is_empty(),
+        third.is_empty(),
         "no re-entry, no event, no in-cooldown swing"
     );
 }
@@ -5172,13 +5167,16 @@ fn an_aggro_gate_reseat_emits_the_initial_leaf_on_enter() {
     let events = run_ai_tick(&mut reg, &mut AiRuntime::new(), 0.016);
 
     assert_eq!(enemy_state_name(&reg, enemy), "rest");
-    assert_eq!(events, vec![Cow::Owned("stoodDown".to_string())]);
+    assert_eq!(
+        events,
+        vec![Cow::<'static, str>::Owned("stoodDown".to_string())]
+    );
 }
 
-// Regression: entering a child phase re-resolved the whole active path's
-// action and re-fired a still-active parent offense selector.
+// Regression: a same-tick child transition replaced the fresh parent's pending
+// entry depth, dropping its offense action before the action pass could see it.
 #[test]
-fn a_child_transition_does_not_refire_its_parent_selector_action() {
+fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once() {
     let phase = BehaviorGraphEnvelope {
         initial: "first".to_string(),
         activities: BTreeMap::from([
@@ -5198,7 +5196,7 @@ fn a_child_transition_does_not_refire_its_parent_selector_action() {
                     animation: Some("idle".to_string()),
                     motion: None,
                     action: None,
-                    on_enter: None,
+                    on_enter: Some("secondEntered".to_string()),
                     layers: BTreeMap::new(),
                 },
             ),
@@ -5261,13 +5259,20 @@ fn a_child_transition_does_not_refire_its_parent_selector_action() {
     let mut runtime = AiRuntime::new();
 
     let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
-    assert_eq!(first, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(
+        first,
+        vec![
+            Cow::Owned("secondEntered".to_string()),
+            Cow::Borrowed(ENEMY_ATTACK_EVENT),
+        ],
+        "the child onEnter precedes the fresh parent's one entry action"
+    );
     assert_eq!(player_hp(&reg, pawn), 92.0);
-    assert_eq!(enemy_state_path(&reg, enemy), "engage/first");
+    assert_eq!(enemy_state_path(&reg, enemy), "engage/phase/second");
 
     let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
     assert!(second.is_empty());
-    assert_eq!(enemy_state_path(&reg, enemy), "engage/second");
+    assert_eq!(enemy_state_path(&reg, enemy), "engage/phase/second");
     assert_eq!(
         player_hp(&reg, pawn),
         92.0,
@@ -5309,7 +5314,6 @@ fn malformed_restored_paths_reseat_before_any_ai_consumer_walks_them() {
     stale_nested[1] = 0;
 
     let mut reg = EntityRegistry::new();
-    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let too_long = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
@@ -5425,12 +5429,9 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
     run_ai_tick(&mut reg, &mut runtime, TICK_DT);
     assert_eq!(
         enemy_state_name(&reg, enemy),
-        "rest",
-        "the initial activity remains seated for its entry tick"
+        "commit",
+        "fresh seating still evaluates a true guard on its first armed tick"
     );
-
-    run_ai_tick(&mut reg, &mut runtime, TICK_DT);
-    assert_eq!(enemy_state_name(&reg, enemy), "commit");
     assert_eq!(
         enemy_time_in_activity(&reg, enemy),
         0.0,
@@ -7060,8 +7061,8 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
 
     assert_eq!(
         enemy_state_name(&reg, enemy),
-        graph.envelope.initial,
-        "a reseated initial activity is observed for its entry tick even when its guard is true"
+        "charge",
+        "the invalid path re-seats through the initial activity, whose true guard is evaluated immediately"
     );
     assert!(
         runtime.reseat_warned.contains(&enemy),
@@ -7074,11 +7075,6 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
          the content latch: {:?}",
         runtime.warned
     );
-
-    // Re-seated, not merely parked: the recovered activity's own rows decide
-    // the following tick.
-    run_ai_tick(&mut reg, &mut runtime, 0.016);
-    assert_eq!(enemy_state_name(&reg, enemy), "charge");
 }
 
 // ---------------------------------------------------------------------------

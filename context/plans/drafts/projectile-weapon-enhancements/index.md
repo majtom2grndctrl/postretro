@@ -14,11 +14,15 @@ into a glowing, pulsing, self-illuminating energy shot that bursts on impact —
 cyberpunk boomer-shooter identity the aesthetic calls for. All are additive,
 co-op-correct, and add no wire-format change.
 
-**Prerequisites.** `light-bridge-runtime-light-reclamation` (the light bridge must
-reclaim a despawned runtime light's reserve slot; without it the per-shot travel +
-impact lights — the engine's first high-churn runtime lights — cumulatively
-exhaust the 256-slot `RUNTIME_DYNAMIC_LIGHT_RESERVE` and later projectile lights
-silently drop).
+**Prerequisites.** `light-bridge-runtime-light-reclamation` — **shipped**
+(`context/plans/done/light-bridge-runtime-light-reclamation`; merged to `main`).
+The light bridge now reclaims a despawned runtime light's reserve slot, so the
+per-shot travel + impact lights here — the engine's first high-churn runtime
+lights, the consumer that prerequisite was built for — no longer cumulatively
+exhaust the 256-slot `RUNTIME_DYNAMIC_LIGHT_RESERVE`. Where this spec says a slot
+is "reclaimed by the prerequisite," that reclamation is now live engine behavior;
+anchor its exact seam (free-list, live-count bound) against the merged
+`light_bridge.rs`.
 
 ## Scope
 
@@ -748,6 +752,6 @@ Resolution notes:
   window is accepted as an invisible ≤1-tick linger (the settled light is
   intensity-0), with the reserve slot reclaimed by the prerequisite (Task 5,
   Orderings).
-- **Dependency:** this spec requires `light-bridge-runtime-light-reclamation`
-  (reserve-slot reclamation) to land first; projectile lights are correct only
-  on top of it.
+- **Dependency (satisfied):** `light-bridge-runtime-light-reclamation`
+  (reserve-slot reclamation) is **shipped** on `main` (`context/plans/done/`);
+  projectile lights build on top of it.

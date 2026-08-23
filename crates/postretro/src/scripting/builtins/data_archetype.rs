@@ -279,7 +279,7 @@ fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> bool {
 /// predicate would later return `true` for an eligible descriptor spawn of this
 /// descriptor.
 ///
-/// Used by the connected-client install path (E10 Task 5) to drop AI-enemy map
+/// Used by the connected-client install path to drop AI-enemy map
 /// placements *before* dispatch, since those enemies must arrive only as
 /// host-authoritative snapshots — never as locally-spawned authoritative copies.
 /// Keying on the brain block (not classname strings, not
@@ -296,7 +296,7 @@ pub(crate) fn descriptor_materializes_world_item(descriptor: &EntityTypeDescript
     descriptor.touchable.is_some()
 }
 
-/// Partition map placements for a **connected client** install (E10 Task 5):
+/// Partition map placements for a **connected client** install:
 /// returns only the placements that should still materialize locally, dropping
 /// any whose matched descriptor would materialize a host-authoritative AI enemy
 /// ([`descriptor_materializes_ai_enemy`]) or world item
@@ -451,7 +451,15 @@ pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProjectileSpriteCollection {
     pub(crate) collection: String,
-    pub(crate) lifetime: f32,
+    /// Required loop period when this consumer advances billboard age. Static
+    /// projectile bodies leave it unconstrained because they always pack age zero.
+    pub(crate) lifetime: Option<f32>,
+    pub(crate) emissive: f32,
+    /// A projectile body cadence is translated to the collection's loop period
+    /// only after the actual frame count is known at level install.
+    pub(crate) frame_duration_ms: Option<f32>,
+    /// Stable author-facing origin used when collection draw contracts conflict.
+    pub(crate) source: String,
 }
 
 /// Collect projectile body and trail presentation assets from the full weapon
@@ -463,10 +471,9 @@ pub(crate) fn projectile_presentation_assets(
 ) -> (Vec<String>, Vec<ProjectileSpriteCollection>) {
     let mut seen_models = HashSet::new();
     let mut models = Vec::new();
-    let mut seen_sprites = HashSet::new();
     let mut sprites = Vec::new();
 
-    for descriptor in descriptors {
+    for (descriptor_index, descriptor) in descriptors.iter().enumerate() {
         let Some(projectile) = descriptor
             .weapon
             .as_ref()
@@ -475,28 +482,39 @@ pub(crate) fn projectile_presentation_assets(
             continue;
         };
 
-        // Trails own animated-sheet timing, so give them the first collection
-        // registration when a body and trail intentionally share one sprite.
+        let descriptor_name = descriptor
+            .canonical_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("descriptor[{descriptor_index}]"));
+
         if let Some(trail) = projectile.visual.trail.as_ref()
             && !trail.sprite.is_empty()
-            && seen_sprites.insert(trail.sprite.clone())
         {
             sprites.push(ProjectileSpriteCollection {
                 collection: trail.sprite.clone(),
-                lifetime: trail.lifetime,
+                lifetime: Some(trail.lifetime),
+                emissive: 0.0,
+                frame_duration_ms: None,
+                source: format!("{descriptor_name}.projectile.visual.trail"),
             });
         }
 
         match &projectile.visual.body {
-            ProjectileBodyVisual::Sprite { sprite, .. }
-                if !sprite.is_empty() && seen_sprites.insert(sprite.clone()) =>
-            {
+            ProjectileBodyVisual::Sprite {
+                sprite,
+                emissive,
+                frame_duration_ms,
+                ..
+            } if !sprite.is_empty() => {
                 sprites.push(ProjectileSpriteCollection {
                     collection: sprite.clone(),
-                    // The body is a persistent billboard, not a simulated
-                    // particle. Its packed age is always zero, so this only
-                    // supplies the required sprite-pass collection metadata.
-                    lifetime: 1.0,
+                    // No-cadence bodies pack age 0.0, so another valid consumer
+                    // may choose the collection loop period without changing them.
+                    lifetime: None,
+                    emissive: *emissive,
+                    frame_duration_ms: *frame_duration_ms,
+                    source: format!("{descriptor_name}.projectile.visual.body"),
                 });
             }
             ProjectileBodyVisual::Model { model }
@@ -598,6 +616,7 @@ pub(crate) fn attach_descriptor_components(
             cone_direction: None,
             is_dynamic: true,
             animated_slot: None,
+            follow_transform: false,
             animation: None,
         };
         let _ = registry.set_component(id, component);
@@ -2932,7 +2951,7 @@ mod tests {
     }
 
     #[test]
-    fn projectile_presentation_assets_preload_descriptor_body_and_trail_once() {
+    fn projectile_presentation_assets_retains_every_collection_consumer_contract() {
         // Regression: flight entities materialize after the registry-based level
         // sweep, so their models and sprite collections must come from descriptors.
         let mut sprite = weapon_descriptor("plasma");
@@ -2948,6 +2967,8 @@ mod tests {
                     opacity: 0.9,
                     rotation: 0.0,
                     tint: [0.2, 0.8, 1.0],
+                    emissive: 2.5,
+                    frame_duration_ms: Some(60.0),
                 },
                 trail: Some(ProjectileTrailVisual {
                     sprite: "sprites/trail.png".to_string(),
@@ -2964,6 +2985,8 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
+                impact_light: None,
             },
         });
         let mut rocket = weapon_descriptor("rocket");
@@ -2976,8 +2999,9 @@ mod tests {
                 body: ProjectileBodyVisual::Model {
                     model: "models/rocket.gltf".to_string(),
                 },
-                // Deliberately shares the first weapon's trail collection: one
-                // renderer upload and the first descriptor's timing wins.
+                // Deliberately shares the first weapon's trail collection with a
+                // conflicting lifetime. Harvest must retain both contracts so
+                // level install can report the conflict instead of first-wins.
                 trail: Some(ProjectileTrailVisual {
                     sprite: "sprites/trail.png".to_string(),
                     rate: 20.0,
@@ -2993,25 +3017,59 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
+                impact_light: None,
             },
         });
 
         let (models, sprites) = projectile_presentation_assets(&[sprite, rocket]);
 
         assert_eq!(models, vec!["models/rocket.gltf"]);
-        assert_eq!(
-            sprites,
-            vec![
-                ProjectileSpriteCollection {
-                    collection: "sprites/trail.png".to_string(),
-                    lifetime: 0.5,
-                },
-                ProjectileSpriteCollection {
-                    collection: "sprites/plasma.png".to_string(),
-                    lifetime: 1.0,
-                },
-            ]
-        );
+        assert_eq!(sprites.len(), 3);
+        let expected = [
+            (
+                "sprites/trail.png",
+                Some(0.5),
+                0.0,
+                None,
+                "plasma.projectile.visual.trail",
+            ),
+            (
+                "sprites/plasma.png",
+                None,
+                2.5,
+                Some(60.0),
+                "plasma.projectile.visual.body",
+            ),
+            (
+                "sprites/trail.png",
+                Some(0.75),
+                0.0,
+                None,
+                "rocket.projectile.visual.trail",
+            ),
+        ];
+        for (actual, (collection, lifetime, emissive, frame_duration_ms, source)) in
+            sprites.iter().zip(expected)
+        {
+            assert_eq!(actual.collection, collection);
+            assert_eq!(actual.source, source);
+            match (actual.lifetime, lifetime) {
+                (Some(actual), Some(expected)) => {
+                    assert!((actual - expected).abs() <= f32::EPSILON)
+                }
+                (None, None) => {}
+                values => panic!("lifetime mismatch: {values:?}"),
+            }
+            assert!((actual.emissive - emissive).abs() <= f32::EPSILON);
+            match (actual.frame_duration_ms, frame_duration_ms) {
+                (Some(actual), Some(expected)) => {
+                    assert!((actual - expected).abs() <= f32::EPSILON)
+                }
+                (None, None) => {}
+                values => panic!("frame duration mismatch: {values:?}"),
+            }
+        }
     }
 
     #[test]

@@ -1260,6 +1260,8 @@ mod tests {
                     spin_rate: 0.0,
                     spin_animation: None,
                 }),
+                light: None,
+                impact_light: None,
             },
         }
     }
@@ -1317,6 +1319,8 @@ mod tests {
                     opacity: 1.0,
                     rotation: 0.0,
                     tint: [1.0; 3],
+                    emissive: 0.0,
+                    frame_duration_ms: None,
                 },
                 Some("sprites/old_trail.png"),
                 20.0,
@@ -1496,6 +1500,8 @@ mod tests {
                 opacity: 1.0,
                 rotation: 0.0,
                 tint: [1.0; 3],
+                emissive: 0.0,
+                frame_duration_ms: None,
             },
             Some("sprites/new_trail.png"),
             24.0,

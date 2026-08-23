@@ -41,6 +41,7 @@ use postretro_net::wire::{
 use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
 };
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
@@ -208,7 +209,7 @@ pub(crate) struct ClientReplication {
     latest_sequence: Option<u32>,
     /// The `server_tick` of the latest accepted snapshot — echoed back in the ack.
     acked_server_tick: u32,
-    /// Per-remote-entity interpolation buffers keyed by `NetworkId` (Task 6). Each
+    /// Per-remote-entity interpolation buffers keyed by `NetworkId`. Each
     /// applied `Transform` payload is recorded here stamped by the snapshot's
     /// `server_tick`; `sample_into_registry` later resolves a presented pose for the
     /// render target tick and writes it through the registry's remote-presentation
@@ -408,6 +409,15 @@ pub(crate) struct LocalWeaponAttachmentUpdate {
     pub(crate) active_weapon_archetype: Option<String>,
 }
 
+/// A projectile-presentation entity retired by a contact despawn tombstone. The
+/// descriptor-aware caller resolves the retained class and spawns local cosmetic
+/// impact work after snapshot apply.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetiredProjectilePresentation {
+    pub(crate) entity_class: String,
+    pub(crate) transform: Transform,
+}
+
 /// The local-pawn baseline an `apply_snapshot` armed this snapshot (M15 Phase 3): the
 /// recipient-local `NetworkId` the host flagged `local_player: true`, the `EntityId` it
 /// mapped to, and the descriptor `entity_class` the host materialized the pawn from
@@ -464,6 +474,8 @@ pub(crate) struct ApplyOutcome {
     /// corresponding [`remote_entities`](Self::remote_entities) entry so descriptor
     /// mesh materialization and attachment replacement remain ordered together.
     pub(crate) local_weapon_attachments: Vec<LocalWeaponAttachmentUpdate>,
+    /// Contact retirements for descriptor-backed projectile presentations.
+    pub(crate) retired_projectile_presentations: Vec<RetiredProjectilePresentation>,
     /// Per-snapshot mover correction magnitudes in metres, surfaced so harnesses
     /// can assert corrections stay bounded and non-accumulating.
     pub(crate) mover_corrections: Vec<MoverCorrection>,
@@ -538,7 +550,7 @@ impl ClientReplication {
     pub(crate) fn despawn_all_mapped(&mut self, registry: &mut EntityRegistry) {
         let network_ids: Vec<NetworkId> = self.map.keys().copied().collect();
         for network_id in network_ids {
-            self.apply_despawn(registry, network_id);
+            let _ = self.apply_despawn(registry, network_id, 0);
         }
     }
 
@@ -771,9 +783,14 @@ impl ClientReplication {
                 EntityRecord::Despawn {
                     network_id,
                     tombstone_id,
+                    reason,
                     ..
                 } => {
-                    self.apply_despawn(registry, NetworkId(*network_id));
+                    if let Some(retired) =
+                        self.apply_despawn(registry, NetworkId(*network_id), *reason)
+                    {
+                        outcome.retired_projectile_presentations.push(retired);
+                    }
                     // A despawn always acks its tombstone: the despawn is idempotent
                     // (unknown/already-gone is a no-op) and the client has, by the
                     // time it returns, reached the despawned state the tombstone
@@ -1250,7 +1267,26 @@ impl ClientReplication {
     /// Despawn a mapped entity and drop its mapping + baseline. Idempotent: an unknown
     /// or already-despawned `NetworkId` is a no-op (the registry `despawn` of a stale
     /// id errors, which we swallow).
-    fn apply_despawn(&mut self, registry: &mut EntityRegistry, network_id: NetworkId) {
+    fn apply_despawn(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        reason: u8,
+    ) -> Option<RetiredProjectilePresentation> {
+        let retired_projectile = self.map.get(&network_id).and_then(|&id| {
+            if reason != super::PROJECTILE_CONTACT_DESPAWN_REASON {
+                return None;
+            }
+            let provenance = registry.get_component::<DescriptorProvenance>(id).ok()?;
+            if provenance.spawn_path != DescriptorSpawnPath::ProjectilePresentation {
+                return None;
+            }
+            let transform = *registry.get_component::<Transform>(id).ok()?;
+            Some(RetiredProjectilePresentation {
+                entity_class: provenance.canonical_name.clone(),
+                transform,
+            })
+        });
         let sibling_wieldables: Vec<EntityId> = self
             .map
             .get(&network_id)
@@ -1272,6 +1308,7 @@ impl ClientReplication {
         // A despawn also clears any pending repair for the entity: there is nothing
         // to repair once it is gone.
         self.pending_repairs.remove(&network_id);
+        retired_projectile
     }
 
     /// Drop every registry-backed cache owned by one network identity. Used by both
@@ -2057,6 +2094,12 @@ impl ClientReplication {
 
     pub(crate) fn mover_history(&self) -> &MoverHistoryBuffer {
         &self.mover_history
+    }
+
+    /// Server tick carried by the latest accepted snapshot. Presentation clocks
+    /// use this until time-sync has enough samples to provide a fractional estimate.
+    pub(crate) fn latest_server_tick(&self) -> Option<u32> {
+        self.latest_sequence.map(|_| self.acked_server_tick)
     }
 
     /// The latest accepted snapshot sequence (tests / diagnostics).

@@ -51,7 +51,9 @@ use postretro_entities::{
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
-pub(crate) use projectile_stage::{PredictedProjectileResolution, advance_predicted};
+pub(crate) use projectile_stage::{
+    PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
+};
 pub(crate) use weapon_stage::{projectile_model_body_rotation, spawn_projectile};
 
 #[derive(Debug, Clone)]
@@ -287,6 +289,8 @@ pub(crate) struct TickEvents {
     /// Locally simulated projectiles that a listen host mirrors for remote observers.
     /// The host's renderer suppresses the mirror and continues to draw this source.
     pub(crate) local_projectile_spawns: Vec<EntityId>,
+    /// Locally simulated projectile contacts that retire listen-host mirror flights.
+    pub(crate) local_projectile_contacts: Vec<ProjectileContactEvent>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
     /// Pawns whose active inventory slot repointed this tick. Presentation drains
     /// this after simulation so the hand socket follows committed ownership, never
@@ -314,6 +318,13 @@ pub(crate) struct TickEvents {
     pub(crate) trigger_fires: Vec<TriggerEvent>,
     #[cfg(test)]
     pub(crate) trigger_command_fires: Vec<TriggerCommandFire>,
+}
+
+/// Advance transient presentation work on a connected client. Connected clients
+/// do not run [`simulate_tick`], so their predicted and observer-materialized
+/// impact lights need an explicit per-frame deferred-effect queue boundary.
+pub(crate) fn advance_client_presentation_effects(registry: &mut EntityRegistry, frame_dt: f32) {
+    crate::impact_effects::tick_deferred_effects(registry, frame_dt);
 }
 
 #[cfg(test)]
@@ -674,7 +685,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
-    projectile_stage::advance(
+    let local_projectile_contacts = projectile_stage::advance(
         &registry,
         collision_world,
         hit_zone_store,
@@ -704,6 +715,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             .projectile_presentation_launches,
         rejected_remote_projectile_fires: remote_weapon_result.rejected_projectile_fires,
         local_projectile_spawns: local_result.projectile_spawns,
+        local_projectile_contacts,
         reload_deliveries,
         repointed_pawns,
         dropped_item_meshes: touch_events.dropped_item_meshes,

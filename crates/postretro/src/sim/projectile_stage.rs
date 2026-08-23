@@ -36,6 +36,7 @@ enum PendingProjectileAction {
 
 enum ProjectileResolution<'a> {
     Impact {
+        projectile: EntityId,
         component: &'a ProjectileComponent,
         impact: &'a WeaponImpact,
     },
@@ -48,6 +49,12 @@ enum ProjectileResolution<'a> {
 pub(crate) enum PredictedProjectileResolution {
     Impact { shot_id: u64, impact: WeaponImpact },
     Expired { shot_id: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProjectileContactEvent {
+    pub(crate) projectile: EntityId,
+    pub(crate) point: Vec3,
 }
 
 struct WorldHit {
@@ -74,7 +81,8 @@ pub(crate) fn advance(
     anim_time: f64,
     dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) {
+) -> Vec<ProjectileContactEvent> {
+    let mut contacts = Vec::new();
     advance_matching(
         registry,
         collision_world,
@@ -83,10 +91,22 @@ pub(crate) fn advance(
         dt,
         |_| true,
         |registry, resolution| {
-            let ProjectileResolution::Impact { component, impact } = resolution else {
+            let ProjectileResolution::Impact {
+                projectile,
+                component,
+                impact,
+            } = resolution
+            else {
                 return;
             };
+            contacts.push(ProjectileContactEvent {
+                projectile,
+                point: impact.point,
+            });
             weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
+            if let Some(config) = component.impact_light.as_ref() {
+                weapon::spawn_projectile_impact_light(registry, impact.point, config);
+            }
 
             let target_is_live = impact.target.is_none_or(|target| {
                 registry
@@ -109,6 +129,7 @@ pub(crate) fn advance(
             }
         },
     );
+    contacts
 }
 
 /// Advance only locally-predicted connected-client projectiles. Their collision
@@ -131,8 +152,13 @@ pub(crate) fn advance_predicted(
         dt,
         |component| component.predicted_shot_id.is_some(),
         |registry, resolution| match resolution {
-            ProjectileResolution::Impact { component, impact } => {
+            ProjectileResolution::Impact {
+                component, impact, ..
+            } => {
                 weapon::spawn_impact_effect_at(registry, impact.point, impact.normal);
+                if let Some(config) = component.impact_light.as_ref() {
+                    weapon::spawn_projectile_impact_light(registry, impact.point, config);
+                }
                 on_resolution(PredictedProjectileResolution::Impact {
                     shot_id: component
                         .predicted_shot_id
@@ -140,7 +166,7 @@ pub(crate) fn advance_predicted(
                     impact: impact.clone(),
                 });
             }
-            ProjectileResolution::Expire { component } => {
+            ProjectileResolution::Expire { component, .. } => {
                 on_resolution(PredictedProjectileResolution::Expired {
                     shot_id: component
                         .predicted_shot_id
@@ -275,6 +301,9 @@ fn advance_matching(
         let travel_time = segment_length / component.speed;
         component.remaining_range = (remaining_range - segment_length).max(0.0);
         component.remaining_lifetime = (remaining_lifetime - travel_time).max(0.0);
+        if component.flipbook_active {
+            component.elapsed_flight_age += travel_time;
+        }
         pending.push(PendingProjectileAction::Update {
             projectile: projectile_id,
             transform: Transform {
@@ -329,6 +358,7 @@ fn advance_matching(
                 on_resolution(
                     &mut registry,
                     ProjectileResolution::Impact {
+                        projectile,
                         component: &component,
                         impact: &impact,
                     },
@@ -409,9 +439,14 @@ mod tests {
     use super::*;
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
+    use postretro_entities::components::deferred_effect::{
+        DeferredEffectComponent, DeferredEffectKind,
+    };
     use postretro_entities::components::health::Hitbox;
+    use postretro_entities::components::light::LightComponent;
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+    use postretro_foundation::ProjectileImpactLight;
 
     fn spawn_target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> EntityId {
         let target = registry.spawn(Transform {
@@ -462,6 +497,9 @@ mod tests {
                     owner_weapon,
                     spawned: true,
                     predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
+                    impact_light: None,
                 },
             )
             .expect("projectile component attaches");
@@ -475,6 +513,38 @@ mod tests {
         advance(registry, &world, &zones, 0.0, dt, &mut ignore_impact);
     }
 
+    fn impact_light() -> ProjectileImpactLight {
+        ProjectileImpactLight {
+            color: [0.4, 0.8, 1.0],
+            intensity: 3.5,
+            radius: 4.0,
+            peak_radius: Some(9.0),
+            fade_ms: 180.0,
+        }
+    }
+
+    fn set_impact_light(
+        registry: &mut EntityRegistry,
+        projectile: EntityId,
+        config: ProjectileImpactLight,
+    ) {
+        let mut component = registry
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component exists")
+            .clone();
+        component.impact_light = Some(config);
+        registry
+            .set_component(projectile, component)
+            .expect("impact configuration updates projectile state");
+    }
+
+    fn impact_lights(registry: &EntityRegistry) -> Vec<EntityId> {
+        registry
+            .iter_with_kind(ComponentKind::Light)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     fn wall_at_z(z: f32) -> CollisionWorld {
         let points = vec![
             Point::new(-1.0, -1.0, z),
@@ -486,6 +556,87 @@ mod tests {
             mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
             isometry: Isometry::identity(),
         }
+    }
+
+    #[test]
+    fn impact_flash_spawns_at_contact_point_expands_and_schedules_despawn() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        set_impact_light(&mut registry.borrow_mut(), projectile, impact_light());
+        let world = wall_at_z(-0.5);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let registry_ref = registry.borrow();
+        assert!(!registry_ref.exists(projectile));
+        let flashes = impact_lights(&registry_ref);
+        assert_eq!(flashes.len(), 1, "only a real contact spawns one flash");
+        let flash = flashes[0];
+        let transform = registry_ref
+            .get_component::<Transform>(flash)
+            .expect("flash has a hit-point transform");
+        let light = registry_ref
+            .get_component::<LightComponent>(flash)
+            .expect("flash carries a point light");
+        assert!(transform.position.distance(Vec3::new(0.0, 0.0, -0.5)) <= 1.0e-6);
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(0.0, 0.0, -0.5)) <= 1.0e-6);
+        assert!(!light.follow_transform);
+        assert!((light.intensity - 3.5).abs() <= f32::EPSILON);
+        assert!((light.falloff_range - 4.0).abs() <= f32::EPSILON);
+        let animation = light.animation.as_ref().expect("flash fades once");
+        for (actual, expected) in animation
+            .brightness
+            .as_deref()
+            .expect("flash authors a brightness fade")
+            .iter()
+            .zip([1.0, 0.0])
+        {
+            assert!((*actual - expected).abs() <= f32::EPSILON);
+        }
+        for (actual, expected) in animation
+            .radius
+            .as_deref()
+            .expect("flash authors its radius curve")
+            .iter()
+            .zip([4.0, 9.0])
+        {
+            assert!((*actual - expected).abs() <= f32::EPSILON);
+        }
+        let deferred = registry_ref
+            .get_component::<DeferredEffectComponent>(flash)
+            .expect("flash gets the ordinary deferred-effect component");
+        assert_eq!(deferred.pending.len(), 1);
+        assert_eq!(deferred.pending[0].kind, DeferredEffectKind::Despawn);
+        assert_eq!(deferred.pending[0].remaining_us, 180_000);
+        drop(registry_ref);
+
+        let mut registry = registry.borrow_mut();
+        crate::impact_effects::tick_deferred_effects(&mut registry, 0.180);
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
+        assert!(
+            !registry.exists(flash),
+            "the completed flash self-despawns through the ordinary deferred path"
+        );
+    }
+
+    #[test]
+    fn travel_bound_expiry_with_impact_light_spawns_no_flash() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 0.5, 0.0, 5.0);
+        set_impact_light(&mut registry.borrow_mut(), projectile, impact_light());
+
+        advance_once(&registry, 1.0);
+        advance_once(&registry, 1.0);
+
+        let registry = registry.borrow();
+        assert!(!registry.exists(projectile));
+        assert!(
+            impact_lights(&registry).is_empty(),
+            "travel-bound expiry keeps the particles-only behavior"
+        );
     }
 
     #[test]
@@ -796,6 +947,110 @@ mod tests {
     }
 
     #[test]
+    fn flipbook_age_advances_after_spawn_pass_for_authoritative_and_predicted_projectiles() {
+        let authoritative_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let authoritative =
+            spawn_projectile(&mut authoritative_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let predicted_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let predicted = spawn_projectile(&mut predicted_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        {
+            let mut component = authoritative_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(authoritative)
+                .expect("authoritative projectile component attaches")
+                .clone();
+            component.flipbook_active = true;
+            authoritative_registry
+                .borrow_mut()
+                .set_component(authoritative, component)
+                .expect("authoritative projectile component updates");
+        }
+        {
+            let mut component = predicted_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(predicted)
+                .expect("predicted projectile component attaches")
+                .clone();
+            component.flipbook_active = true;
+            component.predicted_shot_id = Some(7);
+            predicted_registry
+                .borrow_mut()
+                .set_component(predicted, component)
+                .expect("predicted projectile component updates");
+        }
+
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        advance(
+            &authoritative_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut ignore_impact,
+        );
+        let mut no_predicted_resolution = |_resolution: PredictedProjectileResolution| {};
+        advance_predicted(
+            &predicted_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut no_predicted_resolution,
+        );
+        assert!(
+            authoritative_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(authoritative)
+                .expect("authoritative projectile remains live after its spawn pass")
+                .elapsed_flight_age
+                .abs()
+                <= f32::EPSILON,
+            "the authoritative spawn pass must leave the flipbook on frame zero"
+        );
+        assert!(
+            predicted_registry
+                .borrow()
+                .get_component::<ProjectileComponent>(predicted)
+                .expect("predicted projectile remains live after its spawn pass")
+                .elapsed_flight_age
+                .abs()
+                <= f32::EPSILON,
+            "the predicted spawn pass must leave the flipbook on frame zero"
+        );
+
+        advance(
+            &authoritative_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut ignore_impact,
+        );
+        advance_predicted(
+            &predicted_registry,
+            &world,
+            &zones,
+            0.0,
+            0.25,
+            &mut no_predicted_resolution,
+        );
+        let authoritative_age = authoritative_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(authoritative)
+            .expect("authoritative projectile remains live after its travel pass")
+            .elapsed_flight_age;
+        let predicted_age = predicted_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(predicted)
+            .expect("predicted projectile remains live after its travel pass")
+            .elapsed_flight_age;
+        assert!((authoritative_age - 0.25).abs() <= f32::EPSILON);
+        assert!((predicted_age - 0.25).abs() <= f32::EPSILON);
+    }
+
+    #[test]
     fn predicted_projectile_declares_later_impact_without_mutating_target_health() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let target = spawn_target(
@@ -810,6 +1065,7 @@ mod tests {
             .expect("projectile component attaches")
             .clone();
         component.predicted_shot_id = Some(0);
+        component.impact_light = Some(impact_light());
         registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -848,6 +1104,11 @@ mod tests {
         assert!(
             (current - 20.0).abs() <= f32::EPSILON,
             "connected-client prediction declares the hit; it never writes enemy Health"
+        );
+        assert_eq!(
+            impact_lights(&registry.borrow()).len(),
+            1,
+            "the predicted contact still produces its local presentation flash"
         );
     }
 

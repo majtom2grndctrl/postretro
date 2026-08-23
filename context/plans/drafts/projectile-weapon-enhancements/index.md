@@ -774,7 +774,7 @@ const plasmaRifle = defineEntity({
         visual: {
           body: {
             kind: "sprite",
-            sprite: "sprites/plasma_bolt",   // collection dir → multi-frame flipbook
+            sprite: "plasma_bolt",           // bare collection name → textures/plasma_bolt/plasma_bolt_NN.png (60-frame flipbook, placed)
             size: 0.4,
             emissive: 3.0,                    // HDR full-bright; blooms above threshold
             frameDurationMs: 60,              // per-frame hold; loops while travelling

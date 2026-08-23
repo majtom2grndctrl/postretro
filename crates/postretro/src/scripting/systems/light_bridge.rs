@@ -84,9 +84,9 @@ pub(crate) struct LightBridge {
     /// tombstones until a later spawn reuses their slot.
     entity_ids: Vec<EntityId>,
     authored_light_count: usize,
-    /// Reclaimed runtime tombstone indices available for reuse. Keeping the
-    /// slots themselves preserves their one-frame forward/compose tombstones
-    /// and the retained GPU packing high-water mark.
+    /// Reclaimed runtime tombstone indices available for reuse. Until reuse,
+    /// their retained slots preserve forward tombstones on every dirty repack
+    /// and the GPU packing high-water mark. Runtime lights have no compose slot.
     free_slots: Vec<usize>,
     /// Dirty-tracking snapshots. `None` for an entry means the slot has never
     /// been snapshotted — treated as unconditionally dirty on first visit so
@@ -326,11 +326,11 @@ impl LightBridge {
     /// that call is cheap on a no-op tick, since the scan below early-returns
     /// without allocating once nothing new appears.
     ///
-    /// Any `LightComponent` entity not already tracked in `self.entity_ids` is
-    /// appended to the bridge's parallel arrays so its component participates
-    /// in the per-frame dirty/pack loop. Enrollment reads spawn-time origin and
-    /// influence data but does not mutate the component. The next `update`
-    /// produces the initial GPU upload for these new entries.
+    /// Any `LightComponent` entity not already tracked in `self.entity_ids`
+    /// reuses a reclaimed runtime slot, or extends the parallel arrays when
+    /// needed, so its component participates in the per-frame dirty/pack loop.
+    /// Enrollment reads spawn-time origin and influence data but does not mutate
+    /// the component. The next `update` produces its initial GPU upload.
     ///
     /// Descriptor-spawned lights are always dynamic
     /// (`data_archetype.rs` forces `is_dynamic = true` regardless of source);
@@ -431,7 +431,8 @@ impl LightBridge {
         }
 
         // Walk stable tracked slots rather than the registry's full iterator.
-        // The authored prefix never moves; runtime lights only append.
+        // The authored prefix never moves; runtime lights may reuse tombstones
+        // in place without changing slot indices.
         // Settled animations are collected and written back after the loop to
         // avoid aliasing the registry borrow.
         let mut settled: Vec<(EntityId, LightComponent)> = Vec::new();
@@ -2168,6 +2169,12 @@ mod tests {
 
             let live = bridge.update(&mut registry, cycle as f32 + 0.1).unwrap();
             assert_eq!(live.lights_bytes.len(), CONCURRENT_LIGHTS * GPU_LIGHT_SIZE);
+            assert!(
+                live.lights_bytes
+                    .chunks_exact(GPU_LIGHT_SIZE)
+                    .all(|record| record.iter().any(|&byte| byte != 0)),
+                "every live runtime light must produce a non-zero forward record"
+            );
 
             for id in ids {
                 registry.despawn(id).unwrap();
@@ -2222,19 +2229,39 @@ mod tests {
         let _ = bridge.update(&mut registry, 0.0);
 
         let id = spawn_runtime_light(&mut registry, runtime_component([1.0, 2.0, 3.0], 9.0, None));
+        let survivor =
+            spawn_runtime_light(&mut registry, runtime_component([4.0, 5.0, 6.0], 7.0, None));
         bridge.absorb_dynamic_lights(&registry);
         let _ = bridge.update(&mut registry, 0.1);
 
         registry.despawn(id).unwrap();
         let disappeared = bridge.update(&mut registry, 0.2).unwrap();
-        assert_eq!(disappeared.lights_bytes, vec![0; GPU_LIGHT_SIZE]);
         assert_eq!(
-            disappeared.descriptor_bytes,
-            vec![0; ANIMATION_DESCRIPTOR_SIZE]
+            &disappeared.lights_bytes[..GPU_LIGHT_SIZE],
+            &[0; GPU_LIGHT_SIZE]
         );
-        assert_eq!(disappeared.effective_brightness, vec![0.0]);
+        assert_eq!(
+            &disappeared.descriptor_bytes[..ANIMATION_DESCRIPTOR_SIZE],
+            &[0; ANIMATION_DESCRIPTOR_SIZE]
+        );
+        assert_eq!(disappeared.effective_brightness, vec![0.0, 1.0]);
         assert!(bridge.shape[bridge.authored_light_count].is_dynamic);
         assert!(bridge.shape[bridge.authored_light_count].reclaimed);
+
+        let mut survivor_component = registry
+            .get_component::<LightComponent>(survivor)
+            .unwrap()
+            .clone();
+        survivor_component.intensity = 12.0;
+        registry
+            .set_component(survivor, survivor_component)
+            .unwrap();
+        let repacked = bridge.update(&mut registry, 0.3).unwrap();
+        assert!(repacked.has_dirty_data);
+        assert_eq!(
+            &repacked.lights_bytes[..GPU_LIGHT_SIZE],
+            &[0; GPU_LIGHT_SIZE]
+        );
     }
 
     #[test]
@@ -2484,6 +2511,16 @@ mod tests {
         assert!(bridge.free_slots.is_empty());
         assert_eq!(bridge.entity_ids.len(), prior_len + 2);
         assert_eq!(live_runtime_count(&bridge), 5);
+        let update = bridge.update(&mut registry, 0.3).unwrap();
+        assert!(update.has_dirty_data);
+        assert_eq!(update.lights_bytes.len(), 5 * GPU_LIGHT_SIZE);
+        assert!(
+            update
+                .lights_bytes
+                .chunks_exact(GPU_LIGHT_SIZE)
+                .all(|record| record.iter().any(|&byte| byte != 0)),
+            "batched runtime enrollment must upload every live forward record"
+        );
         for id in second_batch {
             assert!(bridge.entity_ids.contains(&id));
         }
@@ -2585,5 +2622,24 @@ mod tests {
         assert!(bridge.free_slots.is_empty());
         assert_eq!(bridge.authored_light_count, 1);
         assert_eq!(bridge.entity_ids.len(), 1);
+
+        let authored = bridge.update(&mut replacement_registry, 0.5).unwrap();
+        let authored_forward = authored.lights_bytes.clone();
+        let final_runtime = spawn_runtime_light(
+            &mut replacement_registry,
+            runtime_component([3.0, 0.0, 0.0], 6.0, None),
+        );
+        bridge.absorb_dynamic_lights(&replacement_registry);
+        let with_runtime = bridge.update(&mut replacement_registry, 0.6).unwrap();
+        let runtime_slot = bridge
+            .entity_ids
+            .iter()
+            .position(|&id| id == final_runtime)
+            .expect("final runtime light is enrolled");
+        assert!(runtime_slot >= bridge.authored_light_count);
+        assert_eq!(
+            &with_runtime.lights_bytes[..bridge.authored_light_count * GPU_LIGHT_SIZE],
+            authored_forward.as_slice()
+        );
     }
 }

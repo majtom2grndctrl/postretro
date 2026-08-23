@@ -233,6 +233,10 @@ pub(super) struct EnemyOutcome {
     /// resolution needs nothing but the outcomes.
     pub(super) position: Vec3,
     pub(super) target: Option<TargetPawn>,
+    /// Shared Task-1 LOS endpoints, carried as data so combat positioning stays
+    /// registry-decoupled and cannot drift from the fire-gate derivation.
+    pub(super) enemy_eye_offset: Vec3,
+    pub(super) target_aim: Option<Vec3>,
     pub(super) brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the selected state is ENGAGED with the target — it chases it
@@ -257,8 +261,8 @@ pub(super) struct EnemyOutcome {
     attack_damage: Option<f32>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
-    pub(super) prior_engagement_radius: f32,
-    pub(super) engagement_radius: f32,
+    pub(super) prior_standoff_distance: f32,
+    pub(super) standoff_distance: f32,
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
@@ -572,6 +576,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // already-debounced perception result. Keep the fire gate independent
         // of authoring below; it still calls `perception::fire_gate` directly.
         let target_visible = target_perception.is_some_and(|perception| perception.visible);
+        let enemy_eye_offset = target_perception
+            .map(|perception| perception.enemy_eye - snap.position)
+            .unwrap_or(Vec3::ZERO);
+        let target_aim = target_perception.map(|perception| perception.target_aim);
 
         let selected_target = target.map(|target| {
             (
@@ -605,7 +613,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             }
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
-        let mut prior_engagement_radius = brain.graph.engagement_radius();
+        let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
         let (transitioned, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
@@ -671,13 +679,13 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
-            prior_engagement_radius = programs
+            prior_standoff_distance = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     action_for_path(bound, scope, &brain)
-                        .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
+                        .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
                 })
                 .flatten()
-                .unwrap_or_else(|| brain.graph.engagement_radius());
+                .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
             let transitioned = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     select_transition_path(bound, scope, &mut brain)
@@ -775,24 +783,26 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         } else {
             None
         };
-        let engagement_radius = programs
+        let standoff_distance = programs
             .with_entry_scope(snap.id, |bound, scope| {
                 action_for_path(bound, scope, &brain)
-                    .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
+                    .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
             })
             .flatten()
-            .unwrap_or_else(|| brain.graph.engagement_radius());
+            .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
         outcomes.push(EnemyOutcome {
             id: snap.id,
             position: snap.position,
             target,
+            enemy_eye_offset,
+            target_aim,
             prior_acquired_target,
             graph_reseated,
             state_changed,
             attacked,
             attack_damage,
-            prior_engagement_radius,
-            engagement_radius,
+            prior_standoff_distance,
+            standoff_distance,
             on_enter,
             steering,
             engaged,

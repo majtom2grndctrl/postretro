@@ -485,8 +485,10 @@ export type AttackParams = {
   maxRange: number,
   --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
   cooldownMs: number,
-  --- Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.
+  --- Optional action-specific engagement radius. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.
   engagementRadius: number?,
+  --- Optional combat-slot standoff for a state firing this attack. Must be finite and > 0; defaults to that action's resolved engagement radius.
+  standoffDistance: number?,
 }
 
 --- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.

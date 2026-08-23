@@ -146,6 +146,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 max_range: 2.0,
                 cooldown_ms: 1200.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: None,

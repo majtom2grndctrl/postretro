@@ -513,6 +513,7 @@ mod statechart_tests {
                     max_range: 2.0,
                     cooldown_ms: 100.0,
                     engagement_radius: None,
+                    standoff_distance: None,
                 },
             )]),
             engagement_radius: None,

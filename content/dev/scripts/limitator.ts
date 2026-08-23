@@ -18,12 +18,26 @@ import { brain, defineEntity } from "postretro";
 // Ranged-combat tuning. Unlike the melee `reference_enemy`, the limitator wants
 // to hold a firing standoff rather than close to contact.
 const DETECTION_RANGE = 50;
-// Preferred firing distance: inside this the move layer releases movement and
-// the enemy plants to shoot; outside it the fallback chases the target back in.
-// Kept well below DETECTION_RANGE so there is a wide band (STANDOFF..DETECTION)
-// in which he actively runs the target down — otherwise, with a standoff near
-// the detection radius, he engages already-in-range and never visibly chases.
-const STANDOFF_RANGE = 8;
+// Firing threshold: at or inside this distance the move layer releases movement
+// and the enemy plants to shoot. Kept well below DETECTION_RANGE so there is a
+// wide band (FIRE..DETECTION) in which he actively runs the target down —
+// otherwise, engaging already-in-range, he never visibly chases.
+const FIRE_RANGE = 8;
+// Break-off distance (hysteresis): once firing, only re-close after the target
+// pulls past this. The FIRE..BREAK band keeps a target dancing on the boundary
+// from endlessly resetting the aim timer.
+const BREAK_RANGE = 9;
+// Combat-positioning slot ring — held strictly INSIDE FIRE_RANGE. The E10
+// positioning system seats the agent at ~engagementRadius from the target and
+// the steering hard-stop leaves it a fraction beyond that; if the ring equalled
+// the fire guard the agent would settle just outside `le(FIRE_RANGE)` and never
+// fire (the standoff deadlock). A ring below the guard guarantees he crosses in.
+const ENGAGEMENT_RADIUS = 6;
+// Leash: abandon the chase and walk home once dragged this far from the spawn
+// anchor, then stand down. Set above DETECTION_RANGE so a target acquired near
+// the detection edge isn't leashed the instant he starts closing.
+const LEASH_RANGE = 70;
+const RETURN_ARRIVAL_EPSILON = 1;
 
 // Firing rhythm: alternate aim -> fire. Each entry into `fire` edge-fires one
 // shot (gated by the attack cooldown); AIM_MS + FIRE_MS sits just above the
@@ -41,10 +55,12 @@ export const limitatorEntity = defineEntity({
     health: {
       max: 100,
       // ~1.82 m tall (model baked at scale 0.68); hitbox spans feet to head,
-      // centered on the torso.
+      // centered on the torso. The head primitive tops out at y≈1.82, so the
+      // box half-height/offset are 0.91 (not the body primitive's 0.81 max) —
+      // otherwise upper-head shots above y≈1.62 miss the health hitbox.
       hitbox: {
-        halfExtents: [0.27, 0.81, 0.27],
-        offset: [0, 0.81, 0],
+        halfExtents: [0.27, 0.91, 0.27],
+        offset: [0, 0.91, 0],
       },
       zoneMultipliers: {
         head: 2.5,
@@ -117,52 +133,60 @@ export const limitatorEntity = defineEntity({
       attacks: {
         // Hitscan-style ranged shot: long reach, held at a standoff. Cooldown
         // sits just under AIM_MS + FIRE_MS so each fire-state entry lands.
+        // maxRange only needs to cover the fire band (a shot can only be issued
+        // from the `fire` state, entered inside FIRE_RANGE and held to
+        // BREAK_RANGE); a small margin past BREAK_RANGE is defense in depth.
         shoot: {
           damage: 10,
-          maxRange: DETECTION_RANGE,
+          maxRange: BREAK_RANGE + 3,
           cooldownMs: 750,
-          engagementRadius: STANDOFF_RANGE,
+          engagementRadius: ENGAGEMENT_RADIUS,
         },
       },
-      engagementRadius: STANDOFF_RANGE,
+      engagementRadius: ENGAGEMENT_RADIUS,
       activities: {
         idle: { animation: "idle", motion: "hold" },
         engage: {
           animation: "run",
           layers: {
-            // Hold the firing line once inside the standoff; otherwise run the
-            // target back into range.
+            // Plant on the firing line once inside FIRE_RANGE; otherwise run the
+            // target back into range. The hold guard (FIRE_RANGE) sits above the
+            // slot ring (ENGAGEMENT_RADIUS) so he settles comfortably inside the
+            // fire threshold rather than deadlocking just outside it.
             move: [
-              { when: brain.targetDistance.le(STANDOFF_RANGE), motion: "hold" },
+              { when: brain.targetDistance.le(FIRE_RANGE), motion: "hold" },
               "chaseTarget",
             ],
             offense: {
               initial: "close",
               activities: {
-                // Run in until within the standoff, then alternate aim/fire so
+                // Run in until within FIRE_RANGE, then alternate aim/fire so
                 // each fire entry edge-fires the shot under its cooldown.
                 close: { animation: "run" },
                 aim: { animation: "idle_aiming" },
                 fire: { animation: "shoot", action: { attack: "shoot" } },
               },
               transitions: {
-                // Any state drops back to `close` (chase) the moment the target
-                // leaves the standoff, so he re-closes instead of firing at air.
+                // Enter the firing cycle inside FIRE_RANGE; only drop back to
+                // `close` once the target pulls past BREAK_RANGE, so a target
+                // hovering at the threshold keeps him firing instead of churning.
                 close: [
-                  { to: "aim", when: brain.targetDistance.le(STANDOFF_RANGE) },
+                  { to: "aim", when: brain.targetDistance.le(FIRE_RANGE) },
                 ],
                 aim: [
-                  { to: "close", when: brain.targetDistance.gt(STANDOFF_RANGE) },
+                  { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                   { to: "fire", when: brain.timeInActivityMs.ge(AIM_MS) },
                 ],
                 fire: [
-                  { to: "close", when: brain.targetDistance.gt(STANDOFF_RANGE) },
+                  { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                   { to: "aim", when: brain.timeInActivityMs.ge(FIRE_MS) },
                 ],
               },
             },
           },
         },
+        // Leashed: walk back to the spawn anchor after being dragged too far.
+        retreat: { animation: "run", motion: "moveToAnchor" },
       },
       transitions: {
         "*": [
@@ -176,6 +200,13 @@ export const limitatorEntity = defineEntity({
               brain.targetDistance.le(DETECTION_RANGE),
             ),
           },
+        ],
+        // Give up the chase once dragged past the leash; stand down at home.
+        engage: [
+          { to: "retreat", when: brain.distanceFromAnchor.gt(LEASH_RANGE) },
+        ],
+        retreat: [
+          { to: "idle", when: brain.distanceFromAnchor.le(RETURN_ARRIVAL_EPSILON) },
         ],
       },
     },

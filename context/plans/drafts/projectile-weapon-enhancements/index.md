@@ -208,14 +208,20 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   `POSTRETRO_BLOOM=0` the halo is gone but the bolt is still full-bright. A sprite
   body with emissive 0 (or unset) is **byte-identical** to the current billboard
   output, and the emissive term is not gated by the dev-tools `LightTermMask`.
+  (Note: 'renders full-bright / blooms' is a visual/review gate; 'byte-identical'
+  is a draw-param assertion — `params.w == 0`, adding-0.0 is exact — not a
+  rendered-pixel compare; 'ungated by `LightTermMask`' is a shader-review/grep
+  gate.)
 - [ ] A model-body projectile is unaffected by emissive: `emissive` is a field of
   the `ProjectileBodyVisual::Sprite` variant, so a `kind: "model"` body carries
   none — the model path renders exactly as today and logs no error.
-- [ ] A projectile weapon authored with a multi-frame sprite body and a per-frame
-  duration cycles through its frames while travelling (observable: frame index
-  advances with flight time and wraps), at the authored cadence, independent of
-  the projectile's travel lifetime/range. A single-frame sprite body (or one with
-  no cadence authored) shows a static frame and is byte-identical to current.
+- [ ] A projectile weapon authored with a multi-frame sprite body **and a
+  per-frame duration** cycles through its frames while travelling (observable:
+  the packed instance age advances with flight time and the frame index wraps),
+  at the authored cadence, independent of the projectile's travel lifetime/range.
+  A body with **no cadence authored** — a single-PNG body OR a multi-frame
+  collection dir — packs age `0.0` and shows a static frame: the packed instance
+  is byte-identical to current.
 - [ ] The flipbook animates identically on the local (SP/host) body, the firing
   client's predicted body, and the remote-observer presentation body — none is
   pinned to frame 0.
@@ -231,7 +237,9 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   reclaimed on despawn by the prerequisite; when more projectile lights are live
   than the reserve holds, the bridge
   warns once and the surplus lights simply do not render (no crash, no corruption
-  of the authored/other dynamic lights).
+  of the authored/other dynamic lights). (`casts_entity_shadows` is not a
+  `LightComponent` field — it is forced `false` in `component_to_map_light`, so
+  assert it through the map-light conversion.)
 - [ ] A light carrying a `LightAnimation` **radius** curve animates its lit area:
   the bridge evaluates the curve each frame and the light's effective falloff
   range **and** its influence-volume cull radius both track the current value (so
@@ -254,7 +262,9 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   presentation projectile) and to the firing client (on its predicted projectile);
   the firing client sees exactly one moving light for its own shot (no doubled
   presentation copy). No new wire message or field is added and no version constant
-  is bumped.
+  is bumped. (Component/enrollment-level assertions; 'sees'/rendered is a visual
+  gate. 'No new wire message/field' is a review/grep gate; the version-constant
+  check is a runtime assertion on the constant.)
 - [ ] Author surface: an out-of-range emissive strength, an invalid flipbook
   cadence, an out-of-range/invalid travel `light`, or an invalid `impactLight`
   (bad color/intensity/radius/peak-radius/fade) is rejected at descriptor
@@ -273,7 +283,8 @@ impact light), the bridge flag, the radius channel, and the transient-despawn.
   when a peak radius is authored, and self-despawns after its fade (slot reclaimed
   by the prerequisite); a connected-client projectile's emissive/flipbook/travel-light/impact-flash
   are present on the predicted and remote paths; no new `unsafe` (grep gate); no
-  authority version constant changed.
+  authority version constant changed (both are grep/review gates, not runtime
+  behavior tests).
 
 ## Tasks
 
@@ -295,7 +306,10 @@ FGD KVP. **Registration:** the emissive strength is a property of the sprite
 `crates/postretro/src/startup/lifecycle.rs`, which today yields
 `{ collection, lifetime }`) into
 `SmokePass::register_collection`
-(`crates/renderer/src/render/smoke.rs`) and pack it into the free
+(`crates/renderer/src/render/smoke.rs`) (threaded through the
+`renderer.register_smoke_collection(collection, frames, spec_intensity,
+lifetime)` wrapper and `ProjectileSpriteCollection`, which both gain the
+emissive field) and pack it into the free
 `SpriteDrawParams.params.w` slot via `build_draw_params` (currently
 `(frame_count, spec_intensity, lifetime, pad)`), keeping the 16-byte size.
 Because emissive is per-collection (keyed by sprite name), all live instances of
@@ -344,10 +358,18 @@ behavior). Validate it in `validate_projectile_descriptor` (field-named error).
 (`crates/entities/src/components/projectile.rs`) advanced in
 `crates/postretro/src/sim/projectile_stage.rs` (`advance` for host/SP; the client
 path `advance_predicted` reuses the same advance body, so it advances there too),
-and pack it in place of the hard-coded `0.0` in
-`crates/postretro/src/scripting/systems/particle_render.rs::collect` for **both**
-the `ComponentKind::Projectile` arm and the `ProjectilePresentation` arm (the
-presentation body must animate for remote peers — it packs age 0.0 today). The
+and pack it **only when the descriptor authored a flipbook cadence**
+(`frameDurationMs`); when no cadence is
+authored, pack `0.0` as today (byte-identical, static frame 0 — regardless of
+frame_count, so a single-PNG body AND a multi-frame collection-dir body with no
+cadence both stay static). Carry a flipbook-active flag (or the `Option`
+cadence) on `ProjectileComponent`, set at `spawn_projectile` from
+`body.frameDurationMs.is_some()`, so both the advance and the collector's pack —
+in `crates/postretro/src/scripting/systems/particle_render.rs::collect`, for
+**both** the `ComponentKind::Projectile` arm and the `ProjectilePresentation`
+arm — know whether to use the elapsed age or `0.0`. Apply the same gate to the
+presentation arm (it packs `0.0` unless the descriptor — resolved via
+`entity_class` — has a cadence). The
 presentation projectile carries **no spawn stamp today**
 (`projectile_presentation.rs::attach_projectile_visual_components` /
 `materialize_armed_remote_projectile` attach only Transform + provenance + visual
@@ -360,11 +382,17 @@ fixed-tick basis and spawn-tick offset** the local `ProjectileComponent` age use
 so the frame index matches across local/predicted/presentation (AC 4's
 'identically'). This is required new state, not a confirm-only step. No
 replicated field. **Registration:** register the projectile sprite
-collection with the frames from the collection-dir source and set the
-per-collection draw-param `lifetime` (the flipbook loop period) to
-`per_frame_ms/1000 × frame_count` (so `frame_duration = lifetime / frame_count`
-equals the authored per-frame duration and the loop wraps via `% frame_count`).
-This repurposes the currently-dead projectile `lifetime` draw-param. **SDK +
+collection with the frames from the collection-dir source; **only when a
+cadence is authored**, set the per-collection draw-param `lifetime` (the
+flipbook loop period) to `per_frame_ms/1000 × frame_count` (so
+`frame_duration = lifetime / frame_count` equals the authored per-frame
+duration and the loop wraps via `% frame_count`) — with no cadence, leave
+today's dead `1.0` (age is packed `0.0`, so the value is inert). This
+repurposes the currently-dead projectile `lifetime` draw-param. The seam is the
+same one Task 1 threads: `projectile_presentation_assets` →
+`ProjectileSpriteCollection` (extend it with the cadence) → the `lifecycle.rs`
+loop → `register_smoke_collection`; `frame_count` comes from
+`load_sprite_frames`/`stitch_frames_to_strip` in that loop. **SDK +
 reference:** typedef the cadence field (TS + Luau) and make the reference plasma
 bolt a multi-frame animated sprite. AC: a multi-frame body animates at the
 authored cadence on local, predicted, and remote bodies, independent of travel
@@ -395,7 +423,11 @@ from the pose that MATCHES ITS BODY's render path: a **sprite** body from the
 from `interpolated_transform(id, alpha)` (the value `mesh_render` packs at the
 frame alpha) — the interpolated read is correct ONLY for a model body; a sprite
 body must use the raw `Transform` or the light trails the un-interpolated
-billboard. `interpolated_transform(id, alpha)` already exists on `EntityRegistry`
+billboard. The bridge selects raw-vs-interpolated per light by probing the
+projectile entity's body component — `has_component_kind(id, SpriteVisual)` →
+raw `Transform`, `has_component_kind(id, MeshComponent)` →
+`interpolated_transform` (new component-kind probes on a bridge that today
+knows only lights). `interpolated_transform(id, alpha)` already exists on `EntityRegistry`
 (which `update` already holds `&mut` to), and `frame_result.alpha` is already in
 scope at the `main.rs` bridge call site, so the only new wiring is adding an
 `alpha` param to `update` and passing it. The genuinely-new work: the per-id loop
@@ -404,7 +436,8 @@ pose read per follow light plus a cached-pose comparison that sets `self.dirty` 
 movement, and (b) two overrides in the pack loop — the packed **position** (today
 `cached_origins_f64[idx]` via `component_to_map_light`) AND the influence **center**
 (today `cached_influences[idx]`, seeded once at enrollment via
-`component_to_influence(component.origin)`) must both come from the body-matched
+`component_to_influence(&LightComponent)` (it reads `.origin` internally)) must
+both come from the body-matched
 pose, not the caches. Non-follow lights are unchanged (they still read
 `component.origin`).
 **Cleanup:** the light despawns with the projectile — the projectile entity's
@@ -457,9 +490,12 @@ with the current radius **before** `pack_light`, AND override the pushed influen
 radius with the current radius (not the `cached_influences[idx]` clone). Both must
 track the animated value so the influence cull radius grows with the lit radius
 and a growing light is never wrongly culled as it expands. Because packing is
-dirty-gated, a light with an **active** radius curve must mark the bridge dirty each
-frame (reusing the per-frame re-pack Task 3 introduces for follow-Transform lights;
-no light re-packs every frame today), so the range/influence re-pack while it
+dirty-gated, a light with an **active** radius curve must mark the bridge dirty
+each frame while the radius curve is active (`animation.radius.is_some()` and
+not yet settled) — the impact flash is stationary (`follow_transform: false`),
+so it does NOT get Task 3's movement-driven dirty; the active-radius dirty
+trigger is its own mechanism (no light re-packs every frame today;
+brightness/color animate GPU-side), so the range/influence re-pack while it
 animates; when the curve is `None` nothing
 changes (static range, byte-identical). **No shader change:** the falloff shaders
 read `GpuLight` range as today; only the packed value moves. Extend the
@@ -487,11 +523,12 @@ fade — a shockwave; when absent it is a static pop), and a fade duration (ms, 
 Validate in `validate_projectile_descriptor`: intensity finite ≥ 0, radius
 finite > 0, peakRadius (if present) finite ≥ radius, fade finite > 0, color
 finite; field-named errors. Independent of the travel `light` — a weapon may author
-either, both, or neither. Add no FGD KVP. **Spawn at contact:** in the projectile
-stage's impact branch (`crates/postretro/src/sim/projectile_stage.rs`, where a real
-contact already calls `spawn_impact_effect_at` before despawning the projectile —
-**only** on a real contact, never on travel-bound expiry), spawn a **stationary**
-light entity at the hit `point`. CRITICAL: a non-follow bridge light reads its
+either, both, or neither. Add no FGD KVP. **Spawn at contact:** in the projectile stage's impact
+branches (`crates/postretro/src/sim/projectile_stage.rs`) — **both** `advance`
+(host/SP) and `advance_predicted` (client) call `spawn_impact_effect_at` on a
+real contact before despawning the projectile, **only** on a real contact,
+never on travel-bound expiry — spawn a **stationary** light entity at the hit
+`point`. CRITICAL: a non-follow bridge light reads its
 position from `LightComponent.origin`, NOT the entity `Transform` — so set
 `LightComponent.origin = point` (a bare `Transform` at `point` would render the
 flash at the world origin). The component is `light_type = Point`,
@@ -509,6 +546,11 @@ gone), so carry the resolved `ProjectileImpactLight` config **on
 `launch.descriptor.visual` is in scope; the impact branch reads it from there.
 Remove the entity after the fade with the existing
 `DeferredEffect` despawn (schedule a `DeferredEffectKind::Despawn` at `fade` ms).
+Read `visual.impact_light` (and Task 3's `visual.light`) for the
+`ProjectileComponent` config **before** the `match launch.descriptor.visual.body`
+moves the body (or via a borrow). Use the ready-made
+`impact_effects::despawn(registry, id, Some(fade_ms))` helper for the timed
+despawn.
 Ordering (grounded): `tick_deferred_effects` runs at the TOP of the tick, so a
 despawn scheduled during the impact branch starts counting next tick and fires
 ~1 tick AFTER the `play_count` settle — the settle wins. Because the settled
@@ -525,9 +567,14 @@ flash spawns at the presentation projectile's despawn point — the site is
 which today carries only kinematics in `PresentationFlight` (no
 descriptor/impact-light); thread the `impact_light` config into
 `PresentationFlight` (or re-resolve it via `descriptor_class`) so that site can
-spawn the presentation flash. This is an approximation of the true hit location
-(the presentation projectile is deterministic straight-line), presentation only,
-no new wire field. **SDK + reference:**
+spawn the presentation flash. The presentation despawn
+(`projectile_presentation.rs::advance`) fires on shot-retire OR straight-line
+completion and does **not** carry the authority's contact-vs-expiry outcome
+(`PresentationFlight` has no such signal), so the remote flash is **not** gated
+on contact — it spawns on every remote shot resolution. This is the accepted
+presentation approximation — also true of the hit location itself (the
+presentation projectile is deterministic straight-line) — presentation only, no
+new wire field; do not hunt for a contact signal that isn't replicated. **SDK + reference:**
 typedef the `impactLight` union (TS + Luau, incl. the optional peak radius) and
 author both reference weapons to flash on impact — the plasma bolt a modest static
 blue-white pop; the rocket a larger **expanding** warm shockwave (peak radius > start,
@@ -543,11 +590,12 @@ capabilities deterministically, and finalize the dev-mod reference weapons.
 **Emissive:** assert emissive 0 packs a draw-param byte-identical to today
 (regression) and emissive > 0 packs the authored strength into `params.w`; assert
 the emissive term is not gated by the light-term mask (the default mask has bit 7
-clear, so a gated term would be off by default). **Flipbook:** assert a single-frame body packs a static
-frame (byte-identical) and that a travelling body's packed age advances across
-ticks (so the shader's frame index advances) on the local, predicted, and
-presentation collector arms — the presentation arm is the regression that used to
-pin age 0.0. **Travel light:** assert a projectile with a `light` attaches a
+clear, so a gated term would be off by default). **Flipbook:** assert a
+**no-cadence** body (single-PNG **and** a multi-frame collection dir) packs age
+`0.0` — byte-identical at the packed-instance level; assert a **cadence**
+body's packed age advances across ticks (frame index advances) on the local,
+predicted, and presentation collector arms — the presentation arm is the
+regression that used to pin age 0.0. **Travel light:** assert a projectile with a `light` attaches a
 `follow_transform` `LightComponent` at spawn; that the light bridge packs its
 position from its body's render pose (step the projectile, assert the packed light
 position moved to match the body — raw `Transform` for a sprite body, interpolated
@@ -582,7 +630,10 @@ predicted and presentation paths and the firer sees no doubled light; assert no
 authority version constant changed and no new `unsafe` (grep gate). Finalize the
 reference weapons (plasma bolt: emissive + flipbook + travel light + static impact
 pop; rocket: model + trail + travel light + expanding impact shockwave) and update
-the weapon-authoring reference docs to cover the new fields. AC: the harness
+the weapon-authoring reference docs to cover the new fields (the dev-mod
+reference weapons live in the dev mod's weapon descriptors — name the concrete
+path when editing; Tasks 2, 3, and 5 each touch the same reference plasma
+bolt). AC: the harness
 exercises each listed behavior deterministically; references are authored and placed
 to fire on the dev map.
 
@@ -597,7 +648,9 @@ seams on top of Task 1. Task 2 touches `particle_render.rs`, `projectile_stage.r
 `ProjectileComponent`, and the collection cadence; Task 3 touches `light_bridge.rs`,
 `spawn_projectile`, `remote_materialize.rs`, and `LightComponent`. Both add
 disjoint fields to `combat.rs` and the SDK typedefs (additive; coordinate the
-shared-file edits). Neither touches the other's stage code.
+shared-file edits). Neither touches the other's stage code. Task 2 and Task 3
+also both edit the **same dev-mod reference weapon descriptor** — coordinate
+that file alongside `combat.rs` and the SDK typedefs.
 **Phase 3 (sequential):** Task 4 (radius-animation channel) — extends the light
 bridge Task 3 just touched (both edit `light_bridge.rs` + `LightComponent`), so it
 follows Task 3 rather than racing it on those files. Engine-floor; its first
@@ -644,7 +697,7 @@ constant changes on the authority path.
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | **Emissive-off is byte-identical** to current billboard output (default strength 0, additive term contributes zero) | Task 1 | a non-zero default; folding emissive into the existing `× lighting` multiply instead of an additive term | AC 1; Task 6 emissive-0 regression |
-| **Single-frame flipbook is byte-identical** to current (frame 0), and advancing age never changes a `frame_count == 1` body | Task 2 | packing a non-zero age changing a single-frame body; dividing by a zero frame count/duration | AC 3; Task 6 single-frame regression |
+| **No-cadence body is byte-identical**: no cadence authored (single-PNG or multi-frame dir) packs age `0.0` → static frame 0, packed instance byte-identical to current; age advances only when a cadence is authored | Task 2 | packing a non-zero age for a no-cadence body; a multi-frame dir animating without an authored cadence | AC 3; Task 6 no-cadence regression |
 | **Flipbook animates on all three bodies** (local, predicted, presentation) — none pinned to age 0.0 | Task 2 | the presentation arm keeping its hard-coded 0.0; the predicted path not advancing age | AC 4; Task 6 presentation-age assertion |
 | **Travel light tracks its body's render pose** (position + influence from the body-matched pose each frame — raw `Transform` for a sprite body, interpolated pose for a model body — not the cached spawn origin) | Task 3 (follow-Transform bridge contract) | the bridge reading `cached_origins_f64` / `component.origin`; a stale influence center; reading the interpolated pose for a sprite body (or raw for a model body) so light and bolt diverge; a stale cached origin/influence | AC 5; Task 6 moving-light assertion |
 | **Travel light despawns with its projectile** — no leaked light after impact/expiry; reserve slot reclaimed by the prerequisite | Task 3 (enroll for the bridge tombstone path) | a follow light not enrolled, so no tombstone fires; a presentation light outliving its shot | AC 5; Task 6 despawn-tombstone assertion |

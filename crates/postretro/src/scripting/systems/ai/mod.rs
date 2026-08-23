@@ -333,10 +333,9 @@ impl Default for AiRuntime {
 /// Ordering inside the tick, PER enemy:
 /// 1. Tick cooldowns and every active activity clock.
 /// 2. Evaluate outer-to-inner transition rows, `"*"` before source-keyed rows,
-///    declaration order, first true wins. A newly seated path skips this step
-///    for its entry tick, so every phase is observable for at least one tick.
-///    A closed aggro gate is the other exception: it stands the brain down to
-///    `initial` and skips evaluation entirely.
+///    declaration order, first true wins. Every guard is evaluated every armed
+///    tick; a closed aggro gate is the sole exception, standing the brain down
+///    to `initial` and skipping evaluation entirely.
 /// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
 ///    this is the fresh spawn's initial seating.
 /// 4. Edge-fire an entered action after its cooldown, range, and target gates.
@@ -644,15 +643,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 })
                 .flatten()
                 .unwrap_or_else(|| brain.graph.engagement_radius());
-            let transitioned = if brain.entry_pending {
-                false
-            } else {
-                programs
-                    .with_entry_scope(snap.id, |bound, scope| {
-                        select_transition_path(bound, scope, &mut brain)
-                    })
-                    .unwrap_or(false)
-            };
+            let transitioned = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    select_transition_path(bound, scope, &mut brain)
+                })
+                .unwrap_or(false);
             let motion = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     motion_for_path(bound, scope, &brain)

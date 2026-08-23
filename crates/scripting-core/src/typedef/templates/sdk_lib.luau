@@ -1361,6 +1361,8 @@ export type BrainInputs = {
   targetReachable: RuntimeGuardNode,
   --- Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number).
   attacksFiredInActivity: RuntimeGuardNode,
+  --- `true` when the selected target is clear on the enemy's shared, debounced static-world sightline; false with no target. This is the LOS verdict the engine fire gate also reads, before its range, cooldown, and facing requirements (boolean).
+  targetVisible: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

@@ -25,7 +25,7 @@ use crate::impact_policy::ImpactPolicyRuntime;
 use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
@@ -348,6 +348,42 @@ fn spawn_enemy(
     id
 }
 
+fn wall_world(x: f32, min_y: f32, max_y: f32) -> CollisionWorld {
+    let points = vec![
+        Point::new(x, min_y, -1.0),
+        Point::new(x, max_y, -1.0),
+        Point::new(x, max_y, 1.0),
+        Point::new(x, min_y, 1.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
+        isometry: Isometry::identity(),
+    }
+}
+
+fn floor_world(y: f32) -> CollisionWorld {
+    let points = vec![
+        Point::new(-2.0, y, -2.0),
+        Point::new(2.0, y, -2.0),
+        Point::new(2.0, y, 2.0),
+        Point::new(-2.0, y, 2.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
+        isometry: Isometry::identity(),
+    }
+}
+
+fn set_enemy_hitbox(reg: &mut EntityRegistry, enemy: EntityId, hitbox: Hitbox) {
+    let mut health = reg
+        .get_component::<HealthComponent>(enemy)
+        .expect("enemy carries health")
+        .clone();
+    health.hitbox = Some(hitbox);
+    reg.set_component(enemy, health)
+        .expect("enemy remains live");
+}
+
 fn player_hp(reg: &EntityRegistry, pawn: EntityId) -> f32 {
     reg.get_component::<HealthComponent>(pawn).unwrap().current
 }
@@ -507,7 +543,7 @@ fn step_graph(
         &reg,
         enemy,
         BrainFacts {
-            target: Some((enemy, distance)),
+            target: Some((enemy, distance, Vec3::ZERO)),
             attack_cooldown_ms: 0.0,
             acquisition_due,
             distance_from_anchor: 0.0,
@@ -2004,6 +2040,188 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
         assert_eq!(entries[0].last_hit_damage, 8.0);
         assert_eq!(entries[0].last_attacker, Some(enemy));
     }
+}
+
+#[test]
+fn enemy_attack_fire_gate_requires_clear_static_eye_to_aim_los() {
+    let mut clear_registry = EntityRegistry::new();
+    let mut clear_runtime = AiRuntime::new();
+    let clear_pawn = spawn_player(&mut clear_registry, Vec3::new(1.0, 0.0, 0.0));
+    let clear_enemy = spawn_enemy(
+        &mut clear_registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut clear_registry,
+        clear_enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+
+    let clear_events = run_ai_tick_with_navigation(
+        &mut clear_registry,
+        &mut clear_runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert_eq!(clear_events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&clear_registry, clear_pawn), 92.0);
+
+    let mut blocked_registry = EntityRegistry::new();
+    let mut blocked_runtime = AiRuntime::new();
+    let blocked_pawn = spawn_player(&mut blocked_registry, Vec3::new(1.0, 0.0, 0.0));
+    let blocked_enemy = spawn_enemy(
+        &mut blocked_registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut blocked_registry,
+        blocked_enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+    let wall = wall_world(0.5, -1.0, 2.0);
+
+    let blocked_events = run_ai_tick_with_navigation(
+        &mut blocked_registry,
+        &mut blocked_runtime,
+        0.016,
+        None,
+        Some(&wall),
+    );
+    assert!(
+        blocked_events.is_empty(),
+        "a persistent static-world occluder suppresses both damage and enemyAttack"
+    );
+    assert_eq!(player_hp(&blocked_registry, blocked_pawn), 100.0);
+}
+
+#[test]
+fn enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire() {
+    let make_fixture = || {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+        let enemy = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            brain_with(tuning(), TEST_IDLE_STATE),
+            50.0,
+        );
+        set_enemy_hitbox(
+            &mut registry,
+            enemy,
+            Hitbox {
+                half_extents: Vec3::new(0.4, 1.5, 0.4),
+                offset: Vec3::ZERO,
+            },
+        );
+        (registry, pawn)
+    };
+
+    let (mut low_cover_registry, low_cover_pawn) = make_fixture();
+    let mut low_cover_runtime = AiRuntime::new();
+    // The enemy eye (1.5) to the pawn eye (0.5) crosses x=1 at y=1.0,
+    // clearing this 0.9-high wall. A ground-point target ray would cross at
+    // y=0.75 and fail instead, so this pins the target-eye endpoint too.
+    let low_cover = wall_world(1.0, -1.0, 0.9);
+    let events = run_ai_tick_with_navigation(
+        &mut low_cover_registry,
+        &mut low_cover_runtime,
+        0.016,
+        None,
+        Some(&low_cover),
+    );
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "the eye-to-pawn-eye segment passes over low cover"
+    );
+    assert_eq!(player_hp(&low_cover_registry, low_cover_pawn), 92.0);
+
+    let (mut full_cover_registry, full_cover_pawn) = make_fixture();
+    let mut full_cover_runtime = AiRuntime::new();
+    let full_cover = wall_world(1.0, -1.0, 1.25);
+    let events = run_ai_tick_with_navigation(
+        &mut full_cover_registry,
+        &mut full_cover_runtime,
+        0.016,
+        None,
+        Some(&full_cover),
+    );
+    assert!(
+        events.is_empty(),
+        "cover that reaches the eye ray blocks fire"
+    );
+    assert_eq!(player_hp(&full_cover_registry, full_cover_pawn), 100.0);
+}
+
+#[test]
+fn enemy_eye_prefers_hitbox_top_and_uses_nav_height_as_its_fallback() {
+    let mut registry = EntityRegistry::new();
+    let position = Vec3::new(3.0, 4.0, 5.0);
+    let enemy = spawn_enemy(
+        &mut registry,
+        position,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    let nav_graph = reachability_nav_graph(Vec::new());
+
+    assert_eq!(
+        perception::enemy_eye(&registry, enemy, position, Some(&nav_graph)),
+        position + Vec3::Y * (perception::EYE_FACTOR * nav_graph.agent_params().height),
+        "an enemy without an authored hitbox uses the canonical nav-agent height"
+    );
+
+    set_enemy_hitbox(
+        &mut registry,
+        enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.25, 0.4),
+            offset: Vec3::new(0.1, 0.2, 0.3),
+        },
+    );
+    assert_eq!(
+        perception::enemy_eye(&registry, enemy, position, Some(&nav_graph)),
+        position + Vec3::new(0.1, 1.45, 0.3),
+        "an authored hitbox supplies the exact top-center LOS origin"
+    );
+}
+
+#[test]
+fn melee_contact_eye_to_aim_segment_stays_clear_above_the_floor() {
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::ZERO);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut registry,
+        enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+    let floor = floor_world(0.0);
+
+    let events =
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&floor));
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&registry, pawn), 92.0);
 }
 
 #[test]

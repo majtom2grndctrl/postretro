@@ -138,7 +138,6 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
-use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
@@ -2074,7 +2073,7 @@ fn apply_valid_hit_record(
         let Some(eye) = attacker_eye(registry, shot.pawn) else {
             return false;
         };
-        if !has_static_world_los(collision_world, eye, point) {
+        if !collision::line_of_sight(eye, point, collision_world) {
             return false;
         }
         eye
@@ -2103,22 +2102,6 @@ fn apply_valid_hit_record(
         shot.damage,
     );
     true
-}
-
-fn has_static_world_los(collision_world: &CollisionWorld, eye: Vec3, point: Vec3) -> bool {
-    let to_point = point - eye;
-    let distance = to_point.length();
-    if !distance.is_finite() || distance <= 1.0e-5 {
-        return false;
-    }
-    let dir = to_point / distance;
-    let hit = collision::cast_ray(
-        collision_world,
-        Point::new(eye.x, eye.y, eye.z),
-        Vector::new(dir.x, dir.y, dir.z),
-        distance,
-    );
-    !matches!(hit, Some(hit) if hit.time_of_impact < distance - 1.0e-4)
 }
 
 fn attacker_eye(registry: &EntityRegistry, attacker: EntityId) -> Option<Vec3> {

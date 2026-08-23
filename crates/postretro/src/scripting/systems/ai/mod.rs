@@ -24,7 +24,7 @@
 // shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
@@ -35,6 +35,7 @@ mod combat_slots;
 mod engine_floor;
 mod facing;
 mod graph_eval;
+mod perception;
 mod targeting;
 
 #[cfg(test)]
@@ -54,6 +55,7 @@ use graph_eval::{
     motion_for_path, select_transition_path, steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
+use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
@@ -301,6 +303,10 @@ pub(crate) struct AiRuntime {
     /// Per-entity bound transition guards. Derived data, rebuilt from each
     /// brain's retained graph whenever the entity is (re)seen.
     programs: BrainPrograms,
+    /// Host-only LOS loss grace, keyed by enemy and pruned with live brains.
+    /// It stays out of components and replication because clients never run AI
+    /// perception or guard evaluation.
+    los_grace: HashMap<EntityId, LosGraceState>,
 }
 
 impl AiRuntime {
@@ -310,6 +316,7 @@ impl AiRuntime {
             blocked_warned: HashSet::new(),
             reseat_warned: HashSet::new(),
             programs: BrainPrograms::new(),
+            los_grace: HashMap::new(),
         }
     }
 }
@@ -385,6 +392,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         blocked_warned,
         reseat_warned,
         programs,
+        los_grace,
     } = runtime;
     programs.sync(registry, warned);
 
@@ -396,6 +404,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     // different enemy.
     blocked_warned.retain(|id| programs.get(*id).is_some());
     reseat_warned.retain(|id| programs.get(*id).is_some());
+    los_grace.retain(|id, _| programs.get(*id).is_some());
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
     let snapshots: Vec<EnemySnapshot> = registry
@@ -545,10 +554,30 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // The FINALLY selected pawn's identity and distance, or `None` with no
         // target. This one binding feeds the guard facts and attack range gate,
         // so neither can disagree about which target they describe.
-        let selected_target =
-            target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let target_perception = target.and_then(|target| {
+            perception::perceive_target(
+                registry,
+                los_grace,
+                snap.id,
+                snap.position,
+                target,
+                nav_graph,
+                collision_world,
+            )
+        });
+        if target.is_none() {
+            los_grace.remove(&snap.id);
+        }
+
+        let selected_target = target.map(|target| {
+            (
+                target.entity,
+                target_distance(target, snap.position),
+                target.position,
+            )
+        });
         let target_hostile = selected_target
-            .is_some_and(|(target, _)| entity_faction(registry, target) != enemy_faction);
+            .is_some_and(|(target, _, _)| entity_faction(registry, target) != enemy_faction);
         // Reachability is the nav floor's pathfinder verdict, cached on the
         // existing acquisition stride. It deliberately mirrors the same
         // `find_path` capability chase consumes, rather than claiming a
@@ -571,7 +600,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 false
             }
         };
-        let selected_distance = selected_target.map(|(_, distance)| distance);
+        let selected_distance = selected_target.map(|(_, distance, _)| distance);
         let mut prior_engagement_radius = brain.graph.engagement_radius();
         let (transitioned, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
@@ -719,6 +748,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .unwrap_or(0.0)
                 <= 0.0
             && selected_target_alive(registry, target.entity)
+            && perception::fire_gate(target_perception)
         {
             attacked = true;
             attack_damage = Some(attack.damage);

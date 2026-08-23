@@ -134,7 +134,8 @@
 				"poseMask": [
 					"lowerBody",
 					"legL"
-				]
+				],
+				"hitZone": "leg"
 			}
 		},
 		{
@@ -162,7 +163,8 @@
 				"poseMask": [
 					"lowerBody",
 					"legL"
-				]
+				],
+				"hitZone": "leg"
 			}
 		},
 		{
@@ -288,7 +290,8 @@
 				"poseMask": [
 					"lowerBody",
 					"legR"
-				]
+				],
+				"hitZone": "leg"
 			}
 		},
 		{
@@ -316,7 +319,8 @@
 				"poseMask": [
 					"lowerBody",
 					"legR"
-				]
+				],
+				"hitZone": "leg"
 			}
 		},
 		{

@@ -86,9 +86,14 @@ SOCKETS = {
 # Skeletal hit zones (bone -> `hitZone` tag). A descriptor's `zoneMultipliers`
 # key matches a joint's zone tag by string, so without this tag the head/leg
 # multipliers are silently dead. Radius is omitted; the engine applies its
-# DEFAULT_ZONE_RADIUS (see scripting/systems/hit_zones.rs).
+# DEFAULT_ZONE_RADIUS (see scripting/systems/hit_zones.rs). Feet are left
+# untagged (small, ground-level); the thigh+shin carry the "leg" zone.
 HIT_ZONES = {
     "Head": "head",
+    "LeftUpLeg": "leg",
+    "LeftLeg": "leg",
+    "RightUpLeg": "leg",
+    "RightLeg": "leg",
 }
 
 

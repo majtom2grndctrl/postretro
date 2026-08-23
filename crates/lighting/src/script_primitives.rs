@@ -49,11 +49,12 @@ pub fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
             // so direct serialization yields the script-facing key shape.
             let mut comp =
                 serde_json::to_value(&h.component).expect("LightComponent always serializes");
-            // `animated_slot` is renderer-routing metadata, not part of the
-            // authored LightComponent surface. Keep it in engine storage but
-            // remove it from the read snapshot handed to either script host.
+            // `animated_slot` and `follow_transform` are bridge-routing
+            // metadata, not part of the authored LightComponent surface. Keep
+            // them in engine storage but remove them from script snapshots.
             if let Value::Object(fields) = &mut comp {
                 fields.remove("animatedSlot");
+                fields.remove("followTransform");
             }
             let mut obj = Map::with_capacity(5);
             obj.insert("id".to_string(), Value::from(h.id.to_raw()));
@@ -406,6 +407,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )
@@ -465,6 +467,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic: true,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )

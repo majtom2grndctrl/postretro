@@ -462,6 +462,7 @@ mod tests {
                             rate_curve: vec![0.0, 1.0],
                         }),
                     }),
+                    light: None,
                 },
             }),
             credit_source: None,

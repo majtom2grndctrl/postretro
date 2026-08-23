@@ -3541,6 +3541,7 @@ impl ApplicationHandler for App {
                     .map(|state| state.window.inner_size())
                     .map(|size| [size.width, size.height])
                     .unwrap_or([0, 0]);
+                let is_connected_client = self.is_connected_client();
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     // The render-stage bridges + collectors live on `Session`;
@@ -3596,10 +3597,18 @@ impl ApplicationHandler for App {
                     // allocates slots, so scripted lights reflect their new state.
                     {
                         let mut registry = script_ctx.registry.borrow_mut();
-                        if let Some(update) = session
-                            .light_bridge
-                            .update(&mut registry, self.script_time as f32)
-                        {
+                        // Connected clients materialize predicted and remote
+                        // projectile lights locally from shared descriptors. They
+                        // skip the host tick's enrollment path, so absorb before
+                        // this render-frame update makes those lights visible.
+                        if is_connected_client {
+                            session.light_bridge.absorb_dynamic_lights(&registry);
+                        }
+                        if let Some(update) = session.light_bridge.update(
+                            &mut registry,
+                            self.script_time as f32,
+                            frame_result.alpha,
+                        ) {
                             if update.has_dirty_data {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
                                 renderer.upload_bridge_influences(&update.influence_bytes);

@@ -311,9 +311,18 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ProjectileVisual")
-        .doc("The visible parts of a flying projectile. A body is required; the optional trail is extra smoke, sparks, or similar particles.")
+        .doc("The visible parts of a flying projectile. A body is required; optional trail particles and a travelling point light are cosmetic presentation.")
         .field("body", "ProjectileBodyVisual", "The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.")
         .field("trail?", "ProjectileTrailVisual", "Optional small sprite particles that follow the projectile, such as smoke or sparks. Leave it out when the projectile should have no trail.")
+        .field("light?", "ProjectileLight", "Optional dynamic point light that travels with the body. It affects nearby surfaces only; it never changes damage or hit detection.")
+        .finish();
+    registry
+        .register_type("ProjectileLight")
+        .doc("A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows.")
+        .field("color", "[f32; 3]", "Linear RGB multiplier as exactly three finite numbers.")
+        .field("intensity", "f32", "Brightness multiplier. Use a finite number of 0 or greater.")
+        .field("falloffRange", "f32", "How far the light reaches in metres. Use a finite number greater than 0.")
+        .field("falloffModel?", "FalloffKind", "Distance attenuation model. Omit for the inverse-square default.")
         .finish();
     registry
         .register_type("ProjectileSpriteBodyVisual")

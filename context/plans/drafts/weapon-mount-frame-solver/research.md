@@ -15,7 +15,7 @@ load-resolved rest matrix directly.
 world[parent] * local`. Spec-correct, no reorientation. `SocketBinding`
 (`crates/model/src/gltf_loader.rs`) is `SkinnedJoint(usize)` for skinned holders
 (the `hand_r` socket → RightHand joint, tagged by `tools/mixamo_to_gltf.py`
-`SOCKETS = {"RightHand": "hand_r"}`) or `RigidRest(Mat4)` for rigid.
+`SOCKETS = {"RightHand": "hand_r", "LeftHand": "hand_l"}`) or `RigidRest(Mat4)` for rigid.
 
 Consequence: to make a weapon's barrel point along the character's forward, the
 weapon's **own local frame** must pre-compensate for the socket joint's frame.

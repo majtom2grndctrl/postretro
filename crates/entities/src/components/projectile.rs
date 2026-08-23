@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use postretro_foundation::ProjectileImpactLight;
+
 use crate::registry::EntityId;
 
 /// Engine-owned state for one direct-impact projectile.
@@ -31,4 +33,34 @@ pub struct ProjectileComponent {
     /// use `None`; this distinction never crosses the network wire.
     #[serde(default)]
     pub predicted_shot_id: Option<u64>,
+    /// Fixed-tick flight time used by a cadence-enabled sprite body. Bodies
+    /// without cadence leave this at exactly zero so their packed instance stays
+    /// byte-identical to the static billboard path.
+    #[serde(default)]
+    pub elapsed_flight_age: f32,
+    /// Resolved once from the descriptor at spawn. The render collector must not
+    /// infer animation from collection frame count: a multi-frame directory is
+    /// still static until its descriptor authors a cadence.
+    #[serde(default)]
+    pub flipbook_active: bool,
+    /// Descriptor-resolved impact presentation retained for the flight's
+    /// contact branch. It is gameplay-local state and never materialized from
+    /// replication, so a projectile can flash after its owner weapon despawns.
+    #[serde(default)]
+    pub impact_light: Option<ProjectileImpactLight>,
+}
+
+/// Presentation-only timing for a projectile replicated as a visual entity.
+///
+/// This deliberately lives in [`EntityRegistry`](crate::registry::EntityRegistry)'s
+/// non-replicated side data instead of `ComponentKind`: the shared descriptor
+/// determines cadence, while the replicated fixed-tick epoch determines elapsed age.
+/// Adding it to the replicated component vocabulary would change the wire format.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectilePresentationAge {
+    /// Host fixed tick at which this presentation first became authoritative.
+    /// Observer materialization keeps this stamp rather than substituting local
+    /// snapshot-arrival or render-frame time.
+    pub spawn_tick: u32,
+    pub flipbook_active: bool,
 }

@@ -127,6 +127,9 @@ pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll, restore_carried
 pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
+pub(crate) const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
+const PROJECTILE_PRESENTATION_CONTACT_TARGET: u32 = u32::MAX;
+
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
 // submodules and are imported by callers via the direct submodule path.
 
@@ -1024,6 +1027,7 @@ pub(crate) fn client_receive_and_apply(
                     remote,
                     descriptors,
                     registry,
+                    snapshot.server_tick,
                 )
             } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
                 let player_locomotion = descriptor.and_then(|descriptor| {
@@ -1123,6 +1127,11 @@ pub(crate) fn client_receive_and_apply(
             frame_outcome.materialized_remote_entity_presentation |=
                 materialized || attachment_changed;
         }
+        spawn_retired_projectile_presentation_flashes(
+            registry,
+            descriptors,
+            &outcome.retired_projectile_presentations,
+        );
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
         // restore the transform, prune through the host ack, replay the unacked tail,
@@ -1158,6 +1167,25 @@ pub(crate) fn client_receive_and_apply(
         client.send_input(buffer);
     }
     frame_outcome
+}
+
+fn spawn_retired_projectile_presentation_flashes(
+    registry: &mut EntityRegistry,
+    descriptors: &[EntityTypeDescriptor],
+    retired: &[client::RetiredProjectilePresentation],
+) {
+    for retired in retired {
+        let Some(config) = descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(&retired.entity_class))
+            .and_then(|descriptor| descriptor.weapon.as_ref())
+            .and_then(|weapon| weapon.projectile.as_ref())
+            .and_then(|projectile| projectile.visual.impact_light.as_ref())
+        else {
+            continue;
+        };
+        weapon::spawn_projectile_impact_light(registry, retired.transform.position, config);
+    }
 }
 
 fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
@@ -1323,6 +1351,44 @@ pub(crate) fn client_send_hit_declaration(
     let records = local_hits_to_wire_records(hits, |entity_id| {
         replication.network_id_for_entity(entity_id)
     });
+    let record_count = records.len();
+    client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
+        wire::HitDeclaration { shot_id, records },
+    )));
+    Some(record_count)
+}
+
+/// Retire one predicted projectile shot. A contact always carries one record so
+/// the host can preserve presentation contact independently of damage-target
+/// validation. `u32::MAX` is the target sentinel for world or no-longer-nameable
+/// entity contacts; normal range/ownership checks still gate the declaration.
+pub(crate) fn client_send_projectile_resolution_declaration(
+    endpoint: Option<&mut NetEndpoint>,
+    shot_id: u64,
+    impact: Option<&weapon::WeaponImpact>,
+) -> Option<usize> {
+    let Some(NetEndpoint::Client {
+        client,
+        replication,
+        ..
+    }) = endpoint
+    else {
+        return None;
+    };
+
+    let records = impact
+        .map(|impact| {
+            let target = impact
+                .target
+                .and_then(|target| replication.network_id_for_entity(target))
+                .map_or(PROJECTILE_PRESENTATION_CONTACT_TARGET, |target| target.0);
+            vec![wire::HitRecord {
+                target,
+                point: impact.point.to_array(),
+                zone: impact.zone.clone(),
+            }]
+        })
+        .unwrap_or_default();
     let record_count = records.len();
     client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
         wire::HitDeclaration { shot_id, records },
@@ -1733,10 +1799,11 @@ struct HostHitIngestContext<'a> {
     open_shots: &'a mut OpenAuthorizedShots,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct HitDeclarationResult {
     fire_accepted: bool,
     hit_accepted: bool,
+    projectile_contact: Option<Vec3>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1751,6 +1818,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
     pending_hit_declarations: &mut PendingHitDeclarations,
     current_tick: u32,
     mut on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_projectile_contact: impl FnMut(ShotId, Vec3),
 ) -> bool {
     open_shots.prune_stale(current_tick);
     let mut accepted_any_hit = false;
@@ -1774,6 +1842,9 @@ pub(crate) fn host_flush_pending_hit_declarations(
             result.fire_accepted,
             result.hit_accepted,
         );
+        if let Some(point) = result.projectile_contact {
+            on_projectile_contact(ShotId::from_raw(pending.declaration.shot_id), point);
+        }
         accepted_any_hit |= result.hit_accepted;
     }
     accepted_any_hit
@@ -1885,8 +1956,22 @@ fn ingest_hit_declaration(
         return HitDeclarationResult {
             fire_accepted: true,
             hit_accepted: false,
+            projectile_contact: None,
         };
     }
+
+    // Contact presentation is independent of damage-target validation. A real
+    // entity may despawn before declaration intake, and world contacts use the
+    // reserved target sentinel; either still keeps its finite in-range endpoint.
+    let projectile_contact = if open.shot.is_projectile {
+        declaration
+            .records
+            .iter()
+            .take(pellet_count)
+            .find_map(|record| valid_projectile_contact_point(&open.shot, record))
+    } else {
+        None
+    };
 
     let mut hit_accepted = false;
     for record in declaration.records.iter().take(pellet_count) {
@@ -1909,7 +1994,17 @@ fn ingest_hit_declaration(
     HitDeclarationResult {
         fire_accepted: true,
         hit_accepted,
+        projectile_contact,
     }
+}
+
+fn valid_projectile_contact_point(shot: &AuthorizedShot, record: &wire::HitRecord) -> Option<Vec3> {
+    let point = Vec3::from_array(record.point);
+    if !point.is_finite() || !shot.fire_origin.is_finite() {
+        return None;
+    }
+    let max_range = shot.range * HIT_RANGE_TOLERANCE;
+    (max_range.is_finite() && shot.fire_origin.distance(point) <= max_range).then_some(point)
 }
 
 /// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
@@ -3964,6 +4059,56 @@ mod tests {
             13,
             "projectile presentation reuses Transform plus entity_class snapshots"
         );
+    }
+
+    #[test]
+    fn projectile_world_contact_marker_preserves_presentation_without_damage_target() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture
+            .open_shots
+            .shots
+            .get_mut(&fixture.shot_id)
+            .expect("authorized test shot remains open")
+            .shot
+            .is_projectile = true;
+        let point = Vec3::new(4.0, 0.5, 0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            point: point.to_array(),
+            zone: None,
+        }]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert_eq!(result.projectile_contact, Some(point));
+        assert_eq!(fixture.target_health().current, 100.0);
+    }
+
+    #[test]
+    fn invalid_entity_target_does_not_erase_valid_projectile_contact() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture
+            .open_shots
+            .shots
+            .get_mut(&fixture.shot_id)
+            .expect("authorized test shot remains open")
+            .shot
+            .is_projectile = true;
+        let point = Vec3::new(4.0, 0.5, 0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: 999_999,
+            point: point.to_array(),
+            zone: None,
+        }]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert_eq!(result.projectile_contact, Some(point));
+        assert_eq!(fixture.target_health().current, 100.0);
     }
 
     #[test]

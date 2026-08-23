@@ -415,6 +415,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )
@@ -993,6 +994,7 @@ mod tests {
                     cone_direction: None,
                     is_dynamic: true,
                     animated_slot: None,
+                    follow_transform: false,
                     animation: None,
                 },
             )

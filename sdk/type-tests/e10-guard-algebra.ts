@@ -8,7 +8,7 @@ const fluentGuard = brain.targetDistance
 
 const directGuard = runtime.and(
   brain.hasTarget,
-  runtime.not(brain.targetDied),
+  runtime.and(brain.targetVisible, runtime.not(brain.targetDied)),
 );
 
 defineEntity({

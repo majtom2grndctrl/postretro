@@ -714,7 +714,7 @@ defineEntity({
 | `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
-| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius? } }` (optional) | Named attack vocabulary. An activity action must name an entry here. |
+| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius?, standoffDistance? } }` (optional) | Named attack vocabulary. An activity action must name an entry here. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
@@ -724,7 +724,7 @@ An activity is either a leaf or a composite:
 |-------|------|-------------|
 | `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
-| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires on entry. |
+| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 
@@ -764,16 +764,21 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-`{ attack: "name" }` is the only action today. It fires **once on entry** into
-the activity that names it, provided that attack's cooldown is ready and the
-target is in range. Holding `commit` does not repeatedly fire it. A later entry
-can fire again only after cooldown permits it. A graph with no `attacks` entries
-never attacks.
+`{ attack: "name" }` is the only action today. During its active firing leaf,
+it fires at most once on the first tick for which that attack's cooldown is
+ready, the target is in range, and the other applicable gates are open. Its
+firing latch stays armed until it fires, so temporarily closed gates can open
+later in the same dwell. Holding `commit` does not repeatedly fire it after it
+has fired. A later firing-leaf dwell can fire again only after cooldown permits
+it. A graph with no `attacks` entries never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
-`"chaseTarget"` motion or any active action. Target retention, combat-slot
-participation, and target facing key on it. A `hold` + action activity stands its
-ground and swings while keeping its target and slot.
+`"chaseTarget"` motion or any active action. This current-tick engagement
+controls combat-slot participation and target facing. Target retention follows
+active-path engagement capability, so it continues through a committed,
+actionless selector-held phase. Idle, patrol, and position-goal paths drop a
+retained target, take no combat slot, and do not face it. A `hold` + action
+activity stands its ground and swings while keeping its target and slot.
 
 **Animation.** The host resolves exactly one mesh animation state each tick. An
 active offense leaf that supplies `animation` wins; otherwise the active
@@ -812,6 +817,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain` property | `read` name | Type | Meaning |
 |------------------|-------------|------|---------|
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
+| `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced static-world LOS verdict for the selected target. `false` with no target; independent of range, cooldown, and facing. |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
@@ -938,19 +944,21 @@ inherits the pathfinder's freestanding-wall wraparound false-negative until the
 pursuit repair lands; do not treat it as a ground-truth visibility or geometry
 oracle.
 
-### `maxRange` vs `engagementRadius`
+### `maxRange`, `engagementRadius`, and `standoffDistance`
 
-Two separate knobs that are easy to conflate:
+Three separate knobs that are easy to conflate:
 
 - **An attack entry's `maxRange` gates damage.** It is the distance within which
   a state selecting that entry actually lands a hit, checked every tick. A state
   may select an attack at any distance; this is what stops it connecting from
   across the room.
-- **`engagementRadius` sets combat spacing.** It is the radius of the ring of
-  combat slots the engine spreads engaged agents around their target — where
-  chasers *stand*. A named attack state uses its entry's `engagementRadius`, or
-  its `maxRange` when that field is omitted. Non-attack states use the graph-wide
-  `engagementRadius`.
+- **`engagementRadius` resolves an action's default combat distance.** A named
+  attack uses its entry's `engagementRadius`, or its `maxRange` when that field
+  is omitted. Non-attack states use the graph-wide `engagementRadius`.
+- **`standoffDistance` sets attack combat positioning.** It controls the ring
+  and scoring the engine uses to place engaged agents around their target. It
+  must be finite and greater than zero. When omitted, it uses that action's
+  resolved `engagementRadius`, including an attack-specific override.
 
 For a non-attack state, `engagementRadius` resolves as the graph-wide authored
 field, else the engine default of **2 m**. A pure-pursuit graph (`chaseTarget`,
@@ -959,10 +967,11 @@ would generate no slots at all and pile every chaser onto the target. If your
 pursuers should crowd tighter or hang back, author the graph-wide
 `engagementRadius` outright.
 
-An attack entry's `engagementRadius` defaults to its own `maxRange`. Author it
-explicitly when its desired standoff differs from its damage reach. Graph-wide
-and attack-specific standoff are separate knobs, so retuning one named attack
-does not re-space non-attack states or other attacks.
+An attack entry's `engagementRadius` defaults to its own `maxRange`. Set
+`standoffDistance` when an attack should stand at a different distance without
+changing its damage reach or default action distance. Graph-wide and
+attack-specific positioning are separate, so retuning one named attack does not
+re-space non-attack states or other attacks.
 
 Each named cooldown is independent. Switching states never resets another
 attack's timer, so a graph can alternate attacks without bypassing their

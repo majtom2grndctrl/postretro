@@ -1,0 +1,305 @@
+//! Shared enemy-to-pawn perception endpoints and debounced static-world LOS.
+//! See: context/lib/entity_model.md §7c.
+
+use std::collections::HashMap;
+
+use glam::Vec3;
+
+use super::targeting::TargetPawn;
+use crate::collision::{self, CollisionWorld};
+use crate::nav::NavGraph;
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::{EntityId, EntityRegistry};
+
+/// Fraction of the baked navigation-agent height used as an enemy eye when an
+/// authored health hitbox does not define the exact top-center origin.
+pub(super) const EYE_FACTOR: f32 = 0.9;
+
+/// Ticks that a retained target remains visible after raw static-world LOS is
+/// first lost. This is host-only feel state; fresh acquisition never uses it.
+pub(super) const LOS_GRACE_TICKS: u32 = 3;
+
+/// Persistent visibility state for one enemy. The selected target is retained
+/// beside the countdown so a grace window cannot leak from an old target to a
+/// newly selected pawn.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LosGraceState {
+    target: EntityId,
+    remaining_ticks: u32,
+}
+
+/// The debounced verdict for one enemy's selected target in one AI compute
+/// pass. Every LOS caller derives its endpoints through this module's shared
+/// helpers rather than casting a second ray with slightly different points.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EnemyTargetPerception {
+    pub(super) visible: bool,
+    /// Canonical shared enemy-eye and target-aim endpoints for this pair.
+    /// Combat positioning receives them rather than deriving a second ray.
+    pub(super) enemy_eye: Vec3,
+    pub(super) target_aim: Vec3,
+}
+
+/// The undebounced LOS result computed while admitting a fresh target. The
+/// selected candidate carries this into perception so acquisition and debounce
+/// share one static-world ray on that tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RawTargetPerception {
+    pub(super) target: EntityId,
+    pub(super) visible: bool,
+    pub(super) enemy_eye: Vec3,
+    pub(super) target_aim: Vec3,
+}
+
+/// Inputs that identify one enemy/selected-target perception query. The grace
+/// table and registry stay separate because they are the mutable state and
+/// shared entity source the query operates on.
+pub(super) struct TargetPerceptionQuery<'a> {
+    pub(super) enemy: EntityId,
+    pub(super) enemy_position: Vec3,
+    pub(super) target: TargetPawn,
+    pub(super) nav_graph: Option<&'a NavGraph>,
+    pub(super) collision_world: Option<&'a CollisionWorld>,
+    pub(super) fresh: Option<RawTargetPerception>,
+}
+
+/// Derive the one enemy eye point used by LOS consumers. An authored health
+/// hitbox is exact; otherwise the baked navigation-agent height supplies the
+/// consistent fallback for every enemy on the map.
+pub(super) fn enemy_eye(
+    registry: &EntityRegistry,
+    enemy: EntityId,
+    position: Vec3,
+    nav_graph: Option<&NavGraph>,
+) -> Vec3 {
+    if let Ok(health) = registry.get_component::<HealthComponent>(enemy)
+        && let Some(hitbox) = health.hitbox
+    {
+        return position + hitbox.offset + Vec3::Y * hitbox.half_extents.y;
+    }
+
+    let agent_height = nav_graph.map_or(0.0, |graph| graph.agent_params().height);
+    position + Vec3::Y * (EYE_FACTOR * agent_height)
+}
+
+/// Derive the selected pawn's one target-aim point from the transform snapshot
+/// carried by targeting and its authored capsule eye height.
+pub(super) fn target_aim(registry: &EntityRegistry, target: TargetPawn) -> Option<Vec3> {
+    let movement = registry
+        .get_component::<PlayerMovementComponent>(target.entity)
+        .ok()?;
+    Some(target.position + Vec3::Y * movement.capsule.eye_height)
+}
+
+/// Raw (undebounced) static-world LOS for a fresh candidate. This uses the same
+/// canonical pawn-eye helper as selected-target perception; a missing aim point
+/// fails candidacy rather than admitting a target the fire gate cannot describe.
+/// A missing collision world remains clear, matching the selected-target path.
+pub(super) fn raw_target_perception(
+    registry: &EntityRegistry,
+    enemy_eye: Vec3,
+    target: TargetPawn,
+    collision_world: Option<&CollisionWorld>,
+) -> Option<RawTargetPerception> {
+    let target_aim = target_aim(registry, target)?;
+    let visible = collision_world
+        .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+        .unwrap_or(true);
+    Some(RawTargetPerception {
+        target: target.entity,
+        visible,
+        enemy_eye,
+        target_aim,
+    })
+}
+
+/// Compute this tick's one enemy-to-selected-target perception result. A
+/// missing collision world intentionally means clear sight, preserving
+/// headless and no-world ticks from before LOS existed.
+pub(super) fn perceive_target(
+    registry: &EntityRegistry,
+    grace: &mut HashMap<EntityId, LosGraceState>,
+    query: TargetPerceptionQuery<'_>,
+) -> Option<EnemyTargetPerception> {
+    let TargetPerceptionQuery {
+        enemy,
+        enemy_position,
+        target,
+        nav_graph,
+        collision_world,
+        fresh,
+    } = query;
+    let raw = match fresh {
+        Some(raw) if raw.target == target.entity => raw,
+        _ => {
+            let target_aim = match target_aim(registry, target) {
+                Some(aim) => aim,
+                None => {
+                    grace.remove(&enemy);
+                    return None;
+                }
+            };
+            let enemy_eye = enemy_eye(registry, enemy, enemy_position, nav_graph);
+            let visible = collision_world
+                .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+                .unwrap_or(true);
+            RawTargetPerception {
+                target: target.entity,
+                visible,
+                enemy_eye,
+                target_aim,
+            }
+        }
+    };
+    let visible = debounce_los(grace, enemy, target.entity, raw.visible);
+
+    Some(EnemyTargetPerception {
+        visible,
+        enemy_eye: raw.enemy_eye,
+        target_aim: raw.target_aim,
+    })
+}
+
+/// The engine-floor fire gate. It intentionally has no graph or cooldown
+/// dependency: the caller layers those gates around this one shared verdict.
+pub(super) fn fire_gate(perception: Option<EnemyTargetPerception>) -> bool {
+    perception.is_some_and(|perception| perception.visible)
+}
+
+fn debounce_los(
+    grace: &mut HashMap<EntityId, LosGraceState>,
+    enemy: EntityId,
+    target: EntityId,
+    raw_visible: bool,
+) -> bool {
+    if raw_visible {
+        grace.insert(
+            enemy,
+            LosGraceState {
+                target,
+                remaining_ticks: LOS_GRACE_TICKS,
+            },
+        );
+        return true;
+    }
+
+    let Some(state) = grace.get_mut(&enemy) else {
+        return false;
+    };
+    if state.target != target {
+        grace.remove(&enemy);
+        return false;
+    }
+    if state.remaining_ticks == 0 {
+        grace.remove(&enemy);
+        return false;
+    }
+
+    state.remaining_ticks -= 1;
+    if state.remaining_ticks == 0 {
+        grace.remove(&enemy);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postretro_entities::EntityRegistry;
+
+    #[test]
+    fn debounce_holds_exactly_the_configured_loss_grace_ticks() {
+        let mut grace = HashMap::new();
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Default::default());
+        let target = registry.spawn(Default::default());
+
+        assert!(debounce_los(&mut grace, enemy, target, true));
+        for _ in 0..LOS_GRACE_TICKS {
+            assert!(
+                debounce_los(&mut grace, enemy, target, false),
+                "the previous clear verdict survives its grace window"
+            );
+        }
+        assert!(
+            !debounce_los(&mut grace, enemy, target, false),
+            "the first loss tick after grace closes the verdict"
+        );
+        assert!(grace.is_empty(), "expired state is pruned immediately");
+    }
+
+    #[test]
+    fn debounce_does_not_carry_visibility_to_a_replaced_target() {
+        let mut grace = HashMap::new();
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Default::default());
+        let first_target = registry.spawn(Default::default());
+        let second_target = registry.spawn(Default::default());
+
+        assert!(debounce_los(&mut grace, enemy, first_target, true));
+        assert!(
+            !debounce_los(&mut grace, enemy, second_target, false),
+            "a newly selected target has no inherited grace"
+        );
+        assert!(grace.is_empty(), "mismatched state is pruned");
+    }
+
+    #[test]
+    fn fire_gate_projects_the_shared_perception_verdict() {
+        // P4: the floor's fire gate consumes the same already-debounced scalar
+        // that the brain-fact refresh receives from the AI compute pass.
+        assert!(fire_gate(Some(EnemyTargetPerception {
+            visible: true,
+            enemy_eye: Vec3::ZERO,
+            target_aim: Vec3::ZERO,
+        })));
+        assert!(!fire_gate(Some(EnemyTargetPerception {
+            visible: false,
+            enemy_eye: Vec3::ZERO,
+            target_aim: Vec3::ZERO,
+        })));
+        assert!(
+            !fire_gate(None),
+            "no selected target cannot inherit visibility"
+        );
+    }
+
+    #[test]
+    fn fresh_perception_consumes_the_acquisition_verdict_without_recasting() {
+        let mut grace = HashMap::new();
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Default::default());
+        let target = registry.spawn(Default::default());
+        let raw = RawTargetPerception {
+            target,
+            visible: true,
+            enemy_eye: Vec3::new(1.0, 2.0, 3.0),
+            target_aim: Vec3::new(4.0, 5.0, 6.0),
+        };
+
+        // A fresh candidate already proved it carried PlayerMovement when the
+        // offer was built. Omitting it here makes any fallback lookup fail, so
+        // this pins the no-second-query handoff rather than LOS geometry.
+        let perception = perceive_target(
+            &registry,
+            &mut grace,
+            TargetPerceptionQuery {
+                enemy,
+                enemy_position: Vec3::ZERO,
+                target: TargetPawn {
+                    entity: target,
+                    position: Vec3::ZERO,
+                },
+                nav_graph: None,
+                collision_world: Some(&CollisionWorld::new()),
+                fresh: Some(raw),
+            },
+        )
+        .expect("the acquisition result is sufficient for this tick");
+
+        assert!(perception.visible);
+        assert_eq!(perception.enemy_eye, raw.enemy_eye);
+        assert_eq!(perception.target_aim, raw.target_aim);
+    }
+}

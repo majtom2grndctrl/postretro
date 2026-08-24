@@ -472,9 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn spawned_enemy_cannot_attack_before_interpolation_windup_expires() {
+    fn spawned_enemy_latches_first_eligible_fire_after_interpolation_windup() {
         let mut registry = EntityRegistry::new();
-        add_spawner(&mut registry, TAG, 1, true, Transform::default());
+        add_spawner(
+            &mut registry,
+            TAG,
+            1,
+            true,
+            Transform {
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                ..Transform::default()
+            },
+        );
         let mut descriptor = behavior_enemy_descriptor("cultist");
         let behavior = descriptor
             .behavior
@@ -485,8 +494,9 @@ mod tests {
             AttackParams {
                 damage: 12.0,
                 max_range: 2.0,
-                cooldown_ms: 1800.0,
+                cooldown_ms: 0.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         );
         behavior
@@ -516,6 +526,15 @@ mod tests {
 
         spawn_from_spawner_tag(&mut registry, TAG, &context);
         let enemy = spawned(&registry).pop().expect("one spawned enemy");
+        let spawned_forward = registry
+            .get_component::<Transform>(enemy)
+            .expect("spawned enemy retains its transform")
+            .rotation
+            * Vec3::Z;
+        assert!(
+            (spawned_forward - Vec3::X).length() < 1e-5,
+            "the fixture starts the spawned enemy facing its live target"
+        );
         let seed = MAX_DELAY_MICROS as f32 / 1000.0;
         let cooldowns = &registry
             .get_component::<BrainComponent>(enemy)
@@ -535,13 +554,14 @@ mod tests {
 
         let mut warned = crate::scripting_systems::ai::AiRuntime::new();
         let dt_secs = 0.05;
-        for tick in 0..4 {
+        let windup_ticks = (seed / (dt_secs * 1000.0)).ceil() as usize;
+        for tick in 1..windup_ticks {
             assert!(
                 run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
-                "no attack may land before the {} ms windup floor",
+                "no attack event may land while the {} ms interpolation windup gate is closed",
                 seed
             );
-            if tick == 0 {
+            if tick == 1 {
                 assert_eq!(
                     registry
                         .get_component::<BrainComponent>(enemy)
@@ -561,18 +581,45 @@ mod tests {
             "the player remains unharmed before the windup expires"
         );
 
-        assert!(
-            run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
-            "a cooldown-gated entry is not retried after its interpolation windup expires"
+        // The only gate that changes in this bounded scenario is the spawned
+        // cooldown. The player stays alive, no collision world means clear LOS,
+        // and the spawner authored the enemy already facing the target. The
+        // active `slam` leaf must therefore fire on its first open dwell tick.
+        let events = run_ai_tick(&mut registry, &mut warned, dt_secs);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.as_ref())
+                .collect::<Vec<_>>(),
+            vec![crate::scripting_systems::ai::ENEMY_ATTACK_EVENT],
+            "the first post-windup eligible tick fires exactly once"
         );
         assert_eq!(
             registry
                 .get_component::<HealthComponent>(player)
                 .unwrap()
                 .current,
-            100.0,
-            "the initial edge was cooldown-gated and held attack states never retry it"
+            88.0,
+            "the first open firing dwell tick applies the declared damage"
         );
+
+        // `slam` has no authored cooldown after firing. Empty later ticks
+        // therefore demonstrate the active leaf's one-fire latch, not a
+        // separate cooldown gate.
+        for tick in 1..=2 {
+            assert!(
+                run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
+                "same firing-leaf dwell does not emit a second event on later tick {tick}"
+            );
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(player)
+                    .unwrap()
+                    .current,
+                88.0,
+                "same firing-leaf dwell does not apply a second hit on later tick {tick}"
+            );
+        }
     }
 
     #[test]

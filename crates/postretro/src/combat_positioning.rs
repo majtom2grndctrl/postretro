@@ -1,17 +1,25 @@
 //! Pure combat-position candidate selection.
 //!
 //! This module is deliberately decoupled from AI steering state. Callers pass a
-//! target position directly, plus the nav/collision query surfaces required to
-//! prove each candidate is reachable and statically occupiable.
+//! target position and the canonical enemy-eye/target-aim LOS endpoints
+//! supplied by AI perception, plus the nav/collision
+//! query surfaces required to prove each candidate is reachable, statically
+//! occupiable, and visible from its own eye point.
+//!
+//! See: context/lib/entity_model.md §7c.
 
 use std::cmp::Ordering;
 
 use glam::Vec3;
 
-use crate::collision::{
-    CapsulePlacement, CollisionWorld, SKIN_DISTANCE, capsule_static_placement_center,
-};
-use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::collision::CollisionWorld;
+use crate::nav::{NavGraph, distance_xz};
+
+mod scoring;
+
+#[cfg(test)]
+use scoring::tactically_direct_path_length_limit;
+use scoring::{capsule_placement, dynamic_min_spacing, score_candidate};
 
 const RING_DIRECTIONS: [Vec3; 8] = [
     Vec3::new(1.0, 0.0, 0.0),
@@ -33,6 +41,11 @@ pub(crate) struct CombatQuery<'a> {
     pub(crate) agent_pos: Vec3,
     pub(crate) engagement_radius: f32,
     pub(crate) target_pos: Vec3,
+    /// Offset from the candidate slot's grounded center to the shared enemy
+    /// eye point, derived once by `ai::perception`.
+    pub(crate) enemy_eye_offset: Vec3,
+    /// Shared selected-target aim point derived by `ai::perception`.
+    pub(crate) target_aim: Vec3,
     pub(crate) combat_slot: Option<Vec3>,
     pub(crate) scan_challengers: bool,
     pub(crate) other_agents: &'a [CombatAgentSnapshot],
@@ -177,6 +190,8 @@ pub(crate) fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<
 pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
     if !query.agent_pos.is_finite()
         || !query.target_pos.is_finite()
+        || !query.enemy_eye_offset.is_finite()
+        || !query.target_aim.is_finite()
         || !query.engagement_radius.is_finite()
         || !query.path_length_score_weight.is_finite()
         || query.engagement_radius <= 0.0
@@ -232,123 +247,6 @@ fn same_position_bits(a: Vec3, b: Vec3) -> bool {
     a.x.to_bits() == b.x.to_bits()
         && a.y.to_bits() == b.y.to_bits()
         && a.z.to_bits() == b.z.to_bits()
-}
-
-fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement> {
-    let params = nav_graph.agent_params();
-    if !params.radius.is_finite()
-        || !params.height.is_finite()
-        || !params.step_height.is_finite()
-        || params.radius <= 0.0
-        || params.height < params.radius * 2.0
-        || params.step_height <= 0.0
-    {
-        return None;
-    }
-
-    Some(CapsulePlacement {
-        radius: params.radius,
-        half_height: (params.height - params.radius * 2.0) * 0.5,
-        step_height: params.step_height,
-    })
-}
-
-fn score_candidate(
-    query: &CombatQuery<'_>,
-    placement: CapsulePlacement,
-    position: Vec3,
-    generation_index: usize,
-    is_incumbent: bool,
-) -> Option<CombatCandidate> {
-    if !position.is_finite() {
-        return None;
-    }
-
-    let position = grounded_candidate_position(query, placement, position)?;
-    if !dynamic_placement_is_clear(query, placement, position) {
-        return None;
-    }
-    let path = find_path(query.nav_graph, query.agent_pos, position)?;
-    let target_distance = distance_xz(position, query.target_pos);
-    if !has_tactically_direct_target_path(query, placement, position, target_distance) {
-        return None;
-    }
-    let path_cost = path_length(&path);
-    let attack_band_error = (target_distance - query.engagement_radius).abs();
-    let score = attack_band_error + path_cost * query.path_length_score_weight;
-    Some(CombatCandidate {
-        position,
-        score,
-        attack_band_error,
-        path_cost,
-        generation_index,
-        is_incumbent,
-    })
-}
-
-fn has_tactically_direct_target_path(
-    query: &CombatQuery<'_>,
-    placement: CapsulePlacement,
-    position: Vec3,
-    target_distance: f32,
-) -> bool {
-    let Some(target_path) = find_path(query.nav_graph, position, query.target_pos) else {
-        // The funnel can conservatively refuse a route when a moving endpoint
-        // grazes a clearance disk, even while its regions remain connected.
-        // Keep a reachable slot in that narrow case so pursuit keeps moving;
-        // a disconnected corral still has no shared component and is rejected.
-        return query
-            .nav_graph
-            .endpoints_are_topologically_connected(position, query.target_pos);
-    };
-
-    // A local engagement may bend around one clearance disk at a nearby portal
-    // endpoint. One capsule-clearance diameter (including the collision skin)
-    // admits that bounded repair, but not a route that walks around a wall whose
-    // far end is remote from the candidate-to-target engagement segment.
-    let max_path_length = tactically_direct_path_length_limit(placement, target_distance);
-    path_length(&target_path) <= max_path_length
-}
-
-fn tactically_direct_path_length_limit(placement: CapsulePlacement, target_distance: f32) -> f32 {
-    target_distance + 2.0 * (placement.radius + SKIN_DISTANCE)
-}
-
-fn grounded_candidate_position(
-    query: &CombatQuery<'_>,
-    placement: CapsulePlacement,
-    position: Vec3,
-) -> Option<Vec3> {
-    let region_index = query.nav_graph.region_at(position)?;
-    let region = query.nav_graph.region(region_index)?;
-    let probe = Vec3::new(
-        position.x,
-        region.floor_y_max + placement.rest_offset(),
-        position.z,
-    );
-    let grounded = capsule_static_placement_center(query.collision_world, probe, placement)?;
-    (query.nav_graph.region_at(grounded) == Some(region_index)).then_some(grounded)
-}
-
-fn dynamic_placement_is_clear(
-    query: &CombatQuery<'_>,
-    placement: CapsulePlacement,
-    position: Vec3,
-) -> bool {
-    let min_spacing = dynamic_min_spacing(placement);
-    query.other_agents.iter().all(|other| {
-        if other.claimant_id == query.claimant_id {
-            return true;
-        }
-        if other.position.is_finite() && distance_xz(position, other.position) < min_spacing {
-            return false;
-        }
-        true
-    })
-}
-
-fn dynamic_min_spacing(placement: CapsulePlacement) -> f32 {
-    placement.radius * 2.0
 }
 
 fn apply_hysteresis(
@@ -425,6 +323,7 @@ fn compare_proposals(a: &CombatProposal, b: &CombatProposal) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nav::find_path;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
@@ -434,6 +333,7 @@ mod tests {
     const AGENT_HEIGHT: f32 = 1.8;
     const STEP_HEIGHT: f32 = 0.4;
     const REST_Y: f32 = AGENT_HEIGHT * 0.5 + crate::collision::SKIN_DISTANCE;
+    const LOS_EYE_OFFSET: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 
     fn nav_region(x0: u32, z0: u32, x1: u32, z1: u32) -> NavRegion {
         NavRegion {
@@ -525,6 +425,65 @@ mod tests {
         }
     }
 
+    fn floor_with_los_wall() -> CollisionWorld {
+        let points = vec![
+            Point::new(-20.0, 0.0, -20.0),
+            Point::new(20.0, 0.0, -20.0),
+            Point::new(20.0, 0.0, 20.0),
+            Point::new(-20.0, 0.0, 20.0),
+            Point::new(4.0, 0.0, 4.0),
+            Point::new(4.0, 3.0, 4.0),
+            Point::new(4.0, 3.0, 6.0),
+            Point::new(4.0, 0.0, 6.0),
+        ];
+        let triangles = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn floor_with_target_los_cage() -> CollisionWorld {
+        let points = vec![
+            Point::new(-20.0, 0.0, -20.0),
+            Point::new(20.0, 0.0, -20.0),
+            Point::new(20.0, 0.0, 20.0),
+            Point::new(-20.0, 0.0, 20.0),
+            Point::new(4.75, 0.0, 4.75),
+            Point::new(4.75, 3.0, 4.75),
+            Point::new(4.75, 3.0, 5.25),
+            Point::new(4.75, 0.0, 5.25),
+            Point::new(5.25, 0.0, 5.25),
+            Point::new(5.25, 3.0, 5.25),
+            Point::new(5.25, 3.0, 4.75),
+            Point::new(5.25, 0.0, 4.75),
+            Point::new(5.25, 0.0, 4.75),
+            Point::new(5.25, 3.0, 4.75),
+            Point::new(4.75, 3.0, 4.75),
+            Point::new(4.75, 0.0, 4.75),
+            Point::new(4.75, 0.0, 5.25),
+            Point::new(4.75, 3.0, 5.25),
+            Point::new(5.25, 3.0, 5.25),
+            Point::new(5.25, 0.0, 5.25),
+        ];
+        let triangles = vec![
+            [0u32, 1, 2],
+            [0, 2, 3],
+            [4, 5, 6],
+            [4, 6, 7],
+            [8, 9, 10],
+            [8, 10, 11],
+            [12, 13, 14],
+            [12, 14, 15],
+            [16, 17, 18],
+            [16, 18, 19],
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
     fn query<'a>(
         nav_graph: &'a NavGraph,
         collision_world: &'a CollisionWorld,
@@ -536,6 +495,8 @@ mod tests {
             agent_pos,
             engagement_radius: 2.0,
             target_pos,
+            enemy_eye_offset: LOS_EYE_OFFSET,
+            target_aim: target_pos + LOS_EYE_OFFSET,
             combat_slot: None,
             scan_challengers: true,
             other_agents: &[],
@@ -559,6 +520,8 @@ mod tests {
             agent_pos,
             engagement_radius: 2.0,
             target_pos,
+            enemy_eye_offset: LOS_EYE_OFFSET,
+            target_aim: target_pos + LOS_EYE_OFFSET,
             combat_slot,
             scan_challengers: true,
             other_agents,
@@ -631,6 +594,8 @@ mod tests {
             agent_pos: Vec3::new(2.0, REST_Y, 2.0),
             engagement_radius: 1.0,
             target_pos: Vec3::new(10.0, REST_Y, 10.0),
+            enemy_eye_offset: LOS_EYE_OFFSET,
+            target_aim: Vec3::new(10.0, REST_Y, 10.0) + LOS_EYE_OFFSET,
             combat_slot: None,
             scan_challengers: true,
             other_agents: &[],
@@ -717,6 +682,66 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert!(approx_xz(candidates[0].position, slot));
+    }
+
+    // P10: an incumbent held across ticks must be re-scored against the target's
+    // latest aim point, even while challengers are not being scanned.
+    #[test]
+    fn combat_candidates_clear_a_held_slot_that_loses_line_of_sight() {
+        let nav_graph = open_nav_graph();
+        let world = floor_with_los_wall();
+        let held_slot = Vec3::new(3.0, REST_Y, 5.0);
+        let mut clear_incumbent = query_with(
+            1,
+            &nav_graph,
+            &world,
+            held_slot,
+            Vec3::new(3.0, REST_Y, 7.0),
+            Some(held_slot),
+            &[],
+        );
+        clear_incumbent.scan_challengers = false;
+        assert!(
+            select_combat_position(&clear_incumbent).is_some(),
+            "the held slot must begin clear before the target moves behind cover"
+        );
+
+        let mut blocked_incumbent = query_with(
+            1,
+            &nav_graph,
+            &world,
+            held_slot,
+            Vec3::new(5.0, REST_Y, 5.0),
+            Some(held_slot),
+            &[],
+        );
+        blocked_incumbent.scan_challengers = false;
+
+        assert!(
+            combat_candidates(&blocked_incumbent).is_empty(),
+            "a held slot behind static cover must clear instead of remaining fireable"
+        );
+    }
+
+    // P11: each generated in-band slot is visible only when its own eye-to-aim
+    // segment is clear. With all segments blocked, batch allocation receives no
+    // firing proposal and the caller holds/repositions.
+    #[test]
+    fn combat_candidates_yield_no_slot_when_all_in_band_positions_are_occluded() {
+        let nav_graph = open_nav_graph();
+        let world = floor_with_target_los_cage();
+        let target = Vec3::new(5.0, REST_Y, 5.0);
+        let candidates = combat_candidates(&query(
+            &nav_graph,
+            &world,
+            Vec3::new(1.0, REST_Y, 5.0),
+            target,
+        ));
+
+        assert!(
+            candidates.is_empty(),
+            "all blocked ring positions must yield no firing slot: {candidates:?}"
+        );
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::impact_policy::ImpactPolicyRuntime;
 use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
@@ -172,6 +172,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 max_range: TEST_ATTACK_RANGE,
                 cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -312,7 +313,9 @@ fn spawn_player_without_health(reg: &mut EntityRegistry, pos: Vec3) -> EntityId 
 }
 
 /// Spawn an enemy at `pos` carrying a Brain, an Agent (steering target), a Mesh,
-/// and its own Health. Returns the enemy id.
+/// and its own Health. Generic attack tests place their target along +X and
+/// exercise non-facing gates, so begin those fixtures already aimed at it.
+/// Focused facing tests overwrite this heading explicitly.
 fn spawn_enemy(
     reg: &mut EntityRegistry,
     pos: Vec3,
@@ -321,6 +324,7 @@ fn spawn_enemy(
 ) -> EntityId {
     let id = reg.spawn(Transform {
         position: pos,
+        rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
         ..Transform::default()
     });
     let mut brain = brain;
@@ -346,6 +350,42 @@ fn spawn_enemy(
     )
     .unwrap();
     id
+}
+
+fn wall_world(x: f32, min_y: f32, max_y: f32) -> CollisionWorld {
+    let points = vec![
+        Point::new(x, min_y, -1.0),
+        Point::new(x, max_y, -1.0),
+        Point::new(x, max_y, 1.0),
+        Point::new(x, min_y, 1.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
+        isometry: Isometry::identity(),
+    }
+}
+
+fn floor_world(y: f32) -> CollisionWorld {
+    let points = vec![
+        Point::new(-2.0, y, -2.0),
+        Point::new(2.0, y, -2.0),
+        Point::new(2.0, y, 2.0),
+        Point::new(-2.0, y, 2.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
+        isometry: Isometry::identity(),
+    }
+}
+
+fn set_enemy_hitbox(reg: &mut EntityRegistry, enemy: EntityId, hitbox: Hitbox) {
+    let mut health = reg
+        .get_component::<HealthComponent>(enemy)
+        .expect("enemy carries health")
+        .clone();
+    health.hitbox = Some(hitbox);
+    reg.set_component(enemy, health)
+        .expect("enemy remains live");
 }
 
 fn player_hp(reg: &EntityRegistry, pawn: EntityId) -> f32 {
@@ -507,12 +547,13 @@ fn step_graph(
         &reg,
         enemy,
         BrainFacts {
-            target: Some((enemy, distance)),
+            target: Some((enemy, distance, Vec3::ZERO)),
             attack_cooldown_ms: 0.0,
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,
             target_reachable: true,
+            target_visible: true,
             attacks_fired_in_activity: 0,
         },
     );
@@ -1118,12 +1159,48 @@ fn bind_candidate_filter_for_test(node: IrNode) -> BoundProgram<CandidateScope> 
     .expect("candidate filter binds")
 }
 
+/// Direct targeting unit tests exercise the same due-tick offer/eligibility
+/// seam as the AI tick without adding collision fixtures. The retired `visible`
+/// argument is intentionally ignored: LOS belongs only to the engine-floor
+/// eligibility closure passed by the live caller, never upstream of offers.
+fn select_target_for_test(
+    registry: &EntityRegistry,
+    from: Vec3,
+    enemy_faction: f32,
+    retained_target: Option<EntityId>,
+    _visible: Option<&dyn Fn(EntityId) -> bool>,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
+) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
+    let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
+    let offers = target_offers(registry, from, enemy_faction, retained_target);
+    let nearest = offers.nearest;
+    let mut candidate_perception = |target: TargetPawn| {
+        Some(perception::RawTargetPerception {
+            target: target.entity,
+            visible: true,
+            enemy_eye: from,
+            target_aim: target.position,
+        })
+    };
+    let selected = select_target(
+        retained,
+        &offers,
+        registry,
+        candidate_filter,
+        candidate_scope,
+        &mut candidate_perception,
+    )
+    .map(|selection| selection.target);
+    (nearest, selected)
+}
+
 #[test]
 fn select_target_returns_single_player_pawn() {
     let mut reg = EntityRegistry::new();
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1145,7 +1222,7 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     reg.mark_local_player_pawn(local).unwrap();
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1169,7 +1246,7 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let slightly_nearer = spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1194,7 +1271,7 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let closer = spawn_player(&mut reg, Vec3::new(8.5, 0.0, 0.0));
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1219,7 +1296,7 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     reg.remove_component::<PlayerMovementComponent>(retained)
         .unwrap();
 
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &reg,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1259,7 +1336,7 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
             value: IrValue::Bool(true),
         }),
     });
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &registry,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1285,7 +1362,7 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
         }),
     });
     let mut candidate_scope = CandidateScope::for_validation();
-    let (_, target) = select_target(
+    let (_, target) = select_target_for_test(
         &registry,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1321,7 +1398,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     });
     let mut inside = EntityRegistry::new();
     let inside_pawn = spawn_player(&mut inside, Vec3::new(RANGE - EPSILON, 0.0, 0.0));
-    let (_, selected) = select_target(
+    let (_, selected) = select_target_for_test(
         &inside,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1337,7 +1414,7 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
 
     let mut outside = EntityRegistry::new();
     spawn_player(&mut outside, Vec3::new(RANGE + EPSILON, 0.0, 0.0));
-    let (_, selected) = select_target(
+    let (_, selected) = select_target_for_test(
         &outside,
         Vec3::ZERO,
         ENEMY_DEFAULT_FACTION,
@@ -1452,6 +1529,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
         authored_brain(&graph, TEST_ATTACK_STATE),
         50.0,
     );
+    set_enemy_yaw(&mut registry, second, 3.0 * std::f32::consts::FRAC_PI_4);
 
     // AI snapshots every outcome before it enters this apply-pass callback.
     // The first impact makes the player friendly, but both precomputed guards
@@ -2007,6 +2085,188 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
 }
 
 #[test]
+fn enemy_attack_fire_gate_requires_clear_static_eye_to_aim_los() {
+    let mut clear_registry = EntityRegistry::new();
+    let mut clear_runtime = AiRuntime::new();
+    let clear_pawn = spawn_player(&mut clear_registry, Vec3::new(1.0, 0.0, 0.0));
+    let clear_enemy = spawn_enemy(
+        &mut clear_registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut clear_registry,
+        clear_enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+
+    let clear_events = run_ai_tick_with_navigation(
+        &mut clear_registry,
+        &mut clear_runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert_eq!(clear_events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&clear_registry, clear_pawn), 92.0);
+
+    let mut blocked_registry = EntityRegistry::new();
+    let mut blocked_runtime = AiRuntime::new();
+    let blocked_pawn = spawn_player(&mut blocked_registry, Vec3::new(1.0, 0.0, 0.0));
+    let blocked_enemy = spawn_enemy(
+        &mut blocked_registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut blocked_registry,
+        blocked_enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+    let wall = wall_world(0.5, -1.0, 2.0);
+
+    let blocked_events = run_ai_tick_with_navigation(
+        &mut blocked_registry,
+        &mut blocked_runtime,
+        0.016,
+        None,
+        Some(&wall),
+    );
+    assert!(
+        blocked_events.is_empty(),
+        "a persistent static-world occluder suppresses both damage and enemyAttack"
+    );
+    assert_eq!(player_hp(&blocked_registry, blocked_pawn), 100.0);
+}
+
+#[test]
+fn enemy_eye_height_clears_low_cover_but_full_cover_blocks_fire() {
+    let make_fixture = || {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+        let enemy = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            brain_with(tuning(), TEST_IDLE_STATE),
+            50.0,
+        );
+        set_enemy_hitbox(
+            &mut registry,
+            enemy,
+            Hitbox {
+                half_extents: Vec3::new(0.4, 1.5, 0.4),
+                offset: Vec3::ZERO,
+            },
+        );
+        (registry, pawn)
+    };
+
+    let (mut low_cover_registry, low_cover_pawn) = make_fixture();
+    let mut low_cover_runtime = AiRuntime::new();
+    // The enemy eye (1.5) to the pawn eye (0.5) crosses x=1 at y=1.0,
+    // clearing this 0.9-high wall. A ground-point target ray would cross at
+    // y=0.75 and fail instead, so this pins the target-eye endpoint too.
+    let low_cover = wall_world(1.0, -1.0, 0.9);
+    let events = run_ai_tick_with_navigation(
+        &mut low_cover_registry,
+        &mut low_cover_runtime,
+        0.016,
+        None,
+        Some(&low_cover),
+    );
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "the eye-to-pawn-eye segment passes over low cover"
+    );
+    assert_eq!(player_hp(&low_cover_registry, low_cover_pawn), 92.0);
+
+    let (mut full_cover_registry, full_cover_pawn) = make_fixture();
+    let mut full_cover_runtime = AiRuntime::new();
+    let full_cover = wall_world(1.0, -1.0, 1.25);
+    let events = run_ai_tick_with_navigation(
+        &mut full_cover_registry,
+        &mut full_cover_runtime,
+        0.016,
+        None,
+        Some(&full_cover),
+    );
+    assert!(
+        events.is_empty(),
+        "cover that reaches the eye ray blocks fire"
+    );
+    assert_eq!(player_hp(&full_cover_registry, full_cover_pawn), 100.0);
+}
+
+#[test]
+fn enemy_eye_prefers_hitbox_top_and_uses_nav_height_as_its_fallback() {
+    let mut registry = EntityRegistry::new();
+    let position = Vec3::new(3.0, 4.0, 5.0);
+    let enemy = spawn_enemy(
+        &mut registry,
+        position,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    let nav_graph = reachability_nav_graph(Vec::new());
+
+    assert_eq!(
+        perception::enemy_eye(&registry, enemy, position, Some(&nav_graph)),
+        position + Vec3::Y * (perception::EYE_FACTOR * nav_graph.agent_params().height),
+        "an enemy without an authored hitbox uses the canonical nav-agent height"
+    );
+
+    set_enemy_hitbox(
+        &mut registry,
+        enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.25, 0.4),
+            offset: Vec3::new(0.1, 0.2, 0.3),
+        },
+    );
+    assert_eq!(
+        perception::enemy_eye(&registry, enemy, position, Some(&nav_graph)),
+        position + Vec3::new(0.1, 1.45, 0.3),
+        "an authored hitbox supplies the exact top-center LOS origin"
+    );
+}
+
+#[test]
+fn melee_contact_eye_to_aim_segment_stays_clear_above_the_floor() {
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::ZERO);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_IDLE_STATE),
+        50.0,
+    );
+    set_enemy_hitbox(
+        &mut registry,
+        enemy,
+        Hitbox {
+            half_extents: Vec3::new(0.4, 1.0, 0.4),
+            offset: Vec3::ZERO,
+        },
+    );
+    let floor = floor_world(0.0);
+
+    let events =
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&floor));
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
 fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire() {
     let graph = test_behavior_graph!({
         initial: "attack".to_string(),
@@ -2045,6 +2305,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 max_range: TEST_ATTACK_RANGE,
                 cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -3979,6 +4240,7 @@ fn moving_alert_enemy_facing_is_rate_limited_per_tick() {
         brain_with(tuning(), TEST_ALERT_STATE),
         50.0,
     );
+    set_enemy_yaw(&mut reg, enemy, 0.0);
     set_agent_velocity(&mut reg, enemy, Vec3::new(4.0, 0.0, 0.0));
 
     let before = enemy_yaw(&reg, enemy);
@@ -4089,8 +4351,8 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
 }
 
 // ---------------------------------------------------------------------------
-// Attack clips and damage are entry-edge driven. A held attack activity does
-// not restart its clip or produce a second hit when its cooldown becomes ready.
+// Attack clips and onEnter remain entry-edge driven. Damage uses the
+// fire-once-per-firing-leaf-dwell latch.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4601,6 +4863,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                 max_range: 2.0,
                 cooldown_ms: 1000.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: None,
@@ -5044,6 +5307,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             max_range: 2.0,
             cooldown_ms: 1000.0,
             engagement_radius: None,
+            standoff_distance: None,
         },
     );
 
@@ -5242,6 +5506,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 max_range: 2.0,
                 cooldown_ms: 0.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: None,
@@ -5936,6 +6201,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     max_range: JAB_RANGE,
                     cooldown_ms: 1200.0,
                     engagement_radius: None,
+                    standoff_distance: None,
                 },
             ),
             (
@@ -5945,6 +6211,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     max_range: SLAM_RANGE,
                     cooldown_ms: 1800.0,
                     engagement_radius: Some(SLAM_RANGE),
+                    standoff_distance: None,
                 },
             ),
         ]),
@@ -6162,6 +6429,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     max_range: JAB_RANGE,
                     cooldown_ms: 1200.0,
                     engagement_radius: None,
+                    standoff_distance: None,
                 },
             ),
             (
@@ -6171,6 +6439,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     max_range: SLAM_RANGE,
                     cooldown_ms: 1800.0,
                     engagement_radius: Some(SLAM_RANGE),
+                    standoff_distance: None,
                 },
             ),
         ]),
@@ -6652,6 +6921,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     max_range: 2.0,
                     cooldown_ms: 1200.0,
                     engagement_radius: None,
+                    standoff_distance: None,
                 },
             ),
             (
@@ -6661,6 +6931,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     max_range: 3.5,
                     cooldown_ms: 1800.0,
                     engagement_radius: Some(3.5),
+                    standoff_distance: None,
                 },
             ),
         ]),
@@ -7107,10 +7378,93 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
                 max_range: 2.0,
                 cooldown_ms: 1000.0,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: None,
         move_speed: 3.5,
+    })
+}
+
+/// A minimal hold-at-standoff offense cycle. Its nested `aim` leaf deliberately
+/// exposes no action while the parent move selector remains capable of chasing,
+/// matching the committed ranged-aim shape without relying on demo content.
+fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
+    let elapsed_at_least = |duration_ms| IrNode::Ge {
+        a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(duration_ms),
+        }),
+    };
+    let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
+        initial: "aim".to_string(),
+        activities: BTreeMap::from([
+            (
+                "aim".to_string(),
+                authored_state("idle_aiming", MotionVerb::Hold, None),
+            ),
+            (
+                "fire".to_string(),
+                authored_state(
+                    "shoot",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("shoot".to_string())),
+                ),
+            ),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "aim".to_string(),
+                vec![edge("fire", elapsed_at_least(aim_ms))],
+            ),
+            (
+                "fire".to_string(),
+                vec![edge("aim", elapsed_at_least(fire_ms))],
+            ),
+        ]),
+    });
+    test_behavior_graph!({
+        initial: "engage".to_string(),
+        activities: BTreeMap::from([(
+            "engage".to_string(),
+            BehaviorActivityDescriptor {
+                animation: Some("idle_aiming".to_string()),
+                motion: None,
+                action: None,
+                on_enter: None,
+                layers: BTreeMap::from([
+                    (
+                        "move".to_string(),
+                        BehaviorLayerDescriptor::Selector(vec![
+                            BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+                                when: Some(IrNode::Const {
+                                    value: IrValue::Bool(true),
+                                }),
+                                motion: Some(MotionVerb::Hold),
+                                action: None,
+                            }),
+                            BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget),
+                        ]),
+                    ),
+                    ("offense".to_string(), offense),
+                ]),
+            },
+        )]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "shoot".to_string(),
+            AttackParams {
+                damage: TEST_ATTACK_DAMAGE,
+                max_range: 5.0,
+                cooldown_ms: 0.0,
+                engagement_radius: Some(5.0),
+                standoff_distance: None,
+            },
+        )]),
+        engagement_radius: Some(5.0),
+        move_speed: TEST_MOVE_SPEED,
     })
 }
 
@@ -7159,11 +7513,485 @@ fn an_attack_state_deals_no_damage_outside_attack_range() {
     reg.set_component(pawn, transform).unwrap();
 
     let events = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "the dwell latch fires once when its range gate first opens"
+    );
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn latched_firing_leaf_rechecks_blocked_los_and_fires_once_when_clear() {
+    // P1: a blocked entry keeps its per-leaf latch open. Once the shared
+    // debounced verdict clears, the same dwell fires exactly once.
+    let graph = standing_attack_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    set_enemy_yaw(&mut registry, enemy, std::f32::consts::FRAC_PI_2);
+    let wall = wall_world(0.5, -1.0, 2.0);
+
+    for _ in 0..=perception::LOS_GRACE_TICKS {
+        let events =
+            run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+        assert!(
+            events.is_empty(),
+            "covered firing dwell must not land damage"
+        );
+    }
+    assert_eq!(player_hp(&registry, pawn), 100.0);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .activity_attack_count(0),
+        Some(0),
+        "a closed LOS gate leaves the current firing dwell unlatched"
+    );
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
     assert!(
         events.is_empty(),
-        "the earlier out-of-range entry cannot re-fire after range changes"
+        "one firing-leaf dwell lands at most one shot"
     );
-    assert_eq!(player_hp(&reg, pawn), 100.0);
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn occluded_fresh_offer_prices_stride_but_is_not_acquired() {
+    // P6: raw nearest-hostile distance still determines the stride, while the
+    // due-tick eligibility path rejects the same candidate for blocked LOS.
+    let graph = test_behavior_graph!({
+        initial: "rest".to_string(),
+        activities: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+            (
+                "due".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+        ]),
+        transitions: BTreeMap::from([(
+            "rest".to_string(),
+            vec![edge("due", brain_input(BRAIN_ACQUISITION_DUE_INPUT))],
+        )]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let mut registry = EntityRegistry::new();
+    let candidate_position = Vec3::new(35.0, 0.0, 0.0);
+    let candidate = spawn_player(&mut registry, candidate_position);
+    let mut brain = authored_brain(&graph, "rest");
+    brain.think_stride_counter = 0;
+    let stride = think_stride_for_distance(distance_xz(candidate_position, Vec3::ZERO));
+    assert!(stride > 1, "fixture must use the far raw-offer band");
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let wall = wall_world(17.0, -1.0, 2.0);
+    let mut runtime = AiRuntime::new();
+
+    for tick in 1..stride {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+        assert_eq!(
+            enemy_state_name(&registry, enemy),
+            "rest",
+            "tick {tick} must remain off the raw-distance stride",
+        );
+        assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    }
+
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "due",
+        "the raw nearest hostile reaches its unchanged stride boundary",
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "the blocked hostile remains ineligible even on its raw-distance due tick",
+    );
+    assert_ne!(enemy_acquired_target(&registry, enemy), Some(candidate));
+}
+
+#[test]
+fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
+    // P7: only fresh candidacy uses raw LOS. A target selected while clear stays
+    // retained, and the existing debounced fire verdict alone controls shots.
+    let graph = test_behavior_graph!({
+        initial: "fire_a".to_string(),
+        activities: BTreeMap::from([
+            (
+                "fire_a".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("attack".to_string())),
+                ),
+            ),
+            (
+                "fire_b".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Hold,
+                    Some(ActionVerb::Attack("attack".to_string())),
+                ),
+            ),
+        ]),
+        transitions: BTreeMap::from([
+            (
+                "fire_a".to_string(),
+                vec![edge(
+                    "fire_b",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                )],
+            ),
+            (
+                "fire_b".to_string(),
+                vec![edge(
+                    "fire_a",
+                    IrNode::Const {
+                        value: IrValue::Bool(true),
+                    },
+                )],
+            ),
+        ]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                damage: TEST_ATTACK_DAMAGE,
+                max_range: TEST_ATTACK_RANGE,
+                cooldown_ms: 0.0,
+                engagement_radius: None,
+                standoff_distance: None,
+            },
+        )]),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let wall = wall_world(0.5, -1.0, 2.0);
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+
+    for grace_tick in 1..=perception::LOS_GRACE_TICKS {
+        let events =
+            run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+        assert_eq!(
+            events,
+            vec![ENEMY_ATTACK_EVENT],
+            "covered tick {grace_tick} remains inside the selected target's loss grace",
+        );
+        assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+    }
+
+    let events = run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert!(
+        events.is_empty(),
+        "the active attack state holds once the debounced verdict has expired",
+    );
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+}
+
+// Regression: an in-range actionless aim cleared the retained target before
+// covered LOS could reach the shared loss-grace verdict.
+#[test]
+fn actionless_committed_aim_retains_target_and_fires_through_los_grace() {
+    let graph = committed_aim_graph(16.0, 1000.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert!(events.is_empty(), "the committed aim leaf has no action");
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/aim");
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let events = run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/fire");
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "cover loss after an actionless committed aim reaches the retained target's LOS grace",
+    );
+    assert_eq!(player_hp(&registry, target), 92.0);
+}
+
+#[test]
+fn retained_target_does_not_switch_to_a_closer_occluded_candidate_on_due_tick() {
+    // P8: a due rescan can replace the incumbent only with an eligible fresh
+    // candidate. LOS must gate this branch too, without LOS-gating A itself.
+    let graph = pursuit_graph();
+    let mut registry = EntityRegistry::new();
+    let retained_position = Vec3::new(10.0, 0.0, 30.0);
+    let retained = spawn_player(&mut registry, retained_position);
+    let occluded = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.acquired_target = Some(retained);
+    let retained_stride = think_stride_for_distance(distance_xz(retained_position, Vec3::ZERO));
+    assert!(
+        retained_stride > 1,
+        "fixture must rescan on a retained due tick"
+    );
+    brain.think_stride_counter = retained_stride - 1;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    // The narrow wall catches B's ray at z=0 but A's ray crosses its x-plane at
+    // z=1.5, beyond the wall edge, so the incumbent is still plainly visible.
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(retained));
+    assert_ne!(enemy_acquired_target(&registry, enemy), Some(occluded));
+}
+
+#[test]
+fn fully_disengaged_enemy_does_not_reacquire_a_nearby_occluded_target() {
+    // P9: standing down clears the retained id. Re-arming reaches the pure
+    // fresh scan, whose raw LOS gate prevents the nearby covered target waking
+    // the enemy back up.
+    let graph = pursuit_graph();
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.acquired_target = Some(target);
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    set_enemy_aggro_armed(&mut registry, enemy, false);
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+
+    set_enemy_aggro_armed(&mut registry, enemy, true);
+    let wall = wall_world(0.5, -1.0, 2.0);
+    run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "rest",
+        "the fresh scan must not reacquire a nearby hostile through cover",
+    );
+}
+
+#[test]
+fn committed_aim_tracks_a_moving_target_then_latches_the_first_facing_clear_fire_tick() {
+    // P2: the actionless hold-at-standoff aim still slews, including after the
+    // target changes heading; entering fire beyond tolerance waits rather than
+    // dropping the dwell's shot.
+    let graph = committed_aim_graph(32.0, 1000.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+    let brain = BrainComponent::from_graph(&graph);
+    assert!(
+        engages_active(&brain),
+        "the hold-at-standoff aim's parent remains an engaged activity"
+    );
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    set_enemy_yaw(&mut registry, enemy, std::f32::consts::PI);
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let yaw_before_target_moves = enemy_yaw(&registry, enemy);
+    set_enemy_position(&mut registry, pawn, Vec3::new(1.0, 0.0, 1.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let yaw_after_target_moves = enemy_yaw(&registry, enemy);
+    let moved_target_yaw = std::f32::consts::FRAC_PI_4;
+    assert!(
+        yaw_distance(yaw_after_target_moves, moved_target_yaw)
+            < yaw_distance(yaw_before_target_moves, moved_target_yaw),
+        "the actionless aim leaf slews toward the target's new heading: before \
+         {yaw_before_target_moves}, after {yaw_after_target_moves}, target {moved_target_yaw}, \
+         state {}, acquired {:?}",
+        enemy_state_path(&registry, enemy),
+        enemy_acquired_target(&registry, enemy),
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert!(
+        events.is_empty(),
+        "the firing leaf stays latched-open while its post-slew heading is outside tolerance"
+    );
+    let mut fired = false;
+    for _ in 0..20 {
+        let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+        if events == vec![ENEMY_ATTACK_EVENT] {
+            fired = true;
+            break;
+        }
+        assert!(events.is_empty());
+    }
+    assert!(
+        fired,
+        "the firing dwell lands on its first facing-clear tick"
+    );
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn firing_gate_reads_the_heading_reached_by_this_ticks_slew() {
+    // P3: configure the initial yaw so one slew step lands exactly on the
+    // inclusive attack tolerance boundary. A prior-tick yaw read would miss.
+    let graph = standing_attack_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let target_yaw = std::f32::consts::FRAC_PI_2;
+    set_enemy_yaw(
+        &mut registry,
+        enemy,
+        target_yaw - facing::ATTACK_FACING_TOLERANCE_RADIANS - FACING_TURN_RATE * 0.016,
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "yaw after slew {}, target {target_yaw}, residual {}, tolerance {}",
+        enemy_yaw(&registry, enemy),
+        yaw_distance(enemy_yaw(&registry, enemy), target_yaw),
+        facing::ATTACK_FACING_TOLERANCE_RADIANS,
+    );
+    assert!(
+        (yaw_distance(enemy_yaw(&registry, enemy), target_yaw)
+            - facing::ATTACK_FACING_TOLERANCE_RADIANS)
+            .abs()
+            < 1e-5,
+        "the apply pass must write the same boundary heading the fire gate read"
+    );
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn zero_duration_aim_transitions_to_a_firing_dwell_that_can_still_fire() {
+    // P12: a zero-duration aim must not consume the future firing leaf's latch.
+    let graph = committed_aim_graph(0.0, 100.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/fire");
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn zero_duration_fire_dwell_fires_on_its_entry_tick() {
+    // P13: the transition out of `fire` is evaluated next tick, so a zero-ms
+    // dwell still exposes the action for one fire-latch decision.
+    let graph = committed_aim_graph(0.0, 0.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/fire");
+    assert_eq!(player_hp(&registry, pawn), 92.0);
+}
+
+#[test]
+fn dead_target_in_a_committed_aim_cycle_never_receives_damage_or_an_attack_event() {
+    // P14: a corpse retains movement/transform identity through the target
+    // selection path, but the engine-floor aliveness gate remains authoritative.
+    let graph = committed_aim_graph(0.0, 100.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    set_hp(&mut registry, pawn, 0.0);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert!(events.is_empty());
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/fire");
+    assert_eq!(player_hp(&registry, pawn), 0.0);
 }
 
 #[test]
@@ -7329,6 +8157,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 max_range: ATTACK_RANGE,
                 cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         )]),
         engagement_radius: Some(ATTACK_RANGE),
@@ -7418,12 +8247,17 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
                 max_range: TEST_ATTACK_RANGE,
                 cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
                 engagement_radius: None,
+                standoff_distance: None,
             },
         );
         assert!(matches!(
             graph.envelope.activities["position"].motion,
             Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
         ));
+        assert!(
+            !engages_active(&BrainComponent::from_graph(&graph)),
+            "{motion:?} remains non-engaged even when an unvalidated graph carries an action",
+        );
     }
 
     let mut chase = position_goal_graph(MotionVerb::ChaseTarget, None);

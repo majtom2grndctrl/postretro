@@ -36,7 +36,9 @@ local BrainSdk = {}
 --- `targetReachable` (boolean; false with no target or no navmesh;
 --- the pathfinder's cached verdict rather than ground-truth reachability), and
 --- `attacksFiredInActivity` (number; successful fires since the current
---- activity entered, visible to guards on the next refresh).
+--- activity entered, visible to guards on the next refresh), and
+--- `targetVisible` (boolean; the shared debounced static-world sightline
+--- verdict, false with no target).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -52,6 +54,7 @@ BrainSdk.brain = table.freeze({
   targetHostile = input("@brain.targetHostile"),
   targetReachable = input("@brain.targetReachable"),
   attacksFiredInActivity = input("@brain.attacksFiredInActivity"),
+  targetVisible = input("@brain.targetVisible"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

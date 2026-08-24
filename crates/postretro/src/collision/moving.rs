@@ -866,6 +866,31 @@ mod tests {
     }
 
     #[test]
+    fn static_line_of_sight_ignores_a_mover_that_blocks_the_combined_ray() {
+        let world = CollisionWorld::new();
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        poses.insert(42, Vec3::new(1.0, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        let eye = Vec3::new(0.0, 1.0, 0.0);
+        let aim = Vec3::new(2.0, 1.0, 0.0);
+
+        let combined = cast_ray_combined(
+            &world,
+            &movers,
+            &poses,
+            Point::new(eye.x, eye.y, eye.z),
+            Vector::new(1.0, 0.0, 0.0),
+            eye.distance(aim),
+        )
+        .expect("the mover blocks the combined ray");
+        assert_eq!(combined.source, CollisionSource::Mover(42));
+        assert!(
+            super::super::line_of_sight(eye, aim, &world),
+            "LOS uses static geometry only and must not call the combined query"
+        );
+    }
+
+    #[test]
     fn combined_capsule_without_movers_matches_static_capsule() {
         let world = floor_world(0.0);
         let poses = TestPoseSource::default();

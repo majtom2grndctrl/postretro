@@ -486,8 +486,10 @@ declare module "postretro" {
     maxRange: number;
     /** Minimum interval between attacks, in milliseconds. Must be finite and > 0. */
     cooldownMs: number;
-    /** Optional combat-slot standoff for a state firing this attack. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`. */
+    /** Optional action-specific engagement radius. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`. */
     engagementRadius?: number;
+    /** Optional combat-slot standoff for a state firing this attack. Must be finite and > 0; defaults to that action's resolved engagement radius. */
+    standoffDistance?: number;
   };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
@@ -575,7 +577,7 @@ declare module "postretro" {
     attacks?: { readonly [attack: string]: AttackParams };
     /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0. */
     moveSpeed: number;
-    /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default. */
+    /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;
   };
 
@@ -1836,6 +1838,8 @@ declare module "postretro" {
     readonly targetReachable: RuntimeGuardNode;
     /** Successful attack fires since the currently-evaluated activity was entered. It is scope-relative and a fire becomes visible on the next tick's guard refresh (number). */
     readonly attacksFiredInActivity: RuntimeGuardNode;
+    /** `true` when the selected target is clear on the enemy's shared, debounced static-world sightline; false with no target. This is the LOS verdict the engine fire gate also reads, before its range, cooldown, and facing requirements (boolean). */
+    readonly targetVisible: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

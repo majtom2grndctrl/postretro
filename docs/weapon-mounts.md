@@ -17,8 +17,10 @@ blender --background --python tools/prop_to_gltf.py -- \
 ```
 
 `--grip` moves the weapon origin to the hand grip, and `--scale` applies the
-uniform size conversion. This is the final weapon path; record these values so
-the emitted rebake command can regenerate that same file from the raw source.
+uniform size conversion. Scale must be finite and greater than zero; reflected
+negative-scale bakes are unsupported in this workflow. This is the final weapon
+path; record these values so the emitted rebake command can regenerate that same
+file from the raw source.
 
 ## 2. Declare the source axes and solve once
 
@@ -82,6 +84,10 @@ part of the normal check command. When supplied, CLI axes and Euler override
 stale persisted values. A declared solve still computes the full from-raw
 Euler; its emitted rebake persists that newly solved Euler and any CLI axis
 override.
+
+The sampled socket direction axes must form an orthonormal, positive-determinant
+rotation. Fix reflected rig transforms or shear caused by hierarchical
+non-uniform scale instead of solving against that invalid frame.
 
 ## Pose and character limits
 

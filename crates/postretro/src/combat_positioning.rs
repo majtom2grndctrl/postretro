@@ -1,7 +1,8 @@
 //! Pure combat-position candidate selection.
 //!
 //! This module is deliberately decoupled from AI steering state. Callers pass a
-//! target position and Task-1 LOS endpoints directly, plus the nav/collision
+//! target position and the canonical enemy-eye/target-aim LOS endpoints
+//! supplied by AI perception, plus the nav/collision
 //! query surfaces required to prove each candidate is reachable, statically
 //! occupiable, and visible from its own eye point.
 

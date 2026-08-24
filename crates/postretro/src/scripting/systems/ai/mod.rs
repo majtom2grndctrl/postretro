@@ -67,8 +67,8 @@ use postretro_entities::{
 };
 use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
-    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance, target_offers,
+    TargetPawn, TargetSelection, acquisition_due, select_target, selected_target_alive,
+    target_candidate, target_distance, target_offers,
 };
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
@@ -262,8 +262,8 @@ pub(super) struct EnemyOutcome {
     /// resolution needs nothing but the outcomes.
     pub(super) position: Vec3,
     pub(super) target: Option<TargetPawn>,
-    /// Shared Task-1 LOS endpoints, carried as data so combat positioning stays
-    /// registry-decoupled and cannot drift from the fire-gate derivation.
+    /// Canonical enemy-eye/target-aim LOS endpoints. Passing them as data keeps
+    /// combat positioning registry-decoupled and aligned with the fire gate.
     pub(super) enemy_eye_offset: Vec3,
     pub(super) target_aim: Option<Vec3>,
     pub(super) brain: BrainComponent,
@@ -510,7 +510,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_acquired_target = brain.acquired_target;
-        let (target, evaluate_acquisition) = if brain.aggro_armed {
+        let (target_selection, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
             // candidates instead of honoring a stale acquired id.
@@ -536,8 +536,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     );
                     let enemy_eye =
                         perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
-                    let candidate_visible = |candidate| {
-                        perception::raw_target_visible(
+                    let mut candidate_perception = |candidate| {
+                        perception::raw_target_perception(
                             registry,
                             enemy_eye,
                             candidate,
@@ -550,10 +550,13 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         registry,
                         candidate_filter,
                         candidate_scope,
-                        &candidate_visible,
+                        &mut candidate_perception,
                     )
                 } else {
-                    Some(retained.target)
+                    Some(TargetSelection {
+                        target: retained.target,
+                        fresh_perception: None,
+                    })
                 };
                 (target, evaluate_acquisition)
             } else {
@@ -570,8 +573,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 let target = evaluate_acquisition.then(|| {
                     let enemy_eye =
                         perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
-                    let candidate_visible = |candidate| {
-                        perception::raw_target_visible(
+                    let mut candidate_perception = |candidate| {
+                        perception::raw_target_perception(
                             registry,
                             enemy_eye,
                             candidate,
@@ -584,7 +587,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         registry,
                         candidate_filter,
                         candidate_scope,
-                        &candidate_visible,
+                        &mut candidate_perception,
                     )
                 });
                 (target.flatten(), evaluate_acquisition)
@@ -593,6 +596,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         } else {
             (None, false)
         };
+        let target = target_selection.map(|selection| selection.target);
 
         // (1) Every named cooldown ticks down before the aggro gate and before
         // any guard reads its selected attack's value. Entries do not freeze
@@ -615,15 +619,18 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // The FINALLY selected pawn's identity and distance, or `None` with no
         // target. This one binding feeds the guard facts and attack range gate,
         // so neither can disagree about which target they describe.
-        let target_perception = target.and_then(|target| {
+        let target_perception = target_selection.and_then(|selection| {
             perception::perceive_target(
                 registry,
                 los_grace,
-                snap.id,
-                snap.position,
-                target,
-                nav_graph,
-                collision_world,
+                perception::TargetPerceptionQuery {
+                    enemy: snap.id,
+                    enemy_position: snap.position,
+                    target: selection.target,
+                    nav_graph,
+                    collision_world,
+                    fresh: selection.fresh_perception,
+                },
             )
         });
         if target.is_none() {

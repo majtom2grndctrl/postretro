@@ -1175,14 +1175,23 @@ fn select_target_for_test(
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
     let offers = target_offers(registry, from, enemy_faction, retained_target);
     let nearest = offers.nearest;
+    let mut candidate_perception = |target: TargetPawn| {
+        Some(perception::RawTargetPerception {
+            target: target.entity,
+            visible: true,
+            enemy_eye: from,
+            target_aim: target.position,
+        })
+    };
     let selected = select_target(
         retained,
         &offers,
         registry,
         candidate_filter,
         candidate_scope,
-        &|_| true,
-    );
+        &mut candidate_perception,
+    )
+    .map(|selection| selection.target);
     (nearest, selected)
 }
 
@@ -4342,8 +4351,8 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
 }
 
 // ---------------------------------------------------------------------------
-// Attack clips and damage are entry-edge driven. A held attack activity does
-// not restart its clip or produce a second hit when its cooldown becomes ready.
+// Attack clips and onEnter remain entry-edge driven. Damage uses the
+// fire-once-per-firing-leaf-dwell latch.
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -7,6 +7,8 @@ Usage:
         --output path/to/output/model.gltf \
         [--grip 0.0 -0.05 0.12] \
         [--scale 0.01] \
+        [--rotate-euler X Y Z] \
+        [--mount-axes BX BY BZ UX UY UZ] \
         [--socket muzzle=BarrelTip] \
         [--socket optic_rail=ScopeMount]
 
@@ -16,7 +18,8 @@ validates against the engine model contract, and exports glTF Separate.
 
 After export the script post-processes the .gltf JSON: removes extensions
 the engine rejects from extensionsRequired, and optionally adds socket
-extras tags for named attachment points on child nodes.
+extras tags for named attachment points on child nodes and mount-axis metadata
+to the selected mesh node.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
 """
@@ -33,6 +36,24 @@ from mathutils import Vector
 REJECTED_EXTENSIONS = {
     "KHR_materials_pbrSpecularGlossiness",
 }
+MOUNT_AXIS_MIN_LENGTH_SQUARED = 1.0e-12
+MOUNT_AXIS_ORTHOGONAL_EPSILON = 1.0e-3
+
+
+def finite_float(value):
+    """argparse type for finite numeric transform inputs."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("value must be finite")
+    return parsed
+
+
+def positive_finite_float(value):
+    """argparse type for a scale that preserves this bake workflow's frame."""
+    parsed = finite_float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("scale must be greater than zero")
+    return parsed
 
 
 def parse_args():
@@ -60,18 +81,25 @@ def parse_args():
              "model's current coordinate space (applied before --scale)."
     )
     parser.add_argument(
-        "--scale", type=float, default=None,
-        help="Uniform scale factor applied after import "
+        "--scale", type=positive_finite_float, default=None,
+        help="Positive uniform scale factor applied after import "
              "(e.g. 0.01 to convert centimeters to meters)"
     )
     parser.add_argument(
-        "--rotate-euler", type=float, nargs=3, metavar=("X", "Y", "Z"),
+        "--rotate-euler", type=finite_float, nargs=3, metavar=("X", "Y", "Z"),
         help="Rotate the mesh about its origin by these XYZ Euler degrees, "
              "applied AFTER --grip (so the rotation pivots around the grip "
              "point). Use to orient a hand-held weapon so it points correctly "
              "when mounted on a skeleton socket: the engine mounts an "
              "attachment at the raw joint matrix with no per-socket offset, so "
              "any orientation fix must be baked into the model here."
+    )
+    parser.add_argument(
+        "--mount-axes", type=finite_float, nargs=6,
+        metavar=("BX", "BY", "BZ", "UX", "UY", "UZ"),
+        help="Persist author-declared raw-source weapon barrel and up axes in the exported "
+             "mesh node's extras.mount metadata. The applied --rotate-euler "
+             "is recorded there too. Do not use this flag for geometric-assist axes."
     )
     parser.add_argument(
         "--socket", action="append", metavar="NAME=NODE",
@@ -337,8 +365,55 @@ def export_gltf(output_path):
             print(f"  {f.name} ({size_kb:.1f} KB)")
 
 
-def postprocess_gltf(gltf_path, sockets=None):
-    """Post-process the exported glTF JSON: clean extensions, add socket tags."""
+def normalized_mount_axis(axis, label):
+    """Return a finite unit mount axis or raise a direct writer error."""
+    if len(axis) != 3:
+        raise ValueError(f"mount {label} axis must contain exactly three numbers")
+    try:
+        axis = tuple(float(value) for value in axis)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"mount {label} axis must contain finite numbers") from error
+    length_squared = sum(value * value for value in axis)
+    if (not all(math.isfinite(value) for value in axis)
+            or not math.isfinite(length_squared)
+            or length_squared <= MOUNT_AXIS_MIN_LENGTH_SQUARED):
+        raise ValueError(f"mount {label} axis must be finite and non-zero")
+    length = math.sqrt(length_squared)
+    return tuple(value / length for value in axis)
+
+
+def validated_mount_metadata(mount_axes, rotate_euler):
+    """Validate and normalize metadata before it can reach JSON serialization."""
+    normalized_euler = None
+    if rotate_euler is not None:
+        if len(rotate_euler) != 3:
+            raise ValueError("rotate Euler must contain exactly three numbers")
+        try:
+            normalized_euler = tuple(float(value) for value in rotate_euler)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("rotate Euler must contain finite numbers") from error
+        if not all(math.isfinite(value) for value in normalized_euler):
+            raise ValueError("rotate Euler must contain only finite numbers")
+
+    if mount_axes is None:
+        return None, normalized_euler
+    if len(mount_axes) != 6:
+        raise ValueError("mount axes must contain exactly six numbers")
+    barrel = normalized_mount_axis(mount_axes[:3], "barrel")
+    up = normalized_mount_axis(mount_axes[3:], "up")
+    dot = sum(barrel_component * up_component
+              for barrel_component, up_component in zip(barrel, up))
+    if abs(dot) > MOUNT_AXIS_ORTHOGONAL_EPSILON:
+        raise ValueError(
+            "mount barrel and up axes must be perpendicular "
+            f"(|dot| <= {MOUNT_AXIS_ORTHOGONAL_EPSILON})"
+        )
+    return barrel + up, normalized_euler
+
+
+def postprocess_gltf(gltf_path, sockets=None, rotate_euler=None, mount_axes=None):
+    """Post-process the exported glTF JSON and write optional author metadata."""
+    mount_axes, rotate_euler = validated_mount_metadata(mount_axes, rotate_euler)
     gltf_path = Path(gltf_path)
     with open(gltf_path, "r") as f:
         gltf = json.load(f)
@@ -370,6 +445,7 @@ def postprocess_gltf(gltf_path, sockets=None):
             print("  If the engine rejects the model, these may need conversion.")
 
     nodes = gltf.get("nodes", [])
+    mesh_node = next((node for node in nodes if "mesh" in node), None)
 
     if sockets:
         print(f"\nAdding socket tags:")
@@ -393,6 +469,23 @@ def postprocess_gltf(gltf_path, sockets=None):
                 print(f"  WARNING: Node '{node_name}' not found for socket '{socket_name}'")
                 node_names = [n.get("name", "(unnamed)") for n in nodes]
                 print(f"  Available nodes: {node_names}")
+
+    if mount_axes is not None:
+        if mesh_node is None:
+            print("  WARNING: Cannot write mount axes: no mesh node was exported")
+        else:
+            extras = mesh_node.get("extras") or {}
+            extras["mount"] = {
+                "barrel": list(mount_axes[:3]),
+                "up": list(mount_axes[3:]),
+                "euler": list(rotate_euler) if rotate_euler is not None else [0, 0, 0],
+            }
+            mesh_node["extras"] = extras
+            modified = True
+            print(
+                "\nPersisted mount axes on mesh node "
+                f"'{mesh_node.get('name', '(unnamed)')}'"
+            )
 
     accessors = gltf.get("accessors", [])
     meshes = gltf.get("meshes", [])
@@ -435,11 +528,6 @@ def postprocess_gltf(gltf_path, sockets=None):
     ext_req = gltf.get("extensionsRequired", [])
     print(f"extensionsRequired: {ext_req if ext_req else '(none)'}")
 
-    mesh_node = None
-    for node in nodes:
-        if "mesh" in node:
-            mesh_node = node
-            break
     if mesh_node:
         print(f"Mesh node: '{mesh_node.get('name', '(unnamed)')}'")
         prim_count = 0
@@ -494,18 +582,23 @@ def main():
 
     apply_all_transforms(mesh)
 
-    if args.scale:
+    if args.scale is not None:
         apply_scale(mesh, args.scale)
 
     if args.grip:
         relocate_origin(mesh, args.grip)
 
-    if args.rotate_euler:
+    if args.rotate_euler is not None:
         rotate_mesh(mesh, args.rotate_euler)
 
     validate_model(mesh)
     export_gltf(args.output)
-    postprocess_gltf(args.output, sockets=args.socket)
+    postprocess_gltf(
+        args.output,
+        sockets=args.socket,
+        rotate_euler=args.rotate_euler,
+        mount_axes=args.mount_axes,
+    )
 
 
 if __name__ == "__main__":

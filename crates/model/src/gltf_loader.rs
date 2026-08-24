@@ -15,10 +15,11 @@ pub use super::gltf_extras::JointZone;
 #[cfg(test)]
 use super::gltf_extras::LegRef;
 use super::gltf_extras::{
-    JointPoseMetadata, LegNameFamily, read_joint_zone, read_model_tags, read_pose_masks,
-    read_socket_name,
+    JointPoseMetadata, LegNameFamily, read_joint_zone, read_model_tags, read_mount_axes,
+    read_pose_masks, read_socket_name,
 };
 use super::mesh::{SkinnedMesh, SkinnedVertex};
+pub use super::mount::MountAxes;
 use super::pose_modifier::{JointMask, LegChain, ModifierEntry, PoseModifier, PoseModifierStack};
 use super::skeleton::{
     AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
@@ -99,6 +100,10 @@ pub struct LoadedModel {
     /// Author-named attachment points. The table keeps the first valid node in
     /// deterministic document-node traversal order when names are duplicated.
     pub sockets: HashMap<String, SocketBinding>,
+    /// Optional raw-source weapon axes declared on the selected mesh node's
+    /// `extras.mount`. Malformed metadata degrades to `None` without rejecting
+    /// the model; the optional applied Euler degrades independently.
+    pub mount: Option<MountAxes>,
     /// Tags parsed from the document's top-level `extras` (`{ "tags": [..] }`).
     /// They are returned but currently unused; map placement tags are separate.
     /// Empty when `extras` or `tags` is absent or malformed.
@@ -894,6 +899,9 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         mesh_node,
         skin,
     } = select_model(&document, &path_str)?;
+    let mount = mesh_node
+        .as_ref()
+        .and_then(|node| read_mount_axes(node.extras()));
 
     // --- Skeleton ---------------------------------------------------------
     // Use the selected skinned node's skin. A static/no-skin model still
@@ -962,6 +970,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         clips,
         submeshes,
         sockets,
+        mount,
         tags,
         joint_zones,
         pose_masks,
@@ -3556,6 +3565,60 @@ mod tests {
             "absent extras yields no tags, got {:?}",
             model.tags,
         );
+    }
+
+    #[test]
+    fn mesh_node_mount_extras_populate_loaded_model_mount() {
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["nodes"][0]["extras"]["mount"] = serde_json::json!({
+            "barrel": [0.0, 2.0, 0.0],
+            "up": [0.0, 0.0, 3.0],
+            "euler": [10.0, 20.0, 30.0],
+        });
+        let path = write_temp_fixture("mesh_mount_extras", &json);
+        let model = load_model(&path).expect("mount extras are optional metadata");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(
+            model.mount,
+            Some(MountAxes {
+                barrel: Vec3::Y,
+                up: Vec3::Z,
+                euler: Some([10.0, 20.0, 30.0]),
+            }),
+            "the selected mesh node carries the public mount declaration",
+        );
+    }
+
+    #[test]
+    fn malformed_mesh_mount_extras_do_not_fail_model_load() {
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["nodes"][0]["extras"]["mount"] = serde_json::json!({
+            "barrel": [0.0, 1.0, 0.0],
+            "up": "not-an-axis",
+        });
+        let path = write_temp_fixture("malformed_mesh_mount_extras", &json);
+        let model = load_model(&path).expect("malformed metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(model.mount, None);
+    }
+
+    #[test]
+    fn overflowed_mesh_mount_axes_degrade_loaded_model_mount_to_none() {
+        // Regression: huge finite axes overflowed length-squared and surfaced
+        // zero directions through LoadedModel.mount.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["nodes"][0]["extras"]["mount"] = serde_json::json!({
+            "barrel": [3.0e38, 3.0e38, 0.0],
+            "up": [0.0, 0.0, 1.0],
+            "euler": [0.0, 0.0, 0.0],
+        });
+        let path = write_temp_fixture("overflowed_mesh_mount_axes", &json);
+        let model = load_model(&path).expect("invalid mount metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(model.mount, None);
     }
 
     fn malformed_extras_fixture_path() -> PathBuf {

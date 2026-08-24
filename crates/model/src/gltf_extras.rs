@@ -6,7 +6,10 @@
 //! This module owns the raw JSON shapes and their non-fatal degradation rules.
 //! The loader owns topology-dependent interpretation and skeleton assembly.
 
+use glam::Vec3;
 use serde::Deserialize;
+
+use crate::mount::MountAxes;
 
 /// A skeletal hit zone authored on a joint node's per-node `extras`. Read at
 /// load time and carried parallel to the loaded skeleton. A radius is carried
@@ -20,6 +23,62 @@ pub struct JointZone {
     /// node omits `hitZoneRadius` or authors an invalid radius; the consumer
     /// applies its own default.
     pub radius: Option<f32>,
+}
+
+/// The per-node `extras.mount` shape. The core axes deserialize separately
+/// from the optional Euler metadata so a malformed Euler never hides valid
+/// author intent.
+#[derive(Debug, Deserialize)]
+struct NodeMountExtras {
+    mount: Option<MountExtras>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MountExtras {
+    barrel: Option<[f32; 3]>,
+    up: Option<[f32; 3]>,
+    #[serde(default)]
+    euler: Option<serde_json::Value>,
+}
+
+/// Read raw-source weapon axes from a selected mesh node's `extras.mount`.
+///
+/// Barrel and up are one core pair: a missing, malformed, non-finite,
+/// degenerate, or non-orthogonal member degrades the whole declaration to
+/// `None`. Euler metadata is independently optional, so malformed Euler data
+/// does not hide a valid barrel/up declaration. Metadata never rejects a model.
+pub(crate) fn read_mount_axes(extras: &gltf::json::Extras) -> Option<MountAxes> {
+    let raw = extras.as_ref()?;
+    let parsed = serde_json::from_str::<NodeMountExtras>(raw.get()).ok()?;
+    let mount = parsed.mount?;
+    let barrel = normalized_mount_axis(mount.barrel?)?;
+    let up = normalized_mount_axis(mount.up?)?;
+    (barrel.dot(up).abs() <= 1.0e-3).then_some(MountAxes {
+        barrel,
+        up,
+        euler: valid_mount_euler(mount.euler.as_ref()),
+    })
+}
+
+fn normalized_mount_axis(axis: [f32; 3]) -> Option<Vec3> {
+    let axis = Vec3::from_array(axis);
+    let length_squared = axis.length_squared();
+    (axis.is_finite() && length_squared.is_finite() && length_squared > 1.0e-12)
+        .then(|| axis.normalize())
+}
+
+fn valid_mount_euler(value: Option<&serde_json::Value>) -> Option<[f32; 3]> {
+    let values = value?.as_array()?;
+    let values: [f32; 3] = values
+        .iter()
+        .map(|value| value.as_f64().map(|value| value as f32))
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()?;
+    values
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(values)
 }
 
 /// The shape of the document's top-level `extras` this loader cares about.
@@ -394,7 +453,9 @@ fn indexed_leg_suffix(name: &str, prefix: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::read_socket_name;
+    use glam::Vec3;
+
+    use super::{read_mount_axes, read_socket_name};
 
     #[test]
     fn read_socket_name_rejects_empty_socket_tag() {
@@ -404,5 +465,61 @@ mod tests {
         let extras: gltf::json::Extras = Some(raw);
 
         assert_eq!(read_socket_name(&extras, 7, "model.gltf"), None);
+    }
+
+    #[test]
+    fn read_mount_axes_normalizes_core_pair_and_keeps_valid_euler() {
+        let raw: Box<serde_json::value::RawValue> =
+            serde_json::from_str(r#"{"mount":{"barrel":[0,3,0],"up":[0,0,4],"euler":[10,20,30]}}"#)
+                .expect("test raw JSON parses");
+        let extras: gltf::json::Extras = Some(raw);
+
+        let mount = read_mount_axes(&extras).expect("valid core pair loads");
+        assert_eq!(mount.barrel, Vec3::Y);
+        assert_eq!(mount.up, Vec3::Z);
+        assert_eq!(mount.euler, Some([10.0, 20.0, 30.0]));
+    }
+
+    #[test]
+    fn read_mount_axes_keeps_core_pair_when_euler_is_malformed() {
+        let raw: Box<serde_json::value::RawValue> = serde_json::from_str(
+            r#"{"mount":{"barrel":[1,0,0],"up":[0,1,0],"euler":[0,"bad",0]}}"#,
+        )
+        .expect("test raw JSON parses");
+        let extras: gltf::json::Extras = Some(raw);
+
+        let mount = read_mount_axes(&extras).expect("valid core pair remains available");
+        assert_eq!(mount.euler, None);
+    }
+
+    #[test]
+    fn read_mount_axes_requires_both_valid_core_axes() {
+        for raw in [
+            r#"{"mount":{"barrel":[1,0,0]}}"#,
+            r#"{"mount":{"barrel":[1,0,0],"up":[0,0,0]}}"#,
+            r#"{"mount":{"barrel":[1,0,0],"up":[1,0,0]}}"#,
+            r#"{"mount":{"barrel":"bad","up":[0,1,0]}}"#,
+        ] {
+            let raw: Box<serde_json::value::RawValue> =
+                serde_json::from_str(raw).expect("test raw JSON parses");
+            let extras: gltf::json::Extras = Some(raw);
+            assert!(
+                read_mount_axes(&extras).is_none(),
+                "invalid core axes {extras:?} degrade to no mount declaration",
+            );
+        }
+    }
+
+    #[test]
+    fn read_mount_axes_rejects_finite_axes_whose_length_squared_overflows() {
+        // Regression: normalizing an overflowed finite axis surfaced Vec3::ZERO
+        // as declared mount metadata instead of degrading the declaration.
+        let raw: Box<serde_json::value::RawValue> = serde_json::from_str(
+            r#"{"mount":{"barrel":[3e38,3e38,0],"up":[0,0,1],"euler":[0,0,0]}}"#,
+        )
+        .expect("test raw JSON parses");
+        let extras: gltf::json::Extras = Some(raw);
+
+        assert_eq!(read_mount_axes(&extras), None);
     }
 }

@@ -9,6 +9,7 @@ pub mod anim;
 pub(crate) mod gltf_extras;
 pub mod gltf_loader;
 pub mod mesh;
+pub mod mount;
 pub mod pose_modifier;
 pub mod sample_params;
 pub mod skeleton;

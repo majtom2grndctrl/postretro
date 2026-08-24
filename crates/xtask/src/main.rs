@@ -7,12 +7,12 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use glam::{Mat3, Vec3};
+use glam::{Mat3, Mat4, Vec3};
 use postretro_level_format::prm::cache_filename_for_key;
-use postretro_model::gltf_loader::load_model;
+use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
-    MountAxes, MountConfidence, corrective_delta, corrective_delta_for_axes, detect_weapon_mount,
-    resolve_socket_frame_in_model,
+    MountAxes, MountConfidence, MountDetection, MountVerification, corrective_delta,
+    corrective_delta_for_axes, detect_weapon_mount, resolve_socket_frame_in_model, verify_mount,
 };
 
 mod crate_graph;
@@ -138,6 +138,11 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
         args.clip,
         format_number(args.time),
     );
+    print_non_reference_mount_pose_note(&args.clip, args.time);
+
+    if args.check {
+        return check_weapon_mount(&args, &weapon, socket.matrix);
+    }
 
     let cli_axes = args.cli_axes()?;
     let declared_axes = cli_axes.or(weapon.mount);
@@ -183,19 +188,7 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
             };
 
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
-            println!(
-                "Detected baked-frame axes: barrel {}  up {}  side {}",
-                format_vec3(detection.frame.barrel),
-                format_vec3(detection.frame.up),
-                format_vec3(detection.frame.side),
-            );
-            println!(
-                "Detection: confidence {}; length {}; muzzle radius {}; stock radius {}",
-                format_confidence(detection.confidence),
-                format_number(detection.length),
-                format_number(detection.muzzle.max_cross_radius),
-                format_number(detection.stock.max_cross_radius),
-            );
+            print_detected_baked_frame(detection);
             println!(
                 "UNVERIFIED raw-source candidate axes: barrel {}  up {}",
                 format_vec3(candidate_axes.barrel),
@@ -227,6 +220,162 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
     Ok(0)
 }
 
+/// Check a baked weapon against its holder socket without invoking Blender.
+fn check_weapon_mount(
+    args: &SolveWeaponMountArgs,
+    weapon: &LoadedModel,
+    socket_matrix: Mat4,
+) -> Result<i32, String> {
+    let declared_axes = args.cli_axes()?.or(weapon.mount);
+    let (verification, status) = match declared_axes {
+        Some(declared_axes) => {
+            let applied_euler = applied_check_euler(weapon.mount, args.current_euler)?;
+            let baked_axes = compose_declared_axes_into_baked_frame(declared_axes, applied_euler);
+            let baked_frame = baked_axes
+                .frame()
+                .map_err(|error| format!("compose declared weapon axes: {error}"))?;
+
+            println!(
+                "Declared raw-source axes: barrel {}  up {}",
+                format_vec3(declared_axes.barrel),
+                format_vec3(declared_axes.up),
+            );
+            println!(
+                "Composed baked-frame axes: barrel {}  up {}",
+                format_vec3(baked_axes.barrel),
+                format_vec3(baked_axes.up),
+            );
+            (verify_mount(socket_matrix, baked_frame), "VERIFIED")
+        }
+        None => {
+            let detection = detect_weapon_mount(weapon)
+                .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
+            println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
+            print_detected_baked_frame(detection);
+            (verify_mount(socket_matrix, detection.frame), "UNVERIFIED")
+        }
+    };
+
+    print_mount_metrics(verification);
+    let failures = failed_mount_metrics(verification, args.thresholds);
+    if failures.is_empty() {
+        println!("{status}: mount check passed.");
+        Ok(0)
+    } else {
+        println!("{status}: mount check failed: {}", failures.join(", "));
+        Ok(1)
+    }
+}
+
+fn applied_check_euler(
+    persisted_mount: Option<MountAxes>,
+    current_euler: Option<[f32; 3]>,
+) -> Result<[f32; 3], String> {
+    persisted_mount
+        .and_then(|mount| mount.euler)
+        .or(current_euler)
+        .ok_or_else(|| {
+            solve_weapon_mount_usage(
+                "declared check is missing the applied euler; add extras.mount.euler or --current-euler X Y Z",
+            )
+        })
+}
+
+/// Compose raw-source declared axes through the rotation baked into the weapon.
+fn compose_declared_axes_into_baked_frame(
+    declared_axes: MountAxes,
+    applied_blender_euler: [f32; 3],
+) -> MountAxes {
+    let applied_gltf_rotation =
+        blender_to_gltf_rotation(blender_xyz_rotation(applied_blender_euler));
+    MountAxes {
+        barrel: applied_gltf_rotation * declared_axes.barrel,
+        up: applied_gltf_rotation * declared_axes.up,
+        euler: None,
+    }
+}
+
+fn print_mount_metrics(verification: MountVerification) {
+    println!(
+        "barrel·+Z: {}",
+        format_number(verification.barrel_dot_forward),
+    );
+    println!("barrel·+Y: {}", format_number(verification.barrel_dot_up));
+    println!("up·+Y: {}", format_number(verification.up_dot_up));
+}
+
+fn print_low_confidence_detection_warning(confidence: MountConfidence) {
+    if confidence == MountConfidence::Low {
+        println!(
+            "WARNING: geometric assist detection is LOW confidence; its result remains UNVERIFIED."
+        );
+    }
+}
+
+fn print_detected_baked_frame(detection: MountDetection) {
+    println!(
+        "Detected baked-frame axes: barrel {}  up {}  side {}",
+        format_vec3(detection.frame.barrel),
+        format_vec3(detection.frame.up),
+        format_vec3(detection.frame.side),
+    );
+    println!(
+        "Detection: confidence {}; length {}; muzzle radius {}; stock radius {}",
+        format_confidence(detection.confidence),
+        format_number(detection.length),
+        format_number(detection.muzzle.max_cross_radius),
+        format_number(detection.stock.max_cross_radius),
+    );
+    print_low_confidence_detection_warning(detection.confidence);
+}
+
+fn print_non_reference_mount_pose_note(clip: &str, time: f32) {
+    if !is_reference_mount_pose(clip, time) {
+        println!(
+            "NOTE: pose (clip {clip:?}, time {}) is not the reference (clip \"idle_aiming\", time 0). A rigid bake is exact only at this pose or the reference, not both; wrist-reorienting poses such as limitator \"reloading\" need a skinned weapon.",
+            format_number(time),
+        );
+    }
+}
+
+fn is_reference_mount_pose(clip: &str, time: f32) -> bool {
+    clip == "idle_aiming" && time == 0.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MountCheckThresholds {
+    min_barrel_dot: f32,
+    max_barrel_y: f32,
+    min_up_dot: f32,
+}
+
+impl Default for MountCheckThresholds {
+    fn default() -> Self {
+        Self {
+            min_barrel_dot: 0.999,
+            max_barrel_y: 0.02,
+            min_up_dot: 0.999,
+        }
+    }
+}
+
+fn failed_mount_metrics(
+    verification: MountVerification,
+    thresholds: MountCheckThresholds,
+) -> Vec<&'static str> {
+    let mut failures = Vec::new();
+    if verification.barrel_dot_forward < thresholds.min_barrel_dot {
+        failures.push("barrel·+Z");
+    }
+    if verification.barrel_dot_up.abs() > thresholds.max_barrel_y {
+        failures.push("|barrel·+Y|");
+    }
+    if verification.up_dot_up < thresholds.min_up_dot {
+        failures.push("up·+Y");
+    }
+    failures
+}
+
 #[derive(Debug, PartialEq)]
 struct SolveWeaponMountArgs {
     holder_path: PathBuf,
@@ -236,12 +385,14 @@ struct SolveWeaponMountArgs {
     weapon_path: PathBuf,
     barrel: Option<Vec3>,
     up: Option<Vec3>,
-    raw_source: String,
-    out: String,
+    check: bool,
+    raw_source: Option<String>,
+    out: Option<String>,
     grip: Option<[String; 3]>,
     scale: Option<String>,
     sockets: Vec<String>,
     current_euler: Option<[f32; 3]>,
+    thresholds: MountCheckThresholds,
 }
 
 impl SolveWeaponMountArgs {
@@ -268,12 +419,16 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
     let mut weapon_path = None;
     let mut barrel = None;
     let mut up = None;
+    let mut check = false;
     let mut raw_source = None;
     let mut out = None;
     let mut grip = None;
     let mut scale = None;
     let mut sockets = Vec::new();
     let mut current_euler = None;
+    let mut min_barrel_dot = None;
+    let mut max_barrel_y = None;
+    let mut min_up_dot = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -310,6 +465,15 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
             }
             "--up" => {
                 set_once(&mut up, parse_vec3(&args, &mut index, "--up")?, "--up")?;
+            }
+            "--check" => {
+                if check {
+                    return Err(solve_weapon_mount_usage(
+                        "solve-weapon-mount accepts only one --check",
+                    ));
+                }
+                check = true;
+                index += 1;
             }
             "--raw-source" => {
                 set_once(
@@ -358,6 +522,27 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
                     "--current-euler",
                 )?;
             }
+            "--min-barrel-dot" => {
+                set_once(
+                    &mut min_barrel_dot,
+                    parse_threshold(&args, &mut index, "--min-barrel-dot", -1.0, 1.0)?,
+                    "--min-barrel-dot",
+                )?;
+            }
+            "--max-barrel-y" => {
+                set_once(
+                    &mut max_barrel_y,
+                    parse_threshold(&args, &mut index, "--max-barrel-y", 0.0, 1.0)?,
+                    "--max-barrel-y",
+                )?;
+            }
+            "--min-up-dot" => {
+                set_once(
+                    &mut min_up_dot,
+                    parse_threshold(&args, &mut index, "--min-up-dot", -1.0, 1.0)?,
+                    "--min-up-dot",
+                )?;
+            }
             option if option.starts_with('-') => {
                 return Err(solve_weapon_mount_usage(&format!(
                     "unknown solve-weapon-mount option {option:?}"
@@ -379,12 +564,16 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
     })?;
     let weapon_path = weapon_path
         .ok_or_else(|| solve_weapon_mount_usage("solve-weapon-mount requires --weapon <path>"))?;
-    let raw_source = raw_source.ok_or_else(|| {
-        solve_weapon_mount_usage("solve-weapon-mount requires --raw-source <path> in solve mode")
-    })?;
-    let out = out.ok_or_else(|| {
-        solve_weapon_mount_usage("solve-weapon-mount requires --out <path> in solve mode")
-    })?;
+    if !check && raw_source.is_none() {
+        return Err(solve_weapon_mount_usage(
+            "solve-weapon-mount requires --raw-source <path> in solve mode",
+        ));
+    }
+    if !check && out.is_none() {
+        return Err(solve_weapon_mount_usage(
+            "solve-weapon-mount requires --out <path> in solve mode",
+        ));
+    }
 
     if barrel.is_some() != up.is_some() {
         return Err(solve_weapon_mount_usage(
@@ -400,12 +589,18 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
         weapon_path,
         barrel,
         up,
+        check,
         raw_source,
         out,
         grip,
         scale,
         sockets,
         current_euler,
+        thresholds: MountCheckThresholds {
+            min_barrel_dot: min_barrel_dot.unwrap_or(0.999),
+            max_barrel_y: max_barrel_y.unwrap_or(0.02),
+            min_up_dot: min_up_dot.unwrap_or(0.999),
+        },
     })
 }
 
@@ -479,6 +674,23 @@ fn parse_finite_number(value: &str, option: &str) -> Result<f32, String> {
     Ok(parsed)
 }
 
+fn parse_threshold(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    minimum: f32,
+    maximum: f32,
+) -> Result<f32, String> {
+    let value = next_argument(args, index, option)?;
+    let parsed = parse_finite_number(&value, option)?;
+    if !(minimum..=maximum).contains(&parsed) {
+        return Err(solve_weapon_mount_usage(&format!(
+            "{option} must be between {minimum} and {maximum}, got {value:?}"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), String> {
     if slot.replace(value).is_some() {
         return Err(solve_weapon_mount_usage(&format!(
@@ -491,9 +703,10 @@ fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), Strin
 fn solve_weapon_mount_usage(message: &str) -> String {
     format!(
         "{message}\n\nUsage: cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> \\
-         --weapon <baked-weapon.gltf> --raw-source <raw-source> --out <output.gltf> \\
+         --weapon <baked-weapon.gltf> [--check] [--raw-source <raw-source> --out <output.gltf>] \\
          [--mount-joint NAME] [--clip NAME] [--time SECONDS] \\
          [--barrel X Y Z --up X Y Z] [--current-euler X Y Z] \\
+         [--min-barrel-dot VALUE] [--max-barrel-y VALUE] [--min-up-dot VALUE] \\
          [--grip X Y Z] [--scale FACTOR] [--socket NAME=NODE]..."
     )
 }
@@ -547,6 +760,14 @@ fn emitted_blender_command(
     euler: [f32; 3],
     axes: MountAxes,
 ) -> String {
+    let raw_source = args
+        .raw_source
+        .as_deref()
+        .expect("solve parser requires --raw-source before emitting a Blender command");
+    let out = args
+        .out
+        .as_deref()
+        .expect("solve parser requires --out before emitting a Blender command");
     let mut command = vec![
         "blender".to_string(),
         "--background".to_string(),
@@ -554,9 +775,9 @@ fn emitted_blender_command(
         "tools/prop_to_gltf.py".to_string(),
         "--".to_string(),
         "--input".to_string(),
-        shell_quote(&args.raw_source),
+        shell_quote(raw_source),
         "--output".to_string(),
-        shell_quote(&args.out),
+        shell_quote(out),
     ];
     if let Some(grip) = &args.grip {
         command.push("--grip".to_string());
@@ -1052,7 +1273,7 @@ fn print_help() {
            cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- mint-identity <mod-root>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
-           cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> --raw-source <raw> --out <output.gltf> [options]\n\
+           cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [--raw-source <raw> --out <output.gltf>] [options]\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
@@ -1065,7 +1286,7 @@ fn print_help() {
                                 builds scripts-build only for TypeScript mods\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
            solve-weapon-mount   Solve a rigid weapon mount and print the Blender\n\
-                                bake command (does not invoke Blender)\n\
+                                bake command, or --check a baked mount in-engine\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\n\
@@ -1404,6 +1625,13 @@ mod tests {
         );
         assert_eq!(parsed.barrel, Some(Vec3::Y));
         assert_eq!(parsed.up, Some(Vec3::Z));
+        assert!(!parsed.check);
+        assert_eq!(parsed.raw_source.as_deref(), Some("raw/ar 4.glb"));
+        assert_eq!(
+            parsed.out.as_deref(),
+            Some("content/dev/models/ar_4/model.gltf")
+        );
+        assert_eq!(parsed.thresholds, MountCheckThresholds::default());
         assert_eq!(
             parsed.grip,
             Some(["0.0".into(), "-0.05".into(), "0.120".into()])
@@ -1440,6 +1668,136 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn parse_solve_weapon_mount_check_mode_does_not_require_bake_endpoints() {
+        let parsed = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "baked-weapon.gltf",
+            "--check",
+            "--min-barrel-dot",
+            "0.95",
+            "--max-barrel-y",
+            "0.1",
+            "--min-up-dot",
+            "0.9",
+        ]))
+        .expect("check mode only needs the baked weapon");
+
+        assert!(parsed.check);
+        assert_eq!(parsed.raw_source, None);
+        assert_eq!(parsed.out, None);
+        assert_eq!(
+            parsed.thresholds,
+            MountCheckThresholds {
+                min_barrel_dot: 0.95,
+                max_barrel_y: 0.1,
+                min_up_dot: 0.9,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_solve_weapon_mount_rejects_out_of_range_check_thresholds() {
+        for args in [
+            [
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--check",
+                "--min-barrel-dot",
+                "1.01",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--check",
+                "--max-barrel-y",
+                "-0.01",
+            ]
+            .as_slice(),
+            [
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--check",
+                "--min-up-dot",
+                "nan",
+            ]
+            .as_slice(),
+        ] {
+            assert!(parse_solve_weapon_mount_args(os_args(args)).is_err());
+        }
+    }
+
+    #[test]
+    fn declared_check_composes_applied_euler_forward_into_baked_frame() {
+        let baked_axes = compose_declared_axes_into_baked_frame(
+            MountAxes {
+                barrel: Vec3::Y,
+                up: Vec3::Z,
+                euler: None,
+            },
+            [90.0, 0.0, 0.0],
+        );
+
+        assert_vec3_close(baked_axes.barrel, Vec3::Z);
+        assert_vec3_close(baked_axes.up, -Vec3::Y);
+    }
+
+    #[test]
+    fn declared_check_prefers_persisted_euler_and_requires_one_when_absent() {
+        let persisted = MountAxes {
+            barrel: Vec3::Z,
+            up: Vec3::Y,
+            euler: Some([10.0, 20.0, 30.0]),
+        };
+        assert_eq!(
+            applied_check_euler(Some(persisted), Some([40.0, 50.0, 60.0])),
+            Ok([10.0, 20.0, 30.0])
+        );
+        assert_eq!(
+            applied_check_euler(
+                Some(MountAxes {
+                    euler: None,
+                    ..persisted
+                }),
+                Some([40.0, 50.0, 60.0]),
+            ),
+            Ok([40.0, 50.0, 60.0])
+        );
+        assert!(
+            applied_check_euler(None, None)
+                .expect_err("declared check needs an applied euler")
+                .contains("missing the applied euler")
+        );
+    }
+
+    #[test]
+    fn mount_check_names_each_out_of_tolerance_metric() {
+        let verification = MountVerification {
+            barrel_world: Vec3::Z,
+            up_world: Vec3::Y,
+            barrel_dot_forward: 0.998,
+            barrel_dot_up: -0.03,
+            up_dot_up: 0.998,
+        };
+
+        assert_eq!(
+            failed_mount_metrics(verification, MountCheckThresholds::default()),
+            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
+        );
+    }
+
+    #[test]
+    fn reference_mount_pose_requires_idle_aiming_at_zero() {
+        assert!(is_reference_mount_pose("idle_aiming", 0.0));
+        assert!(!is_reference_mount_pose("reloading", 0.0));
+        assert!(!is_reference_mount_pose("idle_aiming", 0.1));
     }
 
     #[test]
@@ -1523,5 +1881,13 @@ mod tests {
                 "expected {expected}, got {actual}",
             );
         }
+    }
+
+    fn assert_vec3_close(actual: Vec3, expected: Vec3) {
+        const EPSILON: f32 = 1.0e-5;
+        assert!(
+            actual.abs_diff_eq(expected, EPSILON),
+            "expected {expected:?}, got {actual:?}",
+        );
     }
 }

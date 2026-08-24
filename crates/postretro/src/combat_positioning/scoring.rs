@@ -1,4 +1,6 @@
 //! Candidate placement and scoring for combat slots.
+//!
+//! See: context/lib/entity_model.md §7c.
 
 use glam::Vec3;
 

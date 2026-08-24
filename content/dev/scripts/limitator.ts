@@ -37,9 +37,10 @@ const STANDOFF_DISTANCE = 6;
 const LEASH_RANGE = 70;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// Firing rhythm: alternate aim -> fire. Each entry into `fire` edge-fires one
-// shot (gated by the attack cooldown); AIM_MS + FIRE_MS sits just above the
-// cooldown so every fire entry lands. No reload beat — the available reload clip
+// Firing rhythm: alternate aim -> fire. A `fire` dwell latches at most one shot,
+// rechecking LOS, facing, and cooldown until the first eligible tick. AIM_MS +
+// FIRE_MS sits just above the cooldown so it paces re-entry and firing cycles.
+// No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
@@ -130,7 +131,7 @@ export const limitatorEntity = defineEntity({
       moveSpeed: 4,
       attacks: {
         // Hitscan-style ranged shot: long reach, held at a standoff. Cooldown
-        // sits just under AIM_MS + FIRE_MS so each fire-state entry lands.
+        // sits just under AIM_MS + FIRE_MS, pacing fire-dwell re-entry cycles.
         // maxRange only needs to cover the fire band (a shot can only be issued
         // from the `fire` state, entered inside FIRE_RANGE and held to
         // BREAK_RANGE); a small margin past BREAK_RANGE is defense in depth.
@@ -166,9 +167,10 @@ export const limitatorEntity = defineEntity({
               initial: "close",
               activities: {
                 // Run in until within FIRE_RANGE with the shared, debounced LOS
-                // fact, then alternate aim/fire so each fire entry edge-fires
-                // the shot under its cooldown. Losing visibility returns to
-                // `close`, where the move layer repositions to reacquire.
+                // fact, then alternate aim/fire. Each `fire` dwell retries its
+                // LOS, facing, and cooldown gates until it fires once. Losing
+                // visibility returns to `close`, where the move layer repositions
+                // to reacquire.
                 close: { animation: "run" },
                 aim: { animation: "idle_aiming" },
                 fire: { animation: "shoot", action: { attack: "shoot" } },

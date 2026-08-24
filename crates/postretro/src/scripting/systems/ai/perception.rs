@@ -35,10 +35,33 @@ pub(super) struct LosGraceState {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EnemyTargetPerception {
     pub(super) visible: bool,
-    /// The shared endpoints Task 1 derived for this enemy/target pair. Combat
-    /// positioning receives these values rather than deriving a second ray.
+    /// Canonical shared enemy-eye and target-aim endpoints for this pair.
+    /// Combat positioning receives them rather than deriving a second ray.
     pub(super) enemy_eye: Vec3,
     pub(super) target_aim: Vec3,
+}
+
+/// The undebounced LOS result computed while admitting a fresh target. The
+/// selected candidate carries this into perception so acquisition and debounce
+/// share one static-world ray on that tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RawTargetPerception {
+    pub(super) target: EntityId,
+    pub(super) visible: bool,
+    pub(super) enemy_eye: Vec3,
+    pub(super) target_aim: Vec3,
+}
+
+/// Inputs that identify one enemy/selected-target perception query. The grace
+/// table and registry stay separate because they are the mutable state and
+/// shared entity source the query operates on.
+pub(super) struct TargetPerceptionQuery<'a> {
+    pub(super) enemy: EntityId,
+    pub(super) enemy_position: Vec3,
+    pub(super) target: TargetPawn,
+    pub(super) nav_graph: Option<&'a NavGraph>,
+    pub(super) collision_world: Option<&'a CollisionWorld>,
+    pub(super) fresh: Option<RawTargetPerception>,
 }
 
 /// Derive the one enemy eye point used by LOS consumers. An authored health
@@ -73,16 +96,21 @@ pub(super) fn target_aim(registry: &EntityRegistry, target: TargetPawn) -> Optio
 /// canonical pawn-eye helper as selected-target perception; a missing aim point
 /// fails candidacy rather than admitting a target the fire gate cannot describe.
 /// A missing collision world remains clear, matching the selected-target path.
-pub(super) fn raw_target_visible(
+pub(super) fn raw_target_perception(
     registry: &EntityRegistry,
     enemy_eye: Vec3,
     target: TargetPawn,
     collision_world: Option<&CollisionWorld>,
-) -> bool {
-    target_aim(registry, target).is_some_and(|target_aim| {
-        collision_world
-            .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
-            .unwrap_or(true)
+) -> Option<RawTargetPerception> {
+    let target_aim = target_aim(registry, target)?;
+    let visible = collision_world
+        .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+        .unwrap_or(true);
+    Some(RawTargetPerception {
+        target: target.entity,
+        visible,
+        enemy_eye,
+        target_aim,
     })
 }
 
@@ -92,29 +120,44 @@ pub(super) fn raw_target_visible(
 pub(super) fn perceive_target(
     registry: &EntityRegistry,
     grace: &mut HashMap<EntityId, LosGraceState>,
-    enemy: EntityId,
-    enemy_position: Vec3,
-    target: TargetPawn,
-    nav_graph: Option<&NavGraph>,
-    collision_world: Option<&CollisionWorld>,
+    query: TargetPerceptionQuery<'_>,
 ) -> Option<EnemyTargetPerception> {
-    let target_aim = match target_aim(registry, target) {
-        Some(aim) => aim,
-        None => {
-            grace.remove(&enemy);
-            return None;
+    let TargetPerceptionQuery {
+        enemy,
+        enemy_position,
+        target,
+        nav_graph,
+        collision_world,
+        fresh,
+    } = query;
+    let raw = match fresh {
+        Some(raw) if raw.target == target.entity => raw,
+        _ => {
+            let target_aim = match target_aim(registry, target) {
+                Some(aim) => aim,
+                None => {
+                    grace.remove(&enemy);
+                    return None;
+                }
+            };
+            let enemy_eye = enemy_eye(registry, enemy, enemy_position, nav_graph);
+            let visible = collision_world
+                .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
+                .unwrap_or(true);
+            RawTargetPerception {
+                target: target.entity,
+                visible,
+                enemy_eye,
+                target_aim,
+            }
         }
     };
-    let enemy_eye = enemy_eye(registry, enemy, enemy_position, nav_graph);
-    let raw_visible = collision_world
-        .map(|world| collision::line_of_sight(enemy_eye, target_aim, world))
-        .unwrap_or(true);
-    let visible = debounce_los(grace, enemy, target.entity, raw_visible);
+    let visible = debounce_los(grace, enemy, target.entity, raw.visible);
 
     Some(EnemyTargetPerception {
         visible,
-        enemy_eye,
-        target_aim,
+        enemy_eye: raw.enemy_eye,
+        target_aim: raw.target_aim,
     })
 }
 
@@ -220,5 +263,43 @@ mod tests {
             !fire_gate(None),
             "no selected target cannot inherit visibility"
         );
+    }
+
+    #[test]
+    fn fresh_perception_consumes_the_acquisition_verdict_without_recasting() {
+        let mut grace = HashMap::new();
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Default::default());
+        let target = registry.spawn(Default::default());
+        let raw = RawTargetPerception {
+            target,
+            visible: true,
+            enemy_eye: Vec3::new(1.0, 2.0, 3.0),
+            target_aim: Vec3::new(4.0, 5.0, 6.0),
+        };
+
+        // A fresh candidate already proved it carried PlayerMovement when the
+        // offer was built. Omitting it here makes any fallback lookup fail, so
+        // this pins the no-second-query handoff rather than LOS geometry.
+        let perception = perceive_target(
+            &registry,
+            &mut grace,
+            TargetPerceptionQuery {
+                enemy,
+                enemy_position: Vec3::ZERO,
+                target: TargetPawn {
+                    entity: target,
+                    position: Vec3::ZERO,
+                },
+                nav_graph: None,
+                collision_world: Some(&CollisionWorld::new()),
+                fresh: Some(raw),
+            },
+        )
+        .expect("the acquisition result is sufficient for this tick");
+
+        assert!(perception.visible);
+        assert_eq!(perception.enemy_eye, raw.enemy_eye);
+        assert_eq!(perception.target_aim, raw.target_aim);
     }
 }

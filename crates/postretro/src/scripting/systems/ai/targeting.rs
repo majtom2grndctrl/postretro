@@ -5,6 +5,7 @@
 use glam::Vec3;
 
 use super::engine_floor::{is_meaningfully_closer, think_stride_for_distance};
+use super::perception::RawTargetPerception;
 use crate::nav::distance_xz;
 use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::BrainComponent;
@@ -25,6 +26,15 @@ pub(crate) struct TargetPawn {
 pub(super) struct TargetCandidate {
     pub(super) target: TargetPawn,
     pub(super) distance: f32,
+}
+
+/// This tick's selected pawn plus the raw LOS already computed when a fresh
+/// candidate won the scan. Retained selections carry no fresh verdict and run
+/// the normal per-tick perception query.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TargetSelection {
+    pub(super) target: TargetPawn,
+    pub(super) fresh_perception: Option<RawTargetPerception>,
 }
 
 /// The raw hostile offer set from one registry walk. `nearest` prices the
@@ -117,14 +127,14 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 /// engine-floor LOS both narrow fresh eligibility, while `offers.nearest` stays
 /// untouched for stride pricing. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
-pub(crate) fn select_target(
+pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
     registry: &EntityRegistry,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
-    candidate_visible: &dyn Fn(TargetPawn) -> bool,
-) -> Option<TargetPawn> {
+    candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
+) -> Option<TargetSelection> {
     let nearest_eligible = offers
         .candidates
         .iter()
@@ -136,26 +146,41 @@ pub(crate) fn select_target(
                 candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
                 eval_value(filter, candidate_scope) == IrValue::Bool(true)
             });
-            if filter_allows
-                && candidate_visible(candidate.target)
-                && eligible.is_none_or(|current: TargetCandidate| {
-                    candidate.distance.total_cmp(&current.distance).is_lt()
-                })
-            {
-                Some(candidate)
-            } else {
-                eligible
+            let fresh_perception = filter_allows
+                .then(|| candidate_perception(candidate.target))
+                .flatten()
+                .filter(|perception| perception.visible);
+            match fresh_perception {
+                Some(fresh_perception)
+                    if eligible.is_none_or(
+                        |(current, _): (TargetCandidate, RawTargetPerception)| {
+                            candidate.distance.total_cmp(&current.distance).is_lt()
+                        },
+                    ) =>
+                {
+                    Some((candidate, fresh_perception))
+                }
+                _ => eligible,
             }
         });
 
     match (retained, nearest_eligible) {
-        (Some(retained), Some(nearest))
+        (Some(retained), Some((nearest, fresh_perception)))
             if is_meaningfully_closer(nearest.distance, retained.distance) =>
         {
-            Some(nearest.target)
+            Some(TargetSelection {
+                target: nearest.target,
+                fresh_perception: Some(fresh_perception),
+            })
         }
-        (Some(retained), _) => Some(retained.target),
-        (None, Some(nearest)) => Some(nearest.target),
+        (Some(retained), _) => Some(TargetSelection {
+            target: retained.target,
+            fresh_perception: None,
+        }),
+        (None, Some((nearest, fresh_perception))) => Some(TargetSelection {
+            target: nearest.target,
+            fresh_perception: Some(fresh_perception),
+        }),
         (None, None) => None,
     }
 }
@@ -224,15 +249,107 @@ mod tests {
     ) -> (Option<TargetCandidate>, Option<TargetPawn>) {
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
         let offers = target_offers(registry, from, enemy_faction, retained_target);
+        let mut candidate_perception = |target: TargetPawn| {
+            Some(RawTargetPerception {
+                target: target.entity,
+                visible: true,
+                enemy_eye: from,
+                target_aim: target.position,
+            })
+        };
         let selected = select_target(
             retained,
             &offers,
             registry,
             candidate_filter,
             candidate_scope,
-            &|_| true,
-        );
+            &mut candidate_perception,
+        )
+        .map(|selection| selection.target);
         (offers.nearest, selected)
+    }
+
+    #[test]
+    fn fresh_selection_carries_the_candidate_los_result_but_retention_does_not() {
+        let mut registry = EntityRegistry::new();
+        let pawn = pawn(&mut registry, 4.0);
+        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None);
+        let expected = RawTargetPerception {
+            target: pawn,
+            visible: true,
+            enemy_eye: Vec3::new(0.0, 1.0, 0.0),
+            target_aim: Vec3::new(4.0, 1.1, 0.0),
+        };
+        let mut calls = 0;
+        let mut candidate_perception = |_: TargetPawn| {
+            calls += 1;
+            Some(expected)
+        };
+
+        let selected = select_target(
+            None,
+            &offers,
+            &registry,
+            None,
+            &mut CandidateScope::for_validation(),
+            &mut candidate_perception,
+        )
+        .expect("fresh target");
+
+        assert_eq!(selected.target.entity, pawn);
+        assert_eq!(selected.fresh_perception, Some(expected));
+
+        let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
+        let empty_offers = target_offers(&registry, Vec3::ZERO, 1.0, Some(pawn));
+        let retained_selection = select_target(
+            Some(retained),
+            &empty_offers,
+            &registry,
+            None,
+            &mut CandidateScope::for_validation(),
+            &mut candidate_perception,
+        )
+        .expect("retained target");
+        assert_eq!(calls, 1, "retention does not evaluate fresh-candidate LOS");
+        assert_eq!(retained_selection.target.entity, pawn);
+        assert_eq!(retained_selection.fresh_perception, None);
+    }
+
+    #[test]
+    fn retained_due_switch_carries_the_challengers_los_result() {
+        let mut registry = EntityRegistry::new();
+        let retained_entity = pawn(&mut registry, 10.0);
+        let challenger = pawn(&mut registry, 2.0);
+        let retained =
+            target_candidate(&registry, retained_entity, Vec3::ZERO).expect("retained target");
+        let offers = target_offers(&registry, Vec3::ZERO, 1.0, Some(retained_entity));
+        let mut candidate_perception = |target: TargetPawn| {
+            Some(RawTargetPerception {
+                target: target.entity,
+                visible: true,
+                enemy_eye: Vec3::Y,
+                target_aim: target.position + Vec3::Y,
+            })
+        };
+
+        let selected = select_target(
+            Some(retained),
+            &offers,
+            &registry,
+            None,
+            &mut CandidateScope::for_validation(),
+            &mut candidate_perception,
+        )
+        .expect("closer fresh challenger");
+
+        assert_eq!(selected.target.entity, challenger);
+        assert_eq!(
+            selected
+                .fresh_perception
+                .map(|perception| perception.target),
+            Some(challenger),
+            "the retained-due switch reuses the challenger's acquisition ray",
+        );
     }
 
     #[test]

@@ -27,21 +27,20 @@ const FIRE_RANGE = 8;
 // pulls past this. The FIRE..BREAK band keeps a target dancing on the boundary
 // from endlessly resetting the aim timer.
 const BREAK_RANGE = 9;
-// Combat-positioning slot ring — held strictly INSIDE FIRE_RANGE. The E10
-// positioning system seats the agent at ~engagementRadius from the target and
-// the steering hard-stop leaves it a fraction beyond that; if the ring equalled
-// the fire guard the agent would settle just outside `le(FIRE_RANGE)` and never
-// fire (the standoff deadlock). A ring below the guard guarantees he crosses in.
-const ENGAGEMENT_RADIUS = 6;
+// The action-specific combat-slot standoff — held strictly INSIDE FIRE_RANGE.
+// This is explicit per-attack positioning rather than relying on a reduced
+// engagementRadius to work around the fire guard's boundary.
+const STANDOFF_DISTANCE = 6;
 // Leash: abandon the chase and walk home once dragged this far from the spawn
 // anchor, then stand down. Set above DETECTION_RANGE so a target acquired near
 // the detection edge isn't leashed the instant he starts closing.
 const LEASH_RANGE = 70;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// Firing rhythm: alternate aim -> fire. Each entry into `fire` edge-fires one
-// shot (gated by the attack cooldown); AIM_MS + FIRE_MS sits just above the
-// cooldown so every fire entry lands. No reload beat — the available reload clip
+// Firing rhythm: alternate aim -> fire. A `fire` dwell latches at most one shot,
+// rechecking LOS, facing, and cooldown until the first eligible tick. AIM_MS +
+// FIRE_MS sits just above the cooldown so it paces re-entry and firing cycles.
+// No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
@@ -132,7 +131,7 @@ export const limitatorEntity = defineEntity({
       moveSpeed: 4,
       attacks: {
         // Hitscan-style ranged shot: long reach, held at a standoff. Cooldown
-        // sits just under AIM_MS + FIRE_MS so each fire-state entry lands.
+        // sits just under AIM_MS + FIRE_MS, pacing fire-dwell re-entry cycles.
         // maxRange only needs to cover the fire band (a shot can only be issued
         // from the `fire` state, entered inside FIRE_RANGE and held to
         // BREAK_RANGE); a small margin past BREAK_RANGE is defense in depth.
@@ -140,44 +139,62 @@ export const limitatorEntity = defineEntity({
           damage: 10,
           maxRange: BREAK_RANGE + 3,
           cooldownMs: 750,
-          engagementRadius: ENGAGEMENT_RADIUS,
+          standoffDistance: STANDOFF_DISTANCE,
         },
       },
-      engagementRadius: ENGAGEMENT_RADIUS,
+      // `close` has no action of its own, so it keeps the same pre-fire slot
+      // radius while it approaches the action-specific shoot standoff.
+      engagementRadius: STANDOFF_DISTANCE,
       activities: {
         idle: { animation: "idle", motion: "hold" },
         engage: {
           animation: "run",
           layers: {
-            // Plant on the firing line once inside FIRE_RANGE; otherwise run the
-            // target back into range. The hold guard (FIRE_RANGE) sits above the
-            // slot ring (ENGAGEMENT_RADIUS) so he settles comfortably inside the
-            // fire threshold rather than deadlocking just outside it.
+            // Plant on the firing line once inside FIRE_RANGE with a clear
+            // sightline; otherwise chase a combat slot that can reacquire it.
+            // This is authored presentation and repositioning policy; the
+            // engine fire gate remains the damage/event authority.
             move: [
-              { when: brain.targetDistance.le(FIRE_RANGE), motion: "hold" },
+              {
+                when: brain.targetDistance
+                  .le(FIRE_RANGE)
+                  .and(brain.targetVisible),
+                motion: "hold",
+              },
               "chaseTarget",
             ],
             offense: {
               initial: "close",
               activities: {
-                // Run in until within FIRE_RANGE, then alternate aim/fire so
-                // each fire entry edge-fires the shot under its cooldown.
+                // Run in until within FIRE_RANGE with the shared, debounced LOS
+                // fact, then alternate aim/fire. Each `fire` dwell retries its
+                // LOS, facing, and cooldown gates until it fires once. Losing
+                // visibility returns to `close`, where the move layer repositions
+                // to reacquire.
                 close: { animation: "run" },
                 aim: { animation: "idle_aiming" },
                 fire: { animation: "shoot", action: { attack: "shoot" } },
               },
               transitions: {
-                // Enter the firing cycle inside FIRE_RANGE; only drop back to
-                // `close` once the target pulls past BREAK_RANGE, so a target
-                // hovering at the threshold keeps him firing instead of churning.
+                // Enter the firing cycle only inside FIRE_RANGE with the shared
+                // LOS fact. Loss returns to `close` after the grace window;
+                // distance hysteresis still prevents threshold churn.
                 close: [
-                  { to: "aim", when: brain.targetDistance.le(FIRE_RANGE) },
+                  {
+                    to: "aim",
+                    when: brain
+                      .targetDistance
+                      .le(FIRE_RANGE)
+                      .and(brain.targetVisible),
+                  },
                 ],
                 aim: [
+                  { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                   { to: "fire", when: brain.timeInActivityMs.ge(AIM_MS) },
                 ],
                 fire: [
+                  { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                   { to: "aim", when: brain.timeInActivityMs.ge(FIRE_MS) },
                 ],

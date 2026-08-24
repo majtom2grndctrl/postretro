@@ -24,7 +24,7 @@
 // shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
@@ -35,6 +35,7 @@ mod combat_slots;
 mod engine_floor;
 mod facing;
 mod graph_eval;
+mod perception;
 mod targeting;
 
 #[cfg(test)]
@@ -48,12 +49,13 @@ use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use combat_slots::resolve_combat_slots;
 use engine_floor::{POSITION_GOAL_ARRIVAL_EPSILON, SteeringIntent};
-use facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
+use facing::{FACING_TURN_RATE, slewed_yaw_toward, yaw_from_rotation, yaw_within_attack_tolerance};
 use graph_eval::{
-    action_for_entry_path, action_for_path, animation_for_path, engages_active, engages_path,
-    motion_for_path, select_transition_path, steering_for,
+    action_for_path, animation_for_path, engages_active, engages_path, motion_for_path,
+    select_transition_path, steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
+use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
@@ -65,8 +67,8 @@ use postretro_entities::{
 };
 use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
 use targeting::{
-    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance,
+    TargetPawn, TargetSelection, acquisition_due, select_target, selected_target_alive,
+    target_candidate, target_distance, target_offers,
 };
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
@@ -109,6 +111,34 @@ impl LocomotionIntent {
             moving: speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON,
             speed_xz_sq,
         }
+    }
+}
+
+/// Resolve the one direction this tick's apply pass will slew toward. A
+/// committed aim holds its movement destination but still turns toward the
+/// shared eye-to-target vector; other engaged states keep the established
+/// velocity-first facing behavior.
+fn facing_direction(
+    steering: SteeringIntent,
+    engaged: bool,
+    committed_aim: bool,
+    target_perception: Option<perception::EnemyTargetPerception>,
+    path_state: Option<crate::agent_steering::AgentPathState>,
+) -> Option<Vec3> {
+    let moving_velocity = path_state
+        .map(|path| path.velocity)
+        .filter(|velocity| LocomotionIntent::from_velocity(*velocity).moving);
+    match steering {
+        SteeringIntent::MoveTo(_) if let Some(velocity) = moving_velocity => Some(velocity),
+        SteeringIntent::MoveTo(_) => None,
+        _ if committed_aim => {
+            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
+        }
+        _ if engaged && let Some(velocity) = moving_velocity => Some(velocity),
+        _ if engaged => {
+            target_perception.map(|perception| perception.target_aim - perception.enemy_eye)
+        }
+        _ => None,
     }
 }
 
@@ -220,6 +250,7 @@ fn advance_patrol_cursor(brain: &mut BrainComponent, point_count: usize, mode: P
 struct EnemySnapshot {
     id: EntityId,
     position: Vec3,
+    rotation: Quat,
     brain: BrainComponent,
 }
 
@@ -231,12 +262,20 @@ pub(super) struct EnemyOutcome {
     /// resolution needs nothing but the outcomes.
     pub(super) position: Vec3,
     pub(super) target: Option<TargetPawn>,
+    /// Canonical enemy-eye/target-aim LOS endpoints. Passing them as data keeps
+    /// combat positioning registry-decoupled and aligned with the fire gate.
+    pub(super) enemy_eye_offset: Vec3,
+    pub(super) target_aim: Option<Vec3>,
     pub(super) brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
     pub(super) engaged: bool,
+    /// The facing direction evaluated in the compute pass and written in apply.
+    /// Carrying it across the pass boundary lets the fire gate inspect this
+    /// tick's exact post-slew heading rather than the previous tick's rotation.
+    facing_direction: Option<Vec3>,
     pub(super) combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
@@ -250,13 +289,13 @@ pub(super) struct EnemyOutcome {
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
-    /// Damage already resolved at the one edge-fire seam. The apply pass never
+    /// Damage already resolved at the one fire-latch seam. The apply pass never
     /// re-derives an action from a potentially changed path.
     attack_damage: Option<f32>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
-    pub(super) prior_engagement_radius: f32,
-    pub(super) engagement_radius: f32,
+    pub(super) prior_standoff_distance: f32,
+    pub(super) standoff_distance: f32,
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
@@ -301,6 +340,10 @@ pub(crate) struct AiRuntime {
     /// Per-entity bound transition guards. Derived data, rebuilt from each
     /// brain's retained graph whenever the entity is (re)seen.
     programs: BrainPrograms,
+    /// Host-only LOS loss grace, keyed by enemy and pruned with live brains.
+    /// It stays out of components and replication because clients never run AI
+    /// perception or guard evaluation.
+    los_grace: HashMap<EntityId, LosGraceState>,
 }
 
 impl AiRuntime {
@@ -310,6 +353,7 @@ impl AiRuntime {
             blocked_warned: HashSet::new(),
             reseat_warned: HashSet::new(),
             programs: BrainPrograms::new(),
+            los_grace: HashMap::new(),
         }
     }
 }
@@ -338,7 +382,8 @@ impl Default for AiRuntime {
 ///    to `initial` and skipping evaluation entirely.
 /// 3. On entry, reset the entered path suffix. Raise its leaf `onEnter` unless
 ///    this is the fresh spawn's initial seating.
-/// 4. Edge-fire an entered action after its cooldown, range, and target gates.
+/// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
+///    cooldown, range, live-target, LOS, and post-slew-facing gates.
 /// 5. On an activity change or locomotion stop/resume, request the one animation
 ///    state resolved from the active nested path.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -385,6 +430,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         blocked_warned,
         reseat_warned,
         programs,
+        los_grace,
     } = runtime;
     programs.sync(registry, warned);
 
@@ -396,6 +442,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     // different enemy.
     blocked_warned.retain(|id| programs.get(*id).is_some());
     reseat_warned.retain(|id| programs.get(*id).is_some());
+    los_grace.retain(|id, _| programs.get(*id).is_some());
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
     let snapshots: Vec<EnemySnapshot> = registry
@@ -420,10 +467,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };
-            let position = registry.get_component::<Transform>(id).ok()?.position;
+            let transform = registry.get_component::<Transform>(id).ok()?;
             Some(EnemySnapshot {
                 id,
-                position,
+                position: transform.position,
+                rotation: transform.rotation,
                 brain: brain.clone(),
             })
         })
@@ -462,7 +510,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_acquired_target = brain.acquired_target;
-        let (target, evaluate_acquisition) = if brain.aggro_armed {
+        let (target_selection, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
             // candidates instead of honoring a stale acquired id.
@@ -470,7 +518,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
-                .and_then(|entity| target_candidate(registry, entity, snap.position, None));
+                .and_then(|entity| target_candidate(registry, entity, snap.position));
             let (target, evaluate_acquisition) = if let Some(retained) = retained {
                 // A retained target alone prices the stride from its raw
                 // distance. A due tick may still run the normal hysteresis scan
@@ -480,49 +528,75 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 let target = if evaluate_acquisition {
                     let (candidate_filter, candidate_scope) =
                         programs.candidate_filter_context(snap.id);
-                    select_target(
+                    let offers = target_offers(
                         registry,
                         snap.position,
                         enemy_faction,
                         Some(retained.target.entity),
-                        None,
+                    );
+                    let enemy_eye =
+                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                    let mut candidate_perception = |candidate| {
+                        perception::raw_target_perception(
+                            registry,
+                            enemy_eye,
+                            candidate,
+                            collision_world,
+                        )
+                    };
+                    select_target(
+                        Some(retained),
+                        &offers,
+                        registry,
                         candidate_filter,
                         candidate_scope,
+                        &mut candidate_perception,
                     )
-                    .1
                 } else {
-                    Some(retained.target)
+                    Some(TargetSelection {
+                        target: retained.target,
+                        fresh_perception: None,
+                    })
                 };
                 (target, evaluate_acquisition)
             } else {
+                let offers = target_offers(registry, snap.position, enemy_faction, None);
+                let evaluate_acquisition =
+                    acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
                 let (candidate_filter, candidate_scope) =
                     programs.candidate_filter_context(snap.id);
-                let (nearest_for_stride, nearest_selection) = select_target(
-                    registry,
-                    snap.position,
-                    enemy_faction,
-                    None,
-                    None,
-                    candidate_filter,
-                    candidate_scope,
-                );
-                let evaluate_acquisition = acquisition_due(
-                    &brain,
-                    nearest_for_stride.map(|candidate| candidate.distance),
-                );
                 // The raw nearest hostile offer prices the stride. A
-                // graph-filtered selection becomes a target only on a due
-                // tick; otherwise `BrainFacts` stay untargeted rather than
-                // borrowing it.
-                (
-                    evaluate_acquisition.then_some(nearest_selection).flatten(),
-                    evaluate_acquisition,
-                )
+                // graph- and LOS-filtered selection becomes a target only on a
+                // due tick; otherwise `BrainFacts` stay untargeted rather than
+                // borrowing it. The offer set avoids a second registry walk
+                // while keeping exact candidate raycasts off non-due ticks.
+                let target = evaluate_acquisition.then(|| {
+                    let enemy_eye =
+                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                    let mut candidate_perception = |candidate| {
+                        perception::raw_target_perception(
+                            registry,
+                            enemy_eye,
+                            candidate,
+                            collision_world,
+                        )
+                    };
+                    select_target(
+                        None,
+                        &offers,
+                        registry,
+                        candidate_filter,
+                        candidate_scope,
+                        &mut candidate_perception,
+                    )
+                });
+                (target.flatten(), evaluate_acquisition)
             };
             (target, evaluate_acquisition)
         } else {
             (None, false)
         };
+        let target = target_selection.map(|selection| selection.target);
 
         // (1) Every named cooldown ticks down before the aggro gate and before
         // any guard reads its selected attack's value. Entries do not freeze
@@ -545,10 +619,41 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // The FINALLY selected pawn's identity and distance, or `None` with no
         // target. This one binding feeds the guard facts and attack range gate,
         // so neither can disagree about which target they describe.
-        let selected_target =
-            target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let target_perception = target_selection.and_then(|selection| {
+            perception::perceive_target(
+                registry,
+                los_grace,
+                perception::TargetPerceptionQuery {
+                    enemy: snap.id,
+                    enemy_position: snap.position,
+                    target: selection.target,
+                    nav_graph,
+                    collision_world,
+                    fresh: selection.fresh_perception,
+                },
+            )
+        });
+        if target.is_none() {
+            los_grace.remove(&snap.id);
+        }
+        // The graph fact and the engine-floor fire gate consume this one
+        // already-debounced perception result. Keep the fire gate independent
+        // of authoring below; it still calls `perception::fire_gate` directly.
+        let target_visible = target_perception.is_some_and(|perception| perception.visible);
+        let enemy_eye_offset = target_perception
+            .map(|perception| perception.enemy_eye - snap.position)
+            .unwrap_or(Vec3::ZERO);
+        let target_aim = target_perception.map(|perception| perception.target_aim);
+
+        let selected_target = target.map(|target| {
+            (
+                target.entity,
+                target_distance(target, snap.position),
+                target.position,
+            )
+        });
         let target_hostile = selected_target
-            .is_some_and(|(target, _)| entity_faction(registry, target) != enemy_faction);
+            .is_some_and(|(target, _, _)| entity_faction(registry, target) != enemy_faction);
         // Reachability is the nav floor's pathfinder verdict, cached on the
         // existing acquisition stride. It deliberately mirrors the same
         // `find_path` capability chase consumes, rather than claiming a
@@ -571,9 +676,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 false
             }
         };
-        let selected_distance = selected_target.map(|(_, distance)| distance);
-        let mut prior_engagement_radius = brain.graph.engagement_radius();
-        let (transitioned, steering) = if !brain.aggro_armed {
+        let selected_distance = selected_target.map(|(_, distance, _)| distance);
+        let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
+        let (transitioned, motion, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
@@ -585,7 +690,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             } else {
                 false
             };
-            (transitioned, SteeringIntent::Clear)
+            (transitioned, None, SteeringIntent::Clear)
         } else {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
@@ -610,6 +715,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
@@ -633,16 +739,17 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     distance_from_anchor,
                     target_hostile,
                     target_reachable,
+                    target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                 },
             );
-            prior_engagement_radius = programs
+            prior_standoff_distance = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     action_for_path(bound, scope, &brain)
-                        .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
+                        .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
                 })
                 .flatten()
-                .unwrap_or_else(|| brain.graph.engagement_radius());
+                .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
             let transitioned = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     select_transition_path(bound, scope, &mut brain)
@@ -664,27 +771,56 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (transitioned, steering)
+            (transitioned, motion, steering)
         };
 
-        // The acquired id is the "this brain is engaged" marker the next tick's
-        // retention reads, so it is set by ENGAGEMENT (chasing or acting), not by
-        // the steering intent — a state that stands still and swings keeps its
-        // pawn.
+        // The acquired id is the cross-tick retention marker. Keep it while the
+        // active path remains capable of engagement, even when an in-range move
+        // selector currently resolves to `hold` and the committed leaf has no
+        // action. A transition to a genuinely idle or position-goal path still
+        // clears it here.
+        let retains_target = target.is_some() && engages_active(&brain);
+        brain.acquired_target = match target {
+            Some(target) if retains_target => Some(target.entity),
+            _ => None,
+        };
+
+        // Resolved engagement remains the facing policy for ordinary chase and
+        // action paths. Committed actionless aim is handled separately below.
         let engaged = target.is_some()
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
-        brain.acquired_target = match target {
-            Some(target) if engaged => Some(target.entity),
-            _ => None,
-        };
 
-        // (4) Attack: the selected state names one graph-wide contact attack.
-        // Its own cooldown must have elapsed, the SELECTED target must be
-        // inside its `maxRange`, and it must still be alive. Apply its
-        // configured damage once and re-arm only that named timer. Checked
-        // every tick.
+        // A nested offense phase can intentionally hold at an authored standoff
+        // before its leaf exposes an action. It is still committed to the
+        // target: keep its aim moving even though its resolved current verb is
+        // `hold`, which `engages_path` correctly leaves false.
+        let committed_aim = retains_target && matches!(motion, Some(MotionVerb::Hold));
+        let facing_direction = facing_direction(
+            steering,
+            engaged,
+            committed_aim,
+            target_perception,
+            agent_steering::path_state(registry, snap.id),
+        );
+        // If no horizontal yaw is derivable (for example, melee contact's
+        // vertical eye-to-aim segment), apply leaves the transform untouched;
+        // the firing check therefore reads that unchanged heading.
+        let post_slew_yaw = facing_direction
+            .and_then(|direction| {
+                slewed_yaw_toward(snap.rotation, direction, FACING_TURN_RATE * tick_dt)
+            })
+            .unwrap_or_else(|| yaw_from_rotation(snap.rotation));
+        let post_slew_facing_is_within_tolerance = target_perception.is_some_and(|perception| {
+            yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
+        });
+
+        // (4) Attack: the active firing leaf latches one graph-wide contact
+        // attack on its first clear dwell tick. Its own cooldown must have
+        // elapsed, the SELECTED target must be inside its `maxRange`, and it
+        // must still be alive. The LOS and facing gates read this tick's shared
+        // debounced perception and post-slew heading respectively.
         // The range gate lets a graph declare the action without making it
         // connect from across the room.
         // An unresolved action name configures no range and no damage, so it
@@ -695,22 +831,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         let entered = brain.take_entry_pending();
         let mut attacked = false;
         let mut attack_damage = None;
-        if let Some(entry_start_depth) = entered
+        if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && let Some((attack_name, attack)) = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_entry_path(bound, scope, &brain, entry_start_depth).and_then(
-                        |action| match action {
-                            ActionVerb::Attack(name) => brain
-                                .graph
-                                .attacks
-                                .get(name)
-                                .copied()
-                                .map(|attack| (name.clone(), attack)),
-                        },
-                    )
+                    action_for_path(bound, scope, &brain).and_then(|action| match action {
+                        ActionVerb::Attack(name) => brain
+                            .graph
+                            .attacks
+                            .get(name)
+                            .copied()
+                            .map(|attack| (name.clone(), attack)),
+                    })
                 })
                 .flatten()
+            && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && distance <= attack.max_range
             && brain
                 .attack_cooldown_remaining_ms
@@ -719,6 +854,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .unwrap_or(0.0)
                 <= 0.0
             && selected_target_alive(registry, target.entity)
+            && perception::fire_gate(target_perception)
+            && post_slew_facing_is_within_tolerance
         {
             attacked = true;
             attack_damage = Some(attack.damage);
@@ -739,27 +876,30 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         } else {
             None
         };
-        let engagement_radius = programs
+        let standoff_distance = programs
             .with_entry_scope(snap.id, |bound, scope| {
                 action_for_path(bound, scope, &brain)
-                    .map(|action| brain.graph.engagement_radius_for_action(Some(action)))
+                    .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
             })
             .flatten()
-            .unwrap_or_else(|| brain.graph.engagement_radius());
+            .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
         outcomes.push(EnemyOutcome {
             id: snap.id,
             position: snap.position,
             target,
+            enemy_eye_offset,
+            target_aim,
             prior_acquired_target,
             graph_reseated,
             state_changed,
             attacked,
             attack_damage,
-            prior_engagement_radius,
-            engagement_radius,
+            prior_standoff_distance,
+            standoff_distance,
             on_enter,
             steering,
             engaged,
+            facing_direction,
             combat_slot: None,
             brain,
         });
@@ -863,50 +1003,18 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             }
         }
 
-        // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
-        // so without this the model keeps its spawn heading and moonwalks toward
-        // its selected target. Orient it believably each tick it is engaged, or
-        // while it is travelling under a fixed position goal:
-        //   - Moving (XZ speed above the epsilon): face the velocity direction, so
-        //     it faces where it is going even when routing around obstacles. The
-        //     velocity is read from `path_state` (last tick's resolved velocity) —
-        //     a one-tick lag on facing that is imperceptible.
-        //   - Stopped but engaged (near-zero XZ speed — arrived/blocked/swinging):
-        //     face this enemy's selected target.
-        //   - A stopped position-goal mover leaves facing untouched, even when
-        //     the target scan happened to find a nearby pawn.
-        //   - Standing down: leave facing untouched.
-        // The test is ENGAGEMENT, not the chase intent: a state that stands its
-        // ground and swings must turn toward what it is hitting, or it lands
-        // damage on a pawn behind its back. A state that neither chases nor acts
-        // never turns — which is also why a closed aggro gate cannot turn an
-        // enemy: it forces the resting state, and resting does neither.
-        // Yaw only (model stays upright); a zero-length OR non-finite direction
-        // yields `None` and writes nothing, and `slew_yaw` re-seats rather than
-        // propagates a non-finite current yaw — between them, no NaN can reach
-        // `Transform.rotation`, which the renderer feeds straight into the model
-        // matrix and which nothing else re-seats.
-        if let Some(path) = path_state.as_ref() {
-            let moving = locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON;
-            let facing = match outcome.steering {
-                SteeringIntent::MoveTo(_) if moving => yaw_rotation_toward(path.velocity),
-                SteeringIntent::MoveTo(_) => None,
-                _ if outcome.engaged && moving => yaw_rotation_toward(path.velocity),
-                _ if outcome.engaged => outcome
-                    .target
-                    .and_then(|target| yaw_rotation_toward(target.position - path.position)),
-                _ => None,
-            };
-            if let Some(target_rotation) = facing {
-                if let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
-                {
-                    let current_yaw = yaw_from_rotation(transform.rotation);
-                    let target_yaw = yaw_from_rotation(target_rotation);
-                    let slewed_yaw = slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
-                    transform.rotation = Quat::from_rotation_y(slewed_yaw);
-                    let _ = registry.set_component(outcome.id, transform);
-                }
-            }
+        // Facing (yaw-only): compute chose this direction from the same
+        // start-of-tick path state it used for the attack gate. Reusing it here
+        // keeps the predicted post-slew heading and the transform write exactly
+        // aligned. A committed hold-at-standoff aim therefore turns every tick
+        // even before its firing leaf exposes an action.
+        if let Some(direction) = outcome.facing_direction
+            && let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
+            && let Some(slewed_yaw) =
+                slewed_yaw_toward(transform.rotation, direction, FACING_TURN_RATE * tick_dt)
+        {
+            transform.rotation = Quat::from_rotation_y(slewed_yaw);
+            let _ = registry.set_component(outcome.id, transform);
         }
 
         // Damage: route the configured amount through the chokepoint to the

@@ -76,6 +76,12 @@ pub const BRAIN_TARGET_REACHABLE_INPUT: &str = "@brain.targetReachable";
 /// so this slot is re-pointed by the statechart evaluator before every level.
 /// A fire on the current tick becomes observable only after the next refresh.
 pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInActivity";
+/// Whether the selected target is visible along the enemy's debounced
+/// static-world eye-to-target sightline. `false` with no selected target.
+///
+/// This is the exact shared verdict the engine-floor fire gate reads; it is
+/// independent of the additional range, cooldown, and facing gates.
+pub const BRAIN_TARGET_VISIBLE_INPUT: &str = "@brain.targetVisible";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -107,7 +113,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 14] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 15] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -122,6 +128,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 14] = [
     (BRAIN_TARGET_HOSTILE_INPUT, IrType::Bool),
     (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
     (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
+    (BRAIN_TARGET_VISIBLE_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -277,6 +284,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[13],
             (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn target_visible_appends_at_fixed_slot_fourteen() {
+        assert_eq!(
+            BRAIN_INPUTS[14],
+            (BRAIN_TARGET_VISIBLE_INPUT, IrType::Bool),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

@@ -56,12 +56,19 @@ pub(super) fn resolve_combat_slots(
         let Some(target) = outcome.target else {
             continue;
         };
+        let Some(target_aim) = outcome.target_aim else {
+            continue;
+        };
         let retained_slot = retained_combat_slot(outcome);
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
-            engagement_radius: outcome.engagement_radius,
+            // The single query radius feeds both generated ring positions and
+            // band scoring; it is the action-relative resolved standoff.
+            engagement_radius: outcome.standoff_distance,
             target_pos: target.position,
+            enemy_eye_offset: outcome.enemy_eye_offset,
+            target_aim,
             combat_slot: retained_slot,
             scan_challengers: retained_slot.is_none(),
             other_agents: &other_agents,
@@ -124,5 +131,5 @@ fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
 }
 
 fn retained_standoff_matches_committed_state(outcome: &EnemyOutcome) -> bool {
-    outcome.prior_engagement_radius.to_bits() == outcome.engagement_radius.to_bits()
+    outcome.prior_standoff_distance.to_bits() == outcome.standoff_distance.to_bits()
 }

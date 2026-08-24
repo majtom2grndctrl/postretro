@@ -22,10 +22,14 @@ fn main() {
     // Positional args, collected once (indices stay stable for the weapon and
     // prior-euler slots below): <model> [clip] [socket] [time] [weapon] [ex ey ez].
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let path = argv.first().cloned().expect(
-        "usage: socket_dump <model.gltf> [clip] [socket] [time] [weapon.gltf] [ex ey ez]",
-    );
-    let clip_name = argv.get(1).cloned().unwrap_or_else(|| "idle_aiming".to_string());
+    let path = argv
+        .first()
+        .cloned()
+        .expect("usage: socket_dump <model.gltf> [clip] [socket] [time] [weapon.gltf] [ex ey ez]");
+    let clip_name = argv
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "idle_aiming".to_string());
     // Args are strictly positional: a weapon must sit in slot 5 with clip,
     // socket, and time supplied first. A .gltf/.glb/.bin in the clip slot almost
     // always means someone wrote `socket_dump <model> <weapon>` and it is about
@@ -58,7 +62,11 @@ fn main() {
         .unwrap_or_else(|| {
             panic!(
                 "clip {clip_name:?} not found; have: {:?}",
-                model.clips.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
+                model
+                    .clips
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -74,13 +82,26 @@ fn main() {
     );
     let m = out[joint];
     eprintln!("socket {socket} -> joint {joint}; clip {clip_name} @ t={time}");
-    eprintln!("  hand local +X -> world {:?}", m.x_axis.truncate().to_array());
-    eprintln!("  hand local +Y -> world {:?}", m.y_axis.truncate().to_array());
-    eprintln!("  hand local +Z -> world {:?}", m.z_axis.truncate().to_array());
+    eprintln!(
+        "  hand local +X -> world {:?}",
+        m.x_axis.truncate().to_array()
+    );
+    eprintln!(
+        "  hand local +Y -> world {:?}",
+        m.y_axis.truncate().to_array()
+    );
+    eprintln!(
+        "  hand local +Z -> world {:?}",
+        m.z_axis.truncate().to_array()
+    );
     eprintln!("  position -> world {:?}", m.w_axis.truncate().to_array());
     println!(
         "MAT {}",
-        m.to_cols_array().iter().map(|v| format!("{v:.6}")).collect::<Vec<_>>().join(" ")
+        m.to_cols_array()
+            .iter()
+            .map(|v| format!("{v:.6}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
 
     // Optional 5th arg: a weapon model to mount at this socket (holder = identity,
@@ -98,8 +119,12 @@ fn main() {
     if let Some(weapon_path) = argv.get(4).cloned() {
         use glam::{Mat3, Vec3};
         let weapon = load_model(Path::new(&weapon_path)).expect("load weapon failed");
-        let verts: Vec<Vec3> =
-            weapon.mesh.vertices.iter().map(|v| Vec3::from_array(v.position)).collect();
+        let verts: Vec<Vec3> = weapon
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| Vec3::from_array(v.position))
+            .collect();
         let mut mn = Vec3::splat(f32::INFINITY);
         let mut mx = Vec3::splat(f32::NEG_INFINITY);
         for p in &verts {
@@ -163,8 +188,11 @@ fn main() {
             }
         }
         // Muzzle = thin end.
-        let (barrel_l, muzzle_c, stock_c, r_muzzle, r_stock) =
-            if ra < rb { (axis, ca, cb, ra, rb) } else { (-axis, cb, ca, rb, ra) };
+        let (barrel_l, muzzle_c, stock_c, r_muzzle, r_stock) = if ra < rb {
+            (axis, ca, cb, ra, rb)
+        } else {
+            (-axis, cb, ca, rb, ra)
+        };
         // Up: mean mass offset from the bore line (through the muzzle centroid)
         // points DOWN (grip/mag/stock hang under the barrel).
         let mut mean_off = Vec3::ZERO;
@@ -183,7 +211,11 @@ fn main() {
         let barrel_w = (rot * barrel_l).normalize();
         let up_w = (rot * up_l).normalize();
         eprintln!("--- weapon {weapon_path} mounted ---");
-        eprintln!("  weapon local bbox min {:?} max {:?}", mn.to_array(), mx.to_array());
+        eprintln!(
+            "  weapon local bbox min {:?} max {:?}",
+            mn.to_array(),
+            mx.to_array()
+        );
         eprintln!(
             "  end A (t max) centroid {:?} max cross-radius {:.3}",
             ca.to_array(),
@@ -201,9 +233,19 @@ fn main() {
             stock_c.to_array(),
             r_stock
         );
-        eprintln!("  barrel local {:?}  up local {:?}", barrel_l.to_array(), up_l.to_array());
-        eprintln!("  BARREL -> world {:?}   (target forward = [0,0,1])", barrel_w.to_array());
-        eprintln!("  UP     -> world {:?}   (target up      = [0,1,0])", up_w.to_array());
+        eprintln!(
+            "  barrel local {:?}  up local {:?}",
+            barrel_l.to_array(),
+            up_l.to_array()
+        );
+        eprintln!(
+            "  BARREL -> world {:?}   (target forward = [0,0,1])",
+            barrel_w.to_array()
+        );
+        eprintln!(
+            "  UP     -> world {:?}   (target up      = [0,1,0])",
+            up_w.to_array()
+        );
         eprintln!(
             "  barrel·+Z = {:.3}  (1.0 = forward)   barrel·+Y = {:+.3}  (0 = level, + = muzzle up)",
             barrel_w.dot(Vec3::Z),

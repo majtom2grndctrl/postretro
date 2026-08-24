@@ -7,6 +7,8 @@ Usage:
         --output path/to/output/model.gltf \
         [--grip 0.0 -0.05 0.12] \
         [--scale 0.01] \
+        [--rotate-euler X Y Z] \
+        [--mount-axes BX BY BZ UX UY UZ] \
         [--socket muzzle=BarrelTip] \
         [--socket optic_rail=ScopeMount]
 
@@ -16,7 +18,8 @@ validates against the engine model contract, and exports glTF Separate.
 
 After export the script post-processes the .gltf JSON: removes extensions
 the engine rejects from extensionsRequired, and optionally adds socket
-extras tags for named attachment points on child nodes.
+extras tags for named attachment points on child nodes and mount-axis metadata
+to the selected mesh node.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
 """
@@ -72,6 +75,13 @@ def parse_args():
              "when mounted on a skeleton socket: the engine mounts an "
              "attachment at the raw joint matrix with no per-socket offset, so "
              "any orientation fix must be baked into the model here."
+    )
+    parser.add_argument(
+        "--mount-axes", type=float, nargs=6,
+        metavar=("BX", "BY", "BZ", "UX", "UY", "UZ"),
+        help="Persist raw-source weapon barrel and up axes in the exported "
+             "mesh node's extras.mount metadata. The applied --rotate-euler "
+             "is recorded there too."
     )
     parser.add_argument(
         "--socket", action="append", metavar="NAME=NODE",
@@ -337,8 +347,8 @@ def export_gltf(output_path):
             print(f"  {f.name} ({size_kb:.1f} KB)")
 
 
-def postprocess_gltf(gltf_path, sockets=None):
-    """Post-process the exported glTF JSON: clean extensions, add socket tags."""
+def postprocess_gltf(gltf_path, sockets=None, rotate_euler=None, mount_axes=None):
+    """Post-process the exported glTF JSON and write optional author metadata."""
     gltf_path = Path(gltf_path)
     with open(gltf_path, "r") as f:
         gltf = json.load(f)
@@ -370,6 +380,7 @@ def postprocess_gltf(gltf_path, sockets=None):
             print("  If the engine rejects the model, these may need conversion.")
 
     nodes = gltf.get("nodes", [])
+    mesh_node = next((node for node in nodes if "mesh" in node), None)
 
     if sockets:
         print(f"\nAdding socket tags:")
@@ -393,6 +404,23 @@ def postprocess_gltf(gltf_path, sockets=None):
                 print(f"  WARNING: Node '{node_name}' not found for socket '{socket_name}'")
                 node_names = [n.get("name", "(unnamed)") for n in nodes]
                 print(f"  Available nodes: {node_names}")
+
+    if mount_axes is not None:
+        if mesh_node is None:
+            print("  WARNING: Cannot write mount axes: no mesh node was exported")
+        else:
+            extras = mesh_node.get("extras") or {}
+            extras["mount"] = {
+                "barrel": list(mount_axes[:3]),
+                "up": list(mount_axes[3:]),
+                "euler": list(rotate_euler) if rotate_euler is not None else [0, 0, 0],
+            }
+            mesh_node["extras"] = extras
+            modified = True
+            print(
+                "\nPersisted mount axes on mesh node "
+                f"'{mesh_node.get('name', '(unnamed)')}'"
+            )
 
     accessors = gltf.get("accessors", [])
     meshes = gltf.get("meshes", [])
@@ -435,11 +463,6 @@ def postprocess_gltf(gltf_path, sockets=None):
     ext_req = gltf.get("extensionsRequired", [])
     print(f"extensionsRequired: {ext_req if ext_req else '(none)'}")
 
-    mesh_node = None
-    for node in nodes:
-        if "mesh" in node:
-            mesh_node = node
-            break
     if mesh_node:
         print(f"Mesh node: '{mesh_node.get('name', '(unnamed)')}'")
         prim_count = 0
@@ -505,7 +528,12 @@ def main():
 
     validate_model(mesh)
     export_gltf(args.output)
-    postprocess_gltf(args.output, sockets=args.socket)
+    postprocess_gltf(
+        args.output,
+        sockets=args.socket,
+        rotate_euler=args.rotate_euler,
+        mount_axes=args.mount_axes,
+    )
 
 
 if __name__ == "__main__":

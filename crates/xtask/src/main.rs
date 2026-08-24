@@ -7,7 +7,13 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use glam::{Mat3, Vec3};
 use postretro_level_format::prm::cache_filename_for_key;
+use postretro_model::gltf_loader::load_model;
+use postretro_model::mount::{
+    MountAxes, MountConfidence, corrective_delta, corrective_delta_for_axes, detect_weapon_mount,
+    resolve_socket_frame_in_model,
+};
 
 mod crate_graph;
 
@@ -53,6 +59,10 @@ fn try_main() -> Result<i32, String> {
 
     if command == "bake-model-textures" {
         return bake_model_textures_command(args.collect());
+    }
+
+    if command == "solve-weapon-mount" {
+        return solve_weapon_mount_command(args.collect());
     }
 
     if command == "crate-graph" {
@@ -101,6 +111,498 @@ fn parse_bake_model_textures_args(args: Vec<OsString>) -> Result<PathBuf, String
         _ => Err("bake-model-textures accepts exactly one glTF path\n\n\
              Usage: cargo run -p xtask -- bake-model-textures <scene.gltf>"
             .to_string()),
+    }
+}
+
+/// Solve a rigid weapon bake against the engine's neutral sampled socket frame,
+/// then print the Blender command that performs the actual vertex bake.
+fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
+    let args = parse_solve_weapon_mount_args(args)?;
+    let holder = load_model(&args.holder_path)
+        .map_err(|error| format!("load skeleton {}: {error}", args.holder_path.display()))?;
+    let weapon = load_model(&args.weapon_path)
+        .map_err(|error| format!("load weapon {}: {error}", args.weapon_path.display()))?;
+    let socket = resolve_socket_frame_in_model(&holder, &args.clip, &args.mount_joint, args.time)
+        .map_err(|error| {
+        format!(
+            "resolve mount joint {:?} on {}: {error}",
+            args.mount_joint,
+            args.holder_path.display()
+        )
+    })?;
+
+    println!(
+        "Socket {:?} -> joint {}; clip {:?} @ t={}",
+        args.mount_joint,
+        socket.joint_index,
+        args.clip,
+        format_number(args.time),
+    );
+
+    let cli_axes = args.cli_axes()?;
+    let declared_axes = cli_axes.or(weapon.mount);
+    let (euler, emitted_axes, unverified) = match declared_axes {
+        Some(axes) => {
+            let delta = corrective_delta_for_axes(socket.matrix, axes)
+                .map_err(|error| format!("solve declared weapon axes: {error}"))?;
+            println!(
+                "Declared raw-source axes: barrel {}  up {}",
+                format_vec3(axes.barrel),
+                format_vec3(axes.up),
+            );
+            (
+                blender_xyz_euler_degrees(gltf_to_blender_rotation(delta)),
+                axes,
+                false,
+            )
+        }
+        None => {
+            let detection = detect_weapon_mount(&weapon)
+                .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
+            let current_euler = weapon
+                .mount
+                .and_then(|mount| mount.euler)
+                .or(args.current_euler)
+                .ok_or_else(|| {
+                    solve_weapon_mount_usage(
+                        "geometric assist requires the current bake euler from extras.mount.euler or --current-euler X Y Z",
+                    )
+                })?;
+            let current_blender = blender_xyz_rotation(current_euler);
+            let residual = corrective_delta(socket.matrix, detection.frame)
+                .map_err(|error| format!("solve geometric residual: {error}"))?;
+            let total_blender = gltf_to_blender_rotation(residual) * current_blender;
+
+            // Detection measures the already-baked mesh. Bring that candidate
+            // back to the source frame before persisting it in --mount-axes.
+            let current_gltf = blender_to_gltf_rotation(current_blender);
+            let candidate_axes = MountAxes {
+                barrel: current_gltf.transpose() * detection.frame.barrel,
+                up: current_gltf.transpose() * detection.frame.up,
+                euler: None,
+            };
+
+            println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
+            println!(
+                "Detected baked-frame axes: barrel {}  up {}  side {}",
+                format_vec3(detection.frame.barrel),
+                format_vec3(detection.frame.up),
+                format_vec3(detection.frame.side),
+            );
+            println!(
+                "Detection: confidence {}; length {}; muzzle radius {}; stock radius {}",
+                format_confidence(detection.confidence),
+                format_number(detection.length),
+                format_number(detection.muzzle.max_cross_radius),
+                format_number(detection.stock.max_cross_radius),
+            );
+            println!(
+                "UNVERIFIED raw-source candidate axes: barrel {}  up {}",
+                format_vec3(candidate_axes.barrel),
+                format_vec3(candidate_axes.up),
+            );
+            println!(
+                "Current baked Blender XYZ euler: {} {} {}",
+                format_number(current_euler[0]),
+                format_number(current_euler[1]),
+                format_number(current_euler[2]),
+            );
+            (
+                blender_xyz_euler_degrees(total_blender),
+                candidate_axes,
+                true,
+            )
+        }
+    };
+
+    let prefix = if unverified { "UNVERIFIED " } else { "" };
+    println!(
+        "{prefix}Blender XYZ rotate-euler (degrees): {} {} {}",
+        format_number(euler[0]),
+        format_number(euler[1]),
+        format_number(euler[2]),
+    );
+    println!("Run this command (emit-only; xtask does not invoke Blender):");
+    println!("{}", emitted_blender_command(&args, euler, emitted_axes));
+    Ok(0)
+}
+
+#[derive(Debug, PartialEq)]
+struct SolveWeaponMountArgs {
+    holder_path: PathBuf,
+    mount_joint: String,
+    clip: String,
+    time: f32,
+    weapon_path: PathBuf,
+    barrel: Option<Vec3>,
+    up: Option<Vec3>,
+    raw_source: String,
+    out: String,
+    grip: Option<[String; 3]>,
+    scale: Option<String>,
+    sockets: Vec<String>,
+    current_euler: Option<[f32; 3]>,
+}
+
+impl SolveWeaponMountArgs {
+    fn cli_axes(&self) -> Result<Option<MountAxes>, String> {
+        match (self.barrel, self.up) {
+            (Some(barrel), Some(up)) => Ok(Some(MountAxes {
+                barrel,
+                up,
+                euler: None,
+            })),
+            (None, None) => Ok(None),
+            _ => Err(solve_weapon_mount_usage(
+                "--barrel and --up must be supplied together",
+            )),
+        }
+    }
+}
+
+fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMountArgs, String> {
+    let mut holder_path = None;
+    let mut mount_joint = None;
+    let mut clip = None;
+    let mut time = None;
+    let mut weapon_path = None;
+    let mut barrel = None;
+    let mut up = None;
+    let mut raw_source = None;
+    let mut out = None;
+    let mut grip = None;
+    let mut scale = None;
+    let mut sockets = Vec::new();
+    let mut current_euler = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let argument = argument_string(&args[index], "solve-weapon-mount argument")?;
+        match argument.as_str() {
+            "--mount-joint" => {
+                set_once(
+                    &mut mount_joint,
+                    next_argument(&args, &mut index, "--mount-joint")?,
+                    "--mount-joint",
+                )?;
+            }
+            "--clip" => {
+                set_once(
+                    &mut clip,
+                    next_argument(&args, &mut index, "--clip")?,
+                    "--clip",
+                )?;
+            }
+            "--time" => {
+                let value = next_argument(&args, &mut index, "--time")?;
+                set_once(&mut time, parse_finite_number(&value, "--time")?, "--time")?;
+            }
+            "--weapon" => {
+                let value = next_argument(&args, &mut index, "--weapon")?;
+                set_once(&mut weapon_path, PathBuf::from(value), "--weapon")?;
+            }
+            "--barrel" => {
+                set_once(
+                    &mut barrel,
+                    parse_vec3(&args, &mut index, "--barrel")?,
+                    "--barrel",
+                )?;
+            }
+            "--up" => {
+                set_once(&mut up, parse_vec3(&args, &mut index, "--up")?, "--up")?;
+            }
+            "--raw-source" => {
+                set_once(
+                    &mut raw_source,
+                    next_argument(&args, &mut index, "--raw-source")?,
+                    "--raw-source",
+                )?;
+            }
+            "--out" => {
+                set_once(
+                    &mut out,
+                    next_argument(&args, &mut index, "--out")?,
+                    "--out",
+                )?;
+            }
+            "--grip" => {
+                set_once(
+                    &mut grip,
+                    parse_raw_vec3(&args, &mut index, "--grip")?,
+                    "--grip",
+                )?;
+            }
+            "--scale" => {
+                let value = next_argument(&args, &mut index, "--scale")?;
+                let _ = parse_finite_number(&value, "--scale")?;
+                set_once(&mut scale, value, "--scale")?;
+            }
+            "--socket" => {
+                let socket = next_argument(&args, &mut index, "--socket")?;
+                let Some((name, node)) = socket.split_once('=') else {
+                    return Err(solve_weapon_mount_usage(
+                        "--socket requires NAME=NODE (this is a prop metadata tag, not --mount-joint)",
+                    ));
+                };
+                if name.is_empty() || node.is_empty() {
+                    return Err(solve_weapon_mount_usage(
+                        "--socket requires non-empty NAME and NODE in NAME=NODE",
+                    ));
+                }
+                sockets.push(socket);
+            }
+            "--current-euler" => {
+                set_once(
+                    &mut current_euler,
+                    parse_array3(&args, &mut index, "--current-euler")?,
+                    "--current-euler",
+                )?;
+            }
+            option if option.starts_with('-') => {
+                return Err(solve_weapon_mount_usage(&format!(
+                    "unknown solve-weapon-mount option {option:?}"
+                )));
+            }
+            path => {
+                if holder_path.replace(PathBuf::from(path)).is_some() {
+                    return Err(solve_weapon_mount_usage(
+                        "solve-weapon-mount accepts exactly one skeleton model path",
+                    ));
+                }
+                index += 1;
+            }
+        }
+    }
+
+    let holder_path = holder_path.ok_or_else(|| {
+        solve_weapon_mount_usage("solve-weapon-mount requires a skeleton model path")
+    })?;
+    let weapon_path = weapon_path
+        .ok_or_else(|| solve_weapon_mount_usage("solve-weapon-mount requires --weapon <path>"))?;
+    let raw_source = raw_source.ok_or_else(|| {
+        solve_weapon_mount_usage("solve-weapon-mount requires --raw-source <path> in solve mode")
+    })?;
+    let out = out.ok_or_else(|| {
+        solve_weapon_mount_usage("solve-weapon-mount requires --out <path> in solve mode")
+    })?;
+
+    if barrel.is_some() != up.is_some() {
+        return Err(solve_weapon_mount_usage(
+            "--barrel and --up must be supplied together",
+        ));
+    }
+
+    Ok(SolveWeaponMountArgs {
+        holder_path,
+        mount_joint: mount_joint.unwrap_or_else(|| "hand_r".to_string()),
+        clip: clip.unwrap_or_else(|| "idle_aiming".to_string()),
+        time: time.unwrap_or(0.0),
+        weapon_path,
+        barrel,
+        up,
+        raw_source,
+        out,
+        grip,
+        scale,
+        sockets,
+        current_euler,
+    })
+}
+
+fn next_argument(args: &[OsString], index: &mut usize, option: &str) -> Result<String, String> {
+    let Some(value) = args.get(*index + 1) else {
+        return Err(solve_weapon_mount_usage(&format!(
+            "{option} requires a value"
+        )));
+    };
+    *index += 2;
+    argument_string(value, option)
+}
+
+fn parse_vec3(args: &[OsString], index: &mut usize, option: &str) -> Result<Vec3, String> {
+    Ok(Vec3::from_array(parse_array3(args, index, option)?))
+}
+
+fn parse_array3(args: &[OsString], index: &mut usize, option: &str) -> Result<[f32; 3], String> {
+    let values = parse_raw_vec3(args, index, option)?;
+    Ok([
+        parse_finite_number(&values[0], option)?,
+        parse_finite_number(&values[1], option)?,
+        parse_finite_number(&values[2], option)?,
+    ])
+}
+
+fn parse_raw_vec3(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+) -> Result<[String; 3], String> {
+    let first = next_argument(args, index, option)?;
+    let second = next_vector_component(args, index, option)?;
+    let third = next_vector_component(args, index, option)?;
+    for value in [&first, &second, &third] {
+        let _ = parse_finite_number(value, option)?;
+    }
+    Ok([first, second, third])
+}
+
+fn next_vector_component(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+) -> Result<String, String> {
+    let Some(value) = args.get(*index) else {
+        return Err(solve_weapon_mount_usage(&format!(
+            "{option} requires exactly three finite numbers"
+        )));
+    };
+    *index += 1;
+    argument_string(value, option)
+}
+
+fn argument_string(value: &OsString, label: &str) -> Result<String, String> {
+    value
+        .to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| solve_weapon_mount_usage(&format!("{label} must be valid UTF-8")))
+}
+
+fn parse_finite_number(value: &str, option: &str) -> Result<f32, String> {
+    let parsed = value.parse::<f32>().map_err(|_| {
+        solve_weapon_mount_usage(&format!("{option} expects a finite number, got {value:?}"))
+    })?;
+    if !parsed.is_finite() {
+        return Err(solve_weapon_mount_usage(&format!(
+            "{option} expects a finite number, got {value:?}"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, option: &str) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        return Err(solve_weapon_mount_usage(&format!(
+            "solve-weapon-mount accepts only one {option}"
+        )));
+    }
+    Ok(())
+}
+
+fn solve_weapon_mount_usage(message: &str) -> String {
+    format!(
+        "{message}\n\nUsage: cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> \\
+         --weapon <baked-weapon.gltf> --raw-source <raw-source> --out <output.gltf> \\
+         [--mount-joint NAME] [--clip NAME] [--time SECONDS] \\
+         [--barrel X Y Z --up X Y Z] [--current-euler X Y Z] \\
+         [--grip X Y Z] [--scale FACTOR] [--socket NAME=NODE]..."
+    )
+}
+
+/// glTF-to-Blender basis change for rotation operators. The columns map
+/// `(x, y, z)` to `(x, -z, y)`, so a corrective rotation needs a two-sided
+/// similarity transform rather than a one-sided vector conversion.
+fn gltf_to_blender_rotation(rotation: Mat3) -> Mat3 {
+    let map = gltf_to_blender_basis();
+    map * rotation * map.transpose()
+}
+
+fn blender_to_gltf_rotation(rotation: Mat3) -> Mat3 {
+    let map = gltf_to_blender_basis();
+    map.transpose() * rotation * map
+}
+
+fn gltf_to_blender_basis() -> Mat3 {
+    Mat3::from_cols(Vec3::X, Vec3::Z, -Vec3::Y)
+}
+
+/// Blender's `XYZ` Euler mode applies `Rz * Ry * Rx`.
+fn blender_xyz_rotation(euler_degrees: [f32; 3]) -> Mat3 {
+    Mat3::from_rotation_z(euler_degrees[2].to_radians())
+        * Mat3::from_rotation_y(euler_degrees[1].to_radians())
+        * Mat3::from_rotation_x(euler_degrees[0].to_radians())
+}
+
+fn blender_xyz_euler_degrees(rotation: Mat3) -> [f32; 3] {
+    let sine_y = (-rotation.x_axis.z).clamp(-1.0, 1.0);
+    let y = sine_y.asin();
+    let cosine_y = (1.0 - sine_y * sine_y).sqrt();
+    let (x, z) = if cosine_y > 1.0e-6 {
+        (
+            rotation.y_axis.z.atan2(rotation.z_axis.z),
+            rotation.x_axis.y.atan2(rotation.x_axis.x),
+        )
+    } else if sine_y.is_sign_positive() {
+        // At +90° pitch, Blender's XYZ representation has one free degree of
+        // freedom. Choosing Z = 0 leaves a stable, equivalent X rotation.
+        (rotation.y_axis.x.atan2(rotation.y_axis.y), 0.0)
+    } else {
+        // At -90° pitch the observable combination is X + Z.
+        ((-rotation.y_axis.x).atan2(rotation.y_axis.y), 0.0)
+    };
+    [x.to_degrees(), y.to_degrees(), z.to_degrees()]
+}
+
+fn emitted_blender_command(
+    args: &SolveWeaponMountArgs,
+    euler: [f32; 3],
+    axes: MountAxes,
+) -> String {
+    let mut command = vec![
+        "blender".to_string(),
+        "--background".to_string(),
+        "--python".to_string(),
+        "tools/prop_to_gltf.py".to_string(),
+        "--".to_string(),
+        "--input".to_string(),
+        shell_quote(&args.raw_source),
+        "--output".to_string(),
+        shell_quote(&args.out),
+    ];
+    if let Some(grip) = &args.grip {
+        command.push("--grip".to_string());
+        command.extend(grip.iter().cloned());
+    }
+    if let Some(scale) = &args.scale {
+        command.push("--scale".to_string());
+        command.push(scale.clone());
+    }
+    for socket in &args.sockets {
+        command.push("--socket".to_string());
+        command.push(shell_quote(socket));
+    }
+    command.push("--rotate-euler".to_string());
+    command.extend(euler.into_iter().map(format_number));
+    command.push("--mount-axes".to_string());
+    command.extend(
+        [axes.barrel, axes.up]
+            .into_iter()
+            .flat_map(|axis| axis.to_array().into_iter().map(format_number)),
+    );
+    command.join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
+}
+
+fn format_number(value: f32) -> String {
+    format!("{value:.6}")
+}
+
+fn format_vec3(value: Vec3) -> String {
+    let [x, y, z] = value.to_array();
+    format!(
+        "[{}, {}, {}]",
+        format_number(x),
+        format_number(y),
+        format_number(z),
+    )
+}
+
+fn format_confidence(confidence: MountConfidence) -> &'static str {
+    match confidence {
+        MountConfidence::High => "high",
+        MountConfidence::Low => "LOW",
     }
 }
 
@@ -550,6 +1052,7 @@ fn print_help() {
            cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- mint-identity <mod-root>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
+           cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> --raw-source <raw> --out <output.gltf> [options]\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
@@ -561,6 +1064,8 @@ fn print_help() {
            mint-identity        Mint a mod's durable state-slot identity ledger;\n\
                                 builds scripts-build only for TypeScript mods\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
+           solve-weapon-mount   Solve a rigid weapon mount and print the Blender\n\
+                                bake command (does not invoke Blender)\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\n\
@@ -570,7 +1075,8 @@ fn print_help() {
            cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- observe runspec.json --pool-seed=17\n\
            cargo run -p xtask -- mint-identity content/dev\n\
-           cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
+           cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\
+           cargo run -p xtask -- solve-weapon-mount content/dev/models/limitator/model.gltf --weapon content/dev/models/ar_4/model.gltf --barrel 0 1 0 --up 0 0 1 --raw-source raw/ar_4.glb --out content/dev/models/ar_4/model.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
            --release/-r, --profile, --target, and --target-dir are also mirrored\n\
@@ -852,5 +1358,170 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parse_solve_weapon_mount_args_defaults_and_preserves_bake_passthrough() {
+        let parsed = parse_solve_weapon_mount_args(os_args(&[
+            "content/dev/models/limitator/model.gltf",
+            "--weapon",
+            "content/dev/models/ar_4/model.gltf",
+            "--barrel",
+            "0",
+            "1",
+            "0",
+            "--up",
+            "0",
+            "0",
+            "1",
+            "--raw-source",
+            "raw/ar 4.glb",
+            "--out",
+            "content/dev/models/ar_4/model.gltf",
+            "--grip",
+            "0.0",
+            "-0.05",
+            "0.120",
+            "--scale",
+            "0.68",
+            "--socket",
+            "muzzle=BarrelTip",
+            "--socket",
+            "optic_rail=ScopeMount",
+        ]))
+        .expect("complete solve command should parse");
+
+        assert_eq!(
+            parsed.holder_path,
+            PathBuf::from("content/dev/models/limitator/model.gltf")
+        );
+        assert_eq!(parsed.mount_joint, "hand_r");
+        assert_eq!(parsed.clip, "idle_aiming");
+        assert_eq!(parsed.time, 0.0);
+        assert_eq!(
+            parsed.weapon_path,
+            PathBuf::from("content/dev/models/ar_4/model.gltf")
+        );
+        assert_eq!(parsed.barrel, Some(Vec3::Y));
+        assert_eq!(parsed.up, Some(Vec3::Z));
+        assert_eq!(
+            parsed.grip,
+            Some(["0.0".into(), "-0.05".into(), "0.120".into()])
+        );
+        assert_eq!(parsed.scale.as_deref(), Some("0.68"));
+        assert_eq!(
+            parsed.sockets,
+            ["muzzle=BarrelTip", "optic_rail=ScopeMount"]
+        );
+    }
+
+    #[test]
+    fn parse_solve_weapon_mount_args_rejects_incomplete_axes_and_missing_bake_endpoints() {
+        let common = [
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--raw-source",
+            "raw.glb",
+            "--out",
+            "out.gltf",
+        ];
+        let mut incomplete_axes = common.to_vec();
+        incomplete_axes.extend(["--barrel", "0", "0", "1"]);
+        assert!(parse_solve_weapon_mount_args(os_args(&incomplete_axes)).is_err());
+
+        assert!(
+            parse_solve_weapon_mount_args(os_args(&[
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--raw-source",
+                "raw.glb",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn emitted_blender_command_carries_complete_bake_and_mount_metadata_arguments() {
+        let args = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--raw-source",
+            "raw asset.glb",
+            "--out",
+            "out asset.gltf",
+            "--grip",
+            "0.0",
+            "-0.05",
+            "0.120",
+            "--scale",
+            "0.68",
+            "--socket",
+            "muzzle=BarrelTip",
+        ]))
+        .expect("complete solve command should parse");
+        let command = emitted_blender_command(
+            &args,
+            [10.0, 20.0, 30.0],
+            MountAxes {
+                barrel: Vec3::Y,
+                up: Vec3::Z,
+                euler: None,
+            },
+        );
+
+        assert_eq!(
+            command,
+            concat!(
+                "blender --background --python tools/prop_to_gltf.py -- --input 'raw asset.glb' ",
+                "--output 'out asset.gltf' --grip 0.0 -0.05 0.120 --scale 0.68 ",
+                "--socket 'muzzle=BarrelTip' --rotate-euler 10.000000 20.000000 30.000000 ",
+                "--mount-axes 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000"
+            )
+        );
+    }
+
+    #[test]
+    fn blender_euler_decomposition_round_trips_similarity_rotation_including_gimbal_lock() {
+        for euler in [
+            [20.0, -30.0, 45.0],
+            [35.0, 90.0, -15.0],
+            [-20.0, -90.0, 70.0],
+        ] {
+            let gltf_rotation = blender_to_gltf_rotation(blender_xyz_rotation(euler));
+            let blender_rotation = gltf_to_blender_rotation(gltf_rotation);
+            let decomposed = blender_xyz_euler_degrees(blender_rotation);
+            assert_mat3_close(blender_xyz_rotation(decomposed), blender_rotation);
+        }
+    }
+
+    #[test]
+    fn gltf_to_blender_similarity_maps_axes_and_rotation_operators_on_both_sides() {
+        let basis = gltf_to_blender_basis();
+        assert_eq!(basis * Vec3::X, Vec3::X);
+        assert_eq!(basis * Vec3::Y, Vec3::Z);
+        assert_eq!(basis * Vec3::Z, -Vec3::Y);
+
+        let gltf_rotation = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert_mat3_close(
+            gltf_to_blender_rotation(gltf_rotation),
+            Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+    }
+
+    fn assert_mat3_close(actual: Mat3, expected: Mat3) {
+        const EPSILON: f32 = 1.0e-5;
+        for (actual, expected) in actual
+            .to_cols_array()
+            .into_iter()
+            .zip(expected.to_cols_array())
+        {
+            assert!(
+                (actual - expected).abs() <= EPSILON,
+                "expected {expected}, got {actual}",
+            );
+        }
     }
 }

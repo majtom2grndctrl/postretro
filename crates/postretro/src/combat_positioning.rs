@@ -5,6 +5,8 @@
 //! supplied by AI perception, plus the nav/collision
 //! query surfaces required to prove each candidate is reachable, statically
 //! occupiable, and visible from its own eye point.
+//!
+//! See: context/lib/entity_model.md §7c.
 
 use std::cmp::Ordering;
 

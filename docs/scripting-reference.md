@@ -724,7 +724,7 @@ An activity is either a leaf or a composite:
 |-------|------|-------------|
 | `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
-| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires on entry. |
+| `action` | `{ attack: string }` (leaf sugar) | A one-entry `offense` selector. In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 
@@ -764,16 +764,21 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-`{ attack: "name" }` is the only action today. It fires **once on entry** into
-the activity that names it, provided that attack's cooldown is ready and the
-target is in range. Holding `commit` does not repeatedly fire it. A later entry
-can fire again only after cooldown permits it. A graph with no `attacks` entries
-never attacks.
+`{ attack: "name" }` is the only action today. During its active firing leaf,
+it fires at most once on the first tick for which that attack's cooldown is
+ready, the target is in range, and the other applicable gates are open. Its
+firing latch stays armed until it fires, so temporarily closed gates can open
+later in the same dwell. Holding `commit` does not repeatedly fire it after it
+has fired. A later firing-leaf dwell can fire again only after cooldown permits
+it. A graph with no `attacks` entries never attacks.
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
-`"chaseTarget"` motion or any active action. Target retention, combat-slot
-participation, and target facing key on it. A `hold` + action activity stands its
-ground and swings while keeping its target and slot.
+`"chaseTarget"` motion or any active action. This current-tick engagement
+controls combat-slot participation and target facing. Target retention follows
+active-path engagement capability, so it continues through a committed,
+actionless selector-held phase. Idle, patrol, and position-goal paths drop a
+retained target, take no combat slot, and do not face it. A `hold` + action
+activity stands its ground and swings while keeping its target and slot.
 
 **Animation.** The host resolves exactly one mesh animation state each tick. An
 active offense leaf that supplies `animation` wins; otherwise the active

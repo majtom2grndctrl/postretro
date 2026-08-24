@@ -774,25 +774,29 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             (transitioned, motion, steering)
         };
 
-        // The acquired id is the "this brain is engaged" marker the next tick's
-        // retention reads, so it is set by ENGAGEMENT (chasing or acting), not by
-        // the steering intent — a state that stands still and swings keeps its
-        // pawn.
+        // The acquired id is the cross-tick retention marker. Keep it while the
+        // active path remains capable of engagement, even when an in-range move
+        // selector currently resolves to `hold` and the committed leaf has no
+        // action. A transition to a genuinely idle or position-goal path still
+        // clears it here.
+        let retains_target = target.is_some() && engages_active(&brain);
+        brain.acquired_target = match target {
+            Some(target) if retains_target => Some(target.entity),
+            _ => None,
+        };
+
+        // Resolved engagement remains the facing policy for ordinary chase and
+        // action paths. Committed actionless aim is handled separately below.
         let engaged = target.is_some()
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
-        brain.acquired_target = match target {
-            Some(target) if engaged => Some(target.entity),
-            _ => None,
-        };
 
         // A nested offense phase can intentionally hold at an authored standoff
         // before its leaf exposes an action. It is still committed to the
         // target: keep its aim moving even though its resolved current verb is
         // `hold`, which `engages_path` correctly leaves false.
-        let committed_aim =
-            target.is_some() && matches!(motion, Some(MotionVerb::Hold)) && engages_active(&brain);
+        let committed_aim = retains_target && matches!(motion, Some(MotionVerb::Hold));
         let facing_direction = facing_direction(
             steering,
             engaged,

@@ -158,9 +158,10 @@ pub(super) fn engages_path(
     ) || action_for_path(bound, scope, brain).is_some()
 }
 
-/// Target retention is decided before the tick refreshes selector guards. The
-/// retained active path therefore uses only stateful activity verbs here;
-/// selector policy is evaluated later with the current facts.
+/// Target retention follows the active path's engagement capability, not the
+/// verb a selector resolves this tick. An in-range selector may intentionally
+/// hold through an actionless committed phase and still need target facts next
+/// tick.
 pub(super) fn engages_active(brain: &BrainComponent) -> bool {
     (0..brain.active_depth()).any(|depth| {
         brain
@@ -169,12 +170,18 @@ pub(super) fn engages_active(brain: &BrainComponent) -> bool {
     })
 }
 
-/// Retention runs before selector guards are refreshed for the tick, so it
-/// cannot resolve a selector's current row here. A `move`/`offense` selector
-/// that can chase or attack is nevertheless an engaged activity: when it holds
-/// at combat range, releasing the target would make the next tick's fallback
-/// unable to chase. Other selector names are not AI consumers.
+/// Retention cannot depend only on a selector's current row: before fact
+/// refresh no current resolution exists, and an in-range hold still needs the
+/// target on the next tick. A `move`/`offense` selector that can chase or attack
+/// is therefore an engaged activity. Other selector names are not AI consumers.
 fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
+    if matches!(
+        activity.motion,
+        Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+    ) {
+        return false;
+    }
+
     matches!(activity.motion, Some(MotionVerb::ChaseTarget))
         || activity.action.is_some()
         || activity

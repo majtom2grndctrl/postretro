@@ -78,6 +78,19 @@ class PostprocessGltfMountMetadataTests(unittest.TestCase):
             [0, 0, 0],
         )
 
+    def test_omitted_mount_axes_do_not_create_declared_mount_metadata(self):
+        # Regression: geometric-assist rebakes must remain undeclared so later
+        # checks cannot promote an axis guess to VERIFIED metadata.
+        temp_dir, path = self.write_fixture()
+        with temp_dir:
+            CONVERTER.postprocess_gltf(
+                path,
+                rotate_euler=[10.0, 20.0, 30.0],
+            )
+            result = json.loads(path.read_text())
+
+        self.assertEqual(result["nodes"][1]["extras"], {"keep": "value"})
+
 
 if __name__ == "__main__":
     unittest.main()

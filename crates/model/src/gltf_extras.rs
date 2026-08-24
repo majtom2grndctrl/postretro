@@ -62,7 +62,9 @@ pub(crate) fn read_mount_axes(extras: &gltf::json::Extras) -> Option<MountAxes> 
 
 fn normalized_mount_axis(axis: [f32; 3]) -> Option<Vec3> {
     let axis = Vec3::from_array(axis);
-    (axis.is_finite() && axis.length_squared() > 1.0e-12).then(|| axis.normalize())
+    let length_squared = axis.length_squared();
+    (axis.is_finite() && length_squared.is_finite() && length_squared > 1.0e-12)
+        .then(|| axis.normalize())
 }
 
 fn valid_mount_euler(value: Option<&serde_json::Value>) -> Option<[f32; 3]> {
@@ -506,5 +508,18 @@ mod tests {
                 "invalid core axes {extras:?} degrade to no mount declaration",
             );
         }
+    }
+
+    #[test]
+    fn read_mount_axes_rejects_finite_axes_whose_length_squared_overflows() {
+        // Regression: normalizing an overflowed finite axis surfaced Vec3::ZERO
+        // as declared mount metadata instead of degrading the declaration.
+        let raw: Box<serde_json::value::RawValue> = serde_json::from_str(
+            r#"{"mount":{"barrel":[3e38,3e38,0],"up":[0,0,1],"euler":[0,0,0]}}"#,
+        )
+        .expect("test raw JSON parses");
+        let extras: gltf::json::Extras = Some(raw);
+
+        assert_eq!(read_mount_axes(&extras), None);
     }
 }

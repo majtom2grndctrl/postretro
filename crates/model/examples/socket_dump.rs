@@ -94,7 +94,7 @@ fn main() {
         let weapon = load_model(Path::new(&weapon_path)).expect("load weapon failed");
         let detection = detect_weapon_mount(&weapon).expect("weapon mount detection failed");
         let frame = detection.frame;
-        let verification = verify_mount(m, frame);
+        let verification = verify_mount(m, frame).expect("weapon mount verification failed");
         eprintln!("--- weapon {weapon_path} mounted ---");
         eprintln!(
             "  weapon local bbox min {:?} max {:?}",

@@ -304,34 +304,26 @@ defineEntity({
 // Omit muzzleOffset (or set [0, 0, 0]) to fire from the camera eye, unchanged.
 ```
 
-## Open questions
+## Decisions (carried into the post-placement rework)
 
-- **Muzzle VFX seam (natural follow-up).** Making a muzzle flash / tracer emit
-  from the barrel — for hitscan *and* projectile — needs a spawn-at-muzzle
-  presentation path, since muzzle FX today is a mod reaction on `"activate"` with
-  no position. The client-local swaying muzzle (the same `muzzleOffset` composed
-  through `viewmodel_world_transform`) is the anchor. Decide whether that is an
-  engine-owned effect or a new primitive that hands the muzzle world point to a
-  mod-authored emitter/light. Out of scope here; the projectile-origin work
-  already makes the projectile *body* leave the barrel.
-- **Author ergonomics: tool vs build-time bake.** Task 4 ships a print-and-paste
-  tool. A build-time bake (mod/level build reads the viewmodel glTF and writes
-  `muzzleOffset` into the descriptor) would make it automatic but adds a build
-  dependency on viewmodel assets. Worth it once several projectile weapons exist;
-  not v1.
-- **Convergence range accounting.** The projectile keeps `remaining_range = range`
-  measured from the muzzle, while the convergence raycast measures `range` from
-  the eye. The muzzle-to-eye distance (~1 m) makes these differ by that much.
-  Left as-is for v1 (negligible against typical ranges); revisit if a
-  short-range projectile weapon exposes it.
-- **Point-blank occlusion.** v1 always spawns at the muzzle. If the muzzle sits
-  past a near surface (barrel jammed into a wall, aiming into it), the projectile
-  originates inside/beyond that surface and may not contact it. A deterministic
-  fix (a short eye→muzzle occlusion ray that clamps the origin, run identically on
-  both peers) needs collision access in the host remote path; deferred so the
-  fallback cannot silently break Invariant 2. Acceptable v1 edge for a barrel-
-  origin weapon.
-- **Author-tool home and sequencing vs `weapon-mount-frame-solver`.** Both drafts
-  touch `socket_dump.rs`. Decide the order and the shared tooling home
-  (`crates/model/src/mount.rs` / `solve-weapon-mount`) before either promotes, so
-  the muzzle read lands there rather than as a parallel tool. Owner decision.
+No open design questions remain. Dispositions recorded so the rework does not
+re-litigate them:
+
+- **Muzzle VFX / flash — decided shape, deferred to a follow-up spec.** Not an
+  either/or: the engine owns the muzzle *world point* (a fact); mods own the flash's
+  *look* (a reaction / emitter / light anchored there); never a baked engine effect.
+  Building it is a separate follow-up after muzzle-origin. The projectile *body*
+  already leaves the barrel from the origin work.
+- **Author tooling — cut.** The eye-space socket→offset print-and-paste tool (old
+  Task 4) and its `weapon-mount-frame-solver` coordination are dropped. With the
+  muzzle now model-local and downstream of placement, authoring is revisited in the
+  placement world (hot-reload tuning, optional dev gizmo) — no socket→offset tool,
+  no build-time bake in v1. (Supersedes the former "tool vs bake" and "author-tool
+  home/sequencing" questions.)
+- **Convergence range accounting — decided v1.** Keep `remaining_range = range`
+  measured from the muzzle; the ~1 m eye-vs-muzzle difference is negligible against
+  typical ranges. Revisit only if a short-range projectile weapon exposes it.
+- **Point-blank occlusion — decided v1.** Always spawn at the muzzle; the
+  deterministic eye→muzzle occlusion guard (needs host-path collision access) is
+  deferred. Acceptable barrel-origin edge, documented and tested; it must not break
+  Invariant 2 (origin == `fire_origin`).

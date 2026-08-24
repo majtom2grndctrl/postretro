@@ -16,6 +16,7 @@ use crate::anim::{Loop, sample_clip_looped_world_modified};
 use crate::gltf_loader::{LoadedModel, ModelLoadError, SocketBinding, load_model};
 
 const MIN_DIRECTION_LENGTH_SQUARED: f32 = 1.0e-12;
+const SOCKET_ORTHONORMAL_EPSILON: f32 = 1.0e-4;
 const LOW_CONFIDENCE_RADIUS_RATIO: f32 = 1.5;
 const LOW_CONFIDENCE_ELONGATION: f32 = 2.0;
 
@@ -125,8 +126,10 @@ pub enum MountSolveError {
     InvalidDirection { axis: &'static str },
     #[error("barrel and up axes must be orthogonal")]
     NonOrthogonalAxes,
-    #[error("socket frame has a degenerate rotation column")]
+    #[error("socket frame rotation columns must be finite and non-zero")]
     DegenerateSocketFrame,
+    #[error("socket frame is not a proper rigid rotation: {reason}")]
+    NonRigidSocketFrame { reason: &'static str },
     #[error("socket frame transforms the {axis} to a non-finite or zero direction")]
     InvalidMountedDirection { axis: &'static str },
 }
@@ -210,9 +213,9 @@ pub fn resolve_socket_frame_in_model(
 
 /// Compute the glTF-space corrective rotation `D = S^T * G^T`.
 ///
-/// `S` is the socket matrix's per-column-normalized rotation and `G` is the
-/// weapon frame `[side, up, barrel]`. This module intentionally has no Euler
-/// conversion because that belongs to the authoring-tool adapter.
+/// `S` is the proper rotation from the socket matrix's direction axes and `G`
+/// is the weapon frame `[side, up, barrel]`. This module intentionally has no
+/// Euler conversion because that belongs to the authoring-tool adapter.
 pub fn corrective_delta(
     socket_frame: Mat4,
     weapon_frame: MountFrame,
@@ -232,13 +235,15 @@ pub fn corrective_delta_for_axes(
 
 /// Verify a weapon frame mounted at a socket frame.
 ///
-/// Verification intentionally uses the raw `Mat3::from_mat4(socket_frame)`, not
+/// After validating the socket's direction axes as a proper rotation,
+/// verification intentionally uses the raw `Mat3::from_mat4(socket_frame)`, not
 /// the normalized rotation used by [`corrective_delta`], preserving the legacy
-/// diagnostic's reported values.
+/// diagnostic's reported values and any positive scale they carry.
 pub fn verify_mount(
     socket_frame: Mat4,
     weapon_frame: MountFrame,
 ) -> Result<MountVerification, MountSolveError> {
+    normalized_socket_rotation(socket_frame)?;
     let socket_rotation = Mat3::from_mat4(socket_frame);
     let barrel_world =
         normalized_direction(socket_rotation * weapon_frame.barrel, "mounted barrel axis")
@@ -414,7 +419,23 @@ fn normalized_socket_rotation(socket_frame: Mat4) -> Result<Mat3, MountSolveErro
         .map_err(|_| MountSolveError::DegenerateSocketFrame)?;
     let z_axis = normalized_direction(raw.z_axis, "socket z axis")
         .map_err(|_| MountSolveError::DegenerateSocketFrame)?;
-    Ok(Mat3::from_cols(x_axis, y_axis, z_axis))
+    if x_axis.dot(y_axis).abs() > SOCKET_ORTHONORMAL_EPSILON
+        || x_axis.dot(z_axis).abs() > SOCKET_ORTHONORMAL_EPSILON
+        || y_axis.dot(z_axis).abs() > SOCKET_ORTHONORMAL_EPSILON
+    {
+        return Err(MountSolveError::NonRigidSocketFrame {
+            reason: "direction axes are not orthogonal",
+        });
+    }
+
+    let rotation = Mat3::from_cols(x_axis, y_axis, z_axis);
+    let determinant = rotation.determinant();
+    if !determinant.is_finite() || determinant <= 0.0 {
+        return Err(MountSolveError::NonRigidSocketFrame {
+            reason: "direction axes are reflected (determinant must be positive)",
+        });
+    }
+    Ok(rotation)
 }
 
 #[cfg(test)]
@@ -499,8 +520,39 @@ mod tests {
             .expect_err("a degenerate socket cannot produce verification metrics");
 
         assert!(
-            error.to_string().contains("barrel"),
-            "the error identifies the invalid mounted direction: {error}",
+            error.to_string().contains("finite and non-zero"),
+            "the error identifies the degenerate socket basis: {error}",
+        );
+    }
+
+    #[test]
+    fn corrective_delta_rejects_sheared_socket_direction_axes() {
+        // Regression: independently normalizing columns accepted shear caused
+        // by a rotated child under hierarchical non-uniform scale.
+        let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
+        let sheared_socket =
+            Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0)) * Mat4::from_rotation_z(0.4);
+
+        let error = corrective_delta(sheared_socket, frame)
+            .expect_err("a sheared socket cannot produce a trusted corrective");
+        assert!(
+            error.to_string().contains("not orthogonal"),
+            "the error identifies the sheared socket basis: {error}",
+        );
+    }
+
+    #[test]
+    fn verification_rejects_reflected_socket_direction_axes() {
+        // Regression: negative-scale reflections were accepted as rotations
+        // and could make a declared mount report trusted metrics.
+        let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
+        let reflected_socket = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+
+        let error = verify_mount(reflected_socket, frame)
+            .expect_err("a reflected socket cannot produce trusted verification metrics");
+        assert!(
+            error.to_string().contains("determinant must be positive"),
+            "the error identifies the reflected socket basis: {error}",
         );
     }
 }

@@ -91,6 +91,62 @@ class PostprocessGltfMountMetadataTests(unittest.TestCase):
 
         self.assertEqual(result["nodes"][1]["extras"], {"keep": "value"})
 
+    def test_normalizes_unit_normalizable_mount_axes_before_writing(self):
+        temp_dir, path = self.write_fixture()
+        with temp_dir:
+            CONVERTER.postprocess_gltf(
+                path,
+                rotate_euler=[0.0, 0.0, 0.0],
+                mount_axes=[0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
+            )
+            mount = json.loads(path.read_text())["nodes"][1]["extras"]["mount"]
+
+        self.assertEqual(mount["barrel"], [0.0, 1.0, 0.0])
+        self.assertEqual(mount["up"], [0.0, 0.0, 1.0])
+
+    def test_rejects_non_finite_degenerate_and_non_orthogonal_mount_metadata(self):
+        invalid_cases = [
+            ([float("nan"), 0.0, 1.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+            ([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+            ([1.0, 0.0, 0.0, 1.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+            ([0.0, 0.0, 1.0, 0.0, 1.0, 0.0], [0.0, float("inf"), 0.0]),
+        ]
+        for mount_axes, rotate_euler in invalid_cases:
+            with self.subTest(mount_axes=mount_axes, rotate_euler=rotate_euler):
+                temp_dir, path = self.write_fixture()
+                original = path.read_text()
+                with temp_dir:
+                    with self.assertRaisesRegex(ValueError, "mount|Euler"):
+                        CONVERTER.postprocess_gltf(
+                            path,
+                            rotate_euler=rotate_euler,
+                            mount_axes=mount_axes,
+                        )
+                    self.assertEqual(path.read_text(), original)
+
+
+class ConverterArgumentValidationTests(unittest.TestCase):
+    def parse(self, *args):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["blender", "--", "--input", "input.glb", "--output", "out.gltf", *args]
+            return CONVERTER.parse_args()
+        finally:
+            sys.argv = old_argv
+
+    def test_rejects_non_positive_scale(self):
+        for scale in ["0", "-1"]:
+            with self.subTest(scale=scale), self.assertRaises(SystemExit):
+                self.parse("--scale", scale)
+
+    def test_rejects_non_finite_transform_metadata_inputs(self):
+        for args in [
+            ("--rotate-euler", "0", "nan", "0"),
+            ("--mount-axes", "0", "0", "1", "0", "inf", "0"),
+        ]:
+            with self.subTest(args=args), self.assertRaises(SystemExit):
+                self.parse(*args)
+
 
 if __name__ == "__main__":
     unittest.main()

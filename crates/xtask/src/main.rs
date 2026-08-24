@@ -510,7 +510,12 @@ fn parse_solve_weapon_mount_args(args: Vec<OsString>) -> Result<SolveWeaponMount
             }
             "--scale" => {
                 let value = next_argument(&args, &mut index, "--scale")?;
-                let _ = parse_finite_number(&value, "--scale")?;
+                let parsed = parse_finite_number(&value, "--scale")?;
+                if parsed <= 0.0 {
+                    return Err(solve_weapon_mount_usage(&format!(
+                        "--scale must be greater than zero, got {value:?}"
+                    )));
+                }
                 set_once(&mut scale, value, "--scale")?;
             }
             "--socket" => {
@@ -1327,13 +1332,9 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
-    fn write_weapon_fixture_with_mount(mount: serde_json::Value) -> PathBuf {
+    fn write_weapon_fixture() -> PathBuf {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../model/tests/fixtures/multi_primitive/multi_primitive.gltf");
-        let mut json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(source).expect("model fixture reads"))
-                .expect("model fixture parses");
-        json["nodes"][0]["extras"]["mount"] = mount;
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time follows Unix epoch")
@@ -1343,12 +1344,45 @@ mod tests {
             std::process::id(),
             unique,
         ));
-        std::fs::write(
-            &path,
-            serde_json::to_string(&json).expect("model fixture serializes"),
-        )
-        .expect("model fixture writes");
+        std::fs::copy(source, &path).expect("model fixture copies");
         path
+    }
+
+    fn postprocess_weapon_fixture_with_prop_writer(path: &Path) {
+        let converter =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/prop_to_gltf.py");
+        let python = r#"
+import importlib.util
+import sys
+import types
+
+sys.modules["bpy"] = types.ModuleType("bpy")
+mathutils = types.ModuleType("mathutils")
+mathutils.Vector = tuple
+sys.modules["mathutils"] = mathutils
+
+spec = importlib.util.spec_from_file_location("prop_to_gltf_test", sys.argv[1])
+converter = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(converter)
+converter.postprocess_gltf(
+    sys.argv[2],
+    rotate_euler=[0.0, 0.0, 0.0],
+    mount_axes=[0.0, 0.0, 2.0, 0.0, 3.0, 0.0],
+)
+"#;
+        let output = Command::new("python3")
+            .arg("-c")
+            .arg(python)
+            .arg(converter)
+            .arg(path)
+            .output()
+            .expect("python3 runs the prop postprocessor");
+        assert!(
+            output.status.success(),
+            "prop postprocessor failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]
@@ -1709,6 +1743,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_solve_weapon_mount_rejects_non_positive_scale() {
+        // Regression: zero scale was silently omitted from the emitted bake,
+        // while negative scale could bake a reflected weapon frame.
+        for scale in ["0", "-0.68"] {
+            let error = parse_solve_weapon_mount_args(os_args(&[
+                "holder.gltf",
+                "--weapon",
+                "weapon.gltf",
+                "--raw-source",
+                "raw.glb",
+                "--out",
+                "out.gltf",
+                "--scale",
+                scale,
+            ]))
+            .expect_err("mount workflow scale must be positive");
+            assert!(error.contains("--scale must be greater than zero"));
+        }
+    }
+
+    #[test]
     fn parse_solve_weapon_mount_check_mode_does_not_require_bake_endpoints() {
         let parsed = parse_solve_weapon_mount_args(os_args(&[
             "holder.gltf",
@@ -1854,15 +1909,21 @@ mod tests {
     }
 
     #[test]
-    fn persisted_same_file_mount_checks_without_cli_axes_or_euler() {
-        // Regression: the normal writer-shaped extras -> loader -> declared
-        // check path must not require intent to be supplied again on the CLI.
-        let weapon_path = write_weapon_fixture_with_mount(serde_json::json!({
-            "barrel": [0.0, 0.0, 1.0],
-            "up": [0.0, 1.0, 0.0],
-            "euler": [0.0, 0.0, 0.0],
-        }));
-        let weapon = load_model(&weapon_path).expect("writer-shaped mount fixture loads");
+    fn prop_writer_output_loads_and_checks_without_cli_axes_or_euler() {
+        // Regression: the normal prop writer -> model loader -> declared check
+        // seam must persist intent without a second hand-authored JSON shape.
+        let weapon_path = write_weapon_fixture();
+        postprocess_weapon_fixture_with_prop_writer(&weapon_path);
+        let weapon = load_model(&weapon_path).expect("prop writer output loads");
+        assert_eq!(
+            weapon.mount,
+            Some(MountAxes {
+                barrel: Vec3::Z,
+                up: Vec3::Y,
+                euler: Some([0.0, 0.0, 0.0]),
+            }),
+            "the loader surfaces normalized metadata from the real writer",
+        );
         let args = parse_solve_weapon_mount_args(vec![
             OsString::from("holder.gltf"),
             OsString::from("--weapon"),
@@ -1897,7 +1958,32 @@ mod tests {
 
         let error = check_weapon_mount(&args, &weapon, Mat4::ZERO)
             .expect_err("degenerate sockets cannot produce passing metrics");
-        assert!(error.contains("socket frame transforms the barrel"));
+        assert!(error.contains("rotation columns must be finite and non-zero"));
+    }
+
+    #[test]
+    fn declared_check_surfaces_reflected_socket_as_a_model_error() {
+        // Regression: xtask treated a reflected socket basis as a trusted
+        // declared check instead of propagating the model-layer refusal.
+        let weapon = LoadedModel {
+            mount: Some(MountAxes {
+                barrel: Vec3::Z,
+                up: Vec3::Y,
+                euler: Some([0.0, 0.0, 0.0]),
+            }),
+            ..LoadedModel::default()
+        };
+        let args = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--check",
+        ]))
+        .expect("declared check arguments parse");
+
+        let error = check_weapon_mount(&args, &weapon, Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)))
+            .expect_err("reflected sockets cannot produce trusted checks");
+        assert!(error.contains("determinant must be positive"));
     }
 
     #[test]

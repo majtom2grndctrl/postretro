@@ -127,6 +127,8 @@ pub enum MountSolveError {
     NonOrthogonalAxes,
     #[error("socket frame has a degenerate rotation column")]
     DegenerateSocketFrame,
+    #[error("socket frame transforms the {axis} to a non-finite or zero direction")]
+    InvalidMountedDirection { axis: &'static str },
 }
 
 /// Detect a weapon's local barrel/up/side frame from its loaded mesh vertices.
@@ -233,17 +235,23 @@ pub fn corrective_delta_for_axes(
 /// Verification intentionally uses the raw `Mat3::from_mat4(socket_frame)`, not
 /// the normalized rotation used by [`corrective_delta`], preserving the legacy
 /// diagnostic's reported values.
-pub fn verify_mount(socket_frame: Mat4, weapon_frame: MountFrame) -> MountVerification {
+pub fn verify_mount(
+    socket_frame: Mat4,
+    weapon_frame: MountFrame,
+) -> Result<MountVerification, MountSolveError> {
     let socket_rotation = Mat3::from_mat4(socket_frame);
-    let barrel_world = (socket_rotation * weapon_frame.barrel).normalize();
-    let up_world = (socket_rotation * weapon_frame.up).normalize();
-    MountVerification {
+    let barrel_world =
+        normalized_direction(socket_rotation * weapon_frame.barrel, "mounted barrel axis")
+            .map_err(|_| MountSolveError::InvalidMountedDirection { axis: "barrel" })?;
+    let up_world = normalized_direction(socket_rotation * weapon_frame.up, "mounted up axis")
+        .map_err(|_| MountSolveError::InvalidMountedDirection { axis: "up" })?;
+    Ok(MountVerification {
         barrel_world,
         up_world,
         barrel_dot_forward: barrel_world.dot(Vec3::Z),
         barrel_dot_up: barrel_world.dot(Vec3::Y),
         up_dot_up: up_world.dot(Vec3::Y),
-    }
+    })
 }
 
 /// Verify declared barrel/up axes without geometric detection.
@@ -251,7 +259,7 @@ pub fn verify_mount_axes(
     socket_frame: Mat4,
     axes: MountAxes,
 ) -> Result<MountVerification, MountSolveError> {
-    Ok(verify_mount(socket_frame, axes.frame()?))
+    verify_mount(socket_frame, axes.frame()?)
 }
 
 fn detect_weapon_mount_vertices(vertices: &[Vec3]) -> Result<MountDetection, MountSolveError> {
@@ -388,7 +396,11 @@ fn detect_weapon_mount_vertices(vertices: &[Vec3]) -> Result<MountDetection, Mou
 }
 
 fn normalized_direction(value: Vec3, axis: &'static str) -> Result<Vec3, MountSolveError> {
-    if !value.is_finite() || value.length_squared() <= MIN_DIRECTION_LENGTH_SQUARED {
+    let length_squared = value.length_squared();
+    if !value.is_finite()
+        || !length_squared.is_finite()
+        || length_squared <= MIN_DIRECTION_LENGTH_SQUARED
+    {
         return Err(MountSolveError::InvalidDirection { axis });
     }
     Ok(value.normalize())
@@ -469,12 +481,26 @@ mod tests {
     fn verification_uses_raw_socket_rotation_for_reported_directions() {
         let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
         let socket = Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0));
-        let verification = verify_mount(socket, frame);
+        let verification = verify_mount(socket, frame).expect("scaled rotation is verifiable");
 
         assert_eq!(verification.barrel_world, Vec3::Z);
         assert_eq!(verification.up_world, Vec3::Y);
         assert_close(verification.barrel_dot_forward, 1.0);
         assert_close(verification.barrel_dot_up, 0.0);
         assert_close(verification.up_dot_up, 1.0);
+    }
+
+    #[test]
+    fn verification_rejects_degenerate_socket_before_producing_metrics() {
+        // Regression: zero socket columns normalized to NaN, and NaN threshold
+        // comparisons let a mount check report a false pass.
+        let frame = MountFrame::from_axes(Vec3::Z, Vec3::Y).expect("cardinal axes form a frame");
+        let error = verify_mount(Mat4::ZERO, frame)
+            .expect_err("a degenerate socket cannot produce verification metrics");
+
+        assert!(
+            error.to_string().contains("barrel"),
+            "the error identifies the invalid mounted direction: {error}",
+        );
     }
 }

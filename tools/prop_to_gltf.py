@@ -79,9 +79,9 @@ def parse_args():
     parser.add_argument(
         "--mount-axes", type=float, nargs=6,
         metavar=("BX", "BY", "BZ", "UX", "UY", "UZ"),
-        help="Persist raw-source weapon barrel and up axes in the exported "
+        help="Persist author-declared raw-source weapon barrel and up axes in the exported "
              "mesh node's extras.mount metadata. The applied --rotate-euler "
-             "is recorded there too."
+             "is recorded there too. Do not use this flag for geometric-assist axes."
     )
     parser.add_argument(
         "--socket", action="append", metavar="NAME=NODE",

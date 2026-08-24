@@ -3604,6 +3604,23 @@ mod tests {
         assert_eq!(model.mount, None);
     }
 
+    #[test]
+    fn overflowed_mesh_mount_axes_degrade_loaded_model_mount_to_none() {
+        // Regression: huge finite axes overflowed length-squared and surfaced
+        // zero directions through LoadedModel.mount.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["nodes"][0]["extras"]["mount"] = serde_json::json!({
+            "barrel": [3.0e38, 3.0e38, 0.0],
+            "up": [0.0, 0.0, 1.0],
+            "euler": [0.0, 0.0, 0.0],
+        });
+        let path = write_temp_fixture("overflowed_mesh_mount_axes", &json);
+        let model = load_model(&path).expect("invalid mount metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(model.mount, None);
+    }
+
     fn malformed_extras_fixture_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/malformed_extras/malformed_extras.gltf")

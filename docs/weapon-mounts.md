@@ -46,7 +46,9 @@ when the prop needs attachments such as `--socket muzzle=BarrelTip`.
 When barrel/up axes are declared, the solve output is a trusted declared-axis
 path. If they are absent, the tool can inspect the mesh as a geometry assist,
 but its output is `UNVERIFIED`; a low-confidence detection remains
-`UNVERIFIED` and should not replace an author declaration.
+`UNVERIFIED` and should not replace an author declaration. The assist command
+omits `--mount-axes`, so rebaking it does not turn detected axes into trusted
+metadata. A later geometry-only check remains `UNVERIFIED`.
 
 ## 3. Run the emitted Blender command
 
@@ -76,7 +78,10 @@ For a declared asset, the check composes `extras.mount.euler` into the
 raw-source axes to recover the baked-frame directions. That is why the Euler
 metadata is required. `--barrel`, `--up`, and `--current-euler` are only
 first-author override/fallback inputs for pre-metadata assets; they are not
-part of the normal check command.
+part of the normal check command. When supplied, CLI axes and Euler override
+stale persisted values. A declared solve still computes the full from-raw
+Euler; its emitted rebake persists that newly solved Euler and any CLI axis
+override.
 
 ## Pose and character limits
 

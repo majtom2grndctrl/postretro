@@ -157,18 +157,15 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
             );
             (
                 blender_xyz_euler_degrees(gltf_to_blender_rotation(delta)),
-                axes,
+                Some(axes),
                 false,
             )
         }
         None => {
             let detection = detect_weapon_mount(&weapon)
                 .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
-            let current_euler = weapon
-                .mount
-                .and_then(|mount| mount.euler)
-                .or(args.current_euler)
-                .ok_or_else(|| {
+            let current_euler =
+                current_bake_euler(weapon.mount, args.current_euler).ok_or_else(|| {
                     solve_weapon_mount_usage(
                         "geometric assist requires the current bake euler from extras.mount.euler or --current-euler X Y Z",
                     )
@@ -178,8 +175,8 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
                 .map_err(|error| format!("solve geometric residual: {error}"))?;
             let total_blender = gltf_to_blender_rotation(residual) * current_blender;
 
-            // Detection measures the already-baked mesh. Bring that candidate
-            // back to the source frame before persisting it in --mount-axes.
+            // Detection measures the already-baked mesh. Show an author a
+            // source-frame candidate, but never persist it as declared intent.
             let current_gltf = blender_to_gltf_rotation(current_blender);
             let candidate_axes = MountAxes {
                 barrel: current_gltf.transpose() * detection.frame.barrel,
@@ -200,11 +197,10 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
                 format_number(current_euler[1]),
                 format_number(current_euler[2]),
             );
-            (
-                blender_xyz_euler_degrees(total_blender),
-                candidate_axes,
-                true,
-            )
+            println!(
+                "UNVERIFIED assist rebake will not persist mount axes; declare barrel/up before a VERIFIED check."
+            );
+            (blender_xyz_euler_degrees(total_blender), None, true)
         }
     };
 
@@ -245,14 +241,22 @@ fn check_weapon_mount(
                 format_vec3(baked_axes.barrel),
                 format_vec3(baked_axes.up),
             );
-            (verify_mount(socket_matrix, baked_frame), "VERIFIED")
+            (
+                verify_mount(socket_matrix, baked_frame)
+                    .map_err(|error| format!("verify declared weapon mount: {error}"))?,
+                "VERIFIED",
+            )
         }
         None => {
             let detection = detect_weapon_mount(weapon)
                 .map_err(|error| format!("detect weapon mount geometry: {error}"))?;
             println!("UNVERIFIED geometric assist — no declared barrel/up axes were found.");
             print_detected_baked_frame(detection);
-            (verify_mount(socket_matrix, detection.frame), "UNVERIFIED")
+            (
+                verify_mount(socket_matrix, detection.frame)
+                    .map_err(|error| format!("verify geometric weapon mount: {error}"))?,
+                "UNVERIFIED",
+            )
         }
     };
 
@@ -271,14 +275,18 @@ fn applied_check_euler(
     persisted_mount: Option<MountAxes>,
     current_euler: Option<[f32; 3]>,
 ) -> Result<[f32; 3], String> {
-    persisted_mount
-        .and_then(|mount| mount.euler)
-        .or(current_euler)
-        .ok_or_else(|| {
-            solve_weapon_mount_usage(
-                "declared check is missing the applied euler; add extras.mount.euler or --current-euler X Y Z",
-            )
-        })
+    current_bake_euler(persisted_mount, current_euler).ok_or_else(|| {
+        solve_weapon_mount_usage(
+            "declared check is missing the applied euler; add extras.mount.euler or --current-euler X Y Z",
+        )
+    })
+}
+
+fn current_bake_euler(
+    persisted_mount: Option<MountAxes>,
+    cli_euler: Option<[f32; 3]>,
+) -> Option<[f32; 3]> {
+    cli_euler.or_else(|| persisted_mount.and_then(|mount| mount.euler))
 }
 
 /// Compose raw-source declared axes through the rotation baked into the weapon.
@@ -364,13 +372,17 @@ fn failed_mount_metrics(
     thresholds: MountCheckThresholds,
 ) -> Vec<&'static str> {
     let mut failures = Vec::new();
-    if verification.barrel_dot_forward < thresholds.min_barrel_dot {
+    if !verification.barrel_dot_forward.is_finite()
+        || verification.barrel_dot_forward < thresholds.min_barrel_dot
+    {
         failures.push("barrel·+Z");
     }
-    if verification.barrel_dot_up.abs() > thresholds.max_barrel_y {
+    if !verification.barrel_dot_up.is_finite()
+        || verification.barrel_dot_up.abs() > thresholds.max_barrel_y
+    {
         failures.push("|barrel·+Y|");
     }
-    if verification.up_dot_up < thresholds.min_up_dot {
+    if !verification.up_dot_up.is_finite() || verification.up_dot_up < thresholds.min_up_dot {
         failures.push("up·+Y");
     }
     failures
@@ -758,7 +770,7 @@ fn blender_xyz_euler_degrees(rotation: Mat3) -> [f32; 3] {
 fn emitted_blender_command(
     args: &SolveWeaponMountArgs,
     euler: [f32; 3],
-    axes: MountAxes,
+    axes: Option<MountAxes>,
 ) -> String {
     let raw_source = args
         .raw_source
@@ -793,17 +805,19 @@ fn emitted_blender_command(
     }
     command.push("--rotate-euler".to_string());
     command.extend(euler.into_iter().map(format_number));
-    command.push("--mount-axes".to_string());
-    command.extend(
-        [axes.barrel, axes.up]
-            .into_iter()
-            .flat_map(|axis| axis.to_array().into_iter().map(format_number)),
-    );
+    if let Some(axes) = axes {
+        command.push("--mount-axes".to_string());
+        command.extend(
+            [axes.barrel, axes.up]
+                .into_iter()
+                .flat_map(|axis| axis.to_array().into_iter().map(format_number)),
+        );
+    }
     command.join(" ")
 }
 
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn format_number(value: f32) -> String {
@@ -1313,6 +1327,30 @@ mod tests {
         args.iter().map(OsString::from).collect()
     }
 
+    fn write_weapon_fixture_with_mount(mount: serde_json::Value) -> PathBuf {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../model/tests/fixtures/multi_primitive/multi_primitive.gltf");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(source).expect("model fixture reads"))
+                .expect("model fixture parses");
+        json["nodes"][0]["extras"]["mount"] = mount;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time follows Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "postretro_xtask_mount_{}_{}.gltf",
+            std::process::id(),
+            unique,
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_string(&json).expect("model fixture serializes"),
+        )
+        .expect("model fixture writes");
+        path
+    }
+
     #[test]
     fn split_run_args_without_separator_keeps_backwards_compatible_engine_args() {
         assert_eq!(
@@ -1750,15 +1788,19 @@ mod tests {
     }
 
     #[test]
-    fn declared_check_prefers_persisted_euler_and_requires_one_when_absent() {
+    fn current_bake_euler_cli_override_wins_for_assist_and_declared_check() {
         let persisted = MountAxes {
             barrel: Vec3::Z,
             up: Vec3::Y,
             euler: Some([10.0, 20.0, 30.0]),
         };
         assert_eq!(
-            applied_check_euler(Some(persisted), Some([40.0, 50.0, 60.0])),
-            Ok([10.0, 20.0, 30.0])
+            current_bake_euler(Some(persisted), Some([40.0, 50.0, 60.0])),
+            Some([40.0, 50.0, 60.0])
+        );
+        assert_eq!(
+            current_bake_euler(Some(persisted), None),
+            Some([10.0, 20.0, 30.0])
         );
         assert_eq!(
             applied_check_euler(
@@ -1794,6 +1836,71 @@ mod tests {
     }
 
     #[test]
+    fn mount_check_rejects_non_finite_metrics() {
+        // Regression: NaN comparisons were all false, so invalid metrics could
+        // be reported as a passing check.
+        let verification = MountVerification {
+            barrel_world: Vec3::splat(f32::NAN),
+            up_world: Vec3::splat(f32::NAN),
+            barrel_dot_forward: f32::NAN,
+            barrel_dot_up: f32::NAN,
+            up_dot_up: f32::NAN,
+        };
+
+        assert_eq!(
+            failed_mount_metrics(verification, MountCheckThresholds::default()),
+            ["barrel·+Z", "|barrel·+Y|", "up·+Y"]
+        );
+    }
+
+    #[test]
+    fn persisted_same_file_mount_checks_without_cli_axes_or_euler() {
+        // Regression: the normal writer-shaped extras -> loader -> declared
+        // check path must not require intent to be supplied again on the CLI.
+        let weapon_path = write_weapon_fixture_with_mount(serde_json::json!({
+            "barrel": [0.0, 0.0, 1.0],
+            "up": [0.0, 1.0, 0.0],
+            "euler": [0.0, 0.0, 0.0],
+        }));
+        let weapon = load_model(&weapon_path).expect("writer-shaped mount fixture loads");
+        let args = parse_solve_weapon_mount_args(vec![
+            OsString::from("holder.gltf"),
+            OsString::from("--weapon"),
+            weapon_path.clone().into_os_string(),
+            OsString::from("--check"),
+        ])
+        .expect("normal persisted check needs no CLI axes or euler");
+
+        let result = check_weapon_mount(&args, &weapon, Mat4::IDENTITY);
+        let _ = std::fs::remove_file(weapon_path);
+
+        assert_eq!(result, Ok(0));
+    }
+
+    #[test]
+    fn declared_check_rejects_degenerate_socket_before_reporting_pass() {
+        let weapon = LoadedModel {
+            mount: Some(MountAxes {
+                barrel: Vec3::Z,
+                up: Vec3::Y,
+                euler: Some([0.0, 0.0, 0.0]),
+            }),
+            ..LoadedModel::default()
+        };
+        let args = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--check",
+        ]))
+        .expect("declared check arguments parse");
+
+        let error = check_weapon_mount(&args, &weapon, Mat4::ZERO)
+            .expect_err("degenerate sockets cannot produce passing metrics");
+        assert!(error.contains("socket frame transforms the barrel"));
+    }
+
+    #[test]
     fn reference_mount_pose_requires_idle_aiming_at_zero() {
         assert!(is_reference_mount_pose("idle_aiming", 0.0));
         assert!(!is_reference_mount_pose("reloading", 0.0));
@@ -1807,9 +1914,9 @@ mod tests {
             "--weapon",
             "weapon.gltf",
             "--raw-source",
-            "raw asset.glb",
+            "raw author's asset.glb",
             "--out",
-            "out asset.gltf",
+            "out author's asset.gltf",
             "--grip",
             "0.0",
             "-0.05",
@@ -1817,27 +1924,53 @@ mod tests {
             "--scale",
             "0.68",
             "--socket",
-            "muzzle=BarrelTip",
+            "muzzle's tip=BarrelTip",
         ]))
         .expect("complete solve command should parse");
         let command = emitted_blender_command(
             &args,
             [10.0, 20.0, 30.0],
-            MountAxes {
+            Some(MountAxes {
                 barrel: Vec3::Y,
                 up: Vec3::Z,
                 euler: None,
-            },
+            }),
         );
 
         assert_eq!(
             command,
             concat!(
-                "blender --background --python tools/prop_to_gltf.py -- --input 'raw asset.glb' ",
-                "--output 'out asset.gltf' --grip 0.0 -0.05 0.120 --scale 0.68 ",
-                "--socket 'muzzle=BarrelTip' --rotate-euler 10.000000 20.000000 30.000000 ",
+                "blender --background --python tools/prop_to_gltf.py -- --input 'raw author'\"'\"'s asset.glb' ",
+                "--output 'out author'\"'\"'s asset.gltf' --grip 0.0 -0.05 0.120 --scale 0.68 ",
+                "--socket 'muzzle'\"'\"'s tip=BarrelTip' --rotate-euler 10.000000 20.000000 30.000000 ",
                 "--mount-axes 0.000000 1.000000 0.000000 0.000000 0.000000 1.000000"
             )
+        );
+    }
+
+    #[test]
+    fn geometric_assist_command_remains_unverified_after_rebake() {
+        let args = parse_solve_weapon_mount_args(os_args(&[
+            "holder.gltf",
+            "--weapon",
+            "weapon.gltf",
+            "--raw-source",
+            "raw.glb",
+            "--out",
+            "weapon.gltf",
+            "--current-euler",
+            "10",
+            "20",
+            "30",
+        ]))
+        .expect("geometric assist arguments parse");
+
+        let command = emitted_blender_command(&args, [40.0, 50.0, 60.0], None);
+
+        assert!(command.contains("--rotate-euler 40.000000 50.000000 60.000000"));
+        assert!(
+            !command.contains("--mount-axes"),
+            "assist-derived axes must not become a persisted declaration: {command}",
         );
     }
 

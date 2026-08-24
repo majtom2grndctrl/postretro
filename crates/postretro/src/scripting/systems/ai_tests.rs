@@ -7740,6 +7740,44 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
     assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
 }
 
+// Regression: an in-range actionless aim cleared the retained target before
+// covered LOS could reach the shared loss-grace verdict.
+#[test]
+fn actionless_committed_aim_retains_target_and_fires_through_los_grace() {
+    let graph = committed_aim_graph(16.0, 1000.0);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    assert!(events.is_empty(), "the committed aim leaf has no action");
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/aim");
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let events = run_ai_tick_with_navigation(&mut registry, &mut runtime, 0.016, None, Some(&wall));
+    assert_eq!(enemy_state_path(&registry, enemy), "engage/offense/fire");
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(target));
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "cover loss after an actionless committed aim reaches the retained target's LOS grace",
+    );
+    assert_eq!(player_hp(&registry, target), 92.0);
+}
+
 #[test]
 fn retained_target_does_not_switch_to_a_closer_occluded_candidate_on_due_tick() {
     // P8: a due rescan can replace the incumbent only with an eligible fresh
@@ -8216,6 +8254,10 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
             graph.envelope.activities["position"].motion,
             Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
         ));
+        assert!(
+            !engages_active(&BrainComponent::from_graph(&graph)),
+            "{motion:?} remains non-engaged even when an unvalidated graph carries an action",
+        );
     }
 
     let mut chase = position_goal_graph(MotionVerb::ChaseTarget, None);

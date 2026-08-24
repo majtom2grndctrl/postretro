@@ -577,7 +577,7 @@ declare module "postretro" {
     attacks?: { readonly [attack: string]: AttackParams };
     /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0. */
     moveSpeed: number;
-    /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default. */
+    /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;
   };
 

@@ -568,7 +568,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
         .field("attacks?", "BehaviorAttacks", "Named contact-attack vocabulary. Any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries; omit for an attackless graph.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.")
-        .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use their named entry's `engagementRadius`, else its `maxRange`; non-attack states use this value or the engine default.")
+        .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

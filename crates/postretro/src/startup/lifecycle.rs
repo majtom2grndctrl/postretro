@@ -2163,6 +2163,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: Vec::new(),
             has_portals: false,
+            cell_visibility: None,
             texture_names: Vec::new(),
             texture_cache_keys: Default::default(),
             bvh: postretro_render_data::geometry::BvhTree {

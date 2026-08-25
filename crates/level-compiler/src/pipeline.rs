@@ -14,11 +14,11 @@ use crate::{
 };
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
-    cell_draw_index_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
-    entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
-    lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
-    sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_group, shadowmask_bake, texture_mips,
-    texture_validation, trigger_volumes, visibility,
+    cell_draw_index_bake, cell_visibility_bake, chunk_light_list_bake, delta_sections,
+    delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks, geometry,
+    kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data, navmesh_bake,
+    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_group,
+    shadowmask_bake, texture_mips, texture_validation, trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -51,6 +51,7 @@ pub enum StageId {
     Visibility,
     Geometry,
     BvhBuild,
+    CellVisibility,
     NavMesh,
     LightmapBake,
     ShBake,
@@ -86,6 +87,7 @@ impl StageId {
             Self::Visibility => "Visibility",
             Self::Geometry => "Geometry",
             Self::BvhBuild => "BVH Build",
+            Self::CellVisibility => "Cell Visibility",
             Self::NavMesh => "NavMesh",
             Self::LightmapBake => "Lightmap Bake",
             Self::ShBake => "SH Bake",
@@ -113,6 +115,7 @@ impl StageId {
             Self::Visibility => "Visibility computation...",
             Self::Geometry => "Geometry extraction...",
             Self::BvhBuild => "BVH build...",
+            Self::CellVisibility => "Cell visibility bake...",
             Self::NavMesh => "NavMesh bake...",
             Self::LightmapBake => "Lightmap bake...",
             Self::ShBake => "SH volume bake...",
@@ -132,7 +135,7 @@ impl StageId {
     }
 }
 
-const ORDERED_STAGES: [StageId; 22] = [
+const ORDERED_STAGES: [StageId; 23] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -140,6 +143,7 @@ const ORDERED_STAGES: [StageId; 22] = [
     StageId::Visibility,
     StageId::Geometry,
     StageId::BvhBuild,
+    StageId::CellVisibility,
     StageId::NavMesh,
     StageId::LightmapBake,
     StageId::ShBake,
@@ -407,6 +411,19 @@ fn run_after_parsing(
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
     }
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::CellVisibility);
+    // This is deliberately an all-cells pass: solid and zero-portal leaves
+    // remain valid CellIds as singleton components instead of being elided.
+    let cell_visibility_bytes =
+        cell_visibility_bake::cell_visibility_bake(&result.tree, &generated_portals)?.to_bytes();
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::CellVisibility,
+        stage_start,
+        true,
+    );
 
     // Cell draw index (id 37): per-cell BVH-leaf spans for the runtime visible-cell
     // candidate cull. Derived from the already-sorted flat BVH leaves joined into
@@ -1441,6 +1458,7 @@ fn run_after_parsing(
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
+        Some(cell_visibility_bytes),
         delta_sections.animated_direct.as_ref(),
     )?;
     finish_stage(
@@ -1732,8 +1750,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 22);
-        assert_eq!(with_sdf.len(), 22);
+        assert_eq!(without_sdf.len(), 23);
+        assert_eq!(with_sdf.len(), 23);
         assert_eq!(
             without_sdf
                 .iter()
@@ -1747,6 +1765,7 @@ mod tests {
                 "Visibility",
                 "Geometry",
                 "BVH Build",
+                "Cell Visibility",
                 "NavMesh",
                 "Lightmap Bake",
                 "SH Bake",
@@ -1770,8 +1789,8 @@ mod tests {
                 .filter(|stage| stage.id != StageId::SdfAtlasBake)
                 .all(|stage| stage.predicted_present)
         );
-        assert!(!without_sdf[19].predicted_present);
-        assert!(with_sdf[19].predicted_present);
+        assert!(!without_sdf[20].predicted_present);
+        assert!(with_sdf[20].predicted_present);
     }
 
     #[test]

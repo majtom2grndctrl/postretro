@@ -15,6 +15,7 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
 use postretro_level_format::cell_locator::CellLocatorSection;
+use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
@@ -47,8 +48,9 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material;
 
 use super::{
-    CellData, CellDrawIndex, CellLocatorChild, CellLocatorNodeData, FaceMeta, FalloffModel,
-    LevelWorld, LightType, LightmapMode, MapLight, PortalData, PrlLoadError, ShadowType,
+    CellData, CellDrawIndex, CellLocatorChild, CellLocatorNodeData, CellVisibility,
+    CoupledCellPair, FaceMeta, FalloffModel, LevelWorld, LightType, LightmapMode, MapLight,
+    PortalData, PrlLoadError, ShadowType,
 };
 use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
 
@@ -164,6 +166,22 @@ pub(crate) fn convert_cells_section(section: CellsSection) -> (Vec<CellData>, Ve
         })
         .collect();
     (cells, section.portal_refs)
+}
+
+pub(crate) fn convert_cell_visibility_section(section: CellVisibilitySection) -> CellVisibility {
+    CellVisibility::new(
+        section.component_ids,
+        section
+            .coupled_pairs
+            .into_iter()
+            .map(|pair| CoupledCellPair {
+                cell_a: pair.cell_a as usize,
+                cell_b: pair.cell_b as usize,
+                distance: pair.distance,
+                aperture: pair.aperture,
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn convert_kinematic_geometry_section(
@@ -1791,6 +1809,32 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         portal_ref_count,
     );
 
+    // Optional — its absence is the conservative compatibility path for maps
+    // compiled before CellVisibility was introduced. A present malformed
+    // section remains a format error rather than silently weakening a new map.
+    let cell_visibility = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::CellVisibility as u32,
+    )? {
+        Some(data) => {
+            let section = CellVisibilitySection::from_bytes(&data, cells.len() as u32)
+                .map_err(|err| section_validation_from_error("CellVisibility", err))?;
+            log::info!(
+                "[PRL] CellVisibility: {} cells, {} coupled pair(s)",
+                section.cell_count,
+                section.coupled_pairs.len(),
+            );
+            Some(convert_cell_visibility_section(section))
+        }
+        None => {
+            log::info!(
+                "[PRL] CellVisibility section missing — using conservative all-perceivable fallback"
+            );
+            None
+        }
+    };
+
     let (cell_locator_root, cell_locator_nodes) =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::CellLocator as u32)? {
             Some(data) => {
@@ -2661,6 +2705,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         cell_locator_nodes,
         portals,
         has_portals,
+        cell_visibility,
         texture_names,
         texture_cache_keys,
         bvh,
@@ -2697,10 +2742,47 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::cell_visibility::CoupledPairRecord;
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
         KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
     };
+
+    #[test]
+    fn cell_visibility_section_round_trips_through_runtime_lowering() {
+        let encoded = CellVisibilitySection {
+            cell_count: 3,
+            component_ids: vec![0, 0, 1],
+            coupled_pairs: vec![CoupledPairRecord {
+                cell_a: 0,
+                cell_b: 1,
+                distance: 128,
+                aperture: 64,
+            }],
+        }
+        .to_bytes();
+        let parsed = CellVisibilitySection::from_bytes(&encoded, 3).unwrap();
+        let visibility = convert_cell_visibility_section(parsed);
+
+        assert_eq!(visibility.component_ids(), &[0, 0, 1]);
+        assert_eq!(
+            visibility.coupled_pairs().copied().collect::<Vec<_>>(),
+            vec![CoupledCellPair {
+                cell_a: 0,
+                cell_b: 1,
+                distance: 128,
+                aperture: 64,
+            }]
+        );
+
+        let component_only = convert_cell_visibility_section(CellVisibilitySection {
+            cell_count: 3,
+            component_ids: vec![0, 0, 1],
+            coupled_pairs: vec![],
+        });
+        assert_eq!(component_only.component_ids().len(), 3);
+        assert_eq!(component_only.coupled_pairs().count(), 0);
+    }
 
     fn matching_direct_and_base_sh() -> (DirectShVolumeSection, OctahedralShVolumeSection) {
         let mut direct = DirectShVolumeSection::placeholder();

@@ -914,6 +914,18 @@ mod tests {
         .expect_err("non-table Luau placement must reject mod init");
         assert!(js_error.to_string().contains("defaultWeaponPlacement"));
         assert!(luau_error.to_string().contains("defaultWeaponPlacement"));
+
+        let js_function_error = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Bad Function', id: 'bad-function', version: '1', defaultWeaponPlacement: () => {} };",
+            "bad-function.js",
+        )
+        .expect_err("QuickJS function placement must reject mod init");
+        assert!(
+            js_function_error
+                .to_string()
+                .contains("defaultWeaponPlacement")
+        );
     }
 
     #[test]

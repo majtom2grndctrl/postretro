@@ -511,10 +511,11 @@ fn portal_metrics(vertices: &[DVec3]) -> PortalMetrics {
 
     PortalMetrics {
         centroid: centroid.is_finite().then_some(centroid),
-        minimum_width: minimum_width
-            .is_finite()
-            .then_some(minimum_width)
-            .unwrap_or(0.0),
+        minimum_width: if minimum_width.is_finite() {
+            minimum_width
+        } else {
+            0.0
+        },
     }
 }
 

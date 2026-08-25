@@ -188,8 +188,9 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
 - [ ] AC11 — Two structural caps bound the graded side-table to a hard `O(N·K)` entry count.
   (a) The coupling **distance cap**: pairs whose `distance` exceeds the pinned cap (`distance > cap`,
   same fixed-point domain as the stored `distance`) are omitted. (b) The per-cell **fanout cap** `K`:
-  among the remaining in-cap partners, each cell keeps only its `K` nearest by `distance`, and a pair is
-  stored iff it is among *either* endpoint's `K` nearest (union — preserving symmetry), so the total is
+  among the remaining in-cap partners, each cell keeps only its `K` nearest by canonical `distance` (the
+  `min→max` stored value, so membership, cap, and value never disagree at a rounding boundary), and a
+  pair is stored iff it is among *either* endpoint's `K` nearest (union — preserving symmetry), so the total is
   `<= N·K` entries regardless of map density. (The distance cap bounds path length, not pair count; the
   fanout cap is what actually bounds count on a spatially compact, densely-connected map.) Omitted pairs
   stay perceivable; `distance`/`aperture` read `None` (coupled-but-no-graded). Both caps are
@@ -321,16 +322,18 @@ whose `distance` exceeds the pinned cap is dropped — a coarse pre-filter on pa
 distance cap does not bound *count*: a spatially compact, densely-connected component keeps ~N² pairs
 within any cap, so the distance cap alone can still blow the side-table on a large map. So second, the
 **per-cell fanout cap** `K`: for each source cell, among its remaining in-cap coupled partners, keep
-only the `K` nearest by `distance` (tie-break by partner cell id — pin P10); then store an unordered
-pair iff it survives in *either* endpoint's kept set. This keep-set union keeps the relation symmetric
-(each stored pair is one `(min,max)` entry, reachable from both ends) and bounds the table at `<= N·K`
-entries regardless of density — the hard count guardrail. A dropped pair (beyond the distance cap, or
+only the `K` nearest by **canonical** `distance` (the `min→max` stored value, pin P8; tie-break by
+partner cell id — pin P10); then store an unordered pair iff it survives in *either* endpoint's kept
+set. The cap filter, the ranking, and the stored value all read the one canonical distance, so a pair
+can never be kept on one direction's rounding yet capped/stored on the other's. This keep-set union
+keeps the relation symmetric (each stored pair is one `(min,max)` entry, reachable from both ends) and
+bounds the table at `<= N·K` entries regardless of density — the hard count guardrail. A dropped pair (beyond the distance cap, or
 beyond both endpoints' fanout) stays perceivable (same component) and reads `distance`/`aperture`
 `None` — coupled-but-beyond-the-stored-horizon. Both caps are structural storage bounds set generously
 (beyond any plausible consumer's range), not consumer policy. On the small fixtures leave both
 effectively uncapped (distance cap high, `K >= cell_count`) so tests see the full reachable set.
-`aperture` is stored on exactly the pairs `distance` is (the fanout ranks by `distance`, and both axes
-ride the same surviving set).
+`aperture` is stored on exactly the pairs `distance` is (the fanout ranks by canonical `distance`, and
+both axes ride the same surviving set).
 
 Determinism (AC10): build adjacency as `Vec`s in a fixed portal order; key the Dijkstra frontier on
 `(cost, node_id)` — `node_id` is a single injective index over all frontier node kinds (portal-centroid
@@ -341,13 +344,16 @@ break equal-aperture ties in the maximum spanning tree by portal index; no HashM
 order feeds component-id assignment, relaxation, tree order, side-table pair collection, or
 serialization (see Determinism pins P2/P3) — component ids are assigned by an explicit sort of distinct
 representatives ascending (not first-seen HashMap iteration), so "dense from 0 in ascending
-representative order" is a pinned procedure, not only a pinned result. Assemble the side-table in two
-steps. (1) From each source cell `s`'s Dijkstra result, take its `K` nearest in-cap coupled partners —
-`topK(s)`, selected by `(distance, partner_id)` order (pin P10). (2) Keep an unordered pair `{s,t}` iff
+representative order" is a pinned procedure, not only a pinned result. Assemble the side-table in three
+steps. (1) Build the canonical distance table: for each in-cap perceivable unordered pair `(a,b)`,
+`a < b`, its distance is `Dijkstra(a→b)` (the `min→max` direction, pin P8) — the one value used for the
+cap filter, the top-`K` ranking, and storage alike (the all-pairs run computes both directions; index
+the `min→max` one). (2) For each cell `s`, rank its in-cap coupled partners by `(canonical distance,
+partner_id)` and take the `K` nearest — `topK(s)` (pin P10). (3) Keep an unordered pair `{s,t}` iff
 `t ∈ topK(s)` or `s ∈ topK(t)` (the keep-set union — symmetric); store it once as `(min,max)` with its
-value taken from the canonical `Dijkstra(min→max)` direction, so float non-associativity between `a→b`
-and `b→a` cannot flip the stored fixed-point value (pin P8) — never from a completion-order or
-last-write-wins dedup. Emit kept pairs sorted by `(cell_a,cell_b)` (pin P4). If the per-source Dijkstra
+canonical-table value, so float non-associativity between `a→b` and `b→a` cannot flip the stored
+fixed-point value (pin P8) — never a completion-order or last-write-wins dedup. Emit kept pairs sorted
+by `(cell_a,cell_b)` (pin P4). If the per-source Dijkstra
 runs under `rayon` `into_par_iter()` for speed (optional — cheap single-threaded), collect the
 per-source distance vectors index-aligned to cell id via an order-preserving collect before computing
 `topK`, never a completion-order push (pin P1). Task 1's `coupling` accessor already
@@ -361,7 +367,11 @@ crosses the generous production values. Tests:
 on stored coupled off-diagonal pairs and absent on diagonal/non-perceivable/beyond-cap/beyond-fanout
 pairs; both symmetric; `distance` matches an independent shortest-path oracle and `aperture` an
 independent bottleneck oracle on a fixture (same-metric oracles validate the relaxation/tree and
-determinism, not the metric choice, which is a pinned design decision); a small-cap unit test confirms
+determinism, not the metric choice, which is a pinned design decision). The independent oracle
+validates *values* only; fanout-membership ("stored exactly on within-cap ∩ within-either-endpoint's-
+`K`-nearest pairs") is checked by the uncapped `K >= cell_count` property fixtures (where it reduces to
+the BFS reachable set) and the hand-built small-`K` unit test — never by an oracle that re-derives the
+top-`K` union, which would test the impl against a copy of itself. A small-cap unit test confirms
 `distance == cap` stored / `distance == cap+1` omitted (perceivable stays true); a small-`K` unit test
 confirms each cell stores at most its `K` nearest partners, the keep-set union is symmetric (a pair
 kept by one endpoint is present for both), and the table holds `<= N·K` entries; an over-range value
@@ -378,9 +388,10 @@ option; add a record type + `OutputDocument` field in `observability/document.rs
 registry). Emit the `u32[cell_count]` component-id array (O(V), cheap) as a sibling field alongside a
 JSON array of `{ cell_a, cell_b, distance, aperture }` entries, so the reachability gate — the
 `perceivable` component partition AC2/AC3 rest on — is inspectable independently of the coupled-pair
-list, distinguishing "different component" from "same component but beyond cap". The pair array holds
-one entry per unordered off-diagonal pair `cell_a < cell_b` that is coupled (perceivable and within the
-cap; diagonal omitted; non-coupled pairs absent), `distance`/`aperture` as their integer or `null` —
+list, distinguishing "different component" from "same component but not stored". The pair array holds
+one entry per unordered off-diagonal pair `cell_a < cell_b` that is coupled and stored (perceivable,
+within the distance cap, and within either endpoint's fanout; diagonal omitted; non-stored pairs
+absent), `distance`/`aperture` as their integer or `null` —
 **pre-sorted ascending by `(cell_a, cell_b)`** by the producer, because `to_deterministic_json` sorts
 object keys but leaves arrays in data order (see Determinism pin P4). Consumes only Task 1's runtime
 type via its component-id slice accessor and coupled-pairs iterator (both exposed by Task 1), so it is
@@ -469,7 +480,7 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
 | P7 | Pair with `distance` exactly `== cap` and pair `== cap+1` | Cap compare is `distance <= cap` stored / `> cap` omitted, in fixed-point domain | `==cap` stored with graded values; `==cap+1` perceivable with `None` graded (AC4, AC11) |
 | P8 | Path `a→b` and `b→a` sum identical edges in opposite float order, rounding to adjacent integers at a fixed-point boundary | Every kept unordered pair's stored value comes from the canonical `Dijkstra(min→max)` direction (the keep decision may come from either endpoint's fanout, but the value is always min→max); no completion-order or last-write-wins dedup | One deterministic stored distance/aperture per pair, byte-identical across serial/parallel builds (AC10) — distinct from P1 (per-source row reassembly, not the two-direction pair-value choice) |
 | P9 | Side-table-assembly fn is cap/fanout-parameterized; a unit test passes a small `cap` or `K`, the shipped bake must not | The `cell_visibility_bake` stage binds `cap` and `K` to their `pub const`s; only tests pass other values | Shipped side-table always reflects the production `cap`/`K`; two compiles byte-identical AND the artifact uses the intended values (AC10, AC11) |
-| P10 | A cell has more than `K` in-cap coupled partners; two compiles could keep a different `K`-subset if the ranking is not a total order | Per-source `topK` selected by `(distance, partner_cell_id)` (a total order); the stored set is the union of both endpoints' `topK`; no HashSet/HashMap iteration in selection | Identical `K`-nearest selection and identical stored pair set across recompiles; symmetric (a pair kept by one endpoint present for both); `<= N·K` entries (AC10, AC11) |
+| P10 | A cell has more than `K` in-cap coupled partners; two compiles could keep a different `K`-subset if the ranking is not a total order, or membership could rank on a different distance than the cap/value | `topK` selected by `(canonical distance(min→max), partner_cell_id)` — a total order, and the same value the cap filters and storage use (pin P8), so membership, cap, and value never disagree at a rounding boundary; the stored set is the union of both endpoints' `topK`; no HashSet/HashMap iteration in selection | Identical `K`-nearest selection and identical stored pair set across recompiles; symmetric (a pair kept by one endpoint present for both); no pair stored with canonical `distance > cap`; `<= N·K` entries (AC10, AC11) |
 
 ## Rough sketch
 
@@ -508,3 +519,15 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
   Flagged so review confirms both are generous enough not to hide coupling any plausible consumer would
   use (`K` large enough that a cell's real neighbors are never dropped), that `K` gives an acceptable
   `N·K` storage bound at real-map scale, and that the uncapped/large-`K` small-fixture test path exists.
+  Concrete shape (16 B/entry): at a plausible real-map `N ≈ 10k–50k` cells, `K` in the low tens keeps
+  the table in the tens of MB with the `u32` count orders of magnitude clear (hitting the count ceiling
+  needs `K` in the tens of thousands — implausible), so memory, not the count field, is the binding
+  limit; "generous `K`" vs "small table" is the tension to resolve against real content.
+- **Fanout ranks by `distance` only.** A pair far by path but wide by `aperture` (a long, wide
+  corridor) can be dropped by the fanout even when its aperture is high. Accepted: dropped pairs stay
+  `perceivable` (the gate — audio's potentially-audible set — is intact and conservative) and read
+  `None`/`None` (the same fallback every consumer already handles), and distance-ranking aligns with all
+  three primary consumers (net relevance, AI perception, and audio are all distance-dominant, so a
+  cell's `K` nearest partners are the ones they weight most). The substrate does not preserve
+  high-aperture-but-far pairs in the graded table — an accepted limitation of a distance-ranked fanout,
+  not a bug.

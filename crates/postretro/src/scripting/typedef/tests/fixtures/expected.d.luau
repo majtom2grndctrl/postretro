@@ -398,6 +398,34 @@ export type WeaponResource =
   --- Finite magazine-and-reserve ammunition.
   (AmmoResource & { kind: "ammo" })
 
+--- First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0; omitting the whole placement keeps the legacy BASE_OFFSET.
+export type PlacementOffset = {
+  --- Metres right from screen center, mapped to camera-space +X. Defaults to 0; use a finite number.
+  right: number?,
+  --- Metres up from screen center, mapped to camera-space +Y. Defaults to 0; use a finite number.
+  up: number?,
+  --- Metres forward toward the aim, mapped to camera-space -Z. Defaults to 0; use a finite number.
+  forward: number?,
+}
+
+--- First-person weapon orientation in degrees about the camera origin. Omitted fields default to zero rotation.
+export type PlacementRotation = {
+  --- Yaw in degrees around camera up. Defaults to 0; use a finite number.
+  yaw: number?,
+  --- Pitch in degrees around camera right. Defaults to 0; use a finite number.
+  pitch: number?,
+  --- Roll in degrees around camera forward. Defaults to 0; use a finite number.
+  roll: number?,
+}
+
+--- Authored first-person weapon placement. Position is in metres from screen center and rotation is in degrees. Omit `placement` on a weapon to preserve the legacy BASE_OFFSET with zero rotation.
+export type WeaponPlacementDescriptor = {
+  --- Optional camera-relative position in metres: right/up/forward map to +X/+Y/-Z. Omit fields for 0.
+  positionFromCenter: PlacementOffset?,
+  --- Optional camera-relative rotation in degrees. Omit fields for zero rotation.
+  rotation: PlacementRotation?,
+}
+
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
   --- Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.
@@ -422,6 +450,8 @@ export type WeaponDescriptor = {
   thirdPersonModel: string?,
   --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
   viewmodel: string?,
+  --- Optional first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Omit it for the legacy BASE_OFFSET and zero rotation; it never changes the third-person hand socket.
+  placement: WeaponPlacementDescriptor?,
   --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
   resource: WeaponResource?,
   --- Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.
@@ -851,6 +881,8 @@ export type ModManifest = {
   movers: MoverDefaults?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
+  --- Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket.
+  defaultWeaponPlacement: WeaponPlacementDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
@@ -1713,6 +1745,10 @@ declare function defineMod(config: ModManifestInput): ModManifest
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
+--- Pure identity builder for reusable first-person weapon placement data. The
+--- returned descriptor may be shared by weapon `placement` fields and
+--- `defineMod({ defaultWeaponPlacement = ... })`; no engine registration occurs.
+declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor
 --- Pure identity builder for a trigger-pool declaration returned from a level
 --- or mod manifest. Engine parsing owns arming validation.
 declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
@@ -1775,6 +1811,7 @@ export type ModManifestInput = {
   render: RenderProfile?,
   movers: MoverDefaults?,
   switching: SwitchingDescriptor?,
+  defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
@@ -2386,6 +2423,8 @@ export type PostretroModule = {
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
+  --- Pure identity builder for reusable first-person weapon placement data.
+  defineWeaponPlacement: typeof(defineWeaponPlacement),
   --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning a flattened, frozen schema-keyed handle.

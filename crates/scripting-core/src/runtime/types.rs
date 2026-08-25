@@ -14,7 +14,7 @@ use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
     PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
-    TriggerEventDescriptor, TriggerPoolDescriptor,
+    TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -80,6 +80,10 @@ pub struct ModManifestResult {
     /// Mod-global weapon-switching rules. Omission resolves to the engine
     /// compatibility defaults before this manifest is committed.
     pub switching: SwitchingDescriptor,
+    /// Optional mod-global first-person weapon placement. Per-weapon placement
+    /// overrides this whole descriptor at the render seam; no field merging is
+    /// performed.
+    pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     /// Entity-type descriptors returned by the mod manifest. Empty when the
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.

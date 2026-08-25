@@ -91,6 +91,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.",
         )
         .field(
+            "defaultWeaponPlacement?",
+            "WeaponPlacementDescriptor",
+            "Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket.",
+        )
+        .field(
             "entities?",
             "Vec<EntityTypeDescriptor>",
             "Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.",
@@ -199,6 +204,7 @@ mod tests {
             render: ModRenderProfile::default(),
             movers: ModMoverDefaults::default(),
             switching: SwitchingDescriptor::default(),
+            default_weapon_placement: None,
             entities: Vec::new(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
@@ -221,6 +227,7 @@ mod tests {
             "render",
             "movers",
             "switching",
+            "defaultWeaponPlacement",
             "entities",
             "uiTrees",
             "presentationTemplates",

@@ -470,6 +470,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         "defineEntity",
         "defineMod",
         "defineMapCatalog",
+        "defineWeaponPlacement",
         "defineTriggerPool",
         "defineStore",
     ];

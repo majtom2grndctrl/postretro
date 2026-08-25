@@ -1054,6 +1054,13 @@ function DataScriptSdk.defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
   return entries
 end
 
+--- Pure identity builder for reusable first-person weapon placement data. The
+--- returned descriptor may be shared by weapon `placement` fields and
+--- `defineMod({ defaultWeaponPlacement = ... })`; no engine registration occurs.
+function DataScriptSdk.defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor
+  return desc
+end
+
 --- Identity builder for a trigger-pool declaration returned from a level or
 --- mod manifest. Engine parsing owns arming validation.
 function DataScriptSdk.defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor

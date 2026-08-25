@@ -7,7 +7,8 @@ use std::path::Path;
 use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value as JsValue};
 
 use crate::data_descriptors::{
-    EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    EntityTypeDescriptor, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
     drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
@@ -311,6 +312,18 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let default_weapon_placement =
+            match drain_default_weapon_placement_js(&ctx, &obj, "default mod manifest export") {
+                Ok(placement) => placement,
+                Err(e) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` default mod manifest export `defaultWeaponPlacement` invalid: {e}"
+                        ),
+                    });
+                    return;
+                }
+            };
         let frontend = match drain_frontend_js(&obj, "default mod manifest export") {
             Ok(frontend) => frontend,
             Err(e) => {
@@ -398,6 +411,7 @@ pub(super) fn run_mod_init_quickjs(
             render,
             movers,
             switching,
+            default_weapon_placement,
             entities,
             ui_trees,
             presentation_templates,
@@ -593,6 +607,15 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let default_weapon_placement = drain_default_weapon_placement_lua(
+        &table,
+        "returned mod manifest",
+    )
+    .map_err(|e| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` returned mod manifest `defaultWeaponPlacement` invalid: {e}"
+        ),
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -656,6 +679,7 @@ pub(super) fn run_mod_init_luau(
         render,
         movers,
         switching,
+        default_weapon_placement,
         entities,
         ui_trees,
         presentation_templates,
@@ -830,6 +854,66 @@ mod tests {
         .expect("absent Luau switching block should default");
         assert_eq!(js_default.switching, SwitchingDescriptor::default());
         assert_eq!(luau_default.switching, SwitchingDescriptor::default());
+    }
+
+    #[test]
+    fn mod_init_default_weapon_placement_matches_in_both_runtimes_and_rejects_bad_shapes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Placement', id: 'placement', version: '1', defaultWeaponPlacement: { positionFromCenter: { right: 0.4, up: -0.2, forward: 0.7 }, rotation: { yaw: 15 } } };",
+            "placement.js",
+        )
+        .expect("QuickJS default weapon placement should parse");
+        let luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Placement', id = 'placement', version = '1', defaultWeaponPlacement = { positionFromCenter = { right = 0.4, up = -0.2, forward = 0.7 }, rotation = { yaw = 15 } } }",
+            "placement.luau",
+            Path::new("."),
+        )
+        .expect("Luau default weapon placement should parse");
+        assert_eq!(js.default_weapon_placement, luau.default_weapon_placement);
+        let placement = js
+            .default_weapon_placement
+            .expect("the authored default must survive cold manifest parsing");
+        assert_eq!(placement.offset.right, 0.4);
+        assert_eq!(placement.offset.up, -0.2);
+        assert_eq!(placement.offset.forward, 0.7);
+        assert_eq!(placement.rotation.yaw, 15.0);
+
+        let absent_js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Absent', id: 'absent', version: '1' };",
+            "absent.js",
+        )
+        .expect("absent QuickJS placement should remain optional");
+        let absent_luau = run_mod_init_luau(
+            &[],
+            "return { name = 'Absent', id = 'absent', version = '1' }",
+            "absent.luau",
+            Path::new("."),
+        )
+        .expect("absent Luau placement should remain optional");
+        assert_eq!(absent_js.default_weapon_placement, None);
+        assert_eq!(absent_luau.default_weapon_placement, None);
+
+        let js_error = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Bad', id: 'bad', version: '1', defaultWeaponPlacement: 7 };",
+            "bad.js",
+        )
+        .expect_err("non-object QuickJS placement must reject mod init");
+        let luau_error = run_mod_init_luau(
+            &[],
+            "return { name = 'Bad', id = 'bad', version = '1', defaultWeaponPlacement = 7 }",
+            "bad.luau",
+            Path::new("."),
+        )
+        .expect_err("non-table Luau placement must reject mod init");
+        assert!(js_error.to_string().contains("defaultWeaponPlacement"));
+        assert!(luau_error.to_string().contains("defaultWeaponPlacement"));
     }
 
     #[test]

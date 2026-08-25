@@ -853,6 +853,13 @@ export function defineMapCatalog(
   return entries;
 }
 
+/** Pure identity builder for a reusable first-person weapon placement. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
+export function defineWeaponPlacement(
+  desc: import("postretro").WeaponPlacementDescriptor,
+): import("postretro").WeaponPlacementDescriptor {
+  return desc;
+}
+
 /** Identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
 export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor {
   return pool;

@@ -12,7 +12,7 @@ use super::data_descriptors::{
     CrossingDescriptor, EntityTypeDescriptor, NamedReaction, TriggerEventDescriptor,
     TriggerPoolDescriptor,
 };
-use postretro_foundation::ModMapEntry;
+use postretro_foundation::{ModMapEntry, WeaponPlacementDescriptor};
 
 /// Engine-global reaction definition plus its optional level-tag scope.
 /// Empty `levels` means all levels; activation/composition happens separately.
@@ -76,6 +76,10 @@ pub struct DataRegistry {
     /// frontend and catalog-id load path can discover maps before a level is
     /// loaded. Not populated from `setupLevel()`.
     pub maps: Vec<ModMapEntry>,
+    /// Optional mod-global first-person weapon-placement default. Engine-global
+    /// content committed with descriptor snapshots and resolved at the render
+    /// seam; never copied into session-local presentation state.
+    pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
 }
 
 impl DataRegistry {
@@ -307,6 +311,13 @@ impl DataRegistry {
         self.maps = maps;
     }
 
+    /// Replace the mod-global first-person weapon-placement default as part of
+    /// a successful manifest snapshot commit. `None` clears a prior default
+    /// when the replacement manifest omits the field.
+    pub fn set_default_weapon_placement(&mut self, placement: Option<WeaponPlacementDescriptor>) {
+        self.default_weapon_placement = placement;
+    }
+
     /// Replace the engine-global reaction definition snapshot as one complete
     /// commit. No dedupe: same-name collisions are preserved intentionally.
     pub fn replace_global_reactions(&mut self, reactions: Vec<ScopedReaction>) {
@@ -368,6 +379,7 @@ impl DataRegistry {
             && self.level_trigger_pools.is_empty()
             && self.entities.is_empty()
             && self.maps.is_empty()
+            && self.default_weapon_placement.is_none()
     }
 }
 
@@ -805,6 +817,35 @@ mod tests {
 
         assert_eq!(r.reactions.len(), 0);
         assert_eq!(r.maps, vec![sample_map("e1m1")]);
+    }
+
+    #[test]
+    fn default_weapon_placement_replaces_whole_manifest_value_and_survives_unload() {
+        let mut r = DataRegistry::new();
+        let first = postretro_foundation::WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.32,
+                up: -0.28,
+                forward: 0.62,
+            },
+            rotation: Default::default(),
+        };
+        let replacement = postretro_foundation::WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.20,
+                up: -0.40,
+                forward: 0.70,
+            },
+            rotation: Default::default(),
+        };
+
+        r.set_default_weapon_placement(Some(first));
+        r.set_default_weapon_placement(Some(replacement.clone()));
+        r.clear();
+        assert_eq!(r.default_weapon_placement, Some(replacement));
+
+        r.set_default_weapon_placement(None);
+        assert_eq!(r.default_weapon_placement, None);
     }
 
     #[test]

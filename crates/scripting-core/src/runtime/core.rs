@@ -370,6 +370,7 @@ impl ScriptRuntime {
             let (
                 next_descriptors,
                 next_maps,
+                next_default_weapon_placement,
                 next_global_reactions,
                 next_global_crossings,
                 next_global_trigger_events,
@@ -399,6 +400,7 @@ impl ScriptRuntime {
                     (
                         manifest.entities.clone(),
                         manifest.maps.clone(),
+                        manifest.default_weapon_placement.clone(),
                         manifest.reactions.clone(),
                         manifest.crossings.clone(),
                         manifest.trigger_events.clone(),
@@ -428,6 +430,7 @@ impl ScriptRuntime {
                     (
                         Vec::new(),
                         Vec::new(),
+                        None,
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -586,22 +589,19 @@ impl ScriptRuntime {
                 &mut ctx.slot_table.borrow_mut(),
             );
 
-            ctx.data_registry
-                .borrow_mut()
-                .replace_entity_types(next_descriptors);
-            ctx.data_registry.borrow_mut().replace_maps(next_maps);
-            ctx.data_registry
-                .borrow_mut()
-                .replace_global_reactions(next_global_reactions);
-            ctx.data_registry
-                .borrow_mut()
-                .replace_global_crossings(next_global_crossings);
-            ctx.data_registry
-                .borrow_mut()
-                .replace_global_trigger_events(next_global_trigger_events);
-            ctx.data_registry
-                .borrow_mut()
-                .replace_global_trigger_pools(next_global_trigger_pools);
+            // One mutable registry borrow commits the staged whole snapshot, so
+            // a render frame cannot observe new descriptors without their
+            // matching mod-global weapon-placement default.
+            {
+                let mut data_registry = ctx.data_registry.borrow_mut();
+                data_registry.replace_entity_types(next_descriptors);
+                data_registry.replace_maps(next_maps);
+                data_registry.set_default_weapon_placement(next_default_weapon_placement);
+                data_registry.replace_global_reactions(next_global_reactions);
+                data_registry.replace_global_crossings(next_global_crossings);
+                data_registry.replace_global_trigger_events(next_global_trigger_events);
+                data_registry.replace_global_trigger_pools(next_global_trigger_pools);
+            }
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
 
@@ -1227,6 +1227,7 @@ mod tests {
             credit_source: None,
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,

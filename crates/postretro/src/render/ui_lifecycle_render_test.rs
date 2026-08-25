@@ -94,6 +94,7 @@ fn staged_manifest_result(
             render: Default::default(),
             movers: Default::default(),
             switching: Default::default(),
+            default_weapon_placement: None,
             entities: Vec::new(),
             maps: Vec::new(),
             reactions: Vec::new(),

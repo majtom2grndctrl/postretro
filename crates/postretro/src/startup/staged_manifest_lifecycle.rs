@@ -284,6 +284,7 @@ mod tests {
                 render,
                 movers: Default::default(),
                 switching,
+                default_weapon_placement: None,
                 entities: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),

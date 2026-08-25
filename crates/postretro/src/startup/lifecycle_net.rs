@@ -49,13 +49,13 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let descriptors = session
-            .scripting
-            .script_ctx
-            .data_registry
-            .borrow()
-            .entities
-            .clone();
+        let (descriptors, default_weapon_placement) = {
+            let registry = session.scripting.script_ctx.data_registry.borrow();
+            (
+                registry.entities.clone(),
+                registry.default_weapon_placement.clone(),
+            )
+        };
         let registry = session.scripting.script_ctx.registry.borrow();
         let Some(crate::netcode::NetEndpoint::Host {
             server,
@@ -70,7 +70,12 @@ impl App {
             let Some(pawn) = slot_pawns.pawn_for(client_id) else {
                 continue;
             };
-            let payload = crate::netcode::tuning_payload_for_pawn(&registry, pawn, &descriptors);
+            let payload = crate::netcode::tuning_payload_for_pawn(
+                &registry,
+                pawn,
+                &descriptors,
+                default_weapon_placement.as_ref(),
+            );
             crate::netcode::host_send_tuning_if_changed(
                 server,
                 last_sent_tuning,

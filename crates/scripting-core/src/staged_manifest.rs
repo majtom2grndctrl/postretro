@@ -11,14 +11,15 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
-    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_default_weapon_placement_js, drain_default_weapon_placement_lua, drain_fonts_js,
+    drain_fonts_lua, drain_frontend_js, drain_frontend_lua, drain_global_crossings_js,
+    drain_global_crossings_lua, drain_global_reactions_js, drain_global_reactions_lua,
+    drain_impact_events_js, drain_impact_events_lua, drain_maps_js, drain_maps_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
 };
 use super::error::ScriptError;
@@ -329,6 +330,7 @@ fn run_staged_manifest_build(
         render: manifest.render,
         movers: manifest.movers,
         switching: manifest.switching,
+        default_weapon_placement: manifest.default_weapon_placement,
         entities: manifest.entities,
         maps: manifest.maps,
         reactions: manifest.reactions,
@@ -561,6 +563,14 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let default_weapon_placement =
+        drain_default_weapon_placement_js(ctx, &obj, "default mod manifest export").map_err(
+            |e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `defaultWeaponPlacement` invalid: {e}"
+                ),
+            },
+        )?;
     let frontend = drain_frontend_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -631,6 +641,7 @@ fn manifest_from_js_value<'js>(
         render,
         movers,
         switching,
+        default_weapon_placement,
         entities,
         ui_trees,
         presentation_templates,
@@ -823,6 +834,15 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let default_weapon_placement = drain_default_weapon_placement_lua(
+        &table,
+        "returned mod manifest",
+    )
+    .map_err(|e| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` returned mod manifest `defaultWeaponPlacement` invalid: {e}"
+        ),
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -886,6 +906,7 @@ fn run_staged_mod_init_luau(
         render,
         movers,
         switching,
+        default_weapon_placement,
         entities,
         ui_trees,
         presentation_templates,
@@ -1756,6 +1777,43 @@ mod tests {
         )
         .expect_err("staged Luau nonfinite dwell must reject the manifest");
         assert!(error.to_string().contains("cycleCommitDwellMs"));
+    }
+
+    #[test]
+    fn staged_mod_default_weapon_placement_helper_parses_in_both_runtimes() {
+        let js = run_staged_mod_init_quickjs(
+            "globalThis.__postretroModManifest = defineMod({ name: 'Placement', id: 'placement', version: '1', defaultWeaponPlacement: defineWeaponPlacement({ positionFromCenter: { right: 0.4, up: -0.2, forward: 0.7 }, rotation: { yaw: 15 } }) });",
+            "/mod/start-script.js",
+            &QuickJsConfig::default(),
+        )
+        .expect("staged QuickJS placement helper should parse");
+
+        let dir = temp_mod_root("staged_luau_default_weapon_placement");
+        let luau = run_staged_mod_init_luau(
+            "return defineMod({ name = 'Placement', id = 'placement', version = '1', defaultWeaponPlacement = defineWeaponPlacement({ positionFromCenter = { right = 0.4, up = -0.2, forward = 0.7 }, rotation = { yaw = 15 } }) })",
+            &dir.join("start-script.luau").to_string_lossy(),
+            &dir,
+            &LuauConfig::default(),
+            None,
+        )
+        .expect("staged Luau placement helper should parse");
+
+        assert_eq!(js.default_weapon_placement, luau.default_weapon_placement);
+        let placement = js
+            .default_weapon_placement
+            .expect("the authored default must survive manifest parsing");
+        assert_eq!(placement.offset.right, 0.4);
+        assert_eq!(placement.offset.up, -0.2);
+        assert_eq!(placement.offset.forward, 0.7);
+        assert_eq!(placement.rotation.yaw, 15.0);
+
+        let invalid = run_staged_mod_init_quickjs(
+            "globalThis.__postretroModManifest = { name: 'Bad', id: 'bad', version: '1', defaultWeaponPlacement: { positionFromCenter: { right: Infinity } } };",
+            "/mod/start-script.js",
+            &QuickJsConfig::default(),
+        )
+        .expect_err("non-finite default placement must reject the manifest");
+        assert!(invalid.to_string().contains("defaultWeaponPlacement"));
     }
 
     /// Hot-reload Luau parser (`run_staged_mod_init_luau`) drains the UI fields,

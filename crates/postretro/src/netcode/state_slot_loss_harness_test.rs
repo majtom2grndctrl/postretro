@@ -155,6 +155,7 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: ammo_type.to_string(),
                 magazine: 30,

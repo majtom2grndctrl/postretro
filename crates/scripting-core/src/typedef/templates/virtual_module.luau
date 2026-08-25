@@ -131,6 +131,8 @@ export type PostretroModule = {
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
+  --- Pure identity builder for reusable first-person weapon placement data.
+  defineWeaponPlacement: typeof(defineWeaponPlacement),
   --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning a flattened, frozen schema-keyed handle.

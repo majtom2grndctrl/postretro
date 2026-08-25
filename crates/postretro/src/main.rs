@@ -1323,9 +1323,9 @@ fn followed_player_pawn(
     registry.local_player_movement_pawn()
 }
 
-/// Resolve a local first-person asset strictly through the host-local weapon
-/// ownership relationship. The descriptor is local content, not replicated
-/// presentation state; a missing/uncached model simply never enters the plan.
+/// Resolve a local first-person asset strictly through the pawn's live weapon
+/// ownership relationship. Model selection remains local descriptor content;
+/// connected-client placement is replaced with host tuning at the caller.
 fn local_viewmodel_asset<'a>(
     registry: &postretro_entities::EntityRegistry,
     local_pawn: postretro_entities::EntityId,
@@ -1334,14 +1334,17 @@ fn local_viewmodel_asset<'a>(
     postretro_entities::EntityId,
     &'a str,
     Option<WeaponPlacementDescriptor>,
+    usize,
 )> {
-    let weapon = netcode::active_wieldable_for_pawn(registry, local_pawn)?;
+    let inventory = registry.get_component::<Inventory>(local_pawn).ok()?;
+    let active_slot = inventory.active_slot;
+    let weapon = inventory.active_wieldable()?;
     let provenance = registry
         .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
         .ok()?;
     let archetype = provenance.canonical_name.as_str();
     let (viewmodel, placement) = viewmodel_asset_for_archetype(archetype, descriptors)?;
-    Some((weapon, viewmodel, placement))
+    Some((weapon, viewmodel, placement, active_slot))
 }
 
 /// Resolve optional first-person presentation from a shared weapon archetype.
@@ -3800,38 +3803,60 @@ impl ApplicationHandler for App {
                             &session.hit_zone_store,
                         );
 
-                        // The first-person model is not an entity attachment. Every
-                        // role prefers the local pawn's inventory; a connected client
-                        // without materialized local inventory safely falls back to the
-                        // replicated archetype.
+                        // The first-person model is not an entity attachment. A connected
+                        // client resolves its local asset by inventory or replicated
+                        // archetype, but always takes effective placement from host tuning.
                         let descriptors = script_ctx.data_registry.borrow();
                         if let Some(local_pawn) = followed_player_pawn(&registry) {
-                            let viewmodel =
-                                local_viewmodel_asset(&registry, local_pawn, &descriptors.entities)
-                                    .map(|(weapon, model, placement)| {
-                                        (weapon.to_raw(), model, placement)
-                                    })
-                                    .or_else(|| {
-                                        session.net_endpoint.as_ref().and_then(|endpoint| {
-                                            match endpoint {
-                                                netcode::NetEndpoint::Client {
-                                                    replication,
-                                                    ..
-                                                } => replication
-                                                    .local_active_weapon_archetype()
-                                                    .and_then(|archetype| {
-                                                        viewmodel_asset_for_archetype(
-                                                            archetype,
-                                                            &descriptors.entities,
-                                                        )
-                                                    })
-                                                    .map(|(model, placement)| {
-                                                        (local_pawn.to_raw(), model, placement)
-                                                    }),
-                                                netcode::NetEndpoint::Host { .. } => None,
-                                            }
-                                        })
-                                    });
+                            let viewmodel = match session.net_endpoint.as_ref() {
+                                Some(netcode::NetEndpoint::Client {
+                                    replication,
+                                    tuning,
+                                    ..
+                                }) => local_viewmodel_asset(
+                                    &registry,
+                                    local_pawn,
+                                    &descriptors.entities,
+                                )
+                                .and_then(|(weapon, model, _, active_slot)| {
+                                    Some((
+                                        weapon.to_raw(),
+                                        model,
+                                        tuning.as_deref()?.placement_for_slot(active_slot)?.clone(),
+                                    ))
+                                })
+                                .or_else(|| {
+                                    let archetype = replication.local_active_weapon_archetype()?;
+                                    let (model, _) = viewmodel_asset_for_archetype(
+                                        archetype,
+                                        &descriptors.entities,
+                                    )?;
+                                    let placement = tuning
+                                        .as_deref()?
+                                        .placement_for_archetype(archetype)?
+                                        .clone();
+                                    Some((local_pawn.to_raw(), model, placement))
+                                }),
+                                _ => local_viewmodel_asset(
+                                    &registry,
+                                    local_pawn,
+                                    &descriptors.entities,
+                                )
+                                .map(
+                                    |(weapon, model, placement, _)| {
+                                        (
+                                            weapon.to_raw(),
+                                            model,
+                                            resolve_weapon_placement(
+                                                descriptors.default_weapon_placement.as_ref(),
+                                                None,
+                                                placement.as_ref(),
+                                                None,
+                                            ),
+                                        )
+                                    },
+                                ),
+                            };
                             if let Some((weapon_seed, model, placement)) = viewmodel {
                                 session.mesh_render.collect_viewmodel(
                                     model,
@@ -3842,12 +3867,7 @@ impl ApplicationHandler for App {
                                         vf_roll,
                                         vf_yaw_offset,
                                         vf_pitch_offset,
-                                        &resolve_weapon_placement(
-                                            descriptors.default_weapon_placement.as_ref(),
-                                            None,
-                                            placement.as_ref(),
-                                            None,
-                                        ),
+                                        &placement,
                                     ),
                                     weapon_seed,
                                 );
@@ -5881,10 +5901,14 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
         );
-        let net_descriptors: Vec<postretro_entities::EntityTypeDescriptor> = if is_networked {
-            script_ctx.data_registry.borrow().entities.clone()
+        let (net_descriptors, net_default_weapon_placement) = if is_networked {
+            let registry = script_ctx.data_registry.borrow();
+            (
+                registry.entities.clone(),
+                registry.default_weapon_placement.clone(),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         // Apply reliable lifecycle controls before draining Snapshot. A same-drain
         // hold for epoch N followed by the marker for N+1 must clear N's engine
@@ -6262,6 +6286,7 @@ impl App {
                                     &registry,
                                     pawn,
                                     &net_descriptors,
+                                    net_default_weapon_placement.as_ref(),
                                 );
                                 netcode::host_send_tuning_if_changed(
                                     server,
@@ -6311,8 +6336,12 @@ impl App {
                         let Some(pawn) = slot_pawns.pawn_for(client_id) else {
                             continue;
                         };
-                        let payload =
-                            netcode::tuning_payload_for_pawn(&registry, pawn, &net_descriptors);
+                        let payload = netcode::tuning_payload_for_pawn(
+                            &registry,
+                            pawn,
+                            &net_descriptors,
+                            net_default_weapon_placement.as_ref(),
+                        );
                         netcode::host_send_tuning_if_changed(
                             server,
                             last_sent_tuning,
@@ -8588,7 +8617,7 @@ mod tests {
     }
 
     #[test]
-    fn viewmodel_paths_resolve_live_mod_default_and_shared_weapon_placement() {
+    fn local_viewmodel_paths_resolve_live_mod_default_and_weapon_placement() {
         let default_a = placement(0.15, -0.25, 0.55, 5.0);
         let default_b = placement(0.45, -0.35, 0.75, -5.0);
         let shared_weapon_placement = placement(0.25, -0.15, 0.65, 12.0);
@@ -8603,25 +8632,18 @@ mod tests {
             Some(shared_weapon_placement.clone()),
         )];
 
-        let client_raw = viewmodel_asset_for_archetype("reference_pistol", &unauthored)
-            .expect("client archetype lookup must find the viewmodel")
+        let local_raw = viewmodel_asset_for_archetype("reference_pistol", &unauthored)
+            .expect("local archetype lookup must find the viewmodel")
             .1;
         assert_eq!(
-            resolve_weapon_placement(Some(&default_a), None, client_raw.as_ref(), None),
+            resolve_weapon_placement(Some(&default_a), None, local_raw.as_ref(), None),
             default_a,
             "a mod default applies when the archetype omits placement"
         );
 
         let host_raw = viewmodel_asset_for_archetype("reference_pistol", &authored)
-            .expect("host archetype lookup must find the viewmodel")
+            .expect("local archetype lookup must find the viewmodel")
             .1;
-        let client_raw = viewmodel_asset_for_archetype("reference_pistol", &authored)
-            .expect("client archetype lookup must find the viewmodel")
-            .1;
-        assert_eq!(
-            host_raw, client_raw,
-            "host/client read one shared descriptor value"
-        );
         assert_eq!(
             resolve_weapon_placement(Some(&default_a), None, host_raw.as_ref(), None),
             shared_weapon_placement,
@@ -8693,6 +8715,7 @@ mod tests {
             .expect("host inventory lookup must find the viewmodel");
         assert_eq!(local.0, weapon);
         assert_eq!(local.1, "models/pistol/view.gltf");
+        assert_eq!(local.3, 0);
         assert_eq!(
             local.2,
             Some(WeaponPlacementDescriptor {

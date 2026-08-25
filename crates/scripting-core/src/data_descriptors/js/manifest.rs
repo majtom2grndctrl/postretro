@@ -143,7 +143,7 @@ pub fn drain_default_weapon_placement_js<'js>(
     if raw.is_null() || raw.is_undefined() {
         return Ok(None);
     }
-    if !raw.is_object() || raw.is_array() {
+    if raw.type_of() != rquickjs::Type::Object {
         return Err(DescriptorError::InvalidShape {
             reason: format!("{scope}: `defaultWeaponPlacement` must be an object"),
         });

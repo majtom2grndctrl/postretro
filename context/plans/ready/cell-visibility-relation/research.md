@@ -157,8 +157,10 @@ portal-graph foundation: the gate is portal-**reachability** (connected componen
 
 The cost accepted: **storage, not bake time.** Reachability is looser than sightline, so in a
 connected level most pairs are perceivable and carry graded values — the side-table can approach N².
-v1 bounds it with a generous, structural coupling cap (drop pairs weaker than any plausible consumer
-cares about); the exact profile is unmeasurable until real maps exist. The sightline tightening is
+v1 bounds it with two structural caps — a coupling distance cap (coarse path-length pre-filter) and a
+per-cell fanout cap `K` keeping each cell's `K` nearest partners (the hard `<= N·K` count bound, since
+the distance cap bounds path length, not count); the exact magnitudes are unmeasurable until real maps
+exist. The sightline tightening is
 retained as a deferred additive axis — restoring the substrate doc's original placement of it as a
 later refinement, not a v1 requirement.
 
@@ -224,11 +226,14 @@ The real cost axis is **storage, not time.** Reachability is a looser gate than 
 connected level most pairs are perceivable and carry graded values — the `distance`+`aperture`
 side-table approaches N² (for 3,339 cells, ~5.6M off-diagonal pairs × a few bytes ≈ tens of MB
 uncapped). The gate itself is cheap (`u32[cell_count]` component ids, `O(V)`); only the graded table
-grows. Guardrail: a **coupling `distance` cap** — a generous, structural threshold (drop pairs weaker
-than any plausible consumer's range), determinism-preserving, that omits beyond-cap pairs from the
-side-table while keeping `perceivable` true. Analogous in role to the earlier design's depth cap, but
-bounding storage rather than bake recursion. On small fixtures it is left effectively uncapped so
-tests see the full reachable set. The right cap magnitude is unmeasurable until real maps exist.
+grows. Guardrail: **two structural caps**, both determinism-preserving. A **coupling `distance` cap**
+(drop pairs whose path length exceeds a generous threshold) is a coarse pre-filter — but it bounds
+path *length*, not pair *count*: a spatially compact, densely-connected component keeps ~N² pairs
+within any distance cap, so the distance cap alone does not stop the blow-up. The hard count bound is a
+**per-cell fanout cap `K`**: keep only each cell's `K` nearest coupled partners, storing a pair iff
+either endpoint keeps it (union — symmetric), giving `<= N·K` entries regardless of density. On small
+fixtures both are left effectively uncapped (high distance cap, `K >= cell_count`) so tests see the
+full reachable set. The right magnitudes are unmeasurable until real maps exist.
 
 ## Owner-approved divergences from `context/research/cell-visibility-substrate.md`
 

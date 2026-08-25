@@ -556,8 +556,9 @@ mod tests {
         );
 
         let json = super::super::to_deterministic_json(&dump).unwrap();
-        assert!(json.contains("\"distance\":50"));
-        assert!(json.contains("\"aperture\":5"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["coupled_pairs"][0]["distance"], serde_json::json!(50));
+        assert_eq!(value["coupled_pairs"][0]["aperture"], serde_json::json!(5));
 
         let reversed_json = super::super::to_deterministic_json(&loaded_cell_visibility_dump(
             &[0, 0, 1],

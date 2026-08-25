@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use super::super::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, PresentationOverlay,
     PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerPoolDescriptor,
+    WeaponPlacementDescriptor,
 };
 use super::super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::super::runtime::{Frontend, ModMapEntry, ModMoverDefaults, ModRenderProfile};
@@ -46,6 +47,7 @@ pub struct StagedManifest {
     pub render: ModRenderProfile,
     pub movers: ModMoverDefaults,
     pub switching: SwitchingDescriptor,
+    pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     pub entities: Vec<EntityTypeDescriptor>,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,

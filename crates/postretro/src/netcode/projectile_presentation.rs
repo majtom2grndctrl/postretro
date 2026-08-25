@@ -644,6 +644,7 @@ mod tests {
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,
+                placement: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,

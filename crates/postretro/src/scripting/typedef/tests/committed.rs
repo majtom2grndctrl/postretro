@@ -465,9 +465,13 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && ts.contains("blockDuringReload: boolean;")
             && ts.contains("switching?: SwitchingDescriptor;")
             && ts.contains("blockDuringReload?: boolean;")
+            && ts.contains("defaultWeaponPlacement?: WeaponPlacementDescriptor;")
             && ts.contains("export function defineMod(config: ModManifestInput): ModManifest;")
             && ts.contains(
                 "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
+            )
+            && ts.contains(
+                "export function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor;"
             ),
         "ts output missing mod map catalog helper/type coverage:\n{ts}"
     );
@@ -490,12 +494,17 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("blockDuringReload: boolean,")
             && luau.contains("switching: SwitchingDescriptor?")
             && luau.contains("blockDuringReload: boolean?")
+            && luau.contains("defaultWeaponPlacement: WeaponPlacementDescriptor?")
             && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest")
             && luau.contains(
                 "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
             )
             && luau.contains("defineMod: typeof(defineMod),")
-            && luau.contains("defineMapCatalog: typeof(defineMapCatalog),"),
+            && luau.contains("defineMapCatalog: typeof(defineMapCatalog),")
+            && luau.contains(
+                "declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor"
+            )
+            && luau.contains("defineWeaponPlacement: typeof(defineWeaponPlacement),"),
         "luau output missing mod map catalog helper/type coverage:\n{luau}"
     );
 }

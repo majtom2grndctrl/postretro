@@ -410,6 +410,26 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("ammo", "AmmoResource", "Finite magazine-and-reserve ammunition.")
         .finish();
     registry
+        .register_type("PlacementOffset")
+        .doc("First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0 within an authored placement; omitting the containing placement leaves that resolution tier absent.")
+        .field("right?", "f32", "Metres right from screen center, mapped to camera-space +X. Defaults to 0; use a finite number.")
+        .field("up?", "f32", "Metres up from screen center, mapped to camera-space +Y. Defaults to 0; use a finite number.")
+        .field("forward?", "f32", "Metres forward toward the aim, mapped to camera-space -Z. Defaults to 0; use a finite number.")
+        .finish();
+    registry
+        .register_type("PlacementRotation")
+        .doc("First-person weapon orientation in degrees about the camera origin. Omitted fields default to zero rotation.")
+        .field("yaw?", "f32", "Yaw in degrees around camera up. Defaults to 0; use a finite number.")
+        .field("pitch?", "f32", "Pitch in degrees around camera right. Defaults to 0; use a finite number.")
+        .field("roll?", "f32", "Roll in degrees around camera forward. Defaults to 0; use a finite number.")
+        .finish();
+    registry
+        .register_type("WeaponPlacementDescriptor")
+        .doc("Authored first-person weapon placement. Position is in metres from screen center and rotation is in degrees. Resolution uses whole-value fallback: per-instance (future) > per-weapon > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement.")
+        .field("positionFromCenter?", "PlacementOffset", "Optional camera-relative position in metres: right/up/forward map to +X/+Y/-Z. Omit fields for 0.")
+        .field("rotation?", "PlacementRotation", "Optional camera-relative rotation in degrees. Omit fields for zero rotation.")
+        .finish();
+    registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
         .field("damage", "f32", "Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.")
@@ -423,6 +443,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
+        .field("placement?", "WeaponPlacementDescriptor", "Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .field("lowerMs?", "u32", "Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick.")
         .field("raiseMs?", "u32", "Raising duration in milliseconds. Optional; defaults to 0.")

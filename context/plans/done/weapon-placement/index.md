@@ -25,8 +25,10 @@ work. An unauthored weapon renders exactly as today.
   in v1 — see Out of scope.
 - Replacing the hardcoded `BASE_OFFSET` at the viewmodel render seam with the
   resolved placement; default placement equals today's constant (regression pin).
-- Placement carried as **weapon-archetype content**, shared on every peer by
-  mod-parity (no new wire), so the later authoritative fire origin can read it.
+- Placement carried as **weapon-archetype content**. The host sends each occupied
+  wieldable's resolved effective placement in the existing opaque tuning payload; no
+  fixed transport wire field is added. The later authoritative fire origin reads the
+  same host-owned value.
 - SDK types, descriptor validation (finite transform components), hover docs.
 
 ### Out of scope
@@ -86,8 +88,8 @@ heavy MG) all need a continuous, per-weapon, reusable placement.
 **Placement.** Three axes. (1) engine-floor vs mod-data: *where* a weapon sits is
 per-game/per-weapon taste → mod-data (a descriptor, seeded to today's default);
 the *composition* into the view transform is engine floor. (2) content vs
-client-local: placement is authored content on the weapon archetype (shared by
-mod-parity), not a client-local render tweak — required so the host can reproduce
+client-local: placement is authored content on the weapon archetype (replicated as
+host-resolved tuning), not a client-local render tweak — required so the host can reproduce
 the shooter's authoritative fire origin (the later muzzle spec). The third-person
 mount does *not* read placement (it is socket-posed; Invariants, #4); the
 content-ness rests on authority alone. (3) placement vs
@@ -157,10 +159,11 @@ placement is fixed in the prop.
 - [ ] Two weapons referencing the same placement handle resolve to identical
       placements (DRY: one authored source, one resolved result).
 - [ ] The resolved placement is present and identical on host and on every client
-      for a given weapon archetype, with no new wire field (shared by mod-parity).
-      (Verified as a same-lookup proxy — both render-seam paths key the same
-      `descriptors` — plus a review/grep gate that no wire field is added; there is no
-      two-peer harness at this layer.)
+      for a given weapon archetype, with no fixed transport wire field. The host sends
+      the effective placement on initial participation and replaces it after live
+      per-weapon or mod-default edits. Connected clients never fall back to local
+      placement content. (Verified by tuning-payload resolution, codec, and reload
+      change-detection tests plus a review/grep gate that no fixed wire type changes.)
 - [ ] A shooter's authored FP placement does **not** move its third-person avatar
       mount: observers see the weapon posed by the avatar hand socket exactly as
       today, whatever the shooter's FP placement (placement is FP-only). (Review gate:
@@ -366,10 +369,13 @@ passes identity rotation and `placement_offset = BASE_OFFSET`, folding through t
 exact same arithmetic as today so the transform is **byte-identical** (Invariant 1) —
 assert transform-equality, not a render golden.
 
-`WeaponDescriptor` is not in any hashed mod-compatibility digest: `mod_compatibility_digest`
-(`crates/postretro/src/mod_digest.rs`) hashes only trigger-events, trigger-pools, and
-crossings, holding entity descriptors outside by design — so `placement` adds no digest
-entry and no exclusion is needed (Invariant 2).
+`WeaponDescriptor` remains outside the mod compatibility digest because its small
+host-resolvable values use the existing opaque tuning payload. Each occupied wieldable
+row carries the effective placement after `mod default < per-weapon` resolution. The
+payload is sent on initial participation and rebuilt every host poll, so live descriptor
+or default changes use the existing send-if-changed path. Connected-client rendering
+uses that value without a local fallback. This changes the engine-owned payload epoch,
+not the fixed transport wire layout (Invariant 2).
 
 Tests: absent placement ⇒ `BASE_OFFSET` composition byte-identical, run with **no**
 `defaultWeaponPlacement` present (AC 1); an inline placement moves the viewmodel, and
@@ -431,8 +437,10 @@ per-weapon field. Register the manifest surface for SDK generation and regenerat
 the typedefs. Tests: the mod default applies to a weapon that omits `placement`
 (AC 4); a present per-weapon placement overrides the mod default whole-value (AC 4);
 two weapons referencing the same handle resolve identically (AC 5); an archetype's
-resolved placement is identical whether resolved on the host path or a client
-archetype path (AC 6, same content both peers); and — because Task 2 rewires the seam
+effective placement enters its host-resolved wieldable tuning row, connected-client
+rendering reads that row without local fallback, and per-weapon or mod-default edits
+change the payload sent by the existing live-retune path (AC 6); and — because Task 2
+rewires the seam
 to always read `resolve_weapon_placement` — re-assert AC 1 through the resolver path:
 `resolve_weapon_placement(None, None, None, None)` composes to the `BASE_OFFSET`
 transform, byte-identical (Task 1's AC 1 test covered the now-replaced const-passthrough
@@ -472,7 +480,7 @@ Default (absent everything) = today's `BASE_OFFSET`, i.e.
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | 1. A weapon with no placement at any tier (no mod default, no per-weapon) composes at exactly today's `BASE_OFFSET`. | Task 1 (`BASE_OFFSET`-const passthrough), preserved by Task 2 (the resolver's absent-everything default converts to the `BASE_OFFSET` transform) | Threatened if the default differs, the resolver's absent-everything default drifts from `BASE_OFFSET`, resolution perturbs the transform when nothing is authored, or a present `defaultWeaponPlacement` masks the AC 1 regression pin. | AC 1 |
-| 2. Placement adds no wire field and no digest entry — it is descriptor content shared by mod-parity, identical on every peer. | Task 1 (field is presentation content; `WeaponDescriptor` is outside the digest — see Task 1), Task 2 (mod default is manifest content) | Threatened if a future digest starts hashing entity descriptors without excluding `placement`, or if any resolution reads client-local (view-feel) state. | AC 6 |
+| 2. Placement adds no fixed transport wire field. Host-resolved effective placement rides each occupied wieldable's opaque tuning row; connected clients never resolve it locally. | Task 1 (per-weapon field and render seam), Task 2 (mod default and resolver), parity repair (tuning payload) | Threatened if placement leaves tuning, live tuning change detection stops rebuilding, or a connected-client fallback reads local descriptor/view-feel state. | AC 6 |
 | 3. Resolution is whole-value fallback, precedence `mod default < character < per-weapon < per-instance`: the first present tier wins the entire placement; absent everything ⇒ `BASE_OFFSET`. Partial inheritance is authored via object spread, not an engine merge. v1 builds `mod default < per-weapon`; character and per-instance are absent (`None`) parameters. | Task 2 (`resolve_weapon_placement`) | Threatened if the order is wrong, a present per-weapon placement fails to override the mod default, or the two future tiers are foreclosed rather than left as no-op parameters. | AC 4 |
 | 4. Placement is first-person only; the third-person avatar mount is unchanged. | Task 1 (render seam touches only the viewmodel transform) | Threatened if any placement value is threaded into the `hand_r` attachment (reopens the E21 offset-in-data foreclosure). | AC 7 |
 
@@ -495,4 +503,3 @@ P4–P6.
 The downstream authority-sampling pins (host reproduces the steady placement at tick
 rate; render-rate sway excluded) belong to `weapon-muzzle-origin` — see §Out of scope,
 fire origin.
-

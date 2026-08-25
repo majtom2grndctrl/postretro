@@ -445,6 +445,7 @@ mod tests {
                 "defineEntity",
                 "defineMod",
                 "defineMapCatalog",
+                "defineWeaponPlacement",
                 "defineTriggerPool",
                 "defineStore",
                 "read",

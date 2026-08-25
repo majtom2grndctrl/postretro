@@ -147,7 +147,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
 };
-use postretro_foundation::{NavAgentParams, PlayerMovementComponent};
+use postretro_foundation::{NavAgentParams, PlayerMovementComponent, WeaponPlacementDescriptor};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -1478,6 +1478,7 @@ pub(crate) fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
     descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
 ) -> TuningPayload {
     let class = registry
         .get_component::<DescriptorProvenance>(pawn)
@@ -1500,8 +1501,21 @@ pub(crate) fn tuning_payload_for_pawn(
                     .canonical_name
                     .clone();
                 let weapon = registry.get_component::<WeaponComponent>(weapon_id).ok()?;
+                let authored_placement = descriptors
+                    .iter()
+                    .find(|descriptor| {
+                        descriptor.canonical_name.as_deref() == Some(canonical_name.as_str())
+                    })
+                    .and_then(|descriptor| descriptor.weapon.as_ref())
+                    .and_then(|weapon| weapon.placement.as_ref());
                 Some(WieldableTuningPayload {
                     canonical_name,
+                    placement: crate::resolve_weapon_placement(
+                        default_weapon_placement,
+                        None,
+                        authored_placement,
+                        None,
+                    ),
                     range: weapon.range,
                     cooldown_ms: weapon.cooldown_ms,
                     pellet_count: weapon.pellet_count,
@@ -2507,6 +2521,7 @@ mod tests {
         let mut wieldables = std::array::from_fn(|_| None);
         wieldables[0] = Some(WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
+            placement: WeaponPlacementDescriptor::default(),
             range: 12.0,
             cooldown_ms: 90.0,
             pellet_count: 1,
@@ -2559,7 +2574,7 @@ mod tests {
                 loadout: vec!["new_slot_a".to_string(), "new_slot_b".to_string()],
             },
         );
-        let payload = tuning_payload_for_pawn(&registry, pawn, &[changed_player]);
+        let payload = tuning_payload_for_pawn(&registry, pawn, &[changed_player], None);
 
         assert!(payload.movement.is_some());
         assert!(
@@ -2575,6 +2590,104 @@ mod tests {
         assert_eq!(slot.fire_mode, FireMode::Auto);
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
+    }
+
+    // Regression: connected clients resolved first-person placement from their
+    // own manifest while the rest of their wieldable tuning came from the host.
+    #[test]
+    fn tuning_payload_tracks_effective_weapon_placement_across_live_defaults() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon_id = registry.spawn(Transform::default());
+        registry
+            .set_component(weapon_id, test_weapon(10.0, 96.0))
+            .unwrap();
+        registry
+            .set_component(
+                weapon_id,
+                DescriptorProvenance {
+                    canonical_name: "live_ion_rifle".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(weapon_id);
+        registry.set_component(pawn, inventory).unwrap();
+
+        let default_a = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.3,
+                up: -0.2,
+                forward: 0.6,
+            },
+            rotation: postretro_foundation::PlacementRotation::default(),
+        };
+        let default_b = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.4,
+                ..default_a.offset.clone()
+            },
+            rotation: default_a.rotation.clone(),
+        };
+        let before = tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_a));
+        let after = tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_b));
+        assert_eq!(before.wieldables[0].as_ref().unwrap().placement, default_a);
+        assert_eq!(after.wieldables[0].as_ref().unwrap().placement, default_b);
+        assert_ne!(
+            before, after,
+            "host change detection must publish a new payload"
+        );
+
+        let authored = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.1,
+                up: 0.2,
+                forward: 0.7,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 5.0,
+                pitch: 6.0,
+                roll: 7.0,
+            },
+        };
+        let descriptor = EntityTypeDescriptor {
+            canonical_name: Some("live_ion_rifle".to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
+                range: 96.0,
+                cooldown_ms: 100.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+                projectile: None,
+                credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
+                placement: Some(authored.clone()),
+                resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
+            }),
+            touchable: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        };
+        let overridden = tuning_payload_for_pawn(&registry, pawn, &[descriptor], Some(&default_b));
+        assert_eq!(
+            overridden.wieldables[0].as_ref().unwrap().placement,
+            authored,
+            "per-weapon placement wholly overrides the mod default in host tuning"
+        );
     }
 
     // Regression: staged descriptor refresh updated the live host component but the
@@ -2609,7 +2722,7 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory.clone()).unwrap();
 
-        let before = tuning_payload_for_pawn(&registry, pawn, &[]);
+        let before = tuning_payload_for_pawn(&registry, pawn, &[], None);
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
             damage: 14.0,
@@ -2623,6 +2736,7 @@ mod tests {
             credit_source: Some("weapon.test.retuned".to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 45,
             raise_ms: 70,
@@ -2635,7 +2749,7 @@ mod tests {
         live.refresh_from_descriptor(&refreshed);
         registry.set_component(weapon_id, live).unwrap();
 
-        let after = tuning_payload_for_pawn(&registry, pawn, &[]);
+        let after = tuning_payload_for_pawn(&registry, pawn, &[], None);
 
         assert_ne!(last_sent.get(&41), Some(&after));
         last_sent.insert(41, after.clone());
@@ -2819,6 +2933,7 @@ mod tests {
             credit_source: Some("weapon.test.net".to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -3127,6 +3242,7 @@ mod tests {
                 credit_source: None,
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
+                placement: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,

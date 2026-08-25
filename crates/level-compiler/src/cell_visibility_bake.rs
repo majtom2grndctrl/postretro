@@ -17,6 +17,10 @@ use rayon::{ThreadPoolBuilder, prelude::*};
 
 use crate::{bake_control::BakeControl, partition::BspTree, portals::Portal};
 
+mod metrics;
+
+use metrics::{fixed_point_value, portal_metrics};
+
 /// Bake the conservative reachability gate and its bounded graded horizon.
 pub fn cell_visibility_bake(
     tree: &BspTree,
@@ -159,6 +163,13 @@ fn assemble_coupled_pairs(
             })
             .collect::<Vec<_>>()
     });
+    let clamped_distances = rows.iter().any(|row| row.clamped_distance);
+    let clamped_apertures = rows.iter().any(|row| row.clamped_aperture);
+    if clamped_distances || clamped_apertures {
+        log::warn!(
+            "[Compiler] CellVisibility fixed-point value(s) clamped to u32::MAX (distance: {clamped_distances}, aperture: {clamped_apertures})"
+        );
+    }
     collapse_directed_candidates(rows)
 }
 
@@ -170,6 +181,13 @@ struct DirectedCandidate {
     aperture: u32,
 }
 
+#[derive(Default)]
+struct SourceCandidates {
+    candidates: Vec<DirectedCandidate>,
+    clamped_distance: bool,
+    clamped_aperture: bool,
+}
+
 /// The resolved fixed-point distance is intentionally the single source for
 /// rank, cap comparison, and stored value (not the pre-round float).
 fn source_top_k(
@@ -179,19 +197,21 @@ fn source_top_k(
     component_ids: &[u32],
     cap: u32,
     fanout: usize,
-) -> Vec<DirectedCandidate> {
+) -> SourceCandidates {
     let Some(source_node) = graph.hub_node[source] else {
         // Keep rows aligned to true CellIds; faceless/solid/isolated sources
         // have an empty top-K row rather than compacting the source list.
-        return Vec::new();
+        return SourceCandidates::default();
     };
     if fanout == 0 {
-        return Vec::new();
+        return SourceCandidates::default();
     }
     let distances = dijkstra(&graph.adjacency, source_node);
     let apertures = widest_paths_from(aperture_tree, source);
     let source_id = u32::try_from(source).expect("validated CellVisibility CellId");
-    let mut kept = Vec::with_capacity(fanout.min(64));
+    let mut candidates = Vec::with_capacity(fanout.min(64));
+    let mut clamped_distance = false;
+    let mut clamped_aperture = false;
 
     for target in 0..component_ids.len() {
         if source == target || component_ids[source] != component_ids[target] {
@@ -210,30 +230,31 @@ fn source_top_k(
             debug_assert!(false, "metric-connected cells need an aperture path");
             continue;
         };
-        let distance = fixed_point_value(
-            distance,
-            CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE,
-            CouplingAxis::Distance,
-        );
+        let (distance, did_clamp_distance) =
+            fixed_point_value(distance, CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE);
+        clamped_distance |= did_clamp_distance;
         if distance > cap {
             continue;
         }
+        let (aperture, did_clamp_aperture) =
+            fixed_point_value(aperture, CELL_VISIBILITY_APERTURE_FIXED_POINT_SCALE);
+        clamped_aperture |= did_clamp_aperture;
         insert_top_k(
-            &mut kept,
+            &mut candidates,
             DirectedCandidate {
                 source: source_id,
                 target: u32::try_from(target).expect("validated CellVisibility CellId"),
                 distance,
-                aperture: fixed_point_value(
-                    aperture,
-                    CELL_VISIBILITY_APERTURE_FIXED_POINT_SCALE,
-                    CouplingAxis::Aperture,
-                ),
+                aperture,
             },
             fanout,
         );
     }
-    kept
+    SourceCandidates {
+        candidates,
+        clamped_distance,
+        clamped_aperture,
+    }
 }
 
 fn insert_top_k(kept: &mut Vec<DirectedCandidate>, candidate: DirectedCandidate, fanout: usize) {
@@ -252,11 +273,11 @@ fn insert_top_k(kept: &mut Vec<DirectedCandidate>, candidate: DirectedCandidate,
 /// A mutually kept pair occurs twice. Sorting by canonical endpoints and then
 /// source makes min-to-max the deterministic retained direction.
 fn collapse_directed_candidates(
-    rows: Vec<Vec<DirectedCandidate>>,
+    rows: Vec<SourceCandidates>,
 ) -> anyhow::Result<Vec<CoupledPairRecord>> {
     let directed_count = rows.iter().try_fold(0usize, |total, row| {
         total
-            .checked_add(row.len())
+            .checked_add(row.candidates.len())
             .ok_or_else(|| anyhow::anyhow!("CellVisibility directed pair count overflow"))
     })?;
     u32::try_from(directed_count).map_err(|_| {
@@ -273,7 +294,7 @@ fn collapse_directed_candidates(
             )
         })?;
     for row in rows {
-        directed.extend(row);
+        directed.extend(row.candidates);
     }
     directed.sort_unstable_by(|first, second| {
         (
@@ -541,95 +562,6 @@ impl UnionFind {
     }
 }
 
-#[derive(Clone, Copy)]
-struct PortalMetrics {
-    centroid: Option<DVec3>,
-    minimum_width: f64,
-}
-
-fn portal_metrics(vertices: &[DVec3]) -> PortalMetrics {
-    if vertices.len() < 3 || vertices.iter().any(|vertex| !vertex.is_finite()) {
-        return PortalMetrics {
-            centroid: None,
-            minimum_width: 0.0,
-        };
-    }
-    let first = vertices[0];
-    let mut normal = DVec3::ZERO;
-    let mut weighted_centroid = DVec3::ZERO;
-    let mut total_area = 0.0;
-    for index in 1..vertices.len() - 1 {
-        let second = vertices[index];
-        let third = vertices[index + 1];
-        let cross = (second - first).cross(third - first);
-        let area = cross.length() * 0.5;
-        normal += cross;
-        weighted_centroid += (first + second + third) * (area / 3.0);
-        total_area += area;
-    }
-    if !total_area.is_finite() || total_area <= 0.0 || normal.length_squared() <= 0.0 {
-        return PortalMetrics {
-            centroid: None,
-            minimum_width: 0.0,
-        };
-    }
-    let centroid = weighted_centroid / total_area;
-    let normal = normal.normalize();
-    let mut minimum_width = f64::INFINITY;
-    for index in 0..vertices.len() {
-        let edge = vertices[(index + 1) % vertices.len()] - vertices[index];
-        if edge.length_squared() <= 0.0 {
-            continue;
-        }
-        let in_plane_normal = normal.cross(edge).normalize();
-        let (minimum, maximum) = vertices.iter().fold(
-            (f64::INFINITY, f64::NEG_INFINITY),
-            |(minimum, maximum), vertex| {
-                let projection = vertex.dot(in_plane_normal);
-                (minimum.min(projection), maximum.max(projection))
-            },
-        );
-        minimum_width = minimum_width.min(maximum - minimum);
-    }
-    PortalMetrics {
-        centroid: centroid.is_finite().then_some(centroid),
-        minimum_width: minimum_width
-            .is_finite()
-            .then_some(minimum_width)
-            .unwrap_or(0.0),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CouplingAxis {
-    Distance,
-    Aperture,
-}
-
-impl CouplingAxis {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Distance => "distance",
-            Self::Aperture => "aperture",
-        }
-    }
-}
-
-fn fixed_point_value(value: f64, scale: u32, axis: CouplingAxis) -> u32 {
-    let scaled = value * f64::from(scale);
-    if !scaled.is_finite() || scaled > f64::from(u32::MAX) {
-        log::warn!(
-            "[Compiler] CellVisibility {} exceeds the u32 fixed-point range; clamping to u32::MAX",
-            axis.label()
-        );
-        return u32::MAX;
-    }
-    if scaled <= 0.0 {
-        return 0;
-    }
-    scaled.round() as u32
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -831,6 +763,7 @@ mod tests {
                     CELL_VISIBILITY_DISTANCE_CAP,
                     1
                 )
+                .candidates
                 .len()
                     <= 1
             );
@@ -879,18 +812,24 @@ mod tests {
     #[test]
     fn sort_then_collapse_keeps_one_min_to_max_candidate() {
         let pairs = collapse_directed_candidates(vec![
-            vec![DirectedCandidate {
-                source: 5,
-                target: 2,
-                distance: 88,
-                aperture: 7,
-            }],
-            vec![DirectedCandidate {
-                source: 2,
-                target: 5,
-                distance: 77,
-                aperture: 7,
-            }],
+            SourceCandidates {
+                candidates: vec![DirectedCandidate {
+                    source: 5,
+                    target: 2,
+                    distance: 88,
+                    aperture: 7,
+                }],
+                ..SourceCandidates::default()
+            },
+            SourceCandidates {
+                candidates: vec![DirectedCandidate {
+                    source: 2,
+                    target: 5,
+                    distance: 77,
+                    aperture: 7,
+                }],
+                ..SourceCandidates::default()
+            },
         ])
         .unwrap();
         assert_eq!(
@@ -1055,20 +994,23 @@ mod tests {
 
     #[test]
     fn fixed_point_overflow_clamps_and_logs_a_warning() {
-        let capture = LogCapture::start();
         let overflow =
             f64::from(u32::MAX) / f64::from(CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE) + 1.0;
         assert_eq!(
-            fixed_point_value(
-                overflow,
-                CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE,
-                CouplingAxis::Distance
-            ),
-            u32::MAX
+            fixed_point_value(overflow, CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE),
+            (u32::MAX, true)
         );
+        let tree = tree(
+            &[DVec3::ZERO, DVec3::new(10_000_000.0, 0.0, 0.0)],
+            &[false, false],
+        );
+        let portals = vec![square_portal(0, 1, DVec3::new(5_000_000.0, 0.0, 0.0), 1.0)];
+        let progress = StageProgress::indeterminate();
+        let capture = LogCapture::start();
+        cell_visibility_bake(&tree, &portals, &test_control(&progress, 1)).unwrap();
         capture.assert_logged_once(
             Level::Warn,
-            "[Compiler] CellVisibility distance exceeds the u32 fixed-point range",
+            "[Compiler] CellVisibility fixed-point value(s) clamped to u32::MAX",
         );
     }
 }

@@ -415,8 +415,16 @@ fn run_after_parsing(
     let stage_start = begin_stage(reporter.as_ref(), StageId::CellVisibility);
     // This is deliberately an all-cells pass: solid and zero-portal leaves
     // remain valid CellIds as singleton components instead of being elided.
-    let cell_visibility_bytes =
-        cell_visibility_bake::cell_visibility_bake(&result.tree, &generated_portals)?.to_bytes();
+    let cell_visibility_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::CellVisibility, cell_visibility_progress.clone());
+    let cell_visibility_control =
+        BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
+    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake(
+        &result.tree,
+        &generated_portals,
+        &cell_visibility_control,
+    )?
+    .to_bytes()?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

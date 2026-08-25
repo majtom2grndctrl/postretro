@@ -1818,7 +1818,13 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         SectionId::CellVisibility as u32,
     )? {
         Some(data) => {
-            let section = CellVisibilitySection::from_bytes(&data, cells.len() as u32)
+            let expected_cell_count = u32::try_from(cells.len()).map_err(|_| {
+                section_validation(
+                    "CellVisibility",
+                    "Cells count exceeds the CellVisibility u32 cell-id limit",
+                )
+            })?;
+            let section = CellVisibilitySection::from_bytes(&data, expected_cell_count)
                 .map_err(|err| section_validation_from_error("CellVisibility", err))?;
             log::info!(
                 "[PRL] CellVisibility: {} cells, {} coupled pair(s)",
@@ -2762,7 +2768,8 @@ mod tests {
                 aperture: 64,
             }],
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         let parsed = CellVisibilitySection::from_bytes(&encoded, 3).unwrap();
         let visibility = convert_cell_visibility_section(parsed);
 
@@ -2897,7 +2904,8 @@ mod tests {
                         aperture: 64,
                     }],
                 }
-                .to_bytes(),
+                .to_bytes()
+                .unwrap(),
             }),
             "postretro_test_cell_visibility_loaded.prl",
         );

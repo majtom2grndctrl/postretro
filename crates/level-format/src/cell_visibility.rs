@@ -13,6 +13,12 @@ pub const CELL_VISIBILITY_APERTURE_FIXED_POINT_SCALE: u32 = 1024;
 /// Distances at or below this cap are stored; greater values remain
 /// perceivable but have no graded detail.
 pub const CELL_VISIBILITY_DISTANCE_CAP: u32 = 16 * 1024 * 1024;
+/// Maximum number of directed graded selections retained for one source cell.
+///
+/// The stored table is the union of these directed selections, so this bounds
+/// the total pair count at `cell_count * K` but does not bound a cell's final
+/// undirected degree.
+pub const CELL_VISIBILITY_FANOUT_K: usize = 32;
 
 const HEADER_SIZE: usize = 8;
 const PAIR_COUNT_SIZE: usize = 4;
@@ -38,28 +44,35 @@ pub struct CellVisibilitySection {
 }
 
 impl CellVisibilitySection {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        debug_assert!(self.validate().is_ok());
+    /// Serialize the complete version-one layout.
+    ///
+    /// Count and byte-size conversions are checked before allocating so an
+    /// oversized side table aborts the bake instead of truncating its wire
+    /// count or wrapping the requested capacity.
+    pub fn to_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.validate()?;
+        let pair_count = checked_pair_count(self.coupled_pairs.len())?;
+        let output_len = checked_section_len(self.cell_count, pair_count)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(output_len).map_err(|error| {
+            invalid(format!(
+                "CellVisibility section cannot reserve {output_len} output bytes: {error}"
+            ))
+        })?;
 
-        let mut bytes = Vec::with_capacity(
-            HEADER_SIZE
-                + self.component_ids.len() * std::mem::size_of::<u32>()
-                + PAIR_COUNT_SIZE
-                + self.coupled_pairs.len() * PAIR_RECORD_SIZE,
-        );
         bytes.extend_from_slice(&CELL_VISIBILITY_VERSION.to_le_bytes());
         bytes.extend_from_slice(&self.cell_count.to_le_bytes());
         for component_id in &self.component_ids {
             bytes.extend_from_slice(&component_id.to_le_bytes());
         }
-        bytes.extend_from_slice(&(self.coupled_pairs.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&pair_count.to_le_bytes());
         for pair in &self.coupled_pairs {
             bytes.extend_from_slice(&pair.cell_a.to_le_bytes());
             bytes.extend_from_slice(&pair.cell_b.to_le_bytes());
             bytes.extend_from_slice(&pair.distance.to_le_bytes());
             bytes.extend_from_slice(&pair.aperture.to_le_bytes());
         }
-        bytes
+        Ok(bytes)
     }
 
     pub fn from_bytes(data: &[u8], expected_cell_count: u32) -> crate::Result<Self> {
@@ -119,10 +132,19 @@ impl CellVisibilitySection {
             )));
         }
 
-        let component_ids = (0..cell_count as usize)
+        let component_count = usize_from_u32(cell_count, "cell_count")?;
+        let component_ids = (0..component_count)
             .map(|index| read_u32(data, HEADER_SIZE + index * std::mem::size_of::<u32>()))
             .collect();
-        let mut coupled_pairs = Vec::with_capacity(pair_count as usize);
+        let pair_count_usize = usize_from_u32(pair_count, "pair_count")?;
+        let mut coupled_pairs = Vec::new();
+        coupled_pairs
+            .try_reserve_exact(pair_count_usize)
+            .map_err(|error| {
+                invalid(format!(
+                    "CellVisibility section cannot reserve {pair_count} pair records: {error}"
+                ))
+            })?;
         let mut cursor = pair_count_end;
         for _ in 0..pair_count {
             coupled_pairs.push(CoupledPairRecord {
@@ -149,7 +171,7 @@ impl CellVisibilitySection {
                 "CellVisibility section cell_count must be greater than zero",
             ));
         }
-        if self.component_ids.len() != self.cell_count as usize {
+        if self.component_ids.len() != usize_from_u32(self.cell_count, "cell_count")? {
             return Err(invalid(format!(
                 "CellVisibility has {} component ids for cell_count {}",
                 self.component_ids.len(),
@@ -210,9 +232,35 @@ impl CellVisibilitySection {
 }
 
 fn checked_bytes(count: u32, stride: usize, name: &'static str) -> crate::Result<usize> {
-    (count as usize).checked_mul(stride).ok_or_else(|| {
+    usize_from_u32(count, name)?.checked_mul(stride).ok_or_else(|| {
         invalid(format!(
             "CellVisibility section count multiplication overflow for {name} {count} * stride {stride}"
+        ))
+    })
+}
+
+fn checked_pair_count(pair_count: usize) -> crate::Result<u32> {
+    u32::try_from(pair_count).map_err(|_| {
+        invalid(format!(
+            "CellVisibility section pair count {pair_count} exceeds the u32 wire limit"
+        ))
+    })
+}
+
+fn checked_section_len(cell_count: u32, pair_count: u32) -> crate::Result<usize> {
+    let component_bytes = checked_bytes(cell_count, std::mem::size_of::<u32>(), "cell_count")?;
+    let pair_bytes = checked_bytes(pair_count, PAIR_RECORD_SIZE, "pair_count")?;
+    HEADER_SIZE
+        .checked_add(component_bytes)
+        .and_then(|length| length.checked_add(PAIR_COUNT_SIZE))
+        .and_then(|length| length.checked_add(pair_bytes))
+        .ok_or_else(|| invalid("CellVisibility section output length overflow"))
+}
+
+fn usize_from_u32(value: u32, name: &'static str) -> crate::Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        invalid(format!(
+            "CellVisibility section {name} {value} does not fit the host index size"
         ))
     })
 }
@@ -260,9 +308,18 @@ mod tests {
     }
 
     #[test]
+    fn cell_visibility_v1_constants_are_pinned() {
+        assert_eq!(CELL_VISIBILITY_VERSION, 1);
+        assert_eq!(CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE, 1024);
+        assert_eq!(CELL_VISIBILITY_APERTURE_FIXED_POINT_SCALE, 1024);
+        assert_eq!(CELL_VISIBILITY_DISTANCE_CAP, 16 * 1024 * 1024);
+        assert_eq!(CELL_VISIBILITY_FANOUT_K, 32);
+    }
+
+    #[test]
     fn round_trip_preserves_fixed_layout() {
         let section = valid_section();
-        let bytes = section.to_bytes();
+        let bytes = section.to_bytes().unwrap();
         assert_eq!(
             CellVisibilitySection::from_bytes(&bytes, 4).unwrap(),
             section
@@ -277,7 +334,7 @@ mod tests {
             coupled_pairs: Vec::new(),
         };
         assert_eq!(
-            CellVisibilitySection::from_bytes(&section.to_bytes(), 2).unwrap(),
+            CellVisibilitySection::from_bytes(&section.to_bytes().unwrap(), 2).unwrap(),
             section
         );
     }
@@ -285,12 +342,14 @@ mod tests {
     #[test]
     fn rejects_version_cell_count_truncation_and_trailing_data() {
         let section = valid_section();
-        let mut bad_version = section.to_bytes();
+        let mut bad_version = section.to_bytes().unwrap();
         bad_version[..4].copy_from_slice(&2u32.to_le_bytes());
         assert_invalid_data(CellVisibilitySection::from_bytes(&bad_version, 4).unwrap_err());
-        assert_invalid_data(CellVisibilitySection::from_bytes(&section.to_bytes(), 3).unwrap_err());
+        assert_invalid_data(
+            CellVisibilitySection::from_bytes(&section.to_bytes().unwrap(), 3).unwrap_err(),
+        );
 
-        let bytes = section.to_bytes();
+        let bytes = section.to_bytes().unwrap();
         assert_invalid_data(
             CellVisibilitySection::from_bytes(&bytes[..bytes.len() - 1], 4).unwrap_err(),
         );
@@ -301,7 +360,7 @@ mod tests {
 
     #[test]
     fn rejects_noncanonical_pair_table() {
-        let mut bytes = valid_section().to_bytes();
+        let mut bytes = valid_section().to_bytes().unwrap();
         // `to_bytes` is intentionally a serialization primitive; mutate a valid
         // payload so decoding remains the strict external-data boundary.
         bytes[28..32].copy_from_slice(&1u32.to_le_bytes());
@@ -311,10 +370,19 @@ mod tests {
 
     #[test]
     fn rejects_graded_pair_beyond_distance_cap() {
-        let mut bytes = valid_section().to_bytes();
+        let mut bytes = valid_section().to_bytes().unwrap();
         // Header (8) + four component IDs (16) + pair count (4) + pair
         // endpoints (8) leaves the distance at byte offset 36.
         bytes[36..40].copy_from_slice(&(CELL_VISIBILITY_DISTANCE_CAP + 1).to_le_bytes());
         assert_invalid_data(CellVisibilitySection::from_bytes(&bytes, 4).unwrap_err());
+    }
+
+    #[test]
+    fn writer_rejects_pair_count_beyond_u32_without_allocating_records() {
+        // The boundary is a wire-format conversion, not an allocation test.
+        // On 32-bit hosts a Vec length cannot exceed the u32 wire range.
+        if let Some(too_many_pairs) = usize::try_from(u32::MAX).unwrap().checked_add(1) {
+            assert_invalid_data(checked_pair_count(too_many_pairs).unwrap_err());
+        }
     }
 }

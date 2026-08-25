@@ -327,8 +327,10 @@ pub struct WeaponDescriptor {
     /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default)]
     pub viewmodel: Option<String>,
-    /// Optional first-person placement. Omission preserves the engine's legacy
-    /// viewmodel transform until a higher-level default is introduced.
+    /// Optional per-weapon first-person placement. Whole-value resolution is
+    /// per-instance (future), per-weapon, character (future), mod default, then
+    /// the legacy `BASE_OFFSET` with zero rotation. v1 supplies `None` for the
+    /// future character and per-instance tiers.
     #[serde(default)]
     pub placement: Option<WeaponPlacementDescriptor>,
     #[serde(default)]

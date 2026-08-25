@@ -93,7 +93,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "defaultWeaponPlacement?",
             "WeaponPlacementDescriptor",
-            "Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket.",
+            "Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.",
         )
         .field(
             "entities?",

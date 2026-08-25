@@ -398,7 +398,7 @@ export type WeaponResource =
   --- Finite magazine-and-reserve ammunition.
   (AmmoResource & { kind: "ammo" })
 
---- First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0; omitting the whole placement keeps the legacy BASE_OFFSET.
+--- First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0 within an authored placement; omitting the containing placement leaves that resolution tier absent.
 export type PlacementOffset = {
   --- Metres right from screen center, mapped to camera-space +X. Defaults to 0; use a finite number.
   right: number?,
@@ -418,7 +418,7 @@ export type PlacementRotation = {
   roll: number?,
 }
 
---- Authored first-person weapon placement. Position is in metres from screen center and rotation is in degrees. Omit `placement` on a weapon to preserve the legacy BASE_OFFSET with zero rotation.
+--- Authored first-person weapon placement. Position is in metres from screen center and rotation is in degrees. Resolution uses whole-value fallback: per-instance (future) > per-weapon > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement.
 export type WeaponPlacementDescriptor = {
   --- Optional camera-relative position in metres: right/up/forward map to +X/+Y/-Z. Omit fields for 0.
   positionFromCenter: PlacementOffset?,
@@ -450,7 +450,7 @@ export type WeaponDescriptor = {
   thirdPersonModel: string?,
   --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
   viewmodel: string?,
-  --- Optional first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Omit it for the legacy BASE_OFFSET and zero rotation; it never changes the third-person hand socket.
+  --- Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.
   placement: WeaponPlacementDescriptor?,
   --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
   resource: WeaponResource?,
@@ -881,7 +881,7 @@ export type ModManifest = {
   movers: MoverDefaults?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
-  --- Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket.
+  --- Optional mod-global first-person weapon placement. It is the lowest authored tier in whole-value resolution: per-instance (future) > per-weapon > character (future) > this default > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket.
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,

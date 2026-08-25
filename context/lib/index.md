@@ -17,7 +17,7 @@
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/done/E20--frame-capture`
 - **Projectile visual enhancements / emissive (full-bright) billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / `LightAnimation` radius channel** → `plans/done/projectile-weapon-enhancements` (shipped design record; extends billboard §7.4 and dynamic lights §4, on the shipped light-bridge reclamation)
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation
-- **Cell→Cell potential-perceptibility relation / baked cell-visibility substrate / network-relevance, audio-occlusion, AI-perception broad-phase, or VFX-cull shared foundation / `CellVisibility` PRL section (id 46)** → `plans/ready/cell-visibility-relation` (design intent; baked view-independent CellId→CellId relation, optional section with conservative all-perceivable fallback, CellId-only query at the `level-loader` data layer)
+- **Cell→Cell coupling relation / baked cell-visibility substrate / network-relevance, audio-occlusion, AI-perception broad-phase, or VFX-cull shared foundation / `CellVisibility` PRL section (id 46)** → `plans/ready/cell-visibility-relation` (design intent; baked view-independent CellId→CellId relation over the portal graph — reachability gate + graded distance/aperture, optional section with conservative all-perceivable fallback, CellId-only query at the `level-loader` data layer)
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`

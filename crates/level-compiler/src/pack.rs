@@ -1594,7 +1594,8 @@ mod tests {
             component_ids: vec![0, 0],
             coupled_pairs: vec![],
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         pack_and_write_portals(
             &output,
             &geo_result,

@@ -111,33 +111,76 @@ carries `EntityRegistry`/`NavGraph`/`CollisionWorld` but **no `LevelWorld`**, so
 into the AI tick — real plumbing, not a drop-in. This is why the AI broad-phase is a
 *paper-check* consumer here, not a built one.
 
-### Superseded prior art — `context/plans/drafts/perf-anti-penumbra-pvs`
+### Deferred sightline axis's math source — `context/plans/drafts/perf-anti-penumbra-pvs`
 
 Sketched the anti-penumbra separating-plane portal flood (Teller 1992 §4; Quake `vis`
-`ClipToSeperators` / `FindPassages`): per adjacent portal pair build separating planes (plane
-through an edge of P_i and a vertex of P_j, normal so P_i is front, kept iff all of P_j is
-front), intersect wedges along the chain, Sutherland–Hodgman-clip the target portal against
-the running wedge stack, non-zero area ⇒ visible. Double precision throughout. **The algorithm
-and citations are reusable; every identifier it names is dead** — `LeafPvsSection`, id 14,
-`compute_pvs`, the compiler `visibility/portal_vis.rs`, and `postretro/src/portal_vis.rs` no
-longer exist. Cite the math, not the seams. It tightened the *baked rendering* PVS, a use the
-runtime narrowing frustum replaced; this substrate serves non-camera consumers instead.
+`ClipToSeperators` / `FindPassages`): per adjacent portal pair build a *separating* plane (through
+an edge of P_i and a vertex of P_j, oriented so P_i is behind and P_j fully in front — opposite
+sides, the standard forward anti-penumbra orientation), intersect the forward wedges along the
+chain, Sutherland–Hodgman-clip the target portal against the running wedge stack, non-zero area ⇒
+visible. Double precision throughout. **The algorithm and citations are reusable; every identifier
+it names is dead** — `LeafPvsSection`, id 14, `compute_pvs`, the compiler `visibility/portal_vis.rs`,
+and `postretro/src/portal_vis.rs` no longer exist. Cite the math, not the seams. This is **not** v1
+of this substrate — it is the math source for the **deferred sightline refinement axis** (see
+Direction pivot below). It tightened the *baked rendering* PVS, a use the runtime narrowing frustum
+replaced; here it would return only as an additive hard-visibility axis for a render-adjacent
+consumer, never as the gate.
+
+## Direction pivot — sightline-first replaced by the graded-portal foundation
+
+An earlier shape of this plan made the v1 gate the conservative *sightline* PVS (the anti-penumbra
+flood above), with `distance` on top and `aperture` deferred. It was reworked to a lighter
+portal-graph foundation: the gate is portal-**reachability** (connected components), and `distance`
++ `aperture` are both v1, computed by cheap graph passes. Why the change:
+
+1. **Wrong axis for the consumers.** This substrate is not a render cull (the runtime portal flood
+   owns that); its consumers — net relevance, audio, AI broad-phase — grade by distance and
+   aperture. A hard line-of-sight bit is the least useful and most expensive axis for them, and for
+   audio it is actively wrong: sound propagates around corners, so a sightline gate would wrongly
+   decouple audible pairs. Reachability is the correct conservative gate for all consumers (a
+   sightline or audible path needs a portal path, so reachable ⊇ visible ⊇ audible).
+2. **Reachability's weakness is answered by the graded axes.** "Reachability barely culls in a
+   connected level" is true only when the sole output is the binary gate; false once distance and
+   aperture grade the reachable set — weak connections (long path, tiny bottleneck) self-suppress
+   under any consumer's weighting.
+3. **Cheaper, simpler, deterministic-by-construction.** The three passes are connected components
+   `O(V+E)`, all-pairs Dijkstra `O(V·E log V)`, and all-pairs widest-path via a maximum spanning
+   tree `O(E log E)` — no separating-plane geometry, no Sutherland–Hodgman, no epsilon slivers, no
+   plane-orientation subtlety. The portal graph is undirected, so all three axes are symmetric by
+   construction (the earlier flood was asymmetric at the epsilon and needed a union of both
+   directions). Determinism reduces to pinned frontier/tree tie-breaks + fixed-point, no float
+   polygon clipping.
+4. **`aperture` decoupled from the sightline math.** The earlier plan assumed `aperture` (bottleneck
+   constriction) had to be extracted from the sightline separating planes, chaining it to the heavy
+   algorithm. Portal polygons carry width/area directly; the cell-pair aperture is the widest-path
+   bottleneck over the graph — so `aperture` moves into v1 with no sightline dependency.
+
+The cost accepted: **storage, not bake time.** Reachability is looser than sightline, so in a
+connected level most pairs are perceivable and carry graded values — the side-table can approach N².
+v1 bounds it with a generous, structural coupling cap (drop pairs weaker than any plausible consumer
+cares about); the exact profile is unmeasurable until real maps exist. The sightline tightening is
+retained as a deferred additive axis — restoring the substrate doc's original placement of it as a
+later refinement, not a v1 requirement.
 
 ## Generalizability paper-check (the doc's second-consumer gate)
 
 The query returns, for a `CellId` pair, `CouplingTuple { perceivable: bool, distance:
-Option<u32-fixed>, aperture: sentinel-in-v1 }` — Cell vocabulary only. Two consumers on paper:
+Option<u32-fixed>, aperture: Option<u32-fixed> }` — Cell vocabulary only. Two consumers on paper:
 
 **Network relevance (E15 Phase 4).** Per client, take the client's pawn Cell `c` via the
 runtime locator. For each candidate entity, take its Cell `e`; replicate iff
-`perceivable(c, e)`. Prioritize the send accumulator by `distance(c, e)` (path length, not
-Euclidean). Relevance *radius*, *include-owner*, *hysteresis*, *grace period*, per-client
-keying — all consumer-side, none in the query. Fits with CellId + policy-on-top.
+`perceivable(c, e)` (the reachability gate). Prioritize the send accumulator by `distance(c, e)`
+(path length, not Euclidean). Relevance *radius*, *include-owner*, *hysteresis*, *grace period*,
+per-client keying — all consumer-side, none in the query. Fits with CellId + policy-on-top. (If
+bandwidth later demands a tighter cull than reachability, the deferred sightline axis is where that
+lands — a net-side refinement, not a substrate rewrite.)
 
 **Audio PAS (E12).** Listener Cell `l`; a sound-source Cell `s`. Audible-at-all iff
-`perceivable(l, s)` (the PVS) or its one-hop portal dilation (the PHS). Attenuate/lowpass by
-`distance(l, s)` and, when it lands, `aperture(l, s)`. The dB curve, audible-range cutoff, and
-obstruction model are consumer-side. Fits with the same query.
+`perceivable(l, s)` — the reachability gate is the natural potentially-audible set (portal-connected,
+including around corners; no one-hop PHS dilation needed since the gate is already the reachable
+superset). Attenuate/lowpass by `distance(l, s)` and `aperture(l, s)` (both v1). The dB curve,
+audible-range cutoff, and obstruction model are consumer-side. Fits with the same query — and the
+graded gate is more audio-correct than a sightline gate, which would wrongly cut around-corner sound.
 
 Both express their need as (map my domain object → its Cell) + query + (apply my own curve).
 Neither needs a different substrate API. Gate passes on paper. Wire the smell-test audit
@@ -160,31 +203,32 @@ exterior flood + encode) 0.00s**, BVH 0.00s. Timing infra: `begin_stage`/`finish
 `pipeline.rs`, printed by `reporter.rs` "Build Summary". No PVS timing exists anywhere in git
 history — the retired `LeafPvs` BFS was never benchmarked.
 
-Complexity: portals are ~4-vertex; per portal-pair the separating-plane + Sutherland–Hodgman clip
-is a small constant. Loose-regime flood is ~O(P²) pair-tests, aggressively pruned by wedge-empty
-termination. Analytic estimate at P=2,561: single-threaded low-tens-of-seconds worst case, more
-likely seconds, sub-second on campaign-test; parallel over 956 source cells drops wall-clock by
-core count. Dijkstra distance is O(P log P), trivial. Verdict: **low risk at current scale** — the
-largest fixture has an order of magnitude fewer portals than the shipped Quake maps where `vis`
-famously cost minutes-to-hours (10k–50k+ portals), and SH-bake headroom (213s) dwarfs any
-plausible PVS cost. The estimate is analytic, uncertain by ~an order of magnitude on adversarial
-topology, and can't be validated against representative content until real maps exist.
+v1 bake cost — three graph passes over the portal graph, not a geometric flood:
 
-Guardrail prior art — `context/plans/drafts/perf-anti-penumbra-pvs/index.md` (algorithm/citations
-reusable; identifiers dead): a `--pvs-fast` BFS fallback for iteration; a wall-clock "3×-BFS
-auto-degrade"; and it deliberately shipped **no recursion depth cap** (deferred "only if a
-pathological map surfaces"). Parallelism: the SH/lightmap bakers run a rayon parallel
-iterator (`into_par_iter()` in `sh_bake.rs`; `par_iter().enumerate()` in `lightmap_layer.rs`) +
-`control.governor().enter()` per work-item — the per-source-cell flood reuses this directly, with an
-order-preserving collect so per-cell rows land index-aligned to cell id (see index.md pin P1).
+- **Reachability** — connected components (union-find / BFS over portal adjacency), `O(V+E)`. Trivial.
+- **Distance** — all-pairs shortest path via per-source-cell Dijkstra, `O(V·E log V)`. At V≈3,339
+  cells / E≈2,561 portals (stress-warren) that is ~tens of millions of ops — sub-second, and cheaper
+  than the earlier sightline flood it replaces. Optionally parallel over source cells (the SH/lightmap
+  `into_par_iter()`/`par_iter()` + `governor().enter()` shape, with an order-preserving collect so
+  rows land index-aligned to cell id — index.md pin P1); cheap enough single-threaded.
+- **Aperture** — all-pairs widest-path bottleneck from a maximum spanning tree, `O(E log E)` to build
+  + bottleneck extraction. Trivial.
 
-Decision (owner): keep the sightline PVS in v1 (affordable now), plus three guardrails, all
-**determinism-preserving** (AC10 byte-identical). We adopt `--pvs-fast` and stage-timing logging,
-add an explicit **recursion/chain-depth cap** (closes the draft's deferred gap), and **reject the
-draft's wall-clock 3×-BFS auto-degrade** — a timing-triggered branch makes output machine-load-
-dependent and breaks byte-identical determinism. The depth cap gives the same worst-case protection
-deterministically: past the cap the flood conservatively includes (localized reachability
-fallback), zero false negatives preserved.
+Verdict on bake time: **low risk, lower than the sightline design.** SH-bake dominates compile
+(212.7s, ~83%); the current Visibility stage is 0.00s; these graph passes add well under a second at
+current scale. The Quake `vis` minutes-to-hours cautionary tale does **not** apply — that was the
+sightline flood over 10k–50k portals, which this design defers. The estimate can't be validated
+against representative content until real maps exist.
+
+The real cost axis is **storage, not time.** Reachability is a looser gate than sightline, so in a
+connected level most pairs are perceivable and carry graded values — the `distance`+`aperture`
+side-table approaches N² (for 3,339 cells, ~5.6M off-diagonal pairs × a few bytes ≈ tens of MB
+uncapped). The gate itself is cheap (`u32[cell_count]` component ids, `O(V)`); only the graded table
+grows. Guardrail: a **coupling `distance` cap** — a generous, structural threshold (drop pairs weaker
+than any plausible consumer's range), determinism-preserving, that omits beyond-cap pairs from the
+side-table while keeping `perceivable` true. Analogous in role to the earlier design's depth cap, but
+bounding storage rather than bake recursion. On small fixtures it is left effectively uncapped so
+tests see the full reachable set. The right cap magnitude is unmeasurable until real maps exist.
 
 ## Owner-approved divergences from `context/research/cell-visibility-substrate.md`
 
@@ -207,5 +251,7 @@ overridden by the owner for this build:
 
 v1 is a static baked relation with no runtime mutation — the dynamic blocker-mask layer (a
 door flipping a portal-state bit) is deferred to the door/destructible consumer. So there is
-no runtime ordering/timer/event surface to enumerate; the only "two candidate values per pair"
-merge is the symmetrization tie-break, captured as an invariant, not an ordering.
+no runtime ordering/timer/event surface to enumerate. All three axes are symmetric by construction
+(the portal graph is undirected), so there is no symmetrization merge to order; the only bake-side
+ordering hazards are graph-algorithm determinism (Dijkstra frontier and spanning-tree tie-breaks,
+fixed-point) and side-table emit order, all captured as Determinism pins, not runtime orderings.

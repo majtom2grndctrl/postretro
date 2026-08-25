@@ -110,6 +110,7 @@ pub fn entity_descriptor_from_lua(
                 if !matches!(raw, LuaValue::Nil) {
                     if let LuaValue::Table(weapon_table) = &raw {
                         validate_optional_weapon_model_paths_lua(weapon_table)?;
+                        validate_optional_weapon_placement_shape_lua(weapon_table)?;
                         validate_optional_projectile_shapes_lua(weapon_table)?;
                     }
                     let json = conv::lua_to_json(raw).map_err(lua_err)?;
@@ -241,6 +242,14 @@ fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), Descri
             ),
         });
     }
+    Ok(())
+}
+
+/// Placement is authored presentation data. Reject a supplied unsupported VM
+/// value before the JSON bridge can coerce it to `null` and serde treats it as
+/// an omitted placement.
+fn validate_optional_weapon_placement_shape_lua(weapon: &Table) -> Result<(), DescriptorError> {
+    optional_table_field_lua(weapon, "placement", "components.weapon.placement", true)?;
     Ok(())
 }
 

@@ -1648,6 +1648,7 @@ mod tests {
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -1673,6 +1674,7 @@ mod tests {
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: capacity,

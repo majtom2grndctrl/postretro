@@ -843,8 +843,9 @@ impl ScriptingCore {
     }
 
     /// Drain the validated mod manifest's engine-global registrations into the
-    /// `DataRegistry`: entity-type descriptors, the map catalog, global reactions
-    /// (validated against the sequence registry), global crossings, and global trigger pools. Shared by
+    /// `DataRegistry`: entity-type descriptors, the map catalog, the optional
+    /// default weapon placement, global reactions (validated against the sequence
+    /// registry), global crossings, and global trigger pools. Shared by
     /// the windowed splash path and the headless driver so the two cannot drift —
     /// without this drain the archetype sweep sees an empty entity-type list and
     /// no player pawn spawns.
@@ -871,6 +872,7 @@ impl ScriptingCore {
                 data_registry.upsert_entity_type(desc);
             }
             data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+            data_registry.set_default_weapon_placement(manifest.default_weapon_placement.take());
             let global_reactions = validate_scoped_sequence_primitives(
                 std::mem::take(&mut manifest.reactions),
                 &self.sequence_registry,

@@ -101,6 +101,7 @@ export {
   defineEntity,
   defineMod,
   defineMapCatalog,
+  defineWeaponPlacement,
   defineTriggerPool,
   defineStore,
   read,

@@ -772,6 +772,7 @@ mod tests {
             credit_source: Some(canonical_name.to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "cells".to_string(),
                 magazine,
@@ -891,6 +892,7 @@ mod tests {
                 credit_source: Some(canonical_name.to_string()),
                 third_person_model: None,
                 viewmodel: None,
+                placement: None,
                 resource: Some(WeaponResource::Ammo(AmmoResource {
                     ammo_type: "cells".to_string(),
                     magazine: 7,

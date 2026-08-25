@@ -128,6 +128,40 @@ fn switching_field_error(scope: &str, field: &str, error: DescriptorError) -> De
     }
 }
 
+/// Drain the optional mod-global first-person weapon placement. This is
+/// descriptor content, so malformed values reject the complete mod-init
+/// attempt instead of silently degrading to the legacy placement.
+pub fn drain_default_weapon_placement_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Option<WeaponPlacementDescriptor>, DescriptorError> {
+    if !obj.contains_key("defaultWeaponPlacement").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("defaultWeaponPlacement").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    if raw.type_of() != rquickjs::Type::Object {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `defaultWeaponPlacement` must be an object"),
+        });
+    }
+    let placement: WeaponPlacementDescriptor =
+        serde_json::from_value(conv::js_to_json(ctx, raw).map_err(js_err)?).map_err(|error| {
+            DescriptorError::InvalidShape {
+                reason: format!("{scope}: `defaultWeaponPlacement` invalid: {error}"),
+            }
+        })?;
+    placement
+        .validate()
+        .map_err(|error| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `defaultWeaponPlacement` invalid: {error}"),
+        })?;
+    Ok(Some(placement))
+}
+
 /// Drain the optional static renderer profile from a QuickJS mod manifest.
 /// Every malformed field degrades independently so presentation preferences
 /// never reject an otherwise valid manifest.

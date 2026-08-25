@@ -139,7 +139,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — at the participation transition the host resolves that slot's pawn tuning and the client installs it instead of reading its own registry.
 
-The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. Render-only tuning stays local, so a player's own view-feel settings survive a join.
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. Pure render feel stays local, so a player's own view-feel settings survive a join.
 
 What stays hashed is what replication cannot reach: a *computation* both peers run independently over the same replicated state, and content too large to send. Reaching for a hash on a value the host could have sent produces a false refusal — the mistake a later widening is most likely to make.
 
@@ -434,12 +434,15 @@ an owner, so it keeps its live single-tick presentation. Engine glue lives in
 
 First-person viewmodel placement — where a weapon sits in view — is authored
 weapon-archetype content (a per-weapon placement descriptor plus a mod-global default),
-shared cross-peer by mod-parity like any descriptor content: no new wire field, no
-digest entry (presentation is not a prediction input). This is deliberate. Because
-placement is content, every peer resolves it identically, so the host can later
-reproduce the shooter's authoritative fire origin from it without new wire (the
-muzzle/fire-origin work; today shots still leave the eye). Placement must never read
-client-local (view-feel) state.
+resolved by the host into each occupied wieldable row of the existing opaque tuning
+payload. This follows the entity-descriptor contract: small host-resolvable values are
+replicated, not hashed. The transport wire vocabulary and mod compatibility digest stay
+unchanged. Initial participation sends the effective placement; a live per-weapon or
+mod-default edit changes the payload and sends a replacement. A connected client reads
+only that host value and has no local placement fallback. The host can therefore later
+reproduce the shooter's authoritative fire origin from the same placement (the
+muzzle/fire-origin work; today shots still leave the eye). Placement never reads
+client-local view-feel state.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
 posed by the avatar hand socket; the FP viewmodel is a per-game screen-space
@@ -448,7 +451,7 @@ placement vs observers' socket pose — and the TP mount carries **no** placemen
 in data (art fixes it in the prop or socket; `plans/done/E21--bone-sockets-attachments`).
 Placement is the base position; render-rate view-feel sway/bob is a separate overlay
 composed on top (owned by movement), excluded from authority. Design intent;
-`plans/ready/weapon-placement`.
+`plans/in-progress/weapon-placement`.
 
 ## Combat authority: FIRE vs HIT
 

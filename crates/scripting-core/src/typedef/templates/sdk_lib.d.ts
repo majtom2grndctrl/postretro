@@ -796,6 +796,8 @@
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
+  /** Pure identity builder for reusable first-person weapon placement data. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
+  export function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor;
   /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
   export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor;
 

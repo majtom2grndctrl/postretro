@@ -214,6 +214,7 @@ mod tests {
             credit_source: Some("weapon.test.reload".to_string()),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: 10,

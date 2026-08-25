@@ -82,6 +82,7 @@ pub fn entity_descriptor_from_js<'js>(
                 if !raw.is_null() && !raw.is_undefined() {
                     if let Some(weapon_obj) = raw.as_object() {
                         validate_optional_weapon_model_paths_js(weapon_obj)?;
+                        validate_optional_weapon_placement_shape_js(weapon_obj)?;
                         validate_optional_projectile_shapes_js(weapon_obj)?;
                     }
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
@@ -218,6 +219,16 @@ fn validate_optional_weapon_model_paths_js<'js>(
             reason: format!("`components.weapon.{field}` must be a string when supplied"),
         });
     }
+    Ok(())
+}
+
+/// Placement is an authored presentation contract, so a supplied unsupported
+/// VM value must not cross the JSON bridge as `null` and silently become an
+/// omitted placement.
+fn validate_optional_weapon_placement_shape_js<'js>(
+    weapon: &Object<'js>,
+) -> Result<(), DescriptorError> {
+    optional_object_field_js(weapon, "placement", "components.weapon.placement", true)?;
     Ok(())
 }
 

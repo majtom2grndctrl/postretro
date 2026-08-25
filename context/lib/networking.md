@@ -430,6 +430,26 @@ on `NetEndpoint::Host` and only for pawns in `MovementOwners` — the host's own
 an owner, so it keeps its live single-tick presentation. Engine glue lives in
 `netcode::host_presentation`; the buffer is owned by the `Host` endpoint.
 
+## Weapon placement is content, not client-local
+
+First-person viewmodel placement — where a weapon sits in view — is authored
+weapon-archetype content (a per-weapon placement descriptor plus a mod-global default),
+shared cross-peer by mod-parity like any descriptor content: no new wire field, no
+digest entry (presentation is not a prediction input). This is deliberate. Because
+placement is content, every peer resolves it identically, so the host can later
+reproduce the shooter's authoritative fire origin from it without new wire (the
+muzzle/fire-origin work; today shots still leave the eye). Placement must never read
+client-local (view-feel) state.
+
+The third-person avatar weapon mount does not read placement. Observers see the weapon
+posed by the avatar hand socket; the FP viewmodel is a per-game screen-space
+presentation. The two vantages legitimately diverge — the shooter's authored FP
+placement vs observers' socket pose — and the TP mount carries **no** placement offset
+in data (art fixes it in the prop or socket; `plans/done/E21--bone-sockets-attachments`).
+Placement is the base position; render-rate view-feel sway/bob is a separate overlay
+composed on top (owned by movement), excluded from authority. Design intent;
+`plans/ready/weapon-placement`.
+
 ## Combat authority: FIRE vs HIT
 
 Client-authoritative combat splits weapon fire into two independently-owned halves, both

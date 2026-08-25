@@ -1812,18 +1812,31 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     // Optional — its absence is the conservative compatibility path for maps
     // compiled before CellVisibility was introduced. A present malformed
     // section remains a format error rather than silently weakening a new map.
+    let expected_cell_count = u32::try_from(cells.len()).map_err(|_| {
+        section_validation(
+            "CellVisibility",
+            "Cells count exceeds the CellVisibility u32 cell-id limit",
+        )
+    })?;
+    if let Some(entry) = meta.find_section(SectionId::CellVisibility as u32) {
+        let max_size = CellVisibilitySection::max_encoded_len(expected_cell_count)
+            .map_err(|err| section_validation_from_error("CellVisibility", err))?;
+        if entry.size > max_size {
+            return Err(section_validation(
+                "CellVisibility",
+                format!(
+                    "section size {} exceeds {expected_cell_count} cells' bounded maximum {max_size}",
+                    entry.size
+                ),
+            ));
+        }
+    }
     let cell_visibility = match prl_format::read_section_data(
         &mut cursor,
         &meta,
         SectionId::CellVisibility as u32,
     )? {
         Some(data) => {
-            let expected_cell_count = u32::try_from(cells.len()).map_err(|_| {
-                section_validation(
-                    "CellVisibility",
-                    "Cells count exceeds the CellVisibility u32 cell-id limit",
-                )
-            })?;
             let section = CellVisibilitySection::from_bytes(&data, expected_cell_count)
                 .map_err(|err| section_validation_from_error("CellVisibility", err))?;
             log::info!(
@@ -2954,6 +2967,32 @@ mod tests {
 
         let err = load_prl(path.to_str().unwrap()).unwrap_err();
 
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellVisibility",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_cell_visibility_section_larger_than_fanout_bound() {
+        let max_size = CellVisibilitySection::max_encoded_len(2).unwrap() as usize;
+        let path = write_cell_visibility_load_fixture(
+            Some(prl_format::SectionBlob {
+                section_id: SectionId::CellVisibility as u32,
+                version: 1,
+                data: vec![0; max_size + 1],
+            }),
+            "postretro_test_cell_visibility_oversized.prl",
+        );
+
+        let err = load_prl(path.to_str().unwrap()).unwrap_err();
         assert!(
             matches!(
                 err,

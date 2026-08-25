@@ -121,6 +121,14 @@ impl CellVisibilitySection {
         }
 
         let pair_count = read_u32(data, pair_count_offset);
+        let pair_count_usize = usize_from_u32(pair_count, "pair_count")?;
+        let max_pair_count = max_pair_count(cell_count)?;
+        if pair_count_usize > max_pair_count {
+            return Err(invalid(format!(
+                "CellVisibility pair count {pair_count} exceeds {} cells × fanout {} = {max_pair_count}",
+                cell_count, CELL_VISIBILITY_FANOUT_K
+            )));
+        }
         let pair_bytes = checked_bytes(pair_count, PAIR_RECORD_SIZE, "pair_count")?;
         let expected_len = pair_count_end
             .checked_add(pair_bytes)
@@ -136,7 +144,6 @@ impl CellVisibilitySection {
         let component_ids = (0..component_count)
             .map(|index| read_u32(data, HEADER_SIZE + index * std::mem::size_of::<u32>()))
             .collect();
-        let pair_count_usize = usize_from_u32(pair_count, "pair_count")?;
         let mut coupled_pairs = Vec::new();
         coupled_pairs
             .try_reserve_exact(pair_count_usize)
@@ -165,6 +172,40 @@ impl CellVisibilitySection {
         Ok(section)
     }
 
+    /// Largest valid encoded byte length for a known Cells count.
+    ///
+    /// Loaders use this before materializing the optional section so a bogus
+    /// container-table size cannot bypass the `N × K` pair-table bound.
+    pub fn max_encoded_len(cell_count: u32) -> crate::Result<u64> {
+        if cell_count == 0 {
+            return Err(invalid(
+                "CellVisibility section cell_count must be greater than zero",
+            ));
+        }
+        let pair_count = u64::from(cell_count)
+            .checked_mul(u64::try_from(CELL_VISIBILITY_FANOUT_K).expect("fanout fits u64"))
+            .ok_or_else(|| invalid("CellVisibility maximum pair count overflow"))?;
+        u64::try_from(HEADER_SIZE)
+            .expect("header size fits u64")
+            .checked_add(
+                u64::from(cell_count)
+                    .checked_mul(
+                        u64::try_from(std::mem::size_of::<u32>()).expect("u32 size fits u64"),
+                    )
+                    .ok_or_else(|| invalid("CellVisibility component table size overflow"))?,
+            )
+            .and_then(|length| {
+                length
+                    .checked_add(u64::try_from(PAIR_COUNT_SIZE).expect("pair-count size fits u64"))
+            })
+            .and_then(|length| {
+                length.checked_add(pair_count.checked_mul(
+                    u64::try_from(PAIR_RECORD_SIZE).expect("pair record size fits u64"),
+                )?)
+            })
+            .ok_or_else(|| invalid("CellVisibility maximum section length overflow"))
+    }
+
     fn validate(&self) -> crate::Result<()> {
         if self.cell_count == 0 {
             return Err(invalid(
@@ -176,6 +217,15 @@ impl CellVisibilitySection {
                 "CellVisibility has {} component ids for cell_count {}",
                 self.component_ids.len(),
                 self.cell_count
+            )));
+        }
+        let max_pair_count = max_pair_count(self.cell_count)?;
+        if self.coupled_pairs.len() > max_pair_count {
+            return Err(invalid(format!(
+                "CellVisibility pair count {} exceeds {} cells × fanout {} = {max_pair_count}",
+                self.coupled_pairs.len(),
+                self.cell_count,
+                CELL_VISIBILITY_FANOUT_K
             )));
         }
 
@@ -245,6 +295,12 @@ fn checked_pair_count(pair_count: usize) -> crate::Result<u32> {
             "CellVisibility section pair count {pair_count} exceeds the u32 wire limit"
         ))
     })
+}
+
+fn max_pair_count(cell_count: u32) -> crate::Result<usize> {
+    usize_from_u32(cell_count, "cell_count")?
+        .checked_mul(CELL_VISIBILITY_FANOUT_K)
+        .ok_or_else(|| invalid("CellVisibility maximum pair count overflow"))
 }
 
 fn checked_section_len(cell_count: u32, pair_count: u32) -> crate::Result<usize> {
@@ -384,5 +440,31 @@ mod tests {
         if let Some(too_many_pairs) = usize::try_from(u32::MAX).unwrap().checked_add(1) {
             assert_invalid_data(checked_pair_count(too_many_pairs).unwrap_err());
         }
+    }
+
+    #[test]
+    fn rejects_pair_table_beyond_fanout_bound_before_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CELL_VISIBILITY_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&((CELL_VISIBILITY_FANOUT_K + 1) as u32).to_le_bytes());
+        bytes.resize(
+            bytes.len() + (CELL_VISIBILITY_FANOUT_K + 1) * PAIR_RECORD_SIZE,
+            0,
+        );
+
+        assert_invalid_data(CellVisibilitySection::from_bytes(&bytes, 1).unwrap_err());
+    }
+
+    #[test]
+    fn maximum_encoded_length_matches_fanout_bound() {
+        assert_eq!(
+            CellVisibilitySection::max_encoded_len(2).unwrap(),
+            (HEADER_SIZE
+                + 2 * std::mem::size_of::<u32>()
+                + PAIR_COUNT_SIZE
+                + 2 * CELL_VISIBILITY_FANOUT_K * PAIR_RECORD_SIZE) as u64
+        );
     }
 }

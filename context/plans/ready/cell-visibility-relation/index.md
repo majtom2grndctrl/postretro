@@ -128,10 +128,11 @@ The cost this direction accepts: **storage, not bake time.** Reachability is a l
 sightline, so in a connected level most pairs are perceivable and carry graded values — the graded
 side-table can approach N². v1 bounds it with **two** structural caps: a generous coupling *distance*
 cap (a coarse pre-filter on path length) and a per-cell *fanout* cap that keeps only each cell's `K`
-nearest coupled partners — a hard `O(N·K)` stored-count bound and `O(E + N + N·K)` sequential bake
-working-set bound (the reduction is applied per source, so the full N² distance matrix is never materialized). The
-distance cap alone gives neither, because distance bounds path *length*, not pair *count* (a spatially
-compact but densely-connected region keeps ~N² pairs within any distance cap). The right magnitudes are measurable only when real maps
+nearest coupled partners — a hard `O(N·K)` stored-count bound and `O(E + P·N + N·K)` parallel bake
+working-set bound (`P` = governor permits; the reduction is applied per source, so the full N² distance
+matrix is never materialized). The distance cap alone gives neither, because distance bounds path
+*length*, not pair *count* (a spatially compact but densely-connected region keeps ~N² pairs within any
+distance cap). The right magnitudes are measurable only when real maps
 exist (fixtures are synthetic — see `research.md`). So the go decision
 rests partly on an unvalidated bet — that the graded axes cull hard enough and the capped side-table
 stays affordable — taken with eyes open because the direction is a two-way door: backing out deletes
@@ -188,6 +189,9 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
 - [ ] AC10 — Two compiles of the same fixture produce byte-identical `CellVisibility` section bytes
   (bake is deterministic; no HashSet/HashMap iteration order leaks into output; no wall-clock value
   branches the bake; float-derived weights resolved through a pinned tie-break and fixed-point scale).
+  The bytes are also invariant to the governor permit count: two compiles at different core budgets
+  (e.g. 1 vs `available_parallelism()`) produce identical output — the parallel per-source map uses an
+  order-preserving collect and the side-table is sorted before serialization (pin P1).
 - [ ] AC11 — Two structural caps bound the graded side-table to a hard `O(N·K)` entry count.
   (a) The coupling **distance cap**: a directed candidate `(s→t)` with `D(s→t) > cap` is dropped.
   (b) The per-cell **fanout cap** `K`: among its in-cap partners (`D(s→t) <= cap`), each cell keeps only
@@ -195,10 +199,12 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
   stored iff it is among *either* endpoint's `K` nearest (union — preserving symmetry), with the stored
   value the kept direction's (min→max tie-break when both keep it) so it always passed a per-source cap
   — membership, cap, and stored value are the same number, no pair stored with `distance > cap`. The
-  total is `<= N·K` entries regardless of density. The v1 bake runs sources sequentially: peak relation
-  working memory is `O(E + N + N·K)` for the portal graph, one Dijkstra workset, and retained top-`K`
-  rows — never an N² matrix. Parallel source passes are deferred until they carry an explicit worker and
-  memory budget. Pair-count conversion to the u32 wire field, output-length arithmetic, and allocation
+  total is `<= N·K` entries regardless of density. The bake runs sources in parallel under the shared
+  `Governor` (TUI-adjustable core count, like the other bakes): peak relation working memory is
+  `O(E + P·N + N·K)` — the shared read-only portal graph, `P` concurrent Dijkstra worksets (`P` =
+  governor permits), and the retained top-`K` rows — never an N² matrix. Output is byte-identical
+  regardless of `P` (order-preserving collect + the `(cell_a,cell_b)` sort — pin P1). Pair-count
+  conversion to the u32 wire field, output-length arithmetic, and allocation
   capacity arithmetic are checked; a value that does not fit aborts the bake with an error, never truncates
   or wraps. Test the count-conversion boundary without allocating `u32::MAX + 1` records. (The distance cap
   bounds path length, not pair count; the fanout cap bounds count and bake memory.) Omitted pairs stay perceivable; `distance`/`aperture` read
@@ -236,9 +242,10 @@ map world-bound budget; scales' fractional bits + representable maxima fixed onc
 them from source. Pin the distance cap in the same domain as the stored `distance` (fixed-point `u32`
 counts, at the Task-1 scale), and pin the boundary operator: `distance <= cap` → stored; `distance >
 cap` → omitted (`perceivable` stays true, graded `None`). Pin `K` so the side-table stays `<= N·K` and
-the sequential bake working set stays `O(E + N + N·K)` regardless of density: each cell keeps its `K` nearest coupled
-partners by `distance` (reduced per source inside the Dijkstra pass — the full N² matrix is never
-materialized), and a pair is stored if *either* endpoint keeps it (union — preserving symmetry). Add a bake stage `cell_visibility_bake` (name the stage function so Task 2 can locate it) after
+the parallel bake working set stays `O(E + P·N + N·K)` (`P` = governor permits) regardless of density:
+each cell keeps its `K` nearest coupled partners by `distance` (reduced per source inside the Dijkstra
+pass — the full N² matrix is never materialized), and a pair is stored if *either* endpoint keeps it
+(union — preserving symmetry). Add a bake stage `cell_visibility_bake` (name the stage function so Task 2 can locate it) after
 `BvhBuild` in `crates/level-compiler/src/pipeline.rs`. `cell_draw_index_bake`
 is the template only for the bytes-held-and-handed-into-`pack_and_write_portals` pattern: consuming
 `result.tree` (or `vis_result.leaves_section`), `generated_portals`, and `exterior_leaves`, and
@@ -258,7 +265,13 @@ ordinal assertions (`without_sdf[19]` and `with_sdf[19]`, each → `[20]`), and 
 between `"BVH Build"` and `"NavMesh"`. The new stage needs no new `predicted_present` arm — it inherits
 `predicted_present = true` via the existing `id != SdfAtlasBake || needs_sdf` logic. Bracket the bake with
 `begin_stage`/`finish_stage` so its duration prints in the Build Summary (AC12) — Task 2's graded
-passes inherit the same bracketed stage. In this task the bake fills the **component ids** (connected
+passes inherit the same bracketed stage. Thread the pipeline's `Arc<Governor>` into the stage as a
+`BakeControl` (`BakeControl::new(Arc::clone(&governor), &progress)`, exactly as the SH/lightmap stages
+do) and hand it to the side-table-assembly function, so Task 2's parallel per-source Dijkstra runs
+under the shared governor — the operator raises/lowers this bake's core count live from the TUI like
+every other bake, and it reports progress via `publish_total`/`advance`. Task 1's own component pass is
+`O(V+E)` single-pass and needs no parallelism; it only stands up the `BakeControl` seam Task 2 fills.
+In this task the bake fills the **component ids** (connected
 components of the portal graph — union-find or BFS over portal adjacency, treating solid leaves as
 barriers). Reuse `find_exterior_leaves`'s portal-adjacency construction and solid-barrier handling, but
 the outer loop over all unvisited cells and the dense component-id assignment are net-new —
@@ -336,10 +349,10 @@ keep only the `K` nearest by `(D(s→t), partner cell id)` — per source, reduc
 value is the kept direction's (min→max when both keep it), so it always passed a per-source cap: the
 cap filter and the stored value are the same number, and no pair is stored with distance `> cap`. This
 keep-set union keeps the relation symmetric (each stored pair is one `(min,max)` entry, reachable from
-both ends), bounds the emitted table at `<= N·K`, and keeps the sequential bake working set at
-`O(E + N + N·K)` — the full N² distance matrix is never materialized (each source reduces to its top-`K` before the next), so a
-spatially compact, densely-connected map neither blows the side-table nor exhausts memory during the
-bake. A dropped pair (beyond the distance cap, or beyond both endpoints' fanout) stays perceivable
+both ends), bounds the emitted table at `<= N·K`, and keeps the parallel bake working set at
+`O(E + P·N + N·K)` (`P` = concurrent governor permits) — the full N² distance matrix is never
+materialized (each source reduces to its top-`K` as it finishes), so a spatially compact,
+densely-connected map neither blows the side-table nor exhausts memory during the bake. A dropped pair (beyond the distance cap, or beyond both endpoints' fanout) stays perceivable
 (same component) and reads `distance`/`aperture` `None` — coupled-but-beyond-the-stored-horizon. Both
 caps are structural bounds set generously (beyond any plausible consumer's range), not consumer policy.
 On the small fixtures leave both effectively uncapped (distance cap high, `K >= cell_count`) so tests
@@ -368,8 +381,19 @@ deterministic (pin P2) and each passed its per-source cap, so the stored value i
 always `<= cap` — the cap filter and the stored value are the same number by construction, never a
 completion-order or last-write-wins dedup. `aperture` rides the same kept set, queried from the
 max-spanning tree (`O(V)`, not per-source). Emit kept pairs sorted by `(cell_a,cell_b)` (pin P4). Run
-the per-source Dijkstra passes sequentially in v1, reusing one workset; parallel execution is deferred
-until it has an explicit worker and memory budget. Task 1's `coupling` accessor already
+the per-source Dijkstra passes in parallel like the other bakes:
+`sources.into_par_iter().map(|s| { let _permit = control.governor().enter(); …reduce to topK(s)…;
+control.advance(1); topK(s) })` with an **order-preserving collect** (index-aligned to source id — the
+`sh_bake` pattern), so the number of workers never affects the output: the keep-set union and the
+`(cell_a,cell_b)` sort canonicalize regardless of completion order or permit count (pin P1). Each
+admitted source holds one Dijkstra workset (`O(N)`) and never waits on another admitted item (sources
+are independent — satisfies the governor's no-permit-waits-on-permit rule), so peak memory is the shared
+read-only graph plus `P` worksets plus the retained rows: `O(E + P·N + N·K)`, `P` = governor permits.
+Concurrency is the shared `Governor`, reached through a `&BakeControl` the stage builds from the
+pipeline's `Arc<Governor>` exactly as the SH/lightmap stages do, so the operator adjusts the
+cell-visibility bake's core count live from the TUI (the same +/- permit control, clamped to
+`available_parallelism()`); `BakeControl::unrestricted()` off the TUI path (tests, `--no-tui`).
+Task 1's `coupling` accessor already
 reads the side-table, so filling it here makes the accessor return `Some` on coupled pairs with no
 `crates/level-loader` edit — Task 2's changes stay in `crates/level-compiler` (the `cell_visibility_bake`
 stage Task 1 created). The side-table-assembly function takes both the coupling cap and the fanout `K`
@@ -476,7 +500,7 @@ Mirrors the little-endian, u32-count conventions of `cells.rs` / `cell_locator.r
 | Reconciliation errs toward more coupling (min `distance`, max `aperture`) | Task 2 | N/A in v1 (symmetric by construction — no merge to reconcile); reserved for the deferred dynamic-mask layer | N/A in v1 (symmetric by construction — no merge to reconcile); reserved for the deferred dynamic-mask layer |
 | Optional section → conservative fallback (all perceivable, no graded detail) | Task 1 (loader `None` path) | Loader default must be all-true, never all-false | AC1 |
 | Distance cap + per-cell fanout cap `K` bound storage (`<= N·K`) without a false negative | Task 2 (caps omit graded detail, keep `perceivable`) | Caps drop only graded values, never a component-gate bit; the distance cap bounds path length while the fanout cap bounds count; fanout must union both endpoints' keep-sets or symmetry breaks | AC11 |
-| Deterministic bake + dump (byte-identical) | Task 1 (fixed emit order), Task 2 (pinned tie-breaks + fixed-point), Task 3 (pre-sorted pairs) | HashSet/HashMap iteration order; Dijkstra/MST tie-break; no wall-clock branch | AC7, AC10 |
+| Deterministic bake + dump (byte-identical) | Task 1 (fixed emit order), Task 2 (pinned tie-breaks + fixed-point), Task 3 (pre-sorted pairs) | HashSet/HashMap iteration order; Dijkstra/MST tie-break; parallel completion order (P1: order-preserving collect + `(cell_a,cell_b)` sort → output invariant to the governor permit count); no wall-clock branch | AC7, AC10 |
 | `CellVisibility` bake-stage cost is observable | Task 1 (stage bracketed with `begin_stage`/`finish_stage`; Task 2 inherits it) | Timing must not branch output (diagnostic only) | AC12 |
 | CellId-only neutral query surface | Task 1 (query API) | Any consumer wiring or API addition | AC8, AC9 |
 
@@ -489,16 +513,16 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
 
 | Pin | Scenario | Ordering the bake must fix | Expected outcome (AC) |
 |---|---|---|---|
-| P1 | Same fixture, two compiles; per-source Dijkstra passes visit cells in the same sequence | Run sources sequentially in ascending CellId order; serialize the component array and side-table in fixed order | Byte-identical `CellVisibility` bytes (AC10) |
+| P1 | Same fixture, two compiles under different governor permit counts (TUI-adjusted cores); parallel per-source Dijkstra tasks finish in different orders | Reduce each source to its `topK` inside the parallel map; **order-preserving collect** index-aligned to source id (the `sh_bake` pattern), never a completion-order push; serialize the component array in cell order and the side-table sorted by `(cell_a,cell_b)` | Byte-identical `CellVisibility` bytes regardless of permit count / completion order (AC10) |
 | P2 | Two `a→b` paths equal to last-ULP under different float accumulation orders | Deterministic `Vec` adjacency in portal order; Dijkstra frontier keyed `(cost, node_id)` | Identical stored fixed-point `distance` across recompiles (AC4, AC10) |
 | P3 | Two spanning trees tie on an aperture-equal edge | Maximum spanning tree breaks equal-aperture ties by portal index; no HashSet/HashMap iteration in tree construction | Identical stored `aperture` across recompiles (AC5, AC10) |
 | P4 | Coupled pairs discovered in arbitrary order before serialization | Component array in cell order; side-table sorted by `(cell_a,cell_b)`, `cell_a<cell_b`; dump pre-sorts identically | Byte-identical section and dump (AC7, AC10) |
-| P5 | Large connected map whose longest path exceeds the fixed-point range (path length) OR whose in-cap pair count blows up (a spatially compact, densely-connected component — the distance cap does NOT bound count) | Task 1 pins distance/aperture scales + representable maxima (fit); the **distance cap** bounds path length and the **per-cell fanout cap `K`** bounds count at `<= N·K`; Task 2 asserts fit (clamp-with-warning), omits beyond-distance-cap pairs, reduces each source to its `K` nearest inside a sequential Dijkstra pass, and checks pair-count/output-size conversions (union across endpoints; full N² matrix never materialized) | Bounded, non-wrapping side-table AND `O(E + N + N·K)` bake working set; overflow is a loud diagnostic (AC11) |
+| P5 | Large connected map whose longest path exceeds the fixed-point range (path length) OR whose in-cap pair count blows up (a spatially compact, densely-connected component — the distance cap does NOT bound count) | Task 1 pins distance/aperture scales + representable maxima (fit); the **distance cap** bounds path length and the **per-cell fanout cap `K`** bounds count at `<= N·K`; Task 2 asserts fit (clamp-with-warning), omits beyond-distance-cap pairs, reduces each source to its `K` nearest inside the parallel per-source Dijkstra map, and checks pair-count/output-size conversions (union across endpoints; full N² matrix never materialized) | Bounded, non-wrapping side-table AND `O(E + P·N + N·K)` bake working set (`P` = governor permits); overflow is a loud diagnostic (AC11) |
 | P6 | Task 1 adds `StageId::CellVisibility` to the stage list | `ORDERED_STAGES`, `label`/`progress_label`, and `planned_stage_contract_pins_order_labels_and_sdf_prediction` updated together: the `[StageId; 22]` type annotation (→23), both `assert_eq!(...len(), 22)` sites (→23), both `[19]` ordinal assertions (`without_sdf`/`with_sdf`, each →`[20]`), and the label-vector insert between `"BVH Build"` and `"NavMesh"`; no new `predicted_present` arm needed (inherits `true` via `id != SdfAtlasBake \|\| needs_sdf`) | Build Summary shows the stage duration (AC12); stage-contract test green; `.prl` bytes identical across runs (timing contributes no bytes) |
 | P7 | Pair with `distance` exactly `== cap` and pair `== cap+1` | Cap compare is `distance <= cap` stored / `> cap` omitted, in fixed-point domain | `==cap` stored with graded values; `==cap+1` perceivable with `None` graded (AC4, AC11) |
-| P8 | Path `a→b` and `b→a` sum identical edges in opposite float order, rounding to adjacent integers at a fixed-point boundary | Each stored pair's value is its kept direction's `D` — `D(a→b)` if `b∈topK(a)`, else `D(b→a)`, and `D(a→b)` (min→max) when both keep it (a deterministic tie-break); each direction is individually deterministic (P2), and each passed its per-source cap; no last-write-wins dedup | One deterministic stored distance/aperture per pair, always `<= cap`, byte-identical across recompiles (AC10) — distinct from P1 (source order, not pair-value choice) |
+| P8 | Path `a→b` and `b→a` sum identical edges in opposite float order, rounding to adjacent integers at a fixed-point boundary | Each stored pair's value is its kept direction's `D` — `D(a→b)` if `b∈topK(a)`, else `D(b→a)`, and `D(a→b)` (min→max) when both keep it (a deterministic tie-break); each direction is individually deterministic (P2), and each passed its per-source cap; no last-write-wins dedup | One deterministic stored distance/aperture per pair, always `<= cap`, byte-identical across recompiles and across permit counts (AC10) — distinct from P1 (which pins collect/emit order, not the pair-value choice) |
 | P9 | Side-table-assembly fn is cap/fanout-parameterized; a unit test passes a small `cap` or `K`, the shipped bake must not | The `cell_visibility_bake` stage binds `cap` and `K` to their `pub const`s; only tests pass other values | Shipped side-table always reflects the production `cap`/`K`; two compiles byte-identical AND the artifact uses the intended values (AC10, AC11) |
-| P10 | A cell has more than `K` in-cap coupled partners; two compiles could keep a different `K`-subset if the ranking is not a total order | `topK(s)` selected by `(D(s→t), partner_cell_id)` — a total order (partner ids unique), reduced per source inside the sequential Dijkstra pass; the stored set is the union of both endpoints' `topK`; the cap filter and the stored value both use the kept direction's own `D` (P8), so membership, cap, and value agree by construction; no HashSet/HashMap iteration in selection | Identical `K`-nearest selection and stored pair set across recompiles; symmetric (a pair kept by one endpoint present for both); no pair stored with `distance > cap`; `<= N·K` entries and `O(E + N + N·K)` bake working set (AC10, AC11) |
+| P10 | A cell has more than `K` in-cap coupled partners; two compiles could keep a different `K`-subset if the ranking is not a total order | `topK(s)` selected by `(D(s→t), partner_cell_id)` — a total order (partner ids unique), reduced per source inside the parallel per-source Dijkstra map; the stored set is the union of both endpoints' `topK`; the cap filter and the stored value both use the kept direction's own `D` (P8), so membership, cap, and value agree by construction; no HashSet/HashMap iteration in selection | Identical `K`-nearest selection and stored pair set across recompiles and permit counts; symmetric (a pair kept by one endpoint present for both); no pair stored with `distance > cap`; `<= N·K` entries and `O(E + P·N + N·K)` bake working set (AC10, AC11) |
 
 ## Rough sketch
 

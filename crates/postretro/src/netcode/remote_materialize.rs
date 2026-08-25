@@ -414,6 +414,7 @@ mod tests {
             credit_source: None,
             third_person_model: Some(model.to_string()),
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -472,6 +473,7 @@ mod tests {
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -802,12 +804,25 @@ mod tests {
     }
 
     #[test]
-    fn active_weapon_attachment_uses_hand_socket_and_clears_unavailable_model() {
-        let descriptors = vec![
+    fn active_weapon_attachment_uses_hand_socket_without_first_person_placement() {
+        let mut descriptors = vec![
             player_mesh_descriptor("co_op_avatar"),
             third_person_weapon_descriptor("reference_pistol", "models/pistol/model.gltf"),
             third_person_weapon_descriptor("missing_pistol", "models/missing/model.gltf"),
         ];
+        descriptors[1].weapon.as_mut().unwrap().placement =
+            Some(postretro_foundation::WeaponPlacementDescriptor {
+                offset: postretro_foundation::PlacementOffset {
+                    right: 0.5,
+                    up: -0.4,
+                    forward: 0.8,
+                },
+                rotation: postretro_foundation::PlacementRotation {
+                    yaw: 20.0,
+                    pitch: -10.0,
+                    roll: 5.0,
+                },
+            });
         let mut registry = EntityRegistry::new();
         let pawn = spawn_transform_only(&mut registry);
         let request = RemoteEntityMaterialize {

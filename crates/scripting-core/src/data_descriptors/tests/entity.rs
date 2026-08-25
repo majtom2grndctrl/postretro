@@ -553,6 +553,61 @@ fn optional_weapon_model_paths_reject_unsupported_vm_values_with_field_errors() 
 }
 
 #[test]
+fn weapon_placement_has_quickjs_luau_parity_and_rejects_unsupported_values() {
+    let js = eval_js(
+        r#"({ components: { weapon: {
+            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            placement: {
+                positionFromCenter: { right: 0.32, up: -0.28, forward: 0.62 },
+                rotation: { yaw: 10, roll: -5 }
+            }
+        } } })"#,
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { weapon = {
+            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            placement = {
+                positionFromCenter = { right = 0.32, up = -0.28, forward = 0.62 },
+                rotation = { yaw = 10, roll = -5 }
+            }
+        } } }"#,
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let js_placement = js.weapon.unwrap().placement;
+    let lua_placement = lua.weapon.unwrap().placement;
+    assert_eq!(js_placement, lua_placement);
+    let placement = js_placement.expect("placement survives descriptor parsing");
+    assert_eq!(placement.offset.forward, 0.62);
+    assert_eq!(placement.rotation.pitch, 0.0);
+
+    let js_error = eval_js(
+        r#"({ components: { weapon: {
+            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            placement: () => {}
+        } } })"#,
+        entity_descriptor_from_js,
+    )
+    .unwrap_err()
+    .to_string();
+    let lua_error = eval_lua(
+        r#"return { components = { weapon = {
+            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            placement = function() end
+        } } }"#,
+        entity_descriptor_from_lua,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(js_error, lua_error);
+    assert!(
+        js_error.contains("components.weapon.placement"),
+        "{js_error}"
+    );
+    assert!(js_error.contains("must be an object"), "{js_error}");
+}
+
+#[test]
 fn optional_weapon_model_paths_reject_escape_and_platform_absolute_forms_in_both_vms() {
     for invalid in [
         "/tmp/model.gltf",

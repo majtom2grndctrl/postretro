@@ -351,6 +351,7 @@ mod tests {
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,
+                placement: None,
                 resource: Some(WeaponResource::Ammo(AmmoResource {
                     ammo_type: ammo_type.to_string(),
                     magazine,

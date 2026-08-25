@@ -1227,6 +1227,7 @@ mod tests {
             credit_source: None,
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,

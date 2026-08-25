@@ -238,6 +238,65 @@ const fn default_pellet_count() -> u32 {
     1
 }
 
+/// Authored first-person placement relative to the camera's screen center.
+///
+/// The labels stay author-facing: the render seam maps `right`, `up`, and
+/// `forward` to camera-space +X, +Y, and -Z respectively.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaponPlacementDescriptor {
+    #[serde(default, rename = "positionFromCenter")]
+    pub offset: PlacementOffset,
+    #[serde(default)]
+    pub rotation: PlacementRotation,
+}
+
+/// First-person position offset in metres from the screen center.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementOffset {
+    #[serde(default)]
+    pub right: f32,
+    #[serde(default)]
+    pub up: f32,
+    #[serde(default)]
+    pub forward: f32,
+}
+
+/// First-person orientation offset in degrees about the camera origin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementRotation {
+    #[serde(default)]
+    pub yaw: f32,
+    #[serde(default)]
+    pub pitch: f32,
+    #[serde(default)]
+    pub roll: f32,
+}
+
+impl WeaponPlacementDescriptor {
+    pub fn validate(&self) -> Result<(), DescriptorError> {
+        for (field, value) in [
+            ("positionFromCenter.right", self.offset.right),
+            ("positionFromCenter.up", self.offset.up),
+            ("positionFromCenter.forward", self.offset.forward),
+            ("rotation.yaw", self.rotation.yaw),
+            ("rotation.pitch", self.rotation.pitch),
+            ("rotation.roll", self.rotation.roll),
+        ] {
+            if !value.is_finite() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.placement.{field}` must be a finite value, got {value}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Authored weapon component preset. This is descriptor-owned tuning data:
 /// maps do not override these params, and the runtime materializes a separate
 /// wieldable instance entity from the descriptor at player spawn.
@@ -268,6 +327,10 @@ pub struct WeaponDescriptor {
     /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default)]
     pub viewmodel: Option<String>,
+    /// Optional first-person placement. Omission preserves the engine's legacy
+    /// viewmodel transform until a higher-level default is introduced.
+    #[serde(default)]
+    pub placement: Option<WeaponPlacementDescriptor>,
     #[serde(default)]
     pub resource: Option<WeaponResource>,
     #[serde(default, rename = "lowerMs")]
@@ -348,6 +411,9 @@ impl WeaponDescriptor {
         }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
+        }
+        if let Some(placement) = self.placement.as_ref() {
+            placement.validate()?;
         }
         for (field, path) in [
             ("thirdPersonModel", self.third_person_model.as_deref()),
@@ -790,6 +856,7 @@ mod tests {
             credit_source: credit_source.map(str::to_string),
             third_person_model: None,
             viewmodel: None,
+            placement: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -1270,6 +1337,55 @@ mod tests {
             invalid.spread_degrees = spread_degrees;
             let error = invalid.validate().unwrap_err();
             assert!(error.to_string().contains("spreadDegrees"), "{error}");
+        }
+    }
+
+    #[test]
+    fn weapon_placement_uses_authored_labels_defaults_and_finite_validation() {
+        let placement: WeaponPlacementDescriptor = serde_json::from_value(serde_json::json!({
+            "positionFromCenter": { "right": 0.32, "forward": 0.62 },
+            "rotation": { "yaw": 15.0 },
+        }))
+        .expect("placement shape deserializes");
+        assert_eq!(placement.offset.right, 0.32);
+        assert_eq!(placement.offset.up, 0.0);
+        assert_eq!(placement.offset.forward, 0.62);
+        assert_eq!(placement.rotation.yaw, 15.0);
+        assert_eq!(placement.rotation.pitch, 0.0);
+        assert_eq!(placement.rotation.roll, 0.0);
+
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.placement = Some(placement);
+        assert!(descriptor.clone().validate().is_ok());
+
+        for (field, placement) in [
+            (
+                "positionFromCenter.right",
+                WeaponPlacementDescriptor {
+                    offset: PlacementOffset {
+                        right: f32::NAN,
+                        ..PlacementOffset::default()
+                    },
+                    rotation: PlacementRotation::default(),
+                },
+            ),
+            (
+                "rotation.roll",
+                WeaponPlacementDescriptor {
+                    offset: PlacementOffset::default(),
+                    rotation: PlacementRotation {
+                        roll: f32::INFINITY,
+                        ..PlacementRotation::default()
+                    },
+                },
+            ),
+        ] {
+            let mut invalid = weapon_descriptor(None);
+            invalid.placement = Some(placement);
+            let error = invalid
+                .validate()
+                .expect_err("non-finite placement rejects");
+            assert!(error.to_string().contains(field), "{error}");
         }
     }
 

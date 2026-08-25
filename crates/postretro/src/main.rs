@@ -145,7 +145,7 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{
     ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
 };
-use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor};
+use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::fire_named_event;
@@ -1330,14 +1330,18 @@ fn local_viewmodel_asset<'a>(
     registry: &postretro_entities::EntityRegistry,
     local_pawn: postretro_entities::EntityId,
     descriptors: &'a [postretro_entities::EntityTypeDescriptor],
-) -> Option<(postretro_entities::EntityId, &'a str)> {
+) -> Option<(
+    postretro_entities::EntityId,
+    &'a str,
+    Option<WeaponPlacementDescriptor>,
+)> {
     let weapon = netcode::active_wieldable_for_pawn(registry, local_pawn)?;
     let provenance = registry
         .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
         .ok()?;
     let archetype = provenance.canonical_name.as_str();
-    let viewmodel = viewmodel_asset_for_archetype(archetype, descriptors)?;
-    Some((weapon, viewmodel))
+    let (viewmodel, placement) = viewmodel_asset_for_archetype(archetype, descriptors)?;
+    Some((weapon, viewmodel, placement))
 }
 
 /// Resolve optional first-person presentation from a shared weapon archetype.
@@ -1345,17 +1349,17 @@ fn local_viewmodel_asset<'a>(
 fn viewmodel_asset_for_archetype<'a>(
     archetype: &str,
     descriptors: &'a [postretro_entities::EntityTypeDescriptor],
-) -> Option<&'a str> {
-    let viewmodel = descriptors
+) -> Option<(&'a str, Option<WeaponPlacementDescriptor>)> {
+    let weapon = descriptors
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))?
         .weapon
-        .as_ref()?
-        .viewmodel
-        .as_deref()?
-        .trim();
-    (!viewmodel.is_empty()).then_some(viewmodel)
+        .as_ref()?;
+    let viewmodel = weapon.viewmodel.as_deref()?.trim();
+    (!viewmodel.is_empty()).then_some((viewmodel, weapon.placement.clone()))
 }
+
+const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
 
 /// Camera-space placement of the first-person model. World camera yaw/pitch
 /// intentionally do not appear here: [`viewmodel_world_transform`] applies the
@@ -1367,17 +1371,34 @@ fn viewmodel_camera_space_transform(
     view_feel_roll: f32,
     view_feel_yaw: f32,
     view_feel_pitch: f32,
+    placement: Option<&WeaponPlacementDescriptor>,
 ) -> glam::Mat4 {
-    const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
     let bob_offset = Vec3::new(
         view_feel_eye_offset.dot(camera_right),
         view_feel_eye_offset.y,
         0.0,
     );
-    let rotation = Quat::from_rotation_y(view_feel_yaw)
+    let sway_rotation = Quat::from_rotation_y(view_feel_yaw)
         * Quat::from_rotation_x(view_feel_pitch)
         * Quat::from_rotation_z(view_feel_roll);
-    glam::Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, BASE_OFFSET + bob_offset)
+    let (placement_offset, placement_rotation) =
+        placement.map_or((BASE_OFFSET, Quat::IDENTITY), |placement| {
+            (
+                Vec3::new(
+                    placement.offset.right,
+                    placement.offset.up,
+                    -placement.offset.forward,
+                ),
+                Quat::from_rotation_y(placement.rotation.yaw.to_radians())
+                    * Quat::from_rotation_x(placement.rotation.pitch.to_radians())
+                    * Quat::from_rotation_z(placement.rotation.roll.to_radians()),
+            )
+        });
+    glam::Mat4::from_scale_rotation_translation(
+        Vec3::ONE,
+        sway_rotation * placement_rotation,
+        placement_offset + bob_offset,
+    )
 }
 
 /// Convert camera-relative weapon placement to a world transform. The dedicated
@@ -1391,6 +1412,7 @@ fn viewmodel_world_transform(
     view_feel_roll: f32,
     view_feel_yaw: f32,
     view_feel_pitch: f32,
+    placement: Option<&WeaponPlacementDescriptor>,
 ) -> glam::Mat4 {
     view_matrix.inverse()
         * viewmodel_camera_space_transform(
@@ -1399,6 +1421,7 @@ fn viewmodel_world_transform(
             view_feel_roll,
             view_feel_yaw,
             view_feel_pitch,
+            placement,
         )
 }
 
@@ -3759,7 +3782,9 @@ impl ApplicationHandler for App {
                         if let Some(local_pawn) = followed_player_pawn(&registry) {
                             let viewmodel =
                                 local_viewmodel_asset(&registry, local_pawn, &descriptors.entities)
-                                    .map(|(weapon, model)| (weapon.to_raw(), model))
+                                    .map(|(weapon, model, placement)| {
+                                        (weapon.to_raw(), model, placement)
+                                    })
                                     .or_else(|| {
                                         session.net_endpoint.as_ref().and_then(|endpoint| {
                                             match endpoint {
@@ -3774,12 +3799,14 @@ impl ApplicationHandler for App {
                                                             &descriptors.entities,
                                                         )
                                                     })
-                                                    .map(|model| (local_pawn.to_raw(), model)),
+                                                    .map(|(model, placement)| {
+                                                        (local_pawn.to_raw(), model, placement)
+                                                    }),
                                                 netcode::NetEndpoint::Host { .. } => None,
                                             }
                                         })
                                     });
-                            if let Some((weapon_seed, model)) = viewmodel {
+                            if let Some((weapon_seed, model, placement)) = viewmodel {
                                 session.mesh_render.collect_viewmodel(
                                     model,
                                     viewmodel_world_transform(
@@ -3789,6 +3816,7 @@ impl ApplicationHandler for App {
                                         vf_roll,
                                         vf_yaw_offset,
                                         vf_pitch_offset,
+                                        placement.as_ref(),
                                     ),
                                     weapon_seed,
                                 );
@@ -8444,6 +8472,7 @@ mod tests {
     fn weapon_viewmodel_descriptor(
         canonical_name: &str,
         viewmodel: Option<&str>,
+        placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
             canonical_name: Some(canonical_name.to_owned()),
@@ -8463,6 +8492,7 @@ mod tests {
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),
+                placement,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
@@ -8500,11 +8530,38 @@ mod tests {
         let descriptors = vec![weapon_viewmodel_descriptor(
             "reference_pistol",
             Some("models/pistol/view.gltf"),
+            Some(WeaponPlacementDescriptor {
+                offset: postretro_foundation::PlacementOffset {
+                    right: 0.4,
+                    up: -0.2,
+                    forward: 0.7,
+                },
+                rotation: postretro_foundation::PlacementRotation {
+                    yaw: 15.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                },
+            }),
         )];
 
         assert_eq!(
             local_viewmodel_asset(&registry, pawn, &descriptors),
-            Some((weapon, "models/pistol/view.gltf")),
+            Some((
+                weapon,
+                "models/pistol/view.gltf",
+                Some(WeaponPlacementDescriptor {
+                    offset: postretro_foundation::PlacementOffset {
+                        right: 0.4,
+                        up: -0.2,
+                        forward: 0.7,
+                    },
+                    rotation: postretro_foundation::PlacementRotation {
+                        yaw: 15.0,
+                        pitch: 0.0,
+                        roll: 0.0,
+                    },
+                }),
+            )),
         );
     }
 
@@ -8535,7 +8592,7 @@ mod tests {
             local_viewmodel_asset(
                 &registry,
                 pawn,
-                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+                &[weapon_viewmodel_descriptor("reference_pistol", None, None)],
             )
             .is_none()
         );
@@ -8546,16 +8603,34 @@ mod tests {
         let descriptors = vec![weapon_viewmodel_descriptor(
             "reference_pistol",
             Some("models/pistol/view.gltf"),
+            Some(WeaponPlacementDescriptor {
+                offset: postretro_foundation::PlacementOffset {
+                    right: 0.1,
+                    up: 0.2,
+                    forward: 0.3,
+                },
+                rotation: postretro_foundation::PlacementRotation::default(),
+            }),
         )];
         assert_eq!(
             viewmodel_asset_for_archetype("reference_pistol", &descriptors),
-            Some("models/pistol/view.gltf")
+            Some((
+                "models/pistol/view.gltf",
+                Some(WeaponPlacementDescriptor {
+                    offset: postretro_foundation::PlacementOffset {
+                        right: 0.1,
+                        up: 0.2,
+                        forward: 0.3,
+                    },
+                    rotation: postretro_foundation::PlacementRotation::default(),
+                }),
+            ))
         );
         assert!(viewmodel_asset_for_archetype("missing", &descriptors).is_none());
         assert!(
             viewmodel_asset_for_archetype(
                 "reference_pistol",
-                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+                &[weapon_viewmodel_descriptor("reference_pistol", None, None)],
             )
             .is_none()
         );
@@ -8563,8 +8638,14 @@ mod tests {
 
     #[test]
     fn viewmodel_transform_applies_view_feel_offsets_without_world_camera_rotation() {
-        let transform =
-            viewmodel_camera_space_transform(Vec3::X, Vec3::new(0.1, 0.2, 0.3), 0.1, 0.2, -0.3);
+        let transform = viewmodel_camera_space_transform(
+            Vec3::X,
+            Vec3::new(0.1, 0.2, 0.3),
+            0.1,
+            0.2,
+            -0.3,
+            None,
+        );
         let translation = transform.w_axis.truncate();
 
         assert_eq!(translation, Vec3::new(0.42, -0.08, -0.62));
@@ -8576,11 +8657,99 @@ mod tests {
     }
 
     #[test]
+    fn viewmodel_placement_preserves_legacy_default_and_applies_continuous_authored_offsets() {
+        let camera_right = Vec3::X;
+        let eye_offset = Vec3::new(0.1, 0.2, 0.3);
+        let roll = 0.1;
+        let yaw = 0.2;
+        let pitch = -0.3;
+        let bob_offset = Vec3::new(eye_offset.dot(camera_right), eye_offset.y, 0.0);
+        let legacy = glam::Mat4::from_scale_rotation_translation(
+            Vec3::ONE,
+            Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Quat::from_rotation_z(roll),
+            BASE_OFFSET + bob_offset,
+        );
+        let absent =
+            viewmodel_camera_space_transform(camera_right, eye_offset, roll, yaw, pitch, None);
+        assert_eq!(absent, legacy, "unauthored placement stays byte-identical");
+
+        let base = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.32,
+                up: -0.28,
+                forward: 0.62,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 15.0,
+                pitch: -10.0,
+                roll: 5.0,
+            },
+        };
+        let higher = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                up: base.offset.up + 0.12,
+                ..base.offset.clone()
+            },
+            rotation: base.rotation.clone(),
+        };
+        let base_transform = viewmodel_camera_space_transform(
+            camera_right,
+            eye_offset,
+            roll,
+            yaw,
+            pitch,
+            Some(&base),
+        );
+        let higher_transform = viewmodel_camera_space_transform(
+            camera_right,
+            eye_offset,
+            roll,
+            yaw,
+            pitch,
+            Some(&higher),
+        );
+
+        assert_ne!(
+            base_transform, absent,
+            "authored placement changes the transform"
+        );
+        assert_eq!(
+            base_transform.w_axis, absent.w_axis,
+            "right/up/forward map to +X/+Y/-Z without sway rotating the placement offset"
+        );
+        assert_eq!(
+            base_transform,
+            glam::Mat4::from_scale_rotation_translation(
+                Vec3::ONE,
+                (Quat::from_rotation_y(yaw)
+                    * Quat::from_rotation_x(pitch)
+                    * Quat::from_rotation_z(roll))
+                    * (Quat::from_rotation_y(15_f32.to_radians())
+                        * Quat::from_rotation_x((-10_f32).to_radians())
+                        * Quat::from_rotation_z(5_f32.to_radians())),
+                Vec3::new(0.32, -0.28, -0.62) + bob_offset,
+            ),
+            "placement rotation is yaw × pitch × roll below render-only sway"
+        );
+        assert_ne!(base_transform, higher_transform);
+        assert!(
+            (higher_transform.w_axis.y - base_transform.w_axis.y - 0.12).abs() <= 1.0e-6,
+            "vertical placement changes camera-space height continuously",
+        );
+        assert_ne!(
+            base_transform.x_axis.truncate(),
+            absent.x_axis.truncate(),
+            "authored placement rotation composes under sway"
+        );
+    }
+
+    #[test]
     fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
         let view =
             glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
-        let camera_space = viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
-        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
+        let camera_space =
+            viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, None);
+        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, None);
         let model_point = Vec3::new(0.1, 0.2, -0.3).extend(1.0);
 
         assert!(

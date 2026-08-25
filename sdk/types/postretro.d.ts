@@ -399,6 +399,34 @@ declare module "postretro" {
     /** Finite magazine-and-reserve ammunition. */
     | ({ kind: "ammo" } & AmmoResource);
 
+  /** First-person weapon position in metres from screen center. `right`, `up`, and `forward` map to camera-space +X, +Y, and -Z respectively. Omitted fields default to 0; omitting the whole placement keeps the legacy BASE_OFFSET. */
+  export type PlacementOffset = {
+    /** Metres right from screen center, mapped to camera-space +X. Defaults to 0; use a finite number. */
+    right?: number;
+    /** Metres up from screen center, mapped to camera-space +Y. Defaults to 0; use a finite number. */
+    up?: number;
+    /** Metres forward toward the aim, mapped to camera-space -Z. Defaults to 0; use a finite number. */
+    forward?: number;
+  };
+
+  /** First-person weapon orientation in degrees about the camera origin. Omitted fields default to zero rotation. */
+  export type PlacementRotation = {
+    /** Yaw in degrees around camera up. Defaults to 0; use a finite number. */
+    yaw?: number;
+    /** Pitch in degrees around camera right. Defaults to 0; use a finite number. */
+    pitch?: number;
+    /** Roll in degrees around camera forward. Defaults to 0; use a finite number. */
+    roll?: number;
+  };
+
+  /** Authored first-person weapon placement. Position is in metres from screen center and rotation is in degrees. Omit `placement` on a weapon to preserve the legacy BASE_OFFSET with zero rotation. */
+  export type WeaponPlacementDescriptor = {
+    /** Optional camera-relative position in metres: right/up/forward map to +X/+Y/-Z. Omit fields for 0. */
+    positionFromCenter?: PlacementOffset;
+    /** Optional camera-relative rotation in degrees. Omit fields for zero rotation. */
+    rotation?: PlacementRotation;
+  };
+
   /** Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor. */
   export type WeaponDescriptor = {
     /** Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0. */
@@ -423,6 +451,8 @@ declare module "postretro" {
     thirdPersonModel?: string;
     /** Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
     viewmodel?: string;
+    /** Optional first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Omit it for the legacy BASE_OFFSET and zero rotation; it never changes the third-person hand socket. */
+    placement?: WeaponPlacementDescriptor;
     /** Optional weapon resource tuning. Omit to preserve unlimited-fire behavior. */
     resource?: WeaponResource;
     /** Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick. */

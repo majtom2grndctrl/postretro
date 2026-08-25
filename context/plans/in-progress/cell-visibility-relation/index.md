@@ -126,8 +126,13 @@ commitments**, divergences 1–2); this spec's direction stands or falls with it
 
 The cost this direction accepts: **storage, not bake time.** Reachability is a looser gate than
 sightline, so in a connected level most pairs are perceivable and carry graded values — the graded
-side-table can approach N². v1 bounds it with a generous coupling cap (below); the exact profile is
-measurable only when real maps exist (fixtures are synthetic — see `research.md`). So the go decision
+side-table can approach N². v1 bounds it with **two** structural caps: a generous coupling *distance*
+cap (a coarse pre-filter on path length) and a per-cell *fanout* cap that keeps only each cell's `K`
+nearest coupled partners — a hard `O(N·K)` bound on both the stored count *and* the bake's peak working
+set (the reduction is applied per source, so the full N² distance matrix is never materialized). The
+distance cap alone gives neither, because distance bounds path *length*, not pair *count* (a spatially
+compact but densely-connected region keeps ~N² pairs within any distance cap). The right magnitudes are measurable only when real maps
+exist (fixtures are synthetic — see `research.md`). So the go decision
 rests partly on an unvalidated bet — that the graded axes cull hard enough and the capped side-table
 stays affordable — taken with eyes open because the direction is a two-way door: backing out deletes
 an optional section, a `LevelWorld` field, and four accessors (the two `LevelWorld` query accessors
@@ -147,9 +152,11 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
   portal-path relation — and is verified by AC2's equality to the BFS reachable set (reachable ⊇
   visible ⊇ ∅, zero false negatives).
 - [ ] AC4 — With a section loaded, `distance(a, b)` is `Some` exactly on perceivable off-diagonal
-  pairs within the coupling cap (`distance <= cap`, compared in the same fixed-point domain as the
-  stored value) and `None` otherwise (diagonal, non-perceivable, beyond cap i.e. `distance > cap`, or a
-  pair touching a faceless invalid-bounds cell that contributes no metric node — coupled-but-no-graded);
+  pairs that are stored (`distance <= cap` in the same fixed-point domain as the stored value, AND the
+  pair is among either endpoint's `K` nearest coupled partners — the per-cell fanout cap) and `None`
+  otherwise (diagonal, non-perceivable, beyond the distance cap i.e. `distance > cap`, beyond the
+  fanout cap, or a pair touching a faceless invalid-bounds cell that contributes no metric node — all
+  coupled-but-no-graded);
   symmetric; equals the shortest portal-graph path length under the pinned edge metric (Task-1
   fixed-point scale); deterministic across recompiles.
 - [ ] AC5 — `aperture(a, b)` is `Some` on the same coupled pairs as `distance` and `None` otherwise;
@@ -163,8 +170,11 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
 - [ ] AC7 — `xtask observe` / `--headless` with a `cell_visibility` dump emits the relation as JSON:
   the `u32[cell_count]` component-id array (the reachability gate, inspectable independent of the
   coupled-pair list) alongside one entry per unordered off-diagonal pair with `cell_a < cell_b` that is
-  coupled (perceivable and within the cap — the informative set; diagonal omitted), sorted ascending by
-  `(cell_a, cell_b)`; `distance`/`aperture` serialize as their integer or `null`. Two identical runs are
+  coupled and stored (perceivable, within the distance cap, and within either endpoint's fanout — the
+  informative set; diagonal omitted), sorted ascending by
+  `(cell_a, cell_b)`; `distance`/`aperture` serialize as integers — a stored pair always carries both
+  graded values (AC5: `aperture` is `Some` on exactly the pairs `distance` is), so `null` never appears
+  in the pair array in v1 (the JSON stays nullable for forward-compat). Two identical runs are
   byte-identical.
 - [ ] AC8 — (Review/grep gate, not a runnable test.) The query API names only cell types (`CellId`,
   cell-count). No `Player`, `Entity`, `ClientId`, `Sound`, `Projectile`, or relevance/audible/
@@ -178,16 +188,24 @@ plus the two dump-facing accessors on `CellVisibility`), with zero consumer chur
 - [ ] AC10 — Two compiles of the same fixture produce byte-identical `CellVisibility` section bytes
   (bake is deterministic; no HashSet/HashMap iteration order leaks into output; no wall-clock value
   branches the bake; float-derived weights resolved through a pinned tie-break and fixed-point scale).
-- [ ] AC11 — The coupling cap bounds the graded side-table: pairs whose `distance` exceeds the
-  pinned cap (`distance > cap`, in the same fixed-point domain as the stored `distance`) are omitted
-  (perceivable stays true; `distance`/`aperture` read `None` — coupled but beyond the stored horizon).
-  The cap choice is the only difference and is deterministic given the cap. On an uncapped small
-  fixture the table holds every reachable off-diagonal pair. The omission boundary is unit-tested via a
-  cap parameter on the side-table-assembly function (a small cap over a hand-built graph exercises
-  `distance == cap` stored / `distance == cap+1` omitted, pin P7), since the generous production cap is
-  never crossed by a synthetic fixture. The shipped `cell_visibility_bake` stage binds this parameter to
-  the `pub const` cap; only unit tests pass another value, so no stray cap value can leak into the
-  shipped bytes (P9).
+- [ ] AC11 — Two structural caps bound the graded side-table to a hard `O(N·K)` entry count.
+  (a) The coupling **distance cap**: a directed candidate `(s→t)` with `D(s→t) > cap` is dropped.
+  (b) The per-cell **fanout cap** `K`: among its in-cap partners (`D(s→t) <= cap`), each cell keeps only
+  its `K` nearest by `(D(s→t), partner id)`, reduced per source inside the Dijkstra pass; a pair is
+  stored iff it is among *either* endpoint's `K` nearest (union — preserving symmetry), with the stored
+  value the kept direction's (min→max tie-break when both keep it) so it always passed a per-source cap
+  — membership, cap, and stored value are the same number, no pair stored with `distance > cap`. The
+  total is `<= N·K` entries regardless of density, and this bounds **both** the emitted side-table and
+  the bake's peak working set: the full N² distance matrix is never materialized, so a compact dense map
+  neither blows the table nor OOMs the bake. (The distance cap bounds path length, not pair count; the
+  fanout cap bounds count and bake memory.) Omitted pairs stay perceivable; `distance`/`aperture` read
+  `None` (coupled-but-no-graded). Both caps are deterministic given their pinned values. On a small fixture left effectively uncapped (distance cap
+  high, `K >= cell_count`) the table holds every reachable off-diagonal pair. The omission boundaries
+  are unit-tested via cap/fanout parameters on the side-table-assembly function: a small distance cap
+  exercises `distance == cap` stored / `distance == cap+1` omitted (pin P7); a small `K` over a
+  hand-built graph exercises the top-`K`-by-distance selection and the union-store symmetry (pin P10).
+  The shipped `cell_visibility_bake` stage binds both parameters to their `pub const`s; only unit tests
+  pass other values, so no stray value leaks into the shipped bytes (P9).
 - [ ] AC12 — The bake stage logs its duration through the Build Summary path, so the cost is visible
   on the first real-map compile. (Wiring gate — provable by the stage-contract test confirming
   `CellVisibility` is in `ORDERED_STAGES` and the stage calls `finish_stage`.)
@@ -209,11 +227,15 @@ count; reject `0`); a per-cell **component id** array (`u32[cell_count]` — the
 `perceivable(a,b) = component[a] == component[b]`); and a count-prefixed, ascending-sorted
 `(cell_a, cell_b, distance, aperture)` graded side-table with `cell_a < cell_b`, present only on
 coupled pairs (empty list encodes as count `0`). Pin the `distance` and `aperture` fixed-point
-scales, and the coupling `distance` cap, as named `pub const`s in the section module (chosen from the
+scales, the coupling `distance` cap, and the per-cell **fanout cap** `K` (max stored coupled partners
+per cell — the hard count bound), as named `pub const`s in the section module (chosen from the
 map world-bound budget; scales' fractional bits + representable maxima fixed once) so Task 2 reads
-them from source. Pin the cap in the same domain as the stored `distance` (fixed-point `u32` counts, at
-the Task-1 scale), and pin the boundary operator: `distance <= cap` → stored; `distance > cap` →
-omitted (`perceivable` stays true, graded `None`). Add a bake stage `cell_visibility_bake` (name the stage function so Task 2 can locate it) after
+them from source. Pin the distance cap in the same domain as the stored `distance` (fixed-point `u32`
+counts, at the Task-1 scale), and pin the boundary operator: `distance <= cap` → stored; `distance >
+cap` → omitted (`perceivable` stays true, graded `None`). Pin `K` so **both** the side-table and the
+bake's peak working set stay `<= N·K` regardless of density: each cell keeps its `K` nearest coupled
+partners by `distance` (reduced per source inside the Dijkstra pass — the full N² matrix is never
+materialized), and a pair is stored if *either* endpoint keeps it (union — preserving symmetry). Add a bake stage `cell_visibility_bake` (name the stage function so Task 2 can locate it) after
 `BvhBuild` in `crates/level-compiler/src/pipeline.rs`. `cell_draw_index_bake`
 is the template only for the bytes-held-and-handed-into-`pack_and_write_portals` pattern: consuming
 `result.tree` (or `vis_result.leaves_section`), `generated_portals`, and `exterior_leaves`, and
@@ -301,12 +323,25 @@ at the Task-1-pinned fixed-point scales — read the named `pub const`s from the
 receives neither Task 1's paragraph nor the Wire-format section); assert every value fits its
 representable range and clamp-with-warning at the maximum rather than wrapping.
 
-The **coupling cap** (AC11) bounds storage: a pair whose `distance` exceeds the pinned cap is omitted
-from the side-table entirely (both axes) — it stays perceivable (same component) but reads
-`distance`/`aperture` `None`, i.e. coupled-but-beyond-the-stored-horizon. The cap is a structural
-storage bound, set generously (beyond any plausible consumer's range), not a consumer policy; it is
-the determinism-preserving guardrail against N² storage blow-up on large connected maps. On the small
-fixtures leave it effectively uncapped so tests see the full reachable set.
+Storage is bounded (AC11) by two structural caps applied in order. First the **distance cap**: a pair
+whose `distance` exceeds the pinned cap is dropped — a coarse pre-filter on path length. But the
+distance cap does not bound *count*: a spatially compact, densely-connected component keeps ~N² pairs
+within any cap, so the distance cap alone can still blow the side-table on a large map. So second, the
+**per-cell fanout cap** `K`: for each source cell, among its in-cap coupled partners (`D(s→t) <= cap`),
+keep only the `K` nearest by `(D(s→t), partner cell id)` — per source, reduced inside the Dijkstra pass
+(pin P10) — then store an unordered pair iff it survives in *either* endpoint's kept set. The stored
+value is the kept direction's (min→max when both keep it), so it always passed a per-source cap: the
+cap filter and the stored value are the same number, and no pair is stored with distance `> cap`. This
+keep-set union keeps the relation symmetric (each stored pair is one `(min,max)` entry, reachable from
+both ends) and bounds **both** the emitted table and the bake's peak working set at `<= N·K` — the full
+N² distance matrix is never materialized (each source reduces to its top-`K` before the next), so a
+spatially compact, densely-connected map neither blows the side-table nor exhausts memory during the
+bake. A dropped pair (beyond the distance cap, or beyond both endpoints' fanout) stays perceivable
+(same component) and reads `distance`/`aperture` `None` — coupled-but-beyond-the-stored-horizon. Both
+caps are structural bounds set generously (beyond any plausible consumer's range), not consumer policy.
+On the small fixtures leave both effectively uncapped (distance cap high, `K >= cell_count`) so tests
+see the full reachable set. `aperture` is stored on exactly the pairs `distance` is (the fanout ranks by
+`distance`; both axes ride the same surviving set, aperture queried from the max-spanning tree).
 
 Determinism (AC10): build adjacency as `Vec`s in a fixed portal order; key the Dijkstra frontier on
 `(cost, node_id)` — `node_id` is a single injective index over all frontier node kinds (portal-centroid
@@ -317,39 +352,60 @@ break equal-aperture ties in the maximum spanning tree by portal index; no HashM
 order feeds component-id assignment, relaxation, tree order, side-table pair collection, or
 serialization (see Determinism pins P2/P3) — component ids are assigned by an explicit sort of distinct
 representatives ascending (not first-seen HashMap iteration), so "dense from 0 in ascending
-representative order" is a pinned procedure, not only a pinned result. Assemble the side-table by
-iterating source cells in ascending id and emitting only targets `t > s`, so each unordered pair's
-stored value comes from `Dijkstra(min→max)` exactly once — no dedup HashMap, no cross-direction
-last-write-wins reconciliation (float addition is non-associative, so `a→b` and `b→a` can round to
-adjacent fixed-point integers). If the per-source Dijkstra is run under `rayon` `into_par_iter()` for
-speed (optional — it is cheap single-threaded), collect rows index-aligned to cell id via an
-order-preserving collect, never a completion-order push (pin P1). Task 1's `coupling` accessor already
+representative order" is a pinned procedure, not only a pinned result. Assemble the side-table with
+**bounded peak memory** — never materialize the full N² distance matrix. (1) Run per-source Dijkstra,
+but reduce each source `s`'s result to that source's top-`K` in-cap partners *inside the pass* —
+`topK(s)` = the `K` nearest `t` with `D(s→t) <= cap`, ranked by `(D(s→t), partner_id)` (pin P10),
+retaining only `(t, D(s→t))` per kept partner (`O(K)` per source, `O(N·K)` total; the full `O(N)`
+distance vector is discarded once reduced). (2) Keep an unordered pair `{s,t}` iff `t ∈ topK(s)` or
+`s ∈ topK(t)` (the keep-set union — symmetric). (3) Store each kept pair `{a,b}`, `a < b`, once as
+`(min,max)`; its value is the kept direction's — `D(a→b)` if `b ∈ topK(a)`, else `D(b→a)`, and `D(a→b)`
+(min→max) when both keep it (a deterministic tie-break, pin P8). Both directions are individually
+deterministic (pin P2) and each passed its per-source cap, so the stored value is deterministic and
+always `<= cap` — the cap filter and the stored value are the same number by construction, never a
+completion-order or last-write-wins dedup. `aperture` rides the same kept set, queried from the
+max-spanning tree (`O(V)`, not per-source). Emit kept pairs sorted by `(cell_a,cell_b)` (pin P4). If the
+per-source Dijkstra runs under `rayon` `into_par_iter()` (optional — cheap single-threaded), each task
+returns its reduced `topK(s)` (never its full distance vector); collect those index-aligned to cell id
+via an order-preserving collect, never a completion-order push (pin P1). Task 1's `coupling` accessor already
 reads the side-table, so filling it here makes the accessor return `Some` on coupled pairs with no
 `crates/level-loader` edit — Task 2's changes stay in `crates/level-compiler` (the `cell_visibility_bake`
-stage Task 1 created). The side-table-assembly function takes the coupling cap as a parameter (the
-`pub const` is the production default), so a unit test can drive a small cap to exercise the omission
-boundary (AC11 / pin P7) without a fixture that crosses the generous production cap. Tests:
+stage Task 1 created). The side-table-assembly function takes both the coupling cap and the fanout `K`
+as parameters (the `pub const`s are the production defaults), so unit tests can drive a small cap
+(AC11 / pin P7) or a small `K` (pin P10) to exercise both omission boundaries without a fixture that
+crosses the generous production values. Tests:
 `distance`/`aperture` present exactly
-on coupled off-diagonal pairs and absent on diagonal/non-perceivable/beyond-cap pairs; both symmetric;
-`distance` matches an independent shortest-path oracle and `aperture` an independent bottleneck oracle
-on a fixture (same-metric oracles validate the relaxation/tree and determinism, not the metric
-choice, which is a pinned design decision); a small-cap unit test confirms `distance == cap` stored /
-`distance == cap+1` omitted (perceivable stays true); an over-range value drives the clamp-with-warning
-path (the small fixtures never approach u32 max); deterministic across recompiles.
+on stored coupled off-diagonal pairs and absent on diagonal/non-perceivable/beyond-cap/beyond-fanout
+pairs; both symmetric; `distance` matches an independent shortest-path oracle and `aperture` an
+independent bottleneck oracle on a fixture (same-metric oracles validate the relaxation/tree and
+determinism, not the metric choice, which is a pinned design decision). The independent oracle
+validates *values* only; fanout-membership ("stored exactly on within-cap ∩ within-either-endpoint's-
+`K`-nearest pairs") is checked by the uncapped `K >= cell_count` property fixtures (where it reduces to
+the BFS reachable set) and the hand-built small-`K` unit test — never by an oracle that re-derives the
+top-`K` union, which would test the impl against a copy of itself. A small-cap unit test confirms
+`distance == cap` stored / `distance == cap+1` omitted (perceivable stays true); a small-`K` unit test
+confirms each cell stores at most its `K` nearest partners, the keep-set union is symmetric (a pair
+kept by one endpoint is present for both), and the table holds `<= N·K` entries; an over-range value
+drives the clamp-with-warning path (the small fixtures never approach u32 max); deterministic across
+recompiles.
 
 ### Task 3: Observability dump
 
 Add a `cell_visibility` dump option to the headless runner so the baked relation is inspectable as
 deterministic JSON. Extend `DumpSpec` (`crates/postretro/src/observability/runspec.rs`) with the
 option; add a record type + `OutputDocument` field in `observability/document.rs`; widen
-`build_output_document` to also receive the loaded relation (the driver has `world` in scope, so the
-`driver.rs` call-site change is trivial — this is the one signature the dump needs beyond the
-registry). Emit the `u32[cell_count]` component-id array (O(V), cheap) as a sibling field alongside a
+`build_output_document` to also receive `&world` (the driver has it in scope, so the `driver.rs`
+call-site change is trivial — the one signature the dump needs beyond the registry). Pass the world,
+not just `Option<CellVisibility>`: under the fallback (relation `None`) the dump still emits the trivial
+single-component array of length `cell_count`, which it reads from `LevelWorld::cell_count()` — the
+`None` relation cannot supply it. Emit the `u32[cell_count]` component-id array (O(V), cheap) as a sibling field alongside a
 JSON array of `{ cell_a, cell_b, distance, aperture }` entries, so the reachability gate — the
 `perceivable` component partition AC2/AC3 rest on — is inspectable independently of the coupled-pair
-list, distinguishing "different component" from "same component but beyond cap". The pair array holds
-one entry per unordered off-diagonal pair `cell_a < cell_b` that is coupled (perceivable and within the
-cap; diagonal omitted; non-coupled pairs absent), `distance`/`aperture` as their integer or `null` —
+list, distinguishing "different component" from "same component but not stored". The pair array holds
+one entry per unordered off-diagonal pair `cell_a < cell_b` that is coupled and stored (perceivable,
+within the distance cap, and within either endpoint's fanout; diagonal omitted; non-stored pairs
+absent), `distance`/`aperture` as integers (both always present for a stored pair; no `null` in the
+pair array in v1) —
 **pre-sorted ascending by `(cell_a, cell_b)`** by the producer, because `to_deterministic_json` sorts
 object keys but leaves arrays in data order (see Determinism pin P4). Consumes only Task 1's runtime
 type via its component-id slice accessor and coupled-pairs iterator (both exposed by Task 1), so it is
@@ -384,18 +440,22 @@ Mirrors the little-endian, u32-count conventions of `cells.rs` / `cell_locator.r
   in ascending lowest-member-cell order (determinism). This is `O(cell_count)` storage — the gate
   never materializes an N² matrix.
 - **Graded side-table** — a count-prefixed, ascending-sorted list of
-  `(cell_a, cell_b, distance, aperture)` records with `cell_a < cell_b`, present only for coupled
-  off-diagonal pairs (same component and within the `distance` cap); `distance` and `aperture` as u32
-  fixed-point at scales **pinned in Task 1** (fractional bits + representable maxima fixed once). Task
-  2 asserts every value fits and clamps-with-warning at u32 max rather than wrapping. Empty list
+  `(cell_a, cell_b, distance, aperture)` records with `cell_a < cell_b`, present only for *stored*
+  coupled off-diagonal pairs (same component, within the `distance` cap, and within either endpoint's
+  per-cell fanout cap `K` — so the list is `<= N·K` entries, never N²); `distance` and `aperture` as
+  u32 fixed-point at scales **pinned in Task 1** (fractional bits + representable maxima fixed once).
+  Task 2 asserts every value fits and clamps-with-warning at u32 max rather than wrapping. Empty list
   (v1 Task-1 placeholder, or a map with no coupled pairs) encodes as count `0`.
-- The **coupling cap** (a pinned `pub const` distance threshold, in the same fixed-point domain as the
-  stored `distance`) bounds the side-table: `distance <= cap` is stored, `distance > cap` is omitted
-  and reads as perceivable-with-`None`-graded-values. Generous and structural, not a consumer range
-  policy. `CouplingTuple`'s `distance`/`aperture` `None` means "no graded detail" and covers BOTH the
-  conservative fallback AND a perceivable-but-beyond-cap pair; a consumer must NOT infer "no bake
-  present" from `None`. This ambiguity is not resolved with a new flag or sentinel in v1 — that is a
-  separate deferred decision.
+- **Two storage caps** (pinned `pub const`s), generous and structural, not consumer range policy. The
+  **distance cap** (same fixed-point domain as the stored `distance`) drops `distance > cap` — a
+  path-length pre-filter. The **per-cell fanout cap** `K` then keeps only each cell's `K` nearest
+  coupled partners by `distance`, storing a pair iff *either* endpoint keeps it (union). The distance
+  cap bounds path length, not count; the fanout cap is the hard count bound (`<= N·K`), so a spatially
+  compact, densely-connected component cannot blow the side-table to N². `CouplingTuple`'s
+  `distance`/`aperture` `None` means "no graded detail" and covers the conservative fallback, a
+  beyond-distance-cap pair, AND a beyond-fanout pair; a consumer must NOT infer "no bake present" from
+  `None`. Distinguishing those cases is not resolved with a flag or sentinel in v1 — a separate
+  deferred decision.
 - No sightline axis in v1. The deferred sightline refinement lands at a `CELL_VISIBILITY_VERSION`
   bump as an added per-pair bit / column, additively — it does not alter the three v1 fields.
 - The section is a recompile-everything artifact; determinism (AC10) requires the bake to emit the
@@ -407,11 +467,11 @@ Mirrors the little-endian, u32-count conventions of `cells.rs` / `cell_locator.r
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | Conservative gate — `perceivable` never omits a pair with any real coupling (zero false negatives) | Task 1 (component = portal-reachability) | Any future gate tightening must stay a conservative superset; the deferred sightline lands as a *separate* axis, never narrowing `perceivable` | AC2, AC3 |
-| Symmetric — `perceivable`, `distance`, `aperture` all symmetric | Task 1 (undirected components), Task 2 (undirected graph → symmetric paths) | Side-table stores one `(min,max)` entry; query canonicalizes the pair | AC2, AC4, AC5 |
+| Symmetric — `perceivable`, `distance`, `aperture` all symmetric | Task 1 (undirected components), Task 2 (undirected graph → symmetric paths) | Side-table stores one `(min,max)` entry; query canonicalizes the pair; the fanout keep-set is unioned across both endpoints, so a pair kept by one is present for both | AC2, AC4, AC5 |
 | `perceivable` is sole cull authority; graded axes modulate only, never gate | Task 2 (`distance`/`aperture` defined only on perceivable pairs) | Consumers/tests must not hard-cull on a scalar threshold | — (designed-for; no consumer wired in this build, so no verifying AC — enforced by consumers in their epics) |
 | Reconciliation errs toward more coupling (min `distance`, max `aperture`) | Task 2 | N/A in v1 (symmetric by construction — no merge to reconcile); reserved for the deferred dynamic-mask layer | N/A in v1 (symmetric by construction — no merge to reconcile); reserved for the deferred dynamic-mask layer |
 | Optional section → conservative fallback (all perceivable, no graded detail) | Task 1 (loader `None` path) | Loader default must be all-true, never all-false | AC1 |
-| Coupling cap bounds storage without a false negative | Task 2 (cap omits graded detail, keeps `perceivable`) | Cap must drop only graded values, never a component-gate bit | AC11 |
+| Distance cap + per-cell fanout cap `K` bound storage (`<= N·K`) without a false negative | Task 2 (caps omit graded detail, keep `perceivable`) | Caps drop only graded values, never a component-gate bit; the distance cap bounds path length while the fanout cap bounds count; fanout must union both endpoints' keep-sets or symmetry breaks | AC11 |
 | Deterministic bake + dump (byte-identical) | Task 1 (fixed emit order), Task 2 (pinned tie-breaks + fixed-point), Task 3 (pre-sorted pairs) | HashSet/HashMap iteration order; Dijkstra/MST tie-break; parallel reassembly order (P1); no wall-clock branch | AC7, AC10 |
 | `CellVisibility` bake-stage cost is observable | Task 1 (stage bracketed with `begin_stage`/`finish_stage`; Task 2 inherits it) | Timing must not branch output (diagnostic only) | AC12 |
 | CellId-only neutral query surface | Task 1 (query API) | Any consumer wiring or API addition | AC8, AC9 |
@@ -429,11 +489,12 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
 | P2 | Two `a→b` paths equal to last-ULP under different float accumulation orders | Deterministic `Vec` adjacency in portal order; Dijkstra frontier keyed `(cost, node_id)` | Identical stored fixed-point `distance` across recompiles (AC4, AC10) |
 | P3 | Two spanning trees tie on an aperture-equal edge | Maximum spanning tree breaks equal-aperture ties by portal index; no HashSet/HashMap iteration in tree construction | Identical stored `aperture` across recompiles (AC5, AC10) |
 | P4 | Coupled pairs discovered in arbitrary order before serialization | Component array in cell order; side-table sorted by `(cell_a,cell_b)`, `cell_a<cell_b`; dump pre-sorts identically | Byte-identical section and dump (AC7, AC10) |
-| P5 | Large connected map whose longest path exceeds the fixed-point range or whose pair count blows up | Task 1 pins distance/aperture scales + representable maxima and the coupling cap; Task 2 asserts fit (clamp-with-warning) and omits beyond-cap pairs | Bounded, non-wrapping side-table; overflow is a loud diagnostic (AC11) |
+| P5 | Large connected map whose longest path exceeds the fixed-point range (path length) OR whose in-cap pair count blows up (a spatially compact, densely-connected component — the distance cap does NOT bound count) | Task 1 pins distance/aperture scales + representable maxima (fit); the **distance cap** bounds path length and the **per-cell fanout cap `K`** bounds count at `<= N·K`; Task 2 asserts fit (clamp-with-warning), omits beyond-distance-cap pairs, and reduces each source to its `K` nearest inside the Dijkstra pass (union across endpoints; full N² matrix never materialized) | Bounded, non-wrapping side-table AND bake working set (`<= N·K`); overflow is a loud diagnostic (AC11) |
 | P6 | Task 1 adds `StageId::CellVisibility` to the stage list | `ORDERED_STAGES`, `label`/`progress_label`, and `planned_stage_contract_pins_order_labels_and_sdf_prediction` updated together: the `[StageId; 22]` type annotation (→23), both `assert_eq!(...len(), 22)` sites (→23), both `[19]` ordinal assertions (`without_sdf`/`with_sdf`, each →`[20]`), and the label-vector insert between `"BVH Build"` and `"NavMesh"`; no new `predicted_present` arm needed (inherits `true` via `id != SdfAtlasBake \|\| needs_sdf`) | Build Summary shows the stage duration (AC12); stage-contract test green; `.prl` bytes identical across runs (timing contributes no bytes) |
 | P7 | Pair with `distance` exactly `== cap` and pair `== cap+1` | Cap compare is `distance <= cap` stored / `> cap` omitted, in fixed-point domain | `==cap` stored with graded values; `==cap+1` perceivable with `None` graded (AC4, AC11) |
-| P8 | Path `a→b` and `b→a` sum identical edges in opposite float order, rounding to adjacent integers at a fixed-point boundary | Every unordered pair's value comes from `Dijkstra(min→max)` only (iterate sources ascending, emit targets `t>s`); no dedup map | One deterministic stored distance/aperture per pair, byte-identical across serial/parallel builds (AC10) — distinct from P1 (per-source row reassembly, not the two-direction pair-value choice) |
-| P9 | Side-table-assembly fn is cap-parameterized; a unit test passes a small cap, the shipped bake must not | The `cell_visibility_bake` stage binds `cap = <the pub const>`; only tests pass another value | Shipped side-table always reflects the production cap; two compiles byte-identical AND the artifact uses the intended cap (AC10, AC11) |
+| P8 | Path `a→b` and `b→a` sum identical edges in opposite float order, rounding to adjacent integers at a fixed-point boundary | Each stored pair's value is its kept direction's `D` — `D(a→b)` if `b∈topK(a)`, else `D(b→a)`, and `D(a→b)` (min→max) when both keep it (a deterministic tie-break); each direction is individually deterministic (P2), and each passed its per-source cap; no completion-order or last-write-wins dedup | One deterministic stored distance/aperture per pair, always `<= cap`, byte-identical across serial/parallel builds (AC10) — distinct from P1 (per-source row reassembly, not the pair-value choice) |
+| P9 | Side-table-assembly fn is cap/fanout-parameterized; a unit test passes a small `cap` or `K`, the shipped bake must not | The `cell_visibility_bake` stage binds `cap` and `K` to their `pub const`s; only tests pass other values | Shipped side-table always reflects the production `cap`/`K`; two compiles byte-identical AND the artifact uses the intended values (AC10, AC11) |
+| P10 | A cell has more than `K` in-cap coupled partners; two compiles could keep a different `K`-subset if the ranking is not a total order | `topK(s)` selected by `(D(s→t), partner_cell_id)` — a total order (partner ids unique), reduced per source inside the Dijkstra pass; the stored set is the union of both endpoints' `topK`; the cap filter and the stored value both use the kept direction's own `D` (P8), so membership, cap, and value agree by construction; no HashSet/HashMap iteration in selection | Identical `K`-nearest selection and stored pair set across recompiles; symmetric (a pair kept by one endpoint present for both); no pair stored with `distance > cap`; `<= N·K` entries and `<= N·K` bake working set (AC10, AC11) |
 
 ## Rough sketch
 
@@ -467,6 +528,20 @@ the bake. Each row is concrete enough to write a test from; the task tests refer
 - **Aperture metric** (portal min-width vs. polygon area) is left to Task 2's implementer within the
   wire-format constraints; both are monotone coupling-quality keys. Flagged so review confirms the
   chosen metric stays deterministic and the widest-path result is symmetric.
-- **Coupling cap value** is pinned by Task 1 but its right magnitude is unmeasurable until real maps
-  exist (fixtures are synthetic). Flagged so review confirms the cap is generous enough not to hide
-  coupling any plausible consumer would use, and that the uncapped-small-fixture test path exists.
+- **Storage-cap magnitudes** — the coupling `distance` cap and the per-cell fanout `K` — are pinned by
+  Task 1 but their right values are unmeasurable until real maps exist (fixtures are synthetic).
+  Flagged so review confirms both are generous enough not to hide coupling any plausible consumer would
+  use (`K` large enough that a cell's real neighbors are never dropped), that `K` gives an acceptable
+  `N·K` storage bound at real-map scale, and that the uncapped/large-`K` small-fixture test path exists.
+  Concrete shape (16 B/entry): at a plausible real-map `N ≈ 10k–50k` cells, `K` in the low tens keeps
+  the table in the tens of MB with the `u32` count orders of magnitude clear (hitting the count ceiling
+  needs `K` in the tens of thousands — implausible), so memory, not the count field, is the binding
+  limit; "generous `K`" vs "small table" is the tension to resolve against real content.
+- **Fanout ranks by `distance` only.** A pair far by path but wide by `aperture` (a long, wide
+  corridor) can be dropped by the fanout even when its aperture is high. Accepted: dropped pairs stay
+  `perceivable` (the gate — audio's potentially-audible set — is intact and conservative) and read
+  `None`/`None` (the same fallback every consumer already handles), and distance-ranking aligns with all
+  three primary consumers (net relevance, AI perception, and audio are all distance-dominant, so a
+  cell's `K` nearest partners are the ones they weight most). The substrate does not preserve
+  high-aperture-but-far pairs in the graded table — an accepted limitation of a distance-ranked fanout,
+  not a bug.

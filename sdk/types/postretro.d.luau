@@ -881,6 +881,8 @@ export type ModManifest = {
   movers: MoverDefaults?,
   --- Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption.
   switching: SwitchingDescriptor?,
+  --- Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket.
+  defaultWeaponPlacement: WeaponPlacementDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
@@ -1743,6 +1745,10 @@ declare function defineMod(config: ModManifestInput): ModManifest
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
+--- Pure identity builder for reusable first-person weapon placement data. The
+--- returned descriptor may be shared by weapon `placement` fields and
+--- `defineMod({ defaultWeaponPlacement = ... })`; no engine registration occurs.
+declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor
 --- Pure identity builder for a trigger-pool declaration returned from a level
 --- or mod manifest. Engine parsing owns arming validation.
 declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
@@ -1805,6 +1811,7 @@ export type ModManifestInput = {
   render: RenderProfile?,
   movers: MoverDefaults?,
   switching: SwitchingDescriptor?,
+  defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
@@ -2416,6 +2423,8 @@ export type PostretroModule = {
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
+  --- Pure identity builder for reusable first-person weapon placement data.
+  defineWeaponPlacement: typeof(defineWeaponPlacement),
   --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning a flattened, frozen schema-keyed handle.

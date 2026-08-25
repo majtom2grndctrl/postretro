@@ -249,6 +249,7 @@ mod tests {
             render: ModRenderProfile::default(),
             movers: Default::default(),
             switching: Default::default(),
+            default_weapon_placement: None,
             entities: vec![entity_descriptor()],
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),

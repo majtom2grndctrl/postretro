@@ -1361,6 +1361,37 @@ fn viewmodel_asset_for_archetype<'a>(
 
 const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
 
+/// Resolve authored first-person weapon placement by whole descriptor. Future
+/// character and per-instance tiers are intentionally parameters only in v1;
+/// callers pass `None` until their real storage homes exist.
+fn resolve_weapon_placement(
+    mod_default: Option<&WeaponPlacementDescriptor>,
+    character: Option<&WeaponPlacementDescriptor>,
+    weapon: Option<&WeaponPlacementDescriptor>,
+    instance: Option<&WeaponPlacementDescriptor>,
+) -> WeaponPlacementDescriptor {
+    instance
+        .or(weapon)
+        .or(character)
+        .or(mod_default)
+        .cloned()
+        .unwrap_or_else(legacy_weapon_placement)
+}
+
+/// The descriptor form of the legacy hard-coded `BASE_OFFSET`. Keeping the
+/// authored labels here means the normal conversion path produces precisely
+/// the same transform for an entirely unauthored weapon.
+fn legacy_weapon_placement() -> WeaponPlacementDescriptor {
+    WeaponPlacementDescriptor {
+        offset: postretro_foundation::PlacementOffset {
+            right: BASE_OFFSET.x,
+            up: BASE_OFFSET.y,
+            forward: -BASE_OFFSET.z,
+        },
+        rotation: postretro_foundation::PlacementRotation::default(),
+    }
+}
+
 /// Camera-space placement of the first-person model. World camera yaw/pitch
 /// intentionally do not appear here: [`viewmodel_world_transform`] applies the
 /// render camera afterward. Render-rate bob, sway, and tilt are composed at this
@@ -1371,7 +1402,7 @@ fn viewmodel_camera_space_transform(
     view_feel_roll: f32,
     view_feel_yaw: f32,
     view_feel_pitch: f32,
-    placement: Option<&WeaponPlacementDescriptor>,
+    placement: &WeaponPlacementDescriptor,
 ) -> glam::Mat4 {
     let bob_offset = Vec3::new(
         view_feel_eye_offset.dot(camera_right),
@@ -1381,19 +1412,14 @@ fn viewmodel_camera_space_transform(
     let sway_rotation = Quat::from_rotation_y(view_feel_yaw)
         * Quat::from_rotation_x(view_feel_pitch)
         * Quat::from_rotation_z(view_feel_roll);
-    let (placement_offset, placement_rotation) =
-        placement.map_or((BASE_OFFSET, Quat::IDENTITY), |placement| {
-            (
-                Vec3::new(
-                    placement.offset.right,
-                    placement.offset.up,
-                    -placement.offset.forward,
-                ),
-                Quat::from_rotation_y(placement.rotation.yaw.to_radians())
-                    * Quat::from_rotation_x(placement.rotation.pitch.to_radians())
-                    * Quat::from_rotation_z(placement.rotation.roll.to_radians()),
-            )
-        });
+    let placement_offset = Vec3::new(
+        placement.offset.right,
+        placement.offset.up,
+        -placement.offset.forward,
+    );
+    let placement_rotation = Quat::from_rotation_y(placement.rotation.yaw.to_radians())
+        * Quat::from_rotation_x(placement.rotation.pitch.to_radians())
+        * Quat::from_rotation_z(placement.rotation.roll.to_radians());
     glam::Mat4::from_scale_rotation_translation(
         Vec3::ONE,
         sway_rotation * placement_rotation,
@@ -1412,7 +1438,7 @@ fn viewmodel_world_transform(
     view_feel_roll: f32,
     view_feel_yaw: f32,
     view_feel_pitch: f32,
-    placement: Option<&WeaponPlacementDescriptor>,
+    placement: &WeaponPlacementDescriptor,
 ) -> glam::Mat4 {
     view_matrix.inverse()
         * viewmodel_camera_space_transform(
@@ -3816,7 +3842,12 @@ impl ApplicationHandler for App {
                                         vf_roll,
                                         vf_yaw_offset,
                                         vf_pitch_offset,
-                                        placement.as_ref(),
+                                        &resolve_weapon_placement(
+                                            descriptors.default_weapon_placement.as_ref(),
+                                            None,
+                                            placement.as_ref(),
+                                            None,
+                                        ),
                                     ),
                                     weapon_seed,
                                 );
@@ -8505,6 +8536,120 @@ mod tests {
         }
     }
 
+    fn placement(right: f32, up: f32, forward: f32, yaw: f32) -> WeaponPlacementDescriptor {
+        WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset { right, up, forward },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn weapon_placement_resolver_uses_whole_value_precedence() {
+        let mod_default = placement(0.10, -0.10, 0.50, 10.0);
+        let character = placement(0.20, -0.20, 0.60, 20.0);
+        let weapon = placement(0.30, -0.30, 0.70, 30.0);
+        let instance = placement(0.40, -0.40, 0.80, 40.0);
+
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), None, None, None),
+            mod_default,
+            "an unauthored weapon falls back to the mod default"
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), Some(&character), None, None),
+            character,
+            "the reserved character tier outranks the mod default"
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), Some(&character), Some(&weapon), None,),
+            weapon,
+            "a weapon placement wholly overrides lower tiers"
+        );
+        assert_eq!(
+            resolve_weapon_placement(
+                Some(&mod_default),
+                Some(&character),
+                Some(&weapon),
+                Some(&instance),
+            ),
+            instance,
+            "the reserved instance tier has highest precedence"
+        );
+
+        let sparse_weapon = placement(0.90, 0.0, 0.0, 0.0);
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), None, Some(&sparse_weapon), None),
+            sparse_weapon,
+            "resolution never merges sparse weapon fields with the mod default"
+        );
+    }
+
+    #[test]
+    fn viewmodel_paths_resolve_live_mod_default_and_shared_weapon_placement() {
+        let default_a = placement(0.15, -0.25, 0.55, 5.0);
+        let default_b = placement(0.45, -0.35, 0.75, -5.0);
+        let shared_weapon_placement = placement(0.25, -0.15, 0.65, 12.0);
+        let unauthored = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+            None,
+        )];
+        let authored = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+            Some(shared_weapon_placement.clone()),
+        )];
+
+        let client_raw = viewmodel_asset_for_archetype("reference_pistol", &unauthored)
+            .expect("client archetype lookup must find the viewmodel")
+            .1;
+        assert_eq!(
+            resolve_weapon_placement(Some(&default_a), None, client_raw.as_ref(), None),
+            default_a,
+            "a mod default applies when the archetype omits placement"
+        );
+
+        let host_raw = viewmodel_asset_for_archetype("reference_pistol", &authored)
+            .expect("host archetype lookup must find the viewmodel")
+            .1;
+        let client_raw = viewmodel_asset_for_archetype("reference_pistol", &authored)
+            .expect("client archetype lookup must find the viewmodel")
+            .1;
+        assert_eq!(
+            host_raw, client_raw,
+            "host/client read one shared descriptor value"
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&default_a), None, host_raw.as_ref(), None),
+            shared_weapon_placement,
+            "the shared per-weapon placement wholly overrides the mod default"
+        );
+
+        let mut data_registry = postretro_entities::DataRegistry::new();
+        data_registry.set_default_weapon_placement(Some(default_a));
+        let first_frame = resolve_weapon_placement(
+            data_registry.default_weapon_placement.as_ref(),
+            None,
+            None,
+            None,
+        );
+        data_registry.set_default_weapon_placement(Some(default_b.clone()));
+        let next_frame = resolve_weapon_placement(
+            data_registry.default_weapon_placement.as_ref(),
+            None,
+            None,
+            None,
+        );
+        assert_ne!(first_frame, next_frame);
+        assert_eq!(
+            next_frame, default_b,
+            "the next render lookup sees a re-drained default"
+        );
+    }
+
     #[test]
     fn local_viewmodel_asset_uses_inventory_weapon_and_weapon_provenance() {
         use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
@@ -8544,24 +8689,33 @@ mod tests {
             }),
         )];
 
+        let local = local_viewmodel_asset(&registry, pawn, &descriptors)
+            .expect("host inventory lookup must find the viewmodel");
+        assert_eq!(local.0, weapon);
+        assert_eq!(local.1, "models/pistol/view.gltf");
         assert_eq!(
-            local_viewmodel_asset(&registry, pawn, &descriptors),
-            Some((
-                weapon,
-                "models/pistol/view.gltf",
-                Some(WeaponPlacementDescriptor {
-                    offset: postretro_foundation::PlacementOffset {
-                        right: 0.4,
-                        up: -0.2,
-                        forward: 0.7,
-                    },
-                    rotation: postretro_foundation::PlacementRotation {
-                        yaw: 15.0,
-                        pitch: 0.0,
-                        roll: 0.0,
-                    },
-                }),
-            )),
+            local.2,
+            Some(WeaponPlacementDescriptor {
+                offset: postretro_foundation::PlacementOffset {
+                    right: 0.4,
+                    up: -0.2,
+                    forward: 0.7,
+                },
+                rotation: postretro_foundation::PlacementRotation {
+                    yaw: 15.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                },
+            }),
+        );
+
+        let client = viewmodel_asset_for_archetype("reference_pistol", &descriptors)
+            .expect("client archetype lookup must find the same descriptor");
+        let mod_default = placement(0.3, -0.1, 0.5, 2.0);
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), None, local.2.as_ref(), None),
+            resolve_weapon_placement(Some(&mod_default), None, client.1.as_ref(), None),
+            "host and client resolve the raw placement from their shared descriptor lookup",
         );
     }
 
@@ -8638,13 +8792,14 @@ mod tests {
 
     #[test]
     fn viewmodel_transform_applies_view_feel_offsets_without_world_camera_rotation() {
+        let placement = resolve_weapon_placement(None, None, None, None);
         let transform = viewmodel_camera_space_transform(
             Vec3::X,
             Vec3::new(0.1, 0.2, 0.3),
             0.1,
             0.2,
             -0.3,
-            None,
+            &placement,
         );
         let translation = transform.w_axis.truncate();
 
@@ -8669,8 +8824,15 @@ mod tests {
             Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Quat::from_rotation_z(roll),
             BASE_OFFSET + bob_offset,
         );
-        let absent =
-            viewmodel_camera_space_transform(camera_right, eye_offset, roll, yaw, pitch, None);
+        let absent_placement = resolve_weapon_placement(None, None, None, None);
+        let absent = viewmodel_camera_space_transform(
+            camera_right,
+            eye_offset,
+            roll,
+            yaw,
+            pitch,
+            &absent_placement,
+        );
         assert_eq!(absent, legacy, "unauthored placement stays byte-identical");
 
         let base = WeaponPlacementDescriptor {
@@ -8692,22 +8854,10 @@ mod tests {
             },
             rotation: base.rotation.clone(),
         };
-        let base_transform = viewmodel_camera_space_transform(
-            camera_right,
-            eye_offset,
-            roll,
-            yaw,
-            pitch,
-            Some(&base),
-        );
-        let higher_transform = viewmodel_camera_space_transform(
-            camera_right,
-            eye_offset,
-            roll,
-            yaw,
-            pitch,
-            Some(&higher),
-        );
+        let base_transform =
+            viewmodel_camera_space_transform(camera_right, eye_offset, roll, yaw, pitch, &base);
+        let higher_transform =
+            viewmodel_camera_space_transform(camera_right, eye_offset, roll, yaw, pitch, &higher);
 
         assert_ne!(
             base_transform, absent,
@@ -8747,9 +8897,10 @@ mod tests {
     fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
         let view =
             glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let placement = resolve_weapon_placement(None, None, None, None);
         let camera_space =
-            viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, None);
-        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, None);
+            viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, &placement);
+        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0, &placement);
         let model_point = Vec3::new(0.1, 0.2, -0.3).extend(1.0);
 
         assert!(
@@ -10871,6 +11022,7 @@ mod tests {
                     render: Default::default(),
                     movers: Default::default(),
                     switching: Default::default(),
+                    default_weapon_placement: None,
                     entities: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),

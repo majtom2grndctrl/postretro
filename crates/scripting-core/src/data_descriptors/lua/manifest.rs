@@ -127,6 +127,39 @@ fn switching_field_error(scope: &str, field: &str, error: DescriptorError) -> De
     }
 }
 
+/// Luau twin of [`drain_default_weapon_placement_js`]. Mod defaults are
+/// authored content; an invalid supplied descriptor rejects the manifest
+/// instead of becoming an absent default through the JSON bridge.
+pub fn drain_default_weapon_placement_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Option<WeaponPlacementDescriptor>, DescriptorError> {
+    let raw: LuaValue = table.get("defaultWeaponPlacement").map_err(lua_err)?;
+    let LuaValue::Table(_) = raw else {
+        return match raw {
+            LuaValue::Nil => Ok(None),
+            other => Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{scope}: `defaultWeaponPlacement` must be a table, got {}",
+                    other.type_name()
+                ),
+            }),
+        };
+    };
+    let placement: WeaponPlacementDescriptor =
+        serde_json::from_value(conv::lua_to_json(raw).map_err(lua_err)?).map_err(|error| {
+            DescriptorError::InvalidShape {
+                reason: format!("{scope}: `defaultWeaponPlacement` invalid: {error}"),
+            }
+        })?;
+    placement
+        .validate()
+        .map_err(|error| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `defaultWeaponPlacement` invalid: {error}"),
+        })?;
+    Ok(Some(placement))
+}
+
 /// Drain the optional static renderer profile from a Luau mod manifest.
 /// Mirrors [`drain_render_profile_js`] field-for-field.
 pub fn drain_render_profile_lua(

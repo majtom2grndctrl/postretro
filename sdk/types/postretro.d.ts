@@ -882,6 +882,8 @@ declare module "postretro" {
     movers?: MoverDefaults;
     /** Mod-global switching policy. Optional; omission preserves immediate direct selection, zero cycle dwell, and reload interruption. */
     switching?: SwitchingDescriptor;
+    /** Optional first-person placement for weapons that omit `placement`. Position is in metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation is in degrees; a weapon placement wholly overrides this default and never changes the third-person hand socket. */
+    defaultWeaponPlacement?: WeaponPlacementDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
@@ -1684,6 +1686,8 @@ declare module "postretro" {
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
+  /** Pure identity builder for reusable first-person weapon placement data. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
+  export function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor;
   /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
   export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor;
 

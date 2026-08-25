@@ -1,4 +1,4 @@
-// Headless observability vocabulary: runspec input, entity-dump output, and
+// Headless observability vocabulary: runspec input, output dumps, and
 // deterministic JSON serialization for byte-identical runs. Driver
 // (`driver::run_headless`) is wired from `startup::build_session`.
 // See: context/plans/done/agentic-observability

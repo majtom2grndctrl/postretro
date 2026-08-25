@@ -135,6 +135,8 @@ pub(crate) struct DumpSpec {
     pub cap: usize,
     /// Whether the output document includes the per-tick event lists.
     pub events: bool,
+    /// Whether the output includes the baked cell-visibility relation.
+    pub cell_visibility: bool,
 }
 
 impl Default for DumpSpec {
@@ -145,6 +147,7 @@ impl Default for DumpSpec {
             entities: None,
             cap: DEFAULT_DUMP_CAP,
             events: true,
+            cell_visibility: false,
         }
     }
 }
@@ -314,6 +317,7 @@ mod tests {
                 entities: None,
                 cap: 500,
                 events: true,
+                cell_visibility: true,
             },
         }
     }
@@ -357,6 +361,21 @@ mod tests {
         assert_eq!(spec.dump, DumpSpec::default());
         assert_eq!(spec.dump.cap, DEFAULT_DUMP_CAP);
         assert!(spec.dump.events, "events default on");
+        assert!(
+            !spec.dump.cell_visibility,
+            "cell-visibility dumping defaults off"
+        );
+    }
+
+    #[test]
+    fn cell_visibility_flag_passes_through_parse() {
+        let spec = parse_runspec(
+            r#"{ "map": "m.prl", "ticks": 1,
+                 "dump": { "cell_visibility": true } }"#,
+        )
+        .unwrap();
+
+        assert!(spec.dump.cell_visibility);
     }
 
     #[test]

@@ -815,9 +815,8 @@ impl LevelWorld {
 
     /// Baked consumer-neutral coupling axes for two cells.
     ///
-    /// The pair lookup is intentionally live even while the initial bake emits
-    /// no graded records, so later bake stages populate this API without a
-    /// loader/query migration.
+    /// Graded axes are absent when the optional section or its pair record is
+    /// absent.
     pub fn coupling(&self, a: CellId, b: CellId) -> CouplingTuple {
         let perceivable = self.perceivable(a, b);
         let pair = self

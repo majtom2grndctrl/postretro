@@ -2742,7 +2742,9 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::cell_locator::CellLocatorChild as FormatCellLocatorChild;
     use postretro_level_format::cell_visibility::CoupledPairRecord;
+    use postretro_level_format::cells::CellRecord;
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
         KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
@@ -2782,6 +2784,179 @@ mod tests {
         });
         assert_eq!(component_only.component_ids().len(), 3);
         assert_eq!(component_only.coupled_pairs().count(), 0);
+    }
+
+    fn write_cell_visibility_load_fixture(
+        section: Option<prl_format::SectionBlob>,
+        name: &str,
+    ) -> std::path::PathBuf {
+        let mut sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: GeometrySection {
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    faces: Vec::new(),
+                }
+                .to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: BvhSection {
+                    nodes: Vec::new(),
+                    leaves: Vec::new(),
+                    root_node_index: 0,
+                }
+                .to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: CellsSection {
+                    cells: vec![
+                        CellRecord {
+                            bounds_min: [0.0, 0.0, 0.0],
+                            bounds_max: [1.0, 1.0, 1.0],
+                            flags: 0,
+                            face_start: 0,
+                            face_count: 0,
+                            portal_ref_start: 0,
+                            portal_ref_count: 0,
+                        },
+                        CellRecord {
+                            bounds_min: [2.0, 0.0, 0.0],
+                            bounds_max: [3.0, 1.0, 1.0],
+                            flags: 0,
+                            face_start: 0,
+                            face_count: 0,
+                            portal_ref_start: 0,
+                            portal_ref_count: 0,
+                        },
+                    ],
+                    portal_refs: Vec::new(),
+                }
+                .to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: CellLocatorSection {
+                    root: FormatCellLocatorChild::Node(0),
+                    nodes: vec![
+                        postretro_level_format::cell_locator::CellLocatorNodeRecord {
+                            plane_normal: [1.0, 0.0, 0.0],
+                            plane_distance: 1.5,
+                            front: FormatCellLocatorChild::Cell(0),
+                            back: FormatCellLocatorChild::Cell(1),
+                        },
+                    ],
+                }
+                .to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::OctahedralShVolume as u32,
+                version: 1,
+                data: OctahedralShVolumeSection::placeholder().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::TextureCacheKeys as u32,
+                version: 1,
+                data: TextureCacheKeysSection::default().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::FogVolumes as u32,
+                version: 1,
+                data: FogVolumesSection::default().to_bytes(),
+            },
+        ];
+        if let Some(section) = section {
+            sections.push(section);
+        }
+
+        let path = std::env::temp_dir().join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_prl_lowers_cell_visibility_section_into_coupling() {
+        let path = write_cell_visibility_load_fixture(
+            Some(prl_format::SectionBlob {
+                section_id: SectionId::CellVisibility as u32,
+                version: 1,
+                data: CellVisibilitySection {
+                    cell_count: 2,
+                    component_ids: vec![0, 0],
+                    coupled_pairs: vec![CoupledPairRecord {
+                        cell_a: 0,
+                        cell_b: 1,
+                        distance: 128,
+                        aperture: 64,
+                    }],
+                }
+                .to_bytes(),
+            }),
+            "postretro_test_cell_visibility_loaded.prl",
+        );
+
+        let world = load_prl(path.to_str().unwrap()).expect("valid CellVisibility must load");
+
+        assert_eq!(
+            world.coupling(0, 1),
+            crate::prl::CouplingTuple {
+                perceivable: true,
+                distance: Some(128),
+                aperture: Some(64),
+            }
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn load_prl_missing_cell_visibility_uses_conservative_coupling_fallback() {
+        let path =
+            write_cell_visibility_load_fixture(None, "postretro_test_cell_visibility_absent.prl");
+
+        let world = load_prl(path.to_str().unwrap()).expect("missing optional section must load");
+
+        assert_eq!(
+            world.coupling(0, 1),
+            crate::prl::CouplingTuple {
+                perceivable: true,
+                distance: None,
+                aperture: None,
+            }
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_cell_visibility_section() {
+        let path = write_cell_visibility_load_fixture(
+            Some(prl_format::SectionBlob {
+                section_id: SectionId::CellVisibility as u32,
+                version: 1,
+                data: vec![0],
+            }),
+            "postretro_test_cell_visibility_malformed.prl",
+        );
+
+        let err = load_prl(path.to_str().unwrap()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellVisibility",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(path).ok();
     }
 
     fn matching_direct_and_base_sh() -> (DirectShVolumeSection, OctahedralShVolumeSection) {

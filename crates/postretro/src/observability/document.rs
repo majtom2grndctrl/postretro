@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use postretro_entities::{ComponentValue, EntityRegistry};
-use postretro_level_loader::{CellVisibility, CoupledCellPair};
+use postretro_level_loader::{CoupledCellPair, LevelWorld};
 
 use super::runspec::DumpSpec;
 use super::{ALL_KINDS, DumpError};
@@ -205,15 +205,14 @@ pub(crate) fn apply_dump(
 
 /// Assemble the full output document. Applies the entity filter to `registry`,
 /// carries through the driver-supplied per-tick events (only when `dump.events`
-/// is set), requested cell-visibility data, and player summary, then stamps the
-/// constant out-of-frame declaration.
+/// is set), requested cell-visibility data from `world`, and player summary,
+/// then stamps the constant out-of-frame declaration.
 pub(crate) fn build_output_document(
     map: impl Into<String>,
     ticks_run: u32,
     registry: &EntityRegistry,
     dump: &DumpSpec,
-    cell_count: usize,
-    cell_visibility: Option<&CellVisibility>,
+    world: &LevelWorld,
     events: Vec<TickEventRecord>,
     player: Option<PlayerPawnSummary>,
 ) -> Result<OutputDocument, DumpError> {
@@ -227,24 +226,21 @@ pub(crate) fn build_output_document(
         player,
         cell_visibility: dump
             .cell_visibility
-            .then(|| build_cell_visibility_dump(cell_count, cell_visibility)),
+            .then(|| build_cell_visibility_dump(world)),
         out_of_frame: OutOfFrame::headless(),
     })
 }
 
 /// Copy the loaded relation into the tool-facing dump format. A map predating
 /// the optional section is one conservative component with no graded pairs.
-fn build_cell_visibility_dump(
-    cell_count: usize,
-    cell_visibility: Option<&CellVisibility>,
-) -> CellVisibilityDump {
-    match cell_visibility {
+fn build_cell_visibility_dump(world: &LevelWorld) -> CellVisibilityDump {
+    match world.cell_visibility.as_ref() {
         Some(cell_visibility) => loaded_cell_visibility_dump(
             cell_visibility.component_ids(),
             cell_visibility.coupled_pairs(),
         ),
         None => CellVisibilityDump {
-            component_ids: vec![0; cell_count],
+            component_ids: vec![0; world.cell_count()],
             coupled_pairs: Vec::new(),
         },
     }
@@ -281,9 +277,36 @@ fn coupled_pair_records<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
+    use postretro_level_loader::{CellData, CellLocatorChild};
     use std::collections::HashMap;
+
+    fn test_world(cell_count: usize) -> LevelWorld {
+        let cells = (0..cell_count)
+            .map(|_| CellData {
+                bounds_min: Vec3::ZERO,
+                bounds_max: Vec3::ONE,
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
+            })
+            .collect();
+        LevelWorld::new_visibility_only(
+            cells,
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("empty-portal observability fixture is valid")
+    }
 
     fn health(max: f32) -> HealthComponent {
         HealthComponent {
@@ -417,8 +440,7 @@ mod tests {
             42,
             &reg,
             &DumpSpec::default(),
-            0,
-            None,
+            &test_world(0),
             vec![],
             None,
         )
@@ -454,13 +476,22 @@ mod tests {
             events: false,
             ..DumpSpec::default()
         };
-        let doc =
-            build_output_document("m.prl", 1, &reg, &dump, 0, None, events.clone(), None).unwrap();
+        let doc = build_output_document(
+            "m.prl",
+            1,
+            &reg,
+            &dump,
+            &test_world(0),
+            events.clone(),
+            None,
+        )
+        .unwrap();
         assert!(doc.events.is_empty(), "events suppressed when flag off");
 
         let dump_on = DumpSpec::default();
         let doc_on =
-            build_output_document("m.prl", 1, &reg, &dump_on, 0, None, events, None).unwrap();
+            build_output_document("m.prl", 1, &reg, &dump_on, &test_world(0), events, None)
+                .unwrap();
         assert_eq!(doc_on.events.len(), 1);
     }
 
@@ -475,7 +506,8 @@ mod tests {
             cap: 1,
             ..DumpSpec::default()
         };
-        let doc = build_output_document("m.prl", 1, &reg, &dump, 0, None, vec![], None).unwrap();
+        let doc =
+            build_output_document("m.prl", 1, &reg, &dump, &test_world(0), vec![], None).unwrap();
         assert_eq!(doc.entities.len(), 1);
         assert_eq!(doc.truncated, 3);
     }
@@ -488,7 +520,8 @@ mod tests {
             ..DumpSpec::default()
         };
 
-        let doc = build_output_document("m.prl", 1, &reg, &dump, 3, None, vec![], None).unwrap();
+        let world = test_world(3);
+        let doc = build_output_document("m.prl", 1, &reg, &dump, &world, vec![], None).unwrap();
         assert_eq!(
             doc.cell_visibility,
             Some(CellVisibilityDump {
@@ -559,6 +592,13 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["coupled_pairs"][0]["distance"], serde_json::json!(50));
         assert_eq!(value["coupled_pairs"][0]["aperture"], serde_json::json!(5));
+        assert!(
+            value["coupled_pairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|pair| pair["distance"].is_u64() && pair["aperture"].is_u64())
+        );
 
         let reversed_json = super::super::to_deterministic_json(&loaded_cell_visibility_dump(
             &[0, 0, 1],
@@ -598,8 +638,7 @@ mod tests {
                 10,
                 &reg,
                 &dump_for_component("health"),
-                0,
-                None,
+                &test_world(0),
                 vec![],
                 None,
             )

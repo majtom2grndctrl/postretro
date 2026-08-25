@@ -346,8 +346,7 @@ fn run_headless_inner(
             runspec.ticks,
             &registry_ref,
             &runspec.dump,
-            world.cell_count(),
-            world.cell_visibility.as_ref(),
+            &world,
             events,
             player,
         )?

@@ -1,5 +1,4 @@
-// Output document vocabulary: the entity-state dump a headless run emits, plus
-// the filter that selects entities out of a live registry.
+// Output document vocabulary: the headless state dump and its entity filter.
 // See: context/plans/done/agentic-observability
 
 use std::collections::HashSet;
@@ -7,6 +6,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use postretro_entities::{ComponentValue, EntityRegistry};
+use postretro_level_loader::{CellVisibility, CoupledCellPair};
 
 use super::runspec::DumpSpec;
 use super::{ALL_KINDS, DumpError};
@@ -31,6 +31,9 @@ pub(crate) struct OutputDocument {
     /// Summary of the local player pawn, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player: Option<PlayerPawnSummary>,
+    /// Baked cell-to-cell visibility relation, when requested by the runspec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_visibility: Option<CellVisibilityDump>,
     /// What headless mode leaves out of frame, in two categories.
     pub out_of_frame: OutOfFrame,
 }
@@ -78,6 +81,28 @@ pub(crate) struct PlayerPawnSummary {
 pub(crate) struct PawnHealth {
     pub current: f32,
     pub max: f32,
+}
+
+/// Baked portal-reachability partition and graded coupling details for a map.
+///
+/// The component array is always present when this record is requested. It
+/// distinguishes disconnected cells from same-component pairs whose graded
+/// detail was omitted by the coupling cap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CellVisibilityDump {
+    /// One portal-reachability component ID for every runtime cell.
+    pub component_ids: Vec<u32>,
+    /// Canonically ordered coupled off-diagonal pairs with their graded details.
+    pub coupled_pairs: Vec<CoupledCellPairRecord>,
+}
+
+/// One unordered coupled cell pair in a [`CellVisibilityDump`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CoupledCellPairRecord {
+    pub cell_a: usize,
+    pub cell_b: usize,
+    pub distance: Option<u32>,
+    pub aperture: Option<u32>,
 }
 
 /// The two-category out-of-frame declaration: what a headless run cannot or does
@@ -180,12 +205,15 @@ pub(crate) fn apply_dump(
 
 /// Assemble the full output document. Applies the entity filter to `registry`,
 /// carries through the driver-supplied per-tick events (only when `dump.events`
-/// is set) and player summary, and stamps the constant out-of-frame declaration.
+/// is set), requested cell-visibility data, and player summary, then stamps the
+/// constant out-of-frame declaration.
 pub(crate) fn build_output_document(
     map: impl Into<String>,
     ticks_run: u32,
     registry: &EntityRegistry,
     dump: &DumpSpec,
+    cell_count: usize,
+    cell_visibility: Option<&CellVisibility>,
     events: Vec<TickEventRecord>,
     player: Option<PlayerPawnSummary>,
 ) -> Result<OutputDocument, DumpError> {
@@ -197,8 +225,57 @@ pub(crate) fn build_output_document(
         truncated: selection.truncated,
         events: if dump.events { events } else { Vec::new() },
         player,
+        cell_visibility: dump
+            .cell_visibility
+            .then(|| build_cell_visibility_dump(cell_count, cell_visibility)),
         out_of_frame: OutOfFrame::headless(),
     })
+}
+
+/// Copy the loaded relation into the tool-facing dump format. A map predating
+/// the optional section is one conservative component with no graded pairs.
+fn build_cell_visibility_dump(
+    cell_count: usize,
+    cell_visibility: Option<&CellVisibility>,
+) -> CellVisibilityDump {
+    match cell_visibility {
+        Some(cell_visibility) => loaded_cell_visibility_dump(
+            cell_visibility.component_ids(),
+            cell_visibility.coupled_pairs(),
+        ),
+        None => CellVisibilityDump {
+            component_ids: vec![0; cell_count],
+            coupled_pairs: Vec::new(),
+        },
+    }
+}
+
+fn loaded_cell_visibility_dump<'a>(
+    component_ids: &[u32],
+    coupled_pairs: impl Iterator<Item = &'a CoupledCellPair>,
+) -> CellVisibilityDump {
+    CellVisibilityDump {
+        component_ids: component_ids.to_vec(),
+        coupled_pairs: coupled_pair_records(coupled_pairs),
+    }
+}
+
+/// Convert the runtime's canonical pairs into JSON records, sorting explicitly
+/// because deterministic JSON sorting applies to object keys, not arrays.
+fn coupled_pair_records<'a>(
+    coupled_pairs: impl Iterator<Item = &'a CoupledCellPair>,
+) -> Vec<CoupledCellPairRecord> {
+    let mut records: Vec<_> = coupled_pairs
+        .filter(|pair| pair.cell_a < pair.cell_b)
+        .map(|pair| CoupledCellPairRecord {
+            cell_a: pair.cell_a,
+            cell_b: pair.cell_b,
+            distance: Some(pair.distance),
+            aperture: Some(pair.aperture),
+        })
+        .collect();
+    records.sort_by_key(|pair| (pair.cell_a, pair.cell_b));
+    records
 }
 
 #[cfg(test)]
@@ -340,6 +417,8 @@ mod tests {
             42,
             &reg,
             &DumpSpec::default(),
+            0,
+            None,
             vec![],
             None,
         )
@@ -347,6 +426,7 @@ mod tests {
 
         assert_eq!(doc.map, "content/dev/maps/x.prl");
         assert_eq!(doc.ticks_run, 42);
+        assert!(doc.cell_visibility.is_none());
         assert_eq!(
             doc.out_of_frame.absent_headless,
             vec!["map_lights".to_string()]
@@ -374,11 +454,13 @@ mod tests {
             events: false,
             ..DumpSpec::default()
         };
-        let doc = build_output_document("m.prl", 1, &reg, &dump, events.clone(), None).unwrap();
+        let doc =
+            build_output_document("m.prl", 1, &reg, &dump, 0, None, events.clone(), None).unwrap();
         assert!(doc.events.is_empty(), "events suppressed when flag off");
 
         let dump_on = DumpSpec::default();
-        let doc_on = build_output_document("m.prl", 1, &reg, &dump_on, events, None).unwrap();
+        let doc_on =
+            build_output_document("m.prl", 1, &reg, &dump_on, 0, None, events, None).unwrap();
         assert_eq!(doc_on.events.len(), 1);
     }
 
@@ -393,9 +475,96 @@ mod tests {
             cap: 1,
             ..DumpSpec::default()
         };
-        let doc = build_output_document("m.prl", 1, &reg, &dump, vec![], None).unwrap();
+        let doc = build_output_document("m.prl", 1, &reg, &dump, 0, None, vec![], None).unwrap();
         assert_eq!(doc.entities.len(), 1);
         assert_eq!(doc.truncated, 3);
+    }
+
+    #[test]
+    fn cell_visibility_dump_uses_conservative_fallback_for_missing_section() {
+        let reg = EntityRegistry::new();
+        let dump = DumpSpec {
+            cell_visibility: true,
+            ..DumpSpec::default()
+        };
+
+        let doc = build_output_document("m.prl", 1, &reg, &dump, 3, None, vec![], None).unwrap();
+        assert_eq!(
+            doc.cell_visibility,
+            Some(CellVisibilityDump {
+                component_ids: vec![0, 0, 0],
+                coupled_pairs: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn coupled_pair_records_sort_and_preserve_integer_grades() {
+        let pairs = [
+            CoupledCellPair {
+                cell_a: 1,
+                cell_b: 2,
+                distance: 200,
+                aperture: 20,
+            },
+            CoupledCellPair {
+                cell_a: 0,
+                cell_b: 2,
+                distance: 100,
+                aperture: 10,
+            },
+            CoupledCellPair {
+                cell_a: 0,
+                cell_b: 1,
+                distance: 50,
+                aperture: 5,
+            },
+            CoupledCellPair {
+                cell_a: 2,
+                cell_b: 2,
+                distance: 999,
+                aperture: 999,
+            },
+        ];
+
+        let dump = loaded_cell_visibility_dump(&[0, 0, 1], pairs.iter());
+        assert_eq!(
+            dump,
+            CellVisibilityDump {
+                component_ids: vec![0, 0, 1],
+                coupled_pairs: vec![
+                    CoupledCellPairRecord {
+                        cell_a: 0,
+                        cell_b: 1,
+                        distance: Some(50),
+                        aperture: Some(5),
+                    },
+                    CoupledCellPairRecord {
+                        cell_a: 0,
+                        cell_b: 2,
+                        distance: Some(100),
+                        aperture: Some(10),
+                    },
+                    CoupledCellPairRecord {
+                        cell_a: 1,
+                        cell_b: 2,
+                        distance: Some(200),
+                        aperture: Some(20),
+                    },
+                ],
+            }
+        );
+
+        let json = super::super::to_deterministic_json(&dump).unwrap();
+        assert!(json.contains("\"distance\":50"));
+        assert!(json.contains("\"aperture\":5"));
+
+        let reversed_json = super::super::to_deterministic_json(&loaded_cell_visibility_dump(
+            &[0, 0, 1],
+            pairs.iter().rev(),
+        ))
+        .unwrap();
+        assert_eq!(json, reversed_json);
     }
 
     #[test]
@@ -428,6 +597,8 @@ mod tests {
                 10,
                 &reg,
                 &dump_for_component("health"),
+                0,
+                None,
                 vec![],
                 None,
             )

@@ -977,6 +977,7 @@ mod tests {
         let mut wieldables = std::array::from_fn(|_| None);
         wieldables[slot] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: canonical_name.to_string(),
+            placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             range,
             cooldown_ms,
             pellet_count: 1,
@@ -1162,6 +1163,7 @@ mod tests {
         let mut tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
         tuning.wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: "local_pistol".to_string(),
+            placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             range: 64.0,
             cooldown_ms: 100.0,
             pellet_count: 1,
@@ -1257,6 +1259,7 @@ mod tests {
         let mut wieldables = std::array::from_fn(|_| None);
         wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
+            placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             range: tuning_weapon.range,
             cooldown_ms: tuning_weapon.cooldown_ms,
             pellet_count: tuning_weapon.pellet_count,

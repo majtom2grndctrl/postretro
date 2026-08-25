@@ -209,6 +209,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | KinematicGeometry | 43 | Version 4 when the map has at least one `kinematic_mover`; origin-relative mover vertices/indices/face metadata, static spin/blocking authoring, and `kinematic_waypoint` records |
 | TriggerVolumes | 44 | When the map has at least one `trigger_volume` or `switch`; trigger AABBs, direct mover commands, and named enter/exit events |
 | AnimatedDirectShDeltaVolumes | 45 | When the map has animated baked lights; sparse per-animated-light direct-SH delta tiles composed into the dynamic-receiver atlas, with a per-affinity-cell coarsening level |
+| CellVisibility | 46 | Reserved (not yet built) for the baked Cell→Cell perceptibility relation — `plans/ready/cell-visibility-relation`. Optional; absent → conservative all-perceivable fallback. Id 14 (`LeafPvs`) is a retired hole; do not reuse |
 
 **Coarsened delta sections (ids 27, 41, 45):** Each present section independently classifies every affinity cell. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Protection AABBs force intersecting bricks to L0 for every present section before one-level seam smoothing.
 

@@ -10,6 +10,7 @@ pub mod bsp;
 pub mod bvh;
 pub mod cell_draw_index;
 pub mod cell_locator;
+pub mod cell_visibility;
 pub mod cells;
 pub mod chunk_light_list;
 pub mod data_script;
@@ -266,6 +267,12 @@ pub enum SectionId {
     /// affinity cell. See
     /// `animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection`.
     AnimatedDirectShDeltaVolumes = 45,
+
+    /// View-independent cell-to-cell portal-graph coupling. The optional
+    /// section stores a conservative reachability partition plus graded pair
+    /// details; absent data deliberately falls back conservatively at runtime.
+    /// See `cell_visibility::CellVisibilitySection`.
+    CellVisibility = 46,
 }
 
 impl SectionId {
@@ -304,6 +311,7 @@ impl SectionId {
             43 => Some(Self::KinematicGeometry),
             44 => Some(Self::TriggerVolumes),
             45 => Some(Self::AnimatedDirectShDeltaVolumes),
+            46 => Some(Self::CellVisibility),
             _ => None,
         }
     }

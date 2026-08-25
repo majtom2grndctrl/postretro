@@ -11,6 +11,7 @@ pub mod bc6h;
 pub mod bvh_build;
 pub mod cache;
 pub mod cell_draw_index_bake;
+pub mod cell_visibility_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_drop_policy;

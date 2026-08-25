@@ -6,9 +6,9 @@ mod prl;
 mod prl_loader;
 
 pub use prl::{
-    CellData, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
-    CellLocatorTraceStep, FalloffModel, LevelWorld, LevelWorldValidationError, LightType, MapLight,
-    PortalData, ShadowType,
+    CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
+    CellLocatorTraceStep, CellVisibility, CoupledCellPair, CouplingTuple, FalloffModel, LevelWorld,
+    LevelWorldValidationError, LightType, MapLight, PortalData, ShadowType,
 };
 #[cfg(feature = "load-prl")]
 pub use prl::{

@@ -58,6 +58,67 @@ use postretro_render_data::influence::LightInfluence;
 #[cfg(feature = "load-prl")]
 use postretro_render_data::material::Material;
 
+/// Stable runtime cell identifier. It is the compiler BSP leaf index.
+pub type CellId = usize;
+
+/// One canonical, unordered coupled cell pair with baked graded details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoupledCellPair {
+    pub cell_a: CellId,
+    pub cell_b: CellId,
+    pub distance: u32,
+    pub aperture: u32,
+}
+
+/// Consumer-neutral cell-to-cell coupling result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CouplingTuple {
+    pub perceivable: bool,
+    pub distance: Option<u32>,
+    pub aperture: Option<u32>,
+}
+
+/// Loaded static portal-graph coupling data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellVisibility {
+    component_ids: Vec<u32>,
+    coupled_pairs: Vec<CoupledCellPair>,
+}
+
+impl CellVisibility {
+    pub(crate) fn new(component_ids: Vec<u32>, coupled_pairs: Vec<CoupledCellPair>) -> Self {
+        Self {
+            component_ids,
+            coupled_pairs,
+        }
+    }
+
+    /// One conservative portal-reachability component ID per cell.
+    pub fn component_ids(&self) -> &[u32] {
+        &self.component_ids
+    }
+
+    /// Canonically sorted coupled off-diagonal pairs with graded detail.
+    pub fn coupled_pairs(&self) -> std::slice::Iter<'_, CoupledCellPair> {
+        self.coupled_pairs.iter()
+    }
+
+    fn perceivable(&self, a: CellId, b: CellId) -> bool {
+        self.component_ids.get(a) == self.component_ids.get(b)
+    }
+
+    fn coupled_pair(&self, a: CellId, b: CellId) -> Option<CoupledCellPair> {
+        if a == b {
+            return None;
+        }
+        let (cell_a, cell_b) = (a.min(b), a.max(b));
+        self.coupled_pairs
+            .binary_search_by_key(&(cell_a, cell_b), |pair| (pair.cell_a, pair.cell_b))
+            .ok()
+            .map(|index| self.coupled_pairs[index])
+    }
+}
+
 #[cfg(feature = "load-prl")]
 #[derive(Debug, Error)]
 pub enum PrlLoadError {
@@ -460,6 +521,9 @@ pub struct LevelWorld {
     pub cell_locator_nodes: Vec<CellLocatorNodeData>,
     pub portals: Vec<PortalData>,
     pub has_portals: bool,
+    /// Optional baked CellVisibility section. `None` is the conservative
+    /// all-perceivable fallback for maps compiled before the section existed.
+    pub cell_visibility: Option<CellVisibility>,
     #[cfg(feature = "load-prl")]
     pub texture_names: Vec<String>,
     /// Per-texture blake3 cache keys (PRL section 32), parallel to `texture_names`.
@@ -617,6 +681,7 @@ impl LevelWorld {
             cell_locator_nodes,
             portals,
             has_portals,
+            cell_visibility: None,
             #[cfg(feature = "load-prl")]
             texture_names: vec![],
             #[cfg(feature = "load-prl")]
@@ -737,6 +802,33 @@ impl LevelWorld {
 
     pub fn cell_count(&self) -> usize {
         self.cells.len()
+    }
+
+    /// Whether two cells share the conservative portal-reachability component.
+    /// Missing baked data deliberately treats every pair as perceivable.
+    pub fn perceivable(&self, a: CellId, b: CellId) -> bool {
+        self.cell_visibility
+            .as_ref()
+            .map(|visibility| visibility.perceivable(a, b))
+            .unwrap_or(true)
+    }
+
+    /// Baked consumer-neutral coupling axes for two cells.
+    ///
+    /// The pair lookup is intentionally live even while the initial bake emits
+    /// no graded records, so later bake stages populate this API without a
+    /// loader/query migration.
+    pub fn coupling(&self, a: CellId, b: CellId) -> CouplingTuple {
+        let perceivable = self.perceivable(a, b);
+        let pair = self
+            .cell_visibility
+            .as_ref()
+            .and_then(|visibility| visibility.coupled_pair(a, b));
+        CouplingTuple {
+            perceivable,
+            distance: pair.map(|pair| pair.distance),
+            aperture: pair.map(|pair| pair.aperture),
+        }
     }
 
     pub fn total_face_count(&self) -> u32 {
@@ -1052,6 +1144,74 @@ mod visibility_only_validation_tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn cell_coupling_falls_back_conservatively_when_section_is_missing() {
+        let world = LevelWorld::new_visibility_only(
+            vec![cell(0, 0), cell(0, 0)],
+            vec![],
+            CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap();
+
+        assert!(world.perceivable(0, 1));
+        assert_eq!(
+            world.coupling(0, 1),
+            CouplingTuple {
+                perceivable: true,
+                distance: None,
+                aperture: None,
+            }
+        );
+    }
+
+    #[test]
+    fn cell_coupling_uses_loaded_components_and_canonical_pair_lookup() {
+        let mut world = LevelWorld::new_visibility_only(
+            vec![cell(0, 0), cell(0, 0), cell(0, 0)],
+            vec![],
+            CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap();
+        world.cell_visibility = Some(CellVisibility::new(
+            vec![0, 0, 1],
+            vec![CoupledCellPair {
+                cell_a: 0,
+                cell_b: 1,
+                distance: 42,
+                aperture: 7,
+            }],
+        ));
+
+        assert!(world.perceivable(0, 1));
+        assert!(!world.perceivable(0, 2));
+        assert_eq!(
+            world.coupling(1, 0),
+            CouplingTuple {
+                perceivable: true,
+                distance: Some(42),
+                aperture: Some(7),
+            }
+        );
+        assert_eq!(
+            world.coupling(0, 2),
+            CouplingTuple {
+                perceivable: false,
+                distance: None,
+                aperture: None,
+            }
+        );
+
+        let visibility = world.cell_visibility.as_ref().unwrap();
+        assert_eq!(visibility.component_ids(), &[0, 0, 1]);
+        assert_eq!(visibility.coupled_pairs().count(), 1);
+    }
 }
 
 #[cfg(all(test, not(feature = "load-prl")))]
@@ -1081,6 +1241,7 @@ mod slim_tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            cell_visibility: None,
         };
 
         assert_eq!(world.total_face_count(), 5);
@@ -1504,6 +1665,7 @@ mod tests {
             }],
             portals: vec![],
             has_portals: false,
+            cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
@@ -1597,6 +1759,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),
@@ -1644,6 +1807,7 @@ mod tests {
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
+            cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
             bvh: empty_bvh(),

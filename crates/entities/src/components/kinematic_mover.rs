@@ -77,6 +77,9 @@ pub struct KinematicMoverComponent {
     pub blocked_event: Option<String>,
     /// Optional host-local named-event address dispatched when a crusher deals damage.
     pub crush_event: Option<String>,
+    /// Portal ids this mover fully seals at its closed dock. The renderer derives
+    /// the live blocked set from this static association and current phase.
+    pub sealed_portal_ids: Vec<u32>,
     pub segment_index: u16,
     pub direction_sign: i8,
     pub segment_elapsed_ms: f32,
@@ -141,6 +144,7 @@ impl KinematicMoverComponent {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            sealed_portal_ids: Vec::new(),
             segment_index: 0,
             direction_sign: 1,
             segment_elapsed_ms: 0.0,

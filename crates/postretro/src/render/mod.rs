@@ -28,6 +28,6 @@ pub use postretro_renderer::{
 #[cfg(feature = "dev-tools")]
 #[allow(unused_imports)]
 pub use postretro_renderer::{
-    AgentDiagnosticsRow, DeltaVolumeMeta, FrameTimingSnapshot, MarkerMode, ShDiagnosticsState,
-    TriggerDiagnosticsRow,
+    AgentDiagnosticsRow, DeltaVolumeMeta, DoorOccluderDiagnosticsRow, FrameTimingSnapshot,
+    MarkerMode, ShDiagnosticsState, TriggerDiagnosticsRow,
 };

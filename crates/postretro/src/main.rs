@@ -23,6 +23,10 @@ mod candidate_cull_probes;
 mod collision;
 mod combat_positioning;
 mod content_hash;
+// App-side diagnostics for baked door-to-portal occluder associations. Keeps
+// the render-only blocked portal buffer inspectable without changing gameplay.
+#[cfg(feature = "dev-tools")]
+mod door_occluder_diagnostics;
 mod frame_timing;
 mod fx;
 mod grant;
@@ -224,6 +228,35 @@ fn mover_event_dispatch_addresses(
                 .map(str::to_owned)
         })
         .collect()
+}
+
+/// Rebuild the render-only blocked-portal input from the final post-tick mover
+/// phase. It is intentionally cleared before every refill so a prior map or
+/// phase can never leave a portal latched closed.
+fn rebuild_blocked_portals(
+    blocked_portals: &mut Vec<bool>,
+    world: Option<&postretro_level_loader::LevelWorld>,
+    registry: &postretro_entities::EntityRegistry,
+) {
+    blocked_portals.clear();
+    let Some(world) = world else {
+        return;
+    };
+    blocked_portals.resize(world.portals.len(), false);
+
+    for (_, value) in registry.iter_with_kind(ComponentKind::KinematicMover) {
+        let ComponentValue::KinematicMover(mover) = value else {
+            continue;
+        };
+        if !kinematic_mover::mover_is_docked_closed(mover) {
+            continue;
+        }
+        for &portal_id in &mover.sealed_portal_ids {
+            if let Some(blocked) = blocked_portals.get_mut(portal_id as usize) {
+                *blocked = true;
+            }
+        }
+    }
 }
 
 /// Execute a batch of post-tick named events through the sequence-aware path.
@@ -669,6 +702,8 @@ pub(crate) struct App {
     capture_portal_walk_next_frame: bool,
 
     scratch_cells: Vec<u32>,
+    /// Render-only portal blockers rebuilt from live mover phase every frame.
+    blocked_portals: Vec<bool>,
 
     /// Ring buffer of per-frame CPU durations. Reports min/avg/max so
     /// hitches don't vanish into the average.
@@ -3493,12 +3528,22 @@ impl ApplicationHandler for App {
 
                 let capture_portal_walk = std::mem::take(&mut self.capture_portal_walk_next_frame);
 
+                {
+                    let registry = script_ctx.registry.borrow();
+                    rebuild_blocked_portals(
+                        &mut self.blocked_portals,
+                        self.level.as_ref(),
+                        &registry,
+                    );
+                }
+
                 // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
                 let (vis_result, _frustum) = match self.level.as_ref() {
                     Some(world) => postretro_visibility::determine_visible_cells(
                         render_eye_position,
                         view_proj,
                         world,
+                        &self.blocked_portals,
                         capture_portal_walk,
                         &mut self.scratch_cells,
                     ),
@@ -3970,6 +4015,19 @@ impl ApplicationHandler for App {
                             (Vec::new(), Vec::new())
                         }
                     };
+                    #[cfg(feature = "dev-tools")]
+                    let door_occluder_diagnostics = {
+                        let diagnostics_visible = session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible());
+                        if diagnostics_visible {
+                            let registry = script_ctx.registry.borrow();
+                            door_occluder_diagnostics::collect(&registry, &self.blocked_portals)
+                        } else {
+                            door_occluder_diagnostics::DoorOccluderDiagnostics::default()
+                        }
+                    };
 
                     // Build the egui UI before `render_frame_indirect` so
                     // the SH diagnostic overlay can push debug lines that
@@ -4021,6 +4079,8 @@ impl ApplicationHandler for App {
                                             timing_snapshot.as_ref(),
                                             &agent_rows,
                                             &trigger_rows,
+                                            &door_occluder_diagnostics.mover_rows,
+                                            &door_occluder_diagnostics.blocked_portal_ids,
                                         );
                                     }
                                 });
@@ -4062,6 +4122,17 @@ impl ApplicationHandler for App {
                             renderer.emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
                             renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
                             renderer.emit_portal_overlay_diagnostics(world);
+                            if session
+                                .debug_ui
+                                .as_ref()
+                                .is_some_and(|debug_ui| debug_ui.is_visible())
+                            {
+                                door_occluder_diagnostics::emit_blocked_portal_geometry(
+                                    renderer,
+                                    world,
+                                    &self.blocked_portals,
+                                );
+                            }
                         }
                         // Navmesh overlay: append region rectangles + portal
                         // edges. No-op unless the `Alt+Shift+N` toggle is on
@@ -8142,6 +8213,578 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    #[test]
+    fn blocked_portal_buffer_rebuilds_from_live_docked_movers_without_latching() {
+        use postretro_entities::{EntityRegistry, KinematicMoverComponent, KinematicMoverConfig};
+        use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
+
+        let world = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::new(0.0, 0.0, 0.0),
+                    bounds_max: Vec3::new(1.0, 1.0, 1.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+                CellData {
+                    bounds_min: Vec3::new(1.0, 0.0, 0.0),
+                    bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 1,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+            ],
+            vec![0, 0],
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            vec![PortalData {
+                polygon: vec![Vec3::ZERO, Vec3::Y, Vec3::Z],
+                front_cell: 0,
+                back_cell: 1,
+            }],
+            true,
+        )
+        .expect("two-cell portal world must be valid");
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        let mut mover = KinematicMoverComponent::new(
+            7,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: postretro_entities::KinematicMoverMode::Once,
+                started: false,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        mover.sealed_portal_ids = vec![0];
+        registry.set_component(entity, mover.clone()).unwrap();
+
+        let mut blocked = vec![true, true];
+        rebuild_blocked_portals(&mut blocked, Some(&world), &registry);
+        assert_eq!(blocked, vec![true]);
+
+        mover.segment_elapsed_ms = 1.0;
+        registry.set_component(entity, mover).unwrap();
+        rebuild_blocked_portals(&mut blocked, Some(&world), &registry);
+        assert_eq!(blocked, vec![false]);
+    }
+
+    #[test]
+    fn blocked_portal_buffer_ors_closed_sealers_and_one_mover_can_seal_many_portals() {
+        use postretro_entities::{EntityRegistry, KinematicMoverComponent, KinematicMoverConfig};
+        use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
+
+        let world = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::ZERO,
+                    bounds_max: Vec3::ONE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 2,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+                CellData {
+                    bounds_min: Vec3::X,
+                    bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 2,
+                    portal_ref_count: 2,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+            ],
+            vec![0, 1, 0, 1],
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            vec![
+                PortalData {
+                    polygon: vec![Vec3::ZERO, Vec3::Y, Vec3::Z],
+                    front_cell: 0,
+                    back_cell: 1,
+                },
+                PortalData {
+                    polygon: vec![Vec3::X, Vec3::X + Vec3::Y, Vec3::X + Vec3::Z],
+                    front_cell: 0,
+                    back_cell: 1,
+                },
+            ],
+            true,
+        )
+        .expect("two-portal world must be valid");
+        let mut registry = EntityRegistry::new();
+        let primary = registry.spawn(Transform::default());
+        let secondary = registry.spawn(Transform::default());
+        let sealer = |mover_id, sealed_portal_ids| {
+            let mut mover = KinematicMoverComponent::new(
+                mover_id,
+                KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::X],
+                    waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    mode: postretro_entities::KinematicMoverMode::Once,
+                    started: false,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
+            );
+            mover.sealed_portal_ids = sealed_portal_ids;
+            mover
+        };
+        registry
+            .set_component(primary, sealer(1, vec![0, 1]))
+            .expect("primary sealer installs");
+        registry
+            .set_component(secondary, sealer(2, vec![0]))
+            .expect("secondary sealer installs");
+
+        let mut blocked = Vec::new();
+        rebuild_blocked_portals(&mut blocked, Some(&world), &registry);
+        assert_eq!(blocked, vec![true, true]);
+
+        let mut leaving = registry
+            .get_component::<KinematicMoverComponent>(primary)
+            .expect("primary sealer remains installed")
+            .clone();
+        leaving.was_active_this_tick = true;
+        leaving.current_linear_velocity = Vec3::X;
+        registry
+            .set_component(primary, leaving)
+            .expect("primary departure phase writes");
+        rebuild_blocked_portals(&mut blocked, Some(&world), &registry);
+        assert_eq!(
+            blocked,
+            vec![true, false],
+            "the second closed door still seals portal zero, while portal one opens"
+        );
+
+        let mut second_leaving = registry
+            .get_component::<KinematicMoverComponent>(secondary)
+            .expect("secondary sealer remains installed")
+            .clone();
+        second_leaving.was_active_this_tick = true;
+        second_leaving.current_linear_velocity = Vec3::X;
+        registry
+            .set_component(secondary, second_leaving)
+            .expect("secondary departure phase writes");
+        rebuild_blocked_portals(&mut blocked, Some(&world), &registry);
+        assert_eq!(blocked, vec![false, false]);
+    }
+
+    #[test]
+    fn blocked_portal_buffer_clears_on_map_replacement_and_when_no_movers_remain() {
+        use postretro_entities::{EntityRegistry, KinematicMoverComponent, KinematicMoverConfig};
+        use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
+
+        let world_with_two_portals = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::ZERO,
+                    bounds_max: Vec3::ONE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 2,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+                CellData {
+                    bounds_min: Vec3::X,
+                    bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 2,
+                    portal_ref_count: 2,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+            ],
+            vec![0, 1, 0, 1],
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            vec![
+                PortalData {
+                    polygon: vec![Vec3::ZERO, Vec3::Y, Vec3::Z],
+                    front_cell: 0,
+                    back_cell: 1,
+                },
+                PortalData {
+                    polygon: vec![Vec3::X, Vec3::X + Vec3::Y, Vec3::X + Vec3::Z],
+                    front_cell: 0,
+                    back_cell: 1,
+                },
+            ],
+            true,
+        )
+        .expect("two-portal world must be valid");
+        let world_with_one_portal = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::ZERO,
+                    bounds_max: Vec3::ONE,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+                CellData {
+                    bounds_min: Vec3::X,
+                    bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 1,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+            ],
+            vec![0, 0],
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            vec![PortalData {
+                polygon: vec![Vec3::ZERO, Vec3::Y, Vec3::Z],
+                front_cell: 0,
+                back_cell: 1,
+            }],
+            true,
+        )
+        .expect("one-portal world must be valid");
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        let mut sealer = KinematicMoverComponent::new(
+            7,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: postretro_entities::KinematicMoverMode::Once,
+                started: false,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        sealer.sealed_portal_ids = vec![1];
+        registry
+            .set_component(entity, sealer)
+            .expect("map-A sealer installs");
+
+        let mut blocked = vec![true, true, true];
+        rebuild_blocked_portals(&mut blocked, Some(&world_with_two_portals), &registry);
+        assert_eq!(blocked, vec![false, true]);
+
+        rebuild_blocked_portals(&mut blocked, Some(&world_with_one_portal), &registry);
+        assert_eq!(
+            blocked,
+            vec![false],
+            "a reused buffer starts map B false before its movers are rebuilt"
+        );
+
+        let no_movers = EntityRegistry::new();
+        rebuild_blocked_portals(&mut blocked, Some(&world_with_two_portals), &no_movers);
+        assert_eq!(blocked, vec![false, false]);
+
+        rebuild_blocked_portals(&mut blocked, None, &no_movers);
+        assert!(
+            blocked.is_empty(),
+            "an unloaded map retains no stale portal slots"
+        );
+    }
+
+    /// Exercise the shipped closet fixture's door payload all the way through
+    /// the host-only presentation path: section-43 bytes -> loader-shaped
+    /// geometry -> spawned mover -> per-frame blocked portal input -> public
+    /// visible-cell result. The compact two-cell world is the fixture's main
+    /// room / closet doorway, using the authored closed-door waypoint and
+    /// doorway dimensions; it keeps this regression CPU-only.
+    #[test]
+    fn closet_reveal_closed_loaded_door_hides_interior_until_it_moves() {
+        use crate::scripting_systems::mesh_anim::MeshClipTables;
+        use crate::scripting_systems::mesh_render::MeshRenderCollector;
+        use glam::Mat4;
+        use postretro_entities::{EntityRegistry, Transform, components::mesh::MeshComponent};
+        use postretro_level_format::geometry::Vertex;
+        use postretro_level_format::kinematic_geometry::{
+            KINEMATIC_GEOMETRY_VERSION, KinematicGeometrySection, KinematicMoverRecord,
+            KinematicWaypointRecord,
+        };
+        use postretro_level_loader::{
+            CellData, CellLocatorChild, CellLocatorNodeData, KinematicGeometry, LevelWorld,
+            PortalData,
+        };
+
+        let fixture = include_str!("../../../content/dev/maps/closet-reveal.map");
+        assert!(fixture.contains("\"classname\" \"kinematic_mover\""));
+        assert!(fixture.contains("\"name\" \"closet_door\""));
+        assert!(fixture.contains("\"path\" \"closet_door_closed\""));
+        assert!(fixture.contains("\"origin\" \"168 -16 48\""));
+
+        let mover_section = KinematicGeometrySection {
+            version: KINEMATIC_GEOMETRY_VERSION,
+            movers: vec![KinematicMoverRecord {
+                mover_id: 3,
+                name: "closet_door".to_string(),
+                tags: vec!["closet_door".to_string()],
+                origin: [168.0, -16.0, 48.0],
+                path: "closet_door_closed".to_string(),
+                speed: 4.0,
+                wait_ms: 0.0,
+                move_mode: 0,
+                start_on_spawn: false,
+                vertices: vec![
+                    Vertex::new(
+                        [160.0, -112.0, 0.0],
+                        [0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [176.0, -112.0, 0.0],
+                        [1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [176.0, -112.0, 96.0],
+                        [1.0, 1.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                ],
+                indices: vec![0, 1, 2],
+                face_meta: Vec::new(),
+                spin_axis: [0.0, 0.0, 0.0],
+                spin_speed_deg_s: 0.0,
+                spin_accel_deg_s2: 0.0,
+                carry_yaw: false,
+                block_policy: "displace".to_string(),
+                crush_damage: 0.0,
+                crush_interval_ms: 0.0,
+                auto_close_ms: None,
+                open_event: None,
+                close_event: None,
+                blocked_event: None,
+                crush_event: None,
+                sealed_portal_ids: vec![0],
+            }],
+            waypoints: vec![
+                KinematicWaypointRecord {
+                    name: "closet_door_closed".to_string(),
+                    next: "closet_door_open".to_string(),
+                    origin: [168.0, -16.0, 48.0],
+                },
+                KinematicWaypointRecord {
+                    name: "closet_door_open".to_string(),
+                    next: String::new(),
+                    origin: [168.0, -16.0, -64.0],
+                },
+            ],
+        };
+        let decoded = KinematicGeometrySection::from_bytes(&mover_section.to_bytes())
+            .expect("closet door v5 section must load");
+
+        let mut world = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::new(0.0, -128.0, 0.0),
+                    bounds_max: Vec3::new(176.0, 0.0, 96.0),
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: true,
+                },
+                CellData {
+                    bounds_min: Vec3::new(176.0, -128.0, 0.0),
+                    bounds_max: Vec3::new(272.0, 0.0, 96.0),
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 1,
+                    portal_ref_count: 1,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: true,
+                },
+            ],
+            vec![0, 0],
+            CellLocatorChild::Node(0),
+            vec![CellLocatorNodeData {
+                plane_normal: Vec3::X,
+                plane_distance: 176.0,
+                front: CellLocatorChild::Cell(1),
+                back: CellLocatorChild::Cell(0),
+            }],
+            vec![PortalData {
+                polygon: vec![
+                    Vec3::new(176.0, -112.0, 0.0),
+                    Vec3::new(176.0, -48.0, 0.0),
+                    Vec3::new(176.0, -48.0, 96.0),
+                    Vec3::new(176.0, -112.0, 96.0),
+                ],
+                front_cell: 0,
+                back_cell: 1,
+            }],
+            true,
+        )
+        .expect("closet doorway visibility world must be valid");
+        world.kinematic_geometry = KinematicGeometry {
+            movers: decoded.movers.into_iter().map(Into::into).collect(),
+            waypoints: decoded.waypoints.into_iter().map(Into::into).collect(),
+        };
+
+        let mut registry = EntityRegistry::new();
+        let spawned = runtime_movers::spawn_loaded_kinematic_movers(
+            &mut registry,
+            &world,
+            runtime_movers::ENGINE_AUTO_CLOSE_MS,
+        )
+        .expect("loaded closet mover must spawn");
+        assert_eq!(spawned.len(), 1);
+        let closet_enemy = registry.spawn(Transform {
+            position: Vec3::new(220.0, -80.0, 48.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                closet_enemy,
+                MeshComponent::stateless("closet_enemy".to_string()),
+            )
+            .expect("closet enemy mesh installs");
+
+        let camera_position = Vec3::new(40.0, -80.0, 48.0);
+        let view = Mat4::look_at_rh(camera_position, camera_position + Vec3::X, Vec3::Y);
+        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 512.0) * view;
+        let visibility = |blocked_portals: &[bool]| {
+            let (result, _) = postretro_visibility::determine_visible_cells(
+                camera_position,
+                view_proj,
+                &world,
+                blocked_portals,
+                false,
+                &mut Vec::new(),
+            );
+            result
+        };
+        let drawable_ids = |visible_cells: &VisibleCells| match visible_cells {
+            VisibleCells::Culled(ids) => ids.clone(),
+            VisibleCells::DrawAll => panic!("closet world must use portal visibility"),
+        };
+        fn closet_enemy_collected(
+            registry: &EntityRegistry,
+            world: &LevelWorld,
+            visible_cells: &VisibleCells,
+            camera_position: Vec3,
+        ) -> bool {
+            let mut collector = MeshRenderCollector::new();
+            collector.collect(
+                registry,
+                world,
+                visible_cells,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                camera_position,
+            );
+            collector
+                .instances()
+                .iter()
+                .any(|instance| instance.model.as_str() == "closet_enemy")
+        }
+
+        let mut blocked_portals = Vec::new();
+        rebuild_blocked_portals(&mut blocked_portals, Some(&world), &registry);
+        assert_eq!(blocked_portals, vec![true]);
+        let closed_visibility = visibility(&blocked_portals);
+        assert_eq!(drawable_ids(&closed_visibility.visible_cells), vec![0]);
+        assert_eq!(
+            closed_visibility.fog_reachable,
+            vec![0],
+            "fog isolated behind the closed door must not be marched"
+        );
+        assert!(
+            !closet_enemy_collected(
+                &registry,
+                &world,
+                &closed_visibility.visible_cells,
+                camera_position,
+            ),
+            "the visible-cell gate drops closet entities from the forward collection"
+        );
+
+        let entity = spawned[0];
+        let mut moving = registry
+            .get_component::<postretro_entities::KinematicMoverComponent>(entity)
+            .expect("spawned closet mover must have a component")
+            .clone();
+        moving.was_active_this_tick = true;
+        registry
+            .set_component(entity, moving)
+            .expect("moving closet mover phase must be writable");
+        rebuild_blocked_portals(&mut blocked_portals, Some(&world), &registry);
+        assert_eq!(blocked_portals, vec![false]);
+        let open_visibility = visibility(&blocked_portals);
+        assert_eq!(drawable_ids(&open_visibility.visible_cells), vec![0, 1]);
+        assert_eq!(open_visibility.fog_reachable, vec![0, 1]);
+        assert!(
+            closet_enemy_collected(
+                &registry,
+                &world,
+                &open_visibility.visible_cells,
+                camera_position,
+            ),
+            "opening restores closet entities through the same VisibleCells seam"
+        );
+
+        // A map with no door association takes the unchanged portal baseline.
+        let no_door_visibility = visibility(&[]);
+        assert_eq!(
+            drawable_ids(&no_door_visibility.visible_cells),
+            drawable_ids(&open_visibility.visible_cells)
+        );
     }
 
     fn mover_yaw_states(

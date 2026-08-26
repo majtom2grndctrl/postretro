@@ -28,6 +28,7 @@ const MAX_PORTAL_WALK_STEPS: u32 = 20_000;
 pub(crate) struct PortalTraversalStats {
     pub considered: u32,
     pub accepted: u32,
+    pub rejected_blocked_portal: u32,
     pub rejected_solid: u32,
     pub rejected_clipped: u32,
     pub rejected_narrow: u32,
@@ -47,6 +48,7 @@ pub(crate) struct PortalTraversalResult {
 // before every write so the hot path allocates nothing when diagnostics are off.
 struct DfsState<'a> {
     world: &'a LevelWorld,
+    blocked_portals: &'a [bool],
     camera_position: Vec3,
     trace: Option<String>,
     visible: Vec<bool>,
@@ -75,7 +77,7 @@ pub fn portal_traverse(
     world: &LevelWorld,
     capture: bool,
 ) -> Vec<bool> {
-    portal_traverse_detailed(camera_position, camera_cell, frustum, world, capture).visible
+    portal_traverse_detailed(camera_position, camera_cell, frustum, world, &[], capture).visible
 }
 
 pub(crate) fn portal_traverse_detailed(
@@ -83,6 +85,7 @@ pub(crate) fn portal_traverse_detailed(
     camera_cell: usize,
     frustum: &Frustum,
     world: &LevelWorld,
+    blocked_portals: &[bool],
     capture: bool,
 ) -> PortalTraversalResult {
     portal_traverse_with_step_limit(
@@ -90,6 +93,7 @@ pub(crate) fn portal_traverse_detailed(
         camera_cell,
         frustum,
         world,
+        blocked_portals,
         capture,
         MAX_PORTAL_WALK_STEPS,
     )
@@ -100,6 +104,7 @@ fn portal_traverse_with_step_limit(
     camera_cell: usize,
     frustum: &Frustum,
     world: &LevelWorld,
+    blocked_portals: &[bool],
     capture: bool,
     step_limit: u32,
 ) -> PortalTraversalResult {
@@ -108,6 +113,7 @@ fn portal_traverse_with_step_limit(
         camera_cell,
         frustum,
         world,
+        blocked_portals,
         capture,
         step_limit,
     );
@@ -126,6 +132,7 @@ fn portal_traverse_inner(
     camera_cell: usize,
     frustum: &Frustum,
     world: &LevelWorld,
+    blocked_portals: &[bool],
     capture: bool,
     step_limit: u32,
 ) -> (PortalTraversalResult, Option<String>) {
@@ -178,6 +185,7 @@ fn portal_traverse_inner(
 
     let mut state = DfsState {
         world,
+        blocked_portals,
         camera_position,
         trace,
         visible,
@@ -234,8 +242,9 @@ fn portal_traverse_inner(
             let _ = write!(buf, "{}={}", name, count);
             first = false;
         };
-        // Same order as the event-site reason codes: clip, narrow, solid,
-        // cycle, depth, invalid.
+        // Same order as the event-site reason codes: blocked, clip, narrow,
+        // solid, cycle, depth, invalid.
+        emit(buf, "blocked", state.stats.rejected_blocked_portal);
         emit(buf, "clip", state.stats.rejected_clipped);
         emit(buf, "narrow", state.stats.rejected_narrow);
         emit(buf, "solid", state.stats.rejected_solid);
@@ -331,6 +340,25 @@ fn flood(
         };
 
         state.stats.considered += 1;
+
+        if state
+            .blocked_portals
+            .get(portal_idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            state.stats.rejected_blocked_portal += 1;
+            if let Some(buf) = state.trace.as_mut() {
+                let _ = writeln!(
+                    buf,
+                    "  rej {}->{} v={} blocked",
+                    cell,
+                    neighbor,
+                    portal.polygon.len(),
+                );
+            }
+            continue;
+        }
 
         if neighbor >= state.cell_count {
             state.stats.rejected_invalid += 1;
@@ -914,12 +942,57 @@ mod tests {
     }
 
     #[test]
+    fn blocked_portal_rejects_in_both_directions_and_reports_trace_stat() {
+        let world = three_cell_chain();
+        let camera_from_a = Vec3::new(16.0, 32.0, 32.0);
+        let frustum_from_a = make_camera_frustum(camera_from_a, Vec3::X);
+        let (from_a, trace) = portal_traverse_inner(
+            camera_from_a,
+            0,
+            &frustum_from_a,
+            &world,
+            &[true],
+            true,
+            MAX_PORTAL_WALK_STEPS,
+        );
+
+        assert!(from_a.visible[0], "camera cell stays visible");
+        assert!(!from_a.visible[1], "blocked portal must reject A→B");
+        assert_eq!(from_a.stats.rejected_blocked_portal, 1);
+        let trace = trace.expect("captured portal walk must include a trace");
+        assert!(
+            trace.contains("blocked"),
+            "blocked reject missing from trace: {trace}"
+        );
+        assert!(
+            trace.contains("blocked=1"),
+            "blocked reject missing from trace summary: {trace}"
+        );
+
+        let camera_from_c = Vec3::new(80.0, 32.0, 32.0);
+        let frustum_from_c = make_camera_frustum(camera_from_c, Vec3::NEG_X);
+        let from_c = portal_traverse_detailed(
+            camera_from_c,
+            2,
+            &frustum_from_c,
+            &world,
+            &[false, true],
+            false,
+        );
+
+        assert!(from_c.visible[2], "camera cell stays visible");
+        assert!(!from_c.visible[1], "blocked portal must reject C→B");
+        assert_eq!(from_c.stats.rejected_blocked_portal, 1);
+    }
+
+    #[test]
     fn portal_traverse_reports_step_limit_before_unbounded_walk() {
         let world = three_cell_chain();
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
 
-        let result = portal_traverse_with_step_limit(camera_pos, 0, &frustum, &world, false, 0);
+        let result =
+            portal_traverse_with_step_limit(camera_pos, 0, &frustum, &world, &[], false, 0);
 
         assert!(
             result.stats.step_limit_hit,
@@ -2041,8 +2114,15 @@ mod tests {
         let world = three_cell_chain();
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
-        let (_visible, trace) =
-            portal_traverse_inner(camera_pos, 0, &frustum, &world, true, MAX_PORTAL_WALK_STEPS);
+        let (_visible, trace) = portal_traverse_inner(
+            camera_pos,
+            0,
+            &frustum,
+            &world,
+            &[],
+            true,
+            MAX_PORTAL_WALK_STEPS,
+        );
         let buf = trace.expect("capture: true should produce a trace buffer");
 
         // Header fields — these are the per-frame camera-cell diagnostics

@@ -539,6 +539,7 @@ mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            sealed_portal_ids: Vec::new(),
         }
     }
 

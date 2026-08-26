@@ -33,4 +33,6 @@ crossterm = "0.28"
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
+postretro-level-loader.workspace = true
+postretro-visibility.workspace = true
 proptest = { workspace = true }

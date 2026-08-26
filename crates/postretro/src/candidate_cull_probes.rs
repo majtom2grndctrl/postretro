@@ -130,6 +130,7 @@ mod tests {
                 position,
                 view_proj,
                 &world,
+                &[],
                 false,
                 &mut scratch,
             );

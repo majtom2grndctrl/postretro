@@ -4061,6 +4061,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &mut texture_names,
         )
         .expect("movers should emit kinematic geometry");
@@ -4092,6 +4093,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &mut texture_names,
         )
         .expect("spinning mover should emit kinematic geometry");
@@ -4126,6 +4128,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &mut texture_names,
         )
         .expect("mover authoring must encode into kinematic geometry");

@@ -376,6 +376,7 @@ fn run_after_parsing(
     let kinematic_geometry_section = kinematic_geometry::encode_kinematic_geometry_section(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
+        &generated_portals,
         &mut geo_result.texture_names,
     );
     let trigger_volumes_section =

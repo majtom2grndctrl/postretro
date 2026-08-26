@@ -8,10 +8,11 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 4;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 5;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
+pub const KINEMATIC_GEOMETRY_VERSION_V4: u16 = 4;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -61,6 +62,9 @@ pub struct KinematicMoverRecord {
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
     pub crush_event: Option<String>,
+    /// Portals fully covered by this mover while docked at waypoint zero.
+    /// Presentation-only: camera visibility derives the live blocked set.
+    pub sealed_portal_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,10 +99,11 @@ impl KinematicGeometrySection {
             KINEMATIC_GEOMETRY_VERSION_V1
                 | KINEMATIC_GEOMETRY_VERSION_V2
                 | KINEMATIC_GEOMETRY_VERSION_V3
+                | KINEMATIC_GEOMETRY_VERSION_V4
                 | KINEMATIC_GEOMETRY_VERSION
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -216,6 +221,12 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         write_optional_string(buf, mover.close_event.as_deref());
         write_optional_string(buf, mover.blocked_event.as_deref());
         write_optional_string(buf, mover.crush_event.as_deref());
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION {
+        write_count(buf, mover.sealed_portal_ids.len());
+        for &portal_id in &mover.sealed_portal_ids {
+            buf.extend_from_slice(&portal_id.to_le_bytes());
+        }
     }
 }
 
@@ -365,6 +376,47 @@ fn read_mover(
         )
     };
 
+    let sealed_portal_ids = if version >= KINEMATIC_GEOMETRY_VERSION {
+        let count = read_count(
+            data,
+            offset,
+            &format!("mover {mover_idx} sealed_portal_ids count"),
+        )?;
+        let portal_id_bytes = count.checked_mul(std::mem::size_of::<u32>()).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: mover {mover_idx} sealed_portal_ids count {count} overflows its byte length"
+                ),
+            ))
+        })?;
+        let bytes_remaining = data.len().saturating_sub(*offset);
+        if portal_id_bytes > bytes_remaining {
+            return invalid_data(format!(
+                "kinematic geometry: mover {mover_idx} sealed_portal_ids count {count} requires {portal_id_bytes} bytes but only {bytes_remaining} remain"
+            ));
+        }
+        let mut portal_ids = Vec::new();
+        portal_ids.try_reserve_exact(count).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: cannot reserve {count} sealed_portal_ids for mover {mover_idx}"
+                ),
+            ))
+        })?;
+        for portal_idx in 0..count {
+            portal_ids.push(read_u32(
+                data,
+                offset,
+                &format!("mover {mover_idx} sealed_portal_ids {portal_idx}"),
+            )?);
+        }
+        portal_ids
+    } else {
+        Vec::new()
+    };
+
     let mover = KinematicMoverRecord {
         mover_id,
         name,
@@ -390,6 +442,7 @@ fn read_mover(
         close_event,
         blocked_event,
         crush_event,
+        sealed_portal_ids,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -810,6 +863,7 @@ mod tests {
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
+                sealed_portal_ids: vec![2, 7],
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -827,17 +881,29 @@ mod tests {
     }
 
     #[test]
-    fn v4_round_trip_preserves_records() {
+    fn v5_round_trip_preserves_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
     }
 
     #[test]
+    fn v4_records_decode_with_no_sealed_portals() {
+        let mut section = sample_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V4;
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes())
+            .expect("v4 kinematic geometry must remain loadable");
+
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V4);
+        assert!(restored.movers[0].sealed_portal_ids.is_empty());
+    }
+
+    #[test]
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -846,10 +912,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![6, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1, 2, 3, or 4"));
+        assert!(error.to_string().contains("expected 1, 2, 3, 4, or 5"));
     }
 
     // Regression: V3 encoded zero as inherit; treating it as an authored
@@ -997,6 +1063,21 @@ mod tests {
         assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
     }
 
+    // Regression: a truncated V5 sealed-ID count used to reserve before
+    // proving the declared IDs fit in the remaining section payload.
+    #[test]
+    fn rejects_truncated_v5_sealed_portal_ids_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v5_sealed_portal_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a truncated sealed portal-ID list must reject before reserving");
+
+        assert!(error.to_string().contains("sealed_portal_ids count"));
+    }
+
     #[test]
     fn rejects_v2_spin_axis_as_impossible_v1_waypoint_count() {
         let mut section = sample_section();
@@ -1117,6 +1198,18 @@ mod tests {
         offset + face_count * 8
     }
 
+    fn find_first_mover_v5_sealed_portal_count_offset(bytes: &[u8]) -> usize {
+        let mut offset = find_first_mover_v2_append_offset(bytes) + 21;
+        skip_string(bytes, &mut offset); // block_policy
+        offset += 4; // crush_damage
+        offset += 4; // crush_interval_ms
+        skip_optional_f32(bytes, &mut offset); // auto_close_ms
+        for _ in 0..4 {
+            skip_optional_string(bytes, &mut offset);
+        }
+        offset
+    }
+
     fn v1_fixture_section() -> KinematicGeometrySection {
         KinematicGeometrySection {
             version: KINEMATIC_GEOMETRY_VERSION_V1,
@@ -1156,6 +1249,7 @@ mod tests {
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
+                sealed_portal_ids: Vec::new(),
             }],
             waypoints: Vec::new(),
         }
@@ -1190,6 +1284,22 @@ mod tests {
     fn skip_string(bytes: &[u8], offset: &mut usize) {
         let len = read_u32_for_test(bytes, offset) as usize;
         *offset += len;
+    }
+
+    fn skip_optional_f32(bytes: &[u8], offset: &mut usize) {
+        let is_present = bytes[*offset];
+        *offset += 1;
+        if is_present == 1 {
+            *offset += 4;
+        }
+    }
+
+    fn skip_optional_string(bytes: &[u8], offset: &mut usize) {
+        let is_present = bytes[*offset];
+        *offset += 1;
+        if is_present == 1 {
+            skip_string(bytes, offset);
+        }
     }
 
     fn read_u32_for_test(bytes: &[u8], offset: &mut usize) -> u32 {

@@ -2472,6 +2472,27 @@ mod tests {
         })
     }
 
+    fn closed_starting_mover_payload(mover_id: u32) -> ComponentPayload {
+        ComponentPayload::KinematicMoverState(WireKinematicMoverState {
+            mover_id,
+            segment_index: 0,
+            direction: 1,
+            mode: 0,
+            segment_elapsed_ms: 0.0,
+            wait_remaining_ms: 0.0,
+            started: true,
+            completed: false,
+            blocked: false,
+            velocity: [0.0, 0.0, 0.0],
+            target_segment: None,
+            spin_angle_rad: 0.0,
+            spin_angle_before_tick_rad: 0.0,
+            was_active_this_tick: false,
+            spin_rate_rad_s: 0.0,
+            spin_target_rate_rad_s: 0.0,
+        })
+    }
+
     fn spawn_loaded_mover(registry: &mut EntityRegistry, mover_id: u32) -> EntityId {
         let id = registry.spawn(Transform::default());
         registry
@@ -2697,6 +2718,105 @@ mod tests {
         assert!(mover.was_active_this_tick);
         assert!((mover.spin_rate_rad_s - 1.25).abs() < EPSILON);
         assert!((mover.spin_target_rate_rad_s - 2.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn client_predicted_mover_phase_matches_host_door_occlusion_phase() {
+        let ComponentPayload::KinematicMoverState(closed_starting_phase) =
+            closed_starting_mover_payload(42)
+        else {
+            unreachable!("fixture creates a kinematic mover payload");
+        };
+
+        let mut host_phase = KinematicMoverComponent::new(
+            42,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["closed".to_string(), "open".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        seed_kinematic_mover_phase(&mut host_phase, &closed_starting_phase)
+            .expect("host fixture phase is valid");
+        assert!(
+            crate::kinematic_mover::mover_is_docked_closed(&host_phase),
+            "a start_on_spawn door is closed before its first simulation tick"
+        );
+
+        let mut registry = EntityRegistry::new();
+        let mover_entity = spawn_loaded_mover(&mut registry, 42);
+        let mut client = ClientReplication::new();
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), closed_starting_mover_payload(42)],
+                )],
+            ),
+            100,
+            0.25,
+        );
+        let client_closed_phase = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("snapshot seeds the loaded mover");
+        assert_eq!(
+            crate::kinematic_mover::mover_is_docked_closed(client_closed_phase),
+            crate::kinematic_mover::mover_is_docked_closed(&host_phase),
+            "both peers derive occlusion from the same live component phase"
+        );
+        assert_eq!(
+            client.sample_count(NetworkId(7)),
+            0,
+            "movers remain outside the interpolation sampler"
+        );
+
+        let mut host_transform = Transform::default();
+        for _ in 0..2 {
+            advance_mover_phase_one_tick(&mut host_phase, &mut host_transform, 0.25);
+        }
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                1,
+                100,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![transform_payload(0.0), closed_starting_mover_payload(42)],
+                )],
+            ),
+            102,
+            0.25,
+        );
+        let client_opening_phase = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("predicted phase remains in the live registry");
+        assert_eq!(client_opening_phase.segment_index, host_phase.segment_index);
+        assert!(
+            (client_opening_phase.segment_elapsed_ms - host_phase.segment_elapsed_ms).abs()
+                <= EPSILON
+        );
+        assert_eq!(
+            crate::kinematic_mover::mover_is_docked_closed(client_opening_phase),
+            crate::kinematic_mover::mover_is_docked_closed(&host_phase),
+            "the predicted opening phase unblocks on both peers before render"
+        );
+        assert!(
+            !crate::kinematic_mover::mover_is_docked_closed(client_opening_phase),
+            "a locally predicted opening door cannot cull its now-visible interior"
+        );
     }
 
     #[test]

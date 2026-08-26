@@ -1,15 +1,18 @@
 // Compiler extraction for the KinematicGeometry PRL section.
 // See: context/lib/build_pipeline.md §PRL Compilation.
 
+use std::collections::HashMap;
+
 use postretro_level_format::kinematic_geometry::{
     KINEMATIC_GEOMETRY_VERSION, KinematicGeometrySection, KinematicMoverRecord,
-    KinematicWaypointRecord,
+    KinematicWaypointRecord, MemberLight,
 };
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::geometry::extract_kinematic_mover_geometry;
 use crate::geometry_utils::clip_winding_to_half_spaces;
-use crate::map_data::{BrushVolume, MapKinematicMover, MapKinematicWaypoint};
+use crate::light_namespaces::AlphaLightsNs;
+use crate::map_data::{BrushVolume, CarriedLightLink, MapKinematicMover, MapKinematicWaypoint};
 use crate::partition::Aabb;
 use crate::portals::{PORTAL_EPSILON, Portal};
 
@@ -21,6 +24,7 @@ const MIN_BRUSH_AABB_EXTENT: f64 = 1.0e-12;
 pub fn encode_kinematic_geometry_section(
     movers: &[MapKinematicMover],
     waypoints: &[MapKinematicWaypoint],
+    carried_lights_by_mover: &[Vec<MemberLight>],
     generated_portals: &[Portal],
     texture_names: &mut TextureNamesSection,
 ) -> Option<KinematicGeometrySection> {
@@ -30,7 +34,8 @@ pub fn encode_kinematic_geometry_section(
 
     let mover_records = movers
         .iter()
-        .map(|mover| {
+        .enumerate()
+        .map(|(mover_index, mover)| {
             let sides: Vec<_> = mover
                 .brush_volumes
                 .iter()
@@ -71,6 +76,10 @@ pub fn encode_kinematic_geometry_section(
                 blocked_event: mover.blocked_event.clone(),
                 crush_event: mover.crush_event.clone(),
                 sealed_portal_ids,
+                carried_lights: carried_lights_by_mover
+                    .get(mover_index)
+                    .cloned()
+                    .unwrap_or_default(),
                 move_mode: mover.move_mode.to_wire(),
                 start_on_spawn: mover.start_on_spawn,
                 vertices: geometry.vertices,
@@ -98,6 +107,42 @@ pub fn encode_kinematic_geometry_section(
         movers: mover_records,
         waypoints: waypoint_records,
     })
+}
+
+/// Translate compiler-source light indices into the positional AlphaLights
+/// namespace at the one seam where both index spaces are available.
+pub fn member_lights_by_mover(
+    movers: &[MapKinematicMover],
+    links: &[CarriedLightLink],
+    alpha_lights: &AlphaLightsNs<'_>,
+) -> Vec<Vec<MemberLight>> {
+    let alpha_index_by_source: HashMap<usize, u32> = alpha_lights
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(alpha_index, entry)| (entry.source_index, alpha_index as u32))
+        .collect();
+    let mover_index_by_id: HashMap<u32, usize> = movers
+        .iter()
+        .enumerate()
+        .map(|(mover_index, mover)| (mover.mover_id, mover_index))
+        .collect();
+    let mut members = vec![Vec::new(); movers.len()];
+
+    for link in links {
+        let Some(&alpha_light_index) = alpha_index_by_source.get(&link.source_light_index) else {
+            continue;
+        };
+        let Some(&mover_index) = mover_index_by_id.get(&link.mover_id) else {
+            continue;
+        };
+        members[mover_index].push(MemberLight {
+            alpha_light_index,
+            local_offset: link.local_offset,
+        });
+    }
+
+    members
 }
 
 /// Return generated portal ids covered by the union of a mover's closed-pose
@@ -302,7 +347,10 @@ mod tests {
     use glam::DVec3;
 
     use super::*;
-    use crate::map_data::{BrushPlane, KinematicMoveMode};
+    use crate::map_data::{
+        BrushPlane, CarriedLightLink, FalloffModel, KinematicMoveMode, LightType, MapLight,
+        ShadowType,
+    };
     use crate::partition::Aabb;
 
     fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
@@ -363,6 +411,30 @@ mod tests {
             move_mode: KinematicMoveMode::Once,
             start_on_spawn: false,
             brush_volumes,
+        }
+    }
+
+    fn point_light(bake_only: bool) -> MapLight {
+        MapLight {
+            origin: DVec3::ZERO,
+            light_type: LightType::Point,
+            carrier: String::new(),
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 10.0,
+            light_size: 0.0,
+            angular_diameter: 0.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            animation: None,
+            bake_only,
+            is_dynamic: !bake_only,
+            casts_entity_shadows: false,
+            is_animated: false,
+            tags: Vec::new(),
+            shadow_type: ShadowType::StaticLightMap,
         }
     }
 
@@ -479,17 +551,59 @@ mod tests {
             portal_at_x_with_y_range(0.0, 1.0, 3.0),
         ];
         let mut first_textures = TextureNamesSection { names: Vec::new() };
-        let first =
-            encode_kinematic_geometry_section(&[door.clone()], &[], &portals, &mut first_textures)
-                .expect("mover must produce a kinematic section");
+        let first = encode_kinematic_geometry_section(
+            &[door.clone()],
+            &[],
+            &[],
+            &portals,
+            &mut first_textures,
+        )
+        .expect("mover must produce a kinematic section");
         let mut second_textures = TextureNamesSection { names: Vec::new() };
         let second =
-            encode_kinematic_geometry_section(&[door], &[], &portals, &mut second_textures)
+            encode_kinematic_geometry_section(&[door], &[], &[], &portals, &mut second_textures)
                 .expect("mover must produce a kinematic section");
 
         let sealed_ids = &first.movers[0].sealed_portal_ids;
         assert_eq!(sealed_ids, &[0, 2]);
         assert!(sealed_ids.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(first.to_bytes(), second.to_bytes());
+    }
+
+    #[test]
+    fn member_lights_use_positional_alpha_light_indices() {
+        let mover = mover(Vec::new());
+        let lights = vec![point_light(true), point_light(false), point_light(false)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let members = member_lights_by_mover(
+            &[mover],
+            &[
+                CarriedLightLink {
+                    source_light_index: 1,
+                    mover_id: 7,
+                    local_offset: [1.0, 2.0, 3.0],
+                },
+                CarriedLightLink {
+                    source_light_index: 2,
+                    mover_id: 7,
+                    local_offset: [-1.0, 0.0, 0.5],
+                },
+            ],
+            &alpha_lights,
+        );
+
+        assert_eq!(
+            members,
+            vec![vec![
+                MemberLight {
+                    alpha_light_index: 0,
+                    local_offset: [1.0, 2.0, 3.0],
+                },
+                MemberLight {
+                    alpha_light_index: 1,
+                    local_offset: [-1.0, 0.0, 0.5],
+                },
+            ]]
+        );
     }
 }

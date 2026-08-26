@@ -827,6 +827,7 @@ fn map_light_to_component(
         is_dynamic: light.is_dynamic,
         animated_slot: light.animated_slot,
         follow_transform: false,
+        carrier: None,
         animation: baked_descriptor.map(|descriptor| LightAnimation {
             period_ms: descriptor.period * 1000.0,
             phase: Some(descriptor.phase),
@@ -896,6 +897,12 @@ fn follow_transform_position(
     component: &LightComponent,
     alpha: f32,
 ) -> Option<glam::Vec3> {
+    if let Some(carrier) = component.carrier.as_ref() {
+        return registry
+            .interpolated_transform(carrier.mover_entity, alpha)
+            .ok()
+            .map(|transform| transform.position + transform.rotation * carrier.local_offset);
+    }
     if !component.follow_transform {
         return None;
     }
@@ -1648,6 +1655,65 @@ mod tests {
     }
 
     #[test]
+    fn carrier_uses_interpolated_mover_pose_for_light_and_influence() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[], &mut registry, 0);
+
+        let mover = registry.spawn(Transform::default());
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(4.0, 2.0, 1.0),
+                    rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let light = spawn_runtime_light(
+            &mut registry,
+            LightComponent {
+                follow_transform: true,
+                carrier: Some(LightCarrier {
+                    mover_entity: mover,
+                    local_offset: glam::Vec3::X,
+                }),
+                ..runtime_component([99.0, 0.0, 0.0], 5.0, None)
+            },
+        );
+        registry
+            .set_component(
+                light,
+                Transform {
+                    position: glam::Vec3::new(99.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        bridge.absorb_dynamic_lights(&registry);
+        let update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("carried light is enrolled and packed");
+        let expected = glam::Vec3::new(2.0, 1.0, 0.5)
+            + glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4) * glam::Vec3::X;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected) <= 1.0e-6,
+            "carrier pose overrides the light's own follow-transform pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected) <= 1.0e-6,
+            "carrier pose relocates the matching dynamic-light influence"
+        );
+    }
+
+    #[test]
     fn runtime_light_conversion_disables_entity_shadows() {
         let component = runtime_component([1.0, 2.0, 3.0], 5.0, None);
         let converted = component_to_map_light(&component, [1.0, 2.0, 3.0], true, u32::MAX);
@@ -2062,6 +2128,7 @@ mod tests {
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: Some(LightAnimation {
                 period_ms: 500.0,
                 phase: None,
@@ -2175,6 +2242,7 @@ mod tests {
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: None,
         };
         registry.set_component(new_id, component).unwrap();

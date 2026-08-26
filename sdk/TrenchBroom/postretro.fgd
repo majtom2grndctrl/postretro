@@ -220,6 +220,7 @@
 // the CLASSNAME, not a KVP.
 @BaseClass = DynamicLight
 [
+    carrier(string) : "Carrier mover name" : ""
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
     _falloff_range(integer) : "Falloff Distance (map units)"

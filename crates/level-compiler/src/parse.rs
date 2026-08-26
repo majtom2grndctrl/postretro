@@ -1206,6 +1206,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         &kinematic_waypoints,
         scale,
     )?;
+    let carried_light_links = resolve_carried_light_links(&lights, &kinematic_movers);
 
     // Stat logging
     let total_brushes = geo_map.brushes.len();
@@ -1226,6 +1227,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entity_brushes: entity_brushes_summary,
         entities,
         lights,
+        carried_light_links,
         light_start_active_defaults,
         data_script,
         map_entities,
@@ -1240,6 +1242,34 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         nav_params,
         entity_shadow_params,
     })
+}
+
+/// Resolve only unambiguous dynamic-light carrier names. Diagnostics for
+/// malformed/baked/ambiguous authoring live at this boundary's follow-up; this
+/// first slice simply leaves those lights as normal unbound alpha lights.
+fn resolve_carried_light_links(
+    lights: &[MapLight],
+    movers: &[MapKinematicMover],
+) -> Vec<crate::map_data::CarriedLightLink> {
+    lights
+        .iter()
+        .enumerate()
+        .filter(|(_, light)| light.is_dynamic && !light.carrier.is_empty())
+        .filter_map(|(source_light_index, light)| {
+            let mut matches = movers.iter().filter(|mover| mover.name == light.carrier);
+            let mover = matches.next()?;
+            matches
+                .next()
+                .is_none()
+                .then(|| crate::map_data::CarriedLightLink {
+                    source_light_index,
+                    mover_id: mover.mover_id,
+                    local_offset: (light.origin - mover.origin)
+                        .to_array()
+                        .map(|value| value as f32),
+                })
+        })
+        .collect()
 }
 
 /// Brush hulls for `brush_ids`, with the ids dropped.
@@ -3926,6 +3956,45 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_light_carrier_resolves_to_mover_local_offset() {
+        let map_text = kinematic_test_map("wp_b").replacen(
+            r#""origin" "0 0 0"
+}
+// entity 3"#,
+            r#""origin" "0 0 0"
+}
+// entity 4
+{
+"classname" "light_dynamic"
+"origin" "0 0 64"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "512"
+"carrier" "lift_a"
+}
+// entity 3"#,
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("carrier map should parse");
+
+        assert_eq!(map_data.lights.len(), 1);
+        assert!(map_data.lights[0].is_dynamic);
+        assert_eq!(map_data.lights[0].carrier, "lift_a");
+        assert_eq!(map_data.kinematic_movers.len(), 1);
+        assert_eq!(map_data.kinematic_movers[0].name, "lift_a");
+        assert_eq!(map_data.carried_light_links.len(), 1);
+        let link = &map_data.carried_light_links[0];
+        assert_eq!(link.source_light_index, 0);
+        assert_eq!(link.mover_id, map_data.kinematic_movers[0].mover_id);
+        assert_eq!(
+            link.local_offset,
+            (map_data.lights[0].origin - map_data.kinematic_movers[0].origin)
+                .to_array()
+                .map(|value| value as f32),
+        );
+    }
+
+    #[test]
     fn trenchbroom_func_group_brushes_are_flattened_into_static_world() {
         // Regression: TrenchBroom editor groups are saved as `func_group`
         // brush entities; treating every brush entity as non-static made
@@ -4062,6 +4131,7 @@ mod tests {
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
             &[],
+            &[],
             &mut texture_names,
         )
         .expect("movers should emit kinematic geometry");
@@ -4093,6 +4163,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &[],
             &mut texture_names,
         )
@@ -4128,6 +4199,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &[],
             &mut texture_names,
         )

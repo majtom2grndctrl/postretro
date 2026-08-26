@@ -915,6 +915,89 @@ impl App {
             },
         );
 
+        // Lights are installed before movers, so resolve the runtime-only
+        // carrier handles only after the all-or-nothing mover spawn completes.
+        // The returned ids are safe to zip only when the whole geometry list
+        // spawned; otherwise leave every link unbound rather than guessing a
+        // shifted entity id.
+        let mover_entity_by_id = if products.spawned_mover_entities.len()
+            == self
+                .level
+                .as_ref()
+                .expect("level installed before carried-light resolution")
+                .kinematic_geometry
+                .movers
+                .len()
+        {
+            self.level
+                .as_ref()
+                .expect("level installed before carried-light resolution")
+                .kinematic_geometry
+                .movers
+                .iter()
+                .zip(products.spawned_mover_entities.iter().copied())
+                .map(|(mover, entity)| (mover.mover_id, entity))
+                .collect::<std::collections::HashMap<_, _>>()
+        } else {
+            log::warn!(
+                "[Loader] kinematic mover spawn count did not match level geometry; carried lights remain unbound"
+            );
+            std::collections::HashMap::new()
+        };
+        {
+            use postretro_entities::components::light::LightCarrier;
+
+            let level = self
+                .level
+                .as_ref()
+                .expect("level installed before carried-light resolution");
+            let mut registry = script_ctx.registry.borrow_mut();
+            for mover in &level.kinematic_geometry.movers {
+                for member in &mover.carried_lights {
+                    let Some(&mover_entity) = mover_entity_by_id.get(&mover.mover_id) else {
+                        log::warn!(
+                            "[Loader] carried AlphaLight {} could not bind: mover {} was not spawned",
+                            member.alpha_light_index,
+                            mover.mover_id,
+                        );
+                        continue;
+                    };
+                    let Some(light_entity) = session
+                        .light_bridge
+                        .entity_for_map_index(member.alpha_light_index as usize)
+                    else {
+                        log::warn!(
+                            "[Loader] carried AlphaLight {} could not bind: map light entity is unavailable",
+                            member.alpha_light_index,
+                        );
+                        continue;
+                    };
+                    let Ok(mut light) = registry
+                        .get_component::<postretro_entities::components::light::LightComponent>(
+                            light_entity,
+                        )
+                        .cloned()
+                    else {
+                        log::warn!(
+                            "[Loader] carried AlphaLight {} could not bind: light component is unavailable",
+                            member.alpha_light_index,
+                        );
+                        continue;
+                    };
+                    light.carrier = Some(LightCarrier {
+                        mover_entity,
+                        local_offset: member.local_offset,
+                    });
+                    if let Err(error) = registry.set_component(light_entity, light) {
+                        log::warn!(
+                            "[Loader] carried AlphaLight {} could not bind: {error}",
+                            member.alpha_light_index,
+                        );
+                    }
+                }
+            }
+        }
+
         // `levelLoad` may already have queued system commands during the CPU
         // install. Bind the final composed reaction set before that queue is
         // next drained, so an inline setState IR is evaluated rather than
@@ -1389,6 +1472,9 @@ pub(crate) fn resolved_spawner_mesh_models(
 pub(crate) struct WorldInstallProducts {
     /// Static colliders for every loaded kinematic mover.
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
+    /// Spawned mover entity ids aligned with `KinematicGeometry::movers`.
+    /// A failed all-or-nothing mover spawn returns an empty vector.
+    pub(crate) spawned_mover_entities: Vec<postretro_entities::registry::EntityId>,
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
     /// Host-only trigger-pool outcome retained by `App` for diagnostics and

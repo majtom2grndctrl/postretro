@@ -231,6 +231,7 @@ mod tests {
     fn light(dynamic: bool) -> MapLight {
         MapLight {
             origin: DVec3::new(1.0, 2.0, 3.0),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 0.5, 0.25],

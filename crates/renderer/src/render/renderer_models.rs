@@ -540,6 +540,7 @@ mod tests {
             blocked_event: None,
             crush_event: None,
             sealed_portal_ids: Vec::new(),
+            carried_lights: Vec::new(),
         }
     }
 

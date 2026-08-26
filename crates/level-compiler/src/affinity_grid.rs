@@ -664,6 +664,40 @@ mod tests {
     }
 
     #[test]
+    fn world_reach_index_counts_and_maps_receiver_to_the_lights_own_cell() {
+        // Spike helpers: a point light at origin (range 2 → AABB half-extent
+        // 2.5 m) reaches its own affinity cell. A world point in that cell must
+        // count the light; a far corner must not (empty tree → no portal
+        // bypass extends it, only the AABB clip). Verifies `cell_of` lands in the
+        // same grid the decompose builds and that per-cell counts are read back.
+        let verts = cube_vertices();
+        let light = animated_point_light(DVec3::ZERO, 2.0);
+        let lights: Vec<&MapLight> = vec![&light];
+        let exterior: HashSet<usize> = HashSet::new();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &verts,
+            tree: &empty_tree(),
+            exterior_leaves: &exterior,
+            portals: &[],
+            probe_spacing: 1.0,
+        };
+        let index = WorldReachIndex::build(&reach, &lights);
+        let geom = &index.geom;
+
+        // base_min = (-8,-8,-8); affinity cell = 4 m. Origin lands in cell
+        // floor((0+8)/4) = 2 on each axis; that cell overlaps the light AABB.
+        assert_eq!(geom.cell_of(DVec3::ZERO), geom.cell_of(DVec3::splat(0.5)));
+        assert_eq!(index.reaching_count_at(DVec3::ZERO), 1);
+
+        // A far corner cell the AABB never overlaps has no reaching light.
+        assert_eq!(index.reaching_count_at(DVec3::new(7.9, 7.9, 7.9)), 0);
+
+        // Out-of-grid points clamp into the grid (never panic), like `cell_range`.
+        assert!(geom.cell_of(DVec3::new(-1000.0, 0.0, 0.0)).is_some());
+        assert!(geom.cell_of(DVec3::new(1000.0, 0.0, 0.0)).is_some());
+    }
+
+    #[test]
     fn portal_filter_drops_unreachable_cells() {
         // Two non-solid leaves split at x=0, NO portals between them. A light in
         // leaf 0 (x<0) must not reach cells whose centroid lands in leaf 1.

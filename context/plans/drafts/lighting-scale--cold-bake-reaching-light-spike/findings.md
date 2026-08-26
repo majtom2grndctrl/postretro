@@ -187,8 +187,14 @@ What *is* content-independent is the mechanism conclusion: the cold SH bake cast
 provably-zero shadow rays that the cold lightmap bake already skips, and closing
 that gap is exact regardless of how many lights reach a receiver on a real map.
 Real-map validation would refine the *magnitude* of the win, not its correctness.
-The prototype and instrumentation are committed (env-gated, off by default) so
-that re-measurement on a real map, once one exists, is a one-command rerun.
+The prototype and instrumentation were committed on this branch (env-gated, off by
+default) and recorded here with their env flags (`POSTRETRO_SPIKE_REACH_STATS` /
+`POSTRETRO_SPIKE_REACH_CULL`) and method, so re-measurement on a real map — once
+one exists — is reproducible. The implementation spec that hardens this finding
+(`lighting-scale--cold-sh-bake-falloff-early-out`) makes the SH early-out
+unconditional and **removes the measurement harness in full**; re-measuring later
+is then a `git restore` of the spike commit, not a live env flag in the shipped
+compiler.
 
 ## Reproducibility notes
 

@@ -1722,6 +1722,290 @@ mod tests {
     }
 
     #[test]
+    fn carried_light_matches_mover_interpolation_after_zero_and_two_fixed_ticks() {
+        use crate::kinematic_mover::{self, MoverTickStateTable};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    12,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(4.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 4.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        let local_offset = glam::Vec3::new(2.0, 1.0, 0.0);
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        // A render-only frame after load has no fixed tick history to advance.
+        // The bridge must read the same spawn pose that mover geometry renders.
+        let zero_tick_alpha = 0.73;
+        let zero_tick_expected = registry
+            .interpolated_transform(mover, zero_tick_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let zero_tick_update = bridge
+            .update(&mut registry, 0.0, zero_tick_alpha)
+            .expect("first bridge update packs the bound carrier");
+        assert!(
+            packed_dynamic_position(&zero_tick_update.lights_bytes).distance(zero_tick_expected)
+                <= 1.0e-6,
+            "zero-tick render frame must compose from the mover's spawn pose"
+        );
+
+        // Catch-up can advance two fixed ticks before one render. Interpolation
+        // must still use the renderer-visible previous/current pair after tick 2.
+        let mut tick_states = MoverTickStateTable::default();
+        for _ in 0..2 {
+            registry.snapshot_transform(mover);
+            kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+        }
+        let two_tick_alpha = 0.25;
+        let two_tick_expected = registry
+            .interpolated_transform(mover, two_tick_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let two_tick_update = bridge
+            .update(&mut registry, 0.0, two_tick_alpha)
+            .expect("mover movement makes the carrier upload dirty");
+        assert!(
+            packed_dynamic_position(&two_tick_update.lights_bytes).distance(two_tick_expected)
+                <= 1.0e-6,
+            "two-tick render frame must match geometry's interpolated mover pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&two_tick_update.influence_bytes)
+                .distance(two_tick_expected)
+                <= 1.0e-6,
+            "two-tick light influence must share the geometry-matched position"
+        );
+    }
+
+    #[test]
+    fn carried_light_tracks_ping_pong_reversal_and_stop_hold_without_snapping() {
+        use crate::kinematic_mover::{self, MoverTickStateTable, apply_mover_command};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut authored = sample_dynamic_point_light();
+        authored.origin = [50.0, 50.0, 50.0];
+        bridge.populate_from_level(&[authored], &mut registry, 0);
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    13,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(2.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::PingPong,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let local_offset = glam::Vec3::new(0.0, 1.0, 0.0);
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let mut tick_states = MoverTickStateTable::default();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 2.5);
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .unwrap()
+                .direction_sign,
+            -1,
+            "the fixture must cross the ping-pong endpoint and reverse"
+        );
+        let reversal_alpha = 0.75;
+        let reversal_expected = registry
+            .interpolated_transform(mover, reversal_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let reversal_update = bridge
+            .update(&mut registry, 0.0, reversal_alpha)
+            .expect("reversal movement repacks the carried light");
+        assert!(
+            packed_dynamic_position(&reversal_update.lights_bytes).distance(reversal_expected)
+                <= 1.0e-6,
+            "the light must remain on the interpolation path through reversal"
+        );
+
+        let mut mover_component = registry
+            .get_component::<KinematicMoverComponent>(mover)
+            .unwrap()
+            .clone();
+        apply_mover_command(&mut mover_component, &MoverCommand::Stop);
+        registry.set_component(mover, mover_component).unwrap();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let stop_expected = registry
+            .interpolated_transform(mover, 0.5)
+            .unwrap()
+            .position
+            + local_offset;
+        let stop_update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("the stop frame changes the followed pose from the reversal blend");
+        assert!(
+            packed_dynamic_position(&stop_update.lights_bytes).distance(stop_expected) <= 1.0e-6,
+            "a stopped mover keeps its composed carrier position"
+        );
+        assert!(
+            packed_dynamic_position(&stop_update.lights_bytes).distance(glam::Vec3::splat(50.0))
+                > 1.0,
+            "a stop must never snap the light back to its authored origin"
+        );
+
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let held_update = bridge.update(&mut registry, 0.0, 0.5).unwrap();
+        assert!(
+            !held_update.has_dirty_data,
+            "a stable stop hold preserves the last composed GPU upload"
+        );
+        let held_origin = bridge.collect_all_as_map_lights(&registry, 0.0)[0].0.origin;
+        assert!(
+            glam::Vec3::from_array(held_origin.map(|value| value as f32)).distance(stop_expected)
+                <= 1.0e-6,
+            "the bridge cache retains the stopped carrier pose rather than the authored origin"
+        );
+    }
+
+    #[test]
+    fn carried_light_holds_once_terminus_without_snapping_to_authored_origin() {
+        use crate::kinematic_mover::{self, MoverTickStateTable};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut authored = sample_dynamic_point_light();
+        authored.origin = [-40.0, 0.0, 0.0];
+        bridge.populate_from_level(&[authored], &mut registry, 0);
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    14,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(2.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "terminus".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let local_offset = glam::Vec3::new(0.0, 0.0, 1.0);
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let mut tick_states = MoverTickStateTable::default();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 2.0);
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .unwrap()
+                .completed,
+            "fixture must complete at the once terminus"
+        );
+        let terminus_update = bridge
+            .update(&mut registry, 0.0, 1.0)
+            .expect("completion frame packs the terminus pose");
+        let terminus = glam::Vec3::new(2.0, 0.0, 1.0);
+        assert!(
+            packed_dynamic_position(&terminus_update.lights_bytes).distance(terminus) <= 1.0e-6,
+            "completion frame must publish the composed terminus position"
+        );
+
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let held_update = bridge.update(&mut registry, 0.0, 0.5).unwrap();
+        assert!(
+            !held_update.has_dirty_data,
+            "a completed once mover holds its last bridge upload"
+        );
+        let held_origin = bridge.collect_all_as_map_lights(&registry, 0.0)[0].0.origin;
+        assert!(
+            glam::Vec3::from_array(held_origin.map(|value| value as f32)).distance(terminus)
+                <= 1.0e-6,
+            "once completion must hold at the terminus rather than snapping to authored origin"
+        );
+    }
+
+    #[test]
     fn carried_spot_tracks_translating_mover_without_rotating_authored_aim() {
         use postretro_entities::components::light::LightCarrier;
 

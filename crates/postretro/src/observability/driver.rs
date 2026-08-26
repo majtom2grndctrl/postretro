@@ -346,6 +346,7 @@ fn run_headless_inner(
             runspec.ticks,
             &registry_ref,
             &runspec.dump,
+            &world,
             events,
             player,
         )?

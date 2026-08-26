@@ -586,6 +586,9 @@ pub fn pack_and_write_portals(
     // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
     // emission is independent of portal presence.
     cell_draw_index_bytes: Option<Vec<u8>>,
+    // Pre-serialized CellVisibility (id 46) bytes. The section stays optional
+    // for old PRLs; current compiler output always provides it.
+    cell_visibility_bytes: Option<Vec<u8>>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
@@ -810,6 +813,11 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::CellDrawIndex as u32,
         cell_draw_index_bytes,
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::CellVisibility as u32,
+        cell_visibility_bytes,
     );
 
     write_and_validate_sections(output, &sections)?;
@@ -1079,6 +1087,7 @@ mod tests {
     use postretro_level_format::bsp::BspLeafRecord;
     use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
     use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
+    use postretro_level_format::cell_visibility::CellVisibilitySection;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -1580,6 +1589,13 @@ mod tests {
         let alpha_lights = empty_alpha_lights();
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         let animated_direct_sh_delta_volumes = minimal_animated_direct_sh_delta_volumes();
+        let cell_visibility_bytes = CellVisibilitySection {
+            cell_count: 2,
+            component_ids: vec![0, 0],
+            coupled_pairs: vec![],
+        }
+        .to_bytes()
+        .unwrap();
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -1612,6 +1628,7 @@ mod tests {
             None,
             None,
             Some(sample_cell_draw_index_bytes()),
+            Some(cell_visibility_bytes),
             Some(&animated_direct_sh_delta_volumes),
         )
         .expect("pack_and_write_portals should succeed");
@@ -1621,9 +1638,9 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        // Baseline modern sections plus section 45, always-emitted FogVolumes,
-        // and the required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 15);
+        // Baseline modern sections plus CellVisibility, section 45,
+        // always-emitted FogVolumes, and the required CellDrawIndex.
+        assert_eq!(meta.header.section_count, 16);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -1638,6 +1655,10 @@ mod tests {
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
         assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::CellVisibility as u32)
+                .is_some()
+        );
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(
             meta.find_section(SectionId::LightInfluence as u32)
@@ -1707,6 +1728,7 @@ mod tests {
             None,
             Some(sample_cell_draw_index_bytes()),
             None,
+            None,
         )
         .expect("pack should succeed");
 
@@ -1765,6 +1787,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
                 None,
             )
             .expect("pack should succeed");
@@ -1876,6 +1899,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
                 None,
             )
             .expect("pack should succeed");
@@ -1993,6 +2017,7 @@ mod tests {
                 None,
                 Some(sample_cell_draw_index_bytes()),
                 None,
+                None,
             )
             .expect("pack should succeed");
         }
@@ -2085,6 +2110,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
                 None,
             )
             .expect("pack should succeed");
@@ -2188,6 +2214,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let msg = result.expect_err("non-empty BVH without CellDrawIndex must fail");
@@ -2241,6 +2268,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -2304,6 +2332,7 @@ mod tests {
             None,
             None,
             Some(sample_cell_draw_index_bytes()),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -2402,6 +2431,7 @@ mod tests {
             None,
             None,
             cell_draw_index_bytes,
+            None,
             None,
         )
         .expect("full pipeline portal pack should succeed");

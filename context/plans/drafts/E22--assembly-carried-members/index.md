@@ -1,0 +1,117 @@
+# E22 Spec 1 — Assembly carried members (mover-carried dynamic light)
+
+> **Status:** draft. First spec of Epic 22 (`../E22--kinematic-assemblies/`). Foundation + first consumer. Source-grounded seam map, lifecycle diagram, observer/ordering tables in `research.md`.
+> **Related:** `context/lib/build_pipeline.md` §PRL section IDs (KinematicGeometry 43, AlphaLights 18) · `context/lib/entity_model.md` · `context/lib/rendering_pipeline.md` §4 · `context/plans/done/E17--rotating-movers/` (spin) · `context/plans/done/E21--bone-sockets-attachments/` (the attachment relation this generalizes).
+
+## Goal
+
+A dynamic light can be authored to travel with a kinematic mover: the mapper binds a `light_dynamic` / `light_dynamic_spot` to a mover, and at runtime the light rides the mover's pose — position and (for spots) direction — staying locked to the moving geometry on host and connected clients alike. This is the first consumer that proves Epic 22's canonical member-of-an-assembly relation, built on the shipped kinematic mover substrate with no new wire traffic.
+
+## Scope
+
+### In scope
+- A `carrier` KVP on the FGD `DynamicLight` base class binding a dynamic light to a mover by the mover's **`name`**.
+- Compile-time resolution of `carrier` to the mover of that name, producing a carried-light **linkage** (light → mover + authored local offset). No-match, duplicate-name, and baked-light bindings degrade with a named warning (the light stays unbound); never a hard build failure (see Orderings).
+- Emitting the linkage in `KinematicGeometry` (id 43), version 4 → 5, as a per-mover member-light list; back-compatible decode of v1–v4.
+- Runtime: resolve the linkage at level load onto the spawned dynamic light, and compose the light's per-frame world pose from the carrier mover's **interpolated** transform ∘ local offset — position for all carried lights, cone direction for spots — by generalizing the existing light-bridge follow hook.
+- Client parity with no new wire: the carried light reconstructs from the mover pose the client already re-derives from replicated phase.
+- A dev fixture map and edge tests (reverse, stop, completion, 0/2 ticks per frame, spinning mover, unresolved/baked bindings).
+
+### Out of scope
+- **The full `MapAssembly` container** and multiple member kinds. Spec 1 ships the minimal member-light **linkage** — the reusable relation — not a general assembly type. `MapAssembly` lands with spec 2 (`E22--group-recognition`), where `func_group` and heterogeneous members justify a container; introducing it now would be a stub no consumer exercises.
+- **`func_group` / linked-group recognition.** Binding here is the explicit `carrier` KVP only. Spec 2 adds implicit grouping that projects onto the same linkage.
+- **Non-light members** (`prop_mesh`, emitters carried by a mover). The linkage generalizes, but only the dynamic light is spec 1's consumer.
+- **Instancing / shared templates** — spec 3.
+- **Baked lights that move.** A baked light's contribution is baked static; it cannot move. A baked light bound to a mover is warn+ignored, never carried.
+
+## Direction
+
+**Problem.** A dynamic light cannot travel with a kinematic mover today. Co-locating a `light_dynamic` with a mover in the editor changes nothing: the light compiles to a top-level dynamic light at its authored world origin (`research.md` seam map), disconnected from the mover, which then moves out from under it. The cause is the missing member-of-mover relation and the runtime pose composition it drives — not the discarded editor grouping (that is spec 2).
+
+**Prior commitments.**
+- *Kinematic substrate (Epic 17).* Movers live outside the static bake, one entity per mover, driven by `run_kinematic_mover_tick`, drawn at `interpolated_transform(id, alpha)`; client re-derives the mover pose from replicated phase. This spec adds a relation onto that substrate and changes none of it. Consistent.
+- *E21 attachment relation.* E21 renders a child at `holder_interpolated_transform × socket_matrix`, follows the rendered pose, inherits visibility, re-derives on the client with no new wire, and deliberately carries no per-attachment data offset. This spec is the same relation with the holder pose being a mover `Transform` (E21's `RigidRest(Mat4)` case) and the child a live light entity (E21's explicitly reserved "entity-as-attachment" growth). The offset stays out of authored data: it is derived as `light.origin − mover.origin`, the same origin-subtraction the mover geometry already uses — honoring E21's no-data-offset stance rather than diverging from it.
+- *Source-format neutrality.* `carrier` is a canonical binding on the engine's dynamic-light archetype, resolved in the compiler; it names a mover by its engine-side `name`, not a TrenchBroom construct. No source vocabulary crosses into a shared stage.
+- *Trigger→mover binding.* Triggers bind movers by `_tag` and command *all* matches — fan-out is correct for a command. A carried light rides exactly *one* parent, so it binds by the mover's `name` (the unique "stable mover name") and resolves to a single mover at compile time. Using `name` rather than the trigger `_tag` vocabulary is deliberate: it fits the 1:1 relation, gives the currently diagnostics-only `name` field a real consumer, and avoids overloading `_tags` (a light sharing a script-query tag with a mover must not silently become carried).
+
+**Alternatives rejected.**
+- *Reuse `follow_transform` as-is.* It reads the **same entity's** Transform (projectile-scoped). A carried light's pose comes from a **different** entity (the mover). Rejected as-is; adopted as the hook to generalize.
+- *A per-tick system that writes the light entity's Transform from the mover each tick.* Rejected: the light's visible pose must match the **interpolated** mover pose the geometry draws with, and a tick-written child Transform would need its own interpolation and could desync by up to a tick. Composing at upload time from the mover's interpolated pose is exact by construction and needs no tick system (`research.md` design resolution).
+- *Peel the light entirely into the mover record (section 43 carries full light params).* Rejected: it duplicates light-param encoding and forks the dynamic-light spawn path. Keeping the carried light a normal `AlphaLights` record plus a small linkage reuses all existing dynamic-light machinery; only the per-frame position/direction is overridden.
+- *Bind by mover `_tag` (mirror trigger `target_tag`), or infer from shared `_tags` with no KVP.* Rejected: the trigger tag vocabulary carries fan-out semantics (command all matches) a single-parent light does not want, forcing a uniqueness-suppression check; and any tag-based scheme overloads `_tags` — a light sharing an unrelated script-query tag with a mover would be silently carried (shared-tag *inference* additionally makes >1 shared tags ambiguous). Binding by the mover's unique `name` fits the 1:1 relation directly. The engine already chose a dedicated `target_tag` KVP over shared-tag inference for triggers, for the same overload reason.
+- *Membership-only wire (store `alpha_light_index` alone; re-derive `local_offset` at load).* The offset is `AlphaLightRecord.origin − mover.origin`, both already in the PRL, so the wire could omit it. Rejected in favor of storing the derived offset: it keeps the linkage self-contained and the runtime resolution a pure copy (no per-light arithmetic against a second section at load), for 12 bytes per carried light. The version bump is required for membership regardless, so denormalizing buys nothing structural. Decided, not deferred.
+
+## Acceptance criteria
+
+- [ ] In a dev map, a `light_dynamic` whose `carrier` names a linear `kinematic_mover` renders at a fixed offset from the platform and tracks it across start→end→start; at rest the light sits at its authored position.
+- [ ] The carried light's rendered position matches the moving geometry with no visible one-tick lag on a frame with **zero** fixed ticks and a frame with **two** fixed ticks (interpolation parity with the geometry draw).
+- [ ] The mover reverses (`ping_pong`) and completes (`once`): the light tracks through the reversal and holds at the terminus — it never snaps back to the authored origin.
+- [ ] A `light_dynamic_spot` carried by a **spinning** mover (E17-D) has its cone direction rotate with the mover, and its offset position orbits the spin axis.
+- [ ] `carrier` naming **no** mover → a compile warning naming the light and the missing name; the light compiles as a normal unbound dynamic light at its authored origin and the build succeeds.
+- [ ] `carrier` matching **more than one** mover (duplicate mover `name`s) → a compile warning naming the light and the duplicate-named movers; the light compiles unbound.
+- [ ] `carrier` on a baked `light` / `light_spot` / `light_sun` → a compile warning; the light bakes as a normal static light with the binding ignored.
+- [ ] A blank or cleared `carrier` produces no warning and a normal dynamic light — never a parse error.
+- [ ] A connected client renders the carried light tracking the mover identically to the host, and the app/wire protocol version is unchanged (no new replicated field).
+- [ ] `KinematicGeometry` round-trips version 5 with member-light linkages; a v1–v4 file still loads (empty linkages). Adding a carried light leaves `level_content_digest` unchanged.
+- [ ] A carried light produces no baked lighting data (it is dynamic): one `AlphaLights` record, no static/animated bake-namespace entry.
+
+## Tasks
+
+### Task 1: Thin vertical slice — omni light carried by a linear mover
+Build the whole path end to end for one case: a `light_dynamic` (omnidirectional) bound to a non-spinning `kinematic_mover`, tracking it at runtime. **Compile:** add a `carrier` string KVP to the FGD `@BaseClass = DynamicLight` block; read it in `translate_light` (`format/quake_map.rs`) via the blank-is-default `authored` helper pattern and store it on a new `MapLight.carrier: String` field (`map_data.rs` — a new typed field; `MapLight` has no KVP bag). After the parse loop collects both `lights` and the movers (a post-loop pass, sibling to `resolve_kinematic_movers`), for each dynamic light with a non-blank `carrier` resolve it against the movers' `name` fields to the mover of that name and compute `local_offset = light.origin − mover.origin` (mover authored rotation is identity); record a `CarriedLightLink { source_light_index, mover_id, local_offset: [f32;3] }`. **Wire:** bump `KINEMATIC_GEOMETRY_VERSION` 4→5 (`level-format/src/kinematic_geometry.rs`); append to each `KinematicMoverRecord`'s encode/decode a member-light list of `{ alpha_light_index: u32, local_offset: [f32;3] }`, guarded `if version >= V5`, defaulting to empty for v1–v4 (mirror the v2/v3 append blocks). At the pack seam where both the source `MapLight` list and the `AlphaLightsNs` namespace are in scope, map each link's `source_light_index` to its **`AlphaLights` section position** (the index space `LightInfluence`/`LightTags` already use) and emit the per-mover member-light list. **Runtime:** decode the linkage into `LoadedKinematicMover`; at level load, after movers spawn (build a `mover_id → EntityId` map from `spawn_loaded_kinematic_movers`) and lights spawn (`LightBridge::populate_from_level`), set a new `LightComponent.carrier: Option<LightCarrier { mover_entity: EntityId, local_offset: Vec3 }>` (`#[serde(skip)]`, re-resolved at load like `follow_transform`) on each carried light by its `AlphaLights` index. Thread the linkage table + the `mover_id→EntityId` map into `populate_from_level` (it is called from the same `startup/lifecycle*` install where the spawned movers are in scope). **Compose:** generalize `follow_transform_position` (`scripting/systems/light_bridge.rs`) so a light with `carrier: Some(..)` returns `registry.interpolated_transform(carrier.mover_entity, alpha).transform_point(local_offset)` — using `transform_point` so a rotating mover is handled from the start. The bridge already writes that position into the `GpuLight` origin and the culling `influence.center`. Prove it in a dev map: a moving platform (`name "lift"`) carrying an omni `light_dynamic` (`carrier "lift"`); the light tracks the platform. Keep validation, spot direction, and the full edge suite for later tasks — this task's test is a smoke check plus a `KinematicGeometry` v5 round-trip unit test.
+
+### Task 2: Compile-time resolution diagnostics and digest exclusion
+Own the resolution edge cases in the post-loop carrier pass from Task 1, matching the compiler's warn-and-continue posture. A `carrier` naming **no** mover logs a warning naming the light (origin) and the missing name, and leaves the light unbound (a normal top-level dynamic light at its authored origin). A `carrier` matching **more than one** mover (duplicate mover `name`s) logs a warning naming the light and the duplicate-named movers, and leaves the light unbound (a light cannot ride two movers); spec 1 warns on the duplicate-name collision but does not add a general unique-`name` check (out of scope). A `carrier` present on a **baked** light (`light` / `light_spot` / `light_sun` — `is_dynamic == false`) logs a warning and clears the binding, so the light bakes normally (mirroring how baked `_cast_entity_shadows` is warn-cleared). A blank or cleared `carrier` is not a warning and not an error — the `authored` helper returns the default and the light is unbound. Separately, ensure the new member-light linkage is **excluded** from `level_content_digest` (`runtime_movers.rs`): it is presentation-only, like the v3 mover event fields the digest already omits, so it must not perturb the multiplayer static-content fingerprint. Add unit tests for each degradation and a test asserting the digest is byte-identical with and without carried lights.
+
+### Task 3: Spot direction carry and rotating-mover composition
+Extend the bridge compose so a carried `light_dynamic_spot` aims correctly under a moving/rotating mover. The spot's `cone_direction` is authored world-space and, because the mover's authored rotation is identity, equals its mover-local direction; at upload, rotate it by the carrier mover's **interpolated** rotation before packing the light — the same interpolated transform used for the position in Task 1. Position already rotates correctly via Task 1's `transform_point`; this task adds the direction rotation and verifies both against a **spinning** mover (E17-D `spin_*`). Confirm the influence volume and cone still cull correctly as the light moves (the bridge already relocates `influence.center` to the followed position). Tests: a carried spot on a spinner sweeps its cone with the mover; a carried omni on a spinner orbits the spin axis at the authored radius.
+
+### Task 4: Dev fixture, edge suite, and client parity
+Author the durable fixture and the full edge test suite (consuming Tasks 1–3). Fixture: a dev map with (a) a linear platform carrying an omni light and (b) a spinning mover carrying a spotlight, with named stations for visual inspection. Tests per the `research.md` Orderings table: pose tracking across reversal (`ping_pong`), stop, and `once` completion (holds at terminus, no snap); interpolation parity on a frame with zero fixed ticks and one with two ticks (light pose matches the geometry's `interpolated_transform` at the same `alpha`); and **client parity** — a loopback/two-process check (or a client-path unit test over `client_predict_loaded_movers_tick` + the generalized bridge hook) asserting the carried light tracks the mover on a connected client with the app/wire protocol version **unchanged**. Assert a carried light emits exactly one `AlphaLights` record and no bake-namespace entry.
+
+## Sequencing
+
+**Phase 1 (sequential):** Task 1 — thin slice; falsifies the boundary assumptions (KVP → compile resolution → section-43 v5 → load resolution → bridge compose → render) across every layer before breadth piles on.
+**Phase 2 (concurrent):** Task 2 (compile-side diagnostics + digest), Task 3 (bridge-side spot/rotation). Independent surfaces — compiler resolution pass vs. light-bridge compose; note both Task 1 and Task 3 edit `light_bridge.rs`, so Task 3 extends the hook Task 1 established (no parallel Task touches it).
+**Phase 3 (sequential):** Task 4 — fixture + full edge/parity suite; consumes Tasks 1–3.
+
+## Rough sketch
+
+- New FGD KVP on `@BaseClass = DynamicLight`: `carrier(string) : "Carrier mover name" : ""`.
+- Compiler: `MapLight.carrier: String`; a post-loop `resolve_carried_lights` pass (resolving `carrier` against mover `name`) producing `Vec<CarriedLightLink { source_light_index, mover_id, local_offset }>`; pack maps `source_light_index → AlphaLights` position and attaches per-mover member-light lists.
+- `level-format`: `KinematicMoverRecord` gains a `carried_lights: Vec<MemberLight { alpha_light_index: u32, local_offset: [f32;3] }>`; `KINEMATIC_GEOMETRY_VERSION = 5`; `write_mover`/`read_mover` gate it on `version >= 5`.
+- Runtime: `LightComponent.carrier: Option<LightCarrier>` (`#[serde(skip)]`); resolution in the `startup/lifecycle*` install; `follow_transform_position` generalized to the carrier branch. `LightCarrier { mover_entity: EntityId, local_offset: Vec3 }`.
+- Compose: `interpolated_transform(mover_entity, alpha).transform_point(local_offset)` for position; `rotation * cone_direction` for spot aim.
+
+## Boundary inventory
+
+| Name | Rust (compiler) | Wire / PRL | Rust (runtime) | FGD KVP |
+|---|---|---|---|---|
+| carrier binding | `MapLight.carrier: String` (holds a mover `name`) | not on wire — compile-resolved | — | `carrier` (string) |
+| carried-light linkage | `CarriedLightLink { source_light_index, mover_id, local_offset: [f32;3] }` | `KinematicGeometry` v5: per-mover `MemberLight { alpha_light_index: u32, local_offset: [f32;3] }` | `LoadedKinematicMover.carried_lights` | n/a |
+| runtime carrier | — | not replicated (`#[serde(skip)]`, re-resolved at load) | `LightComponent.carrier: Option<LightCarrier { mover_entity: EntityId, local_offset: Vec3 }>` | n/a |
+
+## Wire format
+
+`KinematicGeometry` (id 43) advances 4 → 5. Per-mover, after the v4 field group, append a member-light list: a length-prefixed sequence of `{ alpha_light_index: u32, local_offset: [f32; 3] }`, little-endian, matching the section's existing integer/vec conventions. Empty list encodes as length 0. Decoding v1–v4 yields an empty list (the established default-on-old-version pattern; loader `from_bytes` must accept version 5). `alpha_light_index` indexes the `AlphaLights` (id 18) section — the same positional index space `LightInfluence` (21) and `LightTags` (26) use. State the constraint, not the byte offsets: the implementer places the group after the v4 fields where both encoder and decoder gate on `version >= 5`.
+
+## Invariants
+
+| Invariant | Established by | Preserved / threatened at | Verified by |
+|---|---|---|---|
+| Carried light rendered pose = carrier mover's interpolated pose ∘ local offset, every render frame | Task 1 (bridge compose) | reversal, stop, `once` completion, 0/2 ticks per frame, spin (Task 3) | AC 1, 2, 3, 4 |
+| No new wire for carried lights; client reconstructs from replicated mover phase | Task 1 (compose reads the client's own mover entity via the generalized hook) | broken if compose reads any host-only state | AC 9 |
+| Only dynamic-tier lights carry; a baked binding is ignored | Task 2 (baked warn-clear) | a baked light with `carrier` | AC 7, 11 |
+| Member-light linkage excluded from `level_content_digest` | Task 2 (digest omission) | broken if the linkage enters the fingerprint | AC 10 (digest unchanged) |
+| `KinematicGeometry` back-compat: v1–v4 decode with empty linkages | Task 1 (version gate) | any future field appended after the v5 group | AC 10 |
+
+## Decisions
+
+- **Binding by mover `name`, KVP `carrier`.** A carried light rides one parent; `name` is the unique 1:1 identifier, gives the currently diagnostics-only field a real consumer, and avoids overloading `_tags`. Not the trigger `_tag` vocabulary (fan-out) — see Direction / Alternatives.
+- **No-match / duplicate-name / baked binding → warn + unbound, never a hard error.** Matches the compiler's warn-and-continue posture; a valid map still results (unlike `switch`'s brush-count error, where the press volume is genuinely undefined). A duplicate-`name` match is a latent mover-authoring issue spec 1 warns on but does not police with a general unique-`name` check (out of scope).
+- **Store the derived `local_offset` on the wire (not membership-only).** Self-contained linkage, pure-copy runtime resolution; 12 bytes/light. Both origins are in the `.prl`, but storing avoids a cross-section read at resolution.
+- **Positional `AlphaLights` index, computed at pack.** The linkage keys the carried light by its `AlphaLights` section position — the space `LightInfluence`/`LightTags` already use — mapped from source order at the pack seam. The linkage ships in the same `.prl` as `AlphaLights`, so they cannot drift; no stable light id is needed.
+- **The carried light's baked cell assignment is harmless.** `AlphaLightRecord.origin` / `leaf_index` reflect the authored origin, but dynamic-light culling is influence-based and the bridge moves `influence.center` to the followed position, so the stale cell is never read for the moving light.
+- **The light entity's own `Transform` stays at the authored origin.** The carried position is composed at upload via the carrier override; nothing reads a dynamic light's `Transform` for its position (mirrors `follow_transform`), so no per-tick Transform write is needed.
+- **`cone_direction` is stored as-authored (= mover-local, since the mover's authored rotation is identity) and rotated at runtime** by the mover's interpolated rotation for carried spots (Task 3). No compile-side direction transform.
+- **The carried light updates independent of mover render visibility.** The light bridge iterates lights, not mover draws; `interpolated_transform(mover)` is always available (the mover entity is always spawned), so the light stays correct even when the mover geometry is culled.

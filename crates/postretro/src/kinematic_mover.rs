@@ -279,12 +279,22 @@ fn mover_is_at_open_terminus(mover: &KinematicMoverComponent) -> bool {
         && mover.segment_elapsed_ms <= f32::EPSILON
 }
 
-/// A mover closes a camera portal only while fully settled at waypoint zero.
-/// Any ambiguous or in-motion phase deliberately leaves the portal unblocked.
-pub(crate) fn mover_is_docked_closed(mover: &KinematicMoverComponent) -> bool {
+fn mover_is_at_closed_terminus(mover: &KinematicMoverComponent) -> bool {
     mover.waypoints.len() >= 2
         && mover.segment_index == 0
         && mover.segment_elapsed_ms <= f32::EPSILON
+}
+
+/// A mover closes a camera portal only while fully settled at waypoint zero.
+///
+/// `was_active_this_tick` is the settle-tick gate: an arrival can already have
+/// the closed pose, but the renderer may still blend from the preceding open
+/// pose. Waiting until the following inactive tick keeps camera culling
+/// conservative. This deliberately does not inspect `started`, because a
+/// freshly spawned `start_on_spawn` mover is still physically closed before its
+/// first simulation tick.
+pub(crate) fn mover_is_docked_closed(mover: &KinematicMoverComponent) -> bool {
+    mover_is_at_closed_terminus(mover)
         && mover.current_linear_velocity.length_squared() <= f32::EPSILON * f32::EPSILON
         && !mover.was_active_this_tick
         && !mover.blocked
@@ -847,6 +857,118 @@ mod tests {
         mover.current_linear_velocity = Vec3::ZERO;
         mover.blocked = true;
         assert!(!mover_is_docked_closed(&mover));
+    }
+
+    #[test]
+    fn docked_closed_waits_for_the_tick_after_closed_arrival() {
+        let mut mover = sample_mover(KinematicMoverMode::Once, 0.0);
+        // Travel the final quarter-second of the 2 m close leg. The close
+        // target makes arrival complete, but that physical arrival tick still
+        // has nonzero motion provenance and must over-draw.
+        mover.segment_index = 1;
+        mover.direction_sign = -1;
+        mover.segment_elapsed_ms = 1_750.0;
+        mover.target_segment = Some(0);
+        let mut transform = transform_at(Vec3::new(0.25, 0.0, 0.0));
+
+        advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+
+        assert_eq!(mover.segment_index, 0);
+        assert!(mover.completed);
+        assert!(
+            mover.was_active_this_tick,
+            "arrival remains active this tick"
+        );
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "the arrival tick must never cull against an interpolation endpoint that was ajar"
+        );
+
+        advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+
+        assert!(!mover.was_active_this_tick, "settle tick is inactive");
+        assert!(
+            mover.current_linear_velocity.length() <= EPS,
+            "the settle tick has no residual linear motion"
+        );
+        assert!(
+            mover_is_docked_closed(&mover),
+            "the first full closed-pose tick may occlude"
+        );
+    }
+
+    #[test]
+    fn docked_closed_predicate_is_conservative_across_mover_phase_rows() {
+        let mut mover = sample_mover(KinematicMoverMode::Once, 0.0);
+
+        assert!(mover.started, "fixture is start_on_spawn");
+        assert!(
+            mover_is_docked_closed(&mover),
+            "a fresh closed start_on_spawn mover occludes before its first tick"
+        );
+
+        mover.started = false;
+        assert!(
+            mover_is_docked_closed(&mover),
+            "the predicate intentionally remains independent of started"
+        );
+
+        mover.started = true;
+        mover.was_active_this_tick = true;
+        mover.current_linear_velocity = Vec3::X;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "leaving the closed dock unblocks during the same frame"
+        );
+
+        mover.was_active_this_tick = false;
+        mover.current_linear_velocity = Vec3::ZERO;
+        mover.segment_elapsed_ms = f32::EPSILON * 2.0;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "an ajar door is never an occluder even after a zero-motion hold"
+        );
+
+        mover.segment_index = 1;
+        mover.segment_elapsed_ms = 500.0;
+        mover.blocked = true;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "an obstruction hold partway through the close leg stays visible through"
+        );
+
+        mover.blocked = false;
+        mover.completed = true;
+        mover.segment_elapsed_ms = 0.0;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "a completed mover at the open terminus does not seal the portal"
+        );
+
+        mover.mode = KinematicMoverMode::PingPong;
+        mover.segment_index = 0;
+        mover.completed = false;
+        mover.started = true;
+        mover.was_active_this_tick = true;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "a running ping-pong mover over-draws at its closed turnaround"
+        );
+
+        mover.started = false;
+        mover.was_active_this_tick = false;
+        assert!(
+            mover_is_docked_closed(&mover),
+            "a stopped ping-pong mover at the closed dock may seal"
+        );
+
+        mover.started = true;
+        mover.wait_remaining_ms = 250.0;
+        mover.was_active_this_tick = true;
+        assert!(
+            !mover_is_docked_closed(&mover),
+            "an end-wait remains conservatively unblocked while its tick is active"
+        );
     }
 
     #[test]

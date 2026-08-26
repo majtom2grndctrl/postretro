@@ -366,6 +366,7 @@ fn spawn_from_geometry_with_auto_close_default(
         component.close_event = mover.close_event.clone();
         component.blocked_event = mover.blocked_event.clone();
         component.crush_event = mover.crush_event.clone();
+        component.sealed_portal_ids = mover.sealed_portal_ids.clone();
         log::info!("{}", kinematic_mover_load_summary(mover, &component));
         registry
             .set_component(entity, component)
@@ -612,6 +613,7 @@ mod tests {
             close_event: None,
             blocked_event: None,
             crush_event: None,
+            sealed_portal_ids: Vec::new(),
         }
     }
 
@@ -868,6 +870,7 @@ mod tests {
         authored.close_event = Some("door_close".to_string());
         authored.blocked_event = Some("door_blocked".to_string());
         authored.crush_event = Some("door_crush".to_string());
+        authored.sealed_portal_ids = vec![1, 3];
 
         let mut registry = EntityRegistry::new();
         let id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
@@ -883,6 +886,7 @@ mod tests {
         assert_eq!(mover.close_event.as_deref(), Some("door_close"));
         assert_eq!(mover.blocked_event.as_deref(), Some("door_blocked"));
         assert_eq!(mover.crush_event.as_deref(), Some("door_crush"));
+        assert_eq!(mover.sealed_portal_ids, vec![1, 3]);
     }
 
     #[test]

@@ -279,6 +279,17 @@ fn mover_is_at_open_terminus(mover: &KinematicMoverComponent) -> bool {
         && mover.segment_elapsed_ms <= f32::EPSILON
 }
 
+/// A mover closes a camera portal only while fully settled at waypoint zero.
+/// Any ambiguous or in-motion phase deliberately leaves the portal unblocked.
+pub(crate) fn mover_is_docked_closed(mover: &KinematicMoverComponent) -> bool {
+    mover.waypoints.len() >= 2
+        && mover.segment_index == 0
+        && mover.segment_elapsed_ms <= f32::EPSILON
+        && mover.current_linear_velocity.length_squared() <= f32::EPSILON * f32::EPSILON
+        && !mover.was_active_this_tick
+        && !mover.blocked
+}
+
 pub(crate) fn advance_mover_phase_one_tick(
     mover: &mut KinematicMoverComponent,
     transform: &mut Transform,
@@ -818,6 +829,24 @@ mod tests {
             a = (next_a.0, next_a.1);
             b = (next_b.0, next_b.1);
         }
+    }
+
+    #[test]
+    fn docked_closed_requires_resting_unblocked_waypoint_zero_phase() {
+        let mut mover = sample_mover(KinematicMoverMode::Once, 0.0);
+        assert!(
+            mover_is_docked_closed(&mover),
+            "a just-spawned closed mover must occlude on its first render frame"
+        );
+
+        mover.was_active_this_tick = true;
+        assert!(!mover_is_docked_closed(&mover));
+        mover.was_active_this_tick = false;
+        mover.current_linear_velocity = Vec3::X;
+        assert!(!mover_is_docked_closed(&mover));
+        mover.current_linear_velocity = Vec3::ZERO;
+        mover.blocked = true;
+        assert!(!mover_is_docked_closed(&mover));
     }
 
     #[test]

@@ -195,6 +195,23 @@ pub(crate) fn convert_kinematic_geometry_section(
     Ok(geometry)
 }
 
+/// Drop presentation-only mover associations that cannot address this map's
+/// usable portal array. The loader keeps one warning for the whole section.
+fn drop_out_of_range_sealed_portal_ids(
+    geometry: &mut KinematicGeometry,
+    portal_count: usize,
+) -> usize {
+    let mut dropped_count = 0usize;
+    for mover in &mut geometry.movers {
+        let previous_len = mover.sealed_portal_ids.len();
+        mover
+            .sealed_portal_ids
+            .retain(|&portal_id| (portal_id as usize) < portal_count);
+        dropped_count += previous_len - mover.sealed_portal_ids.len();
+    }
+    dropped_count
+}
+
 fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLoadError> {
     let mut waypoints: HashMap<&str, usize> = HashMap::new();
     for (index, waypoint) in geometry.waypoints.iter().enumerate() {
@@ -2472,7 +2489,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         };
 
     // Optional — absent or empty means the level has no kinematic movers.
-    let kinematic_geometry: KinematicGeometry = match prl_format::read_section_data(
+    let mut kinematic_geometry: KinematicGeometry = match prl_format::read_section_data(
         &mut cursor,
         &meta,
         SectionId::KinematicGeometry as u32,
@@ -2691,6 +2708,16 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
 
     let portal_data = portals_section.as_ref().and_then(convert_usable_portals);
+    if let Some(portal_data) = portal_data.as_ref() {
+        let dropped_count =
+            drop_out_of_range_sealed_portal_ids(&mut kinematic_geometry, portal_data.len());
+        if dropped_count > 0 {
+            log::warn!(
+                "[PRL] KinematicGeometry: dropped {dropped_count} sealed portal id(s) outside the {} loaded portals",
+                portal_data.len(),
+            );
+        }
+    }
     if portal_data.is_none() {
         validate_cell_portal_refs(&cells, &cell_portal_refs, None)?;
     }
@@ -2766,7 +2793,8 @@ mod tests {
     use postretro_level_format::cells::CellRecord;
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
-        KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
+        KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KinematicMoverRecord,
+        KinematicWaypointRecord,
     };
 
     #[test]
@@ -3112,6 +3140,7 @@ mod tests {
                 close_event: None,
                 blocked_event: None,
                 crush_event: None,
+                sealed_portal_ids: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -3149,6 +3178,32 @@ mod tests {
         let err = convert_kinematic_geometry_section(section).unwrap_err();
 
         assert_kinematic_validation_message(err, "duplicate mover_id");
+    }
+
+    #[test]
+    fn kinematic_geometry_v4_loads_with_no_sealed_portals() {
+        let mut section = sample_kinematic_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V4;
+
+        let geometry = convert_kinematic_geometry_section(
+            KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect("v4 section bytes must remain readable"),
+        )
+        .expect("v4 section must remain runtime-loadable");
+
+        assert!(geometry.movers[0].sealed_portal_ids.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_drops_sealed_portals_outside_loaded_portal_array() {
+        let mut geometry = convert_kinematic_geometry_section(sample_kinematic_section())
+            .expect("sample section must lower");
+        geometry.movers[0].sealed_portal_ids = vec![0, 2, u32::MAX];
+
+        let dropped = drop_out_of_range_sealed_portal_ids(&mut geometry, 2);
+
+        assert_eq!(dropped, 2);
+        assert_eq!(geometry.movers[0].sealed_portal_ids, vec![0]);
     }
 
     #[test]

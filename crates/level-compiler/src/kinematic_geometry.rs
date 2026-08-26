@@ -161,7 +161,7 @@ fn portal_bounds(portal: &Portal) -> Option<Aabb> {
         && polygon_area(&portal.polygon) > MIN_UNCOVERED_PORTAL_AREA_M2)
         .then(|| portal_polygon_is_valid(&portal.polygon))
         .filter(|is_valid| *is_valid)
-        .and_then(|_| Some(Aabb::from_points(&portal.polygon)))
+        .map(|_| Aabb::from_points(&portal.polygon))
         .filter(Aabb::is_valid)
 }
 

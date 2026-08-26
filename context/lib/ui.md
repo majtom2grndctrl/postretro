@@ -2,7 +2,7 @@
 
 > **Read this when:** working on the UI layer — CPU model (`postretro-ui` crate) or renderer pass (`render/ui/`, `postretro` crate) — widgets, theming, HUD state binding, UI animation.
 > **Key invariant:** scripts declare widget trees and state values; Rust owns the live UI. Authoritative values live in the state store; anything the UI animates or displays is retained-UI-local presentation state that never writes back. The renderer only consumes the resulting draw list at the GPU boundary.
-> **Related:** `context/research/ui-layer.md` (design exploration) · `scripting.md` (state store) · `rendering_pipeline.md` (frame structure) · historical plans under `context/plans/done/M13--*`.
+> **Related:** [Scripting](./scripting.md) (state store) · [Rendering Pipeline](./rendering_pipeline.md) (frame structure)
 
 ---
 
@@ -12,7 +12,7 @@ The CPU UI model (`postretro-ui` crate) builds the authoring model — serde des
 
 Game logic and the renderer meet at exactly one point: a read-only snapshot published once per frame after game logic (descriptor tree, resolved slot values, frame time). The renderer never reads the live slot table. The retained gameplay tree diffs only bound slots frame-over-frame and splits invalidation: content changes relayout, appearance changes only redraw, a settled frame rebuilds nothing.
 
-**A second, passive draw-list producer.** Besides the modal stack of retained trees, the draw list has a passive **presentation layer**: a CPU pool of world-anchored transient instances (CPU world→screen projection + fixed-cap pool + retained per-instance template layout cache over the same widget/theme/text machinery) that folds into the same per-frame composition but carries no retained gameplay-tree identity, modal or input state, focus, or hit-test — a purely passive producer, like the focus ring. Authored as two archetypes (spawn / overlay) via `definePresentationTemplate` / `present` / `defineOverlay`, for combat feedback (floating damage numbers, damaged-enemy status bars). Template roots admit only `Text`, `Bar`, `Image`, `VStack`, and `HStack`; interactive and other retained-tree widgets are rejected. Producer-stamped `{ fact }` binds are valid only in templates. Ordinary UI-tree drains reject them. `ModManifest.presentationOverlays` accepts one overlay descriptor, not an array. Design intent; `plans/in-progress/E16--combat-presentation-substrate`.
+**A second, passive draw-list producer.** Besides the modal stack of retained trees, the draw list has a passive **presentation layer**: a CPU pool of world-anchored transient instances (CPU world→screen projection + fixed-cap pool + retained per-instance template layout cache over the same widget/theme/text machinery) that folds into the same per-frame composition but carries no retained gameplay-tree identity, modal or input state, focus, or hit-test — a purely passive producer, like the focus ring. Authored as two archetypes (spawn / overlay) via `definePresentationTemplate` / `present` / `defineOverlay`, for combat feedback (floating damage numbers, damaged-enemy status bars). Template roots admit only `Text`, `Bar`, `Image`, `VStack`, and `HStack`; interactive and other retained-tree widgets are rejected. Producer-stamped `{ fact }` binds are valid only in templates. Ordinary UI-tree drains reject them. `ModManifest.presentationOverlays` accepts one overlay descriptor, not an array.
 
 Each presentation pool contains only feedback for that machine's local screen.
 Host-addressed remote overlays stay in recipient-private fact streams and never

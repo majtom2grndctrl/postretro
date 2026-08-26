@@ -6,7 +6,7 @@
 
 ---
 
-This is **Epic 15 Phase 3**: authoritative client-server co-op with client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4). See *Phase boundaries* below.
+Authoritative client-server co-op uses client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4).
 
 ## Crate boundary and ownership
 
@@ -159,7 +159,7 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 ### Presentation events vs. replicated state
 
-Combat feedback the player reads and forgets — floating damage numbers, damaged-enemy health/shield facts — is **presented, not replicated**: the host pushes it as transient events on a dedicated unreliable `Channel::Presentation` (its own tagged `ServerPresentationMessage` family, one family per channel like `ServerControlMessage`), addressed fire-and-forget to the one client that earned it, loss- and reorder-tolerant. The replicated component set is unchanged — enemy health/state stay host-only. A client *simulates against* replicated state but only *displays* a pushed presentation fact, so a cosmetic never enters a digest or blocks a join (this is the other half of "presentation is not" a replication candidate, above). Design intent; `plans/in-progress/E16--combat-presentation-substrate`.
+Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel to the client that earned it; loss and reordering are acceptable. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
 
 Damaged-enemy overlays are private per recipient. The host renderer owns only
 host-local feedback; each remote recipient has an independent cap and linger
@@ -261,9 +261,9 @@ sudo tc qdisc del dev lo root netem
 
 `tc netem` shapes every packet over `lo`, so it affects all local loopback traffic for the duration — apply it only for a soak session and always tear it down afterward. The in-memory harness is the deterministic automated gate; `tc netem` is the manual end-to-end soak over the real encrypted UDP path.
 
-### Manual loopback recipe — Phase 3 movement prediction (host + client over `lo`)
+### Manual loopback recipe — movement prediction (host + client over `lo`)
 
-The deterministic in-memory harness (`netcode::predict_reconcile_harness`) is the automated Phase 3 gate; this is its manual real-socket complement, for eyeballing the *feel* of prediction/reconciliation that automated tests cannot judge. Use a map with a descriptor-backed player pawn — `content/dev/maps/campaign-test.prl` (a `player_spawn` placement resolves to the `"player"` descriptor) — so the host materializes a real movement pawn on accept.
+The deterministic in-memory harness (`netcode::predict_reconcile_harness`) is the automated gate; this is its manual real-socket complement, for eyeballing the *feel* of prediction/reconciliation that automated tests cannot judge. Use a map with a descriptor-backed player pawn — `content/dev/maps/campaign-test.prl` (a `player_spawn` placement resolves to the `"player"` descriptor) — so the host materializes a real movement pawn on accept.
 
 Run two processes locally over `lo`:
 
@@ -275,7 +275,7 @@ RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --hos
 RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --connect 127.0.0.1:<port>
 ```
 
-Then shape the loopback link to the Phase 2/3 profile (45..105 ms one-way, ~5% loss) before driving the client, so the manual session matches the automated harness's `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`:
+Then shape the loopback link to the harness profile (45..105 ms one-way, ~5% loss) before driving the client, so the manual session matches its `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`:
 
 ```sh
 # ~75ms mean one-way delay, ±30ms jitter, 5% loss on loopback (both directions).
@@ -290,10 +290,10 @@ Verify, on the **client**:
 2. **One camera-followed pawn.** The camera follows a single pawn — the marked local pawn — and never a remote one.
 3. **No second local-player marker after join/disconnect.** Disconnect and rejoin the client; the host issues a fresh `NetworkId` and the client arms exactly one local pawn again. There is never a moment with two `local_player`-marked pawns.
 4. **Immediate local input.** Under the shaped link, the camera-followed pawn responds to WASD/dash on the *same* fixed tick the input is sampled — it does not wait a full RTT. This is prediction working: the local pawn moves locally before the host's authoritative snapshot returns.
-5. **Remote interpolation still active.** A *second* client (or the host's own pawn, viewed from the first client) moves smoothly via the Phase 2 interpolation buffer, NOT prediction — a remote pawn lags behind by the interpolation delay and is never predicted.
+5. **Remote interpolation still active.** A *second* client (or the host's own pawn, viewed from the first client) moves smoothly through the interpolation buffer, not prediction — a remote pawn lags behind by the interpolation delay and is never predicted.
 6. **No duplicate local pawn.** Exactly one descriptor-backed pawn exists per client. There is no provisional client-spawned pawn alongside the host-authoritative one; the local pawn is the host's pawn, mapped by `NetworkId` and reconciled in place.
 
-Tear down the `tc netem` qdisc when finished. As with the Phase 1/2 soak, the shaped link affects all loopback traffic for its duration.
+Tear down the `tc netem` qdisc when finished. The shaped link affects all loopback traffic for its duration.
 
 ## Time sync
 
@@ -445,13 +445,12 @@ muzzle/fire-origin work; today shots still leave the eye). Placement never reads
 client-local view-feel state.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
-posed by the avatar hand socket; the FP viewmodel is a per-game screen-space
-presentation. The two vantages legitimately diverge — the shooter's authored FP
-placement vs observers' socket pose — and the TP mount carries **no** placement offset
-in data (art fixes it in the prop or socket; `plans/done/E21--bone-sockets-attachments`).
-Placement is the base position; render-rate view-feel sway/bob is a separate overlay
-composed on top (owned by movement), excluded from authority. Design intent;
-`plans/in-progress/weapon-placement`.
+posed by the avatar hand socket; the FP viewmodel is a screen-space presentation. The
+two vantages legitimately diverge — the shooter's authored FP placement versus
+observers' socket pose — and the TP mount carries no placement offset. Art owns its
+placement in the prop or socket. Placement is the base position; render-rate view-feel
+sway/bob is a separate overlay composed on top (owned by movement), excluded from
+authority.
 
 ## Combat authority: FIRE vs HIT
 
@@ -551,11 +550,9 @@ input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to
 19. Earlier peers are refused by both handshake gates.
 
-## Phase boundaries
+## Current contract
 
-Epic 15 Phase 3 is the active contract: authoritative client-server co-op, entity baseline/delta/despawn replication, state-slot replication, snapshot interpolation, client input streaming, prediction, and reconciliation.
-
-Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn, or single-component limits as current behavior.
+Authoritative client-server co-op provides entity baseline, delta, and despawn replication; state-slot replication; snapshot interpolation; client input streaming; prediction; and reconciliation.
 
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
@@ -565,7 +562,7 @@ A mover's **block reaction** (reverse/stop/crush on contact) is the exception to
 
 Trigger volumes are shared baked map data, not replicated state. Clients send a `use_pressed` input bit with movement input; only the host evaluates touch/use overlap and fires trigger commands. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 
-Trap-pool arming follows the same host-only shape: at level install a seeded pass arms a subset of each tagged trigger pool. The roll never crosses the wire and clients never re-run it — client trigger armed-state stays as authored; only a host-armed trap's consequences (mover phase, spawned enemies) reach clients, through the replication above. General posture for engine randomness: host-only, load-time, consequences-only — never per-tick or client-side, never shared-seed re-sim (the per-tick evaluator forbids RNG outright, `scripting.md` §12). One carved exception: weapon pellet-spread sampling runs deterministic per-tick RNG on whichever machine casts the rays. Sound because the posture's underlying commitments hold — no roll crosses the wire, no machine re-runs another's roll (each samples only its own pawn's fire), and the seed is a pure function of replay-stable weapon state (per-weapon shell counter + spawn-order-stable salt), so the determinism gate replays it exactly. See `plans/done/E16--shotgun-pellet-spread/`.
+Trap-pool arming follows the same host-only shape: at level install a seeded pass arms a subset of each tagged trigger pool. The roll never crosses the wire and clients never re-run it — client trigger armed-state stays as authored; only a host-armed trap's consequences (mover phase, spawned enemies) reach clients through replication. General posture for engine randomness: host-only, load-time, consequences-only — never per-tick or client-side, never shared-seed re-sim (the per-tick evaluator forbids RNG outright, `scripting.md` §12). One carved exception: weapon pellet-spread sampling runs deterministic per-tick RNG on whichever machine casts the rays. No roll crosses the wire or is re-run by another machine; each casts only its own pawn's rays. Its seed is a pure function of replay-stable weapon state, so the determinism gate can replay it exactly.
 
 **Connected-client AI-enemy spawn suppression.** A connected client does not spawn local authoritative copies of AI enemies, whether map-placed or runtime-spawned (e.g. via a `spawnFromSpawner` reaction fired through the client's own trigger/named-reaction drain paths). Both are host-authoritative: the client receives them solely as host snapshots, runtime spawns arriving `RuntimeSpawn`-classified. A `SpawnContext` runtime-spawn authority flag, set false for a connected client, enforces suppression for the runtime-spawn path (see `spawner.rs`, `session/mod.rs`). Client-side materialization attaches only the descriptor's mesh presentation; `Brain`, `Agent`, `Health`, and `Weapon` components are never attached on the client for a remote enemy. Remote enemies are presentation-only — they carry no local simulation state.
 

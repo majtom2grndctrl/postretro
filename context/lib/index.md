@@ -14,16 +14,17 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/done/E20--frame-capture`
-- **Projectile visual enhancements / emissive (full-bright) billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / `LightAnimation` radius channel** → `plans/done/projectile-weapon-enhancements` (shipped design record; extends billboard §7.4 and dynamic lights §4, on the shipped light-bridge reclamation)
+- **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
+- **Projectile visuals / emissive billboards / flipbook sprite bodies / mover-attached dynamic lights / impact-flash light / animated light radius** → `rendering_pipeline.md` §4, §7.4 · `resource_management.md` §6
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md` §PRL Compilation
-- **Cell→Cell coupling relation / baked cell-visibility substrate / network-relevance, audio-occlusion, AI-perception broad-phase, or VFX-cull shared foundation / `CellVisibility` PRL section (id 46)** → `plans/ready/cell-visibility-relation` (design intent; baked view-independent CellId→CellId relation over the portal graph — reachability gate + graded distance/aperture, optional section with conservative all-perceivable fallback, CellId-only query at the `level-loader` data layer)
+- **Cell→cell coupling relation / baked cell-visibility substrate / network relevance, audio occlusion, AI-perception broad phase, or VFX cull shared foundation** → `build_pipeline.md` §PRL section IDs
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
-- **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `plans/ready/E10--hierarchical-behavior-statecharts` (design intent; generalizes the flat graph in §7c)
+- **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
+- **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
@@ -33,19 +34,14 @@
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
-- **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content · `plans/ready/weapon-placement`
+- **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Player movement / movement states / FPS feel** → `movement.md`
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
-- **Roadmap / implementation phases** → `plans/roadmap.md`
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
-- **Draft plans / future features** → `plans/drafts/`
-- **Ready plans (reviewed, awaiting implementation)** → `plans/ready/` — promoted out of drafts after review; current design intent.
-- **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
-- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent; `research/combat-events.md` for the on-hit / on-kill combat-event substrate (XP, scoring, kill credit, resource economy) design intent; `research/enemy-aggro-model.md` for the enemy aggro / perception model design intent (growth past the two detection/leash scalars; select_target and visibility seams); `research/enemy-attack-modes.md` for the enemy attack-modes / combat-stances design intent (modes as constraint-sets over the multi-attack `attacks` vocabulary; the convention/primitive/mechanism split feeding statecharts and Epic 16 combat stances); `research/enemy-ranged-attacks.md` for the deferred enemy ranged / hitscan design intent (weapon-referencing attack entries and nearest-of resolution, the load-bearing prerequisite of making the player a first-class hitscan target, and the Epic 16 combat-layer ownership); `research/co-op-triggers-trap-pools.md` for the Epic 18 trigger fan-out / pressure-plate / spawner / semi-random trap-pool design intent; `research/coop-session-lobby.md` for the Epic 15 session/lobby design intent (mod matching, server-chosen maps, session and player identity, join-policy authoring); `research/coop-content-compatibility.md` for what content divergence can actually break a co-op session (the three-tier model of what server authority absorbs, the compatibility-digest domains, and the knowingly uncovered set).
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 
 ---
@@ -65,7 +61,7 @@
 | Principle | Invariant |
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
-| **Baked over computed** | Spatial data and indirect lighting are baked offline; visibility computes per frame from baked portal geometry (id Tech 4 lineage; portal traversal is the sole visibility path). Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
+| **Baked over computed** | Spatial data and indirect lighting are baked offline; portal traversal normally computes visibility per frame from baked portal geometry. Defined fallback cases use per-cell AABB frustum culling. Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |
@@ -75,9 +71,9 @@
 
 ## 3. Baked Data Strategy
 
-Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format.
+Single authoring pipeline today: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format. One input format is a content decision, not an architectural one — the compiler's `format/` adapter translates source vocabulary to canonical engine terms so a second front end can target PRL without touching a shared stage. See `build_pipeline.md` §Source-format neutrality.
 
-prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk BSP nodes for rendering or visibility. Portal traversal is the sole visibility path; the runtime falls back to per-cell AABB frustum culling for solid-cell, exterior-camera, and no-portals cases. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
+prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk BSP nodes for rendering or visibility. Portal traversal normally computes visibility; solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
 
 ### PRL baked data
 
@@ -103,4 +99,4 @@ Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 - General-purpose / extensible ECS framework — archetype storage, query planner, system scheduler, modder-defined component types. Internal storage *is* data-oriented (dense per-kind component columns); the component *vocabulary* is engine-closed. See `entity_model.md` §1.
 - Deferred rendering
 - Runtime level compilation
-- General-purpose multiplayer — deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer topologies, full server-rewind lag compensation. Authoritative client-server **co-op** is in scope: see Epic 15 (`plans/roadmap.md`); design in `context/research/netcode/`.
+- General-purpose multiplayer — deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer topologies, full server-rewind lag compensation. Authoritative client-server **co-op** is in scope.

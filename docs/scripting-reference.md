@@ -1297,7 +1297,7 @@ world:setGravity(-4.9)
 
 `setGravity` rejects `NaN` and non-finite values silently (a warning is logged) so a misbehaving script cannot break particle physics. The value persists until the next level load or another `setGravity` call.
 
-**TrenchBroom KVP:** set `initialGravity` (float, m/s²) on the `worldspawn` entity. The KVP is required — prl-build errors if absent. Example: `"initialGravity" "-9.81"`.
+**TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses standard Earth gravity (`-9.81`). Supplied malformed or non-finite values are compile errors. Example: `"initialGravity" "-9.81"`.
 
 **Particle effect:** `world.setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
 

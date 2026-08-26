@@ -19,7 +19,9 @@ use crate::map_data::{
     MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
-use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
+use postretro_level_format::fog_volumes::{
+    DEFAULT_WORLD_GRAVITY_MPS2, MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME,
+};
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -765,23 +767,23 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         ),
     };
 
-    // Worldspawn `initialGravity` (m/s², negative = downward). Required —
-    // absence halts compilation so authors face an explicit choice rather
-    // than inheriting an undocumented engine default.
+    // Worldspawn `initialGravity` (m/s², negative = downward). Absence uses
+    // the documented Earth-gravity default; supplied values remain strict so
+    // malformed map data cannot reach the runtime gravity register.
     let initial_gravity: f32 = {
-        let raw = get_property(&geo_map, &worldspawn_id, "initialGravity").ok_or_else(|| {
-            anyhow::anyhow!(
-                "worldspawn missing required `initialGravity` KVP — author a value (m/s², \
-                 negative = downward; standard Earth gravity is -9.81)"
-            )
-        })?;
-        let parsed: f32 = raw.trim().parse().map_err(|e| {
-            anyhow::anyhow!("worldspawn `initialGravity` value `{raw}` is not a valid float: {e}")
-        })?;
-        if !parsed.is_finite() {
-            anyhow::bail!("worldspawn `initialGravity` value `{raw}` is not a finite number");
+        if let Some(raw) = get_property(&geo_map, &worldspawn_id, "initialGravity") {
+            let parsed: f32 = raw.trim().parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "worldspawn `initialGravity` value `{raw}` is not a valid float: {e}"
+                )
+            })?;
+            if !parsed.is_finite() {
+                anyhow::bail!("worldspawn `initialGravity` value `{raw}` is not a finite number");
+            }
+            parsed
+        } else {
+            DEFAULT_WORLD_GRAVITY_MPS2
         }
-        parsed
     };
 
     for entity_id in geo_map.entities.iter() {
@@ -5313,10 +5315,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_map_file_rejects_missing_initial_gravity() {
-        // Write a minimal .map file whose worldspawn omits `initialGravity` and
-        // confirm the parser surfaces a hard error referencing the key. Uses a
-        // single-brush worldspawn so brush extraction does not bail first.
+    fn parse_map_file_defaults_missing_initial_gravity() {
+        // A map can omit `initialGravity`; the parser seeds the runtime
+        // register with the canonical Earth-gravity default.
         let map_text = "\
 // entity 0
 {
@@ -5336,15 +5337,54 @@ mod tests {
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
         let tmp =
-            std::env::temp_dir().join(format!("postretro_missing_initial_gravity_{unique}.map"));
+            std::env::temp_dir().join(format!("postretro_default_initial_gravity_{unique}.map"));
         std::fs::write(&tmp, map_text).unwrap();
-        let err = parse_map_file(&tmp, MapFormat::IdTech2).unwrap_err();
+        let map_data = parse_map_file(&tmp, MapFormat::IdTech2)
+            .expect("missing `initialGravity` should use the default");
         let _ = std::fs::remove_file(&tmp);
-        let msg = err.to_string();
         assert!(
-            msg.contains("initialGravity"),
-            "error should reference `initialGravity`, got: {msg}",
+            (map_data.initial_gravity - DEFAULT_WORLD_GRAVITY_MPS2).abs() < f32::EPSILON,
+            "missing `initialGravity` should default to {DEFAULT_WORLD_GRAVITY_MPS2}, got {}",
+            map_data.initial_gravity,
         );
+    }
+
+    #[test]
+    fn parse_map_file_rejects_malformed_or_non_finite_initial_gravity() {
+        for value in ["not-a-number", "NaN", "inf"] {
+            let map_data = format!(
+                "\\
+// entity 0
+{{
+\"classname\" \"worldspawn\"
+\"initialGravity\" \"{value}\"
+{{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}}
+}}
+"
+            );
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let tmp = std::env::temp_dir().join(format!(
+                "postretro_invalid_initial_gravity_{value}_{unique}.map"
+            ));
+            std::fs::write(&tmp, map_data).unwrap();
+            let err = parse_map_file(&tmp, MapFormat::IdTech2)
+                .expect_err("supplied invalid `initialGravity` should fail");
+            let _ = std::fs::remove_file(&tmp);
+            assert!(
+                err.to_string().contains("initialGravity"),
+                "error should reference `initialGravity`, got: {err}",
+            );
+        }
     }
 
     /// Write a worldspawn-only .map with the supplied extra KVP block (raw map

@@ -300,9 +300,9 @@ The SDK ships an `emitter()` component constructor (`sdk/lib/entities/emitters.{
 
 **Per-entity-type vocabulary convention.** `sdk/lib/entities/emitters.{ts,luau}` and `sdk/lib/entities/lights.{ts,luau}` are instances of the same pattern: each file owns its entity-type's handle wrapper, vocabulary helpers, and presets. `sdk/lib/world.{ts,luau}` is a thin query router that delegates to entity-type-specific handle wrappers in `entities/`. Structurally generic utilities (keyframe validation) live in `sdk/lib/util/`. Add new entity types by following this same layout.
 
-**Scripts configure, Rust simulates.** Per-particle `on_tick` callbacks are not supported — the simulation loop runs in Rust every frame. Scripts never observe individual particles.
+**Scripts configure, Rust simulates.** Per-particle `on_tick` callbacks are not supported — the simulation loop runs in Rust on each fixed game-logic tick. Scripts never observe individual particles.
 
-Each live particle is a full ECS entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge owns spawn and despawn via `EntityRegistry::spawn` / `despawn` — scripts never call these directly.
+Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge owns its spawn and despawn; scripts never call either directly.
 
 `ParticleState.emitter` serves a single role: spin-rate lookup against the parent emitter at each sim tick. It plays **no part in render-collect culling**. Each billboard is located from *its own* world position and culled against the frame's portal-visible cell set — so a puff that has drifted into a visible cell draws even when its emitter sits behind a wall, and a puff that drifted out is culled even when its emitter is on-screen. (An earlier per-emitter decision dropped drifted-in-view particles; that was a correctness bug.) Orphaned particles (emitter despawned) need no special case: a particle always carries its own `Transform`, so it is located and culled like any other particle. Orphans complete their lifetime at their last rotation angle.
 
@@ -517,8 +517,6 @@ mid-session).
 ---
 
 ## 13. Crate Architecture
-
-> Implemented by `plans/done/engine-data-floor/`. The boundary contracts below are durable.
 
 The engine data sits in a **VM-free two-layer floor** beneath the VM-coupled runtime, so routine engine edits stop recompiling the VM bindings. Dependency flows one way, top to bottom:
 

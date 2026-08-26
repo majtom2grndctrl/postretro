@@ -1,8 +1,8 @@
 # Player Movement
 
-> **Read this when:** designing or extending player movement — states, abilities, the author/tuning surface, or anything in the `movement--*` spec series.
+> **Read this when:** designing or extending player movement — states, abilities, or the author/tuning surface.
 > **Key invariant:** movement is custom kinematic, engine-internal, and authored declaratively. The player is a capsule whose velocity the engine sets each tick — never a simulated rigid body, never script-driven per tick.
-> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md) · series spec: `plans/done/movement--state-machine/`
+> **Related:** [Entity Model §5 update order, §7 collision, §7b component](./entity_model.md) · [Scripting](./scripting.md) · [Input](./input.md)
 
 ---
 
@@ -23,9 +23,9 @@ A real constraint solver may eventually earn a *scoped, opt-in* place (e.g. a de
 
 Authors tune and compose movement through descriptor data — never per-tick imperative script.
 
-States live natively in Rust. Authors control **which states exist, their tuning, and their transition triggers** as descriptor fields and (eventually) declarative transition rules. They do **not** write per-tick movement callbacks.
+States live natively in Rust. Authors tune enabled native states through descriptor data. They do **not** write per-tick movement callbacks.
 
-**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — scripts cannot read or write the movement component through `worldQuery` (`entity_model.md` §7b). The seam is shaped so a future script-driven path could resolve behind it without reshaping callers, but that path is not built.
+**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — scripts cannot read or write the movement component through `worldQuery` (`entity_model.md` §7b).
 
 ### The shape of the surface
 
@@ -79,22 +79,22 @@ Today's walk/run/jump/air-control is the baseline `Normal` state; later states (
 | **Titanfall 2 / Apex** | Speed-preserving slide (converts sprint/downhill speed into a decaying boost rather than capping), timed wall-run, auto-mantle/vault. |
 | **Ultrakill / Neon White** | Ceiling reference — can the surface compose it? (see §3) |
 
-## 6. Cross-cutting policies to decide early
+## 6. Cross-cutting policies
 
-Two policies cut across every state and define the modern feel. Both are foundations, not per-state details — settle each before the specs that need it, not by emerging from one state and refactoring the rest. Settle the policy and seam, not the full breadth; breadth grows with the states.
+Two policies cut across every state and define the modern feel. Both are foundations, not per-state details. They belong at the transition and input seams, not in individual states.
 
-- **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor. **Decided** (`movement--cross-cutting-policies`): velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal-rule and a boost-rule (the base+boost velocity model) over §2's closed vocabulary; wall-relative rules (`projectOntoWallPlane`, `reflect`) land with `movement--wall-run`. Carried momentum above the run cap survives into the air only while the player gives no air-steer input or `air.bunny_hop` is set — otherwise `Normal`'s airborne cap re-clamps it; states that hand off above the cap (dash, slide-jump) depend on this.
-- **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges. **Decided** (`movement--cross-cutting-policies`): coyote and jump-buffer windows are descriptor-tuned, derived once per tick into edges that intents consume in place of raw button bits.
+- **Momentum conservation.** Velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal rule and a boost rule over §2's closed vocabulary. Carried momentum above the run cap survives into the air only while the player gives no air-steer input or `air.bunny_hop` is set; otherwise airborne `Normal` re-clamps it.
+- **Input forgiveness.** Coyote and jump-buffer windows are descriptor-tuned. The engine derives their edges once per tick; state intents consume those edges rather than raw button bits.
 
 ### Moving bases
 
 Player grounded state is a `GroundRef`: `Airborne`, `World`, or `Mover(mover_id)`. Scripting-facing `grounded` stays a bool projection (`ground != Airborne`), and AI agent grounding remains separate.
 
-The movement query surface combines static world collision with active mover colliders. When the player stands on `Mover(id)`, the substrate revolves the planted position by the mover's tick rotation about its origin, then applies its linear tick delta. Carry is predicted and reconciled with the pawn. `carry_yaw` is an authored mover toggle, default off: when set, world-up rotation carries view yaw on the owning client; pitch and roll never tilt the FPS camera. Leaving a mover preserves player-controlled velocity and adds linear base velocity plus tangential spin velocity (`angular_velocity × radius`) once. The player gains no angular momentum. Movers react to what they hit through a per-mover **block policy** — `displace` (default: push out of overlap, never yield), `reverse`, `stop`, or `crush` — applied to players and enemies. Because the reaction depends on live entity positions, the block decision is host-authoritative and reconciled, never pure-phase-predicted like mover motion (`networking.md`); crush deals damage through the entity damage chokepoint, with overkill and gibbing left to mod policy (roadmap E16). A mover never blocks, reverses for, or crushes a player *riding* it: a player grounded on a mover — or briefly airborne just after leaving it, for a bounded host-side grace — is not an obstruction to that mover. Only the free-riding contact is exempt; a rider carried into static geometry it cannot be pushed clear of (crushed against a ceiling) is still crushed. The grace is host-only decision state, never replicated.
+The movement query surface combines static world collision with active mover colliders. When the player stands on `Mover(id)`, the substrate revolves the planted position by the mover's tick rotation about its origin, then applies its linear tick delta. Carry is predicted and reconciled with the pawn. `carry_yaw` is an authored mover toggle, default off: when set, world-up rotation carries view yaw on the owning client; pitch and roll never tilt the FPS camera. Leaving a mover preserves player-controlled velocity and adds linear base velocity plus tangential spin velocity (`angular_velocity × radius`) once. The player gains no angular momentum. Movers react to what they hit through a per-mover **block policy** — `displace` (default: push out of overlap, never yield), `reverse`, `stop`, or `crush` — applied to players and enemies. Because the reaction depends on live entity positions, the block decision is host-authoritative and reconciled, never pure-phase-predicted like mover motion (`networking.md`); crush deals damage through the entity damage chokepoint, with presentation and overkill effects left to mod policy. A mover never blocks, reverses for, or crushes a player *riding* it: a player grounded on a mover — or briefly airborne just after leaving it, for a bounded host-side grace — is not an obstruction to that mover. Only the free-riding contact is exempt; a rider carried into static geometry it cannot be pushed clear of (crushed against a ceiling) is still crushed. The grace is host-only decision state, never replicated.
 
 ## 7. Non-goals
 
 - Rigid-body dynamics for the player (forces, mass, restitution, constraint solving).
 - Per-tick script-authored movement (imperative callbacks). The author surface is declarative.
-- Map-overridable movement tuning — movement physics is descriptor-owned, never FGD KVPs (`entity_model.md` §4).
+- Map-overridable per-archetype movement tuning — movement physics is descriptor-owned. A map may only seed level-wide world gravity at load (`entity_model.md` §4).
 - Rollback or deterministic lockstep. Pawn and mover prediction/reconciliation are in scope for authoritative co-op, but not rollback.

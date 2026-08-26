@@ -8608,6 +8608,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: vec![0],
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

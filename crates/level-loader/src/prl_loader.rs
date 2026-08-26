@@ -2793,8 +2793,8 @@ mod tests {
     use postretro_level_format::cells::CellRecord;
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
-        KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KinematicMoverRecord,
-        KinematicWaypointRecord,
+        KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
+        KinematicMoverRecord, KinematicWaypointRecord,
     };
 
     #[test]
@@ -3141,6 +3141,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -3192,6 +3193,23 @@ mod tests {
         .expect("v4 section must remain runtime-loadable");
 
         assert!(geometry.movers[0].sealed_portal_ids.is_empty());
+        assert!(geometry.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_v5_loads_sealed_portals_with_no_member_lights() {
+        let mut section = sample_kinematic_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+        section.movers[0].sealed_portal_ids = vec![1];
+
+        let geometry = convert_kinematic_geometry_section(
+            KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect("v5 section bytes must remain readable"),
+        )
+        .expect("v5 section must remain runtime-loadable");
+
+        assert_eq!(geometry.movers[0].sealed_portal_ids, vec![1]);
+        assert!(geometry.movers[0].carried_lights.is_empty());
     }
 
     #[test]

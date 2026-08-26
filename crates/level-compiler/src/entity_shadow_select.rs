@@ -194,6 +194,7 @@ mod tests {
     fn point_light(intensity: f32, range: f32) -> MapLight {
         MapLight {
             origin: DVec3::ZERO,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity,
             color: [1.0, 1.0, 1.0],
@@ -217,6 +218,7 @@ mod tests {
     fn spot_light(origin: DVec3, direction: [f32; 3]) -> MapLight {
         MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Spot,
             cone_angle_inner: Some(0.2),
             cone_angle_outer: Some(0.35),

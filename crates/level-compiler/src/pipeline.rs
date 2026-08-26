@@ -373,9 +373,15 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Geometry);
     let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let carried_lights_by_mover = kinematic_geometry::member_lights_by_mover(
+        &map_data.kinematic_movers,
+        &map_data.carried_light_links,
+        &alpha_lights_ns,
+    );
     let kinematic_geometry_section = kinematic_geometry::encode_kinematic_geometry_section(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
+        &carried_lights_by_mover,
         &generated_portals,
         &mut geo_result.texture_names,
     );

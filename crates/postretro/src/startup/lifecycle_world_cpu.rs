@@ -134,7 +134,7 @@ pub(crate) fn install_world_cpu(
     // movement collision is ready.
     collision_world.populate_from_level(world);
     let mover_colliders = crate::runtime_movers::build_loaded_mover_colliders(world);
-    if !world.kinematic_geometry.movers.is_empty() {
+    let spawned_mover_entities = if !world.kinematic_geometry.movers.is_empty() {
         let mut registry = script_ctx.registry.borrow_mut();
         match crate::runtime_movers::spawn_loaded_kinematic_movers(
             &mut registry,
@@ -146,12 +146,16 @@ pub(crate) fn install_world_cpu(
                     "[Loader] spawned {} kinematic mover entity/entities",
                     spawned.len()
                 );
+                spawned
             }
             Err(err) => {
                 log::warn!("[Loader] failed to spawn kinematic movers: {err}");
+                Vec::new()
             }
         }
-    }
+    } else {
+        Vec::new()
+    };
     timings.record("bridges_populated");
 
     // Classname dispatch: partition player-start placements out (retained for the
@@ -503,6 +507,7 @@ pub(crate) fn install_world_cpu(
 
     WorldInstallProducts {
         mover_colliders,
+        spawned_mover_entities,
         trigger_bindings,
         trigger_pool_report,
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),

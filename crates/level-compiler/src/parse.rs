@@ -2592,7 +2592,7 @@ mod tests {
             .map(|carrier| format!("\"carrier\" \"{carrier}\"\n"))
             .unwrap_or_default();
         let light = format!(
-            "// entity 4\n{{\n\"classname\" \"{classname}\"\n\"origin\" \"{origin}\"\n\"light\" \"300\"\n\"_color\" \"255 255 255\"\n\"_falloff_range\" \"512\"\n{carrier_property}{extra_properties}}}\n"
+            "// entity 4\n{{\n\"classname\" \"{classname}\"\n\"origin\" \"{origin}\"\n\"light\" \"300\"\n\"_color\" \"255 255 255\"\n\"_falloff_range\" \"512\"\n\"style\" \"0\"\n{carrier_property}{extra_properties}}}\n"
         );
 
         map.replacen("// entity 3", &format!("{light}// entity 3"), 1)

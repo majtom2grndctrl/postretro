@@ -198,6 +198,8 @@ Context files are the durable layer. Plans are the ephemeral layer.
 
 **When a new doc is added to `context/lib/`:** add a corresponding entry to the Agent Router in `index.md` before merging. An unrouted doc is invisible to agents.
 
+**The durable library never links to plans, specs, or research archives.** Those records may be moved or removed. Copy the surviving contract into `context/lib/`; point readers only to another durable library document or to current code when the implementation shape matters.
+
 **Before a plan moves from `drafts/` to `ready/`:** capture durable decisions in `context/lib/`. New architectural constraints, subsystem contracts, and pipeline topology belong there — not in the plan. Agents working the plan find full context in the codebase, not in plan documents.
 
 **After a plan ships:** the plan moves to `done/` and stays as a historical record. Don't maintain it. The implementation is the source of truth; `context/lib/` holds the durable architectural layer.

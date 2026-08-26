@@ -114,7 +114,7 @@ pub fn translate_light(
 
     let intensity = raw_intensity / QUAKE_INTENSITY_REFERENCE;
 
-    let color = if let Some(color_str) = props.get("_color") {
+    let color = if let Some(color_str) = props.get("_color").filter(|s| !s.trim().is_empty()) {
         parse_color255(color_str).ok_or_else(|| TranslateError::InvalidProperty {
             key: "_color",
             value: color_str.clone(),
@@ -215,12 +215,13 @@ pub fn translate_light(
             let mangle_str = props
                 .get("angles")
                 .filter(|s| !s.trim().is_empty())
-                .ok_or(TranslateError::MissingProperty("angles"))?;
+                .map(String::as_str)
+                .unwrap_or("0 0 0");
             let dir = parse_mangle_direction(mangle_str).ok_or_else(|| {
                 TranslateError::InvalidProperty {
                     key: "angles",
-                    value: mangle_str.clone(),
-                    reason: "expected three numeric values: pitch yaw roll (degrees)",
+                    value: mangle_str.to_string(),
+                    reason: "expected three finite numeric values: pitch yaw roll (degrees)",
                 }
             })?;
             cone_direction = Some(dir);
@@ -232,7 +233,7 @@ pub fn translate_light(
                     TranslateError::InvalidProperty {
                         key: "angles",
                         value: mangle_str.clone(),
-                        reason: "expected three numeric values: pitch yaw roll (degrees)",
+                        reason: "expected three finite numeric values: pitch yaw roll (degrees)",
                     }
                 })?
             } else {
@@ -757,7 +758,7 @@ pub fn quake_to_engine_angles(
     [0.0; 3]
 }
 
-/// Parse an `angles` "pitch yaw roll" string into a normalized engine-space direction.
+/// Parse three finite `angles` components into a normalized engine-space direction.
 /// Roll is ignored. Quake forward from (pitch, yaw):
 ///   qf = (cos(p)*cos(y), cos(p)*sin(y), sin(p))
 /// Swizzle to Y-up engine space: engine = (-qf_y, qf_z, -qf_x).
@@ -770,6 +771,9 @@ fn parse_mangle_direction(s: &str) -> Option<[f32; 3]> {
     let pitch_deg: f32 = parts[0].parse().ok()?;
     let yaw_deg: f32 = parts[1].parse().ok()?;
     let _roll_deg: f32 = parts[2].parse().ok()?; // validated but unused
+    if !pitch_deg.is_finite() || !yaw_deg.is_finite() || !_roll_deg.is_finite() {
+        return None;
+    }
 
     let pitch = pitch_deg.to_radians();
     let yaw = yaw_deg.to_radians();
@@ -1171,15 +1175,25 @@ mod tests {
     }
 
     #[test]
-    fn spot_missing_angles_errors() {
-        let p = props(&[
-            ("light", "300"),
-            ("_falloff_range", "2048"),
-            ("_cone", "30"),
-            ("_cone2", "45"),
-        ]);
-        let err = translate_light(&p, DVec3::ZERO, "light_spot").expect_err("should error");
-        assert!(matches!(err, TranslateError::MissingProperty("angles")));
+    fn spot_missing_or_blank_angles_default_to_zero_rotation() {
+        for classname in ["light_spot", "light_dynamic_spot"] {
+            for angles in [None, Some("   ")] {
+                let mut p = props(&[
+                    ("light", "300"),
+                    ("_falloff_range", "2048"),
+                    ("_cone", "30"),
+                    ("_cone2", "45"),
+                ]);
+                if let Some(angles) = angles {
+                    p.insert("angles".to_string(), angles.to_string());
+                }
+
+                let light = translate_light(&p, DVec3::ZERO, classname)
+                    .expect("missing or blank spot angles should use the default");
+                let direction = light.cone_direction.expect("spot direction");
+                assert_vec_close(direction, [0.0, 0.0, -1.0], 1e-5, "default spot direction");
+            }
+        }
     }
 
     #[test]
@@ -1208,6 +1222,23 @@ mod tests {
             err,
             TranslateError::InvalidProperty { key: "angles", .. }
         ));
+    }
+
+    #[test]
+    fn angles_non_finite_components_error() {
+        for angles in ["NaN 0 0", "0 NaN 0", "0 0 NaN", "Infinity 0 0"] {
+            let p = props(&[
+                ("light", "300"),
+                ("_falloff_range", "2048"),
+                ("angles", angles),
+            ]);
+            let err = translate_light(&p, DVec3::ZERO, "light_spot")
+                .expect_err("non-finite spot angles must error");
+            assert!(matches!(
+                err,
+                TranslateError::InvalidProperty { key: "angles", .. }
+            ));
+        }
     }
 
     #[test]
@@ -1480,6 +1511,17 @@ mod tests {
     #[test]
     fn missing_color_defaults_to_white() {
         let p = props(&[("light", "300"), ("_falloff_range", "1024")]);
+        let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
+        assert_eq!(light.color, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn blank_color_defaults_to_white() {
+        let p = props(&[
+            ("light", "300"),
+            ("_color", "   "),
+            ("_falloff_range", "1024"),
+        ]);
         let light = translate_light(&p, DVec3::ZERO, "light").expect("should translate");
         assert_eq!(light.color, [1.0, 1.0, 1.0]);
     }

@@ -34,7 +34,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | PlayerMovement | Capsule physics state for the player pawn |
 | Light | Dynamic point-light parameters |
 | BillboardEmitter | Particle emitter configuration |
-| ParticleState | Per-particle simulation state |
+| ParticleState | Per-particle simulation state for registry-managed presentation entities |
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Descriptor-authored weapon tuning plus live magazine, cooldown, reload, and fire/reload input-edge state |
@@ -106,7 +106,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Gameplay tuning params are not map-overridable.** Tuning params — weapon damage/range/fire-rate, movement physics, future wieldable/ability params — are descriptor-owned, never FGD KVPs. Maps cannot rebalance gameplay. Scripts may mutate them at runtime, including on events. This mirrors §7b: `PlayerMovement` physics pass verbatim from the descriptor with no FGD override. When adding a descriptor block, add no FGD KVPs for its tuning params. An archetype may still need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/fire-rate, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 ---
 
@@ -149,7 +149,7 @@ Movement, AI, weapon, and death event names are collected across all catch-up ti
 
 ### Ownership
 
-Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities directly. Networked replication (Epic 15) preserves this: a server snapshot is applied through a game-logic-owned apply step — the net subsystem produces typed snapshots and never mutates the registry directly.
+Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities directly. Server-authoritative replication preserves this: game logic applies server snapshots; netcode produces typed snapshots and never mutates the registry directly.
 
 | Subsystem | Interaction with entities |
 |-----------|--------------------------|
@@ -203,9 +203,9 @@ A player pawn is present only when a `player_spawn` entity in the level resolves
 
 ## 7c. Enemy Brain Component
 
-Enemy behavior is an **authored state graph**, not an engine-closed state enum. The descriptor declares named states; each state fixes a motion verb, an optional action verb, the mesh animation state it requests, and an ordered list of outgoing transitions. A separate ordered `interrupts` list holds any-state transitions. Transition guards are IR expressions (`scripting.md` §11) over a brain-local binding scope; they are bound once at spawn and evaluated by the engine every tick.
+Enemy behavior is an **authored hierarchical statechart**, not an engine-closed state enum. A graph declares named activities and ordered guarded transitions. Activities may be leaves or compose nested graph layers and stateless selector layers. A leaf selects motion, an optional action, and its animation. Transition guards are IR expressions (`scripting.md` §11) over a brain-local binding scope; the engine binds them when the graph is installed and evaluates them every tick.
 
-**Ownership split.** The author owns which states exist, what each one does, the ordered guards between them, and — through an optional per-graph candidacy predicate — which of the candidates the engine offers are worth engaging. The engine owns everything else: which entities are offered as candidates at all, ranking and retention among the eligible ones, think-stride time-slicing of acquisition, target-switch hysteresis, combat-slot resolution, steering, facing, damage application through the chokepoint, and the aggro gate. Motion and action verbs are closed vocabularies — a state selects an engine behavior, it does not describe one.
+**Ownership split.** The author owns which activities and layers exist, what each one does, the ordered guards between them, and — through an optional per-graph candidacy predicate — which of the candidates the engine offers are worth engaging. The engine owns everything else: which entities are offered as candidates at all, ranking and retention among the eligible ones, think-stride time-slicing of acquisition, target-switch hysteresis, combat-slot resolution, steering, facing, damage application through the chokepoint, and the aggro gate. Motion and action verbs are closed vocabularies — an activity selects an engine behavior, it does not describe one.
 
 The line between the two halves of targeting is **perceivable vs. worth engaging**. The floor decides what an enemy could possibly perceive — a question with one right answer, so it is correctness. Whether a perceivable pawn is worth attacking is taste: a blind grunt, a psychic boss, and an enemy that ignores the wounded are all valid designs. Candidacy can only narrow the offer set, never widen it.
 
@@ -213,13 +213,13 @@ The line between the two halves of targeting is **perceivable vs. worth engaging
 
 Invariants the evaluator upholds:
 
-- **Guards evaluate every tick.** No state, animation, or cooldown latches evaluation off. A commitment window is an authored guard over time-in-state, never an engine mechanism.
-- **Interrupts first, then the current state's own transitions**, each in declaration order, first true wins. An interrupt naming the current state is skipped — interrupts fire as transitions, never as self re-entry.
-- **Guards are read-only.** Per-entity state fields are written by impact policies and reactions; guards only read them. That is how a hit-driven reaction and an authored interrupt compose without either knowing about the other.
-- **Candidacy is per-graph eligibility; disengagement is per-state policy.** The candidacy predicate is read-only and evaluated once per offered candidate during a ranking scan, never against the target already retained — dropping a retained target is what guards are for. It answers eligibility only, never rank: it produces a boolean, and ranking stays the engine's.
+- **Guards evaluate every tick.** No activity, animation, or cooldown latches evaluation off. A commitment window is an authored guard over time-in-activity, never an engine mechanism.
+- **Transitions evaluate outer-to-inner.** At each level, wildcard (`"*"`) rows precede the active activity's rows, each in declaration order; the first true row wins. A winning edge enters its target and descends through initial activities immediately. Newly entered activities do not evaluate transitions until the next tick.
+- **Guards are read-only.** Per-entity state fields are written by impact policies and reactions; guards only read them. That is how a hit-driven reaction and an authored wildcard transition compose without either knowing about the other.
+- **Candidacy is per-graph eligibility; disengagement is per-activity policy.** The candidacy predicate is read-only and evaluated once per offered candidate during a ranking scan, never against the target already retained — dropping a retained target is what guards are for. It answers eligibility only, never rank: it produces a boolean, and ranking stays the engine's.
 - **Hostility is mutable per-entity state, not a fixed enemy/friend archetype.** The engine floor narrows fresh acquisition by it — a candidate is offered only when its faction differs from the evaluating enemy's — while dropping a target that turns friendly stays authored, per the split above. The durable authored contract is the target-hostility fact a guard reads, not the numeric faction leaf beneath it: that storage is interim and migrates under the fact as the relationship model grows.
-- **Target selection holds no aliveness policy.** Aliveness gates the attack, not the choice of whom to attack. An enemy may select a corpse and be unable to hit it; disengaging from a downed target is an authored interrupt over target-side facts, not an engine rule. The authored death signal is the death sweep's latch rather than a health comparison — a health comparison cannot distinguish a corpse from no target at all, since target-side facts read zero untargeted.
-- **Acquisition and stand-down are graph policy.** The engine holds no acquisition leash. A candidacy predicate, including a distance predicate, bounds fresh acquisition only; an ordered transition or interrupt stands down a retained target. A graph without either policy pursues without limit by design.
+- **Target selection holds no aliveness policy.** Aliveness gates the attack, not the choice of whom to attack. An enemy may select a corpse and be unable to hit it; disengaging from a downed target is an authored wildcard transition over target-side facts, not an engine rule. The authored death signal is the death sweep's latch rather than a health comparison — a health comparison cannot distinguish a corpse from no target at all, since target-side facts read zero untargeted.
+- **Acquisition and stand-down are graph policy.** The engine holds no acquisition leash. A candidacy predicate, including a distance predicate, bounds fresh acquisition only; an ordered transition stands down a retained target. A graph without either policy pursues without limit by design.
 - **Motion includes position goals, not only pursuit.** A motion verb may steer toward a fixed point — the enemy's home anchor, or the next point on an authored route — as much as toward the target. The home anchor is the enemy's spawn position, fixed for the brain's life and host-only; placing the entity authors its home, and runtime re-homing is a separate additive path. A position-goal state cannot declare an action and is non-engaged: it holds no target and takes no combat slot, so movement leash and retreat compose as ordinary authored guards over the home-distance fact, not as engine policy.
 - **The think stride is cost machinery and shares no data path with authored relevance rules.** Its distance is the raw retained target distance without a new scan, or the raw nearest hostile candidate the engine offers when none is retained. Engine-owned hostility defines that offered set; authored candidacy and guards never filter or clamp its distance. Deriving it from the authored-filtered value inverts the stride — an absent distance reads as due every tick, so the far-band enemy the stride exists to make cheap becomes the one that scans most.
 - **Bound guard programs are derived data.** They live in the evaluator, never on the component, so they are never serialized and never affect component equality. They rebuild from the retained graph whenever the entity is seen.
@@ -228,13 +228,11 @@ Invariants the evaluator upholds:
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 
-The flat graph is the degenerate case of a recursive statechart: nested activities express a phase the brain cannot be routed out of until it completes (attack windup→commit→recover), orthogonal layers run at once, and the `interrupts` list generalizes to scoped `"*"` transitions (outer-beats-inner). Design intent, not yet built: `plans/ready/E10--hierarchical-behavior-statecharts`.
-
 ---
 
 ## 8. Particles
 
-Each live particle is a full ECS entity in the scripting entity registry, carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick via `EntityRegistry::spawn` / `despawn` — scripts never observe or manipulate individual particles.
+Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick; scripts never observe or manipulate individual particles.
 
 The particle simulation runs in Rust every game-logic tick: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
 
@@ -247,7 +245,7 @@ The parent emitter entity carries `BillboardEmitterComponent`. Particles back-re
 - Full ECS (archetype storage, query planner, system scheduler)
 - Entity inheritance hierarchies
 - Per-entity script lifecycle callbacks (entity types don't have script attachment points; scripts manipulate entities through registered primitives)
-- Client-authoritative entity state; deterministic-lockstep replication. (Server-authoritative replication — server owns entities, clients receive replicated `ComponentValue` deltas — is the Epic 15 direction; see `context/research/netcode/`.)
+- Client-authoritative entity state; deterministic-lockstep replication. Server-authoritative replication owns gameplay entities on the server; clients receive replicated component state.
 - Entity serialization (save/load)
 - Spatial partitioning for entity-entity queries (octree, grid)
 - Physics engine integration (rigid body, joints, constraints)

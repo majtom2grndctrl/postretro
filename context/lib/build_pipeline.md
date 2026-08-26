@@ -1,7 +1,7 @@
 # Build Pipeline
 
 > **Read this when:** setting up the map authoring toolchain, modifying the asset pipeline, adding custom entities, or debugging map compilation issues.
-> **Key invariant:** maps are authored in TrenchBroom. Engine canonical unit: 1 unit = 1 meter. PRL is the sole runtime map format.
+> **Key invariant:** maps are authored in TrenchBroom today; PRL is the sole runtime map format, and source-format vocabulary stops at the compiler's `format/` adapter (§Source-format neutrality). Engine canonical unit: 1 unit = 1 meter.
 > **Related:** [Architecture Index](./index.md) · [Development Guide](./development_guide.md)
 
 ---
@@ -26,7 +26,35 @@ prl-build accepts idTech2 `.map` files (Quake 1/2 dialect, parsed via shambler/s
 
 Both Standard (axis-aligned) and Valve 220 (explicit UV axes) texture projections are supported. Shalrath auto-detects per face; they can coexist in one `.map` file.
 
-> **Format adapter boundary:** PRL is the engine's internal coordinate standard; Quake convention is not. The `format/` layer in the level compiler is the adapter boundary — each input format translates its own coordinate axes, angle encoding, and units to engine convention before reaching shared compiler logic. Format-specific helpers belong in the format adapter, not shared code.
+### Source-format neutrality
+
+> **Key invariant:** PRL and every shared compiler stage are source-format agnostic. Quake and TrenchBroom vocabulary stops at the `format/` adapter.
+
+`.map` is the only input format today. That is a content decision, not an architectural one. PRL is the engine's contract; the Quake dialect is one front end that targets it. A second front end — a different editor, a mesh-based authoring format, a procedural generator — must be able to reach PRL without touching a shared stage.
+
+`crates/level-compiler/src/format/` is that boundary. One module per source format. Each translates its own vocabulary into the canonical map representation (`crates/level-compiler/src/map_data.rs`) before shared logic runs. Downstream stages — BSP, portals, geometry, BVH, bakes, pack — never branch on which format produced their input and never see source vocabulary.
+
+The rule is not "avoid Quake artifacts." Quake-shaped authoring is fine and expected. The rule is that those artifacts are translated, not propagated.
+
+| Source-format concern | Canonical form |
+|---|---|
+| Coordinate axes and handedness (Quake Z-up) | Engine convention (Y-up) |
+| Units (1 unit = 0.0254 m) | Meters |
+| Angle encoding, spotlight direction convention | Canonical light orientation |
+| Radiosity intensity reference (mapper-authored `light 300`) | Linear intensity |
+| Texture projection dialects (Standard, Valve 220) | Resolved UV axes |
+| Classnames and FGD property names | Canonical archetypes and typed fields |
+| Editor-only containers and keys (`func_group`, `_tb_*`) | Flattened into the world or dropped, before shared logic |
+| Text-format quoting and escaping quirks | Decoded values |
+
+**The line test:** would a different input format need a different answer? Yes — adapter. No — shared stage.
+
+**The FGD is a front-end schema, not the engine's entity model.** It expresses canonical archetypes for one editor. A second front end brings its own schema and reaches the same canonical vocabulary. Entity semantics live in the canonical layer; the FGD projects them.
+
+Two failure modes this invariant exists to prevent:
+
+- **Vocabulary leak.** Source-format naming or convention reaching a PRL section or a shared stage. Invisible until a second format arrives with no answer for it.
+- **Canonical layer shaped by the source.** Defining a canonical field by what Quake happens to do rather than by what the engine needs. A Quake-shaped canonical layer is a leak with extra steps — the adapter still exists, but it has nothing left to translate.
 
 ---
 
@@ -77,7 +105,11 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `kinematic_waypoint` | point | Waypoint in a mover path | `name`, `next` (optional next waypoint name), `origin` |
 | `trigger_volume` | brush | Invisible AABB; touch/use activation runs a direct mover command and named enter/paired-exit reactions; excluded from static BSP/BVH/collision/lightmap/SDF/portals/navmesh | `activation` (`touch`/`use`), `target_tag`, `on_fire`, `on_exit`, `command` (`start`/`stop`/`reverse`/`go_to_path_node`), `command_arg` (required node name for go-to), `fire_mode` (`once`/`multiple`), `rearm_ms`, `enabled_on_spawn`, `_tags`. Blank optional KVPs (`activation`, `command`, `fire_mode`, `rearm_ms`, `enabled_on_spawn`) fall back to their declared defaults — a field cleared in TrenchBroom is unset, not a compile error |
 | `switch` | brush | Visible, solid, pressable brush; compiles as static world geometry **and** a `use`-activation trigger volume whose faces grow toward `use_reach`, each clamped to the free space the compiler can prove is in front of it; the geometry never moves. Exactly one brush per switch — zero brushes or more than one is a compile error | `name`, `use_reach` (per-face press margin, map units; default 24 ≈ 0.61 m; must exceed the compiler's flush-tolerance floor, a few hundredths of a map unit, and be ≤ 128 — outside that range is a compile error), `target_tag`, `on_fire`, `on_exit`, `command` (`start`/`stop`/`reverse`/`go_to_path_node`), `command_arg`, `fire_mode` (`once`/`multiple`), `rearm_ms`, `enabled_on_spawn`, `_tags`; blanks fall back to defaults as for `trigger_volume`, `use_reach` included. No `activation` — always `use`; an authored one warns and is discarded |
-| `worldspawn` | special | Scene-wide render settings | `data_script` (path to entry `.ts`, `.js`, or `.luau` data script, relative to `.map`; TypeScript and JavaScript compile via `scripts-build`, Luau passes through; its compile-time evaluation emits the compiler-only light-membership manifest; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8), `_lightmap_density` (lightmap bake density, meters per texel; default 0.04; finer = higher resolution; `--lightmap-density` CLI overrides; non-finite/≤0 warns and falls back to default), `entity_shadow_min_intensity_ratio` (static-light entity-shadow selection intensity floor as ratio of map max; default 0.5), `entity_shadow_min_range` (static-light entity-shadow selection falloff floor in meters; default 4.0), `initialGravity` (world gravity in m/s²; negative = downward; required; standard Earth = -9.81) |
+| `worldspawn` | special | Scene-wide load-time settings | `data_script` (path to entry `.ts`, `.js`, or `.luau` data script, relative to `.map`; TypeScript and JavaScript compile via `scripts-build`, Luau passes through; its compile-time evaluation emits the compiler-only light-membership manifest; absent = no data script), `ambient_color` (RGB ambient floor), `fog_pixel_scale` (volumetric pass resolution divisor; default 4, range 1–8), `_lightmap_density` (lightmap bake density, meters per texel; default 0.04; finer = higher resolution; `--lightmap-density` CLI overrides; non-finite/≤0 warns and falls back to default), `entity_shadow_min_intensity_ratio` (static-light entity-shadow selection intensity floor as ratio of map max; default 0.5), `entity_shadow_min_range` (static-light entity-shadow selection falloff floor in meters; default 4.0), `initialGravity` (world gravity in m/s²; negative = downward; default standard Earth = -9.81; malformed/non-finite supplied values are compile errors) |
+
+**Load-time gameplay declarations.** Maps may seed level-wide gameplay values at load for accessible non-script authoring. They cannot mutate gameplay values after load or override per-archetype descriptor tuning. `initialGravity` is a level declaration; player movement tuning remains descriptor-owned.
+
+**Mover authoring split.** KVPs define basic deterministic kinematic motion. Brush tags bind movers to triggers and reactions for richer event-driven behavior.
 
 ### Entity resolution
 
@@ -246,13 +278,13 @@ Wire layout (format version 2, all little-endian; source of truth `crates/level-
 
 ### Runtime visibility
 
-Portal traversal is the sole visibility path: per-frame flood-fill from the camera cell with frustum narrowing at each portal. The runtime falls back to per-cell AABB frustum culling for solid-cell, exterior-camera, and no-portals cases. `CollisionWorld` remains the physics source of truth; cells and portals do not answer collision contacts. See `rendering_pipeline.md` §2.
+Portal traversal normally computes visibility: per-frame flood-fill from the camera cell with frustum narrowing at each portal. Solid-cell, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling. `CollisionWorld` remains the physics source of truth; cells and portals do not answer collision contacts. See `rendering_pipeline.md` §2.
 
 ---
 
 ## Navigation bake
 
-Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked after the BVH stage and before the lightmap bake; the runtime loader decodes it. The bake shipped via `plans/done/M10--navigation-representation/`. Runtime consumption — A* + funnel string-pull pathfinding and agent path-following over the regions/portals — is specced in `plans/done/M10--pathfinding-path-following/`.
+Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked after the BVH stage and before the lightmap bake; the runtime loader decodes it. Runtime pathfinding traverses regions with A* and follows the resulting portal sequence with funnel string-pulling.
 
 **Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as future portal kinds / region attachments — additive, no format break. Seed of a broader baked spatial-AI layer.
 
@@ -359,5 +391,6 @@ only; the shader reconstructs Z).
 ## Non-Goals
 
 - Runtime level compilation
+- Format plugin registry — adding an input format is a code change in `format/`, not a registration surface
 - WAD file support
 - Runtime lightmap baking

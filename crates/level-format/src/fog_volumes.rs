@@ -9,6 +9,10 @@ use crate::FormatError;
 /// re-exports this via `crate::fx::fog_volume::MAX_FOG_VOLUMES`.
 pub const MAX_FOG_VOLUMES: usize = 16;
 
+/// Default starting world gravity in meters per second squared. Negative values
+/// accelerate downward in engine space.
+pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -9.81_f32;
+
 /// Maximum number of bounding planes per fog volume. Brushes with more faces
 /// are rejected by the level compiler; the runtime never sees `plane_count`
 /// greater than this. Authoritative definition shared between the compiler
@@ -152,9 +156,9 @@ impl Default for FogVolumeRecord {
 pub struct FogVolumesSection {
     pub pixel_scale: u32,
     /// Worldspawn `initialGravity` (m/s²). Negative = downward (Earth = -9.81),
-    /// positive = upward. Authored by mappers as a required worldspawn KVP and
-    /// validated by `prl-build`; the engine consumes it as the starting value
-    /// for the runtime gravity register.
+    /// positive = upward. When the KVP is absent, `prl-build` uses
+    /// [`DEFAULT_WORLD_GRAVITY_MPS2`]; the engine consumes the packed value as
+    /// the starting value for the runtime gravity register.
     pub initial_gravity: f32,
     pub volumes: Vec<FogVolumeRecord>,
 }
@@ -163,7 +167,7 @@ impl Default for FogVolumesSection {
     fn default() -> Self {
         Self {
             pixel_scale: 4,
-            initial_gravity: -9.81,
+            initial_gravity: DEFAULT_WORLD_GRAVITY_MPS2,
             volumes: Vec::new(),
         }
     }
@@ -407,6 +411,14 @@ mod tests {
         assert_eq!(bytes.len(), 12);
         let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn default_uses_default_world_gravity() {
+        assert_eq!(
+            FogVolumesSection::default().initial_gravity,
+            DEFAULT_WORLD_GRAVITY_MPS2,
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 Visibility is computed per frame from baked portal geometry — the id Tech 4 approach. Precomputed visibility sets lengthen compile cycles and fight dynamic geometry; per-frame portal traversal is cheap at modern cell counts.
 
-Portal traversal is the sole visibility path.
+Portal traversal normally computes visibility. Solid-cell, exterior-camera, and no-portals cases use the defined AABB-culling fallback.
 
 **Portal traversal.** CPU flood-fill. At each portal, clip the portal polygon against the current frustum. A non-empty clip result confirms visibility and narrows the frustum for the next hop. Produces a visible-cell bitmask consumed by the BVH traversal compute pass (§5).
 
@@ -39,7 +39,7 @@ Portal traversal is the sole visibility path.
 
 ## 3. Level Loading
 
-Loader parses PRL via the `postretro-level-format` crate. Uploads the global vertex/index buffer and BVH arrays to GPU storage buffers. Matches PNG textures by name (checkerboard placeholder for missing albedo, neutral normal for missing normal map). Renderer performs all GPU uploads and returns opaque handles — raw PRL types never cross into renderer code.
+Loader parses PRL via the `postretro-level-format` crate. Uploads the global vertex/index buffer and BVH arrays to GPU storage buffers. World materials resolve through PRL cache keys to baked `.prm` sidecars; missing or invalid sidecars use placeholders. UI and sprite textures load PNGs through their separate runtime paths. Renderer performs all GPU uploads and returns opaque handles — raw PRL types never cross into renderer code.
 
 Kinematic brush movers load from PRL `KinematicGeometry` as a renderer-owned dynamic geometry path. Their vertices/indices are uploaded separately from the static world BVH/indirect path; game logic supplies per-frame mover instances and interpolated transforms. Movers bind the same world-material bundle as static geometry, so albedo, normal maps, texture filtering, and material shininess follow the world contract. Their runtime light loop stays diffuse-only for dynamic lights. View-dependent specular is limited to promoted static-light records, where it follows the promotion crossfade; non-promoted static lights remain baked-direct only for movers.
 
@@ -86,7 +86,7 @@ FORWARD COMPOSITION (per fragment) — direct terms disjoint by technique; they 
               + Σ dynamic direct    × shadow map (rationed pool)
 ```
 
-The seams that keep direct and indirect disjoint — tier routing, the position-axis namespace filter, indirect reaching every baked light regardless of shadow type — are pinned by compiler tests. Full producer/consumer inventory and the SDF runtime path (perf-gated, promotes to its own context doc once the gate holds): `context/plans/done/sdf-per-light-shadows/architecture.md`.
+Compiler tests pin the seams that keep direct and indirect disjoint: tier routing, the position-axis namespace filter, and indirect reachability for every baked light regardless of shadow type. The SDF runtime path remains performance-gated.
 
 **Ownership boundary.** Wgpu-free light packing, light spec packing, influence packing, and light-reachability CPU math may live in `postretro-lighting`. GPU pools/resources, uploads, bind groups, and wgpu-facing layout construction remain renderer-owned.
 
@@ -121,9 +121,9 @@ Runtime dynamic lights may attach to a **moving** gameplay entity (e.g. a projec
 
 **World specular shadowmask.** Compiler-selected non-SDF static world specular is multiplied by its baked `ShadowmaskAtlas` channel; absent, rejected, or dropped shadowmask data is fully lit, and this world-only signal remains independent of pool-shadow promotion and its crossfade.
 
-**Promoted static lights (entity shadows).** Compiler-selected static lights (heuristic selection, no per-light KVP; dim, short-falloff, directional, SDF, and decorative wall/ceiling fixtures excluded) promote into the shadow pool at runtime when a shadow-relevant receiver intersects their influence and the light is portal-reachable. Relevance includes skinned meshes and active movers; a mover remains active while present, including when docked or camera-PVS-culled. Both receiver kinds share the existing ranker and fixed promotion budget: 8 spot slots and 2 cube slots. Promotion is budget-capped and crossfaded by a weight `w`: an entity receives the light as `(1 − w) × baked direct SH + w × runtime term × pool shadow map` — the SH atlas is the far LOD (occlusion-tested, directional light/dark space), the pool slot the near tier (true self-shadowing), and no receiver sums the light twice. Per-light baked direct SH delta tiles make the subtraction possible. Mover specular is part of the promoted runtime term, so it fades with `w`; baked direct SH remains diffuse-only. World receivers are untouched by promotion — their direct term stays in the lightmap — and fog excludes promoted slots. A promoted slot's world depth is cached (static lights never move; only entity occluders re-render). Entity→world shadow receipt is the separate gated follow-on `plans/ready/static-light-shadowmask-world-receipt` (per-light baked occlusion mask ∪ pool shadow map; never runtime static→static shadowing).
+**Promoted static lights (entity shadows).** Compiler-selected static lights (heuristic selection, no per-light KVP; dim, short-falloff, directional, SDF, and decorative wall/ceiling fixtures excluded) promote into the shadow pool at runtime when a shadow-relevant receiver intersects their influence and the light is portal-reachable. Relevance includes skinned meshes and active movers; a mover remains active while present, including when docked or camera-PVS-culled. Both receiver kinds share the existing ranker and fixed promotion budget: 8 spot slots and 2 cube slots. Promotion is budget-capped and crossfaded by a weight `w`: an entity receives the light as `(1 − w) × baked direct SH + w × runtime term × pool shadow map` — the SH atlas is the far LOD (occlusion-tested, directional light/dark space), the pool slot the near tier (true self-shadowing), and no receiver sums the light twice. Per-light baked direct SH delta tiles make the subtraction possible. Mover specular is part of the promoted runtime term, so it fades with `w`; baked direct SH remains diffuse-only. World receivers are untouched by promotion — their direct term stays in the lightmap — and fog excludes promoted slots. A promoted slot's world depth is cached (static lights never move; only entity occluders re-render).
 
-**Pool-shadow receiver bias.** The three pool-shadow receiver classes — world surfaces (through the shadowmask union term), kinematic movers, and skinned characters — sample a pool depth map that contains their own geometry, so a raw depth-compare produces self-shadow acne (texel-grid striping). The shared pool sampling path offsets the receiver position along its **geometric** normal (never the bump/shading normal, which would wobble shadow boundaries) by the shadow-texel world footprint before the compare, scaled per receiver class — world and movers aggressive, skinned conservative. Normal-offset is chosen over more caster-side depth bias because it scales structurally with texel footprint and does not degrade the already-tuned skinned contact shadows. Skinned self-shadow bias is **authorable per model** through a mesh-component scalar whose default preserves current appearance: quantized self-shadow reads as on-brand on flat pixel-art characters but objectionable on rounded ones, so no single engine constant serves both. The world-surface path additionally dead-zones the shadowmask union subtraction — sub-threshold compare noise contributes zero, keeping runtime static→static shadowing exactly zero (the double-count invariant). Design + tasks: `plans/ready/pool-shadow-receiver-bias`.
+**Pool-shadow receiver bias.** The three pool-shadow receiver classes — world surfaces (through the shadowmask union term), kinematic movers, and skinned characters — sample a pool depth map that contains their own geometry, so a raw depth-compare produces self-shadow acne (texel-grid striping). The shared pool sampling path offsets the receiver position along its **geometric** normal (never the bump/shading normal, which would wobble shadow boundaries) by the shadow-texel world footprint before the compare, scaled per receiver class — world and movers aggressive, skinned conservative. Normal-offset is chosen over more caster-side depth bias because it scales structurally with texel footprint and does not degrade the already-tuned skinned contact shadows. Skinned self-shadow bias is **authorable per model** through a mesh-component scalar whose default preserves current appearance: quantized self-shadow reads as on-brand on flat pixel-art characters but objectionable on rounded ones, so no single engine constant serves both. The world-surface path additionally dead-zones the shadowmask union subtraction — sub-threshold compare noise contributes zero, keeping runtime static→static shadowing exactly zero (the double-count invariant).
 
 **Normal maps.** Perturb the per-fragment normal before direct and indirect evaluation. Tangents baked into the vertex format at compile time.
 
@@ -222,7 +222,7 @@ Low-resolution raymarched pass over `fog_volume` brush regions. Resolution gover
 - `VisibleCells::Culled(cells)` + masks absent: stale/corrupt modern PRLs fail load before this point; valid modern maps with no fog volumes keep all canonical slots inactive.
 - `VisibleCells::Culled(cells)` + empty `fog_reachable` (solid-cell camera, exterior, or no-portals map): portal isolation does not apply, so the renderer returns `all_slots_mask` directly. Camera-cell union is skipped on this path. `DrawAll` is never returned for these cases; the empty-world arm is the only source of `DrawAll`, and fog volumes cannot exist in an empty world, so `DrawAll` is unreachable in practice.
 
-The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. Volumes that recently left the reachable set are held active for a brief time-based hysteresis window (framerate-independent) to absorb single-frame portal-narrowing transients. See `context/plans/done/perf-portal-fog-culling/index.md`.
+The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. Volumes that recently left the reachable set are held active for a brief time-based hysteresis window (framerate-independent) to absorb single-frame portal-narrowing transients.
 
 ### 7.6 Wireframe Overlay (`dev-tools` only)
 
@@ -285,12 +285,11 @@ successful present path.
 
 The resolve applies a near-neutral soft-knee tonemap before the existing flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). The former byte-identity resolve contract is superseded: in-range content remains a visual-parity/manual-GPU gate. The resolve sampler is NEAREST / pixel-aligned. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
-**Frame capture (Epic 20, shipped).** Headless capture runs the same soft-knee
+**Frame capture.** Headless capture runs the same soft-knee
 tonemap into a capture-only `Rgba8UnormSrgb` target after the bloom composite,
 then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
-readback (per the boundary rule); surfaceless-renderer construction and full
-design: `plans/done/E20--frame-capture`.
+readback (per the boundary rule).
 
 ---
 
@@ -422,4 +421,4 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing; for a normal dev lau
 - **Hardware ray tracing** — not in baseline wgpu, and absent at the §10 perf floor (Turing GTX 16-series has no RT cores). Shadow maps cover dynamic shadowing; SH volume covers indirect; SDF shadows sphere-trace in compute.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven culling uses compute + `draw_indexed_indirect`.
 - **Runtime level compilation** — maps compiled offline by prl-build. Engine is a consumer only.
-- **Multiplayer / networking** — single-player engine. Out of project scope.
+- **General-purpose multiplayer** — deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer topologies, and full server-rewind lag compensation are out of scope. Authoritative client-server co-op is in scope.

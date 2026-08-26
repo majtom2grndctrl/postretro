@@ -316,4 +316,27 @@ mod tests {
 
         assert_eq!(alpha.compact_source_table(&[10_u32, 20, 30]), [20, 30]);
     }
+
+    #[test]
+    fn carried_dynamic_light_has_one_alpha_record_and_no_bake_namespace_entry() {
+        let mut carried = light(ShadowType::StaticLightMap, false, true);
+        carried.carrier = "inspection_platform".to_string();
+
+        let lights = [carried];
+        let alpha = AlphaLightsNs::from_lights(&lights);
+        assert_eq!(
+            alpha.len(),
+            1,
+            "a carried dynamic light stays in AlphaLights"
+        );
+        assert_eq!(alpha.entries()[0].source_index, 0);
+        assert!(
+            StaticBakedLights::from_lights(&lights).is_empty(),
+            "a carried dynamic light must not enter the static bake namespace"
+        );
+        assert!(
+            AnimatedBakedLights::from_lights(&lights).is_empty(),
+            "a carried dynamic light must not enter the animated bake namespace"
+        );
+    }
 }

@@ -1820,6 +1820,7 @@ mod tests {
             diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
             capture_portal_walk_next_frame: false,
             scratch_cells: Vec::new(),
+            blocked_portals: Vec::new(),
             frame_rate_meter: FrameRateMeter::new(),
             title_buffer: String::new(),
             last_title_update: Instant::now(),

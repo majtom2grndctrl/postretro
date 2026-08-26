@@ -299,6 +299,7 @@ fn determine_visible_cell_set(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &LevelWorld,
+    blocked_portals: &[bool],
     capture_portal_walk: bool,
 ) -> CellVisResult {
     let total_faces = world.total_face_count();
@@ -368,6 +369,7 @@ fn determine_visible_cell_set(
             camera_cell_idx,
             &frustum,
             world,
+            blocked_portals,
             capture_portal_walk,
         );
 
@@ -523,10 +525,17 @@ pub fn determine_visible_cells(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &LevelWorld,
+    blocked_portals: &[bool],
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
 ) -> (VisibilityResult, Frustum) {
-    let result = determine_visible_cell_set(camera_position, view_proj, world, capture_portal_walk);
+    let result = determine_visible_cell_set(
+        camera_position,
+        view_proj,
+        world,
+        blocked_portals,
+        capture_portal_walk,
+    );
 
     let visible_cells = match result.cells {
         None => {
@@ -834,8 +843,14 @@ mod tests {
         let world = two_cell_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            Vec3::new(50.0, 0.0, 0.0),
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+        );
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert!(cells.contains(&0), "camera cell 0 should be visible");
@@ -865,7 +880,7 @@ mod tests {
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
         let (result, _frustum) =
-            determine_visible_cells(Vec3::ZERO, vp, &world, false, &mut scratch);
+            determine_visible_cells(Vec3::ZERO, vp, &world, &[], false, &mut scratch);
         assert!(matches!(result.visible_cells, VisibleCells::DrawAll));
         assert_eq!(result.stats.total_faces, 0);
         assert!(matches!(
@@ -885,7 +900,8 @@ mod tests {
         let vp = proj * view;
 
         let mut scratch = Vec::new();
-        let (result, _frustum) = determine_visible_cells(position, vp, &world, false, &mut scratch);
+        let (result, _frustum) =
+            determine_visible_cells(position, vp, &world, &[], false, &mut scratch);
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 assert_eq!(cells.len(), 1, "should cull cell behind camera");
@@ -927,8 +943,14 @@ mod tests {
         world.cells[0].is_drawable = false;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            Vec3::new(50.0, 0.0, 0.0),
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+        );
         // Solid fallback draws all drawable cells.
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
@@ -953,8 +975,14 @@ mod tests {
         world.cells[0].is_exterior = true;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
-        let (result, _frustum) =
-            determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
+        let (result, _frustum) = determine_visible_cells(
+            Vec3::new(50.0, 0.0, 0.0),
+            vp,
+            &world,
+            &[],
+            false,
+            &mut scratch,
+        );
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
                 // Cell 1 still has faces; cell 0 is excluded (exterior).

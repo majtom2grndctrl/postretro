@@ -8,10 +8,11 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 4;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 5;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
+pub const KINEMATIC_GEOMETRY_VERSION_V4: u16 = 4;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -61,6 +62,9 @@ pub struct KinematicMoverRecord {
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
     pub crush_event: Option<String>,
+    /// Portals fully covered by this mover while docked at waypoint zero.
+    /// Presentation-only: camera visibility derives the live blocked set.
+    pub sealed_portal_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,10 +99,11 @@ impl KinematicGeometrySection {
             KINEMATIC_GEOMETRY_VERSION_V1
                 | KINEMATIC_GEOMETRY_VERSION_V2
                 | KINEMATIC_GEOMETRY_VERSION_V3
+                | KINEMATIC_GEOMETRY_VERSION_V4
                 | KINEMATIC_GEOMETRY_VERSION
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -216,6 +221,12 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         write_optional_string(buf, mover.close_event.as_deref());
         write_optional_string(buf, mover.blocked_event.as_deref());
         write_optional_string(buf, mover.crush_event.as_deref());
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION {
+        write_count(buf, mover.sealed_portal_ids.len());
+        for &portal_id in &mover.sealed_portal_ids {
+            buf.extend_from_slice(&portal_id.to_le_bytes());
+        }
     }
 }
 
@@ -365,6 +376,25 @@ fn read_mover(
         )
     };
 
+    let sealed_portal_ids = if version >= KINEMATIC_GEOMETRY_VERSION {
+        let count = read_count(
+            data,
+            offset,
+            &format!("mover {mover_idx} sealed_portal_ids count"),
+        )?;
+        let mut portal_ids = Vec::with_capacity(count);
+        for portal_idx in 0..count {
+            portal_ids.push(read_u32(
+                data,
+                offset,
+                &format!("mover {mover_idx} sealed_portal_ids {portal_idx}"),
+            )?);
+        }
+        portal_ids
+    } else {
+        Vec::new()
+    };
+
     let mover = KinematicMoverRecord {
         mover_id,
         name,
@@ -390,6 +420,7 @@ fn read_mover(
         close_event,
         blocked_event,
         crush_event,
+        sealed_portal_ids,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -810,6 +841,7 @@ mod tests {
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
+                sealed_portal_ids: vec![2, 7],
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -827,17 +859,29 @@ mod tests {
     }
 
     #[test]
-    fn v4_round_trip_preserves_records() {
+    fn v5_round_trip_preserves_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
     }
 
     #[test]
+    fn v4_records_decode_with_no_sealed_portals() {
+        let mut section = sample_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V4;
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes())
+            .expect("v4 kinematic geometry must remain loadable");
+
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V4);
+        assert!(restored.movers[0].sealed_portal_ids.is_empty());
+    }
+
+    #[test]
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -846,10 +890,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![6, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1, 2, 3, or 4"));
+        assert!(error.to_string().contains("expected 1, 2, 3, 4, or 5"));
     }
 
     // Regression: V3 encoded zero as inherit; treating it as an authored
@@ -1156,6 +1200,7 @@ mod tests {
                 close_event: Some("close".to_string()),
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
+                sealed_portal_ids: Vec::new(),
             }],
             waypoints: Vec::new(),
         }

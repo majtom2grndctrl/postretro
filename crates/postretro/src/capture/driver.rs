@@ -91,6 +91,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         eye,
         view_proj,
         &world,
+        &[],
         CAPTURE_PORTAL_WALK,
         &mut scratch,
     );

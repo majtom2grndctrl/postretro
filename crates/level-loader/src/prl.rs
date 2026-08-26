@@ -452,6 +452,7 @@ pub struct LoadedKinematicMover {
     pub close_event: Option<String>,
     pub blocked_event: Option<String>,
     pub crush_event: Option<String>,
+    pub sealed_portal_ids: Vec<u32>,
 }
 
 #[cfg(feature = "load-prl")]
@@ -490,6 +491,7 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             close_event: record.close_event,
             blocked_event: record.blocked_event,
             crush_event: record.crush_event,
+            sealed_portal_ids: record.sealed_portal_ids,
         }
     }
 }
@@ -4531,6 +4533,7 @@ mod tests {
                 close_event: None,
                 blocked_event: None,
                 crush_event: None,
+                sealed_portal_ids: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

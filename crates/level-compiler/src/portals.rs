@@ -9,7 +9,7 @@ use crate::partition::{BspChild, BspTree};
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
 /// error. Matches ericw-tools' ON_EPSILON for winding operations.
-const PORTAL_EPSILON: f64 = 0.01;
+pub(crate) const PORTAL_EPSILON: f64 = 0.01;
 
 /// Slivers below this area are discarded to prevent degenerate geometry
 /// from accumulating numerical precision loss during repeated clipping.

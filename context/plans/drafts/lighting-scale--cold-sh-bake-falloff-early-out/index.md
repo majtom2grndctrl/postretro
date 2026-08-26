@@ -16,20 +16,22 @@ on the parent spike's synthetic fixture, cut the cold SH stage ~20.9× (245.9 s 
 
 ### In scope
 
-- A per-light early-out inside `sample_radiance_rgb` (`crates/level-compiler/src/sh_bake.rs`):
-  skip a Point/Spot light when its distance to `hit.point` exceeds
-  `falloff_range.max(1e-4)`, before the `soft_visibility` shadow ray. Directional
-  lights are never skipped.
+- A per-light early-out inside the shared `sample_radiance_rgb`
+  (`crates/level-compiler/src/sh_bake.rs`): skip a Point/Spot light when its
+  distance to `hit.point` exceeds `falloff_range.max(1e-4)`, before the
+  `soft_visibility` shadow ray. Directional lights are never skipped. Placement is
+  the **shared sampler, unconditional** (not a cold-only gated branch) — see
+  Resolved decisions.
 - The early-out is **unconditional** (no env gate) — the production hardening of
   the env-gated `POSTRETRO_SPIKE_REACH_CULL` prototype.
 - A determinism test proving the early-out is contribution-neutral (a bake with an
   out-of-range light produces bit-identical SH coefficients to a bake without it),
   plus a unit test pinning the cull predicate (skip iff `dist > range`; Directional
   never skipped).
-- Disposition of the env-gated spike instrumentation (`spike_reach.rs` plus its
-  `pipeline.rs` install/log hooks): remove the now-superseded `CULL` path; retain
-  or remove the `STATS` distribution harness per the reviewer's call (see Open
-  Questions; default below).
+- Removal of the env-gated spike instrumentation in full (`spike_reach.rs`, its
+  `pipeline.rs` / `sh_bake.rs` / `lightmap_bake.rs` hooks, and the spike-only
+  `affinity_grid` additions) — both the `CULL` prototype and the `STATS` harness
+  (see Resolved decisions).
 
 ### Out of scope
 
@@ -129,8 +131,10 @@ on real content.
   shadow rays and completes measurably faster. The parent spike saw ~20.9× (245.9 s
   → 11.8 s) on `stress-warren-lit`; this is a synthetic-fixture figure, not a
   production projection, and is recorded, not thresholded.
-- [ ] **No env gate.** The early-out runs on every cold bake with no environment
-  variable required to enable it.
+- [ ] **No env gate, no spike harness.** The early-out runs on every cold bake with
+  no environment variable required to enable it, and after Task 3 no
+  `POSTRETRO_SPIKE_REACH_*` path or spike-only code (`spike_reach.rs`, the
+  `affinity_grid` spike additions) remains in the tree.
 
 ## Tasks
 
@@ -167,25 +171,33 @@ test; it guards the determinism invariant at the section boundary. Use the exist
 cold-bake / determinism test patterns in `sh_bake.rs` and
 `lightmap_bake.rs:2936` (the "two `--no-cache` bakes" pattern) as the harness model.
 
-### Task 3: Retire the env-gated cull prototype; decide STATS disposition
+### Task 3: Remove the spike measurement harness in full
 
-Remove the `POSTRETRO_SPIKE_REACH_CULL` path now that the production early-out is
-unconditional: delete the `cull_enabled()` flag and its branch in
-`sample_radiance_rgb`, and any code reachable only through it. **Default
-disposition of the STATS harness:** retain `POSTRETRO_SPIKE_REACH_STATS` and its
-`spike_reach.rs` distribution histogram plus the `pipeline.rs` `install_sh` /
-`log_sh_summary` hooks (off by default, byte-neutral) so a real map can be
-re-measured with one command later — the parent spike's measurement was on a
-synthetic fixture, and the STATS path is the re-measurement tool. If the reviewer
-elects full removal (see Open Questions), delete `spike_reach.rs`, its `mod`
-declaration, the `install_sh` / `install_lm` / `record_sh` / `record_lm` /
-`log_sh_summary` / `log_lm_summary` call sites in `pipeline.rs`, and the
-`record_lm` hook in `lightmap_bake.rs`. Either way, after this task no code path is
-gated on `POSTRETRO_SPIKE_REACH_CULL`, and the cold SH early-out remains
-unconditional. Keeping STATS while making the cull unconditional is coherent: STATS
-counts the reaching-light *distribution* at each hit point, independent of whether
-the cull fires; only the removed CULL flag's baseline-vs-cull A/B comparison is lost
-(and it is lost by design, since the cull now always runs).
+Now that the production early-out is unconditional, delete the entire spike
+instrumentation — both the `POSTRETRO_SPIKE_REACH_CULL` prototype (superseded by
+Task 1) and the `POSTRETRO_SPIKE_REACH_STATS` distribution harness. Remove:
+
+- `crates/level-compiler/src/spike_reach.rs` and its `pub mod spike_reach;`
+  declaration in `main.rs`.
+- The install/record/log hooks in `pipeline.rs` (`install_sh` / `install_lm` /
+  `log_sh_summary` / `log_lm_summary` and the `WorldReachIndex` construction at the
+  two cold-bake call sites) and the `record_sh` call in `sh_bake.rs` /
+  `record_lm` call in `lightmap_bake.rs`.
+- The spike-only additions in `affinity_grid.rs`: `AffinityGridGeometry`,
+  `affinity_grid_geometry`, `WorldReachIndex`, `cell_of`, and the
+  `world_reach_index_counts_and_maps_receiver_to_the_lights_own_cell` unit test.
+  Verify nothing else consumes them first (the direct/delta/animated bakes use
+  `decompose_affinity_for_lights` / `build_csr` / their own `ReachIndex`, which stay).
+
+After this task the compiler carries no `POSTRETRO_SPIKE_REACH_*` env path and no
+spike-only code; the cold SH early-out from Task 1 is the only surviving change.
+This matches the project's spike convention (the `perf-animated-sh-light-culling`
+spike reverted its instrumentation to a clean `git diff`; the level-compiler crate
+carries no standing env-gated debug instrumentation) and the lean-binary northstar.
+The re-measurement capability the STATS harness provided is preserved by the parent
+spike's `findings.md` (which documents the method and flags) plus the harness's git
+history on this branch — a `git restore` of the spike commit, not a rebuild, if a
+real map later warrants re-measuring the reaching-light distribution.
 
 ## Sequencing
 
@@ -193,9 +205,12 @@ the cull fires; only the removed CULL flag's baseline-vs-cull A/B comparison is 
 and predicate tests. Falsifies the byte-identity assumption at the smallest grain
 before anything else builds on it.
 **Phase 2 (concurrent):** Task 2, Task 3 — Task 2 adds the section-level fixture
-byte-identity check; Task 3 retires the prototype cull path. Independent: Task 2
-touches test code and reads the post-Task-1 sampler; Task 3 removes the env-gated
-branch Task 1 already superseded. Both depend on Task 1's early-out existing.
+byte-identity check; Task 3 removes the spike measurement harness in full.
+Independent: Task 2 touches test code and reads the post-Task-1 sampler; Task 3
+deletes `spike_reach.rs`, its hooks, and the spike-only `affinity_grid` additions,
+which Task 1's self-contained early-out already superseded. Both depend on Task 1's
+early-out existing (Task 1 must not leave the sampler depending on `spike_reach.rs`,
+so Task 3 can delete it cleanly).
 
 ## Rough sketch
 
@@ -234,26 +249,41 @@ determinism pattern for the section-level check.
 | Cull predicate == `falloff()==0` region: skip iff `dist > falloff_range.max(1e-4)`; Directional never skipped; kept at `dist == range` | Task 1 (local range predicate mirroring `falloff`) | Threatened by a looser bound (culls a contributing light) or a tighter bound (screens backface/cone — out of scope) | Predicate-matches AC |
 | Kept lights' soft-visibility seeds unchanged by any skip | Task 1 (`soft_visibility_seed` is a pure fn of probe/ray/global index; skip shifts no other index) | Threatened if the skip reindexes or reorders the light loop | Byte-identical cold output AC; Contribution-neutral AC |
 | Warm grouped + animated delta SH output unchanged | Task 1 (shared `sample_radiance_rgb` early-out is byte-neutral in bounded/single-light callers) | Threatened if placement changes warm's bounded-set semantics or delta's slice | Warm-and-delta-unchanged AC |
-| No path gated on `POSTRETRO_SPIKE_REACH_CULL`; early-out always runs | Task 3 (removes the CULL flag/branch) | Threatened if a residual env check survives | No-env-gate AC |
+| No spike harness remains (`POSTRETRO_SPIKE_REACH_*`, `spike_reach.rs`, spike `affinity_grid` additions); early-out always runs | Task 1 (self-contained early-out) + Task 3 (deletes the harness) | Threatened if a residual env check or spike-only symbol survives, or if Task 1 left the sampler depending on `spike_reach.rs` | No-env-gate-no-harness AC |
 
-## Open questions
+## Resolved decisions
 
-- **STATS harness disposition (reviewer decision).** Default: retain the
-  off-by-default `POSTRETRO_SPIKE_REACH_STATS` distribution instrumentation
-  (`spike_reach.rs` + `pipeline.rs` install/log hooks) for future real-map
-  re-measurement, and remove only the now-superseded `CULL` path (Task 3).
-  Alternative: delete the whole harness for a smaller surface. The parent spike's
-  measurement was synthetic-only, so the re-measurement tool has residual value;
-  the counter-argument is dead-code hygiene. Owner's call — surfaced per the
-  findings' note that the spike prototype demonstrates the change and the
-  production version makes the early-out unconditional.
-- **Early-out placement (recommendation, flag for review).** Recommended: place the
-  early-out inside the shared `sample_radiance_rgb`, matching the prototype and the
-  lightmap's early-out-before-shadow-ray structure. It executes in the warm and
-  animated-delta callers too, but is byte-neutral there (they pass a pre-bounded or
-  single-light slice; the early-out only skips lights already contributing zero) and
-  adds only a cheap per-light distance check. The strict alternative — gating the
-  early-out so it runs only on the cold monolithic caller — needs a threaded flag
-  and would still leave the delta path casting the same wasted rays; it is not
-  recommended, but the placement is surfaced because "scope is the cold path only"
-  admits both readings.
+Both questions the draft originally left open were resolved against source, not
+left to the reviewer.
+
+- **Early-out placement → shared `sample_radiance_rgb`, unconditional.** The warm
+  grouped SH path is not a separate sampler: `sh_group.rs` bakes each group through
+  `sh_bake::bake_probe` → `bake_probe_rgb_with_moments` → `sample_radiance_rgb`
+  (`sh_group.rs:376`, `:1733`, `:1743`), so it already flows through the exact
+  function the early-out lives in. It is byte-neutral there: the warm path bounds a
+  group to `falloff_range` *dilated* by a reach cutoff, so any light the early-out
+  would skip is beyond exact `falloff_range`, has `falloff() == 0`, and contributes
+  zero today — the early-out only ever removes a provably-zero shadow ray, so warm
+  output is unchanged and the warm path merely gets faster too. The existing
+  cold-vs-warm `bake_probe` equivalence check (`sh_group.rs:1733`) stays valid
+  because both sides receive the early-out identically. The strict cold-only
+  alternative would need a gate flag threaded through the shared `bake_probe`, adds
+  complexity, and leaves warm casting the same wasted rays for no benefit —
+  strictly worse. The "scope is the cold path only" language refers to not altering
+  any other path's *output* or its light-bounding construction (both preserved),
+  not to gating where the early-out physically runs.
+
+- **Spike harness → removed in full (Task 3), STATS included.** Precedent, not
+  taste: the comparable `perf-animated-sh-light-culling` spike reverted its
+  instrumentation to a clean `git diff` and relied on its findings note, and the
+  `level-compiler` crate carries no standing `POSTRETRO_*` env instrumentation
+  (that pattern lives only in the runtime renderer/netcode, where a live debug
+  toggle has ongoing value). Retaining STATS would be a precedent-less permanent
+  addition to the compiler, against the lean-binary northstar — and it would keep
+  the `WorldReachIndex` / affinity-cell code tied to the very mechanism this spec
+  *rejects*. The re-measurement capability is not lost: the parent spike's
+  `findings.md` documents the method and env flags, and the full harness is
+  recoverable from this branch's git history (`git restore` of the spike commit)
+  if a real map later warrants re-measuring the reaching-light distribution — this
+  spec's win is byte-identical and content-independent for correctness, so
+  real-map validation refines only the *magnitude*, never a gate on shipping.

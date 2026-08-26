@@ -1379,6 +1379,14 @@ mod tests {
         )
     }
 
+    fn packed_dynamic_direction(bytes: &[u8]) -> glam::Vec3 {
+        glam::Vec3::new(
+            f32::from_ne_bytes(bytes[32..36].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[36..40].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[40..44].try_into().unwrap()),
+        )
+    }
+
     fn packed_dynamic_influence_center(bytes: &[u8]) -> glam::Vec3 {
         glam::Vec3::new(
             f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
@@ -1710,6 +1718,193 @@ mod tests {
         assert!(
             packed_dynamic_influence_center(&update.influence_bytes).distance(expected) <= 1.0e-6,
             "carrier pose relocates the matching dynamic-light influence"
+        );
+    }
+
+    #[test]
+    fn carried_spot_tracks_translating_mover_without_rotating_authored_aim() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_spot_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(-6.0, 1.0, 4.0),
+            ..Transform::default()
+        });
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(2.0, 5.0, -4.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let local_offset = glam::Vec3::new(1.5, -0.5, 2.0);
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        let authored_aim = glam::Vec3::from_array(component.cone_direction.unwrap());
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.25)
+            .expect("carried spot is packed");
+        let interpolated_mover_position = glam::Vec3::new(-4.0, 2.0, 2.0);
+        let expected_position = interpolated_mover_position + local_offset;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            "carried spot position must use the translating mover's interpolated pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+                <= 1.0e-6,
+            "the carried spot's culling influence must follow its packed position"
+        );
+        assert!(
+            packed_dynamic_direction(&update.lights_bytes).distance(authored_aim) <= 1.0e-6,
+            "a translating mover must not rotate a carried spot's authored world-space cone aim"
+        );
+    }
+
+    #[test]
+    fn carried_omni_orbits_spinning_mover_at_authored_offset() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0, 2.0, -1.0),
+            ..Transform::default()
+        });
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(3.0, 2.0, -1.0),
+                    rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let local_offset = glam::Vec3::new(4.0, 0.0, 0.0);
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("carried omni is packed");
+        let expected_position = glam::Vec3::new(3.0, 2.0, -1.0)
+            + glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4) * local_offset;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            "a carried omni must orbit with the mover's interpolated rotation"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+                <= 1.0e-6,
+            "the orbiting omni's culling influence must share its moved center"
+        );
+        assert!(
+            (packed_dynamic_position(&update.lights_bytes)
+                .distance(glam::Vec3::new(3.0, 2.0, -1.0))
+                - local_offset.length())
+            .abs()
+                <= 1.0e-6,
+            "the spinning mover must preserve the omni's authored orbit radius"
+        );
+    }
+
+    #[test]
+    fn far_moved_carried_light_uses_relocated_influence_for_culling_without_mover_draw() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut light = sample_dynamic_point_light();
+        light.origin = [-80.0, 0.0, 0.0];
+        light.falloff_range = 6.0;
+        light.cell_index = 91; // Deliberately stale after the carrier moves.
+        bridge.populate_from_level_with_influences(
+            &[light],
+            &[LightInfluence {
+                center: glam::Vec3::new(-80.0, 0.0, 0.0),
+                radius: 6.0,
+            }],
+            &[],
+            &mut registry,
+            0,
+        );
+
+        // No Mesh/SpriteVisual is attached: this mover has no beauty draw to
+        // keep the light alive. The bridge must still read its Transform.
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(100.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let light_entity = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light_entity)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset: glam::Vec3::new(1.0, 0.0, 0.0),
+        });
+        registry.set_component(light_entity, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("far-moved carried light is packed");
+        let moved_center = packed_dynamic_influence_center(&update.influence_bytes);
+        let reachable_receiver = [(
+            glam::Vec3::new(99.0, -1.0, -1.0),
+            glam::Vec3::new(103.0, 1.0, 1.0),
+        )];
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(moved_center) <= 1.0e-6,
+            "the direct-light record and culling influence must agree on the carried position"
+        );
+        assert!(
+            postretro_lighting::light_reaches_visible_cell(
+                moved_center,
+                packed_dynamic_influence_radius(&update),
+                &reachable_receiver,
+            ),
+            "the moved influence, not the stale authored cell or origin, keeps a reachable receiver lit"
+        );
+        assert!(
+            !postretro_lighting::light_reaches_visible_cell(
+                glam::Vec3::new(-80.0, 0.0, 0.0),
+                packed_dynamic_influence_radius(&update),
+                &reachable_receiver,
+            ),
+            "this fixture must distinguish relocated influence culling from the stale authored origin"
         );
     }
 

@@ -8502,8 +8502,8 @@ mod tests {
     /// doorway dimensions; it keeps this regression CPU-only.
     #[test]
     fn closet_reveal_closed_loaded_door_hides_interior_until_it_moves() {
-        use crate::scripting::systems::mesh_anim::MeshClipTables;
-        use crate::scripting::systems::mesh_render::MeshRenderCollector;
+        use crate::scripting_systems::mesh_anim::MeshClipTables;
+        use crate::scripting_systems::mesh_render::MeshRenderCollector;
         use glam::Mat4;
         use postretro_entities::{EntityRegistry, Transform, components::mesh::MeshComponent};
         use postretro_level_format::geometry::Vertex;

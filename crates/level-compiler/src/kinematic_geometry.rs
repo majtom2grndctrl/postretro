@@ -2,8 +2,8 @@
 // See: context/lib/build_pipeline.md §PRL Compilation.
 
 use postretro_level_format::kinematic_geometry::{
-    KinematicGeometrySection, KinematicMoverRecord, KinematicWaypointRecord,
-    KINEMATIC_GEOMETRY_VERSION,
+    KINEMATIC_GEOMETRY_VERSION, KinematicGeometrySection, KinematicMoverRecord,
+    KinematicWaypointRecord,
 };
 use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -11,7 +11,7 @@ use crate::geometry::extract_kinematic_mover_geometry;
 use crate::geometry_utils::clip_winding_to_half_spaces;
 use crate::map_data::{BrushVolume, MapKinematicMover, MapKinematicWaypoint};
 use crate::partition::Aabb;
-use crate::portals::{Portal, PORTAL_EPSILON};
+use crate::portals::{PORTAL_EPSILON, Portal};
 
 /// Ignore only numerical clipping dust. Any real uncovered portal area must
 /// survive the carve so the camera flood stays conservative toward drawing.
@@ -161,7 +161,7 @@ fn portal_bounds(portal: &Portal) -> Option<Aabb> {
         && polygon_area(&portal.polygon) > MIN_UNCOVERED_PORTAL_AREA_M2)
         .then(|| portal_polygon_is_valid(&portal.polygon))
         .filter(|is_valid| *is_valid)
-        .then(|| Aabb::from_points(&portal.polygon))
+        .and_then(|_| Some(Aabb::from_points(&portal.polygon)))
         .filter(Aabb::is_valid)
 }
 

@@ -970,15 +970,19 @@ mod tests {
     }
 
     #[test]
-    fn v5_records_preserve_sealed_portals_and_decode_with_no_member_lights() {
-        let mut section = sample_section();
-        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+    fn v5_fixture_preserves_sealed_portal_layout_and_decodes_without_member_lights() {
+        let section = v5_fixture_section();
+        let fixture = exact_v5_fixture();
 
-        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes())
+        // Regression: V6 appended carried-light records. Keep V5's sealed
+        // portal payload byte-for-byte compatible with maps baked before E22.
+        assert_eq!(section.to_bytes(), fixture);
+
+        let restored = KinematicGeometrySection::from_bytes(&fixture)
             .expect("v5 kinematic geometry must remain loadable");
 
         assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V5);
-        assert_eq!(restored.movers[0].sealed_portal_ids, vec![2, 7]);
+        assert_eq!(restored.movers[0].sealed_portal_ids, vec![11, 29]);
         assert!(restored.movers[0].carried_lights.is_empty());
     }
 
@@ -1176,6 +1180,51 @@ mod tests {
         assert!(error.to_string().contains("sealed_portal_ids count"));
     }
 
+    // Regression: malformed V6 member counts must reject before allocation,
+    // even when no complete member record remains in the section payload.
+    #[test]
+    fn rejects_truncated_v6_carried_lights_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a truncated carried-light list must reject before reserving");
+
+        assert!(error.to_string().contains("carried_lights count"));
+    }
+
+    #[test]
+    fn rejects_oversized_v6_carried_lights_count_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("an oversized carried-light count must reject before reserving");
+
+        assert!(
+            error
+                .to_string()
+                .contains("carried_lights count 2 requires 32 bytes")
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_v6_member_light_local_offset() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        let local_offset = count_offset + 4 + 4;
+        bytes[local_offset..local_offset + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a non-finite carried-light local offset must reject");
+
+        assert!(error.to_string().contains("local_offset is non-finite"));
+    }
+
     #[test]
     fn rejects_v2_spin_axis_as_impossible_v1_waypoint_count() {
         let mut section = sample_section();
@@ -1308,6 +1357,12 @@ mod tests {
         offset
     }
 
+    fn find_first_mover_v6_carried_light_count_offset(bytes: &[u8]) -> usize {
+        let mut offset = find_first_mover_v5_sealed_portal_count_offset(bytes);
+        let sealed_portal_count = read_u32_for_test(bytes, &mut offset) as usize;
+        offset + sealed_portal_count * std::mem::size_of::<u32>()
+    }
+
     fn v1_fixture_section() -> KinematicGeometrySection {
         KinematicGeometrySection {
             version: KINEMATIC_GEOMETRY_VERSION_V1,
@@ -1354,6 +1409,26 @@ mod tests {
         }
     }
 
+    fn v5_fixture_section() -> KinematicGeometrySection {
+        let mut section = v1_fixture_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+        section.movers[0].spin_axis = [0.0, 1.0, 0.0];
+        section.movers[0].spin_speed_deg_s = 0.0;
+        section.movers[0].spin_accel_deg_s2 = 0.0;
+        section.movers[0].carry_yaw = false;
+        section.movers[0].block_policy = "displace".to_string();
+        section.movers[0].crush_damage = 0.0;
+        section.movers[0].crush_interval_ms = 0.0;
+        section.movers[0].auto_close_ms = None;
+        section.movers[0].open_event = None;
+        section.movers[0].close_event = None;
+        section.movers[0].blocked_event = None;
+        section.movers[0].crush_event = None;
+        section.movers[0].sealed_portal_ids = vec![11, 29];
+        section.movers[0].carried_lights = Vec::new();
+        section
+    }
+
     fn exact_v1_fixture() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&1u16.to_le_bytes());
@@ -1377,6 +1452,29 @@ mod tests {
         }
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    fn exact_v5_fixture() -> Vec<u8> {
+        let mut bytes = exact_v1_fixture();
+        bytes[..2].copy_from_slice(&KINEMATIC_GEOMETRY_VERSION_V5.to_le_bytes());
+        let mover_end = bytes.len() - 4; // final waypoint count
+        let mut v5_append = Vec::new();
+        for component in [0.0f32, 1.0, 0.0] {
+            v5_append.extend_from_slice(&component.to_le_bytes());
+        }
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.push(0);
+        v5_append.extend_from_slice(&8u32.to_le_bytes());
+        v5_append.extend_from_slice(b"displace");
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&[0; 5]); // auto-close and four event presence bytes
+        v5_append.extend_from_slice(&2u32.to_le_bytes());
+        v5_append.extend_from_slice(&11u32.to_le_bytes());
+        v5_append.extend_from_slice(&29u32.to_le_bytes());
+        bytes.splice(mover_end..mover_end, v5_append);
         bytes
     }
 

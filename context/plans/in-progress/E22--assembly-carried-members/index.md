@@ -12,7 +12,7 @@ A dynamic light can be authored to travel with a kinematic mover: the mapper bin
 ### In scope
 - A `carrier` KVP on the FGD `DynamicLight` base class binding a dynamic light to a mover by the mover's **`name`**.
 - Compile-time resolution of `carrier` to the mover of that name, producing a carried-light **linkage** (light → mover + authored local offset). No-match, duplicate-name, and baked-light bindings degrade with a named warning (the light stays unbound); never a hard build failure (see Orderings).
-- Emitting the linkage in the `KinematicGeometry` (id 43) **section format**, version 4 → 5, as a per-mover member-light list; back-compatible decode of v1–v4.
+- Emitting the linkage in the `KinematicGeometry` (id 43) **section format**, version 5 → 6, as a per-mover member-light list; back-compatible decode of v1–v5.
 - Runtime: resolve the linkage at level load onto the spawned dynamic light, and compose the light's per-frame world **position** from the carrier mover's **interpolated** transform (`pos + rot·offset`, so a carried omni orbits a spinning mover), by generalizing the existing light-bridge follow hook. A carried **spot** on a **translating (non-spinning)** mover keeps its authored cone aim, which is correct because a non-spinning mover holds identity rotation.
 - Client parity with no new network traffic: the carried light reconstructs from the mover pose the client already re-derives from replicated phase.
 - A dev fixture map and edge tests (reverse, stop, completion, 0/2 ticks per frame, spinning mover for the carried omni, unresolved/baked bindings).

@@ -213,7 +213,8 @@ fn drop_out_of_range_sealed_portal_ids(
 }
 
 /// Drop presentation-only light associations that cannot resolve to exactly
-/// one dynamic AlphaLights record. Invalid content leaves the light unbound.
+/// one dynamic AlphaLights record or compose to a runtime-finite spawn pose.
+/// Invalid content leaves the light unbound.
 fn drop_invalid_carried_light_links(
     geometry: &mut KinematicGeometry,
     lights: &[MapLight],
@@ -261,6 +262,24 @@ fn drop_invalid_carried_light_links(
             if !light.is_dynamic {
                 log::warn!(
                     "[PRL] KinematicGeometry: dropped mover {mover_id} (`{mover_name}`) carried-light reference to non-dynamic AlphaLight {}",
+                    member.alpha_light_index,
+                );
+                dropped_count += 1;
+                return false;
+            }
+            let composed_position = [
+                f64::from(mover.origin.x) + f64::from(member.local_offset.x),
+                f64::from(mover.origin.y) + f64::from(member.local_offset.y),
+                f64::from(mover.origin.z) + f64::from(member.local_offset.z),
+            ];
+            if composed_position
+                .iter()
+                .any(|component| {
+                    !component.is_finite() || component.abs() > f64::from(f32::MAX)
+                })
+            {
+                log::warn!(
+                    "[PRL] KinematicGeometry: dropped mover {mover_id} (`{mover_name}`) carried-light reference to AlphaLight {} because its authored position is outside the runtime f32 range",
                     member.alpha_light_index,
                 );
                 dropped_count += 1;
@@ -2849,6 +2868,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
     use postretro_level_format::cell_locator::CellLocatorChild as FormatCellLocatorChild;
     use postretro_level_format::cell_visibility::CoupledPairRecord;
     use postretro_level_format::cells::CellRecord;
@@ -2857,6 +2877,7 @@ mod tests {
         KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
         KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
     };
+    use postretro_test_log_capture::LogCapture;
 
     #[test]
     fn cell_visibility_section_round_trips_through_runtime_lowering() {
@@ -3308,6 +3329,33 @@ mod tests {
         assert_eq!(
             geometry.movers[0].carried_lights[0].local_offset,
             Vec3::new(1.0, 2.0, 3.0)
+        );
+    }
+
+    // Regression: finite V6 mover and offset components could overflow when
+    // composed and then propagate infinity to GPU-facing light buffers.
+    #[test]
+    fn kinematic_geometry_drops_carried_light_with_unrepresentable_authored_position() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].origin = [3.0e38, 0.0, 0.0];
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [3.0e38, 0.0, 0.0],
+        }];
+        section.waypoints[0].origin = [3.0e38, 0.0, 0.0];
+        section.waypoints[1].origin = [3.0e38, 1.0, 0.0];
+        let decoded = KinematicGeometrySection::from_bytes(&section.to_bytes())
+            .expect("finite wire components should decode");
+        let mut geometry = convert_kinematic_geometry_section(decoded).unwrap();
+        let capture = LogCapture::start();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[dynamic_light()]);
+
+        assert_eq!(dropped, 1);
+        assert!(geometry.movers[0].carried_lights.is_empty());
+        capture.assert_logged_once(
+            Level::Warn,
+            "because its authored position is outside the runtime f32 range",
         );
     }
 

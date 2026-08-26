@@ -1260,6 +1260,16 @@ fn resolve_carried_light_links(
             continue;
         }
 
+        if light.is_dynamic && light.bake_only {
+            log::warn!(
+                "[Compiler] dynamic bake-only light at {:?} ignores carrier `{}`; bake-only lights have no runtime presence and cannot be carried",
+                light.origin,
+                light.carrier,
+            );
+            light.carrier.clear();
+            continue;
+        }
+
         if !light.is_dynamic {
             log::warn!(
                 "[Compiler] baked light at {:?} ignores carrier `{}`; baked lights cannot be carried",
@@ -1309,12 +1319,21 @@ fn resolve_carried_light_links(
             );
         }
 
+        let derived_offset = light.origin - mover.origin;
+        let local_offset = derived_offset.to_array().map(|value| value as f32);
+        if !local_offset.iter().all(|component| component.is_finite()) {
+            log::warn!(
+                "[Compiler] dynamic light at {:?} carrier `{}` produces local offset {derived_offset:?} outside the runtime f32 range; leaving it unbound",
+                light.origin,
+                light.carrier,
+            );
+            continue;
+        }
+
         links.push(crate::map_data::CarriedLightLink {
             source_light_index,
             mover_id: mover.mover_id,
-            local_offset: (light.origin - mover.origin)
-                .to_array()
-                .map(|value| value as f32),
+            local_offset,
         });
     }
 
@@ -4075,6 +4094,36 @@ mod tests {
         );
     }
 
+    // Regression: a finite compiler offset could narrow to infinity in the V6
+    // carried-light record and later poison GPU light and influence positions.
+    #[test]
+    fn dynamic_light_carrier_unrepresentable_local_offset_warns_and_stays_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        );
+        let mut map_data = parse_inline_map(&map_text).expect("carrier map should parse");
+        map_data.lights[0].origin = DVec3::new(3.0e38, 0.0, 0.0);
+        map_data.kinematic_movers[0].origin = DVec3::new(-3.0e38, 0.0, 0.0);
+        let derived_offset = map_data.lights[0].origin - map_data.kinematic_movers[0].origin;
+        assert!((map_data.lights[0].origin.x as f32).is_finite());
+        assert!((map_data.kinematic_movers[0].origin.x as f32).is_finite());
+        assert!(derived_offset.is_finite());
+        assert!(!(derived_offset.x as f32).is_finite());
+
+        let capture = LogCapture::start();
+        let links = resolve_carried_light_links(&mut map_data.lights, &map_data.kinematic_movers);
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "outside the runtime f32 range; leaving it unbound",
+        );
+        assert!(links.is_empty());
+    }
+
     #[test]
     fn dynamic_light_carrier_missing_mover_warns_and_leaves_light_unbound() {
         let map_text = kinematic_map_with_light(
@@ -4167,6 +4216,36 @@ mod tests {
         assert_eq!(
             bound.lights[0], unbound.lights[0],
             "clearing a baked carrier must leave the static-bake input unchanged"
+        );
+    }
+
+    // Regression: dynamic bake-only carrier links silently disappeared during AlphaLights packing.
+    #[test]
+    fn dynamic_bake_only_light_carrier_warns_and_leaves_light_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "\"_bake_only\" \"1\"\n",
+        );
+        let capture = LogCapture::start();
+        let map_data =
+            parse_inline_map(&map_text).expect("dynamic bake-only carrier must not fail parsing");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "dynamic bake-only light at {:?} ignores carrier `lift_a`; bake-only lights have no runtime presence and cannot be carried",
+                map_data.lights[0].origin
+            ),
+        );
+        assert!(map_data.lights[0].is_dynamic);
+        assert!(map_data.lights[0].bake_only);
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(
+            map_data.carried_light_links.is_empty(),
+            "a bake-only light cannot emit a runtime mover link"
         );
     }
 

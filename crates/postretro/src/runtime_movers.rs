@@ -43,6 +43,8 @@ impl std::error::Error for RuntimeMoverLoadError {}
 
 pub(crate) const ENGINE_AUTO_CLOSE_MS: f32 = 0.0;
 
+/// Spawn every loaded mover as one batch. Any failure removes entities already
+/// created by this call before returning the original error.
 pub(crate) fn spawn_loaded_kinematic_movers(
     registry: &mut EntityRegistry,
     world: &LevelWorld,
@@ -293,85 +295,100 @@ fn spawn_from_geometry_with_auto_close_default(
     let waypoint_indices = waypoint_index_map(&geometry.waypoints)?;
     let mut spawned = Vec::with_capacity(geometry.movers.len());
 
-    for mover in &geometry.movers {
-        let spin_axis = mover.spin_axis.normalize_or_zero();
-        let initial_spin_rate_rad_s = mover.spin_speed_deg_s.to_radians();
-        let spin_accel_rad_s2 = mover.spin_accel_deg_s2.to_radians();
-        if mover.spin_speed_deg_s != 0.0 && initial_spin_rate_rad_s == 0.0 {
-            return Err(RuntimeMoverLoadError::new(format!(
-                "mover {} (`{}`) has nonzero spin_speed_deg_s that becomes zero after conversion to radians/sec",
-                mover.mover_id, mover.name
-            )));
-        }
-        if mover.spin_accel_deg_s2 > 0.0 && spin_accel_rad_s2 == 0.0 {
-            return Err(RuntimeMoverLoadError::new(format!(
-                "mover {} (`{}`) has positive spin_accel_deg_s2 that becomes zero after conversion to radians/sec²",
-                mover.mover_id, mover.name
-            )));
-        }
-        let has_initial_spin = initial_spin_rate_rad_s != 0.0;
-        if has_initial_spin && spin_axis == Vec3::ZERO {
-            return Err(RuntimeMoverLoadError::new(format!(
-                "mover {} (`{}`) has nonzero spin_speed_deg_s but a zero spin_axis",
-                mover.mover_id, mover.name
-            )));
-        }
-        let allow_single_waypoint = has_initial_spin;
-        let (waypoints, waypoint_names) = resolve_waypoint_chain(
-            mover,
-            &geometry.waypoints,
-            &waypoint_indices,
-            allow_single_waypoint,
-        )?;
-        let mode = mover_mode(mover)?;
-        let transform = Transform {
-            position: mover.origin,
-            rotation: Quat::IDENTITY,
-            scale: Vec3::ONE,
-        };
-        let Some(entity) = registry.try_spawn(transform, &mover.tags) else {
-            return Err(RuntimeMoverLoadError::new(format!(
-                "entity registry exhausted while spawning mover {} (`{}`)",
-                mover.mover_id, mover.name
-            )));
-        };
-        let mut component = KinematicMoverComponent::new(
-            mover.mover_id,
-            postretro_entities::KinematicMoverConfig {
-                waypoints,
-                waypoint_names,
-                speed_mps: mover.speed_mps,
-                wait_ms: mover.wait_ms,
-                mode,
-                started: mover.start_on_spawn,
-                spin_axis,
-                initial_spin_rate_rad_s,
-                spin_accel_rad_s2,
-                carry_yaw: mover.carry_yaw,
-            },
-        );
-        component.block_policy = block_policy_from_loaded(mover)?;
-        component.crush_damage = mover.crush_damage;
-        component.crush_interval_ms = mover.crush_interval_ms;
-        component.auto_close_ms = mover.auto_close_ms.unwrap_or(mod_auto_close_ms);
-        if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
-            log::warn!(
-                "[Loader] kinematic mover {} (`{}`) ignores auto_close_ms because it has fewer than two waypoints",
+    let spawn_result = (|| {
+        for mover in &geometry.movers {
+            let spin_axis = mover.spin_axis.normalize_or_zero();
+            let initial_spin_rate_rad_s = mover.spin_speed_deg_s.to_radians();
+            let spin_accel_rad_s2 = mover.spin_accel_deg_s2.to_radians();
+            if mover.spin_speed_deg_s != 0.0 && initial_spin_rate_rad_s == 0.0 {
+                return Err(RuntimeMoverLoadError::new(format!(
+                    "mover {} (`{}`) has nonzero spin_speed_deg_s that becomes zero after conversion to radians/sec",
+                    mover.mover_id, mover.name
+                )));
+            }
+            if mover.spin_accel_deg_s2 > 0.0 && spin_accel_rad_s2 == 0.0 {
+                return Err(RuntimeMoverLoadError::new(format!(
+                    "mover {} (`{}`) has positive spin_accel_deg_s2 that becomes zero after conversion to radians/sec²",
+                    mover.mover_id, mover.name
+                )));
+            }
+            let has_initial_spin = initial_spin_rate_rad_s != 0.0;
+            if has_initial_spin && spin_axis == Vec3::ZERO {
+                return Err(RuntimeMoverLoadError::new(format!(
+                    "mover {} (`{}`) has nonzero spin_speed_deg_s but a zero spin_axis",
+                    mover.mover_id, mover.name
+                )));
+            }
+            let allow_single_waypoint = has_initial_spin;
+            let (waypoints, waypoint_names) = resolve_waypoint_chain(
+                mover,
+                &geometry.waypoints,
+                &waypoint_indices,
+                allow_single_waypoint,
+            )?;
+            let mode = mover_mode(mover)?;
+            let transform = Transform {
+                position: mover.origin,
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            };
+            let Some(entity) = registry.try_spawn(transform, &mover.tags) else {
+                return Err(RuntimeMoverLoadError::new(format!(
+                    "entity registry exhausted while spawning mover {} (`{}`)",
+                    mover.mover_id, mover.name
+                )));
+            };
+            // Track immediately: later validation and component installation can
+            // still fail, and the batch must remain atomic for carried-light binding.
+            spawned.push(entity);
+
+            let mut component = KinematicMoverComponent::new(
                 mover.mover_id,
-                mover.name
+                postretro_entities::KinematicMoverConfig {
+                    waypoints,
+                    waypoint_names,
+                    speed_mps: mover.speed_mps,
+                    wait_ms: mover.wait_ms,
+                    mode,
+                    started: mover.start_on_spawn,
+                    spin_axis,
+                    initial_spin_rate_rad_s,
+                    spin_accel_rad_s2,
+                    carry_yaw: mover.carry_yaw,
+                },
             );
-            component.auto_close_ms = ENGINE_AUTO_CLOSE_MS;
+            component.block_policy = block_policy_from_loaded(mover)?;
+            component.crush_damage = mover.crush_damage;
+            component.crush_interval_ms = mover.crush_interval_ms;
+            component.auto_close_ms = mover.auto_close_ms.unwrap_or(mod_auto_close_ms);
+            if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
+                log::warn!(
+                    "[Loader] kinematic mover {} (`{}`) ignores auto_close_ms because it has fewer than two waypoints",
+                    mover.mover_id,
+                    mover.name
+                );
+                component.auto_close_ms = ENGINE_AUTO_CLOSE_MS;
+            }
+            component.open_event = mover.open_event.clone();
+            component.close_event = mover.close_event.clone();
+            component.blocked_event = mover.blocked_event.clone();
+            component.crush_event = mover.crush_event.clone();
+            component.sealed_portal_ids = mover.sealed_portal_ids.clone();
+            log::info!("{}", kinematic_mover_load_summary(mover, &component));
+            registry
+                .set_component(entity, component)
+                .map_err(|err| RuntimeMoverLoadError::new(err.to_string()))?;
         }
-        component.open_event = mover.open_event.clone();
-        component.close_event = mover.close_event.clone();
-        component.blocked_event = mover.blocked_event.clone();
-        component.crush_event = mover.crush_event.clone();
-        component.sealed_portal_ids = mover.sealed_portal_ids.clone();
-        log::info!("{}", kinematic_mover_load_summary(mover, &component));
-        registry
-            .set_component(entity, component)
-            .map_err(|err| RuntimeMoverLoadError::new(err.to_string()))?;
-        spawned.push(entity);
+        Ok(())
+    })();
+
+    if let Err(error) = spawn_result {
+        for entity in spawned.drain(..).rev() {
+            registry
+                .despawn(entity)
+                .expect("freshly spawned mover must remain live until batch commit");
+        }
+        return Err(error);
     }
 
     Ok(spawned)
@@ -878,6 +895,36 @@ mod tests {
             registry.has_component_kind(id, ComponentKind::KinematicMover),
             Ok(true)
         ));
+    }
+
+    // Regression: a later mover load error left earlier movers active while startup
+    // discarded their IDs, preventing carried lights from binding to them.
+    #[test]
+    fn spawn_loaded_movers_rolls_back_batch_when_later_mover_is_invalid() {
+        let mut geometry = geometry(1);
+        let mut invalid = mover(1);
+        invalid.mover_id = 8;
+        invalid.name = "broken-door".to_string();
+        invalid.block_policy = "unsupported".to_string();
+        geometry.movers.push(invalid);
+
+        let mut registry = EntityRegistry::new();
+        let error = spawn_from_geometry(&mut registry, &geometry)
+            .expect_err("the unsupported block policy must reject the mover batch");
+
+        assert!(error.to_string().contains("unsupported block_policy"));
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Transform).count(),
+            0,
+            "the failed batch must leave no spawned mover entities behind"
+        );
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::KinematicMover)
+                .count(),
+            0,
+            "the failed batch must leave no mover components behind"
+        );
     }
 
     #[test]

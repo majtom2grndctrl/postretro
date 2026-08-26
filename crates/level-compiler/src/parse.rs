@@ -14,9 +14,9 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode, MapData,
-    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight,
-    MapTriggerVolume, NavParams, TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
+    LightType, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint,
+    MapLight, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{

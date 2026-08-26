@@ -423,7 +423,7 @@ The canonical assembly is defined by engine need and authored two ways that both
 
 Epic hub + source-grounded research: `context/plans/drafts/E22--kinematic-assemblies/`. Four child specs, drafted detail-on-open in dependency order:
 
-- [ ] **`E22--assembly-carried-members`** — foundation: the canonical assembly, proven by a dynamic light that travels with a kinematic mover (explicit binding; no `func_group` dependency). The thin slice through adapter → canonical → PRL → runtime. Generalizes the shipped E21 attachment relation (child at `holder_interpolated_transform × offset`) to a mover source and a live-entity child.
+- [x] **`E22--assembly-carried-members`** — foundation: the canonical assembly, proven by a dynamic light that travels with a kinematic mover (explicit binding; no `func_group` dependency). The thin slice through adapter → canonical → PRL → runtime. Generalizes the shipped E21 attachment relation (child at `holder_interpolated_transform × offset`) to a mover source and a live-entity child.
 - [ ] **`E22--group-recognition`** — adapter recognition of both `func_group` nesting forms + linked-group GUIDs; translate to the canonical assembly; provenance so diagnostics name the group. Static groups still flatten behavior-identically.
 - [ ] **`E22--kinematic-instancing`** — recognize shared-template linked-group instances, dedupe to one template + per-instance transforms, add the net-new instanced draw path (kinematic tier only). Forces the Chunk-Primitive converge-or-defer decision. Efficiency win is anticipated, not yet observed — most deferrable leg.
 - [ ] **`E22--runtime-addressable-assemblies`** — an assembly addressable by scripts/reactions (toggle, target, batch). Gated on a concrete gameplay consumer; may land in Epic 18.

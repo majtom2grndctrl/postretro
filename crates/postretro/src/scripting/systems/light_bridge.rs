@@ -890,7 +890,9 @@ fn component_to_map_light(
 /// Resolve a mover-attached light from the exact pose its projectile body uses
 /// in the current render frame. Sprite bodies deliberately take the raw tick
 /// transform because billboard collection does not interpolate them; rigid
-/// model bodies use the same interpolated transform as mesh collection.
+/// model bodies use the same interpolated transform as mesh collection. An
+/// unrepresentable carrier composition returns `None`, retaining the authored
+/// finite position instead of packing a non-finite GPU position.
 fn follow_transform_position(
     registry: &EntityRegistry,
     id: EntityId,
@@ -901,7 +903,27 @@ fn follow_transform_position(
         return registry
             .interpolated_transform(carrier.mover_entity, alpha)
             .ok()
-            .map(|transform| transform.position + transform.rotation * carrier.local_offset);
+            .and_then(|transform| {
+                let rotation = glam::DQuat::from_xyzw(
+                    f64::from(transform.rotation.x),
+                    f64::from(transform.rotation.y),
+                    f64::from(transform.rotation.z),
+                    f64::from(transform.rotation.w),
+                );
+                let local_offset = glam::DVec3::new(
+                    f64::from(carrier.local_offset.x),
+                    f64::from(carrier.local_offset.y),
+                    f64::from(carrier.local_offset.z),
+                );
+                let position = glam::DVec3::new(
+                    f64::from(transform.position.x),
+                    f64::from(transform.position.y),
+                    f64::from(transform.position.z),
+                ) + rotation * local_offset;
+                let narrowed =
+                    glam::Vec3::new(position.x as f32, position.y as f32, position.z as f32);
+                narrowed.is_finite().then_some(narrowed)
+            });
     }
     if !component.follow_transform {
         return None;
@@ -1719,6 +1741,48 @@ mod tests {
             packed_dynamic_influence_center(&update.influence_bytes).distance(expected) <= 1.0e-6,
             "carrier pose relocates the matching dynamic-light influence"
         );
+    }
+
+    // Regression: malformed finite V6 carrier inputs composed to infinity and
+    // were packed into both the GPU light record and its culling influence.
+    #[test]
+    fn unrepresentable_carrier_composition_keeps_gpu_positions_finite() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut light = sample_dynamic_point_light();
+        light.origin = [3.0e38, 0.0, 0.0];
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        bridge.cached_influences[0].center = glam::Vec3::new(3.0e38, 0.0, 0.0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0e38, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let light_entity = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light_entity)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset: glam::Vec3::new(3.0e38, 0.0, 0.0),
+        });
+        registry.set_component(light_entity, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 1.0)
+            .expect("initial bridge update should pack the light");
+        let packed_position = packed_dynamic_position(&update.lights_bytes);
+        let packed_influence = packed_dynamic_influence_center(&update.influence_bytes);
+
+        assert!(packed_position.is_finite());
+        assert!(packed_influence.is_finite());
+        let fallback_x = 3.0e38;
+        let epsilon = fallback_x * 1.0e-6;
+        assert!((packed_position.x - fallback_x).abs() <= epsilon);
+        assert!((packed_influence.x - fallback_x).abs() <= epsilon);
     }
 
     #[test]

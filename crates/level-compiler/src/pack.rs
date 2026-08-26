@@ -2471,6 +2471,186 @@ mod tests {
         let _ = std::fs::remove_file(&output);
     }
 
+    // Regression: the closet fixture's compiler-generated portal ids were never
+    // exercised across PRL packing and runtime loading, so portal-order drift
+    // could silently make a closed door block the wrong portal.
+    #[test]
+    fn closet_reveal_compiler_loader_portal_ids_block_and_restore_interior() {
+        use glam::{Mat4, Vec3};
+        use postretro_visibility::VisibleCells;
+
+        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .join("content/dev/maps/closet-reveal.map");
+        let map_data =
+            crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
+                .expect("closet-reveal.map should parse");
+        let result =
+            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
+        let generated_portals = crate::portals::generate_portals(&result.tree);
+        let exterior = crate::visibility::find_exterior_leaves(&result.tree, &generated_portals);
+        let vis_result = crate::visibility::encode_vis(&result.tree, &exterior);
+        let mut geo_result =
+            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        let kinematic_geometry = crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &map_data.kinematic_movers,
+            &map_data.kinematic_waypoints,
+            &generated_portals,
+            &mut geo_result.texture_names,
+        )
+        .expect("closet fixture should emit kinematic geometry");
+        let (_, _, bvh_section) =
+            crate::bvh_build::build_bvh(&geo_result).expect("BVH build should succeed");
+        let cell_draw_index_bytes = crate::cell_draw_index_bake::bake_cell_draw_index(
+            &bvh_section.leaves,
+            &vis_result.leaves_section.leaves,
+        )
+        .map(|section| section.to_bytes());
+        let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
+        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
+        let light_influence = encode_light_influence(&alpha_ns);
+        let map_entities = encode_map_entities(&map_data.map_entities);
+        let portals = encode_portals(&generated_portals);
+        let texture_cache_keys = HashMap::new();
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should follow Unix epoch")
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!(
+            "postretro-closet-reveal-{}-{unique}.prl",
+            std::process::id()
+        ));
+        // Lighting is unrelated to this seam. Existing valid placeholders keep
+        // the regression on the production geometry/portal/pack/load path
+        // without turning it into a cold-bake test.
+        pack_and_write_portals(
+            &output,
+            &geo_result,
+            &texture_cache_keys,
+            &vis_result.leaves_section,
+            &result.tree,
+            &portals,
+            &exterior,
+            &bvh_section,
+            &[],
+            &alpha_lights,
+            &light_influence,
+            &empty_sh_volume(),
+            None,
+            None,
+            None,
+            None,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            map_entities.as_ref(),
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            Some(&kinematic_geometry),
+            None,
+            cell_draw_index_bytes,
+            None,
+            None,
+        )
+        .expect("closet fixture should pack into a loader-valid PRL");
+
+        let world = postretro_level_loader::load_prl(
+            output
+                .to_str()
+                .expect("temporary PRL path should be valid UTF-8"),
+        )
+        .expect("production loader should read the compiled closet PRL");
+        std::fs::remove_file(&output).expect("temporary closet PRL should be removable");
+
+        let mover = world
+            .kinematic_geometry
+            .movers
+            .iter()
+            .find(|mover| mover.name == "closet_door")
+            .expect("loaded closet door mover");
+        assert!(
+            !mover.sealed_portal_ids.is_empty(),
+            "the production compiler must associate the closed closet door with a portal"
+        );
+        assert!(
+            mover
+                .sealed_portal_ids
+                .iter()
+                .all(|&portal_id| (portal_id as usize) < world.portals.len()),
+            "every loaded association must index the loaded portal array"
+        );
+
+        let player_position = Vec3::from(
+            world
+                .map_entities
+                .iter()
+                .find(|entity| entity.classname == "player_spawn")
+                .expect("loaded player spawn")
+                .origin,
+        );
+        let closet_position = Vec3::from(
+            world
+                .map_entities
+                .iter()
+                .find(|entity| entity.classname == "reference_enemy")
+                .expect("loaded closet enemy")
+                .origin,
+        );
+        let player_cell = world.locate_cell(player_position) as u32;
+        let closet_cell = world.locate_cell(closet_position) as u32;
+        assert_ne!(
+            player_cell, closet_cell,
+            "fixture must straddle the closet door"
+        );
+
+        let view_direction = (closet_position - player_position).normalize();
+        let view = Mat4::look_at_rh(player_position, player_position + view_direction, Vec3::Y);
+        let view_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.01, 100.0) * view;
+        let visible_ids = |blocked_portals: &[bool]| {
+            let (result, _) = postretro_visibility::determine_visible_cells(
+                player_position,
+                view_proj,
+                &world,
+                blocked_portals,
+                false,
+                &mut Vec::new(),
+            );
+            match result.visible_cells {
+                VisibleCells::Culled(ids) => ids,
+                VisibleCells::DrawAll => panic!("closet fixture must use portal visibility"),
+            }
+        };
+
+        let open_visible = visible_ids(&[]);
+        assert!(
+            open_visible.contains(&closet_cell),
+            "the loaded closet interior must be visible through the unblocked portal"
+        );
+
+        let mut blocked_portals = vec![false; world.portals.len()];
+        for &portal_id in &mover.sealed_portal_ids {
+            blocked_portals[portal_id as usize] = true;
+        }
+        let closed_visible = visible_ids(&blocked_portals);
+        assert!(
+            closed_visible.contains(&player_cell),
+            "blocking the closet door must retain the camera cell"
+        );
+        assert!(
+            !closed_visible.contains(&closet_cell),
+            "blocking compiler-associated portal ids must hide the loaded closet interior"
+        );
+    }
+
     /// A curated set of small fixture maps must compile end-to-end and emit an
     /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
     /// time bounded — the probe count is a design parameter, not what this test

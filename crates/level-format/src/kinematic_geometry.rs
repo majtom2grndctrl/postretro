@@ -382,7 +382,29 @@ fn read_mover(
             offset,
             &format!("mover {mover_idx} sealed_portal_ids count"),
         )?;
-        let mut portal_ids = Vec::with_capacity(count);
+        let portal_id_bytes = count.checked_mul(std::mem::size_of::<u32>()).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: mover {mover_idx} sealed_portal_ids count {count} overflows its byte length"
+                ),
+            ))
+        })?;
+        let bytes_remaining = data.len().saturating_sub(*offset);
+        if portal_id_bytes > bytes_remaining {
+            return invalid_data(format!(
+                "kinematic geometry: mover {mover_idx} sealed_portal_ids count {count} requires {portal_id_bytes} bytes but only {bytes_remaining} remain"
+            ));
+        }
+        let mut portal_ids = Vec::new();
+        portal_ids.try_reserve_exact(count).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: cannot reserve {count} sealed_portal_ids for mover {mover_idx}"
+                ),
+            ))
+        })?;
         for portal_idx in 0..count {
             portal_ids.push(read_u32(
                 data,
@@ -1041,6 +1063,21 @@ mod tests {
         assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
     }
 
+    // Regression: a truncated V5 sealed-ID count used to reserve before
+    // proving the declared IDs fit in the remaining section payload.
+    #[test]
+    fn rejects_truncated_v5_sealed_portal_ids_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v5_sealed_portal_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a truncated sealed portal-ID list must reject before reserving");
+
+        assert!(error.to_string().contains("sealed_portal_ids count"));
+    }
+
     #[test]
     fn rejects_v2_spin_axis_as_impossible_v1_waypoint_count() {
         let mut section = sample_section();
@@ -1161,6 +1198,18 @@ mod tests {
         offset + face_count * 8
     }
 
+    fn find_first_mover_v5_sealed_portal_count_offset(bytes: &[u8]) -> usize {
+        let mut offset = find_first_mover_v2_append_offset(bytes) + 21;
+        skip_string(bytes, &mut offset); // block_policy
+        offset += 4; // crush_damage
+        offset += 4; // crush_interval_ms
+        skip_optional_f32(bytes, &mut offset); // auto_close_ms
+        for _ in 0..4 {
+            skip_optional_string(bytes, &mut offset);
+        }
+        offset
+    }
+
     fn v1_fixture_section() -> KinematicGeometrySection {
         KinematicGeometrySection {
             version: KINEMATIC_GEOMETRY_VERSION_V1,
@@ -1235,6 +1284,22 @@ mod tests {
     fn skip_string(bytes: &[u8], offset: &mut usize) {
         let len = read_u32_for_test(bytes, offset) as usize;
         *offset += len;
+    }
+
+    fn skip_optional_f32(bytes: &[u8], offset: &mut usize) {
+        let is_present = bytes[*offset];
+        *offset += 1;
+        if is_present == 1 {
+            *offset += 4;
+        }
+    }
+
+    fn skip_optional_string(bytes: &[u8], offset: &mut usize) {
+        let is_present = bytes[*offset];
+        *offset += 1;
+        if is_present == 1 {
+            skip_string(bytes, offset);
+        }
     }
 
     fn read_u32_for_test(bytes: &[u8], offset: &mut usize) -> u32 {

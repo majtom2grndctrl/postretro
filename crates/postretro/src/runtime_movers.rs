@@ -569,6 +569,7 @@ mod tests {
     use postretro_level_format::geometry::Vertex;
     use postretro_level_loader::{
         CellData, CellLocatorChild, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
+        LoadedMemberLight,
     };
 
     fn vertex(position: [f32; 3]) -> Vertex {
@@ -658,6 +659,26 @@ mod tests {
         let mut changed = base;
         changed.movers[0].vertices[0].position[0] = 0.5;
         assert_ne!(digest, level_content_digest(&changed, &world));
+    }
+
+    #[test]
+    fn level_content_digest_excludes_carried_light_members() {
+        let without_members = KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: Vec::new(),
+        };
+        let world = single_cell_world(without_members.clone());
+        let mut with_members = without_members.clone();
+        with_members.movers[0].carried_lights = vec![LoadedMemberLight {
+            alpha_light_index: 4,
+            local_offset: Vec3::new(2.0, -1.0, 0.5),
+        }];
+
+        assert_eq!(
+            level_content_digest(&without_members, &world),
+            level_content_digest(&with_members, &world),
+            "presentation-only carried-light members must stay outside the content digest"
+        );
     }
 
     fn world_vertex(position: [f32; 3]) -> postretro_render_data::geometry::WorldVertex {

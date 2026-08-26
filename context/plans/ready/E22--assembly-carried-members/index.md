@@ -1,6 +1,6 @@
 # E22 Spec 1 — Assembly carried members (mover-carried dynamic light)
 
-> **Status:** draft — review-cleared, ready to promote. First spec of Epic 22 (`../E22--kinematic-assemblies/`). Foundation + first consumer. Cleared 3 structural-review rounds + implementability (all lenses clean on the final pass). Source-grounded seam map, lifecycle diagram, observer/ordering tables in `research.md`.
+> **Status:** ready. First spec of Epic 22 (`context/plans/drafts/E22--kinematic-assemblies/`). Foundation + first consumer. Cleared 3 structural-review rounds + implementability (all lenses clean on the final pass). Source-grounded seam map, lifecycle diagram, observer/ordering tables in `research.md`.
 > **Related:** `context/lib/build_pipeline.md` §PRL section IDs (KinematicGeometry 43, AlphaLights 18) · `context/lib/entity_model.md` · `context/lib/rendering_pipeline.md` §4 · `context/plans/done/E17--rotating-movers/` (spin) · `context/plans/done/E21--bone-sockets-attachments/` (the attachment relation this generalizes).
 
 ## Goal

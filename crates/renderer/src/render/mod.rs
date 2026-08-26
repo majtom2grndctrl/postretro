@@ -145,7 +145,10 @@ pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
-pub use debug_ui::{AgentDiagnosticsRow, DebugUi, TriggerDiagnosticsRow, draw_diagnostics_panel};
+pub use debug_ui::{
+    AgentDiagnosticsRow, DebugUi, DoorOccluderDiagnosticsRow, TriggerDiagnosticsRow,
+    draw_diagnostics_panel,
+};
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;
 #[cfg(feature = "dev-tools")]

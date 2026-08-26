@@ -50,16 +50,18 @@ pub enum DiagnosticsTab {
     Performance,
     Spatial,
     Agents,
+    Doors,
     Triggers,
 }
 
 impl DiagnosticsTab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Lighting,
         Self::Volumes,
         Self::Performance,
         Self::Spatial,
         Self::Agents,
+        Self::Doors,
         Self::Triggers,
     ];
 
@@ -70,6 +72,7 @@ impl DiagnosticsTab {
             Self::Performance => "Performance",
             Self::Spatial => "Spatial",
             Self::Agents => "Agents",
+            Self::Doors => "Doors",
             Self::Triggers => "Triggers",
         }
     }
@@ -110,6 +113,18 @@ pub struct TriggerDiagnosticsRow {
     pub on_fire_resolved: bool,
     pub on_exit: String,
     pub on_exit_resolved: bool,
+}
+
+/// Renderer-facing door occluder diagnostics for one live kinematic mover.
+///
+/// The app prepares this from the mover's baked portal associations and live
+/// phase, keeping entity components outside the renderer boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoorOccluderDiagnosticsRow {
+    pub id: String,
+    pub mover_id: u32,
+    pub sealed_portal_ids: Vec<u32>,
+    pub docked_closed: bool,
 }
 
 /// Diagnostics-panel widget state. The panel binds these to renderer setters
@@ -253,6 +268,8 @@ pub fn draw_diagnostics_panel(
     frame_timing: Option<&FrameTimingSnapshot>,
     agent_rows: &[AgentDiagnosticsRow],
     trigger_rows: &[TriggerDiagnosticsRow],
+    door_occluder_rows: &[DoorOccluderDiagnosticsRow],
+    blocked_portal_ids: &[u32],
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -303,6 +320,7 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
+            DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
             DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
         }
     });
@@ -745,6 +763,66 @@ fn draw_agents_tab(ui: &mut egui::Ui, renderer: &mut Renderer, agent_rows: &[Age
                         ui.label(row.state.as_deref().unwrap_or("-"));
                         ui.label(format!("{:.2}", row.speed));
                         ui.label(agent_flags_label(row));
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn portal_ids_label(portal_ids: &[u32]) -> String {
+    if portal_ids.is_empty() {
+        "-".to_string()
+    } else {
+        portal_ids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn draw_doors_tab(
+    ui: &mut egui::Ui,
+    door_occluder_rows: &[DoorOccluderDiagnosticsRow],
+    blocked_portal_ids: &[u32],
+) {
+    egui::CollapsingHeader::new("Blocked portals this frame")
+        .default_open(true)
+        .show(ui, |ui| {
+            if blocked_portal_ids.is_empty() {
+                ui.label("None");
+            } else {
+                ui.label(portal_ids_label(blocked_portal_ids));
+                ui.label("Highlighted as magenta portal polygons in the world view.");
+            }
+            ui.label(
+                "Portal-walk captures (Alt+Shift+1) report blocked rejections as `blocked=N`.",
+            );
+        });
+
+    egui::CollapsingHeader::new("Baked door-to-portal associations")
+        .default_open(true)
+        .show(ui, |ui| {
+            if door_occluder_rows.is_empty() {
+                ui.label("No live kinematic movers");
+                return;
+            }
+
+            egui::Grid::new("door_occluder_diagnostics_grid")
+                .num_columns(4)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Entity");
+                    ui.strong("Mover");
+                    ui.strong("Sealed portal IDs");
+                    ui.strong("Docked closed");
+                    ui.end_row();
+
+                    for row in door_occluder_rows {
+                        ui.label(row.id.as_str());
+                        ui.label(row.mover_id.to_string());
+                        ui.label(portal_ids_label(&row.sealed_portal_ids));
+                        ui.label(row.docked_closed.to_string());
                         ui.end_row();
                     }
                 });

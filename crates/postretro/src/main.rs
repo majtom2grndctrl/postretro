@@ -23,6 +23,10 @@ mod candidate_cull_probes;
 mod collision;
 mod combat_positioning;
 mod content_hash;
+// App-side diagnostics for baked door-to-portal occluder associations. Keeps
+// the render-only blocked portal buffer inspectable without changing gameplay.
+#[cfg(feature = "dev-tools")]
+mod door_occluder_diagnostics;
 mod frame_timing;
 mod fx;
 mod grant;
@@ -4011,6 +4015,19 @@ impl ApplicationHandler for App {
                             (Vec::new(), Vec::new())
                         }
                     };
+                    #[cfg(feature = "dev-tools")]
+                    let door_occluder_diagnostics = {
+                        let diagnostics_visible = session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible());
+                        if diagnostics_visible {
+                            let registry = script_ctx.registry.borrow();
+                            door_occluder_diagnostics::collect(&registry, &self.blocked_portals)
+                        } else {
+                            door_occluder_diagnostics::DoorOccluderDiagnostics::default()
+                        }
+                    };
 
                     // Build the egui UI before `render_frame_indirect` so
                     // the SH diagnostic overlay can push debug lines that
@@ -4062,6 +4079,8 @@ impl ApplicationHandler for App {
                                             timing_snapshot.as_ref(),
                                             &agent_rows,
                                             &trigger_rows,
+                                            &door_occluder_diagnostics.mover_rows,
+                                            &door_occluder_diagnostics.blocked_portal_ids,
                                         );
                                     }
                                 });
@@ -4103,6 +4122,17 @@ impl ApplicationHandler for App {
                             renderer.emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
                             renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
                             renderer.emit_portal_overlay_diagnostics(world);
+                            if session
+                                .debug_ui
+                                .as_ref()
+                                .is_some_and(|debug_ui| debug_ui.is_visible())
+                            {
+                                door_occluder_diagnostics::emit_blocked_portal_geometry(
+                                    renderer,
+                                    world,
+                                    &self.blocked_portals,
+                                );
+                            }
                         }
                         // Navmesh overlay: append region rectangles + portal
                         // edges. No-op unless the `Alt+Shift+N` toggle is on

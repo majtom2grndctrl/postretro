@@ -1,6 +1,7 @@
 // Weapon descriptor tuning plus live magazine, cooldown, reload, and input-edge state.
 // See: context/lib/entity_model.md §4, §5
 
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 #[cfg(debug_assertions)]
@@ -35,6 +36,8 @@ pub struct EffectiveStats<'a> {
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     pub projectile: Option<&'a ProjectileDescriptor>,
+    /// Model-local projectile origin authored on this weapon.
+    pub muzzle_offset: Option<Vec3>,
     pub lower_ms: u32,
     pub raise_ms: u32,
     /// Per-weapon override of the mod-global reload-interrupt policy. This is
@@ -265,6 +268,9 @@ pub struct WeaponComponent {
     pub resolution: ResolutionMode,
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
+    /// Model-local projectile origin authored on this weapon.
+    #[serde(default)]
+    pub muzzle_offset: Option<Vec3>,
     #[serde(default)]
     pub lower_ms: u32,
     #[serde(default)]
@@ -325,6 +331,7 @@ impl WeaponComponent {
             fire_mode: desc.fire_mode,
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
+            muzzle_offset: desc.muzzle_offset.map(Vec3::from_array),
             lower_ms: desc.lower_ms,
             raise_ms: desc.raise_ms,
             block_during_reload: desc.block_during_reload,
@@ -354,6 +361,7 @@ impl WeaponComponent {
             fire_mode: self.fire_mode,
             resolution: self.resolution,
             projectile: self.projectile.as_ref(),
+            muzzle_offset: self.muzzle_offset,
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
             block_during_reload: self.block_during_reload,
@@ -377,6 +385,7 @@ impl WeaponComponent {
         self.fire_mode = desc.fire_mode;
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
+        self.muzzle_offset = desc.muzzle_offset.map(Vec3::from_array);
         self.lower_ms = desc.lower_ms;
         self.raise_ms = desc.raise_ms;
         self.block_during_reload = desc.block_during_reload;
@@ -542,6 +551,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -601,6 +611,19 @@ mod tests {
         assert_eq!(component.state_remaining_ms, 0);
         assert_eq!(component.state_total_ms, 0);
         assert_eq!(component.effective().ammo, None);
+    }
+
+    #[test]
+    fn muzzle_offset_materializes_refreshes_and_surfaces_effectively() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.muzzle_offset = Some([0.2, -0.1, -0.7]);
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+        assert_eq!(component.muzzle_offset, Some(Vec3::new(0.2, -0.1, -0.7)));
+        assert_eq!(component.effective().muzzle_offset, component.muzzle_offset);
+
+        descriptor.muzzle_offset = Some([-0.3, 0.4, -1.1]);
+        component.refresh_from_descriptor(&descriptor);
+        assert_eq!(component.muzzle_offset, Some(Vec3::new(-0.3, 0.4, -1.1)));
     }
 
     #[test]

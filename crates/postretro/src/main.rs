@@ -1352,6 +1352,29 @@ fn local_active_wieldable(
     Some((inventory.active_slot, weapon))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ClientFireMuzzleTerms {
+    placement: WeaponPlacementDescriptor,
+    muzzle_offset: Option<Vec3>,
+}
+
+/// Select both authoritative fire-origin terms from one host tuning row. The
+/// local weapon component is intentionally absent: a Control-only replacement
+/// can make it stale until the next local-pawn snapshot applies.
+fn client_fire_muzzle_terms(
+    tuning: &netcode::TuningPayload,
+    active_slot: usize,
+) -> Option<ClientFireMuzzleTerms> {
+    let row = tuning.wieldables.get(active_slot)?.as_ref()?;
+    Some(ClientFireMuzzleTerms {
+        placement: row.placement.clone(),
+        muzzle_offset: tuning
+            .muzzle_for_slot(active_slot)
+            .copied()
+            .map(Vec3::from_array),
+    })
+}
+
 fn client_fire_snapshot_for_post_loop<'a>(
     fixed_tick_snapshot: Option<&'a input::ActionSnapshot>,
     zero_tick_snapshot: Option<&'a input::ActionSnapshot>,
@@ -1468,14 +1491,7 @@ fn viewmodel_camera_space_transform(
     let sway_rotation = Quat::from_rotation_y(view_feel_yaw)
         * Quat::from_rotation_x(view_feel_pitch)
         * Quat::from_rotation_z(view_feel_roll);
-    let placement_offset = Vec3::new(
-        placement.offset.right,
-        placement.offset.up,
-        -placement.offset.forward,
-    );
-    let placement_rotation = Quat::from_rotation_y(placement.rotation.yaw.to_radians())
-        * Quat::from_rotation_x(placement.rotation.pitch.to_radians())
-        * Quat::from_rotation_z(placement.rotation.roll.to_radians());
+    let (placement_offset, placement_rotation) = placement.camera_space();
     glam::Mat4::from_scale_rotation_translation(
         Vec3::ONE,
         sway_rotation * placement_rotation,
@@ -2874,6 +2890,8 @@ impl ApplicationHandler for App {
                         // re-borrow `self.session`.
                         let data_registry = script_ctx.data_registry.borrow();
                         let descriptors = &data_registry.entities;
+                        let default_weapon_placement =
+                            data_registry.default_weapon_placement.as_ref();
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
@@ -2926,6 +2944,7 @@ impl ApplicationHandler for App {
                             tick_dt,
                             touch_system,
                             descriptors,
+                            default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,
                             Some(sim::TriggerTickContext {
@@ -6700,6 +6719,17 @@ impl App {
                 pellet_salt_name,
             )
         };
+        let Some(fire_terms) = session
+            .net_endpoint
+            .as_ref()
+            .and_then(|endpoint| match endpoint {
+                netcode::NetEndpoint::Client { tuning, .. } => tuning.as_deref(),
+                netcode::NetEndpoint::Host { .. } => None,
+            })
+            .and_then(|tuning| client_fire_muzzle_terms(tuning, active_slot))
+        else {
+            return;
+        };
         if let Some(command) = zero_tick_fire_command.as_mut() {
             command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
         }
@@ -6736,6 +6766,8 @@ impl App {
                 button,
                 aim_origin,
                 aim_direction,
+                &fire_terms.placement,
+                fire_terms.muzzle_offset,
                 client_tick,
                 &self.collision_world,
                 &registry,
@@ -9290,6 +9322,7 @@ mod tests {
                 third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),
                 placement,
+                muzzle_offset: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
@@ -9407,6 +9440,63 @@ mod tests {
             next_frame, default_b,
             "the next render lookup sees a re-drained default"
         );
+    }
+
+    #[test]
+    fn client_fire_muzzle_terms_use_the_replaced_host_payload_row() {
+        let host_placement = placement(0.3, -0.2, 0.7, 15.0);
+        let replacement_placement = placement(-0.4, 0.1, 0.5, -20.0);
+        let host_muzzle = [0.2, -0.1, -0.8];
+        let replacement_muzzle = [-0.3, 0.4, -1.2];
+        let local_component_muzzle = Vec3::new(9.0, 8.0, 7.0);
+        let local_data_placement = placement(8.0, 7.0, 6.0, 45.0);
+        let local_data_registry = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/local/view.gltf"),
+            Some(local_data_placement),
+        )];
+        let mut slots = std::array::from_fn(|_| None);
+        slots[0] = Some(netcode::WieldableTuningPayload {
+            canonical_name: "reference_pistol".to_string(),
+            placement: host_placement.clone(),
+            muzzle_offset: Some(host_muzzle),
+            range: 64.0,
+            cooldown_ms: 100.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
+            fire_mode: postretro_foundation::FireMode::Semi,
+            resolution: postretro_foundation::ResolutionMode::Projectile,
+            lower_ms: 0,
+            raise_ms: 0,
+        });
+        let initial = netcode::TuningPayload::new(None, slots.clone());
+        let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
+        assert_eq!(terms.placement, host_placement);
+        assert_eq!(terms.muzzle_offset, Some(Vec3::from_array(host_muzzle)));
+        assert_ne!(
+            terms.placement,
+            local_data_registry[0]
+                .weapon
+                .as_ref()
+                .unwrap()
+                .placement
+                .clone()
+                .unwrap()
+        );
+        assert_ne!(terms.muzzle_offset, Some(local_component_muzzle));
+
+        // A reliable Control replacement updates this payload before any local
+        // snapshot refresh. The old component/data values remain irrelevant.
+        slots[0].as_mut().unwrap().placement = replacement_placement.clone();
+        slots[0].as_mut().unwrap().muzzle_offset = Some(replacement_muzzle);
+        let replacement = netcode::TuningPayload::new(None, slots);
+        let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");
+        assert_eq!(terms.placement, replacement_placement);
+        assert_eq!(
+            terms.muzzle_offset,
+            Some(Vec3::from_array(replacement_muzzle))
+        );
+        assert_ne!(terms.muzzle_offset, Some(local_component_muzzle));
     }
 
     #[test]
@@ -9919,6 +10009,8 @@ mod tests {
             commands[0].button,
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             selected[0],
             &collision::CollisionWorld::new(),
             &registry,

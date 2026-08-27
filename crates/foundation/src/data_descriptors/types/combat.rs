@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::types::light::FalloffKind;
@@ -276,6 +277,16 @@ pub struct PlacementRotation {
 }
 
 impl WeaponPlacementDescriptor {
+    /// Convert author-facing placement into the viewmodel camera-space frame.
+    /// Camera space is right-handed with -Z forward, matching the renderer.
+    pub fn camera_space(&self) -> (Vec3, Quat) {
+        let offset = Vec3::new(self.offset.right, self.offset.up, -self.offset.forward);
+        let rotation = Quat::from_rotation_y(self.rotation.yaw.to_radians())
+            * Quat::from_rotation_x(self.rotation.pitch.to_radians())
+            * Quat::from_rotation_z(self.rotation.roll.to_radians());
+        (offset, rotation)
+    }
+
     pub fn validate(&self) -> Result<(), DescriptorError> {
         for (field, value) in [
             ("positionFromCenter.right", self.offset.right),
@@ -333,6 +344,10 @@ pub struct WeaponDescriptor {
     /// future character and per-instance tiers.
     #[serde(default)]
     pub placement: Option<WeaponPlacementDescriptor>,
+    /// Optional model-local projectile origin in metres. This composes through
+    /// the resolved steady first-person placement at fire time.
+    #[serde(default)]
+    pub muzzle_offset: Option<[f32; 3]>,
     #[serde(default)]
     pub resource: Option<WeaponResource>,
     #[serde(default, rename = "lowerMs")]
@@ -416,6 +431,17 @@ impl WeaponDescriptor {
         }
         if let Some(placement) = self.placement.as_ref() {
             placement.validate()?;
+        }
+        if let Some(muzzle_offset) = self.muzzle_offset {
+            for (index, component) in muzzle_offset.into_iter().enumerate() {
+                if !component.is_finite() {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.weapon.muzzleOffset[{index}]` must be a finite value, got {component}"
+                        ),
+                    });
+                }
+            }
         }
         for (field, path) in [
             ("thirdPersonModel", self.third_person_model.as_deref()),
@@ -859,6 +885,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -917,6 +944,29 @@ mod tests {
             panic!("expected InvalidShape");
         };
         assert!(reason.contains("components.weapon.projectile"), "{reason}");
+    }
+
+    #[test]
+    fn muzzle_offset_requires_finite_components() {
+        for muzzle_offset in [
+            [f32::NAN, 0.0, 0.0],
+            [0.0, f32::INFINITY, 0.0],
+            [0.0, 0.0, f32::NEG_INFINITY],
+        ] {
+            let mut descriptor = weapon_descriptor(None);
+            descriptor.muzzle_offset = Some(muzzle_offset);
+
+            let error = descriptor
+                .validate()
+                .expect_err("non-finite muzzle rejects");
+            let DescriptorError::InvalidShape { reason } = error else {
+                panic!("expected InvalidShape");
+            };
+            assert!(
+                reason.contains("components.weapon.muzzleOffset"),
+                "{reason}"
+            );
+        }
     }
 
     #[test]

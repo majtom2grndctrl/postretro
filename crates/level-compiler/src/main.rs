@@ -2416,6 +2416,7 @@ mod tests {
     fn baseline_point_light() -> MapLight {
         MapLight {
             origin: DVec3::new(0.5, 1.0, 0.5),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],

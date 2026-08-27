@@ -827,6 +827,7 @@ fn map_light_to_component(
         is_dynamic: light.is_dynamic,
         animated_slot: light.animated_slot,
         follow_transform: false,
+        carrier: None,
         animation: baked_descriptor.map(|descriptor| LightAnimation {
             period_ms: descriptor.period * 1000.0,
             phase: Some(descriptor.phase),
@@ -889,13 +890,41 @@ fn component_to_map_light(
 /// Resolve a mover-attached light from the exact pose its projectile body uses
 /// in the current render frame. Sprite bodies deliberately take the raw tick
 /// transform because billboard collection does not interpolate them; rigid
-/// model bodies use the same interpolated transform as mesh collection.
+/// model bodies use the same interpolated transform as mesh collection. An
+/// unrepresentable carrier composition returns `None`, retaining the authored
+/// finite position instead of packing a non-finite GPU position.
 fn follow_transform_position(
     registry: &EntityRegistry,
     id: EntityId,
     component: &LightComponent,
     alpha: f32,
 ) -> Option<glam::Vec3> {
+    if let Some(carrier) = component.carrier.as_ref() {
+        return registry
+            .interpolated_transform(carrier.mover_entity, alpha)
+            .ok()
+            .and_then(|transform| {
+                let rotation = glam::DQuat::from_xyzw(
+                    f64::from(transform.rotation.x),
+                    f64::from(transform.rotation.y),
+                    f64::from(transform.rotation.z),
+                    f64::from(transform.rotation.w),
+                );
+                let local_offset = glam::DVec3::new(
+                    f64::from(carrier.local_offset.x),
+                    f64::from(carrier.local_offset.y),
+                    f64::from(carrier.local_offset.z),
+                );
+                let position = glam::DVec3::new(
+                    f64::from(transform.position.x),
+                    f64::from(transform.position.y),
+                    f64::from(transform.position.z),
+                ) + rotation * local_offset;
+                let narrowed =
+                    glam::Vec3::new(position.x as f32, position.y as f32, position.z as f32);
+                narrowed.is_finite().then_some(narrowed)
+            });
+    }
     if !component.follow_transform {
         return None;
     }
@@ -1372,6 +1401,14 @@ mod tests {
         )
     }
 
+    fn packed_dynamic_direction(bytes: &[u8]) -> glam::Vec3 {
+        glam::Vec3::new(
+            f32::from_ne_bytes(bytes[32..36].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[36..40].try_into().unwrap()),
+            f32::from_ne_bytes(bytes[40..44].try_into().unwrap()),
+        )
+    }
+
     fn packed_dynamic_influence_center(bytes: &[u8]) -> glam::Vec3 {
         glam::Vec3::new(
             f32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
@@ -1644,6 +1681,578 @@ mod tests {
                 .distance(glam::Vec3::new(4.0, 0.0, 0.0))
                 <= 1.0e-6,
             "the model influence sphere follows the interpolated render pose"
+        );
+    }
+
+    #[test]
+    fn carrier_uses_interpolated_mover_pose_for_light_and_influence() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[], &mut registry, 0);
+
+        let mover = registry.spawn(Transform::default());
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(4.0, 2.0, 1.0),
+                    rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let light = spawn_runtime_light(
+            &mut registry,
+            LightComponent {
+                follow_transform: true,
+                carrier: Some(LightCarrier {
+                    mover_entity: mover,
+                    local_offset: glam::Vec3::X,
+                }),
+                ..runtime_component([99.0, 0.0, 0.0], 5.0, None)
+            },
+        );
+        registry
+            .set_component(
+                light,
+                Transform {
+                    position: glam::Vec3::new(99.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        bridge.absorb_dynamic_lights(&registry);
+        let update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("carried light is enrolled and packed");
+        let expected = glam::Vec3::new(2.0, 1.0, 0.5)
+            + glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4) * glam::Vec3::X;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected) <= 1.0e-6,
+            "carrier pose overrides the light's own follow-transform pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected) <= 1.0e-6,
+            "carrier pose relocates the matching dynamic-light influence"
+        );
+    }
+
+    // Regression: malformed finite V6 carrier inputs composed to infinity and
+    // were packed into both the GPU light record and its culling influence.
+    #[test]
+    fn unrepresentable_carrier_composition_keeps_gpu_positions_finite() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut light = sample_dynamic_point_light();
+        light.origin = [3.0e38, 0.0, 0.0];
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        bridge.cached_influences[0].center = glam::Vec3::new(3.0e38, 0.0, 0.0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0e38, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let light_entity = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light_entity)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset: glam::Vec3::new(3.0e38, 0.0, 0.0),
+        });
+        registry.set_component(light_entity, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 1.0)
+            .expect("initial bridge update should pack the light");
+        let packed_position = packed_dynamic_position(&update.lights_bytes);
+        let packed_influence = packed_dynamic_influence_center(&update.influence_bytes);
+
+        assert!(packed_position.is_finite());
+        assert!(packed_influence.is_finite());
+        let fallback_x = 3.0e38;
+        let epsilon = fallback_x * 1.0e-6;
+        assert!((packed_position.x - fallback_x).abs() <= epsilon);
+        assert!((packed_influence.x - fallback_x).abs() <= epsilon);
+    }
+
+    #[test]
+    fn carried_light_matches_mover_interpolation_after_zero_and_two_fixed_ticks() {
+        use crate::kinematic_mover::{self, MoverTickStateTable};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    12,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(4.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 4.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        let local_offset = glam::Vec3::new(2.0, 1.0, 0.0);
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        // A render-only frame after load has no fixed tick history to advance.
+        // The bridge must read the same spawn pose that mover geometry renders.
+        let zero_tick_alpha = 0.73;
+        let zero_tick_expected = registry
+            .interpolated_transform(mover, zero_tick_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let zero_tick_update = bridge
+            .update(&mut registry, 0.0, zero_tick_alpha)
+            .expect("first bridge update packs the bound carrier");
+        assert!(
+            packed_dynamic_position(&zero_tick_update.lights_bytes).distance(zero_tick_expected)
+                <= 1.0e-6,
+            "zero-tick render frame must compose from the mover's spawn pose"
+        );
+
+        // Catch-up can advance two fixed ticks before one render. Interpolation
+        // must still use the renderer-visible previous/current pair after tick 2.
+        let mut tick_states = MoverTickStateTable::default();
+        for _ in 0..2 {
+            registry.snapshot_transform(mover);
+            kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+        }
+        let two_tick_alpha = 0.25;
+        let two_tick_expected = registry
+            .interpolated_transform(mover, two_tick_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let two_tick_update = bridge
+            .update(&mut registry, 0.0, two_tick_alpha)
+            .expect("mover movement makes the carrier upload dirty");
+        assert!(
+            packed_dynamic_position(&two_tick_update.lights_bytes).distance(two_tick_expected)
+                <= 1.0e-6,
+            "two-tick render frame must match geometry's interpolated mover pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&two_tick_update.influence_bytes)
+                .distance(two_tick_expected)
+                <= 1.0e-6,
+            "two-tick light influence must share the geometry-matched position"
+        );
+    }
+
+    #[test]
+    fn carried_light_tracks_ping_pong_reversal_and_stop_hold_without_snapping() {
+        use crate::kinematic_mover::{self, MoverTickStateTable, apply_mover_command};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut authored = sample_dynamic_point_light();
+        authored.origin = [50.0, 50.0, 50.0];
+        bridge.populate_from_level(&[authored], &mut registry, 0);
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    13,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(2.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::PingPong,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let local_offset = glam::Vec3::new(0.0, 1.0, 0.0);
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let mut tick_states = MoverTickStateTable::default();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 2.5);
+        assert_eq!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .unwrap()
+                .direction_sign,
+            -1,
+            "the fixture must cross the ping-pong endpoint and reverse"
+        );
+        let reversal_alpha = 0.75;
+        let reversal_expected = registry
+            .interpolated_transform(mover, reversal_alpha)
+            .unwrap()
+            .position
+            + local_offset;
+        let reversal_update = bridge
+            .update(&mut registry, 0.0, reversal_alpha)
+            .expect("reversal movement repacks the carried light");
+        assert!(
+            packed_dynamic_position(&reversal_update.lights_bytes).distance(reversal_expected)
+                <= 1.0e-6,
+            "the light must remain on the interpolation path through reversal"
+        );
+
+        let mut mover_component = registry
+            .get_component::<KinematicMoverComponent>(mover)
+            .unwrap()
+            .clone();
+        apply_mover_command(&mut mover_component, &MoverCommand::Stop);
+        registry.set_component(mover, mover_component).unwrap();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let stop_expected = registry
+            .interpolated_transform(mover, 0.5)
+            .unwrap()
+            .position
+            + local_offset;
+        let stop_update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("the stop frame changes the followed pose from the reversal blend");
+        assert!(
+            packed_dynamic_position(&stop_update.lights_bytes).distance(stop_expected) <= 1.0e-6,
+            "a stopped mover keeps its composed carrier position"
+        );
+        assert!(
+            packed_dynamic_position(&stop_update.lights_bytes).distance(glam::Vec3::splat(50.0))
+                > 1.0,
+            "a stop must never snap the light back to its authored origin"
+        );
+
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let held_update = bridge.update(&mut registry, 0.0, 0.5).unwrap();
+        assert!(
+            !held_update.has_dirty_data,
+            "a stable stop hold preserves the last composed GPU upload"
+        );
+        let held_origin = bridge.collect_all_as_map_lights(&registry, 0.0)[0].0.origin;
+        assert!(
+            glam::Vec3::from_array(held_origin.map(|value| value as f32)).distance(stop_expected)
+                <= 1.0e-6,
+            "the bridge cache retains the stopped carrier pose rather than the authored origin"
+        );
+    }
+
+    #[test]
+    fn carried_light_holds_once_terminus_without_snapping_to_authored_origin() {
+        use crate::kinematic_mover::{self, MoverTickStateTable};
+        use postretro_entities::components::light::LightCarrier;
+        use postretro_entities::{
+            KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut authored = sample_dynamic_point_light();
+        authored.origin = [-40.0, 0.0, 0.0];
+        bridge.populate_from_level(&[authored], &mut registry, 0);
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    14,
+                    KinematicMoverConfig {
+                        waypoints: vec![glam::Vec3::ZERO, glam::Vec3::new(2.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "terminus".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: true,
+                        spin_axis: glam::Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let local_offset = glam::Vec3::new(0.0, 0.0, 1.0);
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let mut tick_states = MoverTickStateTable::default();
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 2.0);
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .unwrap()
+                .completed,
+            "fixture must complete at the once terminus"
+        );
+        let terminus_update = bridge
+            .update(&mut registry, 0.0, 1.0)
+            .expect("completion frame packs the terminus pose");
+        let terminus = glam::Vec3::new(2.0, 0.0, 1.0);
+        assert!(
+            packed_dynamic_position(&terminus_update.lights_bytes).distance(terminus) <= 1.0e-6,
+            "completion frame must publish the composed terminus position"
+        );
+
+        registry.snapshot_transform(mover);
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.5);
+        let held_update = bridge.update(&mut registry, 0.0, 0.5).unwrap();
+        assert!(
+            !held_update.has_dirty_data,
+            "a completed once mover holds its last bridge upload"
+        );
+        let held_origin = bridge.collect_all_as_map_lights(&registry, 0.0)[0].0.origin;
+        assert!(
+            glam::Vec3::from_array(held_origin.map(|value| value as f32)).distance(terminus)
+                <= 1.0e-6,
+            "once completion must hold at the terminus rather than snapping to authored origin"
+        );
+    }
+
+    #[test]
+    fn carried_spot_tracks_translating_mover_without_rotating_authored_aim() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_spot_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(-6.0, 1.0, 4.0),
+            ..Transform::default()
+        });
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(2.0, 5.0, -4.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let local_offset = glam::Vec3::new(1.5, -0.5, 2.0);
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        let authored_aim = glam::Vec3::from_array(component.cone_direction.unwrap());
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.25)
+            .expect("carried spot is packed");
+        let interpolated_mover_position = glam::Vec3::new(-4.0, 2.0, 2.0);
+        let expected_position = interpolated_mover_position + local_offset;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            "carried spot position must use the translating mover's interpolated pose"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+                <= 1.0e-6,
+            "the carried spot's culling influence must follow its packed position"
+        );
+        assert!(
+            packed_dynamic_direction(&update.lights_bytes).distance(authored_aim) <= 1.0e-6,
+            "a translating mover must not rotate a carried spot's authored world-space cone aim"
+        );
+    }
+
+    #[test]
+    fn carried_omni_orbits_spinning_mover_at_authored_offset() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(3.0, 2.0, -1.0),
+            ..Transform::default()
+        });
+        registry.snapshot_transform(mover);
+        registry
+            .set_component(
+                mover,
+                Transform {
+                    position: glam::Vec3::new(3.0, 2.0, -1.0),
+                    rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let local_offset = glam::Vec3::new(4.0, 0.0, 0.0);
+        let light = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset,
+        });
+        registry.set_component(light, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.5)
+            .expect("carried omni is packed");
+        let expected_position = glam::Vec3::new(3.0, 2.0, -1.0)
+            + glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4) * local_offset;
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(expected_position) <= 1.0e-6,
+            "a carried omni must orbit with the mover's interpolated rotation"
+        );
+        assert!(
+            packed_dynamic_influence_center(&update.influence_bytes).distance(expected_position)
+                <= 1.0e-6,
+            "the orbiting omni's culling influence must share its moved center"
+        );
+        assert!(
+            (packed_dynamic_position(&update.lights_bytes)
+                .distance(glam::Vec3::new(3.0, 2.0, -1.0))
+                - local_offset.length())
+            .abs()
+                <= 1.0e-6,
+            "the spinning mover must preserve the omni's authored orbit radius"
+        );
+    }
+
+    #[test]
+    fn far_moved_carried_light_uses_relocated_influence_for_culling_without_mover_draw() {
+        use postretro_entities::components::light::LightCarrier;
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut light = sample_dynamic_point_light();
+        light.origin = [-80.0, 0.0, 0.0];
+        light.falloff_range = 6.0;
+        light.cell_index = 91; // Deliberately stale after the carrier moves.
+        bridge.populate_from_level_with_influences(
+            &[light],
+            &[LightInfluence {
+                center: glam::Vec3::new(-80.0, 0.0, 0.0),
+                radius: 6.0,
+            }],
+            &[],
+            &mut registry,
+            0,
+        );
+
+        // No Mesh/SpriteVisual is attached: this mover has no beauty draw to
+        // keep the light alive. The bridge must still read its Transform.
+        let mover = registry.spawn(Transform {
+            position: glam::Vec3::new(100.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let light_entity = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light_entity)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset: glam::Vec3::new(1.0, 0.0, 0.0),
+        });
+        registry.set_component(light_entity, component).unwrap();
+
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("far-moved carried light is packed");
+        let moved_center = packed_dynamic_influence_center(&update.influence_bytes);
+        let reachable_receiver = [(
+            glam::Vec3::new(99.0, -1.0, -1.0),
+            glam::Vec3::new(103.0, 1.0, 1.0),
+        )];
+
+        assert!(
+            packed_dynamic_position(&update.lights_bytes).distance(moved_center) <= 1.0e-6,
+            "the direct-light record and culling influence must agree on the carried position"
+        );
+        assert!(
+            postretro_lighting::light_reaches_visible_cell(
+                moved_center,
+                packed_dynamic_influence_radius(&update),
+                &reachable_receiver,
+            ),
+            "the moved influence, not the stale authored cell or origin, keeps a reachable receiver lit"
+        );
+        assert!(
+            !postretro_lighting::light_reaches_visible_cell(
+                glam::Vec3::new(-80.0, 0.0, 0.0),
+                packed_dynamic_influence_radius(&update),
+                &reachable_receiver,
+            ),
+            "this fixture must distinguish relocated influence culling from the stale authored origin"
         );
     }
 
@@ -2062,6 +2671,7 @@ mod tests {
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: Some(LightAnimation {
                 period_ms: 500.0,
                 phase: None,
@@ -2175,6 +2785,7 @@ mod tests {
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: None,
         };
         registry.set_component(new_id, component).unwrap();

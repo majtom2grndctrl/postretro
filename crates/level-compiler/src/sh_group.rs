@@ -865,6 +865,7 @@ mod tests {
     fn point_light(origin: DVec3, range: f32, color: [f32; 3]) -> MapLight {
         MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 2.0,
             color,

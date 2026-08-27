@@ -8,11 +8,13 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 5;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 6;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 const KINEMATIC_GEOMETRY_VERSION_V2: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V3: u16 = 3;
 pub const KINEMATIC_GEOMETRY_VERSION_V4: u16 = 4;
+/// Version 5 introduced sealed portal ids. Its byte layout remains stable.
+pub const KINEMATIC_GEOMETRY_VERSION_V5: u16 = 5;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
@@ -65,6 +67,18 @@ pub struct KinematicMoverRecord {
     /// Portals fully covered by this mover while docked at waypoint zero.
     /// Presentation-only: camera visibility derives the live blocked set.
     pub sealed_portal_ids: Vec<u32>,
+    /// Dynamic AlphaLights records carried by this mover. These are derived
+    /// compiler links, not mover geometry, and are empty in v1-v5 payloads.
+    pub carried_lights: Vec<MemberLight>,
+}
+
+/// One dynamic light in the positional AlphaLights namespace carried by a
+/// kinematic mover. `local_offset` is derived at compile time from the mover's
+/// spawn pose and composed against the runtime interpolated mover pose.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberLight {
+    pub alpha_light_index: u32,
+    pub local_offset: [f32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,10 +114,11 @@ impl KinematicGeometrySection {
                 | KINEMATIC_GEOMETRY_VERSION_V2
                 | KINEMATIC_GEOMETRY_VERSION_V3
                 | KINEMATIC_GEOMETRY_VERSION_V4
+                | KINEMATIC_GEOMETRY_VERSION_V5
                 | KINEMATIC_GEOMETRY_VERSION
         ) {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, or {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1, 2, 3, 4, 5, or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
@@ -222,10 +237,17 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
         write_optional_string(buf, mover.blocked_event.as_deref());
         write_optional_string(buf, mover.crush_event.as_deref());
     }
-    if version >= KINEMATIC_GEOMETRY_VERSION {
+    if version >= KINEMATIC_GEOMETRY_VERSION_V5 {
         write_count(buf, mover.sealed_portal_ids.len());
         for &portal_id in &mover.sealed_portal_ids {
             buf.extend_from_slice(&portal_id.to_le_bytes());
+        }
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION {
+        write_count(buf, mover.carried_lights.len());
+        for member in &mover.carried_lights {
+            buf.extend_from_slice(&member.alpha_light_index.to_le_bytes());
+            write_vec3(buf, member.local_offset);
         }
     }
 }
@@ -376,7 +398,7 @@ fn read_mover(
         )
     };
 
-    let sealed_portal_ids = if version >= KINEMATIC_GEOMETRY_VERSION {
+    let sealed_portal_ids = if version >= KINEMATIC_GEOMETRY_VERSION_V5 {
         let count = read_count(
             data,
             offset,
@@ -417,6 +439,61 @@ fn read_mover(
         Vec::new()
     };
 
+    let carried_lights = if version >= KINEMATIC_GEOMETRY_VERSION {
+        let count = read_count(
+            data,
+            offset,
+            &format!("mover {mover_idx} carried_lights count"),
+        )?;
+        let member_bytes = count.checked_mul(4 + 12).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: mover {mover_idx} carried_lights count {count} overflows its byte length"
+                ),
+            ))
+        })?;
+        let bytes_remaining = data.len().saturating_sub(*offset);
+        if member_bytes > bytes_remaining {
+            return invalid_data(format!(
+                "kinematic geometry: mover {mover_idx} carried_lights count {count} requires {member_bytes} bytes but only {bytes_remaining} remain"
+            ));
+        }
+        let mut members = Vec::new();
+        members.try_reserve_exact(count).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "kinematic geometry: cannot reserve {count} carried_lights for mover {mover_idx}"
+                ),
+            ))
+        })?;
+        for member_idx in 0..count {
+            let alpha_light_index = read_u32(
+                data,
+                offset,
+                &format!("mover {mover_idx} carried_lights {member_idx} alpha_light_index"),
+            )?;
+            let local_offset = read_vec3(
+                data,
+                offset,
+                &format!("mover {mover_idx} carried_lights {member_idx} local_offset"),
+            )?;
+            if !local_offset.iter().all(|component| component.is_finite()) {
+                return invalid_data(format!(
+                    "kinematic geometry: mover {mover_idx} carried_lights {member_idx} local_offset is non-finite: {local_offset:?}"
+                ));
+            }
+            members.push(MemberLight {
+                alpha_light_index,
+                local_offset,
+            });
+        }
+        members
+    } else {
+        Vec::new()
+    };
+
     let mover = KinematicMoverRecord {
         mover_id,
         name,
@@ -443,6 +520,7 @@ fn read_mover(
         blocked_event,
         crush_event,
         sealed_portal_ids,
+        carried_lights,
     };
     validate_mover_geometry(mover_idx, &mover)?;
     Ok(mover)
@@ -864,6 +942,10 @@ mod tests {
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
                 sealed_portal_ids: vec![2, 7],
+                carried_lights: vec![MemberLight {
+                    alpha_light_index: 3,
+                    local_offset: [0.5, 1.0, -0.25],
+                }],
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -881,14 +963,31 @@ mod tests {
     }
 
     #[test]
-    fn v5_round_trip_preserves_records() {
+    fn v6_round_trip_preserves_member_light_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
     }
 
     #[test]
-    fn v4_records_decode_with_no_sealed_portals() {
+    fn v5_fixture_preserves_sealed_portal_layout_and_decodes_without_member_lights() {
+        let section = v5_fixture_section();
+        let fixture = exact_v5_fixture();
+
+        // Regression: V6 appended carried-light records. Keep V5's sealed
+        // portal payload byte-for-byte compatible with maps baked before E22.
+        assert_eq!(section.to_bytes(), fixture);
+
+        let restored = KinematicGeometrySection::from_bytes(&fixture)
+            .expect("v5 kinematic geometry must remain loadable");
+
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V5);
+        assert_eq!(restored.movers[0].sealed_portal_ids, vec![11, 29]);
+        assert!(restored.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn v4_records_decode_with_no_v5_or_v6_fields() {
         let mut section = sample_section();
         section.version = KINEMATIC_GEOMETRY_VERSION_V4;
 
@@ -897,13 +996,14 @@ mod tests {
 
         assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V4);
         assert!(restored.movers[0].sealed_portal_ids.is_empty());
+        assert!(restored.movers[0].carried_lights.is_empty());
     }
 
     #[test]
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![6, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
@@ -912,10 +1012,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_section_version() {
-        let bytes = vec![6, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let bytes = vec![7, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let error = KinematicGeometrySection::from_bytes(&bytes)
             .expect_err("unsupported kinematic geometry section versions must reject");
-        assert!(error.to_string().contains("expected 1, 2, 3, 4, or 5"));
+        assert!(error.to_string().contains("expected 1, 2, 3, 4, 5, or 6"));
     }
 
     // Regression: V3 encoded zero as inherit; treating it as an authored
@@ -1067,7 +1167,9 @@ mod tests {
     // proving the declared IDs fit in the remaining section payload.
     #[test]
     fn rejects_truncated_v5_sealed_portal_ids_before_reserving() {
-        let mut bytes = sample_section().to_bytes();
+        let mut section = sample_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+        let mut bytes = section.to_bytes();
         let count_offset = find_first_mover_v5_sealed_portal_count_offset(&bytes);
         bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         bytes.truncate(count_offset + 4);
@@ -1076,6 +1178,51 @@ mod tests {
             .expect_err("a truncated sealed portal-ID list must reject before reserving");
 
         assert!(error.to_string().contains("sealed_portal_ids count"));
+    }
+
+    // Regression: malformed V6 member counts must reject before allocation,
+    // even when no complete member record remains in the section payload.
+    #[test]
+    fn rejects_truncated_v6_carried_lights_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a truncated carried-light list must reject before reserving");
+
+        assert!(error.to_string().contains("carried_lights count"));
+    }
+
+    #[test]
+    fn rejects_oversized_v6_carried_lights_count_before_reserving() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        bytes[count_offset..count_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes.truncate(count_offset + 4);
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("an oversized carried-light count must reject before reserving");
+
+        assert!(
+            error
+                .to_string()
+                .contains("carried_lights count 2 requires 32 bytes")
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_v6_member_light_local_offset() {
+        let mut bytes = sample_section().to_bytes();
+        let count_offset = find_first_mover_v6_carried_light_count_offset(&bytes);
+        let local_offset = count_offset + 4 + 4;
+        bytes[local_offset..local_offset + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a non-finite carried-light local offset must reject");
+
+        assert!(error.to_string().contains("local_offset is non-finite"));
     }
 
     #[test]
@@ -1210,6 +1357,12 @@ mod tests {
         offset
     }
 
+    fn find_first_mover_v6_carried_light_count_offset(bytes: &[u8]) -> usize {
+        let mut offset = find_first_mover_v5_sealed_portal_count_offset(bytes);
+        let sealed_portal_count = read_u32_for_test(bytes, &mut offset) as usize;
+        offset + sealed_portal_count * std::mem::size_of::<u32>()
+    }
+
     fn v1_fixture_section() -> KinematicGeometrySection {
         KinematicGeometrySection {
             version: KINEMATIC_GEOMETRY_VERSION_V1,
@@ -1250,9 +1403,30 @@ mod tests {
                 blocked_event: Some("blocked".to_string()),
                 crush_event: Some("crush".to_string()),
                 sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
             }],
             waypoints: Vec::new(),
         }
+    }
+
+    fn v5_fixture_section() -> KinematicGeometrySection {
+        let mut section = v1_fixture_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+        section.movers[0].spin_axis = [0.0, 1.0, 0.0];
+        section.movers[0].spin_speed_deg_s = 0.0;
+        section.movers[0].spin_accel_deg_s2 = 0.0;
+        section.movers[0].carry_yaw = false;
+        section.movers[0].block_policy = "displace".to_string();
+        section.movers[0].crush_damage = 0.0;
+        section.movers[0].crush_interval_ms = 0.0;
+        section.movers[0].auto_close_ms = None;
+        section.movers[0].open_event = None;
+        section.movers[0].close_event = None;
+        section.movers[0].blocked_event = None;
+        section.movers[0].crush_event = None;
+        section.movers[0].sealed_portal_ids = vec![11, 29];
+        section.movers[0].carried_lights = Vec::new();
+        section
     }
 
     fn exact_v1_fixture() -> Vec<u8> {
@@ -1278,6 +1452,29 @@ mod tests {
         }
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    fn exact_v5_fixture() -> Vec<u8> {
+        let mut bytes = exact_v1_fixture();
+        bytes[..2].copy_from_slice(&KINEMATIC_GEOMETRY_VERSION_V5.to_le_bytes());
+        let mover_end = bytes.len() - 4; // final waypoint count
+        let mut v5_append = Vec::new();
+        for component in [0.0f32, 1.0, 0.0] {
+            v5_append.extend_from_slice(&component.to_le_bytes());
+        }
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.push(0);
+        v5_append.extend_from_slice(&8u32.to_le_bytes());
+        v5_append.extend_from_slice(b"displace");
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&0.0f32.to_le_bytes());
+        v5_append.extend_from_slice(&[0; 5]); // auto-close and four event presence bytes
+        v5_append.extend_from_slice(&2u32.to_le_bytes());
+        v5_append.extend_from_slice(&11u32.to_le_bytes());
+        v5_append.extend_from_slice(&29u32.to_le_bytes());
+        bytes.splice(mover_end..mover_end, v5_append);
         bytes
     }
 

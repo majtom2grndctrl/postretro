@@ -31,7 +31,9 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::geometry::Vertex as PrlVertex;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::kinematic_geometry::{KinematicMoverRecord, KinematicWaypointRecord};
+use postretro_level_format::kinematic_geometry::{
+    KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
+};
 #[cfg(feature = "load-prl")]
 use postretro_level_format::lightmap::LightmapSection;
 #[cfg(feature = "load-prl")]
@@ -453,6 +455,26 @@ pub struct LoadedKinematicMover {
     pub blocked_event: Option<String>,
     pub crush_event: Option<String>,
     pub sealed_portal_ids: Vec<u32>,
+    pub carried_lights: Vec<LoadedMemberLight>,
+}
+
+/// Runtime copy of a KinematicGeometry member-light relation. Alpha-light
+/// indices are positional in the loaded `LevelWorld::lights` table.
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedMemberLight {
+    pub alpha_light_index: u32,
+    pub local_offset: Vec3,
+}
+
+#[cfg(feature = "load-prl")]
+impl From<MemberLight> for LoadedMemberLight {
+    fn from(record: MemberLight) -> Self {
+        Self {
+            alpha_light_index: record.alpha_light_index,
+            local_offset: Vec3::from(record.local_offset),
+        }
+    }
 }
 
 #[cfg(feature = "load-prl")]
@@ -492,6 +514,7 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             blocked_event: record.blocked_event,
             crush_event: record.crush_event,
             sealed_portal_ids: record.sealed_portal_ids,
+            carried_lights: record.carried_lights.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -4534,6 +4557,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

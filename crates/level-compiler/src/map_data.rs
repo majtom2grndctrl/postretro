@@ -310,6 +310,9 @@ pub struct MapLight {
     /// lighting math.
     pub origin: DVec3,
     pub light_type: LightType,
+    /// Canonical name of the kinematic mover this dynamic light follows.
+    /// Resolved after parsing; never reaches a runtime light record directly.
+    pub carrier: String,
 
     /// Linear brightness multiplier, 0–1+ (InverseSquared close-range can
     /// legitimately exceed 1.0). Format-specific scales (e.g. Quake's 0–300)
@@ -408,6 +411,15 @@ pub struct MapLight {
     /// not on this field. The dynamic tier rides `is_dynamic` (set by
     /// classname), not a shadow-type value.
     pub shadow_type: ShadowType,
+}
+
+/// Compiler-resolved relation between a dynamic light and one mover. The
+/// source-light index is translated into the AlphaLights index space at pack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CarriedLightLink {
+    pub source_light_index: usize,
+    pub mover_id: u32,
+    pub local_offset: [f32; 3],
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +555,8 @@ pub struct MapData {
     pub entity_brushes: Vec<(String, usize)>,
     pub entities: Vec<EntityInfo>,
     pub lights: Vec<MapLight>,
+    /// Dynamic-light carrier links resolved after both lights and movers exist.
+    pub carried_light_links: Vec<CarriedLightLink>,
     /// Authored initial state for each `lights` entry, retained even when the
     /// light has no parse-time animation. Script-derived membership uses this
     /// fallback when no levelLoad reaction resolves `startActive`.

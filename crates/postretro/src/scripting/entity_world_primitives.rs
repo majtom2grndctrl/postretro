@@ -416,6 +416,7 @@ mod tests {
                     is_dynamic,
                     animated_slot: None,
                     follow_transform: false,
+                    carrier: None,
                     animation: None,
                 },
             )
@@ -995,6 +996,7 @@ mod tests {
                     is_dynamic: true,
                     animated_slot: None,
                     follow_transform: false,
+                    carrier: None,
                     animation: None,
                 },
             )

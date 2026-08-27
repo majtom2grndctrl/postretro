@@ -89,6 +89,26 @@ The sampled socket direction axes must form an orthonormal, positive-determinant
 rotation. Fix reflected rig transforms or shear caused by hierarchical
 non-uniform scale instead of solving against that invalid frame.
 
+## Viewmodel muzzle offset
+
+For a projectile weapon, read its viewmodel's rigid `"muzzle"` socket to get a
+paste-ready descriptor value:
+
+```bash
+cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset \
+  content/dev/models/ar_4/model.gltf
+```
+
+The tool prints `muzzleOffset: [x, y, z]`. Copy the array into the weapon
+descriptor. It is the socket's composed rigid rest translation in
+mesh-node-local metres, with the same authored scale as the viewmodel vertices.
+There is no coordinate conversion or import-time rescaling.
+
+This author-time read is separate from the skinned character mount solver. It
+requires a rigid rest socket on the viewmodel and reports an error if `"muzzle"`
+is absent or is a skinned joint. The runtime does not look up this socket; only
+the copied `muzzleOffset` participates in projectile simulation.
+
 ## Pose and character limits
 
 A rigid bake is exact only at the solve pose. A wrist-reorienting animation

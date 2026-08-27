@@ -12,7 +12,8 @@ use postretro_level_format::prm::cache_filename_for_key;
 use postretro_model::gltf_loader::{LoadedModel, load_model};
 use postretro_model::mount::{
     MountAxes, MountConfidence, MountDetection, MountVerification, corrective_delta,
-    corrective_delta_for_axes, detect_weapon_mount, resolve_socket_frame_in_model, verify_mount,
+    corrective_delta_for_axes, detect_weapon_mount, read_muzzle_offset_in_model,
+    resolve_socket_frame_in_model, verify_mount,
 };
 
 mod crate_graph;
@@ -117,6 +118,10 @@ fn parse_bake_model_textures_args(args: Vec<OsString>) -> Result<PathBuf, String
 /// Solve a rigid weapon bake against the engine's neutral sampled socket frame,
 /// then print the Blender command that performs the actual vertex bake.
 fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
+    if let Some(viewmodel_path) = parse_read_muzzle_offset_args(&args)? {
+        return read_muzzle_offset_command(&viewmodel_path);
+    }
+
     let args = parse_solve_weapon_mount_args(args)?;
     let holder = load_model(&args.holder_path)
         .map_err(|error| format!("load skeleton {}: {error}", args.holder_path.display()))?;
@@ -214,6 +219,51 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
     println!("Run this command (emit-only; xtask does not invoke Blender):");
     println!("{}", emitted_blender_command(&args, euler, emitted_axes));
     Ok(0)
+}
+
+/// Print the author-time, model-local muzzle point from a rigid viewmodel socket.
+///
+/// This deliberately stays separate from the skinned holder-joint solver below:
+/// a viewmodel muzzle is a composed rest translation in mesh-node-local space,
+/// not an animated skinned socket frame.
+fn read_muzzle_offset_command(viewmodel_path: &Path) -> Result<i32, String> {
+    let viewmodel = load_model(viewmodel_path).map_err(|error| {
+        format!(
+            "load weapon viewmodel {}: {error}",
+            viewmodel_path.display()
+        )
+    })?;
+    let offset = read_muzzle_offset_in_model(&viewmodel).map_err(|error| {
+        format!(
+            "read muzzleOffset from {}: {error}",
+            viewmodel_path.display()
+        )
+    })?;
+
+    println!("muzzleOffset: {}", format_vec3(offset));
+    println!("Raw model-local metres from the rigid viewmodel \"muzzle\" socket.");
+    Ok(0)
+}
+
+/// Recognize the distinct viewmodel-only read before parsing the regular mount solver.
+fn parse_read_muzzle_offset_args(args: &[OsString]) -> Result<Option<PathBuf>, String> {
+    if args
+        .first()
+        .map(|argument| argument != "--read-muzzle-offset")
+        .unwrap_or(true)
+    {
+        return Ok(None);
+    }
+
+    match args {
+        [_, viewmodel_path] => Ok(Some(PathBuf::from(argument_string(
+            viewmodel_path,
+            "--read-muzzle-offset",
+        )?))),
+        _ => Err(solve_weapon_mount_usage(
+            "--read-muzzle-offset requires exactly one weapon viewmodel glTF path",
+        )),
+    }
 }
 
 /// Check a baked weapon against its holder socket without invoking Blender.
@@ -1292,6 +1342,7 @@ fn print_help() {
            cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- mint-identity <mod-root>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
+           cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset <viewmodel.gltf>\n\
            cargo run -p xtask -- solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [--raw-source <raw> --out <output.gltf>] [options]\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
@@ -1304,8 +1355,9 @@ fn print_help() {
            mint-identity        Mint a mod's durable state-slot identity ledger;\n\
                                 builds scripts-build only for TypeScript mods\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
-           solve-weapon-mount   Solve a rigid weapon mount and print the Blender\n\
-                                bake command, or --check a baked mount in-engine\n\
+           solve-weapon-mount   Read a viewmodel muzzle offset, solve a rigid weapon\n\
+                                mount and print the Blender bake command, or --check\n\
+                                a baked mount in-engine\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\n\
@@ -1316,6 +1368,7 @@ fn print_help() {
            cargo run -p xtask -- observe runspec.json --pool-seed=17\n\
            cargo run -p xtask -- mint-identity content/dev\n\
            cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\
+           cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset content/dev/models/ar_4/model.gltf\n\
            cargo run -p xtask -- solve-weapon-mount content/dev/models/limitator/model.gltf --weapon content/dev/models/ar_4/model.gltf --barrel 0 1 0 --up 0 0 1 --raw-source raw/ar_4.glb --out content/dev/models/ar_4/model.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
@@ -1561,6 +1614,31 @@ converter.postprocess_gltf(
 
         assert!(parse_bake_model_textures_args(Vec::new()).is_err());
         assert!(parse_bake_model_textures_args(os_args(&["one.gltf", "two.gltf"])).is_err());
+    }
+
+    #[test]
+    fn parse_read_muzzle_offset_args_accepts_only_one_viewmodel_path() {
+        assert_eq!(
+            parse_read_muzzle_offset_args(&os_args(&[
+                "--read-muzzle-offset",
+                "content/dev/models/ar_4/model.gltf",
+            ])),
+            Ok(Some(PathBuf::from("content/dev/models/ar_4/model.gltf"))),
+        );
+        assert_eq!(
+            parse_read_muzzle_offset_args(&os_args(&["holder.gltf"])),
+            Ok(None),
+            "ordinary solver arguments must continue to select the mount path",
+        );
+        assert!(parse_read_muzzle_offset_args(&os_args(&["--read-muzzle-offset"])).is_err());
+        assert!(
+            parse_read_muzzle_offset_args(&os_args(&[
+                "--read-muzzle-offset",
+                "one.gltf",
+                "two.gltf",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

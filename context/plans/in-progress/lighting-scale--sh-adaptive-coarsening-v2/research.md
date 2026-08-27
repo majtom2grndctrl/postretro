@@ -25,7 +25,7 @@ requested `--sh-analyze`.
 | `/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/stress-warren-showcase.coarsened.capture.png` | `a5df81547faccf0a541d8271219d4569d8e144ba251352501d250b4fe0f2c097` | Coarsened comparison proxy. |
 
 The generated binary/PNG artifacts intentionally remain outside Git because
-they total roughly 137 MiB. The corresponding `*.sh-analysis.json` files and
+they total roughly 150 MiB. The corresponding `*.sh-analysis.json` files and
 the temporary PRL inspectors are retained alongside them in the same directory.
 
 Baseline invocation (default-off: no `--sh-coarsen`):
@@ -440,3 +440,114 @@ duration or ratio is available. This correct fixture adds neither a dominant
 id-41 saving nor timestamp evidence, and therefore does not change the
 Task-1 **no-promote** result already set by the showcase's literal I5 failure
 and missing timing evidence.
+
+## Supplemental fixture: `campaign-test.map`
+
+This is an additional Task-1 evidence fixture, not a replacement for the
+Stress-Warren-pinned gate. The retained default-off bake and the explicit
+`--sh-coarsen` comparison used the same fixed controls as the other fixtures:
+
+```text
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/campaign-test.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.uniform-l0.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.uniform-l0.sh-analysis.json \
+  --no-cache --no-tui
+
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/campaign-test.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.coarsened.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.coarsened.sh-analysis.json \
+  --sh-coarsen --no-cache --no-tui
+```
+
+Both complete successfully, with the checked-in map's existing light-default
+and watertightness warnings. The retained artifacts are outside Git under
+`/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/`:
+
+| Artifact | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `campaign-test.uniform-l0.prl` | `1428c937067d265b77c3aea88048825689c5ce5ffb44072aa4ddf5d90076c4ed` | 6,187,409 |
+| `campaign-test.coarsened.prl` | `f819723cd81e6b9c05efd1bc7c53d6b96524bdbfb3530807b94de4f33d6ff076` | 6,174,737 |
+| `campaign-test.uniform-l0.capture.png` | `06f321cf8f852fa679662380419f7d04920bdc1f2aba7a561b013c75bd373668` | 322,138 |
+| `campaign-test.coarsened.capture.png` | `06f321cf8f852fa679662380419f7d04920bdc1f2aba7a561b013c75bd373668` | 322,138 |
+
+The loaded containers are PRL v4 and preserve the id-27/id-41/id-45 payload
+versions **5/3/3**. The default-off aggregate is **39,744 B** (0.0379 MiB,
+0.0592% of 64 MiB), so it passes the P5-sized cap check without any retry;
+the explicit-on aggregate is 27,072 B (0.6812×).
+
+| Section | Uniform payload | Coarsened payload | Ratio | Emitted post-smoothing levels, uniform → on |
+| --- | ---: | ---: | ---: | --- |
+| id 27 indirect | 13,824 B | 1,152 B | 0.0833× | 12/0/0 → 7/0/5 (L0/L1/L2) |
+| id 41 direct | 12,096 B | 12,096 B | 1.0000× | 12/0/0 → 12/0/0 |
+| id 45 animated direct | 13,824 B | 13,824 B | 1.0000× | 12/0/0 → 12/0/0 |
+| **Aggregate** | **39,744 B** | **27,072 B** | **0.6812×** | — |
+
+The table and all following scans read the loaded PRLs, not analyzer candidate
+levels. The all-selected id-41 frame-volume projection remains **12,096
+B/frame** (1.0000×); id27 declines 13,824 → 1,152 B, and id45 is unchanged.
+The exact renderer upload-layout resident calculation is:
+
+| Section | Uniform resident | Coarsened resident | Ratio |
+| --- | ---: | ---: | ---: |
+| id 27 | 14,052 B | 1,380 B | 0.0982× |
+| id 41 | 12,312 B | 12,312 B | 1.0000× |
+| id 45 | 14,052 B | 14,052 B | 1.0000× |
+| **All delta resources** | **40,416 B** | **27,744 B** | **0.6865×** |
+
+The retained-L0 versus emitted-PRL decode sums every present id and CSR entry
+before its interior-RGB comparison. The combined worst emitted cell is
+`rel_p95 = 0.06316` and `rel_max = 0.07921`, within the pinned 0.10/0.25
+limits (absolute p95/max 0.01888/0.05149). Thus the relative reconstruction
+error gate independently passes.
+
+The raw x-fastest all-cell face scan is not a pass: ids 41 and 45 have zero
+violations, while id 27 has **five** L2↔L0 pairs on its 3×1×4 grid:
+`(1,0,0)→(2,0,0)`, `(1,0,1)→(2,0,1)`,
+`(1,0,1)→(1,0,2)`, `(0,0,2)→(1,0,2)`, and
+`(0,0,2)→(0,0,3)`. Campaign therefore **fails literal I5** despite the
+passing error gate. The supporting analyzer diagnostic is 5 pairs, 3
+cross-level pairs, `residual_max = 0`, and `residual_mean = 0`; it is not the
+emitted-level assertion and introduces no separate threshold.
+
+### I1 whole-frame proxy and timing
+
+Both PRLs loaded and ran the renderer-owned whole-frame capture permitted by
+`rendering_pipeline.md` §7.8. The scene uses transformed player spawn
+`[-65.8368, 1.8288, -45.9232]`, yaw/pitch 0°, a 100° FOV, and 1280×720 RGBA8.
+The proxy captures are hash- and pixel-identical (zero nonzero channels and
+pixels), so it passes this I1 proxy for the unchanged dense id-35 output and
+binding contract. It is not a direct compose-atlas readback golden. Manual
+inspection saw no apparent seam, but the temporary PRL root gives placeholder
+materials (and a dark capture), so it is not a material-complete visual
+sign-off.
+
+```text
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.uniform-l0.capture.json
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.coarsened.capture.json
+
+POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools -- \
+  /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/campaign-test.uniform-l0.prl
+```
+
+The windowed baseline reached the renderer but the selected adapter lacks
+`TIMESTAMP_QUERY` and/or `TIMESTAMP_QUERY_INSIDE_ENCODERS`; no compose
+dispatch time or ratio is available for either variant.
+
+### Campaign gate summary and pinned-fixture limits
+
+Campaign independently clears the 64 MiB baseline/cap check, wire-version
+contract, PRL load/compose, whole-frame I1 proxy, and relative reconstruction
+error gate. It does **not** independently clear all relevant functional gates:
+literal I5 fails in id 27, id41 traffic has no reduction, the material-complete
+manual visual check is unavailable, and there is no timestamp-capable compose
+time. In addition, this map cannot replace the plan's specific
+`stress-warren-showcase.map` criterion; that pinned fixture still has its own
+five raw L2↔L0 violations in both ids 27/45 and still lacks a timestamp-capable
+measurement. Campaign is corroborating evidence for the existing Task-1
+**no-promote** result, not an independent clearance of it.

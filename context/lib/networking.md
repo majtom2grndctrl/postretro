@@ -439,10 +439,9 @@ payload. This follows the entity-descriptor contract: small host-resolvable valu
 replicated, not hashed. The transport wire vocabulary and mod compatibility digest stay
 unchanged. Initial participation sends the effective placement; a live per-weapon or
 mod-default edit changes the payload and sends a replacement. A connected client reads
-only that host value and has no local placement fallback. The host can therefore later
-reproduce the shooter's authoritative fire origin from the same placement (the
-muzzle/fire-origin work; today shots still leave the eye). Placement never reads
-client-local view-feel state.
+only that host value and has no local placement fallback. The host can therefore
+reproduce the shooter's authoritative fire origin from the same placement (see below).
+Placement never reads client-local view-feel state.
 
 The third-person avatar weapon mount does not read placement. Observers see the weapon
 posed by the avatar hand socket; the FP viewmodel is a screen-space presentation. The
@@ -451,6 +450,16 @@ observers' socket pose — and the TP mount carries no placement offset. Art own
 placement in the prop or socket. Placement is the base position; render-rate view-feel
 sway/bob is a separate overlay composed on top (owned by movement), excluded from
 authority.
+
+**Fire origin composes on placement (decided, not yet built).** The authoritative
+projectile origin is the weapon's model-local muzzle composed through the authored
+placement — eye ∘ placement ∘ muzzle_local, steady placement, no view-feel. The muzzle
+point is per-weapon content like a hit zone, replicated beside placement in the tuning
+payload; a connected client predicts from that host value, never from the client-local
+viewmodel mesh (the host holds no remote viewmodel). The spawned projectile origin equals
+the validated fire origin — they never diverge. The observer's third-person muzzle, posed
+by the avatar socket rather than placement, is a separate presentation vantage, deferred.
+Today projectiles still spawn at the camera eye.
 
 ## Combat authority: FIRE vs HIT
 

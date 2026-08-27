@@ -200,7 +200,7 @@ Context files are the durable layer. Plans are the ephemeral layer.
 
 **The durable library never links to plans, specs, or research archives.** Those records may be moved or removed. Copy the surviving contract into `context/lib/`; point readers only to another durable library document or to current code when the implementation shape matters.
 
-**Before a plan moves from `drafts/` to `ready/`:** capture durable decisions in `context/lib/`. New architectural constraints, subsystem contracts, and pipeline topology belong there — not in the plan. Agents working the plan find full context in the codebase, not in plan documents.
+**Before a plan moves from `drafts/` to `ready/`:** capture durable decisions in `context/lib/`. New architectural constraints, subsystem contracts, and pipeline topology belong there — not in the plan. Agents working the plan find full context in the codebase, not in plan documents. Capture the decision, not the code: a contract enters the library once decided, before it ships. State it as the contract and mark what is not built yet — "Code shows what is" governs whether a line is durable, not whether the code exists.
 
 **After a plan ships:** the plan moves to `done/` and stays as a historical record. Don't maintain it. The implementation is the source of truth; `context/lib/` holds the durable architectural layer.
 

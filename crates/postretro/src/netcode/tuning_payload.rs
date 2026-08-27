@@ -86,15 +86,6 @@ impl TuningPayload {
     pub(crate) fn muzzle_for_slot(&self, slot: usize) -> Option<&[f32; 3]> {
         self.wieldables.get(slot)?.as_ref()?.muzzle_offset.as_ref()
     }
-
-    #[allow(dead_code)] // Mirrors placement lookup for a future archetype-keyed consumer.
-    pub(crate) fn muzzle_for_archetype(&self, archetype: &str) -> Option<&[f32; 3]> {
-        self.wieldables
-            .iter()
-            .flatten()
-            .find(|wieldable| wieldable.canonical_name == archetype)
-            .and_then(|wieldable| wieldable.muzzle_offset.as_ref())
-    }
 }
 
 #[derive(Debug, Error)]
@@ -300,11 +291,6 @@ mod tests {
             Some(&WeaponPlacementDescriptor::default())
         );
         assert_eq!(payload.muzzle_for_slot(0), Some(&[0.1, -0.2, -0.7]));
-        assert_eq!(
-            payload.muzzle_for_archetype("reference_pistol"),
-            Some(&[0.1, -0.2, -0.7])
-        );
-        assert_eq!(payload.muzzle_for_archetype("ion_rifle"), None);
 
         let decoded = decode_tuning_payload(&encoded).unwrap();
         assert_eq!(

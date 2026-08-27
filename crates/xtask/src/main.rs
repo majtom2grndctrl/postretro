@@ -224,7 +224,8 @@ fn solve_weapon_mount_command(args: Vec<OsString>) -> Result<i32, String> {
 /// Print the author-time, model-local muzzle point from a rigid viewmodel socket.
 ///
 /// This deliberately stays separate from the skinned holder-joint solver below:
-/// a viewmodel muzzle is a raw glTF rest translation, not an animated socket frame.
+/// a viewmodel muzzle is a composed rest translation in mesh-node-local space,
+/// not an animated skinned socket frame.
 fn read_muzzle_offset_command(viewmodel_path: &Path) -> Result<i32, String> {
     let viewmodel = load_model(viewmodel_path).map_err(|error| {
         format!(

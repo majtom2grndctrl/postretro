@@ -25,7 +25,7 @@ requested `--sh-analyze`.
 | `/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/stress-warren-showcase.coarsened.capture.png` | `a5df81547faccf0a541d8271219d4569d8e144ba251352501d250b4fe0f2c097` | Coarsened comparison proxy. |
 
 The generated binary/PNG artifacts intentionally remain outside Git because
-they total roughly 119 MiB. The corresponding `*.sh-analysis.json` files and
+they total roughly 127 MiB. The corresponding `*.sh-analysis.json` files and
 the temporary PRL inspectors are retained alongside them in the same directory.
 
 Baseline invocation (default-off: no `--sh-coarsen`):
@@ -203,3 +203,134 @@ resource-layout calculation rather than a dev-tools log capture.
 No savings-pass magnitude has been introduced. Given the I5 mismatch and the
 missing timestamp-capable timing evidence, this validation slice should feed a
 **no-promote** recommendation until the contract is reconciled and remeasured.
+
+## Supplemental fixture: `occlusion-test.map`
+
+This supplemental Task-1 comparison uses the same explicit before/after
+controls as the showcase: a default-off bake (no `--sh-coarsen`) followed by
+an otherwise identical explicit `--sh-coarsen` bake. Both use
+`--sh-probe-spacing 10.0 --lightmap-density 0.25 --sh-delta-max-size 64MiB
+--sh-analyze --no-cache --no-tui`, and both completed successfully despite the
+fixture's pre-existing light-default, coplanar-face, and watertightness
+diagnostics.
+
+```text
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/occlusion-test.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.uniform-l0.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.uniform-l0.sh-analysis.json \
+  --no-cache --no-tui
+
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/occlusion-test.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.coarsened.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.coarsened.sh-analysis.json \
+  --sh-coarsen --no-cache --no-tui
+```
+
+### Retained artifacts, wire facts, and P5-sized baseline
+
+| Artifact | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `occlusion-test.uniform-l0.prl` | `6bd669b3b128d151cb5ec57d4bbdae1144df9ddf9fb8bb92799643bb5eac1086` | 4,319,809 |
+| `occlusion-test.coarsened.prl` | `1c268fbfba5bf1b9a9dd361f8d2461e6f3ca1692b6547a4e669fe7b636a48e4a` | 4,304,833 |
+| `occlusion-test.uniform-l0.capture.png` | `a4acae550e6725c3d2d1d911c302f49b972a5c100eb14063bc12bb5b36424143` | 194,265 |
+| `occlusion-test.coarsened.capture.png` | `a4acae550e6725c3d2d1d911c302f49b972a5c100eb14063bc12bb5b36424143` | 194,265 |
+
+All are retained under
+`/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/`, outside
+Git. The containers are PRL v4 and the loaded id-27/id-41/id-45 payload
+versions remain **5/3/3**; no layout or binding contract changed.
+
+The uniform aggregate `delta_subblocks` payload is **23,040 B** (0.022 MiB),
+or 0.0343% of the 64 MiB cap; the specified cap accepted it without any
+coarsen-to-fit retry. The coarsened aggregate is **8,064 B** (0.3500×).
+
+| Section | Uniform payload | Coarsened payload | Ratio | Emitted post-smoothing levels, uniform → on |
+| --- | ---: | ---: | ---: | --- |
+| id 27 indirect | 6,912 B | 576 B | 0.0833× | 4/0/0 → 0/0/4 (L0/L1/L2) |
+| id 41 direct | 9,216 B | 576 B | 0.0625× | 4/0/0 → 0/0/4 |
+| id 45 animated direct | 6,912 B | 6,912 B | 1.0000× | 4/0/0 → 1/2/1 |
+| **Aggregate** | **23,040 B** | **8,064 B** | **0.3500×** | — |
+
+These histograms and payloads are read from the loaded PRLs, so they are the
+emitted post-smoothing state rather than `sh_analyze` reclassification.
+
+### Runtime projections, error, and seams
+
+The all-selected id-41 per-frame projection declines from **9,216 B** to
+**576 B** (0.0625×). The id-27 diagnostic projection likewise declines from
+6,912 B to 576 B (0.0833×); id 45 remains 6,912 B (1.0000×). The renderer
+upload-layout resident calculation (payload + three u32 cell metadata values +
+CSR offsets/light ids + descriptors where present) is:
+
+| Section | Uniform resident | Coarsened resident | Ratio |
+| --- | ---: | ---: | ---: |
+| id 27 | 7,004 B | 668 B | 0.0954× |
+| id 41 | 9,292 B | 652 B | 0.0702× |
+| id 45 | 7,004 B | 7,004 B | 1.0000× |
+| **All delta resources** | **23,300 B** | **8,324 B** | **0.3573×** |
+
+The retained-L0 versus emitted-PRL decoder uses the shared L1 trilinear rule
+(valid corners, weights `local/3`, renormalized) and L2 valid-probe mean. It
+sums all present ids and CSR entries before comparing each interior RGB texel
+against the analyzer's composed magnitude. The worst combined emitted cell is
+`rel_p95 = 0.05928` and `rel_max = 0.07977`, passing the pinned `≤0.10` and
+`≤0.25` gates. Id 27 supplies those maxima; id 41 alone is 0.00052/0.00460,
+and id 45's L1/L2 entries carry zero RGB delta in this fixture.
+
+The raw all-cell x-fastest face-adjacency scan reports **zero** level-difference
+violations in every present section: id 27 (all L2), id 41 (all L2), and id 45
+(L0/L1/L2 = 1/2/1). This map therefore **passes literal I5**, including cells
+with no participating delta. Its supporting `sh_analyze` diagnostic is 4
+pairs, 2 cross-level pairs, `residual_max = 0.11788003`, and
+`residual_mean = 0.009306223`; this remains a diagnostic, not an added seam
+threshold. The captured proxy was manually inspected and shows no apparent
+seam, but it is near-black with placeholder checkerboard materials because the
+temporary PRL path cannot resolve the normal PRM cache; it is not a
+material-complete visual sign-off.
+
+### I1 proxy, load/compose, and timing
+
+Both retained PRLs were loaded and composed through renderer-owned whole-frame
+capture, as allowed by `rendering_pipeline.md` §7.8. The capture scene uses the
+map's transformed player spawn `[-23.1648, 1.4224, -15.0368]`, yaw/pitch 0°, a
+100° FOV, and a 1280×720 target. The two RGBA8 files have the same SHA-256 and
+a direct diff has 0 nonzero channels/pixels. This is a passing whole-frame I1
+proxy for the unchanged dense id-35 compose contract, not a new direct-atlas
+readback golden.
+
+```text
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.uniform-l0.capture.json
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.coarsened.capture.json
+
+POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools -- \
+  /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/occlusion-test.uniform-l0.prl
+```
+
+The windowed timing attempt loaded the baseline, but the selected adapter logs
+that it lacks `TIMESTAMP_QUERY` and/or `TIMESTAMP_QUERY_INSIDE_ENCODERS`; no
+compose-dispatch duration or ratio exists for either occlusion variant. The
+same capability limitation is already recorded for the showcase, so timing
+availability remains a no-result rather than an inferred CPU proxy.
+
+### Requested kinematic fixture availability
+
+No source file named `kinematic-movers.map` is present on this integration
+checkout. A repository-wide case-insensitive filename scan returned no paths:
+
+```text
+rg --files -0 . | tr '\\0' '\\n' | awk 'tolower($0) ~ /(^|\\/)kinematic-movers\\.map$/ { print }'
+```
+
+`content/dev/maps/kinematic-platform.map` exists but was **not** substituted,
+because it is a different fixture and no approval was given. Consequently
+there are no baseline/on artifacts or map-specific metrics for the requested
+kinematic-movers source. Occlusion's literal-I5 pass does not change the
+Task-1 **no-promote** finding: the retained showcase still fails literal
+all-cell I5 in ids 27/45 and both fixtures lack timestamp-capable timing
+evidence.

@@ -116,6 +116,12 @@ pub enum MountSolveError {
     MissingSocket { socket: String },
     #[error("socket {socket:?} is not a skinned joint")]
     NonSkinnedSocket { socket: String },
+    #[error("weapon viewmodel has no rigid \"muzzle\" socket")]
+    MissingMuzzleSocket,
+    #[error(
+        "weapon viewmodel socket \"muzzle\" is a skinned joint; muzzleOffset must use a rigid socket on the viewmodel"
+    )]
+    SkinnedMuzzleSocket,
     #[error("clip {clip:?} was not found")]
     MissingClip { clip: String },
     #[error("socket joint {joint} is outside the sampled world pose")]
@@ -209,6 +215,20 @@ pub fn resolve_socket_frame_in_model(
         joint_index,
         matrix,
     })
+}
+
+/// Read the authoring-only mesh-node-local muzzle point from a rigid viewmodel socket.
+///
+/// Unlike [`resolve_socket_frame_in_model`], this never samples a skeleton or
+/// converts between coordinate systems. The composed rigid rest translation
+/// and mesh vertices are both expressed in the viewmodel mesh node's raw glTF
+/// frame.
+pub fn read_muzzle_offset_in_model(model: &LoadedModel) -> Result<Vec3, MountSolveError> {
+    match model.sockets.get("muzzle") {
+        Some(SocketBinding::RigidRest(transform)) => Ok(transform.w_axis.truncate()),
+        Some(SocketBinding::SkinnedJoint(_)) => Err(MountSolveError::SkinnedMuzzleSocket),
+        None => Err(MountSolveError::MissingMuzzleSocket),
+    }
 }
 
 /// Compute the glTF-space corrective rotation `D = S^T * G^T`.
@@ -442,9 +462,11 @@ fn normalized_socket_rotation(socket_frame: Mat4) -> Result<Mat3, MountSolveErro
 mod tests {
     use glam::{Mat3, Mat4, Vec3};
 
+    use crate::gltf_loader::{LoadedModel, SocketBinding};
+
     use super::{
         MountAxes, MountConfidence, MountFrame, corrective_delta, detect_weapon_mount_vertices,
-        verify_mount,
+        read_muzzle_offset_in_model, verify_mount,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -554,5 +576,34 @@ mod tests {
             error.to_string().contains("determinant must be positive"),
             "the error identifies the reflected socket basis: {error}",
         );
+    }
+
+    #[test]
+    fn muzzle_offset_reads_raw_rigid_rest_translation() {
+        let mut model = LoadedModel::default();
+        model.sockets.insert(
+            "muzzle".to_string(),
+            SocketBinding::RigidRest(Mat4::from_translation(Vec3::new(0.1, -0.2, 0.3))),
+        );
+
+        assert_eq!(
+            read_muzzle_offset_in_model(&model).expect("rigid muzzle socket resolves"),
+            Vec3::new(0.1, -0.2, 0.3),
+        );
+    }
+
+    #[test]
+    fn muzzle_offset_rejects_missing_or_skinned_socket() {
+        let missing = read_muzzle_offset_in_model(&LoadedModel::default())
+            .expect_err("a viewmodel muzzle socket is required");
+        assert!(missing.to_string().contains("no rigid \"muzzle\" socket"));
+
+        let mut skinned = LoadedModel::default();
+        skinned
+            .sockets
+            .insert("muzzle".to_string(), SocketBinding::SkinnedJoint(4));
+        let error = read_muzzle_offset_in_model(&skinned)
+            .expect_err("a skinned muzzle socket cannot supply a viewmodel offset");
+        assert!(error.to_string().contains("is a skinned joint"));
     }
 }

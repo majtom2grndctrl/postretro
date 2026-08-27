@@ -8,7 +8,9 @@ use parry3d::math::{Point, Vector};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
-use postretro_foundation::{FireMode, ProjectileDescriptor, ResolutionMode};
+use postretro_foundation::{
+    FireMode, ProjectileDescriptor, ResolutionMode, WeaponPlacementDescriptor,
+};
 
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
@@ -264,6 +266,42 @@ pub(crate) struct ProjectileLaunch {
     pub(crate) descriptor: ProjectileDescriptor,
 }
 
+const MUZZLE_DIRECTION_EPSILON_SQUARED: f32 = 1.0e-12;
+
+/// Compose a model-local muzzle point through steady viewmodel placement and
+/// the gameplay aim basis. Render-rate sway and bob intentionally do not enter
+/// this authoritative origin.
+pub(crate) fn muzzle_world_origin(
+    eye: Vec3,
+    aim_direction: Vec3,
+    placement: &WeaponPlacementDescriptor,
+    muzzle_local: Vec3,
+) -> Vec3 {
+    let (placement_offset, placement_rotation) = placement.camera_space();
+    let camera_space = placement_rotation * muzzle_local + placement_offset;
+
+    let forward_length_squared = aim_direction.length_squared();
+    let forward = if aim_direction.is_finite()
+        && forward_length_squared.is_finite()
+        && forward_length_squared > MUZZLE_DIRECTION_EPSILON_SQUARED
+    {
+        aim_direction
+    } else {
+        Vec3::NEG_Z
+    };
+    let right_candidate = forward.cross(Vec3::Y);
+    let right = if right_candidate.length_squared() > MUZZLE_DIRECTION_EPSILON_SQUARED {
+        right_candidate.normalize()
+    } else {
+        // A remote wire aim may be exactly vertical, even though the local
+        // camera pitch clamp normally keeps it short of this pole.
+        forward.cross(Vec3::Z).normalize()
+    };
+    let up = right.cross(forward);
+
+    eye + right * camera_space.x + up * camera_space.y + forward * -camera_space.z
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
@@ -361,6 +399,7 @@ pub(crate) fn tick_resolved(
         &pellet_salt_name,
         0,
         command,
+        &WeaponPlacementDescriptor::default(),
         collision_world,
         hit_zone_store,
         anim_time,
@@ -378,6 +417,7 @@ pub(crate) fn tick_resolved_component(
     pellet_salt_name: &str,
     active_slot: usize,
     command: &WeaponFireCommand,
+    placement: &WeaponPlacementDescriptor,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -390,6 +430,7 @@ pub(crate) fn tick_resolved_component(
     let range = stats.range;
     let resolution = stats.resolution;
     let projectile = stats.projectile.cloned();
+    let muzzle_offset = stats.muzzle_offset;
     let credit_source = stats.credit_source.to_string();
     match fire {
         WeaponFireAuthorization::Accepted => {
@@ -398,9 +439,24 @@ pub(crate) fn tick_resolved_component(
             // sequence. Only a resolved shell advances this instance-local state.
             let shell_counter = weapon.shells_fired;
             weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
+            let (origin, direction) = if resolution == ResolutionMode::Projectile {
+                resolve_projectile_launch_pose(
+                    command.aim_origin,
+                    command.aim_direction,
+                    placement,
+                    muzzle_offset,
+                    collision_world,
+                    registry,
+                    hit_zone_store,
+                    anim_time,
+                    range,
+                )
+            } else {
+                (command.aim_origin, command.aim_direction)
+            };
             fire_hitscan(
-                command.aim_origin,
-                command.aim_direction,
+                origin,
+                direction,
                 collision_world,
                 registry,
                 hit_zone_store,
@@ -520,6 +576,8 @@ pub(crate) fn resolve_client_fire(
     button: FireButtonState,
     aim_origin: Vec3,
     aim_direction: Vec3,
+    placement: &WeaponPlacementDescriptor,
+    muzzle_offset: Option<Vec3>,
     client_tick: u32,
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
@@ -580,11 +638,22 @@ pub(crate) fn resolve_client_fire(
         ),
         ResolutionMode::Projectile => {
             let projectile = projectile?;
+            let (origin, direction) = resolve_projectile_launch_pose(
+                aim_origin,
+                aim_direction,
+                placement,
+                muzzle_offset,
+                collision_world,
+                registry,
+                hit_zone_store,
+                anim_time,
+                range,
+            );
             (
                 Vec::new(),
                 Some(ProjectileLaunch {
-                    origin: aim_origin,
-                    direction: aim_direction,
+                    origin,
+                    direction,
                     speed: projectile.speed,
                     radius: projectile.radius,
                     range,
@@ -681,6 +750,50 @@ fn resolve_client_hitscan(
         // the projectile declares its later collision or expiry instead.
         ResolutionMode::Projectile => Vec::new(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_projectile_launch_pose(
+    aim_origin: Vec3,
+    aim_direction: Vec3,
+    placement: &WeaponPlacementDescriptor,
+    muzzle_offset: Option<Vec3>,
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    range: f32,
+) -> (Vec3, Vec3) {
+    let Some(muzzle_local) = muzzle_offset else {
+        // This arm preserves the historical eye-origin launch exactly.
+        return (aim_origin, aim_direction);
+    };
+
+    let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
+    let convergence = resolve_nearest_hit(
+        aim_origin,
+        aim_direction,
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        range,
+    )
+    .map_or(aim_origin + aim_direction * range, |hit| match hit {
+        NearestHit::World(hit) => hit.point,
+        NearestHit::Entity(hit) => hit.point,
+    });
+    let muzzle_to_convergence = convergence - muzzle;
+    let length_squared = muzzle_to_convergence.length_squared();
+    if !muzzle_to_convergence.is_finite()
+        || !length_squared.is_finite()
+        || length_squared <= MUZZLE_DIRECTION_EPSILON_SQUARED
+        || muzzle_to_convergence.dot(aim_direction) <= 0.0
+    {
+        return (muzzle, aim_direction);
+    }
+
+    (muzzle, muzzle_to_convergence / length_squared.sqrt())
 }
 
 /// The deterministic pellet salt chooses a canonical descriptor identity first,
@@ -796,7 +909,10 @@ pub(crate) mod tests {
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::registry::{ComponentKind, Transform};
-    use postretro_foundation::{AmmoResource, ReloadStyle, WeaponDescriptor, WeaponResource};
+    use postretro_foundation::{
+        AmmoResource, ProjectileBodyVisual, ProjectileVisual, ReloadStyle, WeaponDescriptor,
+        WeaponResource,
+    };
     use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
@@ -847,6 +963,7 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -886,11 +1003,38 @@ pub(crate) mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
         }
+    }
+
+    fn projectile_weapon_component(muzzle_offset: Option<Vec3>) -> WeaponComponent {
+        let mut descriptor = weapon_descriptor(FireMode::Semi, 100.0);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.muzzle_offset = muzzle_offset.map(|offset| offset.to_array());
+        descriptor.projectile = Some(ProjectileDescriptor {
+            speed: 20.0,
+            radius: 0.1,
+            lifetime_ms: 1_000.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/test.png".to_string(),
+                    size: 0.2,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    emissive: 0.0,
+                    frame_duration_ms: None,
+                },
+                trail: None,
+                light: None,
+                impact_light: None,
+            },
+        });
+        WeaponComponent::from_descriptor(&descriptor)
     }
 
     /// Run a weapon `tick` with an EMPTY hit-zone store and a zero animation
@@ -990,6 +1134,225 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn muzzle_world_origin_composes_model_offset_through_each_placement_rotation() {
+        let eye = Vec3::new(2.0, 3.0, 4.0);
+        let aim = Vec3::NEG_Z;
+        let muzzle_local = Vec3::new(0.2, -0.4, -0.7);
+        let neutral = WeaponPlacementDescriptor::default();
+        let canted = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.35,
+                up: -0.15,
+                forward: 0.6,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 25.0,
+                pitch: -15.0,
+                roll: 35.0,
+            },
+        };
+
+        let neutral_origin = muzzle_world_origin(eye, aim, &neutral, muzzle_local);
+        let canted_origin = muzzle_world_origin(eye, aim, &canted, muzzle_local);
+        let (offset, rotation) = canted.camera_space();
+
+        assert_vec3_approx(neutral_origin, eye + muzzle_local);
+        assert_vec3_approx(canted_origin, eye + rotation * muzzle_local + offset);
+        assert_ne!(
+            neutral_origin, canted_origin,
+            "placement must affect the muzzle"
+        );
+    }
+
+    #[test]
+    fn muzzle_world_origin_tracks_pitched_and_near_vertical_aim_without_nan() {
+        let placement = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.1,
+                up: 0.2,
+                forward: 0.3,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 10.0,
+                pitch: 20.0,
+                roll: -30.0,
+            },
+        };
+        let muzzle = Vec3::new(0.25, -0.5, -0.75);
+
+        for aim in [
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::new(0.000_001, 1.0, 0.0).normalize(),
+        ] {
+            let origin = muzzle_world_origin(Vec3::ZERO, aim, &placement, muzzle);
+            assert!(
+                origin.is_finite(),
+                "near-vertical aim must retain a finite basis"
+            );
+        }
+    }
+
+    #[test]
+    fn projectile_launch_pose_converges_from_muzzle_on_hit_or_far_eye_ray() {
+        let placement = WeaponPlacementDescriptor::default();
+        let muzzle = Some(Vec3::new(0.5, 0.0, -0.8));
+        let registry = EntityRegistry::new();
+        let zones = HitZoneStore::new();
+
+        let (far_origin, far_direction) = resolve_projectile_launch_pose(
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            &placement,
+            muzzle,
+            &CollisionWorld::new(),
+            &registry,
+            &zones,
+            0.0,
+            10.0,
+        );
+        assert_vec3_approx(far_origin, Vec3::new(0.5, 0.0, -0.8));
+        assert_vec3_approx(
+            far_direction,
+            (Vec3::new(0.0, 0.0, -10.0) - far_origin).normalize(),
+        );
+
+        let (hit_origin, hit_direction) = resolve_projectile_launch_pose(
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            &placement,
+            muzzle,
+            &wall_world(),
+            &registry,
+            &zones,
+            0.0,
+            10.0,
+        );
+        assert_vec3_approx(hit_origin, far_origin);
+        assert_vec3_approx(
+            hit_direction,
+            (Vec3::new(0.0, 0.0, -5.0) - hit_origin).normalize(),
+        );
+    }
+
+    #[test]
+    fn projectile_launch_pose_keeps_aim_when_convergence_is_behind_or_degenerate() {
+        let placement = WeaponPlacementDescriptor::default();
+        let registry = EntityRegistry::new();
+        let zones = HitZoneStore::new();
+        for muzzle in [Vec3::new(0.0, 0.0, -6.0), Vec3::new(0.0, 0.0, -5.0)] {
+            let (origin, direction) = resolve_projectile_launch_pose(
+                Vec3::ZERO,
+                Vec3::NEG_Z,
+                &placement,
+                Some(muzzle),
+                &wall_world(),
+                &registry,
+                &zones,
+                0.0,
+                10.0,
+            );
+            assert_vec3_approx(origin, muzzle);
+            assert_vec3_approx(direction, Vec3::NEG_Z);
+        }
+    }
+
+    #[test]
+    fn projectile_without_muzzle_keeps_legacy_eye_launch_bits() {
+        let mut weapon = projectile_weapon_component(None);
+        let placement = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.7,
+                up: -0.3,
+                forward: 0.5,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 20.0,
+                pitch: -10.0,
+                roll: 5.0,
+            },
+        };
+        let eye = Vec3::new(1.0, 2.0, 3.0);
+        let aim = Vec3::new(0.2, -0.1, -0.97).normalize();
+        let resolution = resolve_client_fire(
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            eye,
+            aim,
+            &placement,
+            None,
+            1,
+            &CollisionWorld::new(),
+            &EntityRegistry::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("projectile fire resolves");
+        let launch = resolution.projectile_launch.expect("projectile launch");
+        assert_vec3_bits_eq(launch.origin, eye);
+        assert_vec3_bits_eq(launch.direction, aim);
+    }
+
+    #[test]
+    fn authoritative_projectile_launch_uses_the_same_composed_muzzle_origin() {
+        let muzzle_local = Vec3::new(0.25, -0.1, -0.6);
+        let placement = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.3,
+                up: -0.2,
+                forward: 0.7,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: 20.0,
+                pitch: -10.0,
+                roll: 15.0,
+            },
+        };
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::new(1.0, 2.0, 3.0),
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        let registry = EntityRegistry::new();
+        let mut weapon = projectile_weapon_component(Some(muzzle_local));
+        let events = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            "weapon.unknown",
+            0,
+            &command,
+            &placement,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            WeaponFireAuthorization::Accepted,
+        );
+        let [launch] = events.projectile_launches.as_slice() else {
+            panic!("expected one projectile launch");
+        };
+        assert_vec3_approx(
+            launch.origin,
+            muzzle_world_origin(
+                command.aim_origin,
+                command.aim_direction,
+                &placement,
+                muzzle_local,
+            ),
+        );
+        assert_eq!(launch.range, 10.0, "remaining range stays descriptor range");
+    }
+
+    #[test]
     fn client_fire_path_gates_held_trigger_while_cooling() {
         let mut registry = EntityRegistry::new();
         let target = spawn_hitbox_entity(
@@ -1013,6 +1376,8 @@ pub(crate) mod tests {
             button,
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             7,
             &world,
             &registry,
@@ -1039,6 +1404,8 @@ pub(crate) mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             8,
             &world,
             &registry,
@@ -1167,6 +1534,8 @@ pub(crate) mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             7,
             &CollisionWorld::new(),
             &registry,
@@ -1216,6 +1585,8 @@ pub(crate) mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             7,
             &CollisionWorld::new(),
             &registry,
@@ -1252,6 +1623,8 @@ pub(crate) mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             7,
             &CollisionWorld::new(),
             &registry,
@@ -1732,6 +2105,8 @@ pub(crate) mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
             77,
             &CollisionWorld::new(),
             &registry,

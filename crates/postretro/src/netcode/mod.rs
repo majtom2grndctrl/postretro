@@ -473,7 +473,7 @@ impl ShotId {
     }
 }
 
-const HIT_RANGE_TOLERANCE: f32 = 1.25;
+pub(crate) const HIT_RANGE_TOLERANCE: f32 = 1.25;
 pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
 /// Two seconds comfortably covers the conditioned co-op link's RTT and leaves
 /// room for a delayed rendered-frame declaration after projectile travel.
@@ -1516,6 +1516,7 @@ pub(crate) fn tuning_payload_for_pawn(
                         authored_placement,
                         None,
                     ),
+                    muzzle_offset: weapon.muzzle_offset.map(|offset| offset.to_array()),
                     range: weapon.range,
                     cooldown_ms: weapon.cooldown_ms,
                     pellet_count: weapon.pellet_count,
@@ -2522,6 +2523,7 @@ mod tests {
         wieldables[0] = Some(WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
             placement: WeaponPlacementDescriptor::default(),
+            muzzle_offset: None,
             range: 12.0,
             cooldown_ms: 90.0,
             pellet_count: 1,
@@ -2672,6 +2674,7 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 placement: Some(authored.clone()),
+                muzzle_offset: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
@@ -2737,6 +2740,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 45,
             raise_ms: 70,
@@ -2934,6 +2938,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -3243,6 +3248,7 @@ mod tests {
                 third_person_model: Some("models/pistol/model.gltf".to_string()),
                 viewmodel: None,
                 placement: None,
+                muzzle_offset: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,

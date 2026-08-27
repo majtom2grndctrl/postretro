@@ -56,32 +56,55 @@ re-derived on the host for remote shooters (`remote_fire_origin`). View-feel
 bob/sway is computed at render rate, client-local (`vf_eye_offset`, `vf_roll` in
 `main.rs`), and never reaches the tick. Therefore:
 
-- The muzzle offset **value** must be replicated weapon content (descriptor →
-  component), available to the tick on every peer without loading any mesh.
-- The authoritative origin composes that offset against the **tick-rate aim
-  pose** (eye + yaw/pitch basis), with **no** view-feel — deterministic and
-  reproducible on the host.
+- The muzzle **value** must be replicated weapon content (descriptor →
+  component), available to the tick on every peer without loading any mesh. It is
+  authored **model-local** (the viewmodel mesh's own frame), like a hit zone.
+- The authoritative origin composes that model-local point through the resolved
+  **placement** and the **tick-rate aim pose**: `eye ∘ placement ∘ muzzle_local`,
+  with **no** view-feel — deterministic and reproducible on the host.
 - A glTF `"muzzle"` socket read at runtime cannot feed the authoritative origin:
   the host lacks remote viewmodels, so the value would differ per peer. The
-  socket is an **author-time** source for the offset, never a runtime input.
+  socket is an **author-time** source for the model-local point, never a runtime
+  input.
 
 The engine already parses `{"socket": "name"}` from glTF node `extras`
-(`crates/model/src/gltf_extras.rs:86`) into `LoadedModel.sockets: HashMap<String, SocketBinding>`
+(`crates/model/src/gltf_extras.rs`) into `LoadedModel.sockets: HashMap<String, SocketBinding>`
 where a rigid socket carries its composed rest transform in mesh-node local space
-(`crates/model/src/gltf_loader.rs:70`, `:101`). `crates/model/examples/socket_dump.rs`
-already loads a model and reads `model.sockets`. That is the reuse path for the
-author tool.
+(`crates/model/src/gltf_loader.rs`). The rigid `"muzzle"` socket's translation
+(`SocketBinding::RigidRest(Mat4).w_axis.truncate()`) is the model-local point the
+author read reports (Task 4).
 
-## Single source of truth: one offset, two composition paths
+## Composition: model-local muzzle through placement
 
-- **Authoritative origin (deterministic, all peers):** eye + `aim_basis(yaw,pitch) * muzzleOffset`.
-  No view-feel.
-- **Presentation muzzle (client-local VFX):** the same `muzzleOffset` composed
-  through the live swaying `viewmodel_world_transform`, so a muzzle-flash sticks
-  to the visibly-bobbing barrel.
+`weapon-placement` (done) resolves the viewmodel placement `mod default < per-weapon`
+via `resolve_weapon_placement` (`main.rs`, pure — borrowed descriptors, no I/O) and
+exposes the resolved **steady** value as `placement_offset` / `placement_rot` at the
+render seam (`viewmodel_camera_space_transform`, before the `sway_rot` multiply). The
+host replicates the effective placement in the opaque tuning payload
+(`tuning_payload_for_pawn`, `netcode/mod.rs`).
 
-Same authored vector; the sim uses the steady pose, presentation uses the
-swaying pose. The glTF socket only produces the vector.
+- **Authoritative origin (deterministic, all peers):** `eye ∘ placement ∘ muzzle_local`,
+  reading the steady placement — no view-feel. Both the placement and `muzzle_offset`
+  are **host-authoritative**: a connected client reads them from the replicated tuning
+  payload (the render seam's client branch already reads placement via
+  `placement_for_slot` / `placement_for_archetype`), while the host resolves placement
+  from its own descriptors (`resolve_weapon_placement`) for its own pawn and for remote
+  shooters. One shared helper composes both, so every peer agrees.
+- **Presentation muzzle (client-local VFX, out of scope):** the same `muzzle_local`
+  composed through the live swaying viewmodel transform, so a muzzle-flash sticks to
+  the visibly-bobbing barrel.
+
+Because the muzzle is model-local, it composes through *any* placement unchanged: a
+placement edit moves the muzzle with the barrel, and dual-wield can share one authored
+value. A camera-relative offset would bake the placement in.
+
+Placement is **not** carried on `WeaponComponent`/`EffectiveStats` (the per-instance
+tier is `None`); the fire paths source it as the render seam does — the replicated payload
+accessor on a client, local resolve on the host. `muzzle_offset` rides the tuning payload
+beside placement, so the connected-client fire path reads it from the same payload
+accessor (`muzzle_for_slot`) — atomic with placement, avoiding the split-seam a
+component-sync would open. The component keeps `muzzle_offset` (from the descriptor) for
+the host/single-player authoritative and remote paths, read via `effective()`.
 
 ## `fire_origin` is load-bearing for anti-corruption validation
 
@@ -114,14 +137,15 @@ nearest-entity hit the hitscan path already resolves (`nearest_entity_hit`), so
 convergence can target an enemy body, not only world geometry. Miss → far point
 `eye + aim_dir * range`.
 
-This raycast is needed only on the **firing peer** (client, or listen-host firing
-its own weapon) — the path that spawns the real gameplay projectile
-(`resolve_client_fire`, which already has `collision_world`, `hit_zone_store`,
-`anim_time`). The host's remote-shooter path needs `fire_origin` = muzzle for
-validation and presentation, but does **not** re-simulate trajectory: projectile
-hit authority is the client's declared contact validated by distance
-(`mod.rs:2001`). So the remote path needs the muzzle origin, not the convergence
-raycast.
+This raycast is needed only on the **firing peer** — the two local paths that spawn
+the real gameplay projectile, both already holding `collision_world` /
+`hit_zone_store` / `anim_time`: the client-prediction `resolve_client_fire` and the
+host/single-player authoritative `run_local_weapon_command` → `fire_hitscan`
+projectile arm. The host's remote-shooter path (`run_remote_weapon_commands`) needs
+`fire_origin` = muzzle for validation and presentation, but does **not** re-simulate
+trajectory: projectile hit authority is the client's declared contact validated by
+distance (`netcode/mod.rs`). So the remote path needs the muzzle origin, not the
+convergence raycast.
 
 ## Where muzzle FX lives today
 

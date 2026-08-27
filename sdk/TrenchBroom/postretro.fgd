@@ -215,11 +215,13 @@
 // spotlights cast WORLD shadows automatically — the spot-shadow depth pass
 // renders static geometry, so a pooled dynamic spot shadows pillars and other
 // occluders with no per-light KVP; `_cast_entity_shadows` layers MOVING-entity
-// occluders on top of that world shadow. Dynamic-only KVPs for light movement
-// are deferred until that feature lands. The parser sets is_dynamic = true from
-// the CLASSNAME, not a KVP.
+// occluders on top of that world shadow. `carrier` attaches a dynamic light to
+// one named kinematic mover. Only its position follows: spots retain their
+// authored direction on translating movers; spinner spot aim is deferred. The
+// parser sets is_dynamic = true from the CLASSNAME, not a KVP.
 @BaseClass = DynamicLight
 [
+    carrier(string) : "Carrier mover name" : ""
     light(integer) : "Intensity" : 300
     _color(color255) : "Color" : "255 255 255"
     _falloff_range(integer) : "Falloff Distance (map units)"

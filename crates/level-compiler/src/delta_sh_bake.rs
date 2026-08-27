@@ -531,6 +531,7 @@ mod tests {
     fn animated_point_light(origin: DVec3, range: f32) -> MapLight {
         MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],

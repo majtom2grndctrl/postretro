@@ -222,6 +222,7 @@ mod tests {
                 is_dynamic: false,
                 animated_slot: None,
                 follow_transform: false,
+                carrier: None,
                 animation: None,
             }),
             ComponentKind::BillboardEmitter => {

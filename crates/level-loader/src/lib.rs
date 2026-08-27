@@ -13,7 +13,7 @@ pub use prl::{
 #[cfg(feature = "load-prl")]
 pub use prl::{
     CellDrawIndex, FaceMeta, KinematicGeometry, LightmapMode, LoadedKinematicMover,
-    LoadedKinematicWaypoint, PrlLoadError,
+    LoadedKinematicWaypoint, LoadedMemberLight, PrlLoadError,
 };
 #[cfg(feature = "load-prl")]
 pub use prl_loader::load_prl;

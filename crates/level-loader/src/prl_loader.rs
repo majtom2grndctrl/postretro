@@ -212,6 +212,85 @@ fn drop_out_of_range_sealed_portal_ids(
     dropped_count
 }
 
+/// Drop presentation-only light associations that cannot resolve to exactly
+/// one dynamic AlphaLights record or compose to a runtime-finite spawn pose.
+/// Invalid content leaves the light unbound.
+fn drop_invalid_carried_light_links(
+    geometry: &mut KinematicGeometry,
+    lights: &[MapLight],
+) -> usize {
+    let mut reference_counts = HashMap::<u32, usize>::new();
+    for member in geometry
+        .movers
+        .iter()
+        .flat_map(|mover| mover.carried_lights.iter())
+    {
+        *reference_counts
+            .entry(member.alpha_light_index)
+            .or_default() += 1;
+    }
+
+    let duplicate_indices: HashSet<u32> = reference_counts
+        .iter()
+        .filter_map(|(&alpha_light_index, &count)| (count > 1).then_some(alpha_light_index))
+        .collect();
+    for &alpha_light_index in &duplicate_indices {
+        let count = reference_counts[&alpha_light_index];
+        log::warn!(
+            "[PRL] KinematicGeometry: dropped {count} duplicate carried-light references to AlphaLight {alpha_light_index}; a light may have only one carrier"
+        );
+    }
+
+    let mut dropped_count = 0usize;
+    for mover in &mut geometry.movers {
+        let mover_id = mover.mover_id;
+        let mover_name = mover.name.clone();
+        mover.carried_lights.retain(|member| {
+            if duplicate_indices.contains(&member.alpha_light_index) {
+                dropped_count += 1;
+                return false;
+            }
+            let Some(light) = lights.get(member.alpha_light_index as usize) else {
+                log::warn!(
+                    "[PRL] KinematicGeometry: dropped mover {mover_id} (`{mover_name}`) carried-light reference to AlphaLight {} outside the {} loaded lights",
+                    member.alpha_light_index,
+                    lights.len(),
+                );
+                dropped_count += 1;
+                return false;
+            };
+            if !light.is_dynamic {
+                log::warn!(
+                    "[PRL] KinematicGeometry: dropped mover {mover_id} (`{mover_name}`) carried-light reference to non-dynamic AlphaLight {}",
+                    member.alpha_light_index,
+                );
+                dropped_count += 1;
+                return false;
+            }
+            let composed_position = [
+                f64::from(mover.origin.x) + f64::from(member.local_offset.x),
+                f64::from(mover.origin.y) + f64::from(member.local_offset.y),
+                f64::from(mover.origin.z) + f64::from(member.local_offset.z),
+            ];
+            if composed_position
+                .iter()
+                .any(|component| {
+                    !component.is_finite() || component.abs() > f64::from(f32::MAX)
+                })
+            {
+                log::warn!(
+                    "[PRL] KinematicGeometry: dropped mover {mover_id} (`{mover_name}`) carried-light reference to AlphaLight {} because its authored position is outside the runtime f32 range",
+                    member.alpha_light_index,
+                );
+                dropped_count += 1;
+                return false;
+            }
+            true
+        });
+    }
+    dropped_count
+}
+
 fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLoadError> {
     let mut waypoints: HashMap<&str, usize> = HashMap::new();
     for (index, waypoint) in geometry.waypoints.iter().enumerate() {
@@ -2501,6 +2580,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         }
         None => KinematicGeometry::default(),
     };
+    drop_invalid_carried_light_links(&mut kinematic_geometry, &lights);
     let kinematic_vertex_count: usize = kinematic_geometry
         .movers
         .iter()
@@ -2788,14 +2868,16 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
     use postretro_level_format::cell_locator::CellLocatorChild as FormatCellLocatorChild;
     use postretro_level_format::cell_visibility::CoupledPairRecord;
     use postretro_level_format::cells::CellRecord;
     use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
     use postretro_level_format::kinematic_geometry::{
-        KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KinematicMoverRecord,
-        KinematicWaypointRecord,
+        KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
+        KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
     };
+    use postretro_test_log_capture::LogCapture;
 
     #[test]
     fn cell_visibility_section_round_trips_through_runtime_lowering() {
@@ -3093,6 +3175,13 @@ mod tests {
         }
     }
 
+    fn dynamic_light() -> MapLight {
+        MapLight {
+            is_dynamic: true,
+            ..static_light()
+        }
+    }
+
     fn sample_kinematic_vertex(position: [f32; 3]) -> PrlVertex {
         PrlVertex::new(
             position,
@@ -3141,6 +3230,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -3192,6 +3282,23 @@ mod tests {
         .expect("v4 section must remain runtime-loadable");
 
         assert!(geometry.movers[0].sealed_portal_ids.is_empty());
+        assert!(geometry.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_v5_loads_sealed_portals_with_no_member_lights() {
+        let mut section = sample_kinematic_section();
+        section.version = KINEMATIC_GEOMETRY_VERSION_V5;
+        section.movers[0].sealed_portal_ids = vec![1];
+
+        let geometry = convert_kinematic_geometry_section(
+            KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect("v5 section bytes must remain readable"),
+        )
+        .expect("v5 section must remain runtime-loadable");
+
+        assert_eq!(geometry.movers[0].sealed_portal_ids, vec![1]);
+        assert!(geometry.movers[0].carried_lights.is_empty());
     }
 
     #[test]
@@ -3204,6 +3311,110 @@ mod tests {
 
         assert_eq!(dropped, 2);
         assert_eq!(geometry.movers[0].sealed_portal_ids, vec![0]);
+    }
+
+    #[test]
+    fn kinematic_geometry_keeps_unique_dynamic_carried_light_link() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [1.0, 2.0, 3.0],
+        }];
+        let mut geometry = convert_kinematic_geometry_section(section).unwrap();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[dynamic_light()]);
+
+        assert_eq!(dropped, 0);
+        assert_eq!(geometry.movers[0].carried_lights.len(), 1);
+        assert_eq!(
+            geometry.movers[0].carried_lights[0].local_offset,
+            Vec3::new(1.0, 2.0, 3.0)
+        );
+    }
+
+    // Regression: finite V6 mover and offset components could overflow when
+    // composed and then propagate infinity to GPU-facing light buffers.
+    #[test]
+    fn kinematic_geometry_drops_carried_light_with_unrepresentable_authored_position() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].origin = [3.0e38, 0.0, 0.0];
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [3.0e38, 0.0, 0.0],
+        }];
+        section.waypoints[0].origin = [3.0e38, 0.0, 0.0];
+        section.waypoints[1].origin = [3.0e38, 1.0, 0.0];
+        let decoded = KinematicGeometrySection::from_bytes(&section.to_bytes())
+            .expect("finite wire components should decode");
+        let mut geometry = convert_kinematic_geometry_section(decoded).unwrap();
+        let capture = LogCapture::start();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[dynamic_light()]);
+
+        assert_eq!(dropped, 1);
+        assert!(geometry.movers[0].carried_lights.is_empty());
+        capture.assert_logged_once(
+            Level::Warn,
+            "because its authored position is outside the runtime f32 range",
+        );
+    }
+
+    #[test]
+    fn kinematic_geometry_drops_carried_light_index_outside_alpha_lights() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 1,
+            local_offset: [1.0, 2.0, 3.0],
+        }];
+        let mut geometry = convert_kinematic_geometry_section(section).unwrap();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[dynamic_light()]);
+
+        assert_eq!(dropped, 1);
+        assert!(geometry.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_drops_carried_link_to_baked_alpha_light() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [1.0, 2.0, 3.0],
+        }];
+        let mut geometry = convert_kinematic_geometry_section(section).unwrap();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[static_light()]);
+
+        assert_eq!(dropped, 1);
+        assert!(geometry.movers[0].carried_lights.is_empty());
+    }
+
+    #[test]
+    fn kinematic_geometry_drops_every_duplicate_carried_light_reference() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [1.0, 2.0, 3.0],
+        }];
+        let mut later_mover = section.movers[0].clone();
+        later_mover.mover_id = 8;
+        later_mover.name = "door".to_string();
+        later_mover.carried_lights = vec![MemberLight {
+            alpha_light_index: 0,
+            local_offset: [4.0, 5.0, 6.0],
+        }];
+        section.movers.push(later_mover);
+        let mut geometry = convert_kinematic_geometry_section(section).unwrap();
+
+        let dropped = drop_invalid_carried_light_links(&mut geometry, &[dynamic_light()]);
+
+        assert_eq!(dropped, 2);
+        assert!(
+            geometry
+                .movers
+                .iter()
+                .all(|mover| mover.carried_lights.is_empty())
+        );
     }
 
     #[test]

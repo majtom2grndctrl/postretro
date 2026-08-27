@@ -589,3 +589,44 @@
 "_color" "0 102 255"
 "_tb_group" "2"
 }
+// E22 carried-light inspection stations. These dynamic lights deliberately use
+// the movers above so the map stays a compact kinematic QA fixture:
+// - translating omni: promotion_pair_a (ping-pong linear platform)
+// - spinning omni: rotating_carousel (offset must orbit)
+// - translating spot: ranker_mover (authored cone direction remains world-space)
+// entity 44
+{
+"classname" "light_dynamic"
+"name" "e22_linear_omni_station"
+"carrier" "promotion_pair_a"
+"origin" "1024 -48 96"
+"light" "700"
+"_color" "80 220 255"
+"_falloff_range" "160"
+"_tags" "e22_carried_light linear_omni_station"
+}
+// entity 45
+{
+"classname" "light_dynamic"
+"name" "e22_spin_orbit_omni_station"
+"carrier" "rotating_carousel"
+"origin" "704 0 56"
+"light" "850"
+"_color" "255 96 48"
+"_falloff_range" "160"
+"_tags" "e22_carried_light spin_orbit_station"
+}
+// entity 46
+{
+"classname" "light_dynamic_spot"
+"name" "e22_translating_spot_station"
+"carrier" "ranker_mover"
+"origin" "2104 0 96"
+"light" "900"
+"_color" "120 180 255"
+"_falloff_range" "192"
+"_cone" "18"
+"_cone2" "32"
+"angles" "-90 0 0"
+"_tags" "e22_carried_light translating_spot_station"
+}

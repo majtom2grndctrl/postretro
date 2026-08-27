@@ -856,6 +856,23 @@ fn falloff(light: &MapLight, distance: f32) -> f32 {
     }
 }
 
+/// Whether a light can contribute bounced radiance at `point` before visibility
+/// is traced. Point and spot lights have zero falloff strictly beyond their
+/// clamped range; directional lights are position-independent.
+fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
+    match light.light_type {
+        LightType::Directional => true,
+        LightType::Point | LightType::Spot => {
+            let light_origin = Vec3::new(
+                light.origin.x as f32,
+                light.origin.y as f32,
+                light.origin.z as f32,
+            );
+            point.distance(light_origin) <= light.falloff_range.max(1.0e-4)
+        }
+    }
+}
+
 /// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
 /// so direct and indirect agree along the cone fringe.
 fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
@@ -1278,26 +1295,14 @@ fn sample_radiance_rgb(
     match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => (Vec3::from(SKY_COLOR), far_sentinel),
         Some(hit) => {
-            // Cold-bake reaching-light spike (off unless a POSTRETRO_SPIKE_REACH_*
-            // env var is set): count how many static lights actually reach this
-            // bounce hit point, and optionally skip the provably-zero shadow rays.
-            let spike_active = crate::spike_reach::active();
-            let spike_cull = crate::spike_reach::cull_enabled();
-            let mut spike_in_range: u32 = 0;
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
-                if spike_active {
-                    let reaches = crate::spike_reach::reaches_range(light, hit.point);
-                    if reaches {
-                        spike_in_range += 1;
-                    }
-                    // A light out of falloff range contributes exactly zero at
-                    // this hit point (`light_contribution_lambert` → `falloff`
-                    // returns 0 for `dist > range`), so its shadow ray is wasted
-                    // work. Skipping it is byte-identical to the baseline.
-                    if spike_cull && !reaches {
-                        continue;
-                    }
+                // This must precede `global_index` and seed derivation: a light
+                // beyond range has zero falloff, so its soft-visibility trace is
+                // provably wasted. Kept lights retain their original slice/global
+                // index and therefore their deterministic visibility seed.
+                if !light_reaches_point(light, hit.point) {
+                    continue;
                 }
                 let global_index = light_global_indices
                     .map(|g| g[light_index])
@@ -1319,9 +1324,6 @@ fn sample_radiance_rgb(
                     continue;
                 }
                 radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
-            }
-            if spike_active {
-                crate::spike_reach::record_sh(hit.point, spike_in_range);
             }
             (
                 radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
@@ -1402,6 +1404,7 @@ mod tests {
     use super::*;
     use crate::bvh_build::{build_bvh, collect_primitives};
     use crate::geometry::FaceIndexRange;
+    use crate::light_namespaces::AlphaLightsNs;
     use crate::map_data::{FalloffModel, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -1577,6 +1580,46 @@ mod tests {
         assert!((falloff(&light, 0.5) - 4.0).abs() < 1e-6); // close-range exceeds 1.0 deliberately
         assert_eq!(falloff(&light, 10.001), 0.0);
         assert_eq!(falloff(&light, 100.0), 0.0);
+    }
+
+    #[test]
+    fn light_reaches_point_keeps_range_boundary_and_skips_only_zero_falloff() {
+        let range = 10.0;
+        let at_range = Vec3::new(range, 0.0, 0.0);
+        let beyond_range = Vec3::new(range + 0.001, 0.0, 0.0);
+
+        for light_type in [LightType::Point, LightType::Spot] {
+            for falloff_model in [
+                FalloffModel::Linear,
+                FalloffModel::InverseDistance,
+                FalloffModel::InverseSquared,
+            ] {
+                let mut light = point_light_with_falloff(falloff_model, range);
+                light.light_type = light_type;
+
+                assert!(
+                    light_reaches_point(&light, at_range),
+                    "{light_type:?} light with {falloff_model:?} falloff must reach exactly at range"
+                );
+                assert!(
+                    !light_reaches_point(&light, beyond_range),
+                    "{light_type:?} light with {falloff_model:?} falloff must skip strictly beyond range"
+                );
+                assert_eq!(
+                    falloff(&light, beyond_range.length()),
+                    0.0,
+                    "skipped {light_type:?} light with {falloff_model:?} falloff must contribute zero"
+                );
+            }
+        }
+
+        let mut directional = point_light_with_falloff(FalloffModel::Linear, range);
+        directional.light_type = LightType::Directional;
+        directional.origin = DVec3::new(10_000.0, 0.0, 0.0);
+        assert!(
+            light_reaches_point(&directional, Vec3::new(-10_000.0, 0.0, 0.0)),
+            "directional lights must never be skipped by range"
+        );
     }
 
     #[test]
@@ -2329,6 +2372,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sample_radiance_rgb_ignores_trailing_out_of_range_light_bit_identically() {
+        let floor_a = [[-4.0, 0.0, -4.0], [4.0, 0.0, -4.0], [4.0, 0.0, 4.0]];
+        let floor_b = [[-4.0, 0.0, -4.0], [4.0, 0.0, 4.0], [-4.0, 0.0, 4.0]];
+        let geometry = multi_triangle_geometry(&[floor_a, floor_b]);
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("floor geometry builds a BVH");
+        let ctx = RaytracingCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        };
+
+        let mut kept_light = point_light_with_falloff(FalloffModel::Linear, 10.0);
+        kept_light.origin = DVec3::new(0.0, 5.0, -1.0);
+        let mut out_of_range_light = point_light_with_falloff(FalloffModel::InverseSquared, 1.0);
+        out_of_range_light.origin = DVec3::new(100.0, 5.0, -1.0);
+
+        let origin = Vec3::new(0.0, 1.0, -1.0);
+        let direction = Vec3::NEG_Y;
+        let without_trailing_light =
+            sample_radiance_rgb(&ctx, origin, direction, &[&kept_light], None, 100.0, 17, 23);
+        let with_trailing_light = sample_radiance_rgb(
+            &ctx,
+            origin,
+            direction,
+            &[&kept_light, &out_of_range_light],
+            None,
+            100.0,
+            17,
+            23,
+        );
+
+        assert_eq!(
+            [
+                with_trailing_light.0.x.to_bits(),
+                with_trailing_light.0.y.to_bits(),
+                with_trailing_light.0.z.to_bits(),
+                with_trailing_light.1.to_bits(),
+            ],
+            [
+                without_trailing_light.0.x.to_bits(),
+                without_trailing_light.0.y.to_bits(),
+                without_trailing_light.0.z.to_bits(),
+                without_trailing_light.1.to_bits(),
+            ],
+            "a trailing point light beyond falloff range must leave the per-ray sample byte-identical"
+        );
+    }
+
     /// Task 4b: the SH bounce term scales by the `[0, 1]` soft-visibility fraction,
     /// not a binary 0/1 gate. A receiver floor under a soft (area) light, with a
     /// half-plane occluder blocking part of the light's sphere, must bounce
@@ -2424,6 +2516,66 @@ mod tests {
             bytes_a, bytes_b,
             "soft-shadow SH bake drifted between runs; the index-derived \
              soft-visibility seed must keep output byte-identical for the cache",
+        );
+    }
+
+    /// A trailing, out-of-range `_bake_only` light is still static-baked, but
+    /// contributes exactly zero to every bounce in this fixture. The cold path
+    /// must therefore serialize the same whole-volume section with or without it.
+    #[test]
+    fn cold_sh_section_ignores_trailing_bake_only_out_of_range_light_bit_identically() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let in_range_light = soft_point_light(DVec3::new(2.0, 2.5, 2.0), 1.5);
+        let mut trailing_out_of_range_light =
+            point_light_with_falloff(FalloffModel::InverseSquared, 1.0);
+        trailing_out_of_range_light.origin = DVec3::new(100.0, 2.5, 2.0);
+        trailing_out_of_range_light.bake_only = true;
+
+        // Keep the excluded light last: removing it must not renumber the kept
+        // light's soft-visibility seed. `_bake_only` then makes AlphaLightsNs
+        // remove its raw map-light slot just as pipeline packing does.
+        let full_lights = vec![in_range_light, trailing_out_of_range_light];
+        let without_trailing_lights = full_lights[..1].to_vec();
+
+        let bake_cold_section = |lights: &[MapLight]| {
+            let static_lights = StaticBakedLights::from_lights(lights);
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
+            bake_sh_volume(
+                &ShBakeCtx {
+                    bvh: &bvh,
+                    primitives: &prims,
+                    geometry: &geo,
+                    tree: &tree,
+                    exterior_leaves: &exterior,
+                    static_lights: &static_lights,
+                    animated_lights: &animated_lights,
+                    total_light_count: lights.len(),
+                },
+                &config,
+            )
+        };
+
+        let mut with_trailing_light = bake_cold_section(&full_lights);
+        let mut without_trailing_section = bake_cold_section(&without_trailing_lights);
+
+        // `to_bytes` includes this table. The raw bake table spans MapData
+        // lights, while the PRL boundary compacts it into AlphaLights identity
+        // space; mirror that production seam before asserting section identity.
+        with_trailing_light.slot_for_map_light = AlphaLightsNs::from_lights(&full_lights)
+            .compact_source_table(&with_trailing_light.slot_for_map_light);
+        without_trailing_section.slot_for_map_light =
+            AlphaLightsNs::from_lights(&without_trailing_lights)
+                .compact_source_table(&without_trailing_section.slot_for_map_light);
+
+        assert_eq!(
+            with_trailing_light.to_bytes(),
+            without_trailing_section.to_bytes(),
+            "a trailing bake-only point light beyond falloff range must leave the cold SH section byte-identical"
         );
     }
 

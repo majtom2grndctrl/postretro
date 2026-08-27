@@ -1238,20 +1238,9 @@ fn bake_face_chart(
             // share an identical sample rotation.
             let seed = texel_seed(atlas_x as u32, atlas_y as u32);
 
-            // Cold-bake reaching-light spike (off unless a POSTRETRO_SPIKE_REACH_*
-            // env var is set): count how many static lights reach this texel.
-            // This bake already returns before the shadow ray for out-of-range
-            // lights (see `light_texel_contribution_and_visibility`), so no cull
-            // is applied here — only the reaching distribution is measured.
-            let spike_active = crate::spike_reach::active();
-            let mut spike_in_range: u32 = 0;
-
             let mut irr = Vec3::ZERO;
             let mut weighted_dir = Vec3::ZERO;
             for light in static_lights {
-                if spike_active && crate::spike_reach::reaches_range(light, world_p) {
-                    spike_in_range += 1;
-                }
                 let (irr_contrib, dir_contrib) = light_texel_contribution(
                     light,
                     world_p,
@@ -1263,10 +1252,6 @@ fn bake_face_chart(
                 irr += irr_contrib;
                 weighted_dir += dir_contrib;
             }
-            if spike_active {
-                crate::spike_reach::record_lm(world_p, spike_in_range);
-            }
-
             chart_atlas.irradiance[idx * 4] = irr.x;
             chart_atlas.irradiance[idx * 4 + 1] = irr.y;
             chart_atlas.irradiance[idx * 4 + 2] = irr.z;

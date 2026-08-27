@@ -703,36 +703,6 @@ fn run_after_parsing(
         // density-coarsening retry — bake once at the fixed density.
         let density = lightmap_config.lightmap_density;
         final_lightmap_density = density;
-        // Cold-bake reaching-light spike: register the lightmap stage over the
-        // exact static-light set the cold bake iterates (static baked, minus
-        // Sdf-shadow lights, which the bake drops).
-        if crate::spike_reach::active() {
-            let lm_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
-                .entries()
-                .iter()
-                .map(|e| e.light)
-                .filter(|l| l.shadow_type != crate::map_data::ShadowType::Sdf)
-                .collect();
-            let index = if crate::spike_reach::stats_enabled() {
-                let verts: Vec<[f32; 3]> = geo_result
-                    .geometry
-                    .vertices
-                    .iter()
-                    .map(|v| v.position)
-                    .collect();
-                let reach = crate::affinity_grid::AffinityReachInputs {
-                    geometry_vertices: &verts,
-                    tree: &result.tree,
-                    exterior_leaves: &exterior_leaves,
-                    portals: &generated_portals,
-                    probe_spacing: args.probe_spacing,
-                };
-                Some(crate::affinity_grid::WorldReachIndex::build(&reach, &lm_lights))
-            } else {
-                None
-            };
-            crate::spike_reach::install_lm(lm_lights.len(), index);
-        }
         let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
             bvh: &bvh,
             primitives: &bvh_primitives,
@@ -768,8 +738,6 @@ fn run_after_parsing(
     if args.verbose {
         lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
-    crate::spike_reach::log_lm_summary();
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
@@ -790,31 +758,6 @@ fn run_after_parsing(
         animated_lights: &animated_baked_lights,
         total_light_count: map_data.lights.len(),
     };
-    // Cold-bake reaching-light spike: register the SH stage over the exact
-    // static-light set the cold bake iterates, before it runs. Cold path only —
-    // the warm grouped bake already culls and is out of scope.
-    if crate::spike_reach::active() && stage_cache.is_none() {
-        let sh_lights = sh_bake::static_light_refs(&sh_ctx);
-        let index = if crate::spike_reach::stats_enabled() {
-            let verts: Vec<[f32; 3]> = geo_result
-                .geometry
-                .vertices
-                .iter()
-                .map(|v| v.position)
-                .collect();
-            let reach = crate::affinity_grid::AffinityReachInputs {
-                geometry_vertices: &verts,
-                tree: &result.tree,
-                exterior_leaves: &exterior_leaves,
-                portals: &generated_portals,
-                probe_spacing: args.probe_spacing,
-            };
-            Some(crate::affinity_grid::WorldReachIndex::build(&reach, &sh_lights))
-        } else {
-            None
-        };
-        crate::spike_reach::install_sh(sh_lights.len(), index);
-    }
     let mut sh_volume_section = if let Some(ref cache) = stage_cache {
         // Warm path: per-probe-group SH. Each group bakes/loads a cached
         // entry over its probe subset with a bounded reaching-light set, then the
@@ -879,8 +822,6 @@ fn run_after_parsing(
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
     }
-    crate::spike_reach::log_sh_summary();
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::DeltaShBake);
     let delta_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DeltaShBake, delta_sh_progress.clone());

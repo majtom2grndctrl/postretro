@@ -125,26 +125,32 @@ is the light's slice index; the warm seed is its global-set index — both stabl
 for a trailing removal).
 
 The **section-level** check (Byte-identical cold SH section / Task 2) additionally
-requires the excluded light(s) to be **`_bake_only`**. `OctahedralShVolumeSection::to_bytes`
-embeds `slot_for_map_light`, whose length is the compacted AlphaLights (runtime-present)
-light count, so removing a *runtime-present* light would shrink that in-section table and
-break `to_bytes()` equality for a reason unrelated to the early-out. A `_bake_only` light
-is still baked into the SH indirect pass — so the early-out still skips its shadow ray —
-but is dropped from AlphaLights by `compact_source_table`, so its removal leaves
-`slot_for_map_light`, and the whole section, byte-identical. (The per-ray AC below needs
-no `_bake_only`: it compares `sample_radiance_rgb`'s return value directly, serializing
-no section.)
+requires the excluded light(s) to be **`_bake_only`** *and* the test to reproduce the
+pipeline's slot-table compaction. `OctahedralShVolumeSection::to_bytes` embeds
+`slot_for_map_light`. Straight out of `bake_sh_volume` that table is **raw** —
+`vec![ANIMATED_SLOT_NONE; total_light_count]` — so removing *any* trailing light
+(bake-only or not) shrinks it N→N−1 and breaks `to_bytes()` equality for a reason
+unrelated to the early-out. The pipeline (`pipeline.rs`) compacts it to one entry per
+AlphaLights (runtime-present) light via `AlphaLightsNs::compact_source_table` before
+packing. The test must apply that same compaction before `to_bytes()`; then a
+`_bake_only` trailing light — baked into the SH indirect pass (so the early-out still
+skips its ray) but dropped from AlphaLights by `compact_source_table` — leaves the
+compacted `slot_for_map_light`, and the whole section, byte-identical. (The per-ray AC
+below needs no `_bake_only` and no compaction: it compares `sample_radiance_rgb`'s
+return value directly, serializing no section.)
 
 - [ ] **Byte-identical cold SH section.** A cold (`--no-cache`) bake of a fixture with
-  out-of-range **`_bake_only`** static point/spot lights placed last emits an
+  out-of-range **`_bake_only`** static point/spot lights placed last — after applying the
+  pipeline's `compact_source_table` step to `slot_for_map_light` — emits an
   `OctahedralShVolumeSection` whose `to_bytes()` is byte-identical to the same bake with
-  those trailing lights excluded (bake-only so the removal does not shrink the section's
-  embedded `slot_for_map_light`; see preamble). (The parent spike separately verified
-  full-`.prl` SHA256 identity via the cull toggle on `stress-warren-lit`, 16.6 MB output.)
+  those trailing lights excluded (bake-only + compaction so the removal does not shrink
+  the section's embedded `slot_for_map_light`; see preamble). (The parent spike separately
+  verified full-`.prl` SHA256 identity via the cull toggle on `stress-warren-lit`, 16.6 MB
+  output.)
 - [ ] **Contribution-neutral early-out (per-ray).** A unit test calls
   `sample_radiance_rgb` with a light set whose last light is a point light beyond its
-  falloff range, and asserts the returned SH coefficients / radiance are bit-identical
-  to the same call with that trailing light removed.
+  falloff range, and asserts the returned `(radiance, distance)` is bit-identical to the
+  same call with that trailing light removed.
 - [ ] **Every skipped light has `falloff() == 0`.** A unit test confirms a Point/Spot
   light is skipped iff `dist > falloff_range.max(1e-4)` — a *subset* of the
   `falloff()==0` region, not an equality: Linear is also 0 at `dist == range` (there the
@@ -193,7 +199,9 @@ skip iff `dist > range`). This task also removes the sampler's entire spike bloc
 the `spike_cull` cull branch and the `spike_active` / `spike_in_range` / `record_sh`
 STATS lines currently inside `sample_radiance_rgb` — so the function no longer
 references `spike_reach`, and Task 3 can delete the module cleanly (the predicate is
-self-contained and does not depend on `spike_reach.rs`). Add: (a) a
+self-contained and does not depend on `spike_reach.rs`). Note the `let mut radiance =
+Vec3::ZERO;` accumulator is interleaved among those spike lines but is **not** spike code
+— it is read later in the loop and must survive the removal. Add: (a) a
 determinism/neutrality test that calls `sample_radiance_rgb` with a light set whose
 **last** light is an out-of-range point light and asserts bit-identical output to the
 same call with that trailing light removed (mirror the existing `sample_radiance_rgb`
@@ -208,20 +216,26 @@ unconditional — no env var gates it.
 Add a test that compiles a small map fixture containing at least one in-range and at
 least one out-of-range static point/spot light — the out-of-range light(s) **`_bake_only`**
 and placed **last** in the set — through the cold (`--no-cache`-equivalent, in-process)
-whole-volume SH bake, and asserts the emitted `OctahedralShVolumeSection` `to_bytes()` is
-identical to the same bake with the trailing out-of-range light(s) excluded (the
-excluded-trailing-light surrogate; see Acceptance criteria). Bake-only keeps the removal
-from shrinking the section's embedded `slot_for_map_light` (a bake-only light is baked
-into SH but absent from AlphaLights, so `compact_source_table` drops it either way);
-trailing keeps it from renumbering kept lights' seeds. This delivers the
-Byte-identical-cold-SH-section AC and is the whole-section integration analogue of Task
-1's per-ray neutrality test. (Warm and delta are discharged by Task 1's per-ray
-neutrality — they contact the change only through `sample_radiance_rgb` — so they need no
-separate fixture here; see the Warm-and-delta-SH-sections-unchanged AC.)
+whole-volume SH bake. The raw bake output's `slot_for_map_light` is
+`total_light_count`-sized (`vec![ANIMATED_SLOT_NONE; total_light_count]`), so before
+comparing, reproduce the pipeline's compaction — `AlphaLightsNs::from_lights(&lights)`
+then `.compact_source_table(&section.slot_for_map_light)`, exactly as `pipeline.rs` does —
+and assert the resulting `OctahedralShVolumeSection` `to_bytes()` is identical to the same
+bake with the trailing out-of-range light(s) excluded (the excluded-trailing-light
+surrogate; see Acceptance criteria). Bake-only + that compaction keeps the removal from
+shrinking the compacted `slot_for_map_light` (a bake-only light is baked into SH but
+absent from AlphaLights, so `compact_source_table` drops it either way); trailing keeps it
+from renumbering kept lights' seeds. This delivers the Byte-identical-cold-SH-section AC
+and is the whole-section integration analogue of Task 1's per-ray neutrality test. (Warm
+and delta are discharged by Task 1's per-ray neutrality — they contact the change only
+through `sample_radiance_rgb` — so they need no separate fixture here; see the
+Warm-and-delta-SH-sections-unchanged AC.)
 
-Model the harness on the byte-equality determinism test
-`lightmap_bake_produces_byte_identical_output_on_repeated_runs` in `lightmap_bake.rs`
-(asserts `section.to_bytes()` equality) — **not** the adjacent
+Place the test in `sh_bake.rs`'s `mod tests` (beside
+`sh_volume_bake_with_soft_occluded_light_is_byte_identical`), **not** in `lightmap_bake.rs`
+— Task 3 concurrently edits `lightmap_bake.rs`. Model the assertion on the byte-equality
+determinism test `lightmap_bake_produces_byte_identical_output_on_repeated_runs` in
+`lightmap_bake.rs` (asserts `section.to_bytes()` equality) — **not** the adjacent
 `two_bakes_decode_within_frozen_tolerance`, which is a decode-within-tolerance test that
 does not require byte-equality and is the wrong model for a byte-identity AC.
 
@@ -246,6 +260,8 @@ Task 1) and the `POSTRETRO_SPIKE_REACH_STATS` distribution harness. Remove:
   `world_reach_index_counts_and_maps_receiver_to_the_lights_own_cell` unit test.
   Verify nothing else consumes them first (the direct/delta/animated bakes use
   `decompose_affinity_for_lights` / `build_csr` / their own `ReachIndex`, which stay).
+  Scope note: `sh_analyze.rs` is a *separate* SH-coarsenability spike unrelated to
+  `spike_reach` — leave it untouched.
 
 After this task the compiler carries no `POSTRETRO_SPIKE_REACH_*` env path and no
 spike-only code; the cold SH early-out from Task 1 is the only surviving change.

@@ -210,9 +210,12 @@ light types. Recorded here so a future reader sees it was weighed, not missed.
 
 - **Output-preserving.** `--sh-analyze` changed no emitted bytes; every `.prl` is a standard bake with
   a JSON sidecar. No spike harness was committed — the pass is in-tree.
-- **Approximate indirect.** All runs used `--no-cache` approximate indirect, not `--release` exact.
-  The contrast across fixtures is the signal; absolute magnitudes are indicative. Exact-indirect
-  confirmation is deferred to v2.
+- **Indirect-lighting mode.** The three sweeps used cold `--no-cache` bakes. A `--release`
+  exact-lighting re-bake of `kinematic-platform` (the strongest fixture) produced a **byte-identical**
+  `.prl` and analysis JSON, so none of its coarsenability or aim numbers depend on the
+  approximate/exact distinction. Residual caveat: that fixture carries no indirect SH delta section
+  (`has_delta_indirect: false`), so this is byte-identity on one map, not a test across content where
+  exact and approximate indirect genuinely diverge — still unmeasured.
 - **Synthetic fixtures are a floor.** Three dev maps, not shipping content. The mechanism conclusions
   (coarsenability concentrates with lighting structure; contribution predicts, not distance;
   composition sets the ceiling) are content-independent. The magnitudes are a floor — real levels with
@@ -223,8 +226,9 @@ light types. Recorded here so a future reader sees it was weighed, not missed.
 
 ## Open questions for the v2 spec
 
-- **Exact-indirect confirmation.** Re-bake `kinematic-platform` with `--release`; confirm the
-  concentration holds under exact lighting. ~30 s.
+- **Exact-indirect generality.** The `--release` re-bake of `kinematic-platform` was byte-identical
+  to `--no-cache` (confirmation done). A fixture carrying a genuinely divergent indirect SH delta
+  would be the stronger test — still unmeasured.
 - **Real-content magnitude.** Unknown until content exists. The mechanism is content-independent; the
   ratio is not.
 - **Forward-predictor efficacy.** Does a contribution-aware forward predictor recover most of the

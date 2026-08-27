@@ -19,25 +19,27 @@ Build-to-learn spike. Deliverable is a decision, not a shippable feature.
 The `--sh-analyze` coarsenability pass, run at dense 1.0 m probe spacing across three fixtures
 of increasing lighting intentionality, gives a clear result:
 
-1. **Adaptive density pays, and the payoff scales with lighting structure.** Coarsenable brick
-   fraction at a near-lossless threshold rose **18.5 % → 43.9 % → 83.8 %** from a uniform warren
-   to dispersed point lighting to theatrical spot lighting. Projected SH size fell to **0.22×** on
-   the theatrical map. The style the engine most wants to serve is the style adaptivity helps most.
-2. **The density predictor must be contribution-aware, not distance-aware.** On aimed spots,
-   in-cone bricks never coarsen; at matched distance, out-of-cone bricks carry 6–29× less error.
-   Angle-off-cone-axis predicts error far better than distance (**r = −0.765 vs −0.355**). A
-   distance-only halo — the archived classifier — over-protects the dark side of every spot.
-3. **The coarsenability ceiling is set by receiver composition, not the indirect bounce.** The
-   base indirect field is near-losslessly coarsenable everywhere on all three maps. Composition
-   through the receiver (base + direct + delta SH) manufactures the error, **~5–8×**, rising with
-   theatricality.
+1. **The density predictor must be contribution-aware, not distance-aware — the load-bearing
+   finding.** On aimed spots, in-cone bricks never coarsen; at matched distance, out-of-cone bricks
+   carry 6–29× less error. Angle-off-cone-axis predicts error far better than distance (**r = −0.765
+   vs −0.355**). A distance-only halo — the shape the archived classifier used — over-protects the
+   dark side of every spot. This is a *within-map* result, free of cross-fixture confounds.
+2. **Corroboration: coarsenable fraction scales with lighting structure.** At a near-lossless
+   threshold it rose **18.5 % → 43.9 % → 83.8 %** from a uniform warren to dispersed point lighting
+   to theatrical spot lighting; projected SH size fell to **0.22×** on the theatrical map. Three maps
+   vary in more than lighting, so read this as directional support for finding 1, not independent
+   proof. The style the engine most wants to serve is the style adaptivity helps most.
+3. **The coarsenability ceiling is set by receiver composition, not the indirect bounce.** The base
+   indirect field coarsens far more readily than the composed field on all three maps (base-L2 mean
+   0.005–0.015 vs composed-L2 mean 0.03–0.09). Composition through the receiver (base + direct +
+   delta SH) manufactures the error, **~6–8×**, rising with theatricality.
 4. **The dense bake is feasible.** After the cold-SH falloff early-out, a 1.0 m bake peaked at
    2.0 GiB (uniform warren) and under 0.32 GiB on the two smaller maps — well under the 16 GB box.
 
 **Recommendation — one contribution-aware strategy, sequenced storage-first.** The v2 spec should
 adopt a single contribution-aware density mechanism, not a per-room strategy chosen by dominant
-light type (rejected below). Ship the measure-then-coarsen storage win first — it is already
-validated and light-type-blind. Add a forward contribution predictor for the bake-time win second.
+light type (rejected below). Ship the measure-then-coarsen storage win first — its coarsenability is
+already measured here, and it is light-type-blind. Add a forward contribution predictor for the bake-time win second.
 Expose creative control as an author fidelity threshold, not compiler light classification.
 
 ## What was measured, and how
@@ -81,9 +83,11 @@ mechanism conclusions are content-independent; the magnitudes are a floor, not a
 
 ## Measured finding 1 — coarsenability tracks lighting structure
 
-Coarsenable = brick stored at L1 or L2 rather than dense L0. `ratio` = projected SH size vs the dense
-uniform baseline. By the read-equivalence in the superseded draft's Goal, the delta portion of that
-projected size is also projected per-frame compose traffic — so this is a storage *and* bandwidth number.
+Coarsenable = brick stored at L1 or L2 rather than dense L0. `ratio` = projected total SH size vs the
+dense uniform baseline (`ratio_to_uniform` blends base + composed atlas + delta). It is a storage
+number. By the read-equivalence in the superseded draft's Goal, the *delta portion* alone maps to
+per-frame compose traffic; the blended ratio here is not itself a clean bandwidth figure — a
+delta-only breakout is left to v2.
 
 | threshold | mini (uniform) | campaign (dispersed) | kinematic-platform (theatrical) |
 |---|---|---|---|
@@ -113,21 +117,27 @@ maximizes.
   **−0.765** among bricks within 6 m — more than double the distance correlation.
 
 **A distance-only classifier over-protects.** Near each spot, ~16 in-cone bricks need density and
-~198 out-of-cone bricks do not; distance keeps all ~214 dense. This is the concrete failure mode of
-the archived `adaptive-base-probe-density` surface/distance classifier. The correct predictor is
-proximity to *delivered light* — cone + falloff + facing — which is the same fuller contribution test
-the cold lightmap already applies and the SH cull still lacks
-(`cold-bake-reaching-light-spike/out-of-scope-findings.md` §4). One mechanism serves both.
+~198 out-of-cone bricks do not; distance-to-light keeps all ~214 dense. This measurement refutes
+distance-to-**light** directly. The archived `adaptive-base-probe-density` classifier keyed on
+*surface* distance (distance to nearest world triangle), a different predictor this spike did not
+measure — but it shares the same cone-blindness, and the archived plan already self-invalidated it on
+review. The correct predictor is proximity to *delivered light* — cone + falloff + facing. That is
+the same contribution signal the cold lightmap already applies and the SH cull still lacks
+(`cold-bake-reaching-light-spike/out-of-scope-findings.md` §4); §4's byte-identical result covers the
+zero-contribution *drop* boundary specifically, and the continuous L0/L1/L2 density gradient is this
+note's extension of the same signal.
 
-Distance is not a rival predictor to discard — it is the degenerate case of contribution for an
-omnidirectional light. A point light is a spot with a 360° cone. Evaluating delivered irradiance
-handles points and spots with one function; the cone term is identity for points.
+Distance is not a rival predictor to discard — it is a lossy *input* to contribution, not a rival to
+it. A point light is a spot with a 360° cone; evaluating delivered irradiance (falloff + facing, plus
+the cone for spots) handles points and spots with one function.
 
 ## Measured finding 3 — composition sets the coarsenability ceiling
 
-The base indirect bounce coarsens almost losslessly on every fixture (base-L2 mean error ~0.005).
-The error that forces density appears only after composition through the receiver (base + direct +
-delta SH):
+The base indirect bounce coarsens far more readily than the composed field on every fixture (base-L2
+mean error 0.005–0.015, vs composed-L2 mean 0.03–0.09 below). The gate is on *max* per-texel error,
+not mean, so a low base mean bounds the typical brick, not every brick — but the base-to-composed gap
+is large and consistent across all three. The error that forces density appears only after
+composition through the receiver (base + direct + delta SH):
 
 | fixture | base-L2 mean | composed-L2 mean | amplification |
 |---|---|---|---|
@@ -172,10 +182,12 @@ as a family of strategies chosen by a room's dominant light type is the wrong sh
 
 **Sequence the two wins.**
 
-1. **Measure-then-coarsen (storage) first.** `--sh-analyze` / `--sh-coarsen` already coarsen each
-   brick by its *measured* composed error. This is strategy-free and light-type-blind — the identical
-   pass produced all three results above. It delivers the storage/bandwidth win (~0.22× on the
-   theatrical map) with no predictor at all. This is the validated, lower-risk core.
+1. **Measure-then-coarsen (storage) first.** `--sh-analyze` classifies each brick by its *measured*
+   composed error; `--sh-coarsen` applies it. This is strategy-free and light-type-blind — the
+   identical analysis pass produced all three results above. It projects a large storage reduction
+   (~0.22× total SH on the theatrical map) with no predictor at all. The coarsenability is measured;
+   the end-to-end reduction is projected via `--sh-analyze`, since a `--sh-coarsen` bake plus runtime
+   read was not run here. This is the lower-risk core.
 2. **Forward contribution prediction (bake time) second.** To also cut bake work, predict density
    before baking from the contribution field, so dense probes are skipped where coarse suffices. Only
    this needs a predictor — and it is the single contribution-aware function, not per-room strategies.

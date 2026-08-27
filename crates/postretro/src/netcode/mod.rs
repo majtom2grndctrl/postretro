@@ -473,7 +473,7 @@ impl ShotId {
     }
 }
 
-const HIT_RANGE_TOLERANCE: f32 = 1.25;
+pub(crate) const HIT_RANGE_TOLERANCE: f32 = 1.25;
 pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
 /// Two seconds comfortably covers the conditioned co-op link's RTT and leaves
 /// room for a delayed rendered-frame declaration after projectile travel.

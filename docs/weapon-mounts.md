@@ -100,9 +100,9 @@ cargo run -p xtask -- solve-weapon-mount --read-muzzle-offset \
 ```
 
 The tool prints `muzzleOffset: [x, y, z]`. Copy the array into the weapon
-descriptor. It is the socket's raw glTF rest translation in model-local metres:
-the same mesh-node-local frame and authored scale as the viewmodel vertices.
-There is no Blender up-axis conversion or import-time rescaling.
+descriptor. It is the socket's composed rigid rest translation in
+mesh-node-local metres, with the same authored scale as the viewmodel vertices.
+There is no coordinate conversion or import-time rescaling.
 
 This author-time read is separate from the skinned character mount solver. It
 requires a rigid rest socket on the viewmodel and reports an error if `"muzzle"`

@@ -217,11 +217,12 @@ pub fn resolve_socket_frame_in_model(
     })
 }
 
-/// Read the authoring-only model-local muzzle point from a rigid viewmodel socket.
+/// Read the authoring-only mesh-node-local muzzle point from a rigid viewmodel socket.
 ///
 /// Unlike [`resolve_socket_frame_in_model`], this never samples a skeleton or
-/// converts between coordinate systems. The rigid rest translation and mesh
-/// vertices are both expressed in the viewmodel mesh node's raw glTF frame.
+/// converts between coordinate systems. The composed rigid rest translation
+/// and mesh vertices are both expressed in the viewmodel mesh node's raw glTF
+/// frame.
 pub fn read_muzzle_offset_in_model(model: &LoadedModel) -> Result<Vec3, MountSolveError> {
     match model.sockets.get("muzzle") {
         Some(SocketBinding::RigidRest(transform)) => Ok(transform.w_axis.truncate()),

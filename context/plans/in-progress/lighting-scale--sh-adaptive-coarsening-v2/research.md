@@ -25,7 +25,7 @@ requested `--sh-analyze`.
 | `/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/stress-warren-showcase.coarsened.capture.png` | `a5df81547faccf0a541d8271219d4569d8e144ba251352501d250b4fe0f2c097` | Coarsened comparison proxy. |
 
 The generated binary/PNG artifacts intentionally remain outside Git because
-they total roughly 127 MiB. The corresponding `*.sh-analysis.json` files and
+they total roughly 137 MiB. The corresponding `*.sh-analysis.json` files and
 the temporary PRL inspectors are retained alongside them in the same directory.
 
 Baseline invocation (default-off: no `--sh-coarsen`):
@@ -334,3 +334,109 @@ kinematic-movers source. Occlusion's literal-I5 pass does not change the
 Task-1 **no-promote** finding: the retained showcase still fails literal
 all-cell I5 in ids 27/45 and both fixtures lack timestamp-capable timing
 evidence.
+
+## Correction and supplemental fixture: `kinematic-platform.map`
+
+The user subsequently confirmed that
+`content/dev/maps/kinematic-platform.map`—not the absent
+`kinematic-movers.map`—is the intended kinematic fixture. The prior filename
+scan is retained as a record of the original spelling; this fixture was not
+substituted until that confirmation. It uses the same default-off/on controls
+as the preceding two fixtures:
+
+```text
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/kinematic-platform.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.uniform-l0.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.uniform-l0.sh-analysis.json \
+  --no-cache --no-tui
+
+cargo run --release -p postretro-level-compiler -- \
+  content/dev/maps/kinematic-platform.map \
+  -o /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.coarsened.prl \
+  --sh-probe-spacing 10.0 --lightmap-density 0.25 \
+  --sh-delta-max-size 64MiB --sh-analyze \
+  --sh-analyze-out /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.coarsened.sh-analysis.json \
+  --sh-coarsen --no-cache --no-tui
+```
+
+Both completed successfully with the fixture's seven pre-existing
+missing-`style` light warnings. Ids 27 and 45 are absent (the compiler skipped
+the indirect and animated-direct delta stages); id 41 is the only present
+delta section.
+
+### Retained artifacts and emitted PRL facts
+
+| Artifact | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `kinematic-platform.uniform-l0.prl` | `bf5a5451442dffd116952f9228f71573e7157a3e9144a30972cda95898c93cd3` | 4,909,069 |
+| `kinematic-platform.coarsened.prl` | `bf5a5451442dffd116952f9228f71573e7157a3e9144a30972cda95898c93cd3` | 4,909,069 |
+| `kinematic-platform.uniform-l0.capture.png` | `803b6602cc34e2b120fde910bd3063c376b408527c3c2901f25844d73ed5b311` | 237,010 |
+| `kinematic-platform.coarsened.capture.png` | `803b6602cc34e2b120fde910bd3063c376b408527c3c2901f25844d73ed5b311` | 237,010 |
+
+The equal PRL hashes are the retained default-off baseline and explicit-on
+comparison result, not a copied artifact. The raw loaded containers are PRL
+v4; the present id-41 payload remains version 3 (the unchanged contract is
+id-27/id-41/id-45 = 5/3/3 when each section is present).
+
+The uniform aggregate `delta_subblocks` payload is **133,632 B** (0.1274 MiB,
+0.1991% of the 64 MiB cap); the explicit-coarsen aggregate is the same. The
+cap accepted both with no coarsen-to-fit retry.
+
+| Section | Uniform payload | Coarsened payload | Ratio | Emitted post-smoothing levels, uniform → on |
+| --- | ---: | ---: | ---: | --- |
+| id 27 indirect | absent | absent | — | — |
+| id 41 direct | 133,632 B | 133,632 B | 1.0000× | 6/0/0 → 6/0/0 (L0/L1/L2) |
+| id 45 animated direct | absent | absent | — | — |
+| **Aggregate** | **133,632 B** | **133,632 B** | **1.0000×** | — |
+
+The emitted PRL is therefore a valid P15-style N=0-coarsenable result, rather
+than evidence of an activation failure. All reported levels come from the
+loaded PRL, not the analyzer's independent reclassification.
+
+### Runtime projections, reconstruction, and literal I5
+
+The all-selected id-41 per-frame projection is **133,632 B/frame** before and
+after (1.0000×). Ids 27/45 have no diagnostic traffic because they are absent.
+The exact renderer upload-layout resident calculation is likewise unchanged:
+id 41 / all delta resources are **133,796 B → 133,796 B** (1.0000×), comprising
+the payload plus six × three-u32 cell metadata values, seven CSR offsets, and
+16 CSR light ids.
+
+No emitted cell is coarsened, so the retained-L0 versus emitted decode has zero
+coarsened cells and reports `rel_p95 = 0.0`, `rel_max = 0.0`; it passes the
+pinned error limits vacuously. This is not a savings claim. The raw all-cell,
+x-fastest face scan finds zero violations in present id 41 (1×2×3 affinity
+grid); ids 27/45 are absent. Thus this fixture **passes literal I5 for every
+present section**. The supporting analyzer diagnostic is 7 pairs, 3
+cross-level pairs, `residual_max = 0.0327905`, and
+`residual_mean = 0.0024592555`; its candidate cross-level count does not alter
+the emitted-PRL result and is not a seam gate.
+
+### Load/compose proxy and timing
+
+Both PRLs were loaded and composed through the renderer-owned whole-frame
+capture permitted by `rendering_pipeline.md` §7.8. The capture uses transformed
+player spawn `[-6.5024, 1.2192, -3.2512]`, yaw/pitch 0°, 100° FOV, and 1280×720
+RGBA8 output. The two capture hashes match and their direct pixel diff is zero.
+This is a passing I1 proxy for the unchanged dense id-35 output/binding
+contract, but it is necessarily exact because the PRLs are byte-identical.
+Manual inspection found no discontinuity; missing PRM sidecars yield magenta
+checkerboard placeholders, so it is not material-complete visual sign-off.
+
+```text
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.uniform-l0.capture.json
+cargo run -p xtask -- capture /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.coarsened.capture.json
+
+POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools -- \
+  /private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/kinematic-platform.uniform-l0.prl
+```
+
+The windowed baseline load reaches the renderer, but the selected adapter again
+lacks `TIMESTAMP_QUERY` and/or `TIMESTAMP_QUERY_INSIDE_ENCODERS`; no compose
+duration or ratio is available. This correct fixture adds neither a dominant
+id-41 saving nor timestamp evidence, and therefore does not change the
+Task-1 **no-promote** result already set by the showcase's literal I5 failure
+and missing timing evidence.

@@ -453,6 +453,8 @@ declare module "postretro" {
     viewmodel?: string;
     /** Optional per-weapon first-person placement. Position uses metres from screen center (right/up/forward map to +X/+Y/-Z) and rotation uses degrees. Whole-value resolution is per-instance (future) > this field > character (future) > mod `defaultWeaponPlacement` > legacy BASE_OFFSET with zero rotation. v1 supplies no character or per-instance placement. It never changes the third-person hand socket. */
     placement?: WeaponPlacementDescriptor;
+    /** Optional model-local [x, y, z] offset in metres in the viewmodel's own frame. Omit it to spawn projectiles at the camera eye; when set, it moves the projectile spawn to the barrel while still converging on the crosshair. Author values come from the viewmodel rigid `muzzle` socket read. */
+    muzzleOffset?: readonly [number, number, number];
     /** Optional weapon resource tuning. Omit to preserve unlimited-fire behavior. */
     resource?: WeaponResource;
     /** Lowering duration in milliseconds. Optional; defaults to 0, which repoints within the same tick. */

@@ -8,7 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use glam::Vec3;
 use postretro_foundation::Vec3Lit;
+
+use crate::registry::EntityId;
 
 pub use postretro_foundation::FalloffKind;
 
@@ -102,8 +105,18 @@ pub struct LightComponent {
     /// render pose. World-query snapshots omit this field.
     #[serde(default)]
     pub follow_transform: bool,
+    /// Runtime-only parent relation for a map light carried by a mover. Raw
+    /// entity ids are re-resolved on every level install, never serialized.
+    #[serde(skip)]
+    pub carrier: Option<LightCarrier>,
     #[serde(default)]
     pub animation: Option<LightAnimation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightCarrier {
+    pub mover_entity: EntityId,
+    pub local_offset: Vec3,
 }
 
 #[cfg(test)]
@@ -125,6 +138,7 @@ mod tests {
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: Some(LightAnimation {
                 period_ms: 1000.0,
                 phase: Some(0.25),

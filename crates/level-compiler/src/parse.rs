@@ -14,9 +14,9 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode, MapData,
-    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight,
-    MapTriggerVolume, NavParams, TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
+    LightType, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint,
+    MapLight, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{
@@ -1206,6 +1206,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         &kinematic_waypoints,
         scale,
     )?;
+    let carried_light_links = resolve_carried_light_links(&mut lights, &kinematic_movers);
 
     // Stat logging
     let total_brushes = geo_map.brushes.len();
@@ -1226,6 +1227,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entity_brushes: entity_brushes_summary,
         entities,
         lights,
+        carried_light_links,
         light_start_active_defaults,
         data_script,
         map_entities,
@@ -1240,6 +1242,102 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         nav_params,
         entity_shadow_params,
     })
+}
+
+/// Resolve dynamic-light carrier names after all movers are available.
+///
+/// Carrier bindings are presentation-only authoring, so malformed bindings warn
+/// and leave the light unbound rather than failing the map build. Baked lights
+/// cannot carry because their contribution is already fixed in the bake.
+fn resolve_carried_light_links(
+    lights: &mut [MapLight],
+    movers: &[MapKinematicMover],
+) -> Vec<crate::map_data::CarriedLightLink> {
+    let mut links = Vec::new();
+
+    for (source_light_index, light) in lights.iter_mut().enumerate() {
+        if light.carrier.is_empty() {
+            continue;
+        }
+
+        if light.is_dynamic && light.bake_only {
+            log::warn!(
+                "[Compiler] dynamic bake-only light at {:?} ignores carrier `{}`; bake-only lights have no runtime presence and cannot be carried",
+                light.origin,
+                light.carrier,
+            );
+            light.carrier.clear();
+            continue;
+        }
+
+        if !light.is_dynamic {
+            log::warn!(
+                "[Compiler] baked light at {:?} ignores carrier `{}`; baked lights cannot be carried",
+                light.origin,
+                light.carrier,
+            );
+            light.carrier.clear();
+            continue;
+        }
+
+        let matching_movers: Vec<_> = movers
+            .iter()
+            .filter(|mover| mover.name == light.carrier)
+            .collect();
+        let mover = match matching_movers.as_slice() {
+            [] => {
+                log::warn!(
+                    "[Compiler] dynamic light at {:?} carrier `{}` matches no kinematic_mover; leaving it unbound",
+                    light.origin,
+                    light.carrier,
+                );
+                continue;
+            }
+            [mover] => *mover,
+            movers => {
+                let duplicate_movers = movers
+                    .iter()
+                    .map(|mover| format!("`{}` (id {})", mover.name, mover.mover_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                log::warn!(
+                    "[Compiler] dynamic light at {:?} carrier `{}` matches duplicate kinematic_movers {duplicate_movers}; leaving it unbound",
+                    light.origin,
+                    light.carrier,
+                );
+                continue;
+            }
+        };
+
+        if light.light_type == LightType::Spot && mover.spin_axis != [0.0; 3] {
+            log::warn!(
+                "[Compiler] dynamic spot light at {:?} carrier `{}` targets spinner-capable kinematic_mover `{}` (id {}); cone re-aim under rotation is deferred, carrying position only",
+                light.origin,
+                light.carrier,
+                mover.name,
+                mover.mover_id,
+            );
+        }
+
+        let derived_offset = light.origin - mover.origin;
+        let local_offset = derived_offset.to_array().map(|value| value as f32);
+        if !local_offset.iter().all(|component| component.is_finite()) {
+            log::warn!(
+                "[Compiler] dynamic light at {:?} carrier `{}` produces local offset {derived_offset:?} outside the runtime f32 range; leaving it unbound",
+                light.origin,
+                light.carrier,
+            );
+            continue;
+        }
+
+        links.push(crate::map_data::CarriedLightLink {
+            source_light_index,
+            mover_id: mover.mover_id,
+            local_offset,
+        });
+    }
+
+    links
 }
 
 /// Brush hulls for `brush_ids`, with the ids dropped.
@@ -2416,6 +2514,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
     // -- Coordinate transform (axis swizzle only) --
     // These tests verify the swizzle in isolation; they do not include the unit
     // scale because `quake_to_engine` is a direction-vector transform used for
@@ -2497,6 +2598,35 @@ mod tests {
 
     fn kinematic_test_map(path_next: &str) -> String {
         kinematic_test_map_with_nexts(path_next, "")
+    }
+
+    fn kinematic_map_with_light(
+        map: String,
+        classname: &str,
+        origin: &str,
+        carrier: Option<&str>,
+        extra_properties: &str,
+    ) -> String {
+        let carrier_property = carrier
+            .map(|carrier| format!("\"carrier\" \"{carrier}\"\n"))
+            .unwrap_or_default();
+        let light = format!(
+            "// entity 4\n{{\n\"classname\" \"{classname}\"\n\"origin\" \"{origin}\"\n\"light\" \"300\"\n\"_color\" \"255 255 255\"\n\"_falloff_range\" \"512\"\n\"style\" \"0\"\n{carrier_property}{extra_properties}}}\n"
+        );
+
+        map.replacen("// entity 3", &format!("{light}// entity 3"), 1)
+    }
+
+    fn kinematic_map_with_duplicate_named_mover(map: String) -> String {
+        let mover_start = map
+            .find("// entity 1")
+            .expect("kinematic fixture must contain its mover");
+        let waypoint_start = map
+            .find("// entity 2")
+            .expect("kinematic fixture must contain its first waypoint");
+        let duplicate = map[mover_start..waypoint_start].replacen("// entity 1", "// entity 5", 1);
+
+        map.replacen("// entity 2", &format!("{duplicate}// entity 2"), 1)
     }
 
     fn kinematic_test_map_with_nexts(path_next: &str, wp_b_next: &str) -> String {
@@ -3926,6 +4056,274 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_light_carrier_resolves_to_mover_local_offset() {
+        let map_text = kinematic_test_map("wp_b").replacen(
+            r#""origin" "0 0 0"
+}
+// entity 3"#,
+            r#""origin" "0 0 0"
+}
+// entity 4
+{
+"classname" "light_dynamic"
+"origin" "0 0 64"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "512"
+"carrier" "lift_a"
+}
+// entity 3"#,
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("carrier map should parse");
+
+        assert_eq!(map_data.lights.len(), 1);
+        assert!(map_data.lights[0].is_dynamic);
+        assert_eq!(map_data.lights[0].carrier, "lift_a");
+        assert_eq!(map_data.kinematic_movers.len(), 1);
+        assert_eq!(map_data.kinematic_movers[0].name, "lift_a");
+        assert_eq!(map_data.carried_light_links.len(), 1);
+        let link = &map_data.carried_light_links[0];
+        assert_eq!(link.source_light_index, 0);
+        assert_eq!(link.mover_id, map_data.kinematic_movers[0].mover_id);
+        assert_eq!(
+            link.local_offset,
+            (map_data.lights[0].origin - map_data.kinematic_movers[0].origin)
+                .to_array()
+                .map(|value| value as f32),
+        );
+    }
+
+    // Regression: a finite compiler offset could narrow to infinity in the V6
+    // carried-light record and later poison GPU light and influence positions.
+    #[test]
+    fn dynamic_light_carrier_unrepresentable_local_offset_warns_and_stays_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        );
+        let mut map_data = parse_inline_map(&map_text).expect("carrier map should parse");
+        map_data.lights[0].origin = DVec3::new(3.0e38, 0.0, 0.0);
+        map_data.kinematic_movers[0].origin = DVec3::new(-3.0e38, 0.0, 0.0);
+        let derived_offset = map_data.lights[0].origin - map_data.kinematic_movers[0].origin;
+        assert!((map_data.lights[0].origin.x as f32).is_finite());
+        assert!((map_data.kinematic_movers[0].origin.x as f32).is_finite());
+        assert!(derived_offset.is_finite());
+        assert!(!(derived_offset.x as f32).is_finite());
+
+        let capture = LogCapture::start();
+        let links = resolve_carried_light_links(&mut map_data.lights, &map_data.kinematic_movers);
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "outside the runtime f32 range; leaving it unbound",
+        );
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn dynamic_light_carrier_missing_mover_warns_and_leaves_light_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("missing_lift"),
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("missing carrier must not fail parsing");
+
+        let light = &map_data.lights[0];
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "dynamic light at {:?} carrier `missing_lift` matches no kinematic_mover",
+                light.origin
+            ),
+        );
+        assert!(
+            map_data.carried_light_links.is_empty(),
+            "a missing carrier must leave the dynamic light unbound"
+        );
+    }
+
+    #[test]
+    fn dynamic_light_carrier_duplicate_movers_warns_and_leaves_light_unbound() {
+        let map_text = kinematic_map_with_duplicate_named_mover(kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        ));
+        let capture = LogCapture::start();
+        let map_data =
+            parse_inline_map(&map_text).expect("duplicate mover names must not fail parsing");
+
+        assert_eq!(
+            map_data.kinematic_movers.len(),
+            2,
+            "the carrier diagnostic must not become a global unique-name validation"
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "dynamic light at {:?} carrier `lift_a`",
+                map_data.lights[0].origin
+            ),
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "carrier `lift_a` matches duplicate kinematic_movers `lift_a` (id 0), `lift_a` (id 1)",
+        );
+        assert!(
+            map_data.carried_light_links.is_empty(),
+            "a light cannot bind to more than one mover"
+        );
+    }
+
+    #[test]
+    fn baked_light_carrier_warns_clears_binding_and_preserves_static_light_input() {
+        let bound_map = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        );
+        let capture = LogCapture::start();
+        let bound = parse_inline_map(&bound_map).expect("baked carrier must not fail parsing");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "baked light at {:?} ignores carrier `lift_a`; baked lights cannot be carried",
+                bound.lights[0].origin
+            ),
+        );
+        assert!(!bound.lights[0].is_dynamic);
+        assert!(bound.lights[0].carrier.is_empty());
+        assert!(bound.carried_light_links.is_empty());
+
+        capture.clear();
+        let unbound_map =
+            kinematic_map_with_light(kinematic_test_map("wp_b"), "light", "0 0 64", None, "");
+        let unbound = parse_inline_map(&unbound_map).expect("unbound baked light must parse");
+
+        assert_eq!(
+            bound.lights[0], unbound.lights[0],
+            "clearing a baked carrier must leave the static-bake input unchanged"
+        );
+    }
+
+    // Regression: dynamic bake-only carrier links silently disappeared during AlphaLights packing.
+    #[test]
+    fn dynamic_bake_only_light_carrier_warns_and_leaves_light_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_test_map("wp_b"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "\"_bake_only\" \"1\"\n",
+        );
+        let capture = LogCapture::start();
+        let map_data =
+            parse_inline_map(&map_text).expect("dynamic bake-only carrier must not fail parsing");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "dynamic bake-only light at {:?} ignores carrier `lift_a`; bake-only lights have no runtime presence and cannot be carried",
+                map_data.lights[0].origin
+            ),
+        );
+        assert!(map_data.lights[0].is_dynamic);
+        assert!(map_data.lights[0].bake_only);
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(
+            map_data.carried_light_links.is_empty(),
+            "a bake-only light cannot emit a runtime mover link"
+        );
+    }
+
+    #[test]
+    fn dynamic_spot_carrier_spinner_capability_warns_but_retains_position_link() {
+        let mover_map = kinematic_test_map("wp_b").replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"spin_axis\" \"0 0 2\"\n\"spin_speed\" \"0\"\n",
+            1,
+        );
+        let map_text = kinematic_map_with_light(
+            mover_map,
+            "light_dynamic_spot",
+            "0 0 64",
+            Some("lift_a"),
+            "\"angles\" \"-90 0 0\"\n\"_cone\" \"30\"\n",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("spinner-capable spot map must parse");
+
+        let mover = &map_data.kinematic_movers[0];
+        assert_ne!(
+            mover.spin_axis, [0.0; 3],
+            "the warning contract keys spinner capability on its authored axis"
+        );
+        assert_eq!(
+            mover.spin_speed_deg_s, 0.0,
+            "the test proves a zero initial spin speed does not suppress the warning"
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!(
+                "dynamic spot light at {:?} carrier `lift_a`",
+                map_data.lights[0].origin
+            ),
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "spinner-capable kinematic_mover `lift_a` (id 0); cone re-aim under rotation is deferred, carrying position only",
+        );
+        assert_eq!(
+            map_data.carried_light_links.len(),
+            1,
+            "the spot retains its carried-position relation despite the deferred cone aim"
+        );
+    }
+
+    #[test]
+    fn blank_or_cleared_dynamic_light_carrier_is_silent_and_unbound() {
+        let map_text = kinematic_map_with_light(
+            kinematic_map_with_light(
+                kinematic_test_map("wp_b"),
+                "light_dynamic",
+                "0 0 64",
+                None,
+                "",
+            ),
+            "light_dynamic",
+            "0 0 96",
+            Some("   "),
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("blank carriers must parse normally");
+
+        assert!(map_data.lights.iter().all(|light| light.is_dynamic));
+        assert!(map_data.lights.iter().all(|light| light.carrier.is_empty()));
+        assert!(map_data.carried_light_links.is_empty());
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "absent and cleared carriers must not produce a warning"
+        );
+    }
+
+    #[test]
     fn trenchbroom_func_group_brushes_are_flattened_into_static_world() {
         // Regression: TrenchBroom editor groups are saved as `func_group`
         // brush entities; treating every brush entity as non-static made
@@ -4062,6 +4460,7 @@ mod tests {
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
             &[],
+            &[],
             &mut texture_names,
         )
         .expect("movers should emit kinematic geometry");
@@ -4093,6 +4492,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &[],
             &mut texture_names,
         )
@@ -4128,6 +4528,7 @@ mod tests {
         let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &[],
             &mut texture_names,
         )

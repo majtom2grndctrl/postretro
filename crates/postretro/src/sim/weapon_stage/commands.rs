@@ -536,6 +536,7 @@ pub(crate) fn spawn_projectile(
                 is_dynamic: true,
                 animated_slot: None,
                 follow_transform: true,
+                carrier: None,
                 animation: None,
             },
         );

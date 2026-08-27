@@ -2148,6 +2148,7 @@ mod tests {
     fn point_light_above() -> MapLight {
         MapLight {
             origin: DVec3::new(0.5, 1.0, 0.5),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -3256,6 +3257,7 @@ mod tests {
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let light = MapLight {
             origin: DVec3::new(1.0, 2.0, 1.0),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],

@@ -157,6 +157,82 @@ fn lexical_normalize(path: PathBuf) -> PathBuf {
     normalized
 }
 
+/// Bind PRL member-light links only after the complete mover spawn result is
+/// available. This is intentionally windowed: [`App::install_level_payload`]
+/// owns both the map-light bridge and the mover spawn result, while the
+/// renderer-free installer owns neither bridge nor a reason to bind lights.
+///
+/// A failed all-or-nothing mover spawn leaves every member unbound. The next
+/// level install builds a new bridge and registry, then calls this pass again;
+/// raw entity ids never survive a reload.
+fn resolve_carried_light_bindings_after_mover_spawn(
+    geometry: &postretro_level_loader::KinematicGeometry,
+    spawned_mover_entities: &[postretro_entities::EntityId],
+    light_bridge: &crate::scripting_systems::light_bridge::LightBridge,
+    registry: &mut postretro_entities::EntityRegistry,
+) {
+    use postretro_entities::components::light::{LightCarrier, LightComponent};
+
+    // The spawner is all-or-nothing and returns ids order-aligned to mover
+    // records. Never zip a partial result: that could bind a light to the
+    // wrong mover after a load fault.
+    let mover_entity_by_id = if spawned_mover_entities.len() == geometry.movers.len() {
+        geometry
+            .movers
+            .iter()
+            .zip(spawned_mover_entities.iter().copied())
+            .map(|(mover, entity)| (mover.mover_id, entity))
+            .collect::<std::collections::HashMap<_, _>>()
+    } else {
+        log::warn!(
+            "[Loader] kinematic mover spawn count did not match level geometry; carried lights remain unbound"
+        );
+        std::collections::HashMap::new()
+    };
+
+    for mover in &geometry.movers {
+        for member in &mover.carried_lights {
+            let Some(&mover_entity) = mover_entity_by_id.get(&mover.mover_id) else {
+                log::warn!(
+                    "[Loader] carried AlphaLight {} could not bind: mover {} was not spawned",
+                    member.alpha_light_index,
+                    mover.mover_id,
+                );
+                continue;
+            };
+            let Some(light_entity) =
+                light_bridge.entity_for_map_index(member.alpha_light_index as usize)
+            else {
+                log::warn!(
+                    "[Loader] carried AlphaLight {} could not bind: map light entity is unavailable",
+                    member.alpha_light_index,
+                );
+                continue;
+            };
+            let Ok(mut light) = registry
+                .get_component::<LightComponent>(light_entity)
+                .cloned()
+            else {
+                log::warn!(
+                    "[Loader] carried AlphaLight {} could not bind: light component is unavailable",
+                    member.alpha_light_index,
+                );
+                continue;
+            };
+            light.carrier = Some(LightCarrier {
+                mover_entity,
+                local_offset: member.local_offset,
+            });
+            if let Err(error) = registry.set_component(light_entity, light) {
+                log::warn!(
+                    "[Loader] carried AlphaLight {} could not bind: {error}",
+                    member.alpha_light_index,
+                );
+            }
+        }
+    }
+}
+
 enum LoadingPoll {
     Pending,
     Disconnected,
@@ -915,6 +991,23 @@ impl App {
             },
         );
 
+        // Lights are installed before movers. This synchronous pass is the
+        // only windowed binding funnel, so it runs before the first
+        // LightBridge::update on both initial loads and later reloads.
+        {
+            let level = self
+                .level
+                .as_ref()
+                .expect("level installed before carried-light resolution");
+            let mut registry = script_ctx.registry.borrow_mut();
+            resolve_carried_light_bindings_after_mover_spawn(
+                &level.kinematic_geometry,
+                &products.spawned_mover_entities,
+                &session.light_bridge,
+                &mut registry,
+            );
+        }
+
         // `levelLoad` may already have queued system commands during the CPU
         // install. Bind the final composed reaction set before that queue is
         // next drained, so an inline setState IR is evaluated rather than
@@ -1389,6 +1482,9 @@ pub(crate) fn resolved_spawner_mesh_models(
 pub(crate) struct WorldInstallProducts {
     /// Static colliders for every loaded kinematic mover.
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
+    /// Spawned mover entity ids aligned with `KinematicGeometry::movers`.
+    /// A failed all-or-nothing mover spawn returns an empty vector.
+    pub(crate) spawned_mover_entities: Vec<postretro_entities::registry::EntityId>,
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
     /// Host-only trigger-pool outcome retained by `App` for diagnostics and
@@ -2198,6 +2294,135 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
         }
+    }
+
+    #[test]
+    fn windowed_carrier_binding_reresolves_before_first_bridge_update_after_reload() {
+        use postretro_entities::components::light::LightComponent;
+        use postretro_level_loader::{KinematicGeometry, LoadedKinematicMover, LoadedMemberLight};
+
+        fn geometry() -> KinematicGeometry {
+            KinematicGeometry {
+                movers: vec![LoadedKinematicMover {
+                    mover_id: 71,
+                    name: "reload_lift".to_string(),
+                    tags: Vec::new(),
+                    origin: Vec3::ZERO,
+                    path: "reload_lift_start".to_string(),
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    move_mode: 0,
+                    start_on_spawn: false,
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    face_meta: Vec::new(),
+                    spin_axis: Vec3::ZERO,
+                    spin_speed_deg_s: 0.0,
+                    spin_accel_deg_s2: 0.0,
+                    carry_yaw: false,
+                    block_policy: "displace".to_string(),
+                    crush_damage: 0.0,
+                    crush_interval_ms: 0.0,
+                    auto_close_ms: None,
+                    open_event: None,
+                    close_event: None,
+                    blocked_event: None,
+                    crush_event: None,
+                    sealed_portal_ids: Vec::new(),
+                    carried_lights: vec![LoadedMemberLight {
+                        alpha_light_index: 0,
+                        local_offset: Vec3::new(2.0, 0.0, 0.0),
+                    }],
+                }],
+                waypoints: Vec::new(),
+            }
+        }
+
+        let mut carried_light = map_light("e22_carried", [2.0, 0.0, 0.0]);
+        carried_light.is_dynamic = true;
+
+        // This is the same windowed half of install_level_payload: the bridge
+        // creates light entities first, mover spawn completes, then the pass
+        // binds before LightBridge::update gets a frame.
+        let first_geometry = geometry();
+        let mut first_registry = postretro_entities::EntityRegistry::new();
+        let mut first_bridge = crate::scripting_systems::light_bridge::LightBridge::new();
+        first_bridge.populate_from_level(&[carried_light.clone()], &mut first_registry, 0);
+        let first_mover = first_registry.spawn(Transform {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        resolve_carried_light_bindings_after_mover_spawn(
+            &first_geometry,
+            &[first_mover],
+            &first_bridge,
+            &mut first_registry,
+        );
+        let first_light = first_bridge.entity_for_map_index(0).unwrap();
+        assert_eq!(
+            first_registry
+                .get_component::<LightComponent>(first_light)
+                .unwrap()
+                .carrier
+                .as_ref()
+                .unwrap()
+                .mover_entity,
+            first_mover,
+            "the first windowed install binds before its first bridge frame"
+        );
+        assert!(
+            first_bridge.update(&mut first_registry, 0.0, 0.0).is_some(),
+            "the first bridge update receives the already-bound carrier"
+        );
+
+        // Level unload clears bridge + registry. Make the replacement mover
+        // occupy a distinct raw id so this asserts an actual re-resolution,
+        // rather than accidentally passing because an allocator reused it.
+        let reloaded_geometry = geometry();
+        let mut reloaded_registry = postretro_entities::EntityRegistry::new();
+        let mut reloaded_bridge = crate::scripting_systems::light_bridge::LightBridge::new();
+        reloaded_bridge.populate_from_level(&[carried_light], &mut reloaded_registry, 0);
+        let _unrelated = reloaded_registry.spawn(Transform::default());
+        let reloaded_mover = reloaded_registry.spawn(Transform {
+            position: Vec3::new(30.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        assert_ne!(first_mover, reloaded_mover, "fixture needs fresh mover ids");
+        resolve_carried_light_bindings_after_mover_spawn(
+            &reloaded_geometry,
+            &[reloaded_mover],
+            &reloaded_bridge,
+            &mut reloaded_registry,
+        );
+
+        let reloaded_light = reloaded_bridge.entity_for_map_index(0).unwrap();
+        assert_eq!(
+            reloaded_registry
+                .get_component::<LightComponent>(reloaded_light)
+                .unwrap()
+                .carrier
+                .as_ref()
+                .unwrap()
+                .mover_entity,
+            reloaded_mover,
+            "reload must not retain the first level's raw mover entity id"
+        );
+        assert!(
+            reloaded_bridge
+                .update(&mut reloaded_registry, 0.0, 0.0)
+                .is_some(),
+            "the replacement carrier is also present before its first bridge update"
+        );
+        let reloaded_position = Vec3::from_array(
+            reloaded_bridge.collect_all_as_map_lights(&reloaded_registry, 0.0)[0]
+                .0
+                .origin
+                .map(|value| value as f32),
+        );
+        assert!(
+            reloaded_position.distance(Vec3::new(32.0, 0.0, 0.0)) <= 1.0e-6,
+            "the reloaded bridge composes the fresh mover pose, not the authored origin"
+        );
     }
 
     fn pool_descriptor(tag: &str, arm: TriggerPoolArm, levels: &[&str]) -> TriggerPoolDescriptor {

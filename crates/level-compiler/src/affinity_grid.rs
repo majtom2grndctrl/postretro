@@ -424,6 +424,106 @@ pub(crate) fn csr_entry_cells(affinity_offsets: &[u32]) -> Vec<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// Spike instrumentation (cold-bake reaching-light measurement).
+//
+// The cold SH and cold lightmap bakes gate on the *receiver's* world position
+// (a shadow-ray hit point / a texel), not a grid probe index, so they need a
+// world-space → affinity-cell mapping and a per-cell reaching-light count. Both
+// mirror `decompose_affinity_for_lights` exactly (same base AABB, same cell
+// size, same AABB∩portal reach test) so the measured "reaching fraction" is the
+// number the shipped affinity cull would actually deliver. We keep only per-cell
+// counts, not the light lists — the spike measures fractions, not identities.
+
+/// World-space geometry of the affinity grid: the base-probe AABB minimum, the
+/// coarse affinity-cell dimensions, and the per-axis cell edge in meters.
+pub struct AffinityGridGeometry {
+    pub base_min: DVec3,
+    pub affinity_dims: [u32; 3],
+    pub cell_meters: f64,
+}
+
+/// Derive the affinity-grid geometry from the same inputs the base SH volume and
+/// `decompose_affinity_for_lights` use, so cell indexing lines up.
+pub fn affinity_grid_geometry(vertices: &[[f32; 3]], probe_spacing: f32) -> AffinityGridGeometry {
+    let (base_min, base_max) = world_aabb(vertices);
+    let base_dims = grid_dimensions(base_min, base_max, probe_spacing);
+    let affinity_dims = [
+        base_dims[0].div_ceil(AFFINITY_FACTOR).max(1),
+        base_dims[1].div_ceil(AFFINITY_FACTOR).max(1),
+        base_dims[2].div_ceil(AFFINITY_FACTOR).max(1),
+    ];
+    let cell_meters = probe_spacing.max(1.0e-4) as f64 * AFFINITY_FACTOR as f64;
+    AffinityGridGeometry {
+        base_min,
+        affinity_dims,
+        cell_meters,
+    }
+}
+
+impl AffinityGridGeometry {
+    pub fn cell_count(&self) -> usize {
+        self.affinity_dims[0] as usize
+            * self.affinity_dims[1] as usize
+            * self.affinity_dims[2] as usize
+    }
+
+    /// Linear affinity-cell index (x-fastest) for a world point, clamped into
+    /// the grid exactly like `cell_range`. `None` only when the grid is
+    /// degenerate (non-finite base — no geometry).
+    pub fn cell_of(&self, p: DVec3) -> Option<usize> {
+        if !self.base_min.x.is_finite() {
+            return None;
+        }
+        let idx = |v: f64, lo: f64, n: u32| -> usize {
+            let c = ((v - lo) / self.cell_meters).floor();
+            if c < 0.0 {
+                0
+            } else {
+                (c as usize).min(n as usize - 1)
+            }
+        };
+        let x = idx(p.x, self.base_min.x, self.affinity_dims[0]);
+        let y = idx(p.y, self.base_min.y, self.affinity_dims[1]);
+        let z = idx(p.z, self.base_min.z, self.affinity_dims[2]);
+        let nx = self.affinity_dims[0] as usize;
+        let ny = self.affinity_dims[1] as usize;
+        Some(x + y * nx + z * nx * ny)
+    }
+}
+
+/// Per-cell reaching-light *count* index for the spike. Built from the same
+/// `decompose_affinity_for_lights` the shipped cull consumes; stores only the
+/// count of lights each affinity cell keeps.
+pub struct WorldReachIndex {
+    geom: AffinityGridGeometry,
+    cell_counts: Vec<u32>,
+}
+
+impl WorldReachIndex {
+    pub fn build(reach: &AffinityReachInputs<'_>, lights: &[&MapLight]) -> Self {
+        let decomposition = decompose_affinity_for_lights(reach, lights);
+        let geom = affinity_grid_geometry(reach.geometry_vertices, reach.probe_spacing);
+        debug_assert_eq!(geom.cell_count(), decomposition.affinity_cell_count());
+        let mut cell_counts = vec![0u32; decomposition.affinity_cell_count()];
+        for cells in &decomposition.per_light_cells {
+            for &c in cells {
+                cell_counts[c as usize] += 1;
+            }
+        }
+        Self { geom, cell_counts }
+    }
+
+    /// Number of lights the affinity cull keeps for the cell containing `p`
+    /// (directional lights are included in every cell, per the decompose).
+    pub fn reaching_count_at(&self, p: DVec3) -> u32 {
+        self.geom
+            .cell_of(p)
+            .map(|c| self.cell_counts[c])
+            .unwrap_or(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 
 #[cfg(test)]
@@ -562,6 +662,40 @@ mod tests {
         got.sort_unstable();
         expected.sort_unstable();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn world_reach_index_counts_and_maps_receiver_to_the_lights_own_cell() {
+        // Spike helpers: a point light at origin (range 2 → AABB half-extent
+        // 2.5 m) reaches its own affinity cell. A world point in that cell must
+        // count the light; a far corner must not (empty tree → no portal
+        // bypass extends it, only the AABB clip). Verifies `cell_of` lands in the
+        // same grid the decompose builds and that per-cell counts are read back.
+        let verts = cube_vertices();
+        let light = animated_point_light(DVec3::ZERO, 2.0);
+        let lights: Vec<&MapLight> = vec![&light];
+        let exterior: HashSet<usize> = HashSet::new();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &verts,
+            tree: &empty_tree(),
+            exterior_leaves: &exterior,
+            portals: &[],
+            probe_spacing: 1.0,
+        };
+        let index = WorldReachIndex::build(&reach, &lights);
+        let geom = &index.geom;
+
+        // base_min = (-8,-8,-8); affinity cell = 4 m. Origin lands in cell
+        // floor((0+8)/4) = 2 on each axis; that cell overlaps the light AABB.
+        assert_eq!(geom.cell_of(DVec3::ZERO), geom.cell_of(DVec3::splat(0.5)));
+        assert_eq!(index.reaching_count_at(DVec3::ZERO), 1);
+
+        // A far corner cell the AABB never overlaps has no reaching light.
+        assert_eq!(index.reaching_count_at(DVec3::new(7.9, 7.9, 7.9)), 0);
+
+        // Out-of-grid points clamp into the grid (never panic), like `cell_range`.
+        assert!(geom.cell_of(DVec3::new(-1000.0, 0.0, 0.0)).is_some());
+        assert!(geom.cell_of(DVec3::new(1000.0, 0.0, 0.0)).is_some());
     }
 
     #[test]

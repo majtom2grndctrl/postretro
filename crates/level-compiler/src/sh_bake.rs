@@ -1278,8 +1278,27 @@ fn sample_radiance_rgb(
     match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
         None => (Vec3::from(SKY_COLOR), far_sentinel),
         Some(hit) => {
+            // Cold-bake reaching-light spike (off unless a POSTRETRO_SPIKE_REACH_*
+            // env var is set): count how many static lights actually reach this
+            // bounce hit point, and optionally skip the provably-zero shadow rays.
+            let spike_active = crate::spike_reach::active();
+            let spike_cull = crate::spike_reach::cull_enabled();
+            let mut spike_in_range: u32 = 0;
             let mut radiance = Vec3::ZERO;
             for (light_index, light) in lights.iter().enumerate() {
+                if spike_active {
+                    let reaches = crate::spike_reach::reaches_range(light, hit.point);
+                    if reaches {
+                        spike_in_range += 1;
+                    }
+                    // A light out of falloff range contributes exactly zero at
+                    // this hit point (`light_contribution_lambert` → `falloff`
+                    // returns 0 for `dist > range`), so its shadow ray is wasted
+                    // work. Skipping it is byte-identical to the baseline.
+                    if spike_cull && !reaches {
+                        continue;
+                    }
+                }
                 let global_index = light_global_indices
                     .map(|g| g[light_index])
                     .unwrap_or(light_index as u64);
@@ -1300,6 +1319,9 @@ fn sample_radiance_rgb(
                     continue;
                 }
                 radiance += light_contribution_lambert(light, hit.point, hit.normal) * v;
+            }
+            if spike_active {
+                crate::spike_reach::record_sh(hit.point, spike_in_range);
             }
             (
                 radiance * BOUNCE_ALBEDO / std::f32::consts::PI,

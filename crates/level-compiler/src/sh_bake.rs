@@ -1404,6 +1404,7 @@ mod tests {
     fn point_light_with_falloff(model: FalloffModel, range: f32) -> MapLight {
         MapLight {
             origin: glam::DVec3::ZERO,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -1972,6 +1973,7 @@ mod tests {
     fn point_light_colored(origin: glam::DVec3, color: [f32; 3], intensity: f32) -> MapLight {
         MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity,
             color,
@@ -2149,6 +2151,7 @@ mod tests {
         let tree = tree_all_empty();
         let light = MapLight {
             origin: DVec3::new(0.3, 1.0, 0.3),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -2212,6 +2215,7 @@ mod tests {
         let lights = vec![
             MapLight {
                 origin: DVec3::new(0.5, 1.0, 0.5),
+                carrier: String::new(),
                 light_type: LightType::Point,
                 intensity: 1.0,
                 color: [1.0, 0.5, 0.25],
@@ -2232,6 +2236,7 @@ mod tests {
             },
             MapLight {
                 origin: DVec3::new(3.0, 2.0, 3.0),
+                carrier: String::new(),
                 light_type: LightType::Point,
                 intensity: 2.0,
                 color: [0.25, 0.5, 1.0],
@@ -2281,6 +2286,7 @@ mod tests {
     fn soft_point_light(origin: DVec3, light_size: f32) -> MapLight {
         MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -2552,6 +2558,7 @@ mod tests {
         let tree = tree_all_empty();
         let animated = MapLight {
             origin: DVec3::new(0.5, 2.0, 0.5),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 0.5, 0.25],
@@ -2612,6 +2619,7 @@ mod tests {
         let tree = tree_all_empty();
         let light = MapLight {
             origin: DVec3::new(0.5, 2.0, 0.5),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 3.0,
             color: [0.5, 1.0, 0.8],
@@ -2870,6 +2878,7 @@ mod tests {
 
         let mut dyn_light = MapLight {
             origin: DVec3::new(0.3, 1.0, 0.3),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
@@ -2952,6 +2961,7 @@ mod tests {
 
         let sdf_light = MapLight {
             origin: DVec3::new(0.3, 1.0, 0.3),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 5.0,
             color: [1.0, 1.0, 1.0],

@@ -489,6 +489,7 @@ mod tests {
         use glam::DVec3;
         MapLight {
             origin: DVec3::new(0.5, 0.0, 0.5),
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],

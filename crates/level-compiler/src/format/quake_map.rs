@@ -513,10 +513,15 @@ pub fn translate_light(
         .get("_tags")
         .map(|s| s.split_whitespace().map(|t| t.to_string()).collect())
         .unwrap_or_default();
+    // Read for every light classname. The FGD exposes this only on the dynamic
+    // base, but parsing baked lights too lets the later carrier-resolution
+    // boundary apply one consistent validation policy.
+    let carrier = authored_string(props, "carrier");
 
     Ok(MapLight {
         origin,
         light_type,
+        carrier,
         intensity,
         color,
         falloff_model,
@@ -534,6 +539,18 @@ pub fn translate_light(
         tags,
         shadow_type,
     })
+}
+
+/// FGD text fields arrive as an empty string when an author clears them.
+/// Preserve the canonical empty-default form instead of making call sites
+/// distinguish absent and blank values.
+fn authored_string(props: &HashMap<String, String>, key: &str) -> String {
+    props
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn parse_optional_int(
@@ -1030,6 +1047,33 @@ mod tests {
         assert!(light.cone_angle_inner.is_none());
         assert!(light.cone_direction.is_none());
         assert!(light.animation.is_none());
+    }
+
+    #[test]
+    fn carrier_trims_dynamic_and_baked_light_values_and_defaults_blank_to_empty() {
+        let dynamic = translate_light(
+            &props(&[
+                ("light", "300"),
+                ("_falloff_range", "2048"),
+                ("carrier", "  lift  "),
+            ]),
+            DVec3::ZERO,
+            "light_dynamic",
+        )
+        .expect("dynamic light should translate");
+        assert_eq!(dynamic.carrier, "lift");
+
+        let baked = translate_light(
+            &props(&[
+                ("light", "300"),
+                ("_falloff_range", "2048"),
+                ("carrier", "   "),
+            ]),
+            DVec3::ZERO,
+            "light",
+        )
+        .expect("baked light should translate");
+        assert!(baked.carrier.is_empty());
     }
 
     #[test]

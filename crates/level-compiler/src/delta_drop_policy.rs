@@ -335,6 +335,7 @@ mod tests {
     fn light(animated: bool, dynamic: bool) -> MapLight {
         MapLight {
             origin: DVec3::ZERO,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0; 3],

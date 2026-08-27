@@ -617,6 +617,7 @@ pub(crate) fn attach_descriptor_components(
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: None,
         };
         let _ = registry.set_component(id, component);

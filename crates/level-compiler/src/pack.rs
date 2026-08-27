@@ -1289,6 +1289,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -2497,6 +2498,7 @@ mod tests {
         let kinematic_geometry = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
+            &[],
             &generated_portals,
             &mut geo_result.texture_names,
         )
@@ -2745,6 +2747,7 @@ mod tests {
         let lights = vec![
             MapLight {
                 origin: DVec3::new(10.0, 20.0, 30.0),
+                carrier: String::new(),
                 light_type: LightType::Point,
                 intensity: 1.0,
                 color: [1.0, 1.0, 1.0],
@@ -2765,6 +2768,7 @@ mod tests {
             },
             MapLight {
                 origin: DVec3::new(-4.0, 1.0, 0.5),
+                carrier: String::new(),
                 light_type: LightType::Spot,
                 intensity: 1.5,
                 color: [1.0, 0.8, 0.6],
@@ -2785,6 +2789,7 @@ mod tests {
             },
             MapLight {
                 origin: DVec3::new(0.0, 100.0, 0.0),
+                carrier: String::new(),
                 light_type: LightType::Directional,
                 intensity: 0.9,
                 color: [0.9, 0.95, 1.0],
@@ -2857,6 +2862,7 @@ mod tests {
 
         let mk = |origin: DVec3| MapLight {
             origin,
+            carrier: String::new(),
             light_type: LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],

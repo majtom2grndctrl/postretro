@@ -612,6 +612,24 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
     }
 }
 
+/// Client-side tick path for static PRL-loaded movers. The host replicates
+/// mover *phase*, not a transform or carried-light pose; render consumers read
+/// the transform reconstructed here through the same interpolation accessor.
+fn client_predict_loaded_movers_tick(
+    registry: &mut postretro_entities::EntityRegistry,
+    mover_tick_states: &mut kinematic_mover::MoverTickStateTable,
+    tick_dt: f32,
+) {
+    let mover_entities: Vec<_> = registry
+        .iter_with_kind(postretro_entities::ComponentKind::KinematicMover)
+        .map(|(id, _)| id)
+        .collect();
+    for entity in mover_entities {
+        registry.snapshot_transform(entity);
+    }
+    kinematic_mover::run_kinematic_mover_tick(registry, mover_tick_states, tick_dt);
+}
+
 // --- Application state ---
 
 pub(crate) struct App {
@@ -7786,14 +7804,7 @@ impl App {
             return;
         };
         let mut registry = script_ctx.registry.borrow_mut();
-        let mover_entities: Vec<_> = registry
-            .iter_with_kind(postretro_entities::ComponentKind::KinematicMover)
-            .map(|(id, _)| id)
-            .collect();
-        for entity in mover_entities {
-            registry.snapshot_transform(entity);
-        }
-        kinematic_mover::run_kinematic_mover_tick(
+        client_predict_loaded_movers_tick(
             &mut registry,
             &mut self.kinematic_mover_tick_states,
             tick_dt,
@@ -8216,6 +8227,88 @@ mod tests {
     }
 
     #[test]
+    fn client_prediction_keeps_carried_light_on_its_reconstructed_mover_pose() {
+        use postretro_entities::components::light::{LightCarrier, LightComponent};
+        use postretro_entities::{EntityRegistry, KinematicMoverComponent, KinematicMoverConfig};
+        use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = scripting_systems::light_bridge::LightBridge::new();
+        let light = MapLight {
+            origin: [0.0, 2.0, 0.0],
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 12.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, 0.0],
+            is_dynamic: true,
+            casts_entity_shadows: false,
+            animated_slot: None,
+            tags: Vec::new(),
+            cell_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        bridge.populate_from_level(&[light], &mut registry, 0);
+
+        let mover = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                mover,
+                KinematicMoverComponent::new(
+                    41,
+                    KinematicMoverConfig {
+                        waypoints: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 4.0,
+                        wait_ms: 0.0,
+                        mode: postretro_entities::KinematicMoverMode::Once,
+                        started: true,
+                        spin_axis: Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
+                ),
+            )
+            .unwrap();
+        let light_entity = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(light_entity)
+            .unwrap()
+            .clone();
+        component.carrier = Some(LightCarrier {
+            mover_entity: mover,
+            local_offset: Vec3::new(0.0, 2.0, 0.0),
+        });
+        registry.set_component(light_entity, component).unwrap();
+
+        let mut mover_tick_states = kinematic_mover::MoverTickStateTable::default();
+        client_predict_loaded_movers_tick(&mut registry, &mut mover_tick_states, 0.25);
+        let alpha = 0.4;
+        let expected_mover = registry.interpolated_transform(mover, alpha).unwrap();
+        let expected_light = expected_mover.position + Vec3::new(0.0, 2.0, 0.0);
+
+        assert!(
+            bridge.update(&mut registry, 0.0, alpha).is_some(),
+            "the client bridge packs the hand-bound carrier after client prediction"
+        );
+        let packed_origin = bridge.collect_all_as_map_lights(&registry, 0.0)[0].0.origin;
+        let observed_light = Vec3::from_array(packed_origin.map(|value| value as f32));
+        assert!(
+            observed_light.distance(expected_light) <= 1.0e-6,
+            "client light and geometry must share client-local interpolated mover pose"
+        );
+        assert_eq!(
+            postretro_net::handshake::WIRE_VERSION,
+            19,
+            "carried-light parity adds no app/net protocol field or version bump"
+        );
+    }
+
+    #[test]
     fn blocked_portal_buffer_rebuilds_from_live_docked_movers_without_latching() {
         use postretro_entities::{EntityRegistry, KinematicMoverComponent, KinematicMoverConfig};
         use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld, PortalData};
@@ -8608,6 +8701,7 @@ mod tests {
                 blocked_event: None,
                 crush_event: None,
                 sealed_portal_ids: vec![0],
+                carried_lights: Vec::new(),
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

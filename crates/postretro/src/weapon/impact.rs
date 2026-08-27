@@ -90,6 +90,7 @@ pub(crate) fn spawn_projectile_impact_light(
             is_dynamic: true,
             animated_slot: None,
             follow_transform: false,
+            carrier: None,
             animation: Some(LightAnimation {
                 period_ms: config.fade_ms,
                 phase: None,

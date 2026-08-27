@@ -9,7 +9,8 @@ mod state;
 
 pub(super) use commands::{
     LocalWeaponCommandResult, normalize_all_inventory_liveness, normalize_inventory_liveness,
-    refuse_local_switch, run_local_weapon_command, run_remote_weapon_commands, weapon_fire_command,
+    refuse_local_switch, run_local_weapon_command, run_local_weapon_command_with_content,
+    run_remote_weapon_commands, weapon_fire_command,
 };
 pub(crate) use commands::{projectile_model_body_rotation, spawn_projectile};
 pub(crate) use impact::apply_authorized_weapon_impact_damage;
@@ -215,6 +216,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: 10,
@@ -1495,6 +1497,7 @@ mod tests {
             "weapon.unknown",
             0,
             &command,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
             &HitZoneStore::new(),
             0.0,
@@ -1708,6 +1711,7 @@ mod tests {
             "weapon.unknown",
             0,
             &command,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
             &wall_world(),
             &HitZoneStore::new(),
             0.0,
@@ -1736,6 +1740,7 @@ mod tests {
             "weapon.unknown",
             0,
             &command,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
             &HitZoneStore::new(),
             0.0,
@@ -1762,6 +1767,7 @@ mod tests {
             "weapon.unknown",
             0,
             &command,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
             &HitZoneStore::new(),
             0.0,
@@ -2143,6 +2149,8 @@ mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
+            None,
             9,
             &CollisionWorld::new(),
             &client_registry.borrow(),

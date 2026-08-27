@@ -866,6 +866,7 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 placement: None,
+                muzzle_offset: None,
                 resource: None,
                 lower_ms: 0,
                 raise_ms: 0,
@@ -978,6 +979,7 @@ mod tests {
         wieldables[slot] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: canonical_name.to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
+            muzzle_offset: None,
             range,
             cooldown_ms,
             pellet_count: 1,
@@ -1080,6 +1082,8 @@ mod tests {
             },
             Vec3::ZERO,
             Vec3::NEG_Z,
+            &postretro_foundation::WeaponPlacementDescriptor::default(),
+            None,
             7,
             &crate::collision::CollisionWorld::new(),
             &registry,
@@ -1164,6 +1168,7 @@ mod tests {
         tuning.wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: "local_pistol".to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
+            muzzle_offset: None,
             range: 64.0,
             cooldown_ms: 100.0,
             pellet_count: 1,
@@ -1260,6 +1265,7 @@ mod tests {
         wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
+            muzzle_offset: None,
             range: tuning_weapon.range,
             cooldown_ms: tuning_weapon.cooldown_ms,
             pellet_count: tuning_weapon.pellet_count,

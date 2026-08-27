@@ -48,7 +48,10 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
     SlotTable,
 };
-use postretro_foundation::pose::{FootProbe, MAX_FEET};
+use postretro_foundation::{
+    WeaponPlacementDescriptor,
+    pose::{FootProbe, MAX_FEET},
+};
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub(crate) use projectile_stage::{
@@ -375,6 +378,7 @@ pub(crate) fn simulate_tick(
         tick_dt,
         &mut touch_system,
         &[],
+        None,
         &touch_edges,
         &touch_edges,
         trigger_context,
@@ -405,6 +409,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     tick_dt: f32,
     touch_system: &mut TouchSystem,
     descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
@@ -665,10 +670,12 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     };
     let weapon_fire = weapon_stage::weapon_fire_command(command.fire_button, post_movement_command);
     let local_result: weapon_stage::LocalWeaponCommandResult =
-        weapon_stage::run_local_weapon_command(
+        weapon_stage::run_local_weapon_command_with_content(
             &registry,
             own_pawn,
             mod_block_during_reload,
+            descriptors,
+            default_weapon_placement,
             command.select_slot,
             &weapon_fire,
             command.reload,
@@ -1649,6 +1656,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,
@@ -1675,6 +1683,7 @@ mod tests {
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: capacity,
@@ -2026,6 +2035,7 @@ mod tests {
             1.0 / 60.0,
             &mut touch_system,
             &[],
+            None,
             &edges,
             &edges,
             None,
@@ -2143,6 +2153,7 @@ mod tests {
             1.0 / 60.0,
             &mut touch_system,
             &[],
+            None,
             &use_edges,
             &HashMap::new(),
             Some(TriggerTickContext {

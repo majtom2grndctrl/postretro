@@ -17,8 +17,10 @@ use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::provenance::DescriptorProvenance;
-use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::{FireMode, ProjectileBodyVisual, ResolutionMode};
+use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
+use postretro_foundation::{
+    FireMode, ProjectileBodyVisual, ResolutionMode, WeaponPlacementDescriptor,
+};
 
 use super::super::{
     OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand,
@@ -293,6 +295,43 @@ pub(in crate::sim) fn run_local_weapon_command(
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> LocalWeaponCommandResult {
+    run_local_weapon_command_with_content(
+        registry,
+        pawn,
+        mod_block_during_reload,
+        &[],
+        None,
+        select_slot,
+        command,
+        reload_pressed,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        on_impact,
+    )
+}
+
+/// Local authoritative command with the descriptor context required to resolve
+/// steady placement for a projectile muzzle. The legacy wrapper above keeps
+/// headless test fixtures and the fire-suppressed client equip pass on their
+/// explicit no-content path.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::sim) fn run_local_weapon_command_with_content(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: Option<EntityId>,
+    mod_block_during_reload: bool,
+    descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    select_slot: Option<usize>,
+    command: &WeaponFireCommand,
+    reload_pressed: bool,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
+) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut inventory = pawn.and_then(|pawn| {
         normalize_inventory_liveness(&mut registry, pawn).map(|(inventory, _)| inventory)
@@ -310,6 +349,20 @@ pub(in crate::sim) fn run_local_weapon_command(
     let active_slot = inventory
         .as_ref()
         .map_or(0, |inventory| inventory.active_slot);
+    let authored_placement = registry
+        .get_component::<DescriptorProvenance>(weapon_id)
+        .ok()
+        .and_then(|provenance| {
+            descriptors.iter().find(|descriptor| {
+                descriptor.canonical_name.as_deref() == Some(provenance.canonical_name.as_str())
+            })
+        })
+        .and_then(|descriptor| descriptor.weapon.as_ref())
+        .and_then(|weapon| weapon.placement.as_ref());
+    // Resolve from the pre-switch active weapon captured above. A same-tick
+    // switch may repoint inventory later, but it cannot change this shot.
+    let placement =
+        crate::resolve_weapon_placement(default_weapon_placement, None, authored_placement, None);
     let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.
@@ -384,6 +437,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         &pellet_salt_name,
         active_slot,
         command,
+        &placement,
         collision_world,
         hit_zone_store,
         anim_time,

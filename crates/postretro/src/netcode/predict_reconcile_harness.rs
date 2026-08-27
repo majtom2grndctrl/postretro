@@ -107,6 +107,7 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
             third_person_model: None,
             viewmodel: None,
             placement: None,
+            muzzle_offset: None,
             resource: None,
             lower_ms: 0,
             raise_ms: 0,

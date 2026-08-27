@@ -12,7 +12,7 @@ use thiserror::Error;
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 5;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 6;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -24,6 +24,9 @@ pub(crate) struct WieldableTuningPayload {
     pub(crate) canonical_name: String,
     /// Effective host placement after mod-default and per-weapon resolution.
     pub(crate) placement: WeaponPlacementDescriptor,
+    /// Host-authored model-local projectile origin. Clients pair this with
+    /// `placement` from this same row rather than consulting local content.
+    pub(crate) muzzle_offset: Option<[f32; 3]>,
     pub(crate) range: f32,
     pub(crate) cooldown_ms: f32,
     pub(crate) pellet_count: u32,
@@ -78,6 +81,19 @@ impl TuningPayload {
             .flatten()
             .find(|wieldable| wieldable.canonical_name == archetype)
             .map(|wieldable| &wieldable.placement)
+    }
+
+    pub(crate) fn muzzle_for_slot(&self, slot: usize) -> Option<&[f32; 3]> {
+        self.wieldables.get(slot)?.as_ref()?.muzzle_offset.as_ref()
+    }
+
+    #[allow(dead_code)] // Mirrors placement lookup for a future archetype-keyed consumer.
+    pub(crate) fn muzzle_for_archetype(&self, archetype: &str) -> Option<&[f32; 3]> {
+        self.wieldables
+            .iter()
+            .flatten()
+            .find(|wieldable| wieldable.canonical_name == archetype)
+            .and_then(|wieldable| wieldable.muzzle_offset.as_ref())
     }
 }
 
@@ -219,6 +235,7 @@ mod tests {
         slots[0] = Some(WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
             placement: WeaponPlacementDescriptor::default(),
+            muzzle_offset: Some([0.1, -0.2, -0.7]),
             range: 128.0,
             cooldown_ms: 125.0,
             pellet_count: 1,
@@ -231,6 +248,7 @@ mod tests {
         slots[2] = Some(WieldableTuningPayload {
             canonical_name: "ion_rifle".to_string(),
             placement: WeaponPlacementDescriptor::default(),
+            muzzle_offset: None,
             range: 256.0,
             cooldown_ms: 240.0,
             pellet_count: 8,
@@ -267,6 +285,7 @@ mod tests {
             wieldables[0]["placement"]["positionFromCenter"]["right"],
             0.0
         );
+        assert_eq!(wieldables[0]["muzzle_offset"][2], -0.7);
         assert_eq!(wieldables[2]["pellet_count"], 8);
         assert_eq!(wieldables[2]["spread_degrees"], 4.0);
         assert!(wieldables[1].is_null());
@@ -280,6 +299,12 @@ mod tests {
             payload.placement_for_archetype("ion_rifle"),
             Some(&WeaponPlacementDescriptor::default())
         );
+        assert_eq!(payload.muzzle_for_slot(0), Some(&[0.1, -0.2, -0.7]));
+        assert_eq!(
+            payload.muzzle_for_archetype("reference_pistol"),
+            Some(&[0.1, -0.2, -0.7])
+        );
+        assert_eq!(payload.muzzle_for_archetype("ion_rifle"), None);
 
         let decoded = decode_tuning_payload(&encoded).unwrap();
         assert_eq!(
@@ -337,7 +362,7 @@ mod tests {
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 5,
+                expected: 6,
                 received: 4,
             })
         ));

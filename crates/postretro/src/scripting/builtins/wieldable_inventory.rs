@@ -352,6 +352,7 @@ mod tests {
                 third_person_model: None,
                 viewmodel: None,
                 placement: None,
+                muzzle_offset: None,
                 resource: Some(WeaponResource::Ammo(AmmoResource {
                     ammo_type: ammo_type.to_string(),
                     magazine,

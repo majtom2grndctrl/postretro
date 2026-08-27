@@ -35,10 +35,12 @@ on the parent spike's synthetic fixture, cut the cold SH stage ~20.9× (245.9 s 
 
 ### Out of scope
 
-- The affinity-cell / portal reaching-light index for the cold bakes
-  (`WorldReachIndex` / `decompose_affinity_for_lights`). The parent spike measured
-  it as looser and more complex than the exact per-point range test at these light
-  counts, with a cell-boundary byte-identity hazard. Deferred — see Direction.
+- Building an affinity-cell / portal reaching-light cull for the cold bakes. The
+  parent spike measured it as looser and more complex than the exact per-point range
+  test at these light counts, with a cell-boundary byte-identity hazard. Deferred —
+  see Direction. (The production affinity primitive `decompose_affinity_for_lights`
+  and each bake's own `ReachIndex` stay; only the spike-only `WorldReachIndex`
+  wrapper is removed, in Task 3.)
 - Any change to the cold **lightmap** bake — it already gates its shadow rays by
   range (`light_texel_contribution_and_visibility` returns before `soft_visibility`
   when `contribution.length_squared() <= 1e-12`).
@@ -92,8 +94,9 @@ not the shadow-ray cost itself.
   early-out only ever skips a light already contributing zero).
 
 **Alternatives rejected.** The affinity-cell / portal reaching-light index the
-direct/delta/animated-direct SH bakes already consume
-(`decompose_affinity_for_lights` → `WorldReachIndex`). The parent spike measured it
+direct/delta/animated-direct SH bakes already consume (`decompose_affinity_for_lights`
+→ each bake's own `ReachIndex`; `WorldReachIndex` is the spike-only wrapper this spec
+deletes, not a production consumer). The parent spike measured it
 on the fixture as *looser* than the exact per-point range test (mean 9.8 vs 6.8
 lights/receiver, p95 33 vs 10) because the coarse affinity cell (probe_spacing ×4 ≈
 40 m here) over-keeps lights near cell boundaries; it is also more complex (needs
@@ -109,28 +112,48 @@ on real content.
 
 ## Acceptance criteria
 
-- [ ] **Byte-identical cold output.** A cold (`--no-cache`) bake of a fixture
-  containing both in-range and out-of-range static point/spot lights produces a
-  `.prl` byte-identical (SHA256) to a bake of the same inputs built without the
-  early-out. (Parent spike verified this on `stress-warren-lit`, full 16.6 MB
-  output.)
-- [ ] **Contribution-neutral early-out.** A unit test bakes a probe (or samples one
-  ray via `sample_radiance_rgb`) whose light set includes a point light positioned
-  beyond its falloff range, and asserts the resulting SH coefficients / radiance are
-  bit-identical to the same bake with that far light removed from the set.
+The byte-identity ACs use the **excluded-trailing-light surrogate**, because the
+change is unconditional (no toggle survives to bake "with vs. without the early-out"
+in one process — the parent spike's `POSTRETRO_SPIKE_REACH_CULL` toggle is removed in
+Task 3). The surrogate bakes a fixture whose out-of-range light(s) sit **last** in the
+static-light set, then compares against the same bake with those trailing lights
+removed. Since an out-of-range light contributes exactly zero, "present but skipped"
+and "absent" produce identical SH output — but only when the excluded light is last,
+so its removal does not renumber a kept light's `soft_visibility_seed` (the cold/delta
+seed is the light's slice index; the warm seed is its global-set index — both stable
+only for a trailing removal). Compare at the **SH volume section** granularity, not
+the whole `.prl`: removing a light also shrinks the light-table section, so full-`.prl`
+SHA256 would differ for an unrelated reason. The parent spike's full-`.prl` SHA256
+evidence came from the toggle (identical light set, ray skipped vs. cast).
+
+- [ ] **Byte-identical cold SH section.** A cold (`--no-cache`) bake of a fixture with
+  out-of-range static point/spot lights placed last emits an SH volume section
+  byte-identical to the same bake with those trailing lights excluded. (The parent
+  spike separately verified full-`.prl` SHA256 identity via the cull toggle on
+  `stress-warren-lit`, 16.6 MB output.)
+- [ ] **Contribution-neutral early-out (per-ray).** A unit test calls
+  `sample_radiance_rgb` with a light set whose last light is a point light beyond its
+  falloff range, and asserts the returned SH coefficients / radiance are bit-identical
+  to the same call with that trailing light removed.
 - [ ] **Predicate matches `falloff() == 0`.** A unit test confirms a Point/Spot
   light is skipped iff `dist > falloff_range.max(1e-4)` (kept at `dist == range`;
   skipped just beyond), across Linear / InverseDistance / InverseSquared models, and
   that a Directional light is never skipped.
-- [ ] **Warm and delta output unchanged.** A warm (cached) SH bake and an animated
-  delta SH bake of the same inputs are byte-identical before and after the change —
-  the early-out skips only zero-contribution lights in their bounded / single-light
-  slices.
-- [ ] **Fewer shadow rays on the cold path (context, not a gate).** On a fixture
-  with out-of-range lights the cold SH stage casts strictly fewer soft-visibility
-  shadow rays and completes measurably faster. The parent spike saw ~20.9× (245.9 s
-  → 11.8 s) on `stress-warren-lit`; this is a synthetic-fixture figure, not a
-  production projection, and is recorded, not thresholded.
+- [ ] **Warm and delta SH sections unchanged (discharged by reasoning, not a
+  standalone test).** The warm (`bake_probe_rgb_with_moments`) and animated-delta
+  (`bake_probe_indirect_rgb`) callers contact the early-out *only* through
+  `sample_radiance_rgb`, which the Contribution-neutral-per-ray AC proves byte-neutral
+  (it skips only falloff-zero lights in their bounded / single-light slices). No
+  separate warm/delta fixture is required — this is satisfied by Task 1's per-ray
+  neutrality, matching the Invariants table row. (Constructing a delta-specific
+  byte-identity fixture is disproportionate and would test the same shared function.)
+- [ ] **Fewer shadow rays on the cold path (evidence, not an in-tree gate).** The cold
+  SH stage casts strictly fewer soft-visibility shadow rays on a fixture with
+  out-of-range lights. Satisfied by the parent spike's recorded ~20.9× (245.9 s →
+  11.8 s) on `stress-warren-lit` — a synthetic-fixture figure, not a production
+  projection. No in-tree instrument survives Task 3 (the `POSTRETRO_SPIKE_REACH_STATS`
+  ray counter is removed), so this AC is evidence-by-parent-recording; capture any
+  wanted independent ray-count confirmation before Task 3 removes STATS.
 - [ ] **No env gate, no spike harness.** The early-out runs on every cold bake with
   no environment variable required to enable it, and after Task 3 no
   `POSTRETRO_SPIKE_REACH_*` path or spike-only code (`spike_reach.rs`, the
@@ -150,26 +173,40 @@ light (the seed is a pure function of `(probe_index, ray_index, global_index)`, 
 skipping a light shifts nothing). Implement the predicate as a small self-contained
 range check local to `sh_bake.rs` (mirroring the distance/range math in
 `sh_bake::falloff` and `incident_radiance_at_point` — `range = falloff_range.max(1e-4)`,
-skip iff `dist > range`), so this task does not depend on `spike_reach.rs` and the
-harness can be removed independently in Task 3. Add: (a) a determinism/neutrality
-test that bakes a ray or probe with an out-of-range point light present vs. absent
-and asserts bit-identical output (mirror the existing `sample_radiance_rgb` direct
-call-site test around `sh_bake.rs:2356`); (b) a predicate test covering the three
-falloff models at `dist == range` (kept) and `dist > range` (skipped) plus a
-Directional light (never skipped). The early-out is unconditional — no env var
-gates it.
+skip iff `dist > range`). This task also removes the sampler's entire spike block —
+the `spike_cull` cull branch and the `spike_active` / `spike_in_range` / `record_sh`
+STATS lines currently inside `sample_radiance_rgb` — so the function no longer
+references `spike_reach`, and Task 3 can delete the module cleanly (the predicate is
+self-contained and does not depend on `spike_reach.rs`). Add: (a) a
+determinism/neutrality test that calls `sample_radiance_rgb` with a light set whose
+**last** light is an out-of-range point light and asserts bit-identical output to the
+same call with that trailing light removed (mirror the existing `sample_radiance_rgb`
+call-site test `sh_bounce_scales_by_soft_visibility_fraction` in `sh_bake.rs`) — the
+excluded light must be last so its removal does not renumber a kept light's seed; (b)
+a predicate test covering the three falloff models at `dist == range` (kept) and
+`dist > range` (skipped) plus a Directional light (never skipped). The early-out is
+unconditional — no env var gates it.
 
-### Task 2: Fixture byte-identity check
+### Task 2: Cold SH-section byte-identity check
 
-Add or extend a test that compiles a small map fixture containing at least one
-in-range and one out-of-range static point/spot light through the cold
-(`--no-cache`-equivalent, in-process) SH bake, and asserts the emitted SH volume
-section bytes are identical to a reference produced from the pre-change code path
-(e.g. a bake where the far light is excluded from the set, which is provably the
-same output). This is the whole-section analogue of Task 1's per-ray neutrality
-test; it guards the determinism invariant at the section boundary. Use the existing
-cold-bake / determinism test patterns in `sh_bake.rs` and
-`lightmap_bake.rs:2936` (the "two `--no-cache` bakes" pattern) as the harness model.
+Add a test that compiles a small map fixture containing at least one in-range and at
+least one out-of-range static point/spot light — the out-of-range light(s) placed
+**last** in the set — through the cold (`--no-cache`-equivalent, in-process) whole-volume
+SH bake, and asserts the emitted SH volume section bytes are identical to the same bake
+with the trailing out-of-range light(s) excluded (the excluded-trailing-light surrogate;
+see Acceptance criteria). This delivers the Byte-identical-cold-SH-section AC and is the
+whole-section integration analogue of Task 1's per-ray neutrality test. (Warm and delta
+are discharged by Task 1's per-ray neutrality — they contact the change only through
+`sample_radiance_rgb` — so they need no separate fixture here; see the
+Warm-and-delta-SH-sections-unchanged AC.)
+
+Compare SH-section bytes (`to_bytes()`), not the whole `.prl` (excluding a light also
+shrinks the light-table section, so full-`.prl` SHA256 would differ for an unrelated
+reason). Model the harness on the byte-equality determinism test
+`lightmap_bake_produces_byte_identical_output_on_repeated_runs` in `lightmap_bake.rs`
+(asserts `section.to_bytes()` equality) — **not** the adjacent
+`two_bakes_decode_within_frozen_tolerance`, which is a decode-within-tolerance test that
+does not require byte-equality and is the wrong model for a byte-identity AC.
 
 ### Task 3: Remove the spike measurement harness in full
 
@@ -181,8 +218,9 @@ Task 1) and the `POSTRETRO_SPIKE_REACH_STATS` distribution harness. Remove:
   declaration in `main.rs`.
 - The install/record/log hooks in `pipeline.rs` (`install_sh` / `install_lm` /
   `log_sh_summary` / `log_lm_summary` and the `WorldReachIndex` construction at the
-  two cold-bake call sites) and the `record_sh` call in `sh_bake.rs` /
-  `record_lm` call in `lightmap_bake.rs`.
+  two cold-bake call sites) and the `record_lm` call in `lightmap_bake.rs`. (The
+  `sh_bake.rs` sampler's spike block — cull branch plus `record_sh` — is already
+  removed by Task 1, so nothing spike-related remains in `sample_radiance_rgb`.)
 - The spike-only additions in `affinity_grid.rs`: `AffinityGridGeometry`,
   `affinity_grid_geometry`, `WorldReachIndex`, `cell_of`, and the
   `world_reach_index_counts_and_maps_receiver_to_the_lights_own_cell` unit test.
@@ -236,19 +274,21 @@ exactly: Directional → always true; Point/Spot → `(light.origin - hit.point)
 short-circuit), and at `dist == range` the light is kept and — for Linear —
 contributes exactly zero, so the kept case is byte-identical too.
 
-Existing test anchors: the direct `sample_radiance_rgb` call sites at
-`sh_bake.rs:2356` / `:2368` (soft-visibility test) show the per-ray test harness;
-`lightmap_bake.rs:2936` shows the "two `--no-cache` bakes are identical"
-determinism pattern for the section-level check.
+Existing test anchors: `sh_bounce_scales_by_soft_visibility_fraction` in `sh_bake.rs`
+(its `soft` vs. `clear` `sample_radiance_rgb` calls) shows the per-ray test harness;
+`lightmap_bake_produces_byte_identical_output_on_repeated_runs` in `lightmap_bake.rs`
+(asserts `section.to_bytes()` equality) shows the byte-identity determinism pattern for
+the section-level check — not the adjacent `two_bakes_decode_within_frozen_tolerance`,
+which only checks decode-within-tolerance.
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Cold whole-volume SH `.prl` byte-identical to pre-change output | Task 1 (early-out skips only `falloff()==0` lights) | Threatened if the predicate skips any contributing light, or if a skip perturbs a kept light's seed | Byte-identical cold output AC; Contribution-neutral AC; Task 2 |
+| Cold whole-volume SH section byte-identical to pre-change output | Task 1 (early-out skips only `falloff()==0` lights) | Threatened if the predicate skips any contributing light, or if a skip perturbs a kept light's seed | Byte-identical-cold-SH-section AC; Contribution-neutral-per-ray AC; Task 2 |
 | Cull predicate == `falloff()==0` region: skip iff `dist > falloff_range.max(1e-4)`; Directional never skipped; kept at `dist == range` | Task 1 (local range predicate mirroring `falloff`) | Threatened by a looser bound (culls a contributing light) or a tighter bound (screens backface/cone — out of scope) | Predicate-matches AC |
 | Kept lights' soft-visibility seeds unchanged by any skip | Task 1 (`soft_visibility_seed` is a pure fn of probe/ray/global index; skip shifts no other index) | Threatened if the skip reindexes or reorders the light loop | Byte-identical cold output AC; Contribution-neutral AC |
-| Warm grouped + animated delta SH output unchanged | Task 1 (shared `sample_radiance_rgb` early-out is byte-neutral in bounded/single-light callers) | Threatened if placement changes warm's bounded-set semantics or delta's slice | Warm-and-delta-unchanged AC |
+| Warm grouped + animated delta SH sections unchanged | Task 1 (shared `sample_radiance_rgb` early-out is byte-neutral in bounded/single-light callers) | Threatened if placement changes warm's bounded-set semantics or delta's slice | Warm-and-delta-SH-sections-unchanged AC (discharged by Task 1 per-ray neutrality) |
 | No spike harness remains (`POSTRETRO_SPIKE_REACH_*`, `spike_reach.rs`, spike `affinity_grid` additions); early-out always runs | Task 1 (self-contained early-out) + Task 3 (deletes the harness) | Threatened if a residual env check or spike-only symbol survives, or if Task 1 left the sampler depending on `spike_reach.rs` | No-env-gate-no-harness AC |
 
 ## Resolved decisions
@@ -264,9 +304,12 @@ left to the reviewer.
   group to `falloff_range` *dilated* by a reach cutoff, so any light the early-out
   would skip is beyond exact `falloff_range`, has `falloff() == 0`, and contributes
   zero today — the early-out only ever removes a provably-zero shadow ray, so warm
-  output is unchanged and the warm path merely gets faster too. The existing
-  cold-vs-warm `bake_probe` equivalence check (`sh_group.rs:1733`) stays valid
-  because both sides receive the early-out identically. The strict cold-only
+  output is unchanged and the warm path merely gets faster too. Both existing
+  `sh_group.rs` guards stay valid because each side receives the early-out
+  identically: `sh_cold_grouped_equals_monolithic_on_fixtures` (grouped-cold
+  `to_bytes()` == monolithic, byte-identity) and `warm_sh_within_tolerance_on_fixtures`
+  (warm within a bounded p99.9 error of cold — a deliberate approximation, not an
+  equivalence check). The strict cold-only
   alternative would need a gate flag threaded through the shared `bake_probe`, adds
   complexity, and leaves warm casting the same wasted rays for no benefit —
   strictly worse. The "scope is the cold path only" language refers to not altering

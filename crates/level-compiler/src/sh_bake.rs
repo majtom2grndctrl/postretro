@@ -1404,6 +1404,7 @@ mod tests {
     use super::*;
     use crate::bvh_build::{build_bvh, collect_primitives};
     use crate::geometry::FaceIndexRange;
+    use crate::light_namespaces::AlphaLightsNs;
     use crate::map_data::{FalloffModel, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -2515,6 +2516,66 @@ mod tests {
             bytes_a, bytes_b,
             "soft-shadow SH bake drifted between runs; the index-derived \
              soft-visibility seed must keep output byte-identical for the cache",
+        );
+    }
+
+    /// A trailing, out-of-range `_bake_only` light is still static-baked, but
+    /// contributes exactly zero to every bounce in this fixture. The cold path
+    /// must therefore serialize the same whole-volume section with or without it.
+    #[test]
+    fn cold_sh_section_ignores_trailing_bake_only_out_of_range_light_bit_identically() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let in_range_light = soft_point_light(DVec3::new(2.0, 2.5, 2.0), 1.5);
+        let mut trailing_out_of_range_light =
+            point_light_with_falloff(FalloffModel::InverseSquared, 1.0);
+        trailing_out_of_range_light.origin = DVec3::new(100.0, 2.5, 2.0);
+        trailing_out_of_range_light.bake_only = true;
+
+        // Keep the excluded light last: removing it must not renumber the kept
+        // light's soft-visibility seed. `_bake_only` then makes AlphaLightsNs
+        // remove its raw map-light slot just as pipeline packing does.
+        let full_lights = vec![in_range_light, trailing_out_of_range_light];
+        let without_trailing_lights = full_lights[..1].to_vec();
+
+        let bake_cold_section = |lights: &[MapLight]| {
+            let static_lights = StaticBakedLights::from_lights(lights);
+            let animated_lights = AnimatedBakedLights::from_lights(lights);
+            bake_sh_volume(
+                &ShBakeCtx {
+                    bvh: &bvh,
+                    primitives: &prims,
+                    geometry: &geo,
+                    tree: &tree,
+                    exterior_leaves: &exterior,
+                    static_lights: &static_lights,
+                    animated_lights: &animated_lights,
+                    total_light_count: lights.len(),
+                },
+                &config,
+            )
+        };
+
+        let mut with_trailing_light = bake_cold_section(&full_lights);
+        let mut without_trailing_section = bake_cold_section(&without_trailing_lights);
+
+        // `to_bytes` includes this table. The raw bake table spans MapData
+        // lights, while the PRL boundary compacts it into AlphaLights identity
+        // space; mirror that production seam before asserting section identity.
+        with_trailing_light.slot_for_map_light = AlphaLightsNs::from_lights(&full_lights)
+            .compact_source_table(&with_trailing_light.slot_for_map_light);
+        without_trailing_section.slot_for_map_light =
+            AlphaLightsNs::from_lights(&without_trailing_lights)
+                .compact_source_table(&without_trailing_section.slot_for_map_light);
+
+        assert_eq!(
+            with_trailing_light.to_bytes(),
+            without_trailing_section.to_bytes(),
+            "a trailing bake-only point light beyond falloff range must leave the cold SH section byte-identical"
         );
     }
 

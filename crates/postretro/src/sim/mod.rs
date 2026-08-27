@@ -662,8 +662,13 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         );
     }
 
-    let remote_weapon_result =
-        weapon_stage::run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
+    let remote_weapon_result = weapon_stage::run_remote_weapon_commands(
+        &registry,
+        remote_pawn_commands,
+        descriptors,
+        default_weapon_placement,
+        tick_dt,
+    );
     let own_pawn = {
         let registry = registry.borrow();
         registry.local_player_movement_pawn()

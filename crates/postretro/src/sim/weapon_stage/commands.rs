@@ -91,6 +91,8 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
 pub(in crate::sim) fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
     remote_pawn_commands: &[RemotePawnCommand],
+    descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     tick_dt: f32,
 ) -> RemoteWeaponCommandResult {
     let mut registry = registry.borrow_mut();
@@ -147,43 +149,9 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let credit_source = effective.credit_source.to_string();
         let resolution = effective.resolution;
         let projectile = effective.projectile.cloned();
-        let projectile_presentation = matches!(effective.resolution, ResolutionMode::Projectile)
-            .then(|| {
-                let projectile = projectile.clone()?;
-                let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
-                let movement = registry
-                    .get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
-                    .ok()?;
-                let yaw = remote.command.movement.facing_yaw;
-                let pitch = remote.aim_pitch;
-                if !yaw.is_finite() || !pitch.is_finite() {
-                    return None;
-                }
-                let direction = Vec3::new(
-                    -yaw.sin() * pitch.cos(),
-                    pitch.sin(),
-                    -yaw.cos() * pitch.cos(),
-                );
-                let length_squared = direction.length_squared();
-                if !length_squared.is_finite() || length_squared <= 1.0e-12 {
-                    return None;
-                }
-                let descriptor_class = registry
-                    .get_component::<DescriptorProvenance>(weapon)
-                    .ok()?
-                    .canonical_name
-                    .clone();
-                (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
-                    owner_client_id: remote.owner_client_id,
-                    shot_id: remote.shot_id?,
-                    origin: transform.position + Vec3::Y * movement.capsule.eye_height,
-                    direction: direction / length_squared.sqrt(),
-                    range,
-                    descriptor_class,
-                    projectile,
-                })
-            })
-            .flatten();
+        // Projectile fire origins deliberately read the live host component,
+        // which is the host-spawned source for authored muzzle content.
+        let muzzle_offset = weapon_component.muzzle_offset;
         let _ = registry.set_component(weapon, weapon_component);
         match machine.authorization {
             WeaponFireAuthorization::Accepted => weapon_events.push("activate"),
@@ -210,39 +178,82 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let Some(shot_id) = remote.shot_id else {
             continue;
         };
-        let (is_projectile, fire_origin, timeout_budget_ticks) = match resolution {
-            ResolutionMode::Hitscan => (false, Vec3::ZERO, crate::netcode::MAX_OPEN_SHOT_AGE_TICKS),
-            ResolutionMode::Projectile => {
-                let Some(projectile) = projectile.as_ref() else {
-                    log::warn!(
-                        "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
+        let (is_projectile, fire_origin, timeout_budget_ticks, projectile_presentation) =
+            match resolution {
+                ResolutionMode::Hitscan => (
+                    false,
+                    Vec3::ZERO,
+                    crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                    None,
+                ),
+                ResolutionMode::Projectile => {
+                    let Some(projectile) = projectile.as_ref() else {
+                        log::warn!(
+                            "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
+                        );
+                        rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                            owner_client_id: remote.owner_client_id,
+                            shot_id,
+                        });
+                        continue;
+                    };
+                    let Some((eye, direction)) = remote_projectile_aim(&registry, remote) else {
+                        log::warn!(
+                            "[Net] remote projectile fire has no valid live pawn aim; dropping shot"
+                        );
+                        rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                            owner_client_id: remote.owner_client_id,
+                            shot_id,
+                        });
+                        continue;
+                    };
+                    let descriptor_class = registry
+                        .get_component::<DescriptorProvenance>(weapon)
+                        .ok()
+                        .map(|provenance| provenance.canonical_name.clone())
+                        .unwrap_or_default();
+                    let authored_placement = descriptors
+                        .iter()
+                        .find(|descriptor| {
+                            descriptor.canonical_name.as_deref() == Some(descriptor_class.as_str())
+                        })
+                        .and_then(|descriptor| descriptor.weapon.as_ref())
+                        .and_then(|weapon| weapon.placement.as_ref());
+                    let placement = crate::resolve_weapon_placement(
+                        default_weapon_placement,
+                        None,
+                        authored_placement,
+                        None,
                     );
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
+                    // A projectile's host authorization and its observer launch
+                    // must share this exact fire-time point.
+                    let fire_origin = muzzle_offset.map_or(eye, |muzzle_local| {
+                        weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local)
                     });
-                    continue;
-                };
-                let Some(fire_origin) = remote_fire_origin(&registry, remote.pawn) else {
-                    log::warn!("[Net] remote projectile fire has no live pawn eye; dropping shot");
-                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                        owner_client_id: remote.owner_client_id,
-                        shot_id,
-                    });
-                    continue;
-                };
-                (
-                    true,
-                    fire_origin,
-                    crate::netcode::projectile_timeout_budget_ticks(
-                        range,
-                        projectile.speed,
-                        projectile.lifetime_ms / 1000.0,
-                        tick_dt,
-                    ),
-                )
-            }
-        };
+                    let projectile_presentation = (!descriptor_class.is_empty()).then_some(
+                        RemoteProjectilePresentationLaunch {
+                            owner_client_id: remote.owner_client_id,
+                            shot_id,
+                            origin: fire_origin,
+                            direction,
+                            range,
+                            descriptor_class,
+                            projectile: projectile.clone(),
+                        },
+                    );
+                    (
+                        true,
+                        fire_origin,
+                        crate::netcode::projectile_timeout_budget_ticks(
+                            range,
+                            projectile.speed,
+                            projectile.lifetime_ms / 1000.0,
+                            tick_dt,
+                        ),
+                        projectile_presentation,
+                    )
+                }
+            };
         authorized.push(OpenAuthorizedShot {
             shot: super::super::AuthorizedShot {
                 shot_id,
@@ -273,12 +284,32 @@ pub(in crate::sim) fn run_remote_weapon_commands(
     }
 }
 
-fn remote_fire_origin(registry: &EntityRegistry, pawn: EntityId) -> Option<Vec3> {
-    let transform = registry.get_component::<Transform>(pawn).ok()?;
+fn remote_projectile_aim(
+    registry: &EntityRegistry,
+    remote: &RemotePawnCommand,
+) -> Option<(Vec3, Vec3)> {
+    let transform = registry.get_component::<Transform>(remote.pawn).ok()?;
     let movement = registry
-        .get_component::<PlayerMovementComponent>(pawn)
+        .get_component::<PlayerMovementComponent>(remote.pawn)
         .ok()?;
-    Some(transform.position + Vec3::Y * movement.capsule.eye_height)
+    let yaw = remote.command.movement.facing_yaw;
+    let pitch = remote.aim_pitch;
+    if !yaw.is_finite() || !pitch.is_finite() {
+        return None;
+    }
+    let direction = Vec3::new(
+        -yaw.sin() * pitch.cos(),
+        pitch.sin(),
+        -yaw.cos() * pitch.cos(),
+    );
+    let length_squared = direction.length_squared();
+    if !length_squared.is_finite() || length_squared <= 1.0e-12 {
+        return None;
+    }
+    Some((
+        transform.position + Vec3::Y * movement.capsule.eye_height,
+        direction / length_squared.sqrt(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

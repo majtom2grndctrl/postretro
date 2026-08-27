@@ -65,9 +65,15 @@ mod tests {
     use postretro_entities::data_descriptors::{
         AmmoResource, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
     };
-    use postretro_entities::{AmmoReserve, EntityId, EntityRegistry, Transform};
+    use postretro_entities::provenance::{
+        DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
+    };
+    use postretro_entities::{
+        AmmoReserve, EntityId, EntityRegistry, EntityTypeDescriptor, Transform,
+    };
     use postretro_foundation::{
-        FireMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual,
+        FireMode, PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
+        ProjectileVisual, WeaponPlacementDescriptor,
     };
     use postretro_net::wire::{self, ClientMessage, HitDeclaration, HitRecord, NetworkId};
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -183,6 +189,51 @@ mod tests {
             },
         });
         component
+    }
+
+    fn projectile_weapon_descriptor(
+        canonical_name: &str,
+        placement: WeaponPlacementDescriptor,
+    ) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(canonical_name.to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 10.0,
+                pellet_count: 1,
+                spread_degrees: 0.0,
+                range: 2.0,
+                cooldown_ms: 100.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Projectile,
+                projectile: None,
+                credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
+                placement: Some(placement),
+                muzzle_offset: None,
+                resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
+            }),
+            touchable: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        }
+    }
+
+    fn weapon_provenance(canonical_name: &str) -> DescriptorProvenance {
+        DescriptorProvenance {
+            canonical_name: canonical_name.to_string(),
+            owned_components: std::collections::BTreeSet::from([DescriptorComponentKind::Weapon]),
+            map_overrides: std::collections::BTreeSet::<DescriptorMapOverride>::new(),
+            spawn_path: DescriptorSpawnPath::DefaultWeapon,
+        }
     }
 
     fn set_reload_style(
@@ -1942,6 +1993,177 @@ mod tests {
             "fire itself emits no hitscan impact; damage waits for projectile advance"
         );
         assert!(registry.exists(weapon));
+    }
+
+    #[test]
+    fn remote_projectile_muzzle_matches_local_helper_and_presentation_origin() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let canonical_name = "weapon.test.remote-muzzle";
+        let placement = WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right: 0.3,
+                up: -0.2,
+                forward: 0.7,
+            },
+            rotation: PlacementRotation {
+                yaw: 12.0,
+                pitch: -7.0,
+                roll: 3.0,
+            },
+        };
+        let mod_default = WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right: 9.0,
+                up: 8.0,
+                forward: 7.0,
+            },
+            rotation: PlacementRotation::default(),
+        };
+        let muzzle_local = Vec3::new(0.15, -0.1, -0.8);
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform {
+                position: Vec3::new(2.0, 3.0, 4.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("remote pawn carries eye-height movement");
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component(canonical_name);
+            component.muzzle_offset = Some(muzzle_local);
+            registry
+                .set_component(weapon, component)
+                .expect("remote projectile weapon attaches");
+            registry
+                .set_component(weapon, weapon_provenance(canonical_name))
+                .expect("weapon has its canonical archetype");
+            (pawn, weapon)
+        };
+        let mut remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
+        remote.command.movement.facing_yaw = 0.4;
+        remote.aim_pitch = -0.25;
+
+        let result = run_remote_weapon_commands(
+            &registry,
+            &[remote.clone()],
+            &[projectile_weapon_descriptor(
+                canonical_name,
+                placement.clone(),
+            )],
+            Some(&mod_default),
+            1.0 / 60.0,
+        );
+
+        let eye = Vec3::new(2.0, 3.5, 4.0);
+        let direction = Vec3::new(
+            -remote.command.movement.facing_yaw.sin() * remote.aim_pitch.cos(),
+            remote.aim_pitch.sin(),
+            -remote.command.movement.facing_yaw.cos() * remote.aim_pitch.cos(),
+        )
+        .normalize();
+        let local_origin = weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local);
+        let [authorized] = result.authorized_shots.as_slice() else {
+            panic!("accepted remote projectile fire mints one authorization");
+        };
+        let [presentation] = result.projectile_presentation_launches.as_slice() else {
+            panic!("canonical remote projectile fire emits one observer launch");
+        };
+
+        assert!(
+            authorized.shot.fire_origin.distance(local_origin) <= 1.0e-6,
+            "identical remote and local muzzle inputs compose to the same origin"
+        );
+        assert!(
+            presentation.origin.distance(local_origin) <= 1.0e-6,
+            "the observer launch reuses the authorization's exact muzzle point"
+        );
+        assert!(
+            presentation.direction.distance(direction) <= 1.0e-6,
+            "remote presentation continues along the reconstructed aim without convergence"
+        );
+    }
+
+    #[test]
+    fn remote_projectile_contact_within_muzzle_range_validates() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let canonical_name = "weapon.test.remote-contact-muzzle";
+        let (pawn, weapon, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("remote pawn carries eye-height movement");
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component(canonical_name);
+            component.range = 2.0;
+            component.muzzle_offset = Some(Vec3::new(0.0, 0.0, -1.0));
+            registry
+                .set_component(weapon, component)
+                .expect("remote projectile weapon attaches");
+            registry
+                .set_component(weapon, weapon_provenance(canonical_name))
+                .expect("weapon has its canonical archetype");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, weapon, target)
+        };
+        let remote = remote_command(pawn, Some(weapon), 42, 9, true, false);
+        let result = run_remote_weapon_commands(
+            &registry,
+            &[remote],
+            &[projectile_weapon_descriptor(
+                canonical_name,
+                WeaponPlacementDescriptor::default(),
+            )],
+            None,
+            1.0 / 60.0,
+        );
+        let [authorized] = result.authorized_shots.as_slice() else {
+            panic!("accepted remote projectile fire mints one authorization");
+        };
+        let max_distance = authorized.shot.range * crate::netcode::HIT_RANGE_TOLERANCE;
+        let contact = authorized.shot.fire_origin + Vec3::NEG_Z * (max_distance - 0.01);
+        let eye = Vec3::new(0.0, 0.5, 0.0);
+        assert!(
+            eye.distance(contact) > max_distance,
+            "the contact is only valid when measured from the authored muzzle"
+        );
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(pawn);
+        let target_network_id = allocator.stamp(target);
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, 7);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(authorized.shot.clone(), authorized.owner_client_id);
+        let declaration = HitDeclaration {
+            shot_id: authorized.shot.shot_id.raw(),
+            records: vec![HitRecord {
+                target: target_network_id.0,
+                point: contact.to_array(),
+                zone: None,
+            }],
+        };
+
+        let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+            &mut registry.borrow_mut(),
+            &CollisionWorld::new(),
+            &allocator,
+            &owners,
+            &mut open_shots,
+            7,
+            &declaration,
+        );
+        assert!(fire_accepted);
+        assert!(hit_accepted);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live after nonlethal impact")
+                .current,
+            90.0
+        );
     }
 
     #[test]

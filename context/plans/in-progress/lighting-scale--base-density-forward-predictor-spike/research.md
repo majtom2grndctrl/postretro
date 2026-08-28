@@ -404,3 +404,50 @@ stress-warren-mini) — so the failure is **not** a poverty of the cheap signals
 - Both JSON reports written to scratchpad; all five families populate full 3×3
   confusion matrices summing to the non-empty brick count (802 / 7889) on both
   fixtures — no unclassified cell, S3 holds.
+
+---
+
+## Follow-up: angle-off-cone-axis predictor tuning
+
+Two families added after the original P1–P3 sweep, scoring the prior coarsenability
+spike's strongest signal (angle-off-cone-axis, r=-0.765) directly instead of P1's
+delivered-magnitude-gradient proxy. Same cheap pre-bake inputs as P1, unchanged
+oracle + scoring machinery. Dominant spot selected geometrically (deepest-inside cone
+among spots in falloff range); probes with no spot in range are unevaluable → brick
+falls to L0 (dense) — the safe conservative default.
+
+- `cone_angle`: per-probe angle-off-cone-axis of the dominant spot.
+- `cone_atten`: dominant-spot cone attenuation (smoothstep); across-brick variation
+  concentrates on the penumbra.
+
+### occlusion-test (802 non-empty bricks; oracle L0 190 / L1 40 / L2 572)
+
+FP-vs-recovered tradeoff (recovered → unsafe-FP-rate):
+
+- P1:         0.56→0.165  0.66→0.175  0.76→0.191  0.79→0.192   (flat ~16.5% floor)
+- P2:         floor 0.166 (133 bricks); P3: floor 0.166 (identical)
+- cone_angle: 0.11→0.022  0.25→0.042  0.36→0.062  0.42→0.084  0.48→0.096  (real knee)
+- cone_atten: ~0.40→0.080 (flat 8.0% floor)
+- distance:   floor 0.046 (37);  surface_distance: floor 0.036 (29)
+
+recover@FP≤2% = 0 for every family (cone_angle's knee starts at 2.2%).
+Best FP-vs-savings tradeoff: cone_angle. eval: cone_angle 0.0016s, cone_atten 0.0016s.
+
+### stress-warren-mini (7889 non-empty bricks; oracle L0 186 / L1 200 / L2 7503; 97.6% coarsenable)
+
+recover@FP≤2%  /  recover@FP≤0.5%:
+- P1:         0.578 / 0.255
+- P2:         0.764 / 0.000
+- P3:         0.768 / 0.000
+- cone_angle: 0.463 / 0.000
+- cone_atten: 0.000 / 0.000   (never below 4.2% FP)
+- distance:   0.494 / 0.233
+eval: cone_angle 0.027s, cone_atten 0.026s (both ~0.004% of the 716s base-indirect bake).
+
+### Read
+The best family FLIPS between fixtures: cone_angle wins on occlusion-test (FP floor
+2.2% vs P1's 16.5%), P1/P3 win on stress-warren-mini (cone signal dilutes under 49
+static + 16 spot overlapping lights). No family clears near-zero FP (≤0.5%) with
+meaningful savings on either fixture. The per-fixture flip is evidence forward-
+predictability is not robust. Recommendation unchanged: NO-PROMOTE (now on direct
+evidence, not the P3-ceiling inference). See findings.md.

@@ -39,8 +39,8 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
-// --- Group 1: sprite sheet texture + sampler ---
-@group(1) @binding(0) var sprite_texture: texture_2d<f32>;
+// --- Group 1: sprite-frame texture array + sampler ---
+@group(1) @binding(0) var sprite_texture: texture_2d_array<f32>;
 @group(1) @binding(1) var sprite_sampler: sampler;
 
 // --- Group 2: dynamic lights, spec-only buffer, chunk grid (shared with forward) ---
@@ -169,6 +169,9 @@ struct VertexOutput {
     // per-fragment result with no visible change. The fragment shader does NO
     // lighting; it only samples the sprite texture and premultiplies.
     @location(3) lighting: vec3<f32>,
+    // Integer texture-array layer; flat interpolation keeps all fragments of a
+    // quad on the frame selected from its sprite age.
+    @location(4) @interpolate(flat) frame_idx: u32,
 };
 
 // Corner lookup table: the vertex shader expands each sprite into two triangles
@@ -245,13 +248,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let lifetime = max(draw_params.params.z, 1.0e-6);
     let frame_duration = lifetime / f32(frame_count);
     let frame_idx = u32(floor(age / max(frame_duration, 1.0e-6))) % frame_count;
-    // Sprite sheet convention: frames laid out horizontally (N wide, 1 tall)
-    // within a single texture. Since frames live in separate files and the
-    // renderer stitches them into a single horizontal strip at upload time
-    // (see renderer smoke pipeline), per-frame UV is
-    //   u = (frame_idx + cd.z) / frame_count
-    let u = (f32(frame_idx) + cd.z) / f32(frame_count);
-    let v = cd.w;
+    // Each decoded frame occupies one texture-array layer, so the UV remains
+    // within the frame's native dimensions.
 
     // Full lighting, hoisted from the fragment stage (SH indirect + SH direct,
     // static-specular, and dynamic-light loops). Every input derives from the
@@ -384,10 +382,11 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
 
     var out: VertexOutput;
     out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
-    out.uv = vec2<f32>(u, v);
+    out.uv = vec2<f32>(cd.z, cd.w);
     out.world_position = sprite_pos;
     out.opacity = opacity;
     out.lighting = lighting;
+    out.frame_idx = frame_idx;
     return out;
 }
 
@@ -398,10 +397,10 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
 // the seam between texels across an `fwidth`-wide band. Samples through the
 // hardware linear sampler via `textureSampleGrad`, passing the ORIGINAL
 // (unwarped) derivatives so mip/aniso footprint selection tracks the true
-// screen-space pixel footprint. Snapping against the full sprite-strip
-// `textureDimensions` is correct because the strip's texels are the sprite's
-// texels.
-fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
+// screen-space pixel footprint. `textureDimensions` on the array returns the
+// width and height of one layer, which are the selected frame's true texel
+// dimensions.
+fn sample_post_retro(tex: texture_2d_array<f32>, samp: sampler, uv: vec2<f32>, layer: u32,
                      ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex, 0));
     let uv_tex = uv * dims;
@@ -416,7 +415,7 @@ fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
     // only shifts the sample point; mip selection and the aniso footprint must
     // track the true screen-space pixel footprint. Derivatives of the warped UV
     // collapse the footprint at seams and break mip/aniso selection.
-    return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
+    return textureSampleGrad(tex, samp, uv_recon, i32(layer), ddx, ddy);
 }
 
 fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
@@ -522,7 +521,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // requirement) so they can feed `textureSampleGrad` inside `sample_post_retro`.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let sprite_sample = sample_post_retro(sprite_texture, sprite_sampler, in.uv, ddx, ddy);
+    let sprite_sample = sample_post_retro(
+        sprite_texture,
+        sprite_sampler,
+        in.uv,
+        in.frame_idx,
+        ddx,
+        ddy,
+    );
 
     // The fragment shader does NO lighting. The full lighting term —
     // ambient floor + baked indirect + baked static direct + static specular +

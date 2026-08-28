@@ -163,19 +163,29 @@ comes from `N'`, not `L`).
 
 ## Prerequisites
 
-This spec consumes two amendments that must land before its review begins:
+This spec consumes three upstream pieces that must land before its review begins:
 
-1. **`billboard-sprite-prm-baking` (amended)** bakes optional per-collection
-   `SPECULAR`/`NORMAL` slots into the sprite `.prm` and parses/uploads them at
-   runtime, exposing the loaded slot mask and the slot texture views to the
-   billboard pass. Shimmer consumes: the slot mask (classification) and the two
-   texture views (binding).
-2. **`billboard-volumetric-direct-lighting` (amended)** scopes its normal-free
+1. **`prm-array-layers` (lands first, foundational)** migrates the billboard
+   sprite texture path from a stitched strip to per-frame `texture_2d_array`
+   layers, extends the PRM format with a file-header `layer_count`, and routes
+   the per-fragment `frame_idx` (flat-interpolated on `VertexOutput`) that
+   shimmer samples the spec/normal maps by. Shimmer inherits an already-D2Array
+   billboard shader and bind layout; its own `VertexOutput` growth (the sprite
+   `rotation` for the tangent frame) **coordinates with** the `frame_idx` field
+   that spec adds — the two must not collide in the struct. Shimmer samples the
+   spec/normal maps per fragment at `layer = frame_idx`, not from a strip.
+2. **`billboard-sprite-prm-baking` (amended)** bakes optional per-collection
+   `SPECULAR`/`NORMAL` slots into the sprite `.prm` (as array-layer slots atop
+   the `prm-array-layers` format) and parses/uploads them at runtime, exposing
+   the loaded slot mask and the slot texture views to the billboard pass.
+   Shimmer consumes: the slot mask (classification) and the two texture views
+   (binding).
+3. **`billboard-volumetric-direct-lighting` (amended)** scopes its normal-free
    isotropic-scatter path to non-shimmer (default) billboards and preserves —
    does not delete — the static-specular path for shimmer-flagged materials.
    Shimmer owns that preserved path's per-fragment form.
 
-If either amendment is not yet merged when this spec is picked up, that is a
+If any of the three is not yet merged when this spec is picked up, that is a
 sequencing block, not a scope change here.
 
 ## Acceptance criteria

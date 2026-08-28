@@ -20,6 +20,17 @@ occlusion-test, **97.6 %** on stress-warren-mini) — so the predictor's real an
 hard job is protecting the small dense-needed minority (24 % / **2.4 %** of bricks).
 No measured forward predictor can identify that minority cheaply and safely.
 
+> **Follow-up note (see "Angle-off-cone-axis tuning" below).** After the original
+> P1–P3 sweep, two additional families were added that score bricks on the prior
+> coarsenability spike's *strongest* signal — angle-off-cone-axis (r=-0.765) — directly,
+> rather than P1's blunter delivered-magnitude-gradient. On the primary fixture this
+> **materially improved** the FP floor (cone_angle 2.2 % vs P1's flat 16.5 %), confirming
+> P1 was not the best contribution-aware predictor. But it **did not generalize**: on the
+> heavier fixture the ranking flipped (P1/P3 beat the cone families) and the cone signal
+> diluted. No family — original or tuned — clears near-zero FP with meaningful savings on
+> *both* fixtures, and the per-fixture flip is itself evidence forward-predictability is
+> not robust. **The recommendation is unchanged and better-evidenced.**
+
 ## The two bars, and how each family did
 
 **Cost bar — PASSED decisively by every candidate.** On the heavy realistic fixture
@@ -77,15 +88,53 @@ savings, and reaches meaningful savings only by destroying the dense-needed regi
 Both say: **a cheap forward, pre-bake signal cannot resolve the contribution-concentrated
 dense-needed bricks the composed-receiver oracle marks.**
 
+## Angle-off-cone-axis tuning (follow-up measurement)
+
+The original sweep scored P1 on delivered-magnitude-*gradient*, a blunter proxy than the
+prior coarsenability spike's strongest signal (angle-off-cone-axis, r=-0.765). Two
+families were added to give that signal its best shot as a direct predictor, same cheap
+pre-bake inputs as P1, fed through the unchanged oracle and scoring:
+
+- **`cone_angle`** — per-probe angle-off-cone-axis of the dominant contributing spot.
+- **`cone_atten`** — the dominant spot's cone attenuation (smoothstep), whose across-brick
+  variation concentrates on the penumbra rather than P1's blended brightness.
+
+**What it found — the tuning helped, unevenly, and still short of the bar:**
+
+| | occlusion-test | stress-warren-mini |
+|---|---|---|
+| **FP floor** (min unsafe-FP, any threshold) | cone_angle **2.2 %** / cone_atten 8.0 % vs **P1/P2/P3 flat ~16.5 %** | all families low (97.6 %-coarsenable denominator) |
+| **recover @ FP ≤ 2 %** | 0 for every family (cone_angle's knee starts at 2.2 %) | **P3 0.768 / P2 0.764 / P1 0.578** vs cone_angle 0.463 / cone_atten 0.000 |
+| **recover @ FP ≤ 0.5 %** (strict near-zero) | 0 for every family | P1 0.255 / distance 0.233; **cone families 0.000** |
+| **best family** | **cone_angle** (a real FP-vs-savings knee; P1 is a flat line) | **P1 / P3** (cone families underperform) |
+
+Two things are true at once, and both matter:
+
+1. **The cone signal is genuinely better than P1 on the primary fixture.** cone_angle cuts
+   the unsafe-FP floor from ~16.5 % to ~2.2 % and turns P1's flat FP line into a real
+   tradeoff knee. So the original P1 was *not* the strongest contribution-aware predictor,
+   and the earlier "structural, not a poverty of the cheap signals" claim was too strong on
+   the primary fixture: a sharper cheap signal moved the bar meaningfully.
+2. **It does not generalize, and it does not clear the bar.** On the heavier fixture the
+   ranking *flips* — P1/P2/P3 recover far more at safe FP than the cone families, because
+   the dominant-spot cone signal dilutes under many overlapping lights (49 static, 16 spots).
+   And on *neither* fixture does any family — original or tuned — recover a meaningful
+   fraction at strict near-zero FP (≤0.5 %). The winner flipping per fixture is itself the
+   most important result: forward-predictability is fixture-dependent, exactly the property
+   you least want before committing a one-way door.
+
+**Verdict — NO-PROMOTE holds, now on direct evidence rather than the P3-ceiling inference.**
+We gave the strongest known signal its best shot as an actual predictor. It improved the
+easy fixture, regressed on the hard one, and cleared the near-zero-FP-with-savings bar on
+neither. A door whose payoff depends on a predictor that wins on one map and loses on the
+next should stay shut.
+
 ## Is a richer-but-still-cheaper forward predictor worth a follow-up spike?
 
-**No — this data does not warrant reopening the line.** The strongest evidence is the P3
-ceiling: it reads the actual baked direct-at-probe field and clears neither bar, floors
-at the same FP as the cheap P2, and shows the same no-knee tradeoff. Signal *richness*
-within the forward-predictor paradigm is not the missing ingredient. The measured
-ceiling on forward predictability sits well short of the accuracy the one-way door would
-need, so a follow-up spike on "a slightly richer forward predictor" would be reopening
-the door against evidence, not on it.
+**No — and this is now measured, not inferred.** Beyond the P3 ceiling (richest cheap
+*input*, same FP floor as P2), the angle-off-cone tuning tested the strongest known cheap
+*feature* directly and it neither generalized nor cleared the bar. Richer input and sharper
+feature have both been tried; neither is the missing ingredient.
 
 If the bake-time win is ever revisited, the honest next question is **not** a richer
 forward predictor but a different formulation of the problem — e.g. a cheap *partial*

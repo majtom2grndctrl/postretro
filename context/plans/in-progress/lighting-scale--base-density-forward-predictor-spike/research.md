@@ -247,3 +247,160 @@ for P2 occlusion and the surface-distance control.
 - One real harness run: all five families populate `families` with non-empty
   confusion matrices and 802 brick records each; the top-level P1 surface is
   unchanged from Task 1.
+
+## Task 3 — measurement sweep across both fixtures
+
+Full family run on both fixtures. The decision/hand-off is `findings.md`; this
+section is the raw-numbers log. Primary `occlusion-test.map` re-run for the
+record (dev-optimized `target/debug/prl-build`, matching Tasks 1–2); cross-check
+`stress-warren-mini.map` run with `target/release/prl-build` — see the build-profile
+note below.
+
+### Build-profile / environment note (reported, not hidden)
+
+`stress-warren-mini` **cannot complete its bake under the dev-optimized profile in
+this 15 GB-cgroup environment**: the `Lightmap Bake` stage (which precedes `SH Bake`)
+accumulates a per-texel, layer-major atlas that OOM-killed the process at ~14 GB /
+~6 % lightmap progress (ETA ~21 min for lightmaps alone), on both the dev and release
+profiles, twice. The lightmap atlas is orthogonal to everything the harness reads —
+the oracle and every predictor consume the **SH probe volumes** (id 34 base-indirect,
+id 35 base-direct, id 27 delta-indirect) and `BrickRecord` composed magnitude, none of
+which touch the surface lightmap atlas — so the run used `--lightmap-density 0.16`
+(vs the 0.04 m/texel default; ~16× fewer texels) to shrink the atlas below the memory
+limit. This changes no SH-volume byte, no oracle/predictor input, and no `SH Bake`
+stage time; it only makes the unrelated lightmap stage fit. `occlusion-test` bakes
+fine at the default density and was left at default. Consequence for the cost axis:
+`occlusion-test` timings are dev-optimized; `stress-warren-mini` timings are release.
+The **eval-vs-bake ratio is measured within one profile per fixture** (both the
+predictor eval and the `SH Bake` denominator come from the same run), so the cost
+verdict is apples-to-apples per fixture; only cross-fixture *absolute* times differ by
+profile.
+
+### Base-indirect bake wall-time (cost denominator, `SH Bake` stage banner)
+
+| Fixture | profile | `SH Bake` (base-indirect, id 34) | total build |
+|---|---|---|---|
+| occlusion-test | dev-optimized | **0.24–0.26 s** (warm) | 3.88 s |
+| stress-warren-mini | release | **715.94 s (~11.9 min)** | 983.16 s |
+
+`stress-warren-mini`'s `SH Bake` is the honest heavy-fixture cost — a ~12-minute
+256-ray-per-probe hemisphere bake over the 125×18×223 grid. This is the number the
+bake-time win would have to beat.
+
+### Fixture honesty
+
+| Fixture | `has_delta_indirect` | baked spots (`light_spot`) | animated | static lights | precondition |
+|---|---|---|---|---|---|
+| occlusion-test | **true** | **2** (static) + 4 animated spots | 4 | 5 | **holds** |
+| stress-warren-mini | **true** | **12** (static) | 6 | 49 | **holds** |
+
+`baked_spot_count` was added to the report this task (a trivial, output-preserving
+harness field — count of `LightType::Spot` among the static baked light set — so the
+aimed-spot half of the honesty gate is self-contained in the JSON; S1 re-verified
+byte-identical on occlusion-test after the change, SHA
+`1bf9ac8a213cbe5540b106a0779ab07af0a7dbbd88f4661fffd6ff3fd66d5f60`, and the 14 harness
+tests still pass). Note the exact counts differ from the plan's Rough-sketch estimate
+("16 baked aimed spots + 3 animated") — source has 16 `light_spot` total, of which the
+baked static set holds 12 and 6 lights are animated — but the **precondition**
+(`has_delta_indirect: true` AND non-zero baked aimed-spots) holds solidly on both.
+
+### Oracle — base-indirect coarsenability on each fixture (Open Question resolved)
+
+| Fixture | non-empty | L0 (dense) | L1 | L2 | coarsenable (L1+L2) | fully L2 |
+|---|---|---|---|---|---|---|
+| occlusion-test | 802 | 190 (23.7 %) | 40 | 572 | **612 (76.3 %)** | 71.3 % |
+| stress-warren-mini | 7889 | 186 (2.4 %) | 200 | 7503 | **7703 (97.6 %)** | 95.1 % |
+
+**Finding 3's "base indirect coarsens near-losslessly almost everywhere" HOLDS on both
+fixtures, and more strongly on the heavier realistic map** (97.6 % coarsenable). The
+predictor's real job is therefore protecting the small dense-needed minority — 24 % of
+bricks on occlusion-test, only **2.4 %** on stress-warren-mini — and that is exactly
+where it fails.
+
+### Per-family × per-fixture — best near-zero-FP operating point
+
+FP-rate = predictor-coarser-than-oracle bricks ÷ non-empty bricks (the unsafe,
+under-baked direction). "recovered" = fraction of the oracle's L1+L2 bricks the
+predictor also frees at a safe level. Harness picks the min-FP sweep row.
+
+**occlusion-test** (base-indirect bake 0.24 s):
+
+| Family | eval s | eval/bake | r | best t | FP-rate (bricks) | recovered | agree |
+|---|---|---|---|---|---|---|---|
+| P1 contribution geom | 0.0057 | 2.4 % | −0.198 | 0.010 | **0.1646** (132) | 0.562 | 0.503 |
+| P2 P1+occlusion | 0.2133 | 88 % | −0.213 | 0.010 | **0.1658** (133) | 0.655 | 0.572 |
+| P3 direct-field *ceiling* | 0.0137 | 5.7 % | −0.214 | 0.050 | **0.1658** (133) | 0.665 | 0.572 |
+| distance (control) | 0.0022 | — | −0.169 | 0.010 | 0.0461 (37) | 0.131 | 0.198 |
+| surface_distance (control) | 0.1624 | — | +0.026 | 0.075 | 0.0362 (29) | 0.239 | 0.279 |
+
+**stress-warren-mini** (base-indirect bake 715.94 s):
+
+| Family | eval s | eval/bake | r | best t | FP-rate (bricks) | recovered | agree |
+|---|---|---|---|---|---|---|---|
+| P1 contribution geom | 0.2180 | **0.030 %** | −0.068 | 0.010 | 0.0013 (10) | 0.173 | 0.048 |
+| P2 P1+occlusion | 6.0996 | **0.85 %** | −0.200 | 0.030 | 0.0134 (106) | 0.276 | 0.126 |
+| P3 direct-field *ceiling* | 0.1065 | 0.015 % | −0.205 | 0.030 | 0.0132 (104) | 0.277 | 0.129 |
+| distance (control) | 0.0462 | — | +0.037 | 0.010 | 0.0001 (1) | 0.092 | 0.033 |
+| surface_distance (control) | 1.8874 | — | −0.134 | 0.075 | 0.0022 (17) | 0.281 | 0.227 |
+
+### The stress-warren-mini "low FP" is a denominator artifact, not a win
+
+On stress-warren-mini FP-as-fraction-of-total is small at the min-FP row **because
+97.6 % of bricks are coarsenable** — a predictor that mostly says "coarsen" is mostly
+right. But the min-FP row buys that safety by **refusing to coarsen**: P1's confusion
+at t=0.010 calls 6546/7889 (83 %) of bricks dense (L0) to recover only 17.3 % of the
+coarsenable majority — it behaves like the distance control, not a discriminator
+(r=−0.068). To recover a *meaningful* fraction you climb the threshold, and FP climbs
+with it — there is no knee:
+
+P1 stress FP-vs-recovered along the sweep: recover 0.173 → FP 10 (t=0.01); recover
+0.578 → FP 147 (t=0.05); recover 0.872 → FP 251 (t=0.10); recover 0.974 → FP 382
+(t=0.50). There are only **186 L0 dense-needed bricks**: at recover 0.87 the 251 FP
+already exceeds the entire dense-needed population's worth of mis-leveling, and at
+recover 0.97 the 382 FP ≈ 99 % of the 386 non-L2 bricks. **Meaningful savings ⇒
+mis-coarsening essentially the entire dense-needed minority.**
+
+### Confusion matrices at the safest threshold (rows = predictor L0/L1/L2, cols = oracle L0/L1/L2; L2 coarsest)
+
+- occlusion-test P1 @t=0.010: `[[59,39,228],[0,0,0],[131,1,344]]` — **131 of 190
+  dense-needed (L0) bricks predicted L2 (fully coarsened) = 69 % of dense regions
+  under-baked, even at the safest threshold.** FP floor 132.
+- occlusion-test P2 @t=0.010: `[[58,39,171],[0,0,0],[132,1,401]]` — occlusion moves the
+  L0→L2 miss from 131 to 132; it does not shrink it.
+- stress-warren-mini P1 @t=0.010: `[[182,147,6217],[0,47,1137],[4,6,149]]` — safe (FP
+  10) only by calling 6546 bricks dense; 6217 truly-L2 bricks left un-coarsened
+  (missed savings), 17.3 % recovered.
+- stress-warren-mini P2 @t=0.030: `[[134,143,5377],[0,3,1266],[52,54,860]]`.
+
+### Contribution-aware vs distance correlation (primary fixture, the stronger test)
+
+On the delta-indirect primary fixture (`occlusion-test`) the contribution-aware
+signals barely beat the distance control and all sit far below the coarsenability
+spike's r=−0.765 for angle-off-cone-axis: **P1 −0.198, P2 −0.213** vs **distance
+−0.169, surface_distance +0.026**. On stress-warren-mini P1 collapses to **−0.068**
+(no usable signal) while the occlusion-augmented P2/P3 reach −0.20. The operational
+separation the recommendation rests on is the recovered-savings/FP tradeoff, not the
+raw Pearson r — and on that axis no family separates coarsenable from dense-needed.
+
+### P3 ordering (re-confirmed both fixtures)
+
+`p3_direct_baked_before_base_indirect: false` on both — id 35 (DirectShBake) bakes
+AFTER id 34 (ShBake) in `pipeline.rs` `STAGE_ORDER`. P3 is an accuracy **ceiling**
+only. And as a ceiling it does not clear the FP bar on either fixture (it floors at the
+same 133 bricks as P2 on occlusion-test, and shows the same no-knee tradeoff on
+stress-warren-mini) — so the failure is **not** a poverty of the cheap signals.
+
+### Verification (Task 3)
+
+- `cargo check -p postretro-level-compiler` — clean.
+- `cargo test -p postretro-level-compiler --bin prl-build sh_forward_predict` — **14
+  passed** (unchanged from Task 2; the `baked_spot_count` addition touched only the
+  report struct + assembly + log line).
+- S1 re-confirmed on occlusion-test after the harness change: `.prl` byte-identical
+  with and without `--sh-forward-predict`, SHA
+  `1bf9ac8a213cbe5540b106a0779ab07af0a7dbbd88f4661fffd6ff3fd66d5f60` (127,702,229
+  bytes), matching the Task 1/2 baseline. All large `.prl` outputs deleted after each
+  run (≤1 on disk at a time).
+- Both JSON reports written to scratchpad; all five families populate full 3×3
+  confusion matrices summing to the non-empty brick count (802 / 7889) on both
+  fixtures — no unclassified cell, S3 holds.

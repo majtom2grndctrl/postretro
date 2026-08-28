@@ -1184,6 +1184,9 @@ fn run_after_parsing(
             delta_sections.animated_direct.as_ref(),
             &static_light_refs,
             animated_baked_lights.entries().len(),
+            &bvh,
+            &bvh_primitives,
+            &geo_result,
         );
     }
 
@@ -1754,6 +1757,9 @@ fn run_sh_forward_predict(
     >,
     lights: &[&map_data::MapLight],
     animated_light_count: usize,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    bvh_primitives: &[bvh_build::BvhPrimitive],
+    geometry: &geometry::GeometryResult,
 ) {
     let Some(base) = base_indirect else {
         log::warn!(
@@ -1785,6 +1791,9 @@ fn run_sh_forward_predict(
         lights,
         animated_light_count,
         predictor_thresholds: &sh_forward_predict::DEFAULT_PREDICTOR_THRESHOLDS,
+        bvh,
+        primitives: bvh_primitives,
+        geometry,
     };
     let report = sh_forward_predict::run_forward_predict(&inputs);
     sh_forward_predict::log_summary(&report);

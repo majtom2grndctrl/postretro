@@ -509,7 +509,7 @@ fn point_aabb_distance_sq(p: Vec3, mn: Vec3, mx: Vec3) -> f32 {
 /// Squared distance from `p` to triangle `(a,b,c)`. Standard barycentric
 /// clamp — projects onto the triangle plane, then clamps into the triangle
 /// interior along the closest edge if outside.
-fn point_triangle_distance_sq(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
+pub(crate) fn point_triangle_distance_sq(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
     let ab = b - a;
     let ac = c - a;
     let ap = p - a;

@@ -2050,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_sh_delta_max_size_defaults_to_256_mib() {
+    fn parse_args_sh_delta_max_size_defaults_to_unconditional_256_mib_cap() {
         let parsed = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
 
         assert_eq!(

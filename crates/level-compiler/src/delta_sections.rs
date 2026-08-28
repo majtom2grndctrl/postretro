@@ -21,6 +21,10 @@ use crate::delta_drop_policy::{
 /// Default aggregate raw payload cap for ids 27, 41, and 45 on desktop maps.
 pub(crate) const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Authoring budget for the aggregate raw payload. Crossing this target warns
+/// but never changes emitted detail or substitutes for the production cap.
+const DIAGNOSTIC_MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Compiler-only configuration for the post-bake delta-section policy.
 ///
 /// The cap is carried with the baked sections so the policy can enforce it
@@ -211,40 +215,72 @@ impl PostBakeDeltaSections {
         Ok(())
     }
 
-    /// Enforce the explicit desktop budget on raw emitted delta blocks only.
+    /// Enforce the production cap on raw emitted delta blocks only, warning
+    /// when the post-compaction payload crosses the lower authoring target.
     /// Ids 27, 41, and 45 have completed valid-probe compaction before this
     /// call. Header, descriptor, and CSR bytes remain intentionally out of
     /// budget.
     pub(crate) fn enforce_payload_cap(&self) -> anyhow::Result<()> {
-        let indirect = self
+        let payload = DeltaPayloadBytes {
+            indirect: self
+                .indirect
+                .as_ref()
+                .map_or(0, |section| payload_bytes(&section.delta_subblocks)),
+            direct: self
+                .direct
+                .as_ref()
+                .map_or(0, |section| payload_bytes(&section.delta_subblocks)),
+            animated_direct: self
+                .animated_direct
+                .as_ref()
+                .map_or(0, |section| payload_bytes(&section.delta_subblocks)),
+        };
+        let total = payload
             .indirect
-            .as_ref()
-            .map_or(0, |section| payload_bytes(&section.delta_subblocks));
-        let direct = self
-            .direct
-            .as_ref()
-            .map_or(0, |section| payload_bytes(&section.delta_subblocks));
-        let animated_direct = self
-            .animated_direct
-            .as_ref()
-            .map_or(0, |section| payload_bytes(&section.delta_subblocks));
-        let total = indirect
-            .checked_add(direct)
-            .and_then(|bytes| bytes.checked_add(animated_direct))
+            .checked_add(payload.direct)
+            .and_then(|bytes| bytes.checked_add(payload.animated_direct))
             .ok_or_else(|| anyhow::anyhow!("SH delta payload byte total overflow"))?;
         let overage = total.saturating_sub(self.config.max_payload_bytes);
         log::info!(
-            "[Compiler] SH delta payload cap: id 27 {indirect} bytes, id 41 {direct} bytes, \\
-             id 45 {animated_direct} bytes, total {total} bytes, cap {} bytes, overage {overage} bytes",
+            "[Compiler] SH delta payload cap: id 27 {} bytes, id 41 {} bytes, \\
+             id 45 {} bytes, total {total} bytes, cap {} bytes, overage {overage} bytes",
+            payload.indirect,
+            payload.direct,
+            payload.animated_direct,
             self.config.max_payload_bytes,
         );
         anyhow::ensure!(
             total <= self.config.max_payload_bytes,
-            "SH delta payload cap exceeded before packing: id 27 {indirect} bytes, id 41 {direct} bytes, \\
-             id 45 {animated_direct} bytes; total {total} bytes exceeds cap {} bytes by {overage} bytes",
+            "SH delta payload cap exceeded before packing: id 27 {} bytes, id 41 {} bytes, \\
+             id 45 {} bytes; total {total} bytes exceeds cap {} bytes by {overage} bytes",
+            payload.indirect,
+            payload.direct,
+            payload.animated_direct,
             self.config.max_payload_bytes,
         );
+        warn_if_over_authoring_budget(payload, total, self.config.max_payload_bytes);
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DeltaPayloadBytes {
+    indirect: u64,
+    direct: u64,
+    animated_direct: u64,
+}
+
+fn warn_if_over_authoring_budget(payload: DeltaPayloadBytes, total: u64, cap: u64) {
+    if total > DIAGNOSTIC_MAX_PAYLOAD_BYTES {
+        log::warn!(
+            "[Compiler] SH delta authoring budget warning: id 27 {} bytes, id 41 {} bytes, \\
+             id 45 {} bytes; total {total} bytes exceeds the 64 MiB ({} byte) diagnostic target but remains within the {} byte production cap",
+            payload.indirect,
+            payload.direct,
+            payload.animated_direct,
+            DIAGNOSTIC_MAX_PAYLOAD_BYTES,
+            cap,
+        );
     }
 }
 
@@ -1038,6 +1074,7 @@ fn log_drop_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level as LogLevel;
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::{
         DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL, valid_probe_mask_payload_f16_count,
@@ -1047,6 +1084,7 @@ mod tests {
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
     use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
+    use postretro_test_log_capture::LogCapture;
 
     use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
 
@@ -1220,11 +1258,35 @@ mod tests {
     }
 
     #[test]
-    fn delta_section_config_defaults_to_desktop_cap() {
+    fn delta_section_config_defaults_to_unconditional_256_mib_cap() {
         assert_eq!(
             DeltaSectionConfig::default().max_payload_bytes,
             256 * 1024 * 1024
         );
+    }
+
+    #[test]
+    fn payload_over_64_mib_warns_without_changing_the_256_mib_cap() {
+        let capture = LogCapture::start();
+        let payload = DeltaPayloadBytes {
+            indirect: 17,
+            direct: 29,
+            animated_direct: DIAGNOSTIC_MAX_PAYLOAD_BYTES + 1 - 46,
+        };
+
+        warn_if_over_authoring_budget(
+            payload,
+            DIAGNOSTIC_MAX_PAYLOAD_BYTES + 1,
+            DEFAULT_MAX_PAYLOAD_BYTES,
+        );
+
+        capture.assert_logged_once(
+            LogLevel::Warn,
+            "SH delta authoring budget warning: id 27 17 bytes",
+        );
+        capture.assert_logged_once(LogLevel::Warn, "id 41 29 bytes");
+        capture.assert_logged_once(LogLevel::Warn, "total 67108865 bytes");
+        capture.assert_logged_once(LogLevel::Warn, "production cap");
     }
 
     #[test]

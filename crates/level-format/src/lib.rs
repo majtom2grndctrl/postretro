@@ -471,6 +471,52 @@ pub fn read_container<R: Read>(reader: &mut R) -> Result<ContainerMeta> {
     })
 }
 
+/// Borrow a specific section's raw bytes by section ID from a complete PRL
+/// image. Returns `None` if the section ID is not present in the file.
+///
+/// This is the allocation-free counterpart to [`read_section_data`]. Loaders
+/// that already retain the complete file can inspect a raw section size before
+/// invoking a decoder whose tables would allocate from untrusted input.
+pub fn section_data_from_bytes<'a>(
+    file_data: &'a [u8],
+    meta: &ContainerMeta,
+    section_id: u32,
+) -> Result<Option<&'a [u8]>> {
+    let entry = match meta.find_section(section_id) {
+        Some(entry) => entry,
+        None => return Ok(None),
+    };
+
+    let file_len = file_data.len() as u64;
+    let end = entry
+        .offset
+        .checked_add(entry.size)
+        .ok_or(FormatError::SectionOutOfBounds {
+            offset: entry.offset,
+            size: entry.size,
+            file_len,
+        })?;
+    if end > file_len {
+        return Err(FormatError::SectionOutOfBounds {
+            offset: entry.offset,
+            size: entry.size,
+            file_len,
+        });
+    }
+
+    let start = usize::try_from(entry.offset).map_err(|_| FormatError::SectionOutOfBounds {
+        offset: entry.offset,
+        size: entry.size,
+        file_len,
+    })?;
+    let end = usize::try_from(end).map_err(|_| FormatError::SectionOutOfBounds {
+        offset: entry.offset,
+        size: entry.size,
+        file_len,
+    })?;
+    Ok(Some(&file_data[start..end]))
+}
+
 /// Read a specific section's raw bytes by section ID.
 /// Returns None if the section ID is not present in the file.
 /// Validates offset+size against the actual file length.
@@ -557,6 +603,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(portals, vec![0xCA, 0xFE]);
+    }
+
+    #[test]
+    fn borrows_section_data_from_complete_prl_image() {
+        let sections = make_test_sections();
+        let mut file_data = Vec::new();
+        write_prl(&mut file_data, &sections).unwrap();
+
+        let mut cursor = Cursor::new(&file_data);
+        let meta = read_container(&mut cursor).unwrap();
+        let geometry = section_data_from_bytes(&file_data, &meta, SectionId::Geometry as u32)
+            .unwrap()
+            .expect("geometry section is present");
+
+        assert_eq!(geometry, [0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
     #[test]

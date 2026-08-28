@@ -26,10 +26,9 @@ payoff.
 - **Reader/writer.** `parse_slot` takes `layer_count`; `expected_payload_bytes`
   and `slot_levels` multiply by it. Per-slot `level_count` validation is
   unchanged (non-BC5 full chain, BC5 `bc5_level_count`), applied per layer.
-- **Upload path.** A sibling `upload_texture_array_data` (D2Array view,
-  `layer_count` layers); `upload_texture_data` keeps producing a **2D** view for
-  `layer_count == 1` so the world/model upload path is provably unchanged (a
-  `layer_count == 1` golden pins the D2 view and per-slot payload encoding).
+- **Upload path (world/model only).** `upload_texture_data` stays 2D at
+  `layer_count == 1`; a golden pins the D2 view and per-slot payload encoding. The
+  `D2Array` uploader is out of scope.
 - **Billboard sprite path migration (atomic — all of it, or the engine does not
   build):** the g1b0 sprite binding becomes `texture_2d_array`; `billboard.wgsl`
   samples by layer (`layer = frame_idx`, within-layer UV `0..1`) instead of the
@@ -45,10 +44,13 @@ payoff.
 ### Out of scope
 
 - **Baking mipped sprite `.prm` sidecars, the sprite content-hash, and sprite
-  discovery** — owned by `billboard-sprite-prm-baking`. This spec changes the
-  format so that spec's baked array sidecars are loadable and provides
-  `upload_texture_array_data`; it bakes nothing itself and leaves the sprite path
-  on the (now array-based, single-mip) decode fallback.
+  discovery** — owned by `billboard-sprite-prm-baking`. This spec makes those
+  baked array sidecars *loadable* (the layer-aware reader) but bakes nothing and
+  builds no `D2Array` GPU uploader for them: nothing in scope consumes one — the
+  sprite fallback uploads its layers inline — so `upload_texture_array_data` and
+  the `slot_levels` layer-major generalization land in that spec, with their
+  baked-load first caller. The sprite path stays on the array-based single-mip
+  decode fallback.
 - **Per-texel specular/normal sampling and the shimmer lighting math** — owned by
   `billboard-specular-shimmer`. This spec only routes `frame_idx` to the fragment
   stage for that spec to sample by.
@@ -189,19 +191,16 @@ rejects the truncated body. Tests: multi-layer
 round-trip; `layer_count == 0` reject; `STAGE_VERSION == 3`; a version-2 fixture
 rejected.
 
-### Task 2: `upload_texture_array_data` sibling + `layer_count == 1` golden
+### Task 2: `layer_count == 1` golden (world/model upload unchanged)
 
-Add `upload_texture_array_data` to `crates/renderer/src/render/loaded_texture.rs`
-alongside `upload_texture_data`: it creates a texture with
-`depth_or_array_layers = layer_count` and a `D2Array` view, uploading layer-major
-mip data. Keep `upload_texture_data` producing a `D2` view and single-layer
-texture for `layer_count == 1` so the world/model bind-group layouts (which
-declare `view_dimension: D2`) are unaffected. Generalize
-`slot_levels` (`crates/render-cpu/src/loaded_texture.rs`) to iterate
-`layer_count × Σ levels` in layer-major order (its per-level dims and R8/BC5
-handling are unchanged; the `debug_assert` sum becomes `× layer_count`). Add the
-golden test: a `layer_count == 1` bundle uploads through `upload_texture_data`
-with a `D2` view and matches the pre-change byte plan.
+Add the golden proving the world/model upload path is untouched: a
+`layer_count == 1` bundle (diffuse+spec+normal) uploads through
+`upload_texture_data` (`crates/renderer/src/render/loaded_texture.rs`) with a `D2`
+view and single-layer texture, its per-slot byte plan matching the pre-change
+encoding. `upload_texture_data` and `slot_levels`
+(`crates/render-cpu/src/loaded_texture.rs`) stay as they are — at
+`layer_count == 1` each slot is one chain, so the task asserts the degenerate path
+rather than touching the uploader. The `D2Array` uploader is out of scope.
 
 ### Task 3: Migrate the billboard sprite path to `texture_2d_array`
 
@@ -258,24 +257,25 @@ for sprites.
 **Phase 1 (sequential):** Task 1 — the format contract every other task and the
 downstream bake consume. Blocks 2, 3.
 
-**Phase 2 (concurrent):** Task 2 (upload sibling + golden) and Task 3 (renderer +
-shader migration) — they meet only at Task 1's **payload-layout** contract
-(layer-major sizing). The `D2Array` view is produced independently by Task 2 (the
-`LoadedTexture` uploader) and Task 3 (the inline sprite texture) — two
-implementations of that layout, not a shared view. **Thin-slice note:** stand up the end-to-end path first — a
-hand-built 2-layer `.prm` parsed (Task 1) and uploaded via
-`upload_texture_array_data` (Task 2) and sampled by the migrated shader (Task 3),
-OR the array-based decode-fallback path — so the format→upload→sample boundary is
-falsified before the rest of the ACs are written.
+**Phase 2 (concurrent):** Task 2 (`layer_count == 1` golden) and Task 3 (renderer
++ shader migration) — independent: Task 2 pins the degenerate world/model path,
+Task 3 flips the sprite path to arrays. Neither builds the `D2Array` `.prm`
+uploader; Task 3's array texture is created inline in `register_collection`. **Thin-slice note:** stand up the sprite
+array path end-to-end first — an animated collection decoded into `frame_count`
+inline array layers (Task 3) sampled at `layer = frame_idx` by the migrated shader
+— so the decode→array-upload→sample boundary is falsified before the rest of the
+ACs are written.
 
 **Phase 3 (sequential):** Task 4 — the gates wrap the path Tasks 1–3 establish.
 
 **Phase 4 (sequential):** Task 5 — documents the landed representation.
 
 **Cross-spec:** this whole spec sequences **before** `billboard-sprite-prm-baking`
-(whose Decision 3 truncation/re-stitch deletes and which becomes the mip-bake
-payoff on this format); `billboard-specular-shimmer`'s prerequisite #1 points
-here (it inherits the D2Array shader and consumes `frame_idx`);
+(whose Decision 3 truncation/re-stitch deletes, which becomes the mip-bake payoff
+on this format, and which additionally builds the `D2Array`
+`upload_texture_array_data` uploader + `slot_levels` layer-major generalization to
+load its baked array sidecars); `billboard-specular-shimmer`'s prerequisite #1
+points here (it inherits the D2Array shader and consumes `frame_idx`);
 `sprite-png-retirement` depends on this transitively. `billboard-volumetric-
 direct-lighting` shares a `billboard.wgsl`/`VertexOutput` merge point (orthogonal;
 rebase, not dependency).
@@ -286,7 +286,7 @@ rebase, not dependency).
 |---|---|---|---|
 | Layer count | `PrmHeader.layer_count: u16` | file header, little-endian, `>= 1` (world/model = 1) | implicit (array-layer count of the sprite texture) |
 | Layered slot payload | `PrmSlot.payload` = `layer_count` back-to-back full chains | slot `payload_bytes` = `layer_count × per-layer chain`, layer-major | n/a |
-| Array upload | `upload_texture_array_data` (D2Array); `upload_texture_data` = D2 at `layer_count==1` | n/a | `texture_2d_array<f32>` at g1b0 |
+| Upload | `upload_texture_data` = D2 at `layer_count==1` (world/model); sprite fallback builds its D2Array texture inline in `register_collection`; `.prm` array uploader → `billboard-sprite-prm-baking` | n/a | `texture_2d_array<f32>` at g1b0 |
 | Frame index | computed in `vs_main` from `age` | n/a | `VertexOutput.frame_idx: u32` (`@interpolate(flat)`), `layer = frame_idx` |
 | Layer cap | bake: fresh named `const` (256) in the format/compiler crate; runtime: `device.limits().max_texture_array_layers` | n/a | n/a |
 

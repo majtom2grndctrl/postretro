@@ -478,13 +478,15 @@ retired, by this spec.
 > **Upstream prerequisite — `prm-array-layers` (lands first).** The sprite
 > texture representation is being migrated from a single stitched strip to
 > per-frame `texture_2d_array` layers by the `prm-array-layers` spec, which
-> extends the PRM format with a file-header `layer_count`, adds
-> `upload_texture_array_data`, and flips `billboard.wgsl` / the g1b0 bind layout
+> extends the PRM format with a file-header `layer_count` (the layer-aware
+> reader) and flips `billboard.wgsl` / the g1b0 bind layout
 > / the decode-fallback upload to D2Array end-to-end (sprite path renders from
 > the array-based decode fallback, single-mip, no baked mips). This spec is the
 > **payoff layer** on top of that migration: it bakes the mipped array `.prm`
-> and, in `register_collection`'s baked-preferred branch, uploads the layered
-> mip chain via `upload_texture_array_data` and flips the sampler to
+> and builds the `D2Array` `upload_texture_array_data` uploader (plus the
+> `slot_levels` layer-major generalization) that `prm-array-layers` leaves to
+> this, its first consumer — then in `register_collection`'s baked-preferred
+> branch uploads the layered mip chain through it and flips the sampler to
 > `Linear`/`lod_max_clamp`. **Decision 3 (single-row strip + per-frame-
 > independent re-stitch + sub-4px truncation) is superseded** — each frame is
 > baked as an independent standard image into its own array layer with a normal

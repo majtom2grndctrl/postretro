@@ -49,9 +49,8 @@ pub const STAGE_VERSION: u8 = 3;
 
 /// Portable WebGPU/wgpu baseline for `max_texture_array_layers`.
 ///
-/// Every writer of array-backed `.prm` files must keep
-/// [`PrmHeader::layer_count`] at or below this limit so its output remains
-/// portable across the engine's supported adapters.
+/// [`PrmFile::to_bytes`] enforces this ceiling so every array-backed `.prm`
+/// remains portable across the engine's supported adapters.
 pub const PORTABLE_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256;
 
 /// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
@@ -97,12 +96,12 @@ bitflags! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PrmFormat {
-    /// 4 bytes per pixel, sRGB-encoded RGBA. Used for albedo (diffuse).
+    /// 4 bytes per pixel, sRGB-encoded RGBA. Used for diffuse and emissive color.
     Rgba8UnormSrgb = 0,
     /// 4 bytes per pixel, linear RGBA. Previously the normal-map format;
     /// superseded by `Bc5RgUnorm` (tag 3), which the baker now emits for all
     /// normal slots. Tag 1 remains readable for pre-BC5 `.prm` files but is no
-    /// longer written for normals.
+    /// longer emitted by the baker.
     Rgba8Unorm = 1,
     /// 1 byte per pixel, linear single channel. Used for specular intensity.
     R8Unorm = 2,
@@ -225,8 +224,16 @@ pub enum PrmReadError {
     #[error("slot {slot}: unsupported format tag {tag}")]
     UnsupportedFormatTag { slot: u8, tag: u8 },
 
-    #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
-    Bc5OnNonNormalSlot { slot: u8 },
+    #[error("slot {slot} does not permit format {format:?}")]
+    FormatNotAllowedForSlot { slot: u8, format: PrmFormat },
+
+    #[error("slot {slot} format {format:?} has no representable mip level at {width}x{height}")]
+    EmptyMipChain {
+        slot: u8,
+        format: PrmFormat,
+        width: u16,
+        height: u16,
+    },
 
     #[error("slot is not present in the bundle")]
     NotPresent,
@@ -243,11 +250,14 @@ pub enum PrmWriteError {
     #[error("stage version mismatch: expected {expected}, got {found}")]
     StageVersionMismatch { expected: u8, found: u8 },
 
-    #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
-    Bc5OnNonNormalSlot { slot: u8 },
+    #[error("slot {slot} does not permit format {format:?}")]
+    FormatNotAllowedForSlot { slot: u8, format: PrmFormat },
 
     #[error("invalid layer_count {layer_count}; must be at least 1")]
     InvalidLayerCount { layer_count: u16 },
+
+    #[error("layer_count {layer_count} exceeds the portable texture-array limit {portable_max}")]
+    LayerCountExceedsPortableLimit { layer_count: u16, portable_max: u32 },
 
     #[error("slot_mask has reserved bits set or is zero: {mask:#010b}")]
     InvalidSlotMask { mask: u8 },
@@ -266,6 +276,14 @@ pub enum PrmWriteError {
 
     #[error("slot {slot} level_count mismatch: expected {expected}, got {found}")]
     LevelCountMismatch { slot: u8, expected: u8, found: u8 },
+
+    #[error("slot {slot} format {format:?} has no representable mip level at {width}x{height}")]
+    EmptyMipChain {
+        slot: u8,
+        format: PrmFormat,
+        width: u16,
+        height: u16,
+    },
 
     #[error("slot {slot} payload_bytes mismatch: expected {expected}, got {found}")]
     PayloadBytesMismatch {
@@ -306,6 +324,18 @@ pub fn bc5_level_count(width: u16, height: u16) -> u8 {
         }
     }
     count
+}
+
+/// Material-slot format contract shared by the reader and writer.
+///
+/// The linear RGBA normal format remains accepted for pre-BC5 sidecars.
+fn format_allowed_for_slot(slot_index: u8, format: PrmFormat) -> bool {
+    match slot_index {
+        0 | 3 => format == PrmFormat::Rgba8UnormSrgb,
+        1 => format == PrmFormat::R8Unorm,
+        2 => matches!(format, PrmFormat::Rgba8Unorm | PrmFormat::Bc5RgUnorm),
+        _ => false,
+    }
 }
 
 /// Expected payload size in bytes for `layer_count` mip chains. BC5 is block-compressed
@@ -351,8 +381,10 @@ impl PrmFile {
     /// `header.slot_mask` are emitted. `header.total_body_bytes` is recomputed
     /// from the actual slot payloads, so callers may leave it as `0`.
     ///
-    /// Validation mirrors the reader: slot-mask presence, dimensions, mip
-    /// count, payload size, and the BC5 normal-slot restriction must all hold.
+    /// Validation mirrors the reader: slot-mask presence, slot formats,
+    /// dimensions, mip count, and payload size must all hold. The writer also
+    /// enforces the portable array-layer ceiling; the reader stays permissive
+    /// so tools can inspect structurally valid device-specific/future files.
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
         if self.header.stage_version != STAGE_VERSION {
             return Err(PrmWriteError::StageVersionMismatch {
@@ -362,6 +394,12 @@ impl PrmFile {
         }
         if self.header.layer_count == 0 {
             return Err(PrmWriteError::InvalidLayerCount { layer_count: 0 });
+        }
+        if u32::from(self.header.layer_count) > PORTABLE_MAX_TEXTURE_ARRAY_LAYERS {
+            return Err(PrmWriteError::LayerCountExceedsPortableLimit {
+                layer_count: self.header.layer_count,
+                portable_max: PORTABLE_MAX_TEXTURE_ARRAY_LAYERS,
+            });
         }
 
         let raw_mask = self.header.slot_mask.bits();
@@ -393,8 +431,11 @@ impl PrmFile {
                 continue;
             };
 
-            if slot.format == PrmFormat::Bc5RgUnorm && i != 2 {
-                return Err(PrmWriteError::Bc5OnNonNormalSlot { slot: i as u8 });
+            if !format_allowed_for_slot(i as u8, slot.format) {
+                return Err(PrmWriteError::FormatNotAllowedForSlot {
+                    slot: i as u8,
+                    format: slot.format,
+                });
             }
             if slot.width == 0
                 || slot.height == 0
@@ -412,6 +453,14 @@ impl PrmFile {
                 PrmFormat::Bc5RgUnorm => bc5_level_count(slot.width, slot.height),
                 _ => expected_level_count(slot.width, slot.height),
             };
+            if expected_levels == 0 {
+                return Err(PrmWriteError::EmptyMipChain {
+                    slot: i as u8,
+                    format: slot.format,
+                    width: slot.width,
+                    height: slot.height,
+                });
+            }
             if slot.level_count != expected_levels {
                 return Err(PrmWriteError::LevelCountMismatch {
                     slot: i as u8,
@@ -638,6 +687,9 @@ fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
     if layer_count == 0 {
         return Err(PrmReadError::InvalidLayerCount { layer_count });
     }
+    // Parsing is deliberately not capped at the portable writer limit. This
+    // keeps inspection and future device-specific consumers possible; upload
+    // paths must validate against their actual device before allocation.
 
     Ok(PrmHeader {
         stage_version,
@@ -693,11 +745,14 @@ fn parse_slot(
         body[offset + 11],
     ]);
 
-    if format == PrmFormat::Bc5RgUnorm && slot_index != 2 {
+    if !format_allowed_for_slot(slot_index, format) {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
         let consumed = consumed.min(body.len().saturating_sub(offset));
         return (
-            Err(PrmReadError::Bc5OnNonNormalSlot { slot: slot_index }),
+            Err(PrmReadError::FormatNotAllowedForSlot {
+                slot: slot_index,
+                format,
+            }),
             consumed,
         );
     }
@@ -722,6 +777,19 @@ fn parse_slot(
         PrmFormat::Bc5RgUnorm => bc5_level_count(width, height),
         _ => expected_level_count(width, height),
     };
+    if expected_levels == 0 {
+        let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
+        let consumed = consumed.min(body.len().saturating_sub(offset));
+        return (
+            Err(PrmReadError::EmptyMipChain {
+                slot: slot_index,
+                format,
+                width,
+                height,
+            }),
+            consumed,
+        );
+    }
     if level_count != expected_levels {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
         let consumed = consumed.min(body.len().saturating_sub(offset));
@@ -844,7 +912,8 @@ mod tests {
         let mut payload = Vec::with_capacity(bytes_per_layer * usize::from(layer_count));
         for layer in 0..layer_count {
             payload.extend(
-                (0..bytes_per_layer).map(|index| (index as u8).wrapping_add(layer as u8 * 31)),
+                (0..bytes_per_layer)
+                    .map(|index| (index as u8).wrapping_add((layer as u8).wrapping_mul(31))),
             );
         }
         PrmSlot {
@@ -853,6 +922,28 @@ mod tests {
             height,
             level_count,
             payload,
+        }
+    }
+
+    fn make_one_slot_file(slot_index: usize, slot: PrmSlot, layer_count: u16) -> PrmFile {
+        let slot_mask = match slot_index {
+            0 => PrmSlots::DIFFUSE,
+            1 => PrmSlots::SPECULAR,
+            2 => PrmSlots::NORMAL,
+            3 => PrmSlots::EMISSIVE,
+            _ => panic!("invalid material slot index {slot_index}"),
+        };
+        let mut slots = [None, None, None, None];
+        slots[slot_index] = Some(slot);
+        PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask,
+                bundle_hash: [slot_index as u8; 32],
+                total_body_bytes: 0,
+                layer_count,
+            },
+            slots,
         }
     }
 
@@ -1181,6 +1272,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn writer_accepts_portable_layer_count_boundary() {
+        let layer_count = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as u16;
+        let slot = make_layered_slot(PrmFormat::Rgba8UnormSrgb, 1, 1, 1, layer_count);
+        let file = make_one_slot_file(0, slot, layer_count);
+
+        assert!(
+            file.to_bytes().is_ok(),
+            "the portable maximum layer count must remain writable"
+        );
+    }
+
+    #[test]
+    fn writer_rejects_layer_count_above_portable_boundary() {
+        let layer_count = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as u16 + 1;
+        let slot = make_layered_slot(PrmFormat::Rgba8UnormSrgb, 1, 1, 1, layer_count);
+        let file = make_one_slot_file(0, slot, layer_count);
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::LayerCountExceedsPortableLimit {
+                layer_count: 257,
+                portable_max: PORTABLE_MAX_TEXTURE_ARRAY_LAYERS,
+            })
+        ));
+    }
+
+    #[test]
+    fn reader_remains_permissive_above_portable_writer_boundary() {
+        let portable_layers = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as u16;
+        let slot = make_layered_slot(PrmFormat::Rgba8UnormSrgb, 1, 1, 1, portable_layers);
+        let file = make_one_slot_file(0, slot, portable_layers);
+        let mut bytes = file
+            .to_bytes()
+            .expect("portable-boundary fixture serializes");
+
+        let future_layers = portable_layers + 1;
+        let payload_bytes = u32::from(future_layers) * 4;
+        let total_body_bytes = SLOT_HEADER_SIZE as u32 + payload_bytes;
+        bytes[39..43].copy_from_slice(&total_body_bytes.to_le_bytes());
+        bytes[43..45].copy_from_slice(&future_layers.to_le_bytes());
+        bytes[HEADER_SIZE + 8..HEADER_SIZE + 12].copy_from_slice(&payload_bytes.to_le_bytes());
+        bytes.extend_from_slice(&[0xF1, 0xF2, 0xF3, 0xFF]);
+
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(
+            header
+                .expect("structurally valid future file remains inspectable")
+                .layer_count,
+            future_layers
+        );
+        assert!(slots[0].is_ok());
+    }
+
     // Regression: slot-mask/data mismatches and malformed layered payloads
     // previously serialized into files rejected by the reader.
     #[test]
@@ -1243,6 +1388,56 @@ mod tests {
                 slot: 0,
                 width: 0,
                 height: 4,
+            })
+        ));
+    }
+
+    // Regression: sub-4 BC5 normals produced an empty zero-mip slot that the
+    // legacy D2 uploader later indexed as if mip 0 existed.
+    #[test]
+    fn writer_rejects_zero_mip_bc5_normal_slot() {
+        let slot = PrmSlot {
+            format: PrmFormat::Bc5RgUnorm,
+            width: 2,
+            height: 2,
+            level_count: 0,
+            payload: Vec::new(),
+        };
+        let file = make_one_slot_file(2, slot, 1);
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::EmptyMipChain {
+                slot: 2,
+                format: PrmFormat::Bc5RgUnorm,
+                width: 2,
+                height: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn reader_rejects_zero_mip_bc5_normal_slot() {
+        let mut bytes = vec![0u8; HEADER_SIZE + SLOT_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"PRM\x02");
+        bytes[4] = STAGE_VERSION;
+        bytes[5] = PrmSlots::NORMAL.bits();
+        bytes[39..43].copy_from_slice(&(SLOT_HEADER_SIZE as u32).to_le_bytes());
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
+        bytes[HEADER_SIZE] = PrmFormat::Bc5RgUnorm as u8;
+        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&2u16.to_le_bytes());
+        bytes[HEADER_SIZE + 4..HEADER_SIZE + 6].copy_from_slice(&2u16.to_le_bytes());
+        // level_count and payload_bytes remain zero.
+
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert!(header.is_ok(), "the malformed slot stays isolated");
+        assert!(matches!(
+            slots[2],
+            Err(PrmReadError::EmptyMipChain {
+                slot: 2,
+                format: PrmFormat::Bc5RgUnorm,
+                width: 2,
+                height: 2,
             })
         ));
     }
@@ -1429,124 +1624,103 @@ mod tests {
         assert_eq!(got.level_count, 2, "8×8 BC5 truncates to 2 levels");
     }
 
-    /// `Bc5RgUnorm` is confined to the normal slot (wire index 2). Every other
-    /// slot must fail at write time; the normal slot accepts it.
     #[test]
-    fn writer_rejects_bc5_on_non_normal_slots() {
-        // BC5 on diffuse (slot 0) → rejected.
-        let diffuse_bc5 = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: [0; 32],
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [Some(make_bc5_slot(8, 8)), None, None, None],
-        };
-        assert!(
-            matches!(
-                diffuse_bc5.to_bytes(),
-                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 0 })
-            ),
-            "BC5 on diffuse must be rejected"
-        );
+    fn writer_and_reader_accept_each_slot_format_contract() {
+        let accepted = [
+            (0, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
+            (1, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            // Legacy linear RGBA normals remain readable and writable.
+            (2, make_slot(PrmFormat::Rgba8Unorm, 1, 1)),
+            (2, make_bc5_slot(4, 4)),
+            (3, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
+        ];
 
-        // BC5 on specular (slot 1) → rejected.
-        let specular_bc5 = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::SPECULAR,
-                bundle_hash: [0; 32],
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [None, Some(make_bc5_slot(8, 8)), None, None],
-        };
-        assert!(
-            matches!(
-                specular_bc5.to_bytes(),
-                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 1 })
-            ),
-            "BC5 on specular must be rejected"
-        );
-
-        // BC5 on emissive (slot 3) → rejected.
-        let emissive_bc5 = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::EMISSIVE,
-                bundle_hash: [0; 32],
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [None, None, None, Some(make_bc5_slot(8, 8))],
-        };
-        assert!(
-            matches!(
-                emissive_bc5.to_bytes(),
-                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 3 })
-            ),
-            "BC5 on emissive must be rejected"
-        );
-
-        // BC5 on normal (slot 2) → accepted.
-        let normal_bc5 = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::NORMAL,
-                bundle_hash: [0; 32],
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [None, None, Some(make_bc5_slot(8, 8)), None],
-        };
-        assert!(
-            normal_bc5.to_bytes().is_ok(),
-            "BC5 on normal slot must be accepted"
-        );
+        for (slot_index, slot) in accepted {
+            let expected_format = slot.format;
+            let file = make_one_slot_file(slot_index, slot, 1);
+            let bytes = file
+                .to_bytes()
+                .unwrap_or_else(|error| panic!("slot {slot_index} should serialize: {error}"));
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            assert!(header.is_ok());
+            assert_eq!(
+                slots[slot_index]
+                    .as_ref()
+                    .unwrap_or_else(|error| panic!("slot {slot_index} should parse: {error}"))
+                    .format,
+                expected_format
+            );
+        }
     }
 
-    // Regression: hand-authored bytes could bypass the writer and place BC5
-    // in color/property slots, violating the reader's slot-type contract.
     #[test]
-    fn reader_rejects_bc5_on_every_non_normal_slot() {
-        let normal = make_bc5_slot(8, 8);
-        let valid_normal = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::NORMAL,
-                bundle_hash: [0xB5; 32],
-                total_body_bytes: 0,
-                layer_count: 1,
-            },
-            slots: [None, None, Some(normal), None],
-        };
-        let normal_bytes = valid_normal
-            .to_bytes()
-            .expect("normal BC5 fixture serializes");
+    fn writer_rejects_semantically_incompatible_formats_for_each_slot() {
+        let rejected = [
+            (0, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            (0, make_bc5_slot(4, 4)),
+            (1, make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
+            (1, make_bc5_slot(4, 4)),
+            (2, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            (3, make_slot(PrmFormat::R8Unorm, 1, 1)),
+            (3, make_bc5_slot(4, 4)),
+        ];
 
-        for (slot_mask, slot_index) in [
-            (PrmSlots::DIFFUSE, 0usize),
-            (PrmSlots::SPECULAR, 1),
-            (PrmSlots::EMISSIVE, 3),
-        ] {
-            let mut bytes = normal_bytes.clone();
-            bytes[5] = slot_mask.bits();
-            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-            assert_eq!(
-                header
-                    .expect("header remains independently valid")
-                    .slot_mask,
-                slot_mask
+        for (slot_index, slot) in rejected {
+            let format = slot.format;
+            let file = make_one_slot_file(slot_index, slot, 1);
+            assert!(
+                matches!(
+                    file.to_bytes(),
+                    Err(PrmWriteError::FormatNotAllowedForSlot { slot, format: found })
+                        if usize::from(slot) == slot_index && found == format
+                ),
+                "writer must reject {format:?} on slot {slot_index}"
             );
+        }
+    }
+
+    // Regression: hand-authored bytes bypassed writer-side material semantics
+    // and reached runtime with a format incompatible with the bound slot.
+    #[test]
+    fn reader_rejects_semantically_incompatible_formats_for_each_slot() {
+        let canonical = [
+            (
+                0,
+                make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1),
+                PrmFormat::R8Unorm,
+            ),
+            (
+                1,
+                make_slot(PrmFormat::R8Unorm, 1, 1),
+                PrmFormat::Rgba8UnormSrgb,
+            ),
+            (
+                2,
+                make_slot(PrmFormat::Rgba8Unorm, 1, 1),
+                PrmFormat::R8Unorm,
+            ),
+            (
+                3,
+                make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1),
+                PrmFormat::R8Unorm,
+            ),
+        ];
+
+        for (slot_index, valid_slot, invalid_format) in canonical {
+            let mut bytes = make_one_slot_file(slot_index, valid_slot, 1)
+                .to_bytes()
+                .expect("canonical fixture serializes");
+            bytes[HEADER_SIZE] = invalid_format as u8;
+
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            assert!(header.is_ok(), "the malformed slot stays isolated");
             assert!(
                 matches!(
                     &slots[slot_index],
-                    Err(PrmReadError::Bc5OnNonNormalSlot { slot })
-                        if usize::from(*slot) == slot_index
+                    Err(PrmReadError::FormatNotAllowedForSlot { slot, format })
+                        if usize::from(*slot) == slot_index && *format == invalid_format
                 ),
-                "reader must reject BC5 on slot {slot_index}, got {:?}",
+                "reader must reject {invalid_format:?} on slot {slot_index}, got {:?}",
                 slots[slot_index]
             );
         }

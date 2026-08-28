@@ -585,4 +585,45 @@ mod tests {
             "model D2 upload must fall back before mip planning"
         );
     }
+
+    // Regression: a hand-authored 2x2 BC5 normal declared zero mips, then the
+    // D2 upload path indexed an empty level list as if mip 0 existed.
+    #[test]
+    fn d2_world_planning_degrades_zero_mip_bc5_normal_to_placeholder() {
+        const HEADER_SIZE: usize = 45;
+        const SLOT_HEADER_SIZE: usize = 12;
+        let mut bytes = vec![0u8; HEADER_SIZE + SLOT_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"PRM\x02");
+        bytes[4] = STAGE_VERSION;
+        bytes[5] = PrmSlots::NORMAL.bits();
+        bytes[39..43].copy_from_slice(&(SLOT_HEADER_SIZE as u32).to_le_bytes());
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
+        bytes[HEADER_SIZE] = PrmFormat::Bc5RgUnorm as u8;
+        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&2u16.to_le_bytes());
+        bytes[HEADER_SIZE + 4..HEADER_SIZE + 6].copy_from_slice(&2u16.to_le_bytes());
+        // level_count and payload_bytes remain zero.
+
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("slot failure must not poison the header");
+        assert!(matches!(
+            &slots[2],
+            Err(PrmReadError::EmptyMipChain {
+                slot: 2,
+                format: PrmFormat::Bc5RgUnorm,
+                width: 2,
+                height: 2,
+            })
+        ));
+
+        let plan = d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle)
+            .expect("single-layer world bundle still produces a placeholder plan");
+        assert!(
+            plan.consume[2],
+            "the slot error routes through placeholder upload"
+        );
+        assert_eq!(
+            plan.mip_count, 1,
+            "no valid mip chain disables mip filtering"
+        );
+    }
 }

@@ -17,9 +17,8 @@ use crate::{
     cell_draw_index_bake, cell_visibility_bake, chunk_light_list_bake, delta_sections,
     delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks, geometry,
     kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data, navmesh_bake,
-    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
-    sh_forward_predict, sh_group, shadowmask_bake, texture_mips, texture_validation,
-    trigger_volumes, visibility,
+    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_forward_predict,
+    sh_group, shadowmask_bake, texture_mips, texture_validation, trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -1808,7 +1807,10 @@ fn run_sh_forward_predict(
             "[sh-forward-predict] wrote forward-predict JSON to {}",
             out.display()
         ),
-        Err(e) => log::warn!("[sh-forward-predict] failed to write {}: {e}", out.display()),
+        Err(e) => log::warn!(
+            "[sh-forward-predict] failed to write {}: {e}",
+            out.display()
+        ),
     }
 }
 

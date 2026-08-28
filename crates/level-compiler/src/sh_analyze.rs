@@ -565,6 +565,22 @@ pub struct EmittedBrickRecord {
     pub emitted_error: LevelErrStats,
     pub relative_p95: f32,
     pub relative_max: f32,
+    /// Populated only for combined failures. Each record is a cancellation-safe
+    /// leave-one-section-dense counterfactual over stored unit contributions.
+    pub attribution: Vec<EmittedSectionAttribution>,
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct EmittedSectionAttribution {
+    pub id: u32,
+    /// The selected section's own final-emitted minus dense residual.
+    pub section_error: LevelErrStats,
+    /// Exact combined residual if this section alone were restored to dense L0
+    /// and every other final emitted section stayed as-is.
+    pub leave_one_dense_error: LevelErrStats,
+    pub leave_one_dense_relative_p95: f32,
+    pub leave_one_dense_relative_max: f32,
+    pub leave_one_dense_passes: bool,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -1641,6 +1657,37 @@ fn add_tile(dst: &mut Tile, src: &Tile) {
     }
 }
 
+fn subtract_tile(dst: &mut Tile, src: &Tile) {
+    for (dst, src) in dst.iter_mut().zip(src) {
+        *dst -= *src;
+    }
+}
+
+fn delta_residual(
+    dense: &[Tile; PROBES_PER_CELL],
+    emitted: &[Tile; PROBES_PER_CELL],
+) -> [Tile; PROBES_PER_CELL] {
+    std::array::from_fn(|local| {
+        dense[local]
+            .iter()
+            .zip(&emitted[local])
+            .map(|(dense, emitted)| *emitted - *dense)
+            .collect()
+    })
+}
+
+fn residual_error(
+    residual: &[Tile; PROBES_PER_CELL],
+    valid_mask: &[bool; PROBES_PER_CELL],
+    texels: usize,
+) -> LevelErr {
+    let zero: [Option<Tile>; PROBES_PER_CELL] =
+        std::array::from_fn(|local| valid_mask[local].then(|| zero_tile(texels)));
+    let residual: [Option<Tile>; PROBES_PER_CELL] =
+        std::array::from_fn(|local| valid_mask[local].then(|| residual[local].clone()));
+    emitted_error(&zero, &residual, texels)
+}
+
 /// Classifier darkness floor. This intentionally does *not* use [`percentile`]:
 /// the classifier's map-wide p95 is truncated while per-brick error p95 is
 /// rounded.
@@ -1770,7 +1817,12 @@ pub(crate) fn run_emitted_reconstruction_analysis(
         }
     }
 
-    let mut records = Vec::new();
+    struct PendingRecord {
+        record: EmittedBrickRecord,
+        section_errors: [LevelErrStats; 3],
+        leave_one_dense_errors: [LevelErrStats; 3],
+    }
+    let mut pending = Vec::new();
     for cz in 0..az {
         for cy in 0..ay {
             for cx in 0..ax {
@@ -1805,22 +1857,44 @@ pub(crate) fn run_emitted_reconstruction_analysis(
                     continue;
                 }
 
-                let mut dense_delta: [Tile; PROBES_PER_CELL] =
-                    std::array::from_fn(|_| zero_tile(texels));
-                let mut emitted_delta: [Tile; PROBES_PER_CELL] =
-                    std::array::from_fn(|_| zero_tile(texels));
-                for (dense, emitted) in pairs {
+                let mut dense_by_section: [[Tile; PROBES_PER_CELL]; 3] =
+                    std::array::from_fn(|_| std::array::from_fn(|_| zero_tile(texels)));
+                let mut emitted_by_section: [[Tile; PROBES_PER_CELL]; 3] =
+                    std::array::from_fn(|_| std::array::from_fn(|_| zero_tile(texels)));
+                for (section, (dense, emitted)) in pairs.into_iter().enumerate() {
                     if let (Some(dense), Some(emitted)) = (dense, emitted) {
                         accumulate_dense_and_emitted_delta(
                             dense,
                             emitted,
                             cell,
                             &valid_mask,
-                            &mut dense_delta,
-                            &mut emitted_delta,
+                            &mut dense_by_section[section],
+                            &mut emitted_by_section[section],
                         )?;
                     }
                 }
+
+                let section_residuals: [[Tile; PROBES_PER_CELL]; 3] =
+                    std::array::from_fn(|section| {
+                        delta_residual(&dense_by_section[section], &emitted_by_section[section])
+                    });
+                let section_errors = std::array::from_fn(|section| {
+                    residual_error(&section_residuals[section], &valid_mask, texels).to_stats()
+                });
+                let combined_residual: [Tile; PROBES_PER_CELL] = std::array::from_fn(|local| {
+                    let mut sum = zero_tile(texels);
+                    for residual in &section_residuals {
+                        add_tile(&mut sum, &residual[local]);
+                    }
+                    sum
+                });
+                let leave_one_dense_errors = std::array::from_fn(|section| {
+                    let mut remaining = combined_residual.clone();
+                    for local in 0..PROBES_PER_CELL {
+                        subtract_tile(&mut remaining[local], &section_residuals[section][local]);
+                    }
+                    residual_error(&remaining, &valid_mask, texels).to_stats()
+                });
 
                 let mut truth: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
                 let mut emitted: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
@@ -1830,38 +1904,66 @@ pub(crate) fn run_emitted_reconstruction_analysis(
                     };
                     let mut truth_tile = base_tile.clone();
                     let mut emitted_tile = base_tile.clone();
-                    add_tile(&mut truth_tile, &dense_delta[local]);
-                    add_tile(&mut emitted_tile, &emitted_delta[local]);
+                    for section in 0..3 {
+                        add_tile(&mut truth_tile, &dense_by_section[section][local]);
+                        add_tile(&mut emitted_tile, &emitted_by_section[section][local]);
+                    }
                     truth[local] = Some(truth_tile);
                     emitted[local] = Some(emitted_tile);
                 }
-                records.push(EmittedBrickRecord {
-                    cell: [cx as u32, cy as u32, cz as u32],
-                    linear_cell: cell as u32,
-                    dense_truth_magnitude: tile_magnitude(&truth, texels),
-                    emitted_error: emitted_error(&truth, &emitted, texels).to_stats(),
-                    relative_p95: 0.0,
-                    relative_max: 0.0,
+                pending.push(PendingRecord {
+                    record: EmittedBrickRecord {
+                        cell: [cx as u32, cy as u32, cz as u32],
+                        linear_cell: cell as u32,
+                        dense_truth_magnitude: tile_magnitude(&truth, texels),
+                        emitted_error: emitted_error(&truth, &emitted, texels).to_stats(),
+                        relative_p95: 0.0,
+                        relative_max: 0.0,
+                        attribution: Vec::new(),
+                    },
+                    section_errors,
+                    leave_one_dense_errors,
                 });
             }
         }
     }
 
-    let map_magnitudes: Vec<f32> = records
+    let map_magnitudes: Vec<f32> = pending
         .iter()
-        .map(|record| record.dense_truth_magnitude.p95)
+        .map(|pending| pending.record.dense_truth_magnitude.p95)
         .collect();
     let params = crate::sh_coarsen::CoarsenParams::default();
     let (map_p95, floor) = classifier_darkness_floor(&map_magnitudes, params.darkness_frac);
     let mut failures = 0u64;
-    for record in &mut records {
+    let mut records = Vec::with_capacity(pending.len());
+    for mut pending in pending {
+        let record = &mut pending.record;
         record.relative_p95 =
             record.emitted_error.p95 / record.dense_truth_magnitude.p95.max(floor);
         record.relative_max =
             record.emitted_error.max / record.dense_truth_magnitude.max.max(floor);
         if record.relative_p95 > params.rel_p95_max || record.relative_max > params.rel_max_max {
             failures += 1;
+            record.attribution = [27u32, 41, 45]
+                .into_iter()
+                .enumerate()
+                .map(|(section, id)| {
+                    let remaining = &pending.leave_one_dense_errors[section];
+                    let relative_p95 = remaining.p95 / record.dense_truth_magnitude.p95.max(floor);
+                    let relative_max = remaining.max / record.dense_truth_magnitude.max.max(floor);
+                    EmittedSectionAttribution {
+                        id,
+                        section_error: pending.section_errors[section].clone(),
+                        leave_one_dense_error: remaining.clone(),
+                        leave_one_dense_relative_p95: relative_p95,
+                        leave_one_dense_relative_max: relative_max,
+                        leave_one_dense_passes: relative_p95 <= params.rel_p95_max
+                            && relative_max <= params.rel_max_max,
+                    }
+                })
+                .collect();
         }
+        records.push(pending.record);
     }
     Ok(EmittedReconstructionReport {
         dense_truth_map_p95: map_p95,
@@ -2369,6 +2471,37 @@ mod tests {
         let (map_p95, floor) = classifier_darkness_floor(&[1.0, 10.0, 100.0], 0.02);
         assert_eq!(map_p95, 10.0);
         assert!((floor - 0.2).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn leave_one_dense_attribution_preserves_cancellation() {
+        let texels = 1;
+        let valid = std::array::from_fn(|local| local == 0);
+        let dense: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(texels));
+        let mut emitted_a: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(texels));
+        let mut emitted_b: [Tile; PROBES_PER_CELL] = std::array::from_fn(|_| zero_tile(texels));
+        emitted_a[0][0] = Vec3::splat(2.0);
+        emitted_b[0][0] = Vec3::splat(-1.0);
+        let a = delta_residual(&dense, &emitted_a);
+        let b = delta_residual(&dense, &emitted_b);
+        let combined: [Tile; PROBES_PER_CELL] = std::array::from_fn(|local| {
+            a[local]
+                .iter()
+                .zip(&b[local])
+                .map(|(a, b)| *a + *b)
+                .collect()
+        });
+
+        let combined_error = residual_error(&combined, &valid, texels);
+        let mut without_a = combined.clone();
+        let mut without_b = combined.clone();
+        subtract_tile(&mut without_a[0], &a[0]);
+        subtract_tile(&mut without_b[0], &b[0]);
+        assert_eq!(combined_error.max, 1.0);
+        assert_eq!(residual_error(&without_a, &valid, texels).max, 1.0);
+        assert_eq!(residual_error(&without_b, &valid, texels).max, 2.0);
+        assert_eq!(residual_error(&a, &valid, texels).max, 2.0);
+        assert_eq!(residual_error(&b, &valid, texels).max, 1.0);
     }
 
     fn all_valid_payload(entries: usize, probe_f16_stride: usize) -> Vec<u16> {

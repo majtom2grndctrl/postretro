@@ -1,11 +1,13 @@
 // PRM ("Postretro Mip") texture sidecar file format.
 //
-// One `.prm` file per source PNG texture: it carries the precomputed mip chain
-// for that texture's four material slots (diffuse, specular, normal, emissive), baked
-// at compile time by `prl-build` and uploaded directly at runtime by the
-// renderer. Normal slots may use BC5 block compression (format_tag 3); diffuse
-// and specular stay uncompressed. Loading is still a header parse plus memcpy —
-// BC5 payload bytes are uploaded verbatim. No per-mip headers.
+// One `.prm` file per source PNG texture: it carries precomputed layer-major
+// mip payloads for that texture's four material slots (diffuse, specular,
+// normal, emissive), baked at compile time by `prl-build`. World and model
+// sidecars have one layer and are uploaded directly as D2 textures at runtime;
+// multi-layer payloads are parseable and feed a downstream D2Array upload path.
+// Normal slots may use BC5 block compression (format_tag 3); diffuse and
+// specular stay uncompressed. Loading is still a header parse plus memcpy — BC5
+// payload bytes are uploaded verbatim. No per-mip headers.
 //
 // Wire format (little-endian throughout):
 //
@@ -159,9 +161,10 @@ pub struct PrmHeader {
     pub layer_count: u16,
 }
 
-/// A single material slot's mip chain. The renderer uploads `payload` directly
-/// to the matching texture using `width`, `height`, `level_count`, and
-/// `format`.
+/// A single material slot's layer-major mip payload. `payload` stores one
+/// complete mip chain per layer. The current runtime directly uploads world and
+/// model slots with `PrmHeader::layer_count == 1` as D2 textures; multi-layer
+/// payloads feed a downstream D2Array upload path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrmSlot {
     pub format: PrmFormat,
@@ -235,9 +238,13 @@ pub enum PrmReadError {
 /// Errors returned by the `.prm` writer (`PrmFile::to_bytes`). These guard
 /// invariants the wire format cannot express structurally — chiefly that the
 /// BC5 normal-map format is confined to the normal slot and that every slot
-/// has at least one layer.
+/// has at least one layer. The writer also refuses a stage version that its
+/// exact-version reader would reject.
 #[derive(Debug, Error)]
 pub enum PrmWriteError {
+    #[error("stage version mismatch: expected {expected}, got {found}")]
+    StageVersionMismatch { expected: u8, found: u8 },
+
     #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
     Bc5OnNonNormalSlot { slot: u8 },
 
@@ -320,9 +327,17 @@ impl PrmFile {
     ///
     /// Fails with `Bc5OnNonNormalSlot` if any non-normal slot carries
     /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to wire index 2.
+    /// Fails with `StageVersionMismatch` when the supplied header version does
+    /// not match the exact stage version encoded by this writer.
     /// Fails with `InvalidLayerCount` when every declared slot would have zero
     /// mip chains.
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
+        if self.header.stage_version != STAGE_VERSION {
+            return Err(PrmWriteError::StageVersionMismatch {
+                expected: STAGE_VERSION,
+                found: self.header.stage_version,
+            });
+        }
         if self.header.layer_count == 0 {
             return Err(PrmWriteError::InvalidLayerCount { layer_count: 0 });
         }
@@ -1084,6 +1099,26 @@ mod tests {
                 Err(PrmWriteError::InvalidLayerCount { layer_count: 0 })
             ),
             "writer must not emit a .prm the reader will reject"
+        );
+    }
+
+    // Regression: the writer emitted PRM\x02 with an arbitrary stage byte,
+    // producing files rejected by its exact-stage reader.
+    #[test]
+    fn writer_rejects_stage_version_mismatch() {
+        let mut file = make_four_slot_file();
+        let mismatched = STAGE_VERSION.wrapping_add(1);
+        file.header.stage_version = mismatched;
+
+        assert!(
+            matches!(
+                file.to_bytes(),
+                Err(PrmWriteError::StageVersionMismatch {
+                    expected: STAGE_VERSION,
+                    found,
+                }) if found == mismatched
+            ),
+            "writer must not emit a .prm its reader will reject"
         );
     }
 

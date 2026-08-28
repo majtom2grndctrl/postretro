@@ -767,13 +767,15 @@ per-section runtime binding protection, not extra aggregate-cap headroom.
 ### Promotion recommendation
 
 **Recommendation: no-promote yet; retain the now-landed id-41 default-on
-implementation pending one promote precondition.** This is not a failed
-quality, seam, cap-policy, or loader-floor gate.
+implementation pending one external GPU-timing precondition.** All locally
+evaluable quality, visual, cap, loader, and review gates are clean.
 
-1. Run the representative compose measurement on an adapter with
-   `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`, then record the
-   compose-dispatch ratio and net-runtime-savings sign. The current adapter
-   lacks those features. Bake duration and CPU time are not substitutes.
+1. On an adapter supporting `TIMESTAMP_QUERY` and
+   `TIMESTAMP_QUERY_INSIDE_ENCODERS`, run a fresh content-rooted
+   `campaign-test` 1.0 m uniform/default-on pair with the same bake and run
+   settings. Capture 120-frame `direct_sh_compose` windows for both variants.
+   Record each duration, their delta, the on/off ratio, and the net-runtime-
+   savings sign. Bake duration and CPU time are not substitutes.
 
 The content-rooted manual visual precondition is fulfilled. The reviewer found
 smooth expected spotlight light-to-shadow transitions and an expected hard-ish
@@ -786,7 +788,20 @@ observation, not a gate failure or evidence against id-41 coarsening. Possible
 causes include direct-light cone/range behavior and per-billboard sampling;
 investigate separately before assigning cause.
 
-Once the timestamp measurement satisfies the remaining condition without a
-negative net-runtime result, the measured id-41 behavior supports promotion.
-No further Stress-Warren bake is needed to reinterpret the 64 MiB target: it
-is a warning, and the 256 MiB aggregate cap is the enforced production limit.
+### Final local timestamp-adapter probe (2026-08-28)
+
+Host graphics hardware is AMD Radeon Pro 5300M and Intel UHD Graphics 630,
+both through Metal. Default backend selection and explicit `WGPU_BACKEND=metal`
+each enumerate both adapters. Neither exposes `TIMESTAMP_QUERY` or
+`TIMESTAMP_QUERY_INSIDE_ENCODERS`. Explicit `WGPU_BACKEND=vulkan` and
+`WGPU_BACKEND=opengl` enumerate zero adapters.
+
+No valid local GPU compose measurement can be made. No CPU proxy was used.
+Raw probe logs remain ephemeral audit evidence at
+`/private/tmp/postretro-id41-timestamp-measurement/`.
+
+External timestamp-capable GPU timing is the sole pending promotion
+precondition. Once the required measurement records a non-negative
+net-runtime-savings sign, the measured id-41 behavior supports promotion. No
+further Stress-Warren bake is needed to reinterpret the 64 MiB target: it is a
+warning, and the 256 MiB aggregate cap is the enforced production limit.

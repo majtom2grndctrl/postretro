@@ -179,6 +179,24 @@ fn frames_with_shared_dimensions(frames: &[SpriteFrame]) -> Option<(Vec<&SpriteF
     Some((valid, w, h))
 }
 
+/// Whether a sprite collection's D2-array texture fits the device limit.
+///
+/// Kept GPU-free so the rejection boundary can be exercised in headless tests.
+fn sprite_frame_count_fits_device(frame_count: u32, max_texture_array_layers: u32) -> bool {
+    frame_count <= max_texture_array_layers
+}
+
+fn warn_sprite_frame_count_exceeds_device_limit(
+    collection: &str,
+    frame_count: u32,
+    max_texture_array_layers: u32,
+) {
+    log::warn!(
+        "[Smoke] Collection '{collection}' requires {frame_count} sprite frame array layers, \
+         exceeding device maxTextureArrayLayers {max_texture_array_layers}; collection rejected"
+    );
+}
+
 /// One loaded sprite sheet, shared across all emitters whose `collection`
 /// matches.
 pub struct SpriteSheet {
@@ -507,6 +525,15 @@ impl SmokePass {
             return;
         };
         let frame_count = frames.len() as u32;
+        let max_texture_array_layers = device.limits().max_texture_array_layers;
+        if !sprite_frame_count_fits_device(frame_count, max_texture_array_layers) {
+            warn_sprite_frame_count_exceeds_device_limit(
+                collection,
+                frame_count,
+                max_texture_array_layers,
+            );
+            return;
+        }
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("Sprite Frame Array: {collection}")),
             size: wgpu::Extent3d {
@@ -879,6 +906,34 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].data, red.data);
         assert_eq!(frames[1].data, blue.data);
+    }
+
+    #[test]
+    fn sprite_frame_count_at_device_limit_fits() {
+        assert!(sprite_frame_count_fits_device(256, 256));
+    }
+
+    #[test]
+    fn sprite_frame_count_below_device_limit_fits() {
+        assert!(sprite_frame_count_fits_device(255, 256));
+    }
+
+    #[test]
+    fn sprite_frame_count_above_device_limit_is_rejected() {
+        assert!(!sprite_frame_count_fits_device(257, 256));
+    }
+
+    #[test]
+    fn oversized_sprite_collection_warns_before_gpu_upload() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let capture = LogCapture::start();
+        warn_sprite_frame_count_exceeds_device_limit("test", 257, 256);
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Smoke] Collection 'test' requires 257 sprite frame array layers, exceeding device maxTextureArrayLayers 256; collection rejected",
+        );
     }
 
     #[test]

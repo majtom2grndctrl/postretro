@@ -8,7 +8,9 @@ use postretro_level_format::delta_sh_volumes::{
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::f32_to_f16_bits;
-use postretro_level_format::sh_reconstruct::{Level, kept_mask, reconstruct_l2_tile};
+use postretro_level_format::sh_reconstruct::{
+    Level, Tile, kept_mask, reconstruct_l1_tile, reconstruct_l2_tile, zero_tile,
+};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::delta_drop_policy::{
@@ -516,6 +518,369 @@ fn synthesize_l2_mean_tile(dense_entry: &[u16], validity: u64, probe_stride: usi
     encoded
 }
 
+/// Borrowed, validated view of one finalized compact delta section.
+///
+/// The view precomputes each CSR entry's variable-stride f16 offset once. It is
+/// shared by compiler diagnostics that need the exact tile represented by final
+/// `cell_levels` without reimplementing compact offset/rank arithmetic.
+pub(crate) struct EmittedDeltaSectionRef<'a> {
+    affinity_offsets: &'a [u32],
+    valid_probe_masks: &'a [u64],
+    cell_levels: &'a [u8],
+    delta_subblocks: &'a [u16],
+    entry_f16_offsets: Vec<usize>,
+    tile_dimension: usize,
+    tile_border: usize,
+    probe_stride: usize,
+    interior_texels: usize,
+}
+
+impl<'a> EmittedDeltaSectionRef<'a> {
+    pub(crate) fn from_indirect(section: &'a DeltaShVolumesSection) -> anyhow::Result<Self> {
+        Self::new(
+            &section.affinity_offsets,
+            &section.valid_probe_masks,
+            &section.cell_levels,
+            &section.delta_subblocks,
+            section.tile_dimension,
+            section.tile_border,
+        )
+    }
+
+    pub(crate) fn from_direct(section: &'a DirectShDeltaVolumesSection) -> anyhow::Result<Self> {
+        Self::new(
+            &section.affinity_offsets,
+            &section.valid_probe_masks,
+            &section.cell_levels,
+            &section.delta_subblocks,
+            section.tile_dimension,
+            section.tile_border,
+        )
+    }
+
+    pub(crate) fn from_animated_direct(
+        section: &'a AnimatedDirectShDeltaVolumesSection,
+    ) -> anyhow::Result<Self> {
+        Self::new(
+            &section.affinity_offsets,
+            &section.valid_probe_masks,
+            &section.cell_levels,
+            &section.delta_subblocks,
+            section.tile_dimension,
+            section.tile_border,
+        )
+    }
+
+    fn new(
+        affinity_offsets: &'a [u32],
+        valid_probe_masks: &'a [u64],
+        cell_levels: &'a [u8],
+        delta_subblocks: &'a [u16],
+        tile_dimension: u32,
+        tile_border: u32,
+    ) -> anyhow::Result<Self> {
+        let cell_count = valid_probe_masks.len();
+        anyhow::ensure!(
+            cell_levels.len() == cell_count,
+            "emitted delta view: {} levels for {cell_count} cells",
+            cell_levels.len()
+        );
+        anyhow::ensure!(
+            affinity_offsets.len() == cell_count + 1,
+            "emitted delta view: {} CSR offsets for {cell_count} cells",
+            affinity_offsets.len()
+        );
+        anyhow::ensure!(
+            affinity_offsets.first().copied() == Some(0),
+            "emitted delta view: first CSR offset must be zero"
+        );
+        anyhow::ensure!(
+            affinity_offsets.windows(2).all(|pair| pair[0] <= pair[1]),
+            "emitted delta view: CSR offsets must be monotonic"
+        );
+        let tile_dimension = tile_dimension as usize;
+        let tile_border = tile_border as usize;
+        anyhow::ensure!(
+            tile_dimension > tile_border.saturating_mul(2),
+            "emitted delta view: tile dimension {tile_dimension} must exceed twice border {tile_border}"
+        );
+        let probe_stride = tile_dimension
+            .checked_mul(tile_dimension)
+            .and_then(|texels| texels.checked_mul(DELTA_TILE_TEXEL_F16_COUNT))
+            .ok_or_else(|| anyhow::anyhow!("emitted delta view: probe stride overflow"))?;
+        let interior_edge = tile_dimension - tile_border * 2;
+        let interior_texels = interior_edge
+            .checked_mul(interior_edge)
+            .ok_or_else(|| anyhow::anyhow!("emitted delta view: interior area overflow"))?;
+        let entry_count = affinity_offsets.last().copied().unwrap_or(0) as usize;
+        let mut entry_f16_offsets = Vec::with_capacity(entry_count);
+        let mut cursor = 0usize;
+        for cell in 0..cell_count {
+            let level = Level::from_u8(cell_levels[cell]).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "emitted delta view: cell {cell} has invalid level {}",
+                    cell_levels[cell]
+                )
+            })?;
+            let stored_tiles = kept_mask(level, valid_probe_masks[cell]).count_ones() as usize;
+            let entry_stride = stored_tiles
+                .checked_mul(probe_stride)
+                .ok_or_else(|| anyhow::anyhow!("emitted delta view: entry stride overflow"))?;
+            for _ in affinity_offsets[cell]..affinity_offsets[cell + 1] {
+                entry_f16_offsets.push(cursor);
+                cursor = cursor.checked_add(entry_stride).ok_or_else(|| {
+                    anyhow::anyhow!("emitted delta view: payload offset overflow")
+                })?;
+            }
+        }
+        anyhow::ensure!(
+            entry_f16_offsets.len() == entry_count,
+            "emitted delta view: walked {} entries, CSR declares {entry_count}",
+            entry_f16_offsets.len()
+        );
+        anyhow::ensure!(
+            cursor == delta_subblocks.len(),
+            "emitted delta view: represented length is {cursor} f16 values, payload has {}",
+            delta_subblocks.len()
+        );
+        Ok(Self {
+            affinity_offsets,
+            valid_probe_masks,
+            cell_levels,
+            delta_subblocks,
+            entry_f16_offsets,
+            tile_dimension,
+            tile_border,
+            probe_stride,
+            interior_texels,
+        })
+    }
+
+    pub(crate) fn cell_count(&self) -> usize {
+        self.valid_probe_masks.len()
+    }
+
+    pub(crate) fn entry_range(&self, cell: usize) -> Option<std::ops::Range<usize>> {
+        Some(
+            *self.affinity_offsets.get(cell)? as usize
+                ..*self.affinity_offsets.get(cell + 1)? as usize,
+        )
+    }
+
+    pub(crate) fn valid_probe_mask(&self, cell: usize) -> Option<u64> {
+        self.valid_probe_masks.get(cell).copied()
+    }
+
+    pub(crate) fn level(&self, cell: usize) -> Option<Level> {
+        Level::from_u8(*self.cell_levels.get(cell)?)
+    }
+
+    pub(crate) fn interior_texels(&self) -> usize {
+        self.interior_texels
+    }
+
+    fn decode_interior(&self, tile_start: usize) -> anyhow::Result<Tile> {
+        let tile_end = tile_start
+            .checked_add(self.probe_stride)
+            .ok_or_else(|| anyhow::anyhow!("emitted delta view: tile offset overflow"))?;
+        anyhow::ensure!(
+            tile_end <= self.delta_subblocks.len(),
+            "emitted delta view: tile [{tile_start}..{tile_end}) exceeds payload length {}",
+            self.delta_subblocks.len()
+        );
+        let mut tile = Vec::with_capacity(self.interior_texels);
+        for y in self.tile_border..self.tile_dimension - self.tile_border {
+            for x in self.tile_border..self.tile_dimension - self.tile_border {
+                let i = tile_start + (y * self.tile_dimension + x) * DELTA_TILE_TEXEL_F16_COUNT;
+                tile.push(glam::Vec3::new(
+                    crate::sh_bake::f16_bits_to_f32(self.delta_subblocks[i]),
+                    crate::sh_bake::f16_bits_to_f32(self.delta_subblocks[i + 1]),
+                    crate::sh_bake::f16_bits_to_f32(self.delta_subblocks[i + 2]),
+                ));
+            }
+        }
+        Ok(tile)
+    }
+
+    /// Reconstruct one entry/local tile exactly as the compose shader represents
+    /// it. `None` means the target probe is invalid. Sparse-L1 targets with no
+    /// positively weighted kept corner return an explicit zero tile.
+    pub(crate) fn reconstruct_entry_tile(
+        &self,
+        cell: usize,
+        entry: usize,
+        local_probe: usize,
+    ) -> anyhow::Result<Option<Tile>> {
+        anyhow::ensure!(
+            local_probe < PROBES_PER_CELL,
+            "emitted delta view: local probe {local_probe} is outside 0..{PROBES_PER_CELL}"
+        );
+        let range = self
+            .entry_range(cell)
+            .ok_or_else(|| anyhow::anyhow!("emitted delta view: cell {cell} is out of range"))?;
+        anyhow::ensure!(
+            range.contains(&entry),
+            "emitted delta view: entry {entry} does not belong to cell {cell}"
+        );
+        let validity = self.valid_probe_masks[cell];
+        let local_bit = 1u64 << local_probe;
+        if validity & local_bit == 0 {
+            return Ok(None);
+        }
+        let level = self.level(cell).expect("validated cell level");
+        let kept = kept_mask(level, validity);
+        let entry_start = self.entry_f16_offsets[entry];
+        let decode_local = |local: usize| -> anyhow::Result<Tile> {
+            let rank = (kept & ((1u64 << local) - 1)).count_ones() as usize;
+            self.decode_interior(entry_start + rank * self.probe_stride)
+        };
+        if kept & local_bit != 0 {
+            return decode_local(local_probe).map(Some);
+        }
+
+        let mut kept_tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        let mut remaining = kept;
+        while remaining != 0 {
+            let local = remaining.trailing_zeros() as usize;
+            kept_tiles[local] = Some(decode_local(local)?);
+            remaining &= remaining - 1;
+        }
+        let reconstructed = match level {
+            Level::L1 => reconstruct_l1_tile(&kept_tiles, local_probe, self.interior_texels)
+                .unwrap_or_else(|| zero_tile(self.interior_texels)),
+            Level::L2 => reconstruct_l2_tile(&kept_tiles, self.interior_texels)
+                .expect("a valid L2 cell emits one representative mean tile"),
+            Level::L0 => unreachable!("L0 keeps every valid target"),
+        };
+        Ok(Some(reconstructed))
+    }
+}
+
+/// Per-cell absolute error measured between dense L0 truth and the exact
+/// represented output of a compacted delta section.
+///
+/// This is deliberately a per-section emitted-reconstruction diagnostic. It
+/// does not model runtime light-selection weights, signs, or cross-section
+/// composition.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EmittedReconstructionError {
+    pub p95: f32,
+    pub max: f32,
+    pub texel_samples: u64,
+}
+
+/// Compare dense pre-compaction f16 truth with a section's final compact f16
+/// payload, using the same represented semantics as the compose shaders.
+///
+/// `dense_subblocks` is the bake layout: one 64-probe record per CSR entry.
+/// `compacted_subblocks` is the emitted variable-stride layout after final
+/// post-smoothing `cell_levels` have been applied. The walk derives every
+/// entry's compact offset from the preceding cells' actual kept masks, so mixed
+/// L0/L1/L2 sections are measured without assuming a uniform entry stride.
+/// L1 targets unsupported by the sparse kept-corner lattice reconstruct to
+/// zero, matching the shader rather than disappearing from the score.
+pub(crate) fn emitted_reconstruction_error_by_cell(
+    affinity_offsets: &[u32],
+    valid_probe_masks: &[u64],
+    cell_levels: &[u8],
+    dense_subblocks: &[u16],
+    compacted_subblocks: &[u16],
+    tile_dimension: u32,
+    tile_border: u32,
+) -> anyhow::Result<Vec<EmittedReconstructionError>> {
+    let tile_dimension = tile_dimension as usize;
+    let tile_border = tile_border as usize;
+    let probe_stride = tile_dimension
+        .checked_mul(tile_dimension)
+        .and_then(|texels| texels.checked_mul(DELTA_TILE_TEXEL_F16_COUNT))
+        .ok_or_else(|| anyhow::anyhow!("emitted reconstruction oracle: probe stride overflow"))?;
+    let dense_entry_stride = PROBES_PER_CELL
+        .checked_mul(probe_stride)
+        .ok_or_else(|| anyhow::anyhow!("emitted reconstruction oracle: dense stride overflow"))?;
+    let entry_count = affinity_offsets.last().copied().unwrap_or(0) as usize;
+    let expected_dense_len = entry_count
+        .checked_mul(dense_entry_stride)
+        .ok_or_else(|| anyhow::anyhow!("emitted reconstruction oracle: dense length overflow"))?;
+    anyhow::ensure!(
+        dense_subblocks.len() == expected_dense_len,
+        "emitted reconstruction oracle: dense payload has {} f16 values, expected {expected_dense_len}",
+        dense_subblocks.len()
+    );
+
+    let emitted = EmittedDeltaSectionRef::new(
+        affinity_offsets,
+        valid_probe_masks,
+        cell_levels,
+        compacted_subblocks,
+        tile_dimension as u32,
+        tile_border as u32,
+    )?;
+    let decode_interior = |payload: &[u16], tile_start: usize| -> anyhow::Result<Tile> {
+        let tile_end = tile_start.checked_add(probe_stride).ok_or_else(|| {
+            anyhow::anyhow!("emitted reconstruction oracle: tile offset overflow")
+        })?;
+        anyhow::ensure!(
+            tile_end <= payload.len(),
+            "emitted reconstruction oracle: tile [{tile_start}..{tile_end}) exceeds payload length {}",
+            payload.len()
+        );
+        let mut tile = Vec::with_capacity(emitted.interior_texels());
+        for y in tile_border..tile_dimension - tile_border {
+            for x in tile_border..tile_dimension - tile_border {
+                let i = tile_start + (y * tile_dimension + x) * DELTA_TILE_TEXEL_F16_COUNT;
+                tile.push(glam::Vec3::new(
+                    crate::sh_bake::f16_bits_to_f32(payload[i]),
+                    crate::sh_bake::f16_bits_to_f32(payload[i + 1]),
+                    crate::sh_bake::f16_bits_to_f32(payload[i + 2]),
+                ));
+            }
+        }
+        Ok(tile)
+    };
+
+    let mut output = Vec::with_capacity(emitted.cell_count());
+    for cell in 0..emitted.cell_count() {
+        let validity = emitted.valid_probe_mask(cell).expect("cell is in range");
+        let mut errors = Vec::new();
+        for entry in emitted.entry_range(cell).expect("cell is in range") {
+            let dense_entry_start = entry * dense_entry_stride;
+            let mut valid = validity;
+            while valid != 0 {
+                let target = valid.trailing_zeros() as usize;
+                valid &= valid - 1;
+                let truth =
+                    decode_interior(dense_subblocks, dense_entry_start + target * probe_stride)?;
+                let reconstructed = emitted
+                    .reconstruct_entry_tile(cell, entry, target)?
+                    .expect("valid target reconstructs to a tile");
+                errors.extend(
+                    truth
+                        .iter()
+                        .zip(&reconstructed)
+                        .map(|(truth, reconstructed)| {
+                            (*reconstructed - *truth).abs().max_element()
+                        }),
+                );
+            }
+        }
+
+        errors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let max = errors.last().copied().unwrap_or(0.0);
+        let p95 = if errors.is_empty() {
+            0.0
+        } else {
+            let index = ((errors.len() - 1) as f32 * 0.95).round() as usize;
+            errors[index.min(errors.len() - 1)]
+        };
+        output.push(EmittedReconstructionError {
+            p95,
+            max,
+            texel_samples: errors.len() as u64,
+        });
+    }
+    Ok(output)
+}
+
 fn affinity_dims_for_grid(grid_dimensions: [u32; 3], affinity_factor: u8) -> [u32; 3] {
     let factor = u32::from(affinity_factor);
     [
@@ -645,6 +1010,24 @@ mod tests {
         base.probes = vec![OctahedralShProbe::default(); PROBES_PER_CELL];
         for &local in valid_locals {
             base.probes[local].validity = 1;
+        }
+        base
+    }
+
+    fn base_with_x_cells(valid_locals: &[&[usize]]) -> OctahedralShVolumeSection {
+        let cell_count = valid_locals.len();
+        let dims = [cell_count * AFFINITY_FACTOR as usize, 4, 4];
+        let mut base = OctahedralShVolumeSection::placeholder();
+        base.grid_dimensions = [dims[0] as u32, dims[1] as u32, dims[2] as u32];
+        base.probes = vec![OctahedralShProbe::default(); dims.iter().product()];
+        for (cell_x, locals) in valid_locals.iter().enumerate() {
+            for &local in *locals {
+                let (local_x, local_y, local_z) =
+                    postretro_level_format::sh_reconstruct::local_xyz(local);
+                let x = cell_x * AFFINITY_FACTOR as usize + local_x;
+                let probe = x + local_y * dims[0] + local_z * dims[0] * dims[1];
+                base.probes[probe].validity = 1;
+            }
         }
         base
     }
@@ -1191,6 +1574,13 @@ mod tests {
         payload
     }
 
+    fn dense_entry_from_rgb(mut rgb: impl FnMut(usize) -> [f32; 3]) -> Vec<u16> {
+        let values: Vec<_> = (0..PROBES_PER_CELL)
+            .map(|local| (local, rgb(local)))
+            .collect();
+        dense_entry_with_probe_rgb(&values)
+    }
+
     /// P1 / AC1: an L1 cell stores only its valid corner tiles — fewer than the
     /// full valid set — while `valid_probe_masks` still carries full validity and
     /// the payload length matches the level-aware wire identity.
@@ -1326,6 +1716,114 @@ mod tests {
         let decoded = DirectShDeltaVolumesSection::from_bytes(&compacted.to_bytes())
             .expect("a producer-emitted L2 section uses the existing loader format");
         assert_eq!(decoded, compacted);
+    }
+
+    #[test]
+    fn emitted_oracle_walks_mixed_level_variable_entry_offsets() {
+        let all_locals: Vec<usize> = (0..PROBES_PER_CELL).collect();
+        let base = base_with_x_cells(&[&all_locals, &all_locals, &all_locals]);
+        let dense_l0 = dense_entry_from_rgb(|local| [local as f32, 0.0, 0.0]);
+        let dense_l1 = dense_entry_from_rgb(|local| {
+            let (x, y, z) = postretro_level_format::sh_reconstruct::local_xyz(local);
+            [x as f32, y as f32, z as f32]
+        });
+        let dense_l2 = block([3.0, 3.0, 3.0]);
+        let dense_payload = [dense_l0, dense_l1, dense_l2].concat();
+        let mut section = direct(vec![0, 1, 2], dense_payload.clone());
+        section.affinity_dims = [3, 1, 1];
+        section.cell_levels = vec![Level::L0.to_u8(), Level::L1.to_u8(), Level::L2.to_u8()];
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("mixed L0/L1/L2 section compacts");
+        assert_eq!(
+            compacted.delta_subblocks.len(),
+            (64 + 8 + 1) * DEFAULT_DELTA_PROBE_F16_STRIDE
+        );
+
+        let errors = emitted_reconstruction_error_by_cell(
+            &compacted.affinity_offsets,
+            &compacted.valid_probe_masks,
+            &compacted.cell_levels,
+            &dense_payload,
+            &compacted.delta_subblocks,
+            compacted.tile_dimension,
+            compacted.tile_border,
+        )
+        .expect("oracle resolves each variable-stride entry");
+        assert_eq!(errors.len(), 3);
+        for (cell, error) in errors.iter().enumerate() {
+            assert!(
+                error.max < 1.0e-6,
+                "cell {cell} reconstructed through the wrong compact offset: {error:?}"
+            );
+            assert!(error.p95 < 1.0e-6);
+            assert_eq!(error.texel_samples, 64 * 16);
+        }
+
+        let emitted = EmittedDeltaSectionRef::from_direct(&compacted)
+            .expect("producer output forms an emitted view");
+        let l2 = emitted
+            .reconstruct_entry_tile(2, 2, 63)
+            .expect("L2 entry offset is valid")
+            .expect("local 63 is valid");
+        assert!((l2[0] - glam::Vec3::splat(3.0)).abs().max_element() < 1.0e-6);
+    }
+
+    // Regression: Stress-Warren 1.25 m cell 5213 exposed sparse-L1 targets
+    // that the candidate scorer omitted while the compose shader wrote zero.
+    #[test]
+    fn emitted_oracle_scores_sparse_l1_zero_fallback() {
+        let base = base_with_valid_locals(&[0, 7]);
+        let dense_payload =
+            dense_entry_with_probe_rgb(&[(0, [0.5, 0.5, 0.5]), (7, [1.0, 1.0, 1.0])]);
+        let mut section = direct(vec![0], dense_payload.clone());
+        section.affinity_dims = [1, 1, 1];
+        section.affinity_offsets = vec![0, 1];
+        section.cell_levels = vec![Level::L1.to_u8()];
+
+        let texels = 16;
+        let mut candidate_tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        candidate_tiles[0] = Some(vec![glam::Vec3::splat(0.5); texels]);
+        candidate_tiles[7] = Some(vec![glam::Vec3::ONE; texels]);
+        let weights = vec![1.0; texels];
+        let candidate = crate::sh_analyze::level_errors(
+            &candidate_tiles,
+            crate::sh_analyze::LevelKind::L1,
+            texels,
+            4,
+            &weights,
+        );
+        assert!(candidate.max.abs() < 1.0e-6);
+        assert_eq!(candidate.texel_samples, texels as u64);
+
+        let compacted =
+            compact_direct_valid_probes(&section, &base).expect("sparse L1 section compacts");
+        let emitted = EmittedDeltaSectionRef::from_direct(&compacted)
+            .expect("sparse L1 output forms an emitted view");
+        let unsupported = emitted
+            .reconstruct_entry_tile(0, 0, 7)
+            .expect("sparse L1 lookup is valid")
+            .expect("local 7 is base-valid");
+        assert!(
+            unsupported
+                .iter()
+                .all(|value| value.abs().max_element() < 1.0e-6)
+        );
+
+        let errors = emitted_reconstruction_error_by_cell(
+            &compacted.affinity_offsets,
+            &compacted.valid_probe_masks,
+            &compacted.cell_levels,
+            &dense_payload,
+            &compacted.delta_subblocks,
+            compacted.tile_dimension,
+            compacted.tile_border,
+        )
+        .expect("oracle measures the represented sparse-L1 fallback");
+        assert_eq!(errors.len(), 1);
+        assert!((errors[0].max - 1.0).abs() < 1.0e-6);
+        assert!((errors[0].p95 - 1.0).abs() < 1.0e-6);
+        assert_eq!(errors[0].texel_samples, 2 * texels as u64);
     }
 
     /// The all-L0 path is byte-identical to the pre-coarsening "copy every valid

@@ -124,6 +124,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE,
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [Some(slot), None, None, None],
         };
@@ -153,6 +154,7 @@ mod tests {
                     | PrmSlots::EMISSIVE,
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [
                 Some(PrmSlot {

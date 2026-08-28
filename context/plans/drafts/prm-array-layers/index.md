@@ -135,16 +135,19 @@ re-stitch + sub-4px truncation) is superseded.
       `upload_texture_data` produces a **2D** (`D2`) view and single-layer texture
       for it — the world/model payload encoding and GPU upload are provably
       untouched; only the file header differs (v3, `layer_count == 1`).
-- [ ] `parse_header` rejects `layer_count == 0` as malformed; a stale
-      `STAGE_VERSION == 2` sidecar is rejected (and re-baked), and the header now
-      reports `STAGE_VERSION == 3`.
+- [ ] `parse_header` rejects `layer_count == 0` as malformed; a stale pre-change
+      sidecar is rejected and re-baked — a real v2 file trips the magic
+      version-byte check (`magic[3] != 0x02` → `UnsupportedVersion`) before the
+      `stage_version` check, which stays the secondary guard for a
+      magic-consistent-but-stale file; the header now reports `STAGE_VERSION == 3`.
 - [ ] The portable-baseline cap constant (`max_texture_array_layers` = 256) is
       defined on the dependency-free format/compiler side and documented as the
       contract every array-`.prm` writer must honor (the bake-time *rejection*
       using it — warn, no sidecar — lands in `billboard-sprite-prm-baking`, which
-      owns the writer). The **runtime** independently rejects a parsed
-      `layer_count` exceeding `device.limits().max_texture_array_layers` before
-      texture creation, falling back rather than hitting device validation.
+      owns the writer). The **runtime** independently rejects a `frame_count`
+      exceeding `device.limits().max_texture_array_layers` before
+      `register_collection` creates its D2Array texture, falling back rather than
+      hitting device validation.
 - [ ] The billboard sprite path renders correctly from the array-based decode
       fallback: `register_collection` uploads `frame_count` single-mip array
       layers, `billboard.wgsl` samples `texture_2d_array` at `layer = frame_idx`
@@ -189,7 +192,8 @@ saturates to a clean size mismatch/reject rather than panicking; the
 `from_bytes_partial` `total_body_bytes` cross-check (`u32`, `saturating_add`) then
 rejects the truncated body. Tests: multi-layer
 round-trip; `layer_count == 0` reject; `STAGE_VERSION == 3`; a version-2 fixture
-rejected.
+rejected (via the magic 4th byte, `magic[3] != 0x02` → `UnsupportedVersion`, not
+the secondary `stage_version` check).
 
 ### Task 2: `layer_count == 1` golden (world/model upload unchanged)
 
@@ -239,10 +243,12 @@ cap any array `.prm` writer must honor — because a `.prm` is content-addressed
 compiler has no adapter, the bake cap cannot query a device. (The array `.prm`
 *writer* lives in `billboard-sprite-prm-baking`; this task establishes and
 documents the contract + the constant, and the runtime side.) At runtime, before
-creating the sprite texture, reject a parsed `layer_count >
-device.limits().max_texture_array_layers` (backstop; should never fire given the
-bake cap ≤ every conformant device) and fall back rather than trigger device
-validation.
+`register_collection` calls `create_texture`, reject a `frame_count` (the inline
+D2Array layer count it is about to request as `depth_or_array_layers`) exceeding
+`device.limits().max_texture_array_layers` and fall back rather than trigger
+device validation — `device` is already a `register_collection` parameter. A
+*parsed* `.prm` `layer_count` cannot reach here: the baked-array load that yields
+one is out of scope, so this backstop guards the decode fallback's frame count.
 
 ### Task 5: Documentation
 
@@ -288,7 +294,7 @@ rebase, not dependency).
 | Layered slot payload | `PrmSlot.payload` = `layer_count` back-to-back full chains | slot `payload_bytes` = `layer_count × per-layer chain`, layer-major | n/a |
 | Upload | `upload_texture_data` = D2 at `layer_count==1` (world/model); sprite fallback builds its D2Array texture inline in `register_collection`; `.prm` array uploader → `billboard-sprite-prm-baking` | n/a | `texture_2d_array<f32>` at g1b0 |
 | Frame index | computed in `vs_main` from `age` | n/a | `VertexOutput.frame_idx: u32` (`@interpolate(flat)`), `layer = frame_idx` |
-| Layer cap | bake: fresh named `const` (256) in the format/compiler crate; runtime: `device.limits().max_texture_array_layers` | n/a | n/a |
+| Layer cap | bake: fresh named `const` (256) in the format/compiler crate; runtime: `frame_count` vs `device.limits().max_texture_array_layers` in `register_collection` | n/a | n/a |
 
 ## Wire format
 

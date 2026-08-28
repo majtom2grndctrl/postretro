@@ -17,8 +17,8 @@ use crate::{
     cell_draw_index_bake, cell_visibility_bake, chunk_light_list_bake, delta_sections,
     delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks, geometry,
     kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data, navmesh_bake,
-    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_forward_predict,
-    sh_group, shadowmask_bake, texture_mips, texture_validation, trigger_volumes, visibility,
+    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_group,
+    shadowmask_bake, texture_mips, texture_validation, trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -799,7 +799,7 @@ fn run_after_parsing(
     // bytes (the clone is read, never packed).
     let sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
-    > = if args.sh_analyze || sh_coarsening_enabled || args.sh_forward_predict {
+    > = if args.sh_analyze || sh_coarsening_enabled {
         Some(sh_volume_section.clone())
     } else {
         None
@@ -901,7 +901,7 @@ fn run_after_parsing(
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
         direct_sh_present = raw.grid_dimensions != [0, 0, 0];
-        if args.sh_analyze || sh_coarsening_enabled || args.sh_forward_predict {
+        if args.sh_analyze || sh_coarsening_enabled {
             sh_analyze_base_direct = Some(raw.clone());
         }
         // Re-encode the uncompressed RGBA16F bake output into the production
@@ -1158,34 +1158,6 @@ fn run_after_parsing(
             delta_sections.indirect.as_ref(),
             delta_sections.direct.as_ref(),
             delta_sections.animated_direct.as_ref(),
-        );
-    }
-
-    // Output-preserving base-density forward-predictor efficacy harness
-    // (`--sh-forward-predict`). Sibling to `run_sh_analysis` at the same
-    // post-finalization seam. The predictor forecasts base-indirect
-    // coarsenability from the STATIC (baked) light set — the lights that feed the
-    // base-indirect bake it predicts — evaluated at the probe positions the base
-    // grid defines; the oracle recomputes the production classification of that
-    // baked field. Reads only, writes only its own JSON — byte-preserving.
-    if args.sh_forward_predict {
-        let static_light_refs: Vec<&map_data::MapLight> = static_baked_lights
-            .entries()
-            .iter()
-            .map(|e| e.light)
-            .collect();
-        run_sh_forward_predict(
-            args,
-            sh_analyze_base_indirect.as_ref(),
-            sh_analyze_base_direct.as_ref(),
-            delta_sections.indirect.as_ref(),
-            delta_sections.direct.as_ref(),
-            delta_sections.animated_direct.as_ref(),
-            &static_light_refs,
-            animated_baked_lights.entries().len(),
-            &bvh,
-            &bvh_primitives,
-            &geo_result,
         );
     }
 
@@ -1734,83 +1706,6 @@ fn run_sh_analysis(
     match sh_analyze::write_json(&report, &out) {
         Ok(()) => log::info!("[sh-analyze] wrote analysis JSON to {}", out.display()),
         Err(e) => log::warn!("[sh-analyze] failed to write {}: {e}", out.display()),
-    }
-}
-
-/// Drive the output-preserving base-density forward-predictor efficacy harness
-/// and emit its summary and JSON. Reuses the same captured pre-BC6H base tiles
-/// and finalized delta sections as `run_sh_analysis` (so the oracle is the
-/// production classification of the emitted base-indirect field), plus the
-/// static baked light set the predictor forecasts. Mutates nothing.
-#[allow(clippy::too_many_arguments)]
-fn run_sh_forward_predict(
-    args: &Args,
-    base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
-    base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
-    delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
-    delta_direct: Option<
-        &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
-    >,
-    delta_anim_direct: Option<
-        &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
-    >,
-    lights: &[&map_data::MapLight],
-    animated_light_count: usize,
-    bvh: &bvh::bvh::Bvh<f32, 3>,
-    bvh_primitives: &[bvh_build::BvhPrimitive],
-    geometry: &geometry::GeometryResult,
-) {
-    let Some(base) = base_indirect else {
-        log::warn!(
-            "[sh-forward-predict] no base SH volume produced (empty grid?); prediction skipped"
-        );
-        return;
-    };
-    if base.grid_dimensions == [0, 0, 0] {
-        log::warn!("[sh-forward-predict] degenerate SH grid; prediction skipped");
-        return;
-    }
-    let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
-    let protect: Vec<sh_analyze::ProtectAabb> = Vec::new();
-    let analyze = sh_analyze::AnalyzeInputs {
-        grid_origin: base.grid_origin,
-        cell_size: base.cell_size,
-        grid_dims: base.grid_dimensions,
-        validity: &validity,
-        base_indirect: base,
-        base_direct,
-        delta_indirect,
-        delta_direct,
-        delta_anim_direct,
-        protect_aabbs: &protect,
-        thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
-    };
-    let inputs = sh_forward_predict::ForwardPredictInputs {
-        analyze,
-        lights,
-        animated_light_count,
-        predictor_thresholds: &sh_forward_predict::DEFAULT_PREDICTOR_THRESHOLDS,
-        bvh,
-        primitives: bvh_primitives,
-        geometry,
-    };
-    let report = sh_forward_predict::run_forward_predict(&inputs);
-    sh_forward_predict::log_summary(&report);
-
-    let out = args.sh_forward_predict_out.clone().unwrap_or_else(|| {
-        let mut p = args.output.clone().into_os_string();
-        p.push(".forward-predict.json");
-        std::path::PathBuf::from(p)
-    });
-    match sh_forward_predict::write_json(&report, &out) {
-        Ok(()) => log::info!(
-            "[sh-forward-predict] wrote forward-predict JSON to {}",
-            out.display()
-        ),
-        Err(e) => log::warn!(
-            "[sh-forward-predict] failed to write {}: {e}",
-            out.display()
-        ),
     }
 }
 

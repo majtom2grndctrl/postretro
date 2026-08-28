@@ -35,8 +35,8 @@ relative-error guarantee for every runtime light state.
 
 Existing id-27 script-mutable slots and id-45 animated/script-mutable slots
 have no finite bake-known amplitude bound. The runtime-safe path must not
-assume one. Treat their affected cells as L0 until a separate authored/runtime
-contract supplies a finite bound.
+assume one. Production keeps both sections uniform L0 until a separate
+authored/runtime contract supplies a finite bound.
 
 Task 1 must measure and report, before selecting a promotion policy:
 
@@ -61,8 +61,8 @@ envelope after smoothing until levels reach a fixed point. The process only
 demotes to L0, so it terminates. Preserve I5; repair and smoothing never lift
 a level.
 
-This addendum does not define joint optimization across sections. Id-27/id-45
-remain L0 wherever their mutable/animated status prevents a finite envelope.
+This addendum does not define joint optimization across sections. Ids 27 and
+45 remain uniform L0 in production.
 
 ## Verification
 

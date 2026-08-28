@@ -595,6 +595,87 @@ fn direct_probe_magnitude(
 }
 
 // ---------------------------------------------------------------------------
+// Cone-boundary families — the prior coarsenability spike's strongest signal
+// (angle-off-cone-axis, r=-0.765), isolated so its across-brick variation
+// concentrates on the penumbra rather than P1's blended-brightness gradient.
+// ---------------------------------------------------------------------------
+
+/// The spot whose cone the probe sits deepest inside — smallest angle-off-axis
+/// normalized by the outer half-angle, among spots that actually deliver light
+/// to the point. Returns that spot's `(angle_off_axis, inner_half, outer_half)`
+/// in radians, or `None` when no spot contributes (a probe lit only by point or
+/// directional sources has no cone coordinate — unevaluable, like P3's `None`).
+/// Selecting the deepest-inside cone geometrically keeps the assignment stable
+/// across the penumbra, where an attenuation-weighted pick would flip lights.
+fn dominant_spot_cone(lights: &[&MapLight], point: Vec3) -> Option<(f32, f32, f32)> {
+    // (normalized_angle, angle, inner, outer)
+    let mut best: Option<(f32, f32, f32, f32)> = None;
+    for light in lights {
+        if light.light_type != LightType::Spot {
+            continue;
+        }
+        let (Some(dir), Some(outer)) = (light.cone_direction, light.cone_angle_outer) else {
+            continue;
+        };
+        if outer <= 0.0 {
+            continue;
+        }
+        let origin = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        let to_point = point - origin;
+        let len = to_point.length();
+        // Locality filter by geometric range, NOT by contribution: a probe just
+        // OUTSIDE the cone must still resolve to this spot (attenuation 0), so the
+        // flat-1-inside / flat-0-outside field has a boundary to vary across.
+        // Using incident radiance here would zero the outside and erase that edge.
+        if len <= 1e-6 || len > light.falloff_range {
+            continue;
+        }
+        let aim = Vec3::from(dir).normalize_or_zero();
+        if aim == Vec3::ZERO {
+            continue;
+        }
+        let cos = (to_point / len).dot(aim).clamp(-1.0, 1.0);
+        let angle = cos.acos();
+        let inner = light.cone_angle_inner.unwrap_or(0.0).clamp(0.0, outer);
+        let normalized = angle / outer;
+        if best.is_none_or(|(bn, _, _, _)| normalized < bn) {
+            best = Some((normalized, angle, inner, outer));
+        }
+    }
+    best.map(|(_, angle, inner, outer)| (angle, inner, outer))
+}
+
+/// `cone_angle` family scalar: angle-off-cone-axis (radians) of the dominant
+/// contributing spot — the prior spike's literal metric, fed through the shared
+/// across-brick variation machinery.
+fn cone_axis_angle(lights: &[&MapLight], point: Vec3) -> Option<f32> {
+    dominant_spot_cone(lights, point).map(|(angle, _inner, _outer)| angle)
+}
+
+/// `cone_atten` family scalar: the dominant spot's cone attenuation — `1` inside
+/// the inner cone, a smoothstep across the penumbra, `0` at/outside the outer
+/// cone. Flat deep inside and outside, changing only across the penumbra, so its
+/// across-brick spatial variation isolates cone boundaries (the sharp
+/// base-indirect transitions) far more sharply than P1's blended brightness.
+fn cone_attenuation(lights: &[&MapLight], point: Vec3) -> Option<f32> {
+    dominant_spot_cone(lights, point).map(|(angle, inner, outer)| {
+        if angle <= inner {
+            1.0
+        } else if angle >= outer {
+            0.0
+        } else {
+            // inner < angle < outer, so outer - inner > 0.
+            let t = (outer - angle) / (outer - inner);
+            t * t * (3.0 - 2.0 * t)
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Level thresholding + scoring (shared across all families)
 // ---------------------------------------------------------------------------
 
@@ -853,7 +934,15 @@ pub fn run_forward_predict(inputs: &ForwardPredictInputs<'_>) -> ForwardPredictR
             })
             .collect();
         report.sweep = empty_sweep.clone();
-        for name in ["P1", "P2", "distance", "surface_distance", "P3"] {
+        for name in [
+            "P1",
+            "P2",
+            "distance",
+            "surface_distance",
+            "P3",
+            "cone_angle",
+            "cone_atten",
+        ] {
             report.families.insert(
                 name.to_string(),
                 FamilyReport {
@@ -994,6 +1083,49 @@ pub fn run_forward_predict(inputs: &ForwardPredictInputs<'_>) -> ForwardPredictR
         thresholds,
     );
 
+    // --- cone_angle: angle-off-cone-axis of the dominant spot — the prior
+    // coarsenability spike's strongest signal (r=-0.765), given its best shot as
+    // an actual predictor score (Task 1-3 P1 used delivered-magnitude-gradient, a
+    // blunter proxy). Same cheap inputs as P1, no ray tracing. ---
+    let (cone_angle_pred, cone_angle_secs) = evaluate_family(
+        |_probe, point| cone_axis_angle(lights, point),
+        &analysis.bricks,
+        &oracle_levels,
+        grid_origin,
+        cell_size,
+        dims,
+        validity,
+    );
+    let cone_angle = build_family(
+        "cone_angle",
+        "angle-off-cone-axis of the dominant contributing spot (the coarsenability spike's r=-0.765 signal), no ray tracing",
+        "",
+        cone_angle_pred,
+        cone_angle_secs,
+        thresholds,
+    );
+
+    // --- cone_atten: the dominant spot's cone attenuation, whose across-brick
+    // variation concentrates on the penumbra — the sharp base-indirect transition
+    // P1's blended brightness dilutes. Same cheap inputs as P1. ---
+    let (cone_atten_pred, cone_atten_secs) = evaluate_family(
+        |_probe, point| cone_attenuation(lights, point),
+        &analysis.bricks,
+        &oracle_levels,
+        grid_origin,
+        cell_size,
+        dims,
+        validity,
+    );
+    let cone_atten = build_family(
+        "cone_atten",
+        "dominant-spot cone attenuation (smoothstep); across-brick variation isolates the penumbra",
+        "",
+        cone_atten_pred,
+        cone_atten_secs,
+        thresholds,
+    );
+
     // Top-level P1 surface preserved for Task 1 continuity.
     report.score_vs_oracle_correlation = p1.score_vs_oracle_correlation;
     report.best_operating_point = p1.best_operating_point;
@@ -1008,6 +1140,8 @@ pub fn run_forward_predict(inputs: &ForwardPredictInputs<'_>) -> ForwardPredictR
         .families
         .insert("surface_distance".to_string(), surface_distance);
     report.families.insert("P3".to_string(), p3);
+    report.families.insert("cone_angle".to_string(), cone_angle);
+    report.families.insert("cone_atten".to_string(), cone_atten);
 
     report
 }
@@ -1113,6 +1247,15 @@ mod tests {
         let mut l = point_light(DVec3::ZERO, intensity, 20.0);
         l.light_type = LightType::Directional;
         l.cone_direction = Some(dir);
+        l
+    }
+
+    fn spot_light(origin: DVec3, aim: [f32; 3], inner: f32, outer: f32, range: f32) -> MapLight {
+        let mut l = point_light(origin, 1.0, range);
+        l.light_type = LightType::Spot;
+        l.cone_direction = Some(aim);
+        l.cone_angle_inner = Some(inner);
+        l.cone_angle_outer = Some(outer);
         l
     }
 
@@ -1458,7 +1601,15 @@ mod tests {
         assert!(report.bricks.is_empty());
         assert_eq!(report.sweep.len(), thresholds.len());
         // Every family present with a well-formed empty sweep.
-        for name in ["P1", "P2", "distance", "surface_distance", "P3"] {
+        for name in [
+            "P1",
+            "P2",
+            "distance",
+            "surface_distance",
+            "P3",
+            "cone_angle",
+            "cone_atten",
+        ] {
             let fam = report.families.get(name).expect("family present");
             assert_eq!(fam.sweep.len(), thresholds.len());
             for row in &fam.sweep {
@@ -1469,6 +1620,55 @@ mod tests {
         }
         assert!(!report.p3_direct_baked_before_base_indirect);
         assert!(serde_json::to_vec(&report).is_ok());
+    }
+
+    #[test]
+    fn cone_scalar_is_none_without_a_contributing_spot() {
+        // A probe lit only by a point light has no cone coordinate.
+        let pt = point_light(DVec3::new(0.0, 0.0, 0.0), 1.0, 20.0);
+        let lights = [&pt];
+        let p = Vec3::new(1.0, 0.0, 0.0);
+        assert_eq!(cone_axis_angle(&lights, p), None);
+        assert_eq!(cone_attenuation(&lights, p), None);
+        // A directional light (has an aim but is not a Spot) also yields None.
+        let dir = directional_light([0.0, -1.0, 0.0], 1.0);
+        let dl = [&dir];
+        assert_eq!(cone_attenuation(&dl, p), None);
+    }
+
+    #[test]
+    fn cone_atten_is_one_on_axis_and_zero_outside_the_outer_cone() {
+        // Spot at the origin aiming +X; inner 10deg, outer 30deg half-angles.
+        let inner = 10f32.to_radians();
+        let outer = 30f32.to_radians();
+        let spot = spot_light(DVec3::ZERO, [1.0, 0.0, 0.0], inner, outer, 100.0);
+        let lights = [&spot];
+        // On axis, well inside the inner cone: attenuation 1, angle ~0.
+        let on_axis = Vec3::new(5.0, 0.0, 0.0);
+        assert!((cone_attenuation(&lights, on_axis).unwrap() - 1.0).abs() < 1e-4);
+        assert!(cone_axis_angle(&lights, on_axis).unwrap() < 1e-3);
+        // Beyond the outer half-angle (45deg off axis > 30deg): attenuation 0.
+        let outside = Vec3::new(5.0, 5.0, 0.0);
+        assert_eq!(cone_attenuation(&lights, outside).unwrap(), 0.0);
+        assert!(cone_axis_angle(&lights, outside).unwrap() > outer);
+    }
+
+    #[test]
+    fn cone_atten_smoothsteps_across_the_penumbra() {
+        // A probe between inner and outer half-angles gets a strictly interior
+        // attenuation — this is the transition band whose across-brick variation
+        // the family exists to detect.
+        let inner = 10f32.to_radians();
+        let outer = 40f32.to_radians();
+        let spot = spot_light(DVec3::ZERO, [1.0, 0.0, 0.0], inner, outer, 100.0);
+        let lights = [&spot];
+        // ~25deg off axis: tan(25)*5 in Y.
+        let mid = Vec3::new(5.0, 5.0 * 25f32.to_radians().tan(), 0.0);
+        let a = cone_attenuation(&lights, mid).unwrap();
+        assert!(
+            a > 0.0 && a < 1.0,
+            "penumbra attenuation should be interior, got {a}"
+        );
     }
 
     #[test]

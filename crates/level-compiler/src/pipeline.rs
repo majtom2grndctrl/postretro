@@ -251,6 +251,12 @@ fn run_after_parsing(
     let mut timings = Vec::new();
     timings.push((StageId::Parsing.label(), parsing_elapsed));
     reporter.finish_stage(StageId::Parsing);
+    let sh_coarsening_enabled = !map_data.uniform_grid_optout;
+    if !sh_coarsening_enabled {
+        log::info!(
+            "[sh-coarsen] disabled by worldspawn `_sh_coarsen \"0\"`; id 41 remains uniform L0"
+        );
+    }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
     let compiled_data_script = compile_worldspawn_data_script(
@@ -789,11 +795,11 @@ fn run_after_parsing(
     // Output-preserving SH analysis and the coarsening classifier both need the
     // base indirect tiles at full RGBA16F precision — capture the compact
     // section BEFORE the lossy BC6H re-encode below. Cloned only under
-    // `--sh-analyze` or `--sh-coarsen`; changes no emitted bytes (the clone is
-    // read, never packed).
+    // `--sh-analyze` or the default-on id-41 classifier; changes no emitted
+    // bytes (the clone is read, never packed).
     let sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
-    > = if args.sh_analyze || args.sh_coarsen {
+    > = if args.sh_analyze || sh_coarsening_enabled {
         Some(sh_volume_section.clone())
     } else {
         None
@@ -895,7 +901,7 @@ fn run_after_parsing(
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
         direct_sh_present = raw.grid_dimensions != [0, 0, 0];
-        if args.sh_analyze || args.sh_coarsen {
+        if args.sh_analyze || sh_coarsening_enabled {
             sh_analyze_base_direct = Some(raw.clone());
         }
         // Re-encode the uncompressed RGBA16F bake output into the production
@@ -1090,21 +1096,31 @@ fn run_after_parsing(
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
     delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
-    // Delta-SH probe coarsening (`--sh-coarsen`): classify each 4×4×4 brick to a
-    // per-section coarsening level and stamp it onto each section's
-    // `cell_levels` while the payloads are still DENSE — so the single
-    // valid-probe compaction below emits the coarsened (kept) tile set. Default
-    // off ⇒ every level stays L0 ⇒ compaction is byte-identical to the
-    // non-coarsened path.
-    if args.sh_coarsen {
+    // The emitted-reconstruction diagnostic compares final compact bytes with
+    // their post-drop dense source. Retain this measurement-only snapshot only
+    // for an explicit coarsened analysis; normal and uniform-L0 bakes do not
+    // pay the additional memory cost.
+    let sh_analyze_dense_deltas = (args.sh_analyze && sh_coarsening_enabled).then(|| {
+        (
+            delta_sections.indirect.clone(),
+            delta_sections.direct.clone(),
+            delta_sections.animated_direct.clone(),
+        )
+    });
+    // Production id-41 coarsening classifies each 4×4×4 brick while payloads
+    // are still dense, before the single valid-probe compaction. The map-level
+    // opt-out is checked here, before classification, so its untouched all-L0
+    // path remains byte-identical to the pre-activation uniform bake.
+    run_sh_coarsening_if_enabled(sh_coarsening_enabled, || {
         apply_coarsen_classification(
             args,
             &map_data.sh_protect_aabbs,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
             &mut delta_sections,
-        );
-    }
+            &script_mutable_descriptor_slots,
+        )
+    })?;
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
     delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
@@ -1132,6 +1148,13 @@ fn run_after_parsing(
             args,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
+            sh_analyze_dense_deltas
+                .as_ref()
+                .map(|dense| sh_analyze::DenseDeltaSections {
+                    indirect: dense.0.as_ref(),
+                    direct: dense.1.as_ref(),
+                    animated_direct: dense.2.as_ref(),
+                }),
             delta_sections.indirect.as_ref(),
             delta_sections.direct.as_ref(),
             delta_sections.animated_direct.as_ref(),
@@ -1499,26 +1522,44 @@ fn combined_protect_aabbs(cli: &[[f32; 6]], map: &[[f32; 6]]) -> Vec<[f32; 6]> {
     combined
 }
 
-/// Classify per-section coarsening levels and stamp them onto each delta
-/// section's `cell_levels`, in place, before valid-probe compaction consumes the
-/// dense payloads. Reads the pre-BC6H base indirect (RGBA16F) for composed
-/// magnitude + the sole probe-validity authority; each section is classified
-/// independently (its own reconstruction error over the shared composed
-/// magnitude). No-op when the base grid is absent/degenerate.
+/// Invoke the production classifier only when the map has not selected the
+/// uniform-grid fallback. Keeping the predicate outside the closure makes the
+/// opt-out a true pre-classification short-circuit.
+fn run_sh_coarsening_if_enabled(
+    enabled: bool,
+    classify: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if enabled {
+        classify()?;
+    }
+    Ok(())
+}
+
+/// Classify id 41 coarsening levels and stamp them in place before valid-probe
+/// compaction consumes the dense payload. Ids 27 and 45 stay uniform L0 because
+/// their runtime animation/script amplitudes have no finite bake-known bound.
+/// Reads the pre-BC6H base indirect (RGBA16F) for composed magnitude + the sole
+/// probe-validity authority. No-op when the base grid is absent/degenerate.
 fn apply_coarsen_classification(
     args: &Args,
     map_protect_aabbs: &[[f32; 6]],
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     delta_sections: &mut delta_sections::PostBakeDeltaSections,
-) {
+    mutable_descriptors: &crate::delta_drop_policy::ScriptMutableDescriptorSlots,
+) -> anyhow::Result<()> {
+    // Enforce the owner-approved section scope even on degenerate/absent-base
+    // exits. The bake producers currently initialize these arrays to L0, but
+    // this boundary owns the policy rather than relying on that detail.
+    delta_sections.enforce_id41_only_coarsening_policy();
+
     let Some(base) = base_indirect else {
         log::warn!("[sh-coarsen] no base SH volume produced; coarsening skipped (uniform L0)");
-        return;
+        return Ok(());
     };
     if base.grid_dimensions == [0, 0, 0] {
         log::warn!("[sh-coarsen] degenerate SH grid; coarsening skipped (uniform L0)");
-        return;
+        return Ok(());
     }
     let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
     let grid = sh_coarsen::SectionGrid {
@@ -1534,86 +1575,61 @@ fn apply_coarsen_classification(
     // union forces every intersecting brick to L0 (dense).
     let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, map_protect_aabbs);
 
-    // Compute all three per-section level arrays under shared immutable borrows
-    // of the (still dense) delta sections, then stamp them in a second mutable
-    // pass — the classifier reads all three sections for the composed magnitude
-    // while producing one section's levels.
-    let (indirect_levels, direct_levels, anim_levels) = {
+    // The direct classifier still reads all three dense sections for the
+    // composed reference magnitude, but produces levels only for id 41.
+    let direct_levels = {
         let all = sh_coarsen::DeltaSectionsRef {
             indirect: delta_sections.indirect.as_ref(),
             direct: delta_sections.direct.as_ref(),
             anim_direct: delta_sections.animated_direct.as_ref(),
         };
-        let classify = |target| {
-            sh_coarsen::classify_section_levels(
+        delta_sections.direct.as_ref().map(|_| {
+            sh_coarsen::classify_direct_levels(
                 base,
                 base_direct,
                 all,
-                target,
                 grid,
                 &protect_aabbs,
                 &params,
             )
-        };
-        (
-            delta_sections
-                .indirect
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::Indirect)),
-            delta_sections
-                .direct
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::Direct)),
-            delta_sections
-                .animated_direct
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::AnimatedDirect)),
-        )
+        })
     };
 
-    // Stamp only when the classifier's level count (base-grid derived) matches
-    // the section's own affinity-cell count. They agree whenever the section
-    // shares the base grid (the normal case); guard the defensive path so an
-    // affinity-mismatched section is never handed a wrong-length `cell_levels`
-    // that would corrupt compaction / the wire contract — leave it uniform L0.
-    let mut sections = 0u32;
-    if let (Some(section), Some(levels)) = (delta_sections.indirect.as_mut(), indirect_levels) {
-        let cells = section.affinity_cell_count();
-        if levels.len() == cells {
-            section.cell_levels = levels;
-            sections += 1;
-        } else {
-            log::warn!(
-                "[sh-coarsen] indirect affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
-                levels.len()
-            );
-        }
-    }
+    // Guard the defensive grid-mismatch path so id 41 is never handed a
+    // wrong-length level array that would corrupt compaction / the wire
+    // contract. All sections remain uniform L0 in that case.
+    let mut direct_classified = false;
     if let (Some(section), Some(levels)) = (delta_sections.direct.as_mut(), direct_levels) {
         let cells = section.affinity_cell_count();
         if levels.len() == cells {
             section.cell_levels = levels;
-            sections += 1;
+            direct_classified = true;
         } else {
+            section
+                .cell_levels
+                .fill(postretro_level_format::sh_reconstruct::Level::L0.to_u8());
             log::warn!(
                 "[sh-coarsen] direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
                 levels.len()
             );
         }
     }
-    if let (Some(section), Some(levels)) = (delta_sections.animated_direct.as_mut(), anim_levels) {
-        let cells = section.affinity_cell_count();
-        if levels.len() == cells {
-            section.cell_levels = levels;
-            sections += 1;
+    log::info!(
+        "[sh-coarsen] id 41 classification {}; ids 27/45 remain uniform L0",
+        if direct_classified {
+            "applied"
         } else {
-            log::warn!(
-                "[sh-coarsen] animated-direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
-                levels.len()
-            );
+            "not applicable"
         }
-    }
-    log::info!("[sh-coarsen] classified coarsening levels for {sections} delta section(s)");
+    );
+    crate::sh_runtime_envelope::apply_runtime_safe_envelope(
+        base,
+        base_direct,
+        delta_sections,
+        mutable_descriptors,
+        &params,
+    )?;
+    Ok(())
 }
 
 /// Drive the output-preserving SH coarsenability analysis and emit its summary
@@ -1624,6 +1640,7 @@ fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    dense_deltas: Option<sh_analyze::DenseDeltaSections<'_>>,
     delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
     delta_direct: Option<
         &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
@@ -1662,7 +1679,23 @@ fn run_sh_analysis(
         protect_aabbs: &protect,
         thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
     };
-    let report = sh_analyze::run_analysis(&inputs);
+    let mut report = sh_analyze::run_analysis(&inputs);
+    if let Some(dense) = dense_deltas {
+        match sh_analyze::run_emitted_reconstruction_analysis(
+            &inputs,
+            dense.indirect,
+            dense.direct,
+            dense.animated_direct,
+            delta_indirect,
+            delta_direct,
+            delta_anim_direct,
+        ) {
+            Ok(emitted) => report.emitted_reconstruction = Some(emitted),
+            Err(error) => {
+                log::warn!("[sh-analyze] emitted reconstruction validation skipped: {error}")
+            }
+        }
+    }
     sh_analyze::log_summary(&report);
 
     let out = args.sh_analyze_out.clone().unwrap_or_else(|| {
@@ -1736,6 +1769,28 @@ mod tests {
         assert!(combined_protect_aabbs(&empty, &empty).is_empty());
         assert_eq!(combined_protect_aabbs(&one, &empty), one);
         assert_eq!(combined_protect_aabbs(&empty, &one), one);
+    }
+
+    #[test]
+    fn uniform_grid_optout_short_circuits_before_classification() {
+        let calls = std::cell::Cell::new(0);
+        run_sh_coarsening_if_enabled(false, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .expect("disabled coarsening remains a valid uniform bake");
+        assert_eq!(calls.get(), 0, "classification must not run under opt-out");
+    }
+
+    #[test]
+    fn default_path_invokes_classification_once() {
+        let calls = std::cell::Cell::new(0);
+        run_sh_coarsening_if_enabled(true, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .expect("default-on classification succeeds");
+        assert_eq!(calls.get(), 1);
     }
 
     fn direct_delta_stats_fixture() -> direct_sh_bake::DirectDeltaBakeStats {

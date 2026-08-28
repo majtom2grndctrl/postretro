@@ -45,7 +45,6 @@ pub mod sdf_bake;
 pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_coarsen;
-pub mod sh_forward_predict;
 pub mod sh_group;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
@@ -568,15 +567,6 @@ struct Args {
     /// id-41 classifier and the analysis's protected projection. Repeatable.
     /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
-    /// When true, run the output-preserving base-density forward-predictor
-    /// efficacy harness after the base + delta SH bakes are available.
-    /// Measurement only — emits log/JSON diagnostics and changes no emitted
-    /// `.prl` bytes (mirrors `--sh-analyze`).
-    sh_forward_predict: bool,
-    /// Destination path for the forward-predictor JSON report. `None` with
-    /// `sh_forward_predict` set defaults to `<output>.forward-predict.json`.
-    /// Ignored when `sh_forward_predict` is false.
-    sh_forward_predict_out: Option<PathBuf>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -615,8 +605,6 @@ fn help_text() -> String {
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
-         --sh-forward-predict       Run the output-preserving base-density forward-predictor efficacy harness (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
-         --sh-forward-predict-out <PATH> Destination for the forward-predictor JSON (default: <output>.forward-predict.json when --sh-forward-predict is set)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -652,8 +640,6 @@ where
     let mut sh_analyze = false;
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
-    let mut sh_forward_predict = false;
-    let mut sh_forward_predict_out: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -795,15 +781,6 @@ where
                     .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
                 sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
             }
-            "--sh-forward-predict" => {
-                sh_forward_predict = true;
-            }
-            "--sh-forward-predict-out" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--sh-forward-predict-out requires a path"))?;
-                sh_forward_predict_out = Some(PathBuf::from(path));
-            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -844,8 +821,6 @@ where
         sh_analyze,
         sh_analyze_out,
         sh_protect_aabbs,
-        sh_forward_predict,
-        sh_forward_predict_out,
     })
 }
 

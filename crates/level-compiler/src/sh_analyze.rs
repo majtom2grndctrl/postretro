@@ -763,7 +763,7 @@ fn decode_base_indirect_tile(
 
 /// Decode one probe's interior RGB tile from the base DIRECT dense atlas
 /// (RGBA16F), keyed by dense probe index.
-pub(crate) fn decode_base_direct_tile(
+fn decode_base_direct_tile(
     section: &DirectShVolumeSection,
     probe_index: usize,
     interior: usize,

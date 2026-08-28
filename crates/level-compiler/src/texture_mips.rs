@@ -481,6 +481,7 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             slot_mask: PrmSlots::DIFFUSE,
             bundle_hash,
             total_body_bytes: 0,
+            layer_count: 1,
         },
         slots: [
             Some(PrmSlot {
@@ -700,6 +701,7 @@ pub fn bake_texture_mips(
                 slot_mask,
                 bundle_hash,
                 total_body_bytes: 0, // recomputed by to_bytes
+                layer_count: 1,
             },
             slots: slots_arr,
         };
@@ -815,6 +817,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE,
                 bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None),
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [
                 Some(PrmSlot {
@@ -1106,6 +1109,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0x42; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(slot), None],
         };
@@ -1159,6 +1163,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0x7; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(slot), None],
         };

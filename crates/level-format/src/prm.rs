@@ -9,8 +9,8 @@
 //
 // Wire format (little-endian throughout):
 //
-//   -- header (43 bytes)
-//   [u8; 4]  magic                = b"PRM\x01"
+//   -- header (45 bytes)
+//   [u8; 4]  magic                = b"PRM\x02"
 //   u8       stage_version        -- equals STAGE_VERSION
 //   u8       slot_mask            -- bit 0 diffuse, 1 specular, 2 normal, 3 emissive
 //   u8       reserved             = 0
@@ -18,6 +18,7 @@
 //                                    (bit_index_byte, source_png_file_bytes)
 //   u32      total_body_bytes     -- Σ across present slots of
 //                                    (12-byte per-slot header + payload_bytes)
+//   u16      layer_count          -- shared layer count for every slot, >= 1
 //
 //   -- per present slot, in wire order diffuse → specular → normal → emissive
 //   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm,
@@ -30,7 +31,8 @@
 //                                    width AND height are both >= 4 (see bc5_level_count)
 //   u8       reserved             = 0
 //   u32      payload_bytes        -- total bytes for all levels concatenated
-//   [u8; payload_bytes]           -- levels packed back-to-back, level 0 first
+//   [u8; payload_bytes]           -- layer-major mip chains: every level for
+//                                    layer 0, then every level for layer 1, etc.
 //
 // See: context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
@@ -38,10 +40,10 @@ use bitflags::bitflags;
 use thiserror::Error;
 
 /// Wire-format version of the `.prm` sidecar. The fourth byte of the magic
-/// (`b"PRM\x01"`) and this constant are bumped in lockstep for incompatible
+/// (`b"PRM\x02"`) and this constant are bumped in lockstep for incompatible
 /// layout changes; additively-gated slots keep this version so old sidecars
 /// remain readable.
-pub const STAGE_VERSION: u8 = 2;
+pub const STAGE_VERSION: u8 = 3;
 
 /// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
 /// writer and runtime-side reader both call this so the addressing contract
@@ -59,7 +61,7 @@ pub fn cache_filename_for_key(key: &[u8; 32]) -> String {
 }
 
 /// Size of the fixed file header in bytes.
-const HEADER_SIZE: usize = 43;
+const HEADER_SIZE: usize = 45;
 
 /// Size of each per-slot header in bytes.
 const SLOT_HEADER_SIZE: usize = 12;
@@ -144,6 +146,10 @@ pub struct PrmHeader {
     pub slot_mask: PrmSlots,
     pub bundle_hash: [u8; 32],
     pub total_body_bytes: u32,
+    /// Number of layer-major mip chains in every present slot. World and
+    /// model sidecars use one layer; array textures use one complete chain
+    /// per layer.
+    pub layer_count: u16,
 }
 
 /// A single material slot's mip chain. The renderer uploads `payload` directly
@@ -173,8 +179,11 @@ pub struct PrmFile {
 /// earlier slots.
 #[derive(Debug, Error)]
 pub enum PrmReadError {
-    #[error("bad magic: expected PRM\\x01-prefix, got {found:?}")]
+    #[error("bad magic: expected PRM prefix, got {found:?}")]
     BadMagic { found: [u8; 4] },
+
+    #[error("invalid layer_count {layer_count}; must be at least 1")]
+    InvalidLayerCount { layer_count: u16 },
 
     #[error("unsupported .prm magic version byte: {version}")]
     UnsupportedVersion { version: u8 },
@@ -218,11 +227,15 @@ pub enum PrmReadError {
 
 /// Errors returned by the `.prm` writer (`PrmFile::to_bytes`). These guard
 /// invariants the wire format cannot express structurally — chiefly that the
-/// BC5 normal-map format is confined to the normal slot.
+/// BC5 normal-map format is confined to the normal slot and that every slot
+/// has at least one layer.
 #[derive(Debug, Error)]
 pub enum PrmWriteError {
     #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
     Bc5OnNonNormalSlot { slot: u8 },
+
+    #[error("invalid layer_count {layer_count}; must be at least 1")]
+    InvalidLayerCount { layer_count: u16 },
 }
 
 /// Number of mip levels for a `(width, height)` chain: `floor(log2(max(w, h))) + 1`.
@@ -255,10 +268,17 @@ pub fn bc5_level_count(width: u16, height: u16) -> u8 {
     count
 }
 
-/// Expected payload size in bytes for a mip chain. BC5 is block-compressed
+/// Expected payload size in bytes for `layer_count` mip chains. BC5 is block-compressed
 /// (16 bytes per 4×4 texel block, two back-to-back BC4 blocks for R and G), so
-/// it is sized block-by-block; every other format uses a fixed bytes-per-pixel.
-fn expected_payload_bytes(format: PrmFormat, width: u16, height: u16, level_count: u8) -> u32 {
+/// each layer is sized block-by-block; every other format uses a fixed
+/// bytes-per-pixel. Layers are complete chains laid out layer-major.
+fn expected_payload_bytes(
+    format: PrmFormat,
+    width: u16,
+    height: u16,
+    level_count: u8,
+    layer_count: u16,
+) -> u32 {
     let mut total: u32 = 0;
     match format {
         PrmFormat::Bc5RgUnorm => {
@@ -282,7 +302,7 @@ fn expected_payload_bytes(format: PrmFormat, width: u16, height: u16, level_coun
             }
         }
     }
-    total
+    total.saturating_mul(u32::from(layer_count))
 }
 
 impl PrmFile {
@@ -293,7 +313,13 @@ impl PrmFile {
     ///
     /// Fails with `Bc5OnNonNormalSlot` if any non-normal slot carries
     /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to wire index 2.
+    /// Fails with `InvalidLayerCount` when every declared slot would have zero
+    /// mip chains.
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
+        if self.header.layer_count == 0 {
+            return Err(PrmWriteError::InvalidLayerCount { layer_count: 0 });
+        }
+
         // Guard the BC5-on-normal-slot-only invariant before emitting anything.
         // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal, 3 emissive]`).
         for (i, bit) in [
@@ -339,12 +365,13 @@ impl PrmFile {
         let mut buf = Vec::with_capacity(HEADER_SIZE + total_body as usize);
 
         // -- header --
-        buf.extend_from_slice(b"PRM\x01");
+        buf.extend_from_slice(b"PRM\x02");
         buf.push(self.header.stage_version);
         buf.push(self.header.slot_mask.bits());
         buf.push(0); // reserved
         buf.extend_from_slice(&self.header.bundle_hash);
         buf.extend_from_slice(&total_body.to_le_bytes());
+        buf.extend_from_slice(&self.header.layer_count.to_le_bytes());
         debug_assert_eq!(buf.len(), HEADER_SIZE);
 
         // -- per-slot --
@@ -433,7 +460,7 @@ impl PrmFile {
             if !header.slot_mask.contains(*bit) {
                 continue;
             }
-            let (result, consumed) = parse_slot(body, cursor, i as u8);
+            let (result, consumed) = parse_slot(body, cursor, i as u8, header.layer_count);
             match &result {
                 Ok(slot) => {
                     expected_total = expected_total
@@ -469,7 +496,7 @@ impl PrmFile {
     }
 }
 
-/// Parse the 43-byte header. The whole file is rejected on any header error.
+/// Parse the 45-byte header. The whole file is rejected on any header error.
 fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
     if data.len() < HEADER_SIZE {
         return Err(PrmReadError::Truncated);
@@ -480,7 +507,7 @@ fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
     if &magic[0..3] != b"PRM" {
         return Err(PrmReadError::BadMagic { found: magic });
     }
-    if magic[3] != 0x01 {
+    if magic[3] != 0x02 {
         return Err(PrmReadError::UnsupportedVersion { version: magic[3] });
     }
 
@@ -506,12 +533,17 @@ fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
     bundle_hash.copy_from_slice(&data[7..39]);
 
     let total_body_bytes = u32::from_le_bytes([data[39], data[40], data[41], data[42]]);
+    let layer_count = u16::from_le_bytes([data[43], data[44]]);
+    if layer_count == 0 {
+        return Err(PrmReadError::InvalidLayerCount { layer_count });
+    }
 
     Ok(PrmHeader {
         stage_version,
         slot_mask,
         bundle_hash,
         total_body_bytes,
+        layer_count,
     })
 }
 
@@ -523,6 +555,7 @@ fn parse_slot(
     body: &[u8],
     offset: usize,
     slot_index: u8,
+    layer_count: u16,
 ) -> (Result<PrmSlot, PrmReadError>, usize) {
     if offset.saturating_add(SLOT_HEADER_SIZE) > body.len() {
         return (
@@ -601,7 +634,7 @@ fn parse_slot(
         );
     }
 
-    let expected_payload = expected_payload_bytes(format, width, height, level_count);
+    let expected_payload = expected_payload_bytes(format, width, height, level_count, layer_count);
     if payload_bytes != expected_payload {
         let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
         let consumed = consumed.min(body.len().saturating_sub(offset));
@@ -660,6 +693,7 @@ mod tests {
                     | PrmSlots::EMISSIVE,
                 bundle_hash: [0xAB; 32],
                 total_body_bytes: 0, // recomputed by to_bytes
+                layer_count: 1,
             },
             slots: [Some(diffuse), Some(specular), Some(normal), Some(emissive)],
         }
@@ -678,7 +712,7 @@ mod tests {
     }
 
     fn fill_slot(format: PrmFormat, width: u16, height: u16, level_count: u8) -> PrmSlot {
-        let payload_bytes = expected_payload_bytes(format, width, height, level_count) as usize;
+        let payload_bytes = expected_payload_bytes(format, width, height, level_count, 1) as usize;
         let mut payload = Vec::with_capacity(payload_bytes);
         // Fill with a recognisable pattern keyed on the byte index so
         // accidental swaps between slots show up in equality asserts.
@@ -692,6 +726,58 @@ mod tests {
             level_count,
             payload,
         }
+    }
+
+    fn make_layered_slot(
+        format: PrmFormat,
+        width: u16,
+        height: u16,
+        level_count: u8,
+        layer_count: u16,
+    ) -> PrmSlot {
+        let bytes_per_layer =
+            expected_payload_bytes(format, width, height, level_count, 1) as usize;
+        let mut payload = Vec::with_capacity(bytes_per_layer * usize::from(layer_count));
+        for layer in 0..layer_count {
+            payload.extend(
+                (0..bytes_per_layer).map(|index| (index as u8).wrapping_add(layer as u8 * 31)),
+            );
+        }
+        PrmSlot {
+            format,
+            width,
+            height,
+            level_count,
+            payload,
+        }
+    }
+
+    #[test]
+    fn stage_version_is_3() {
+        assert_eq!(STAGE_VERSION, 3);
+    }
+
+    #[test]
+    fn header_layout_writes_layer_count_after_total_body_bytes() {
+        let slot = make_layered_slot(PrmFormat::Rgba8UnormSrgb, 1, 1, 1, 2);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: [0x7A; 32],
+                total_body_bytes: 0,
+                layer_count: 2,
+            },
+            slots: [Some(slot.clone()), None, None, None],
+        };
+
+        let bytes = file.to_bytes().expect("layered fixture should serialize");
+        let expected_body = SLOT_HEADER_SIZE as u32 + slot.payload.len() as u32;
+        assert_eq!(HEADER_SIZE, 45);
+        assert_eq!(&bytes[0..4], b"PRM\x02");
+        assert_eq!(bytes[6], 0, "the existing reserved byte stays at offset 6");
+        assert_eq!(&bytes[39..43], &expected_body.to_le_bytes());
+        assert_eq!(&bytes[43..45], &2u16.to_le_bytes());
     }
 
     #[test]
@@ -716,6 +802,32 @@ mod tests {
     }
 
     #[test]
+    fn multi_layer_slot_round_trips_layer_major_payload() {
+        let layer_count = 3;
+        let level_count = expected_level_count(4, 2);
+        let diffuse = make_layered_slot(PrmFormat::Rgba8UnormSrgb, 4, 2, level_count, layer_count);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: [0x3C; 32],
+                total_body_bytes: 0,
+                layer_count,
+            },
+            slots: [Some(diffuse.clone()), None, None, None],
+        };
+
+        let bytes = file.to_bytes().expect("layered fixture should serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("layered header should parse");
+        let parsed = slots[0].as_ref().expect("layered diffuse should parse");
+
+        assert_eq!(header.layer_count, layer_count);
+        assert_eq!(parsed.level_count, level_count);
+        assert_eq!(parsed.payload, diffuse.payload);
+    }
+
+    #[test]
     fn existing_three_slot_file_parses_with_absent_emissive() {
         let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
         let specular = make_slot(PrmFormat::R8Unorm, 2, 2);
@@ -726,6 +838,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
                 bundle_hash: [0x3A; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [Some(diffuse), Some(specular), Some(normal), None],
         };
@@ -785,9 +898,10 @@ mod tests {
     #[test]
     fn slot_mask_zero_is_rejected() {
         let mut bytes = vec![0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x01");
+        bytes[0..4].copy_from_slice(b"PRM\x02");
         bytes[4] = STAGE_VERSION;
         bytes[5] = 0; // slot_mask == 0
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
         // bundle_hash and total_body_bytes stay zero.
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
@@ -808,6 +922,7 @@ mod tests {
                 slot_mask: PrmSlots::EMISSIVE,
                 bundle_hash: [0xE0; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, None, Some(emissive.clone())],
         };
@@ -823,9 +938,10 @@ mod tests {
     #[test]
     fn high_reserved_slot_bits_are_rejected() {
         let mut bytes = vec![0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x01");
+        bytes[0..4].copy_from_slice(b"PRM\x02");
         bytes[4] = STAGE_VERSION;
         bytes[5] = 0b0001_0000;
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
             matches!(
@@ -852,26 +968,62 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_magic_version_byte_is_rejected() {
+    fn pre_layer_count_magic_version_is_rejected_before_stage_guard() {
         let mut bytes = vec![0u8; HEADER_SIZE];
         bytes[0..3].copy_from_slice(b"PRM");
-        bytes[3] = 0x02; // wrong version byte
+        bytes[3] = 0x01; // pre-layer-count magic version byte
+        bytes[4] = 2; // old stage version; the magic check must win first.
+        bytes[5] = PrmSlots::DIFFUSE.bits();
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
             matches!(
                 header_result,
-                Err(PrmReadError::UnsupportedVersion { version: 0x02 })
+                Err(PrmReadError::UnsupportedVersion { version: 0x01 })
             ),
-            "expected UnsupportedVersion {{ version: 0x02 }}, got {header_result:?}"
+            "expected UnsupportedVersion {{ version: 0x01 }}, got {header_result:?}"
+        );
+    }
+
+    #[test]
+    fn layer_count_zero_is_rejected() {
+        let mut bytes = vec![0u8; HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"PRM\x02");
+        bytes[4] = STAGE_VERSION;
+        bytes[5] = PrmSlots::DIFFUSE.bits();
+        // bytes 43..45 stay zero, which is invalid.
+
+        let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
+        assert!(
+            matches!(
+                header_result,
+                Err(PrmReadError::InvalidLayerCount { layer_count: 0 })
+            ),
+            "expected InvalidLayerCount {{ layer_count: 0 }}, got {header_result:?}"
+        );
+    }
+
+    #[test]
+    fn writer_rejects_layer_count_zero() {
+        let mut file = make_four_slot_file();
+        file.header.layer_count = 0;
+
+        assert!(
+            matches!(
+                file.to_bytes(),
+                Err(PrmWriteError::InvalidLayerCount { layer_count: 0 })
+            ),
+            "writer must not emit a .prm the reader will reject"
         );
     }
 
     #[test]
     fn stage_version_mismatch_is_rejected() {
         let mut bytes = vec![0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x01");
+        bytes[0..4].copy_from_slice(b"PRM\x02");
         bytes[4] = STAGE_VERSION.wrapping_add(1);
         bytes[5] = PrmSlots::DIFFUSE.bits();
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
             matches!(
@@ -926,15 +1078,25 @@ mod tests {
     fn expected_payload_bytes_bc5_is_block_based() {
         // 8×8, level_count 2: l0 ceil(8/4)*ceil(8/4)=4 blocks, l1
         // ceil(4/4)^2=1 block → 5 blocks * 16 = 80 bytes.
-        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2), 80);
+        assert_eq!(
+            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2, 1),
+            80
+        );
         // 16×16, level_count 3: l0 4*4=16, l1 2*2=4, l2 1*1=1 → 21 blocks * 16
         // = 336 bytes.
         assert_eq!(
-            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 16, 16, 3),
+            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 16, 16, 3, 1),
             336
         );
         // 4×4, level_count 1: 1 block * 16 = 16 bytes.
-        assert_eq!(expected_payload_bytes(PrmFormat::Bc5RgUnorm, 4, 4, 1), 16);
+        assert_eq!(
+            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 4, 4, 1, 1),
+            16
+        );
+        assert_eq!(
+            expected_payload_bytes(PrmFormat::Bc5RgUnorm, 8, 8, 2, 3),
+            240
+        );
     }
 
     /// A BC5 normal slot with a truncated chain and block-sized payload must
@@ -948,6 +1110,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0x5C; 32],
                 total_body_bytes: 0, // recomputed by to_bytes
+                layer_count: 1,
             },
             slots: [None, None, Some(normal.clone()), None],
         };
@@ -974,6 +1137,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE,
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [Some(make_bc5_slot(8, 8)), None, None, None],
         };
@@ -992,6 +1156,7 @@ mod tests {
                 slot_mask: PrmSlots::SPECULAR,
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, Some(make_bc5_slot(8, 8)), None, None],
         };
@@ -1010,6 +1175,7 @@ mod tests {
                 slot_mask: PrmSlots::EMISSIVE,
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, None, Some(make_bc5_slot(8, 8))],
         };
@@ -1028,6 +1194,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(make_bc5_slot(8, 8)), None],
         };
@@ -1048,6 +1215,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0xB5; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(normal), None],
         };
@@ -1133,11 +1301,12 @@ mod tests {
         let declared_body = SLOT_HEADER_SIZE as u32 + diffuse_slot.payload.len() as u32;
 
         let mut bytes = vec![0u8; HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x01");
+        bytes[0..4].copy_from_slice(b"PRM\x02");
         bytes[4] = STAGE_VERSION;
         bytes[5] = PrmSlots::DIFFUSE.bits();
         // bundle_hash stays zero.
         bytes[39..43].copy_from_slice(&declared_body.to_le_bytes());
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
         // No body bytes appended — total length is exactly HEADER_SIZE.
 
         let (header_result, slots) = PrmFile::from_bytes_partial(&bytes);

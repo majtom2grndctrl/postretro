@@ -212,6 +212,16 @@ on, and the shimmer spec must not route isotropic billboards away from scatter. 
 both are in flight, whichever lands second confirms the other's path is intact
 rather than overwriting it. Pinned as an Invariant row below.
 
+**`billboard.wgsl` / `VertexOutput` merge coordination with `prm-array-layers`.**
+The foundational `prm-array-layers` spec restructures `billboard.wgsl` — the
+sprite binding becomes `texture_2d_array`, the strip UV math is replaced by
+per-layer sampling, and `VertexOutput` gains a flat-interpolated `frame_idx`.
+This spec's Task 4 also edits `billboard.wgsl` (the scatter compose/read) and may
+grow `VertexOutput`. The two are orthogonal in intent — sprite sampling vs. the
+lighting term — but touch the same shader and struct, so this spec's edits rebase
+onto the array-migrated shader; it does not reintroduce strip UV math or collide
+with the `frame_idx` field. No dependency, only a merge point.
+
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |

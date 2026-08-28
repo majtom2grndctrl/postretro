@@ -175,9 +175,15 @@ Document the single sprite path and the authoring rule in `context/lib`
 
 ## Dependencies
 
-- **`billboard-sprite-prm-baking`** (must land first): provides `bake_sprite_collection`,
-  the sprite content-hash contract, geometry validation, and the PRM-load runtime
-  this spec points at every sprite asset and whose fallback this spec removes.
+- **`prm-array-layers`** (foundational, lands first): migrates the sprite texture
+  path to per-frame `texture_2d_array` layers and extends the PRM format with a
+  file-header `layer_count`. Every sprite this spec bakes is an array `.prm`; the
+  decode fallback this spec removes is already the array-based single-mip fallback
+  that spec installs. This spec cannot land before it.
+- **`billboard-sprite-prm-baking`** (lands second, before this): provides
+  `bake_sprite_collection`, the sprite content-hash contract, geometry validation,
+  and the baked-array PRM-load runtime this spec points at every sprite asset and
+  whose fallback this spec removes.
 
 ## Cross-spec coordination
 

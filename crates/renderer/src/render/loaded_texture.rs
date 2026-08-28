@@ -4,10 +4,12 @@
 use std::path::Path;
 
 use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmReadError, PrmSlot, cache_filename_for_key,
+    PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot, cache_filename_for_key,
 };
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_render_cpu::loaded_texture::{TextureSlotPolicy, slot_levels, texture_slot_plan};
+use postretro_render_cpu::loaded_texture::{
+    TextureSlotPlan, TextureSlotPolicy, slot_levels, texture_slot_plan,
+};
 
 const PLACEHOLDER_SIZE: u32 = 64;
 const CHECKER_SQUARE: u32 = 8;
@@ -241,6 +243,14 @@ pub(super) fn placeholder_loaded_texture(
     }
 }
 
+fn d2_texture_slot_plan(
+    header: &PrmHeader,
+    slot_results: &[Result<PrmSlot, PrmReadError>; 4],
+    policy: TextureSlotPolicy,
+) -> Option<TextureSlotPlan> {
+    (header.layer_count == 1).then(|| texture_slot_plan(header.slot_mask, slot_results, policy))
+}
+
 /// Load every world-material texture referenced by the PRL. `texture_names[i]`
 /// pairs with `texture_cache_keys.keys[i]`; an all-zero key produces a silent
 /// placeholder. Header errors and per-slot errors degrade to placeholders with
@@ -300,11 +310,16 @@ pub fn load_textures(
             }
         };
 
-        let plan = texture_slot_plan(
-            header.slot_mask,
-            &slot_results,
-            TextureSlotPolicy::WorldBundle,
-        );
+        let Some(plan) =
+            d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::WorldBundle)
+        else {
+            log::warn!(
+                "[Loader] texture '{name}': .prm declares {} layers, but world textures require exactly 1 — using placeholders",
+                header.layer_count,
+            );
+            out.push(placeholder_loaded_texture(device, queue));
+            continue;
+        };
 
         let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
             device,
@@ -395,11 +410,15 @@ pub(super) fn load_model_diffuse_texture(
             return placeholder_loaded_texture(device, queue);
         }
     };
-    let plan = texture_slot_plan(
-        header.slot_mask,
-        &slot_results,
-        TextureSlotPolicy::ModelDiffuseOnly,
-    );
+    let Some(plan) =
+        d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::ModelDiffuseOnly)
+    else {
+        log::warn!(
+            "[Loader] model texture '{name}': .prm declares {} layers, but model textures require exactly 1 — using placeholders",
+            header.layer_count,
+        );
+        return placeholder_loaded_texture(device, queue);
+    };
     let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
         device,
         queue,
@@ -487,6 +506,7 @@ fn upload_slot_or_placeholder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::prm::{PrmSlots, STAGE_VERSION};
 
     // Checkerboard placeholder pixel pattern: 64×64 magenta/black, 8-pixel squares.
 
@@ -525,5 +545,85 @@ mod tests {
                 "unexpected pixel: {pixel:?}"
             );
         }
+    }
+
+    // Regression: parsed multi-layer PRMs reached the legacy one-chain mip
+    // slicer, panicking in debug and uploading only layer 0 in release.
+    #[test]
+    fn d2_world_and_model_planning_rejects_multi_layer_prm() {
+        let slot = PrmSlot {
+            format: PrmFormat::Rgba8UnormSrgb,
+            width: 1,
+            height: 1,
+            level_count: 1,
+            payload: vec![0x11, 0x22, 0x33, 0xFF, 0x44, 0x55, 0x66, 0xFF],
+        };
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: [0xA5; 32],
+                total_body_bytes: 0,
+                layer_count: 2,
+            },
+            slots: [Some(slot), None, None, None],
+        };
+        let bytes = file.to_bytes().expect("multi-layer fixture serializes");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("multi-layer header parses");
+
+        assert!(
+            slots[0].is_ok(),
+            "fixture must contain valid layer payloads"
+        );
+        assert!(
+            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle).is_none(),
+            "world D2 upload must fall back before mip planning"
+        );
+        assert!(
+            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::ModelDiffuseOnly).is_none(),
+            "model D2 upload must fall back before mip planning"
+        );
+    }
+
+    // Regression: a hand-authored 2x2 BC5 normal declared zero mips, then the
+    // D2 upload path indexed an empty level list as if mip 0 existed.
+    #[test]
+    fn d2_world_planning_degrades_zero_mip_bc5_normal_to_placeholder() {
+        const HEADER_SIZE: usize = 45;
+        const SLOT_HEADER_SIZE: usize = 12;
+        let mut bytes = vec![0u8; HEADER_SIZE + SLOT_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"PRM\x02");
+        bytes[4] = STAGE_VERSION;
+        bytes[5] = PrmSlots::NORMAL.bits();
+        bytes[39..43].copy_from_slice(&(SLOT_HEADER_SIZE as u32).to_le_bytes());
+        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
+        bytes[HEADER_SIZE] = PrmFormat::Bc5RgUnorm as u8;
+        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&2u16.to_le_bytes());
+        bytes[HEADER_SIZE + 4..HEADER_SIZE + 6].copy_from_slice(&2u16.to_le_bytes());
+        // level_count and payload_bytes remain zero.
+
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("slot failure must not poison the header");
+        assert!(matches!(
+            &slots[2],
+            Err(PrmReadError::EmptyMipChain {
+                slot: 2,
+                format: PrmFormat::Bc5RgUnorm,
+                width: 2,
+                height: 2,
+            })
+        ));
+
+        let plan = d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle)
+            .expect("single-layer world bundle still produces a placeholder plan");
+        assert!(
+            plan.consume[2],
+            "the slot error routes through placeholder upload"
+        );
+        assert_eq!(
+            plan.mip_count, 1,
+            "no valid mip chain disables mip filtering"
+        );
     }
 }

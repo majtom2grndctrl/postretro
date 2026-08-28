@@ -373,7 +373,23 @@ have distinct runtime-loadable filenames. Stored at
 identical complete bundles produce the same `.prm` regardless of which mod
 authored them.
 
-**Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` exact-match format epoch (not the stage-cache `u32` convention) — the header owns its own version semantics.
+**Wire format.** `.prm` v3 (`PRM\x02`) has a fixed 45-byte header, followed by
+present slot blocks in diffuse → specular → normal → emissive order. The header
+contains a file-level `layer_count: u16`; it is a bundle property shared by every
+present slot, never a per-slot count. Each slot payload is layer-major: the complete
+mip chain for layer 0, then the complete chain for layer 1, and so on. The wire
+layout lives in `postretro-level-format::prm`. `.prm` uses a `u8` exact-match format
+epoch (not the stage-cache `u32` convention) — the header owns its own version
+semantics.
+
+World-material and model sidecars remain single-layer (`layer_count = 1`) and use
+their existing 2D runtime upload path. Writers of array-backed sidecars must cap
+`layer_count` at 256, the portable WebGPU/wgpu `max_texture_array_layers` baseline;
+the shared writer rejects larger values. The reader accepts structurally valid larger
+counts so tools and future device-specific consumers can inspect them. Any upload path
+must still validate against its active adapter before allocation. The current renderer
+does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
+parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT

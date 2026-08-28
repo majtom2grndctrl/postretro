@@ -11,6 +11,10 @@ pub fn level_byte_size(format: PrmFormat, w: u32, h: u32) -> usize {
     }
 }
 
+/// Splits one layer's mip chain for a `texture_2d` upload.
+///
+/// Call only after the PRM header establishes `layer_count == 1`. Layered
+/// payloads are layer-major; `texture_2d_array` consumers must split every layer.
 pub fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     let format = slot.format;
     debug_assert_eq!(
@@ -124,6 +128,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE,
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [Some(slot), None, None, None],
         };
@@ -153,6 +158,7 @@ mod tests {
                     | PrmSlots::EMISSIVE,
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [
                 Some(PrmSlot {

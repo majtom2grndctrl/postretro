@@ -458,7 +458,8 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
         if let Ok(bytes) = std::fs::read(&prm_path) {
             let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
             if let Ok(hdr) = hdr_result {
-                let valid_slots = cache_entry_has_valid_declared_slots(&hdr, &slots);
+                let valid_slots =
+                    hdr.layer_count == 1 && cache_entry_has_valid_declared_slots(&hdr, &slots);
                 let matching_diffuse_only = hdr.slot_mask == PrmSlots::DIFFUSE
                     && hdr.bundle_hash == bundle_hash
                     && valid_slots;
@@ -481,6 +482,7 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             slot_mask: PrmSlots::DIFFUSE,
             bundle_hash,
             total_body_bytes: 0,
+            layer_count: 1,
         },
         slots: [
             Some(PrmSlot {
@@ -614,7 +616,8 @@ pub fn bake_texture_mips(
             if let Ok(bytes) = std::fs::read(&prm_path) {
                 let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
                 if let Ok(hdr) = hdr_result {
-                    if hdr.bundle_hash == bundle_hash
+                    if hdr.layer_count == 1
+                        && hdr.bundle_hash == bundle_hash
                         && cache_entry_has_valid_declared_slots(&hdr, &slots)
                     {
                         out.insert(name.clone(), filename_key);
@@ -700,6 +703,7 @@ pub fn bake_texture_mips(
                 slot_mask,
                 bundle_hash,
                 total_body_bytes: 0, // recomputed by to_bytes
+                layer_count: 1,
             },
             slots: slots_arr,
         };
@@ -754,6 +758,21 @@ mod tests {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         bytes.into_inner()
+    }
+
+    fn duplicate_prm_layers(bytes: &[u8], layer_count: u16) -> Vec<u8> {
+        let (header, slots) = PrmFile::from_bytes_partial(bytes);
+        let mut header = header.expect("source header parses");
+        header.layer_count = layer_count;
+        let slots = slots.map(|slot| {
+            slot.ok().map(|mut slot| {
+                slot.payload = slot.payload.repeat(usize::from(layer_count));
+                slot
+            })
+        });
+        PrmFile { header, slots }
+            .to_bytes()
+            .expect("layered cache fixture serializes")
     }
 
     #[test]
@@ -815,6 +834,7 @@ mod tests {
                 slot_mask: PrmSlots::DIFFUSE,
                 bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None),
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [
                 Some(PrmSlot {
@@ -838,6 +858,32 @@ mod tests {
 
         assert_eq!(returned_key, key);
         assert_eq!(std::fs::read(&cache_path).unwrap(), cached);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: model cache hits accepted array PRMs even though runtime
+    // model textures still use the legacy single-layer D2 upload path.
+    #[test]
+    fn single_diffuse_bake_rebuilds_multi_layer_cache_entry() {
+        let root = unique_temp_dir("single-diffuse-rebuilds-multi-layer");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let diffuse_path = root.join("base_color.png");
+        std::fs::write(&diffuse_path, png_bytes(4, 4)).unwrap();
+        let key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        let layered = duplicate_prm_layers(&std::fs::read(&cache_path).unwrap(), 2);
+        std::fs::write(&cache_path, &layered).unwrap();
+
+        bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+
+        let rebuilt = std::fs::read(&cache_path).unwrap();
+        assert_ne!(rebuilt, layered, "multi-layer model cache must be rebuilt");
+        let (header, slots) = PrmFile::from_bytes_partial(&rebuilt);
+        assert_eq!(header.expect("rebuilt header parses").layer_count, 1);
+        assert!(slots[0].is_ok(), "rebuilt diffuse slot parses");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -959,6 +1005,39 @@ mod tests {
             cache_entry_has_valid_declared_slots(&header, &slots),
             "every slot declared by the rebuilt world bundle must parse"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: world cache hits accepted array PRMs even though runtime
+    // world textures still use the legacy single-layer D2 upload path.
+    #[test]
+    fn world_bake_rebuilds_multi_layer_cache_entry() {
+        let root = unique_temp_dir("world-rebuilds-multi-layer");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("shared");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+
+        std::fs::write(collection.join("surface.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("surface_s.png"), png_bytes(4, 4)).unwrap();
+        let names = ["shared/surface".to_string()];
+        let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+        let cache_path = cache_root.join(format!(
+            "{}.prm",
+            cache_filename_for_key(&keys["shared/surface"])
+        ));
+        let layered = duplicate_prm_layers(&std::fs::read(&cache_path).unwrap(), 2);
+        std::fs::write(&cache_path, &layered).unwrap();
+
+        bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+
+        let rebuilt = std::fs::read(&cache_path).unwrap();
+        assert_ne!(rebuilt, layered, "multi-layer world cache must be rebuilt");
+        let (header, slots) = PrmFile::from_bytes_partial(&rebuilt);
+        let header = header.expect("rebuilt header parses");
+        assert_eq!(header.layer_count, 1);
+        assert!(cache_entry_has_valid_declared_slots(&header, &slots));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1106,6 +1185,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0x42; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(slot), None],
         };
@@ -1159,6 +1239,7 @@ mod tests {
                 slot_mask: PrmSlots::NORMAL,
                 bundle_hash: [0x7; 32],
                 total_body_bytes: 0,
+                layer_count: 1,
             },
             slots: [None, None, Some(slot), None],
         };

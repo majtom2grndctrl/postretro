@@ -45,6 +45,13 @@ use thiserror::Error;
 /// remain readable.
 pub const STAGE_VERSION: u8 = 3;
 
+/// Portable WebGPU/wgpu baseline for `max_texture_array_layers`.
+///
+/// Every writer of array-backed `.prm` files must keep
+/// [`PrmHeader::layer_count`] at or below this limit so its output remains
+/// portable across the engine's supported adapters.
+pub const PORTABLE_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256;
+
 /// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
 /// writer and runtime-side reader both call this so the addressing contract
 /// has a single source of truth. Returns 64 lowercase hex characters;

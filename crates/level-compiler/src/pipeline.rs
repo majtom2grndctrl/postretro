@@ -1090,6 +1090,17 @@ fn run_after_parsing(
         "the post-bake delta handoff must retain the resolved compiler configuration"
     );
     delta_sections.apply_exact_zero_drop_policy(&script_mutable_descriptor_slots)?;
+    // The emitted-reconstruction diagnostic compares final compact bytes with
+    // their post-drop dense source. Retain this measurement-only snapshot only
+    // for an explicit coarsened analysis; normal and uniform-L0 bakes do not
+    // pay the additional memory cost.
+    let sh_analyze_dense_deltas = (args.sh_analyze && args.sh_coarsen).then(|| {
+        (
+            delta_sections.indirect.clone(),
+            delta_sections.direct.clone(),
+            delta_sections.animated_direct.clone(),
+        )
+    });
     // Delta-SH probe coarsening (`--sh-coarsen`): classify each 4×4×4 brick to a
     // per-section coarsening level and stamp it onto each section's
     // `cell_levels` while the payloads are still DENSE — so the single
@@ -1132,6 +1143,13 @@ fn run_after_parsing(
             args,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
+            sh_analyze_dense_deltas
+                .as_ref()
+                .map(|dense| sh_analyze::DenseDeltaSections {
+                    indirect: dense.0.as_ref(),
+                    direct: dense.1.as_ref(),
+                    animated_direct: dense.2.as_ref(),
+                }),
             delta_sections.indirect.as_ref(),
             delta_sections.direct.as_ref(),
             delta_sections.animated_direct.as_ref(),
@@ -1624,6 +1642,7 @@ fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    dense_deltas: Option<sh_analyze::DenseDeltaSections<'_>>,
     delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
     delta_direct: Option<
         &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
@@ -1662,7 +1681,23 @@ fn run_sh_analysis(
         protect_aabbs: &protect,
         thresholds: &sh_analyze::DEFAULT_THRESHOLDS,
     };
-    let report = sh_analyze::run_analysis(&inputs);
+    let mut report = sh_analyze::run_analysis(&inputs);
+    if let Some(dense) = dense_deltas {
+        match sh_analyze::run_emitted_reconstruction_analysis(
+            &inputs,
+            dense.indirect,
+            dense.direct,
+            dense.animated_direct,
+            delta_indirect,
+            delta_direct,
+            delta_anim_direct,
+        ) {
+            Ok(emitted) => report.emitted_reconstruction = Some(emitted),
+            Err(error) => {
+                log::warn!("[sh-analyze] emitted reconstruction validation skipped: {error}")
+            }
+        }
+    }
     sh_analyze::log_summary(&report);
 
     let out = args.sh_analyze_out.clone().unwrap_or_else(|| {

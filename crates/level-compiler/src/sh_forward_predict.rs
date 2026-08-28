@@ -195,6 +195,10 @@ pub struct ForwardPredictReport {
     pub has_delta_indirect: bool,
     pub light_count: u64,
     pub animated_light_count: u64,
+    /// Count of aimed spot (`light_spot`) lights among the static baked light set
+    /// — the aimed-spot half of the fixture-honesty precondition, surfaced in the
+    /// report so the honesty gate is self-contained.
+    pub baked_spot_count: u64,
     // Oracle gate parameters (echoed for provenance).
     pub rel_p95_max: f32,
     pub rel_max_max: f32,
@@ -818,6 +822,11 @@ pub fn run_forward_predict(inputs: &ForwardPredictInputs<'_>) -> ForwardPredictR
         has_delta_indirect: analysis.has_delta_indirect,
         light_count: inputs.lights.len() as u64,
         animated_light_count: inputs.animated_light_count as u64,
+        baked_spot_count: inputs
+            .lights
+            .iter()
+            .filter(|l| l.light_type == LightType::Spot)
+            .count() as u64,
         rel_p95_max: params.rel_p95_max,
         rel_max_max: params.rel_max_max,
         darkness_frac: params.darkness_frac,
@@ -1015,7 +1024,7 @@ pub fn write_json(report: &ForwardPredictReport, path: &Path) -> anyhow::Result<
 pub fn log_summary(report: &ForwardPredictReport) {
     log::info!(
         "[sh-forward-predict] grid {}x{}x{}, {} bricks ({} non-empty); lights {} (animated {}); \
-         base_direct={} delta_indirect={}",
+         base_direct={} delta_indirect={} baked_spots={}",
         report.grid_dims[0],
         report.grid_dims[1],
         report.grid_dims[2],
@@ -1025,6 +1034,7 @@ pub fn log_summary(report: &ForwardPredictReport) {
         report.animated_light_count,
         report.has_base_direct,
         report.has_delta_indirect,
+        report.baked_spot_count,
     );
     log::info!(
         "[sh-forward-predict] oracle levels: L0 {} L1 {} L2 {} (map-p95 {:.6}, floor {:.6}, gate p95<={:.2} max<={:.2})",

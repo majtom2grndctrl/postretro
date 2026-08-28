@@ -8,6 +8,10 @@ and model textures. Sprites gain a Mitchell-Netravali mip chain and are sampled
 with mipmaps at runtime, eliminating the distance shimmer that single-mip strips
 produce. Sprite collections become aesthetically consistent with world surfaces:
 same filter, same linear-space downsample, same `.prm` sidecar addressing.
+A collection that ships companion specular or normal frames bakes them into
+extra slots of the same sidecar, giving the downstream billboard-specular-shimmer
+work the per-texel data it samples; a collection without companions stays
+diffuse-only and byte-identical to a diffuse-only bake.
 
 ## Scope
 
@@ -16,8 +20,17 @@ same filter, same linear-space downsample, same `.prm` sidecar addressing.
 - Compile-time stitching: `prl-build` discovers sprite collections from the
   map's `billboard_emitter` placements, stitches each collection's frames into a
   single horizontal strip, bakes a **per-frame-independent** mip chain, and
-  writes a diffuse-only `.prm` sidecar — content-addressed exactly like a
-  world/model diffuse sidecar.
+  writes a `.prm` sidecar — content-addressed exactly like a world/model
+  sidecar. The sidecar always carries the diffuse slot; it carries specular
+  and/or normal slots when the collection ships companion frames for them.
+- **Optional per-collection specular/normal slots.** A collection MAY provide
+  companion `<collection>_NN_spec.png` and/or `<collection>_NN_normal.png` frames
+  alongside its `<collection>_NN.png` diffuse frames. When present, they bake
+  into the SPECULAR / NORMAL slots of the same `.prm` bundle; when absent, the
+  sidecar stays diffuse-only. Fully backward compatible: a collection with no
+  companions produces the same bytes it produces today. This spec only bakes and
+  uploads the extra slots — the shader-side consumption is owned by the separate
+  billboard-specular-shimmer spec. See *Design decision 4*.
 - Per-frame mip independence: each animation frame is downsampled in isolation
   (edge-clamped) and the per-level results are re-stitched, so no mip level
   bleeds one frame's texels into the next. This is what makes the strip layout
@@ -44,8 +57,6 @@ same filter, same linear-space downsample, same `.prm` sidecar addressing.
   Sprite collection names are not fully known at compile time. See *Design
   decision 2*.
 - **Frame count in the PRM header or a baked KVP.** See *Design decision 1*.
-- Specular/normal slots for sprites. Sprites bake diffuse-only, matching the
-  model path.
 - The billboard pass blend mode, depth state, lighting math, and the
   `SpriteInstance` storage-buffer layout.
 - FGD changes. No new KVPs. `billboard_emitter.sprite` is unchanged.
@@ -116,15 +127,73 @@ the documented contract: `floor(4096 / frame_width)` frames. At the common 64px
 that is 64 frames; smaller frames allow more. This is a content constraint, not a
 format change, so no `MAX_DIMENSION` bump and no PRM version bump.
 
+### Decision 4 — Optional specular/normal slots, discovered per collection, complete-or-absent
+
+**Chosen:** the bake discovers companion frames by the same numeric-suffix scan
+that finds diffuse frames — `<collection>_NN_spec.png` for the SPECULAR slot and
+`<collection>_NN_normal.png` for the NORMAL slot — and stitches each companion
+set into its own strip baked into an extra slot of the same `.prm` bundle. Each
+slot is **complete-or-absent**: for a given slot the companion set must cover
+every `<collection>_NN` diffuse frame or none. A collection missing even one
+frame's companion for a slot warns and omits that slot; the diffuse slot (and any
+complete companion slot) still bakes. The two slots are independent — a collection
+may ship spec-only, normal-only, both, or neither.
+
+**Why complete-or-absent, not per-frame:** the strip is a single stitched image
+whose column layout is `frame_count` tiles wide, and the runtime UV math indexes
+it by `frame_idx`. A partial companion set would leave undefined tiles in the
+strip and give the mip re-stitch a non-uniform per-frame tile count. Requiring the
+set complete keeps every slot's strip the same tile geometry as diffuse, so the
+per-frame-independent bake and the strip-width guard (Decision 3) apply to each
+slot unchanged. This mirrors the world path, which rejects an emissive companion
+whose dimensions do not match diffuse rather than baking a mismatched bundle.
+
+**Colorspaces (mirroring the world/model bake):** SPECULAR bakes to
+`PrmFormat::R8Unorm` — linear, single-channel, the R channel of the decoded PNG,
+through `build_specular_chain`, exactly as the world specular map bakes. NORMAL
+bakes to `PrmFormat::Bc5RgUnorm` — linear, never sRGB, through
+`build_normal_bc5_chain`, exactly as the world/model tangent-space normal map
+bakes. BC5 needs both axes ≥ 4 px; the per-frame sub-4px truncation (Decision 3)
+already stops a frame's chain before it drops below that, so the normal slot's
+`level_count` is `bc5_level_count(frame_w, frame_h)` and a collection whose frames
+are below 4×4 omits the normal slot (the runtime substitutes its neutral-normal
+placeholder, matching the world path).
+
+**Content hash folds every slot's bytes.** The sidecar filename addresses the full
+bundle, so `sprite_collection_filename_key` folds the frame bytes in a fixed slot
+order — all diffuse frames (numeric order), then all spec frames, then all normal
+frames — the way the world path's `filename_key_for` folds diffuse+spec+normal+
+emissive. Two collections that differ only in their spec or normal maps therefore
+address distinct sidecars instead of colliding on a diffuse-only key.
+
 ## Acceptance criteria
 
 - [ ] Compiling a map containing a `billboard_emitter` whose `sprite` resolves to
-      a multi-frame collection writes one diffuse-only `.prm` under
-      `.build-caches/prm-cache/` whose filename is the blake3 the runtime computes
-      for the same frames. The sidecar's diffuse slot has `level_count > 1`.
-- [ ] At runtime the collection's sprite texture is created with
+      a multi-frame collection with no spec/normal companions writes one `.prm`
+      under `.build-caches/prm-cache/` whose filename is the blake3 the runtime
+      computes for the same frames. Its `slot_mask` is diffuse-only, its diffuse
+      slot has `level_count > 1`, and it is byte-identical to the pre-change
+      diffuse-only bake.
+- [ ] A collection that ships complete `<collection>_NN_spec.png` and/or
+      `<collection>_NN_normal.png` companion sets bakes a `.prm` whose `slot_mask`
+      has the SPECULAR and/or NORMAL bit set. The specular slot is `R8Unorm` with
+      `level_count > 1`; the normal slot is `Bc5RgUnorm` with
+      `level_count == bc5_level_count(frame_w, frame_h)`.
+- [ ] Removing, adding, or changing any spec/normal companion frame changes the
+      sidecar filename (the content hash folds every slot's bytes): a collection
+      differing from another only in its spec or normal maps addresses a distinct
+      `.prm`.
+- [ ] A collection whose spec (or normal) companion set is incomplete — present
+      for some frames, missing for others — omits that slot with one warning and
+      still bakes the diffuse slot (and any complete companion slot).
+- [ ] At runtime the collection's diffuse sprite texture is created with
       `mip_level_count == baked level_count` and the sprite sampler uses
       `mipmap_filter: Linear` with `lod_max_clamp == level_count - 1`.
+- [ ] When the loaded sidecar carries a SPECULAR or NORMAL slot, the runtime
+      creates the matching GPU texture and uploads its mip chain, so the baked
+      per-texel data is resident for the billboard bind group. Wiring those
+      textures into the bind-group layout and sampling them is owned by the
+      downstream billboard-specular-shimmer spec, not this one.
 - [ ] A sprite viewed at distance no longer shimmers: the coarse mips are present
       and selected. Verify visually on `content/dev/maps/campaign-test.prl` (which
       has smoke emitters) — distant smoke is stable frame-to-frame under camera
@@ -153,26 +222,48 @@ Lift the frame-discovery and strip-stitch logic into shared, runtime-and-compile
 code so both sides agree on frame order, count, strip dimensions, and content
 hash. Add to `postretro-level-format` (the crate both `prl-build` and the runtime
 already depend on for `prm`): a `collection_frame_paths(texture_root, collection)`
-that returns frame PNG paths in numeric-suffix order, and a
+that returns frame PNG paths in numeric-suffix order for a given slot suffix (the
+diffuse `<collection>_NN.png` set, the `<collection>_NN_spec.png` set, and the
+`<collection>_NN_normal.png` set — one call per slot), and a
 `stitch_frames_to_strip` that produces `(rgba, strip_w, strip_h, frame_count)`.
 The content hash for a collection is `blake3` over the concatenated raw PNG bytes
-in frame order — define this once here (`sprite_collection_filename_key`) so the
-compiler's sidecar filename and the runtime's lookup key are computed by the same
-function, the way `cache_filename_for_key` already unifies addressing.
+in a fixed slot order — all diffuse frames in frame order, then all spec frames,
+then all normal frames — so the sidecar addresses the full bundle and two
+collections differing only in a companion slot do not collide. Define this once
+here (`sprite_collection_filename_key`) so the compiler's sidecar filename and the
+runtime's lookup key are computed by the same function, the way
+`cache_filename_for_key` already unifies addressing and `filename_key_for` already
+folds the world path's diffuse+spec+normal+emissive bytes.
 
 ### Task 2: Per-frame-independent mip bake entry in `texture_mips.rs`
 
 Add `bake_sprite_collection(texture_root, collection, cache_root) -> Option<[u8;
-32]>`. It resolves frames via the Task 1 helper, rejects (warn + `None`) an empty
-or over-4096 strip, then bakes the diffuse mip chain by downsampling **each frame
-independently** with the existing Mitchell-Netravali path (edge-clamped at frame
-borders), re-stitching the per-level frame results, and truncating the chain at
-the per-frame sub-4px level. Emits a diffuse-only `PrmFile`
-(`PrmSlots::DIFFUSE`, `Rgba8UnormSrgb`) addressed by the Task 1 content hash,
-written through the existing `atomic_write` + cache-hit-check path so re-bakes are
-idempotent and cross-collection dedupe is preserved. Reuse `build_diffuse_chain`'s
-filter primitives; the only new logic is the per-frame tiling and re-stitch around
-them.
+32]>`. It resolves the diffuse frames via the Task 1 helper, rejects (warn +
+`None`) an empty or over-4096 strip, then bakes the diffuse mip chain by
+downsampling **each frame independently** with the existing Mitchell-Netravali
+path (edge-clamped at frame borders), re-stitching the per-level frame results,
+and truncating the chain at the per-frame sub-4px level.
+
+Then discover the optional companion sets — `<collection>_NN_spec.png` and
+`<collection>_NN_normal.png` — via the same Task 1 helper. Each companion slot is
+**complete-or-absent**: if present it must cover every diffuse frame, else warn
+and omit that slot (diffuse and any complete companion still bake). For a present
+SPECULAR set, flatten each frame to its R channel and run the per-frame-
+independent bake through `build_specular_chain`, emitting an `R8Unorm` slot; for a
+present NORMAL set, run the per-frame-independent bake through
+`build_normal_bc5_chain`, emitting a `Bc5RgUnorm` slot whose `level_count` is
+`bc5_level_count(frame_w, frame_h)` (omit the normal slot when frames are below
+BC5's 4×4 minimum). The strip-width guard and the per-frame tiling/re-stitch are
+identical to diffuse — only the filter primitive and slot format differ per slot.
+
+Emit one `PrmFile` carrying `PrmSlots::DIFFUSE` plus whichever companion slots
+baked (`SPECULAR`, `NORMAL`), addressed by the Task 1 content hash (which folds
+every slot's bytes), written through the existing `atomic_write` + cache-hit-check
+path so re-bakes are idempotent and cross-collection dedupe is preserved. A
+collection with no companions emits the same diffuse-only bundle as before. Reuse
+the existing filter primitives (`build_diffuse_chain`, `build_specular_chain`,
+`build_normal_bc5_chain`); the only new logic is the per-frame tiling and
+re-stitch around them.
 
 ### Task 3: Compiler discovery + bake pass in `main.rs`
 
@@ -182,9 +273,12 @@ select `classname == "billboard_emitter"`, read the last-wins `sprite` KVP
 component default), dedupe in map order — structurally the twin of
 `prop_mesh_model_handles`. Add `bake_sprite_textures(entities, texture_root,
 prm_cache_root)` that calls `bake_sprite_collection` per discovered collection and
-warns-and-continues on failure — the twin of `bake_model_textures`. Wire the call
-next to the existing `bake_model_textures` call site so sprite sidecars are
-produced in the same pass.
+warns-and-continues on failure — the twin of `bake_model_textures`. The optional
+spec/normal companion frames are discovered inside `bake_sprite_collection`
+(Task 2) from the collection name, so this pass needs no extra discovery — it
+bakes whatever companion slots the collection ships. Wire the call next to the
+existing `bake_model_textures` call site so sprite sidecars are produced in the
+same pass.
 
 ### Task 4: Runtime PRM load path for sprite collections
 
@@ -192,11 +286,17 @@ Replace `register_collection`'s stitch-and-upload body. Given a collection name
 and `texture_root`, compute the Task 1 content hash, open `<key>.prm`, parse it,
 and upload the diffuse slot's mip chain via the shared
 `upload_texture_data`/`slot_levels` helpers in `loaded_texture.rs` (expose them
-`pub(crate)` if not already). Build the sprite sampler with `mipmap_filter:
-Linear` and `lod_max_clamp = level_count - 1`. Frame count is still derived from
-the PNG file count (Task 1 helper) and packed into `SpriteDrawParams` unchanged.
-On any failure (no frames, missing/corrupt `.prm`), upload the 1×1 white
-placeholder and continue. Update the `register_smoke_collection` wrapper signature
+`pub(crate)` if not already). When the parsed sidecar's `slot_mask` also carries
+the SPECULAR and/or NORMAL bits, create and upload those slots' mip chains through
+the same helpers (they already handle `R8Unorm` and `Bc5RgUnorm`) so the baked
+per-texel data is resident as GPU textures. Wiring those textures into the
+billboard bind-group layout and sampling them is a downstream consumer owned by
+the billboard-specular-shimmer spec — this task uploads the textures, it does not
+change the shader or the existing bind-group bindings. Build the sprite sampler
+with `mipmap_filter: Linear` and `lod_max_clamp = level_count - 1`. Frame count is
+still derived from the PNG file count (Task 1 helper) and packed into
+`SpriteDrawParams` unchanged. On any failure (no frames, missing/corrupt `.prm`),
+upload the 1×1 white placeholder and continue. Update the `register_smoke_collection` wrapper signature
 in `render/mod.rs` (it no longer takes `&[SpriteFrame]`; it takes the collection
 name + texture root + the spec/lifetime params it already passes) and update the
 three `main.rs` call sites accordingly.
@@ -240,10 +340,12 @@ loading; consumes Task 4's call-site updates.
   `floor(4096 / W)` as the max frames for that frame width so the content author
   sees the actual ceiling.
 - **Addressing.** Sprite sidecar filename = `cache_filename_for_key(
-  sprite_collection_filename_key(frames))`. A diffuse-only sprite strip and a
-  world/model diffuse share the `.prm` shape, so the existing richer-world-bundle
-  preservation in `bake_diffuse_texture` applies if hashes ever collide (they
-  won't in practice — a stitched strip's bytes differ from any single PNG).
+  sprite_collection_filename_key(frames))`, where the key folds diffuse, then
+  spec, then normal frame bytes. A sprite strip bundle and a world/model bundle
+  share the `.prm` shape, so the existing richer-bundle preservation in
+  `bake_diffuse_texture` applies if hashes ever collide (they won't in practice —
+  a stitched strip's bytes differ from any single PNG, and folding the companion
+  bytes keeps two collections that differ only in spec/normal on distinct keys).
 - **Sampler.** Today `register_collection` builds one shared `Nearest`-mip
   sampler in `SmokePass::new`. Either rebuild a per-collection sampler keyed on
   `level_count` (cheap, few collections) or reuse the world path's
@@ -255,17 +357,23 @@ loading; consumes Task 4's call-site updates.
 | Name | Rust | Wire / serde | FGD KVP |
 |---|---|---|---|
 | Sprite collection name | `BillboardEmitterComponent.sprite` / MapEntity `sprite` KVP | n/a (not in PRL) | `billboard_emitter.sprite` (default `"smoke"`) |
-| Sprite sidecar key | `sprite_collection_filename_key(&[png_bytes]) -> [u8;32]` | `.prm` filename stem (hex) via `cache_filename_for_key` | n/a |
-| Sprite `.prm` slot mask | `PrmSlots::DIFFUSE` | PRM header `slot_mask` bit 0 | n/a |
+| Sprite sidecar key | `sprite_collection_filename_key(diffuse, spec, normal frame bytes) -> [u8;32]` | `.prm` filename stem (hex) via `cache_filename_for_key` | n/a |
+| Sprite `.prm` slot mask | `PrmSlots::DIFFUSE` always; `SPECULAR` / `NORMAL` when companion frames present | PRM header `slot_mask` bits 0 (diffuse), 1 (specular), 2 (normal) | n/a |
+| Spec companion frames | `<collection>_NN_spec.png` → `PrmFormat::R8Unorm` slot | PRM SPECULAR slot | n/a |
+| Normal companion frames | `<collection>_NN_normal.png` → `PrmFormat::Bc5RgUnorm` slot | PRM NORMAL slot | n/a |
 | Frame count | runtime PNG-count → `SpriteDrawParams.params.x` | bitcast `f32` in draw-params UBO | implied by `<collection>_NN.png` count |
 
 ## Wire format
 
 No new binary surface. Sprite collections reuse the existing `.prm` wire format
-(`postretro-level-format::prm`) unchanged — a diffuse-only bundle, byte-identical
-in shape to a model diffuse sidecar. No PRL section is added, so `pack.rs` and the
-PRL header version are untouched. The PRM `STAGE_VERSION` does **not** bump: the
-format is unchanged; only a new producer/consumer of the existing format is added.
+(`postretro-level-format::prm`) unchanged. The sidecar always carries the diffuse
+slot and may also carry the SPECULAR and NORMAL slots the format already
+defines (`PrmSlots` bits 1 and 2) — byte-identical in shape to a world/model
+bundle with those slots. Adding the companion slots is not a format or version
+change: `prm.rs` already defines all four slots and the `slot_mask` bits. No PRL
+section is added, so `pack.rs` and the PRL header version are untouched. The PRM
+`STAGE_VERSION` does **not** bump: the format is unchanged; only a new
+producer/consumer of the existing format is added.
 
 ## Open questions
 

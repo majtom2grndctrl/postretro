@@ -1114,7 +1114,8 @@ fn run_after_parsing(
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
             &mut delta_sections,
-        );
+            &script_mutable_descriptor_slots,
+        )?;
     }
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
     delta_sections.enforce_payload_cap()?;
@@ -1529,14 +1530,15 @@ fn apply_coarsen_classification(
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     delta_sections: &mut delta_sections::PostBakeDeltaSections,
-) {
+    mutable_descriptors: &crate::delta_drop_policy::ScriptMutableDescriptorSlots,
+) -> anyhow::Result<()> {
     let Some(base) = base_indirect else {
         log::warn!("[sh-coarsen] no base SH volume produced; coarsening skipped (uniform L0)");
-        return;
+        return Ok(());
     };
     if base.grid_dimensions == [0, 0, 0] {
         log::warn!("[sh-coarsen] degenerate SH grid; coarsening skipped (uniform L0)");
-        return;
+        return Ok(());
     }
     let validity: Vec<u8> = base.probes.iter().map(|p| p.validity).collect();
     let grid = sh_coarsen::SectionGrid {
@@ -1632,6 +1634,14 @@ fn apply_coarsen_classification(
         }
     }
     log::info!("[sh-coarsen] classified coarsening levels for {sections} delta section(s)");
+    crate::sh_runtime_envelope::apply_runtime_safe_envelope(
+        base,
+        base_direct,
+        delta_sections,
+        mutable_descriptors,
+        &params,
+    )?;
+    Ok(())
 }
 
 /// Drive the output-preserving SH coarsenability analysis and emit its summary

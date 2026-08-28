@@ -267,7 +267,7 @@ fn compact_indirect_valid_probes(
     })
 }
 
-fn compact_direct_valid_probes(
+pub(crate) fn compact_direct_valid_probes(
     section: &DirectShDeltaVolumesSection,
     base: &OctahedralShVolumeSection,
 ) -> anyhow::Result<DirectShDeltaVolumesSection> {
@@ -753,6 +753,60 @@ impl<'a> EmittedDeltaSectionRef<'a> {
             Level::L0 => unreachable!("L0 keeps every valid target"),
         };
         Ok(Some(reconstructed))
+    }
+
+    /// Reconstruct every valid local probe for one entry while decoding its
+    /// kept lattice once. Runtime-envelope validation uses this batch form so
+    /// L1/L2 cells do not repeatedly decode the same stored tiles.
+    pub(crate) fn reconstruct_entry_tiles(
+        &self,
+        cell: usize,
+        entry: usize,
+    ) -> anyhow::Result<[Option<Tile>; PROBES_PER_CELL]> {
+        let range = self
+            .entry_range(cell)
+            .ok_or_else(|| anyhow::anyhow!("emitted delta view: cell {cell} is out of range"))?;
+        anyhow::ensure!(
+            range.contains(&entry),
+            "emitted delta view: entry {entry} does not belong to cell {cell}"
+        );
+        let validity = self.valid_probe_masks[cell];
+        let level = self.level(cell).expect("validated cell level");
+        let kept = kept_mask(level, validity);
+        let entry_start = self.entry_f16_offsets[entry];
+        let decode_local = |local: usize| -> anyhow::Result<Tile> {
+            let rank = (kept & ((1u64 << local) - 1)).count_ones() as usize;
+            self.decode_interior(entry_start + rank * self.probe_stride)
+        };
+        let mut kept_tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        let mut remaining = kept;
+        while remaining != 0 {
+            let local = remaining.trailing_zeros() as usize;
+            kept_tiles[local] = Some(decode_local(local)?);
+            remaining &= remaining - 1;
+        }
+        let l2 = (level == Level::L2).then(|| {
+            reconstruct_l2_tile(&kept_tiles, self.interior_texels)
+                .expect("a valid L2 cell emits one representative mean tile")
+        });
+        let mut output: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        for local in 0..PROBES_PER_CELL {
+            let bit = 1u64 << local;
+            if validity & bit == 0 {
+                continue;
+            }
+            output[local] = Some(if let Some(tile) = &kept_tiles[local] {
+                tile.clone()
+            } else {
+                match level {
+                    Level::L1 => reconstruct_l1_tile(&kept_tiles, local, self.interior_texels)
+                        .unwrap_or_else(|| zero_tile(self.interior_texels)),
+                    Level::L2 => l2.as_ref().expect("computed L2 tile").clone(),
+                    Level::L0 => unreachable!("L0 keeps every valid target"),
+                }
+            });
+        }
+        Ok(output)
     }
 }
 

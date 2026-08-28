@@ -1691,7 +1691,7 @@ fn residual_error(
 /// Classifier darkness floor. This intentionally does *not* use [`percentile`]:
 /// the classifier's map-wide p95 is truncated while per-brick error p95 is
 /// rounded.
-fn classifier_darkness_floor(magnitudes: &[f32], darkness_frac: f32) -> (f32, f32) {
+pub(crate) fn classifier_darkness_floor(magnitudes: &[f32], darkness_frac: f32) -> (f32, f32) {
     let mut sorted = magnitudes.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let map_p95 = sorted

@@ -127,6 +127,19 @@ impl PostBakeDeltaSections {
         Ok(())
     }
 
+    /// Keep runtime-unbounded indirect and animated-direct contributions on
+    /// the dense representation. Only id 41 currently has a runtime-safe
+    /// weight envelope, so ids 27 and 45 must remain byte-compatible with the
+    /// uniform-L0 path when coarsening is requested.
+    pub(crate) fn enforce_id41_only_coarsening_policy(&mut self) {
+        if let Some(section) = self.indirect.as_mut() {
+            section.cell_levels.fill(Level::L0.to_u8());
+        }
+        if let Some(section) = self.animated_direct.as_mut() {
+            section.cell_levels.fill(Level::L0.to_u8());
+        }
+    }
+
     /// Losslessly compact delta payloads to the id-34-valid probes in each
     /// affinity cell. The base volume is the sole validity authority; each
     /// section's own masks are replaced rather than consulted.
@@ -1932,6 +1945,85 @@ mod tests {
             expected.extend_from_slice(&entry1[s..s + DEFAULT_DELTA_PROBE_F16_STRIDE]);
         }
         assert_eq!(compacted.delta_subblocks, expected);
+    }
+
+    #[test]
+    fn id41_only_policy_keeps_ids27_and45_byte_identical_to_uniform_l0() {
+        let all_valid = (0..PROBES_PER_CELL).collect::<Vec<_>>();
+        let base = base_with_x_cells(&[&all_valid, &all_valid]);
+        let payload = [block([0.25, 0.5, 0.75]), block([0.5, 0.25, 0.125])].concat();
+
+        let baseline_indirect = indirect(vec![0, 0], payload.clone());
+        let baseline_direct = direct(vec![0, 0], payload.clone());
+        let baseline_animated = animated_direct(vec![0, 0], payload.clone());
+        let mut uniform = PostBakeDeltaSections::new(
+            DeltaSectionConfig::default(),
+            Some(baseline_indirect.clone()),
+            None,
+            Some(baseline_direct.clone()),
+            Some(baseline_animated.clone()),
+        );
+
+        let mut candidate_indirect = baseline_indirect;
+        candidate_indirect.cell_levels = vec![Level::L1.to_u8(), Level::L2.to_u8()];
+        let mut candidate_direct = baseline_direct;
+        candidate_direct.cell_levels = vec![Level::L1.to_u8(), Level::L2.to_u8()];
+        let mut candidate_animated = baseline_animated;
+        candidate_animated.cell_levels = vec![Level::L1.to_u8(), Level::L2.to_u8()];
+        let mut id41_only = PostBakeDeltaSections::new(
+            DeltaSectionConfig::default(),
+            Some(candidate_indirect),
+            None,
+            Some(candidate_direct),
+            Some(candidate_animated),
+        );
+
+        id41_only.enforce_id41_only_coarsening_policy();
+        assert_eq!(
+            id41_only.indirect.as_ref().unwrap().cell_levels,
+            vec![Level::L0.to_u8(); 2]
+        );
+        assert_eq!(
+            id41_only.animated_direct.as_ref().unwrap().cell_levels,
+            vec![Level::L0.to_u8(); 2]
+        );
+        assert_eq!(
+            id41_only.direct.as_ref().unwrap().cell_levels,
+            vec![Level::L1.to_u8(), Level::L2.to_u8()]
+        );
+        assert_eq!(
+            i16::from(id41_only.direct.as_ref().unwrap().cell_levels[0])
+                - i16::from(id41_only.direct.as_ref().unwrap().cell_levels[1]),
+            -1,
+            "participating adjacent id-41 cells preserve the I5 level bound"
+        );
+
+        uniform
+            .apply_valid_probe_compaction(&base)
+            .expect("uniform sections compact");
+        id41_only
+            .apply_valid_probe_compaction(&base)
+            .expect("id-41-only sections compact");
+
+        assert_eq!(
+            id41_only.indirect.as_ref().unwrap().to_bytes(),
+            uniform.indirect.as_ref().unwrap().to_bytes(),
+            "id 27 must retain the exact uniform-L0 representation"
+        );
+        assert_eq!(
+            id41_only.animated_direct.as_ref().unwrap().to_bytes(),
+            uniform.animated_direct.as_ref().unwrap().to_bytes(),
+            "id 45 must retain the exact uniform-L0 representation"
+        );
+        assert_ne!(
+            id41_only.direct.as_ref().unwrap().to_bytes(),
+            uniform.direct.as_ref().unwrap().to_bytes(),
+            "id 41 remains eligible to coarsen"
+        );
+        assert!(
+            id41_only.direct.as_ref().unwrap().delta_subblocks.len()
+                < uniform.direct.as_ref().unwrap().delta_subblocks.len()
+        );
     }
 
     /// P12: the payload cap still hard-errors exactly once on a coarsened section,

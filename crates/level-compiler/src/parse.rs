@@ -895,8 +895,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             // A brush volume marking world space where SH probe coarsening must
             // be suppressed: intersecting 4×4×4 bricks stay L0 (dense). The
             // mapper-authored counterpart to the `--sh-protect-aabb` CLI stand-in
-            // — both feed the SAME `sh_coarsen::classify_section_levels` protect
-            // input (unioned in `pipeline.rs::apply_coarsen_classification`).
+            // — both feed the same id-41 coarsening protection input (unioned
+            // in `pipeline.rs::apply_coarsen_classification`).
             //
             // The classname is PROVISIONAL: B4's FGD entity pins the final name;
             // update this string (and the FGD) together when it lands.

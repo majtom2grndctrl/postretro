@@ -13,7 +13,7 @@
 //! several of its brick-assembly / error primitives — `build_brick_tiles`,
 //! `level_errors`, `tile_magnitude`, `accumulate_delta_for_cell`,
 //! `brick_world_aabb`, `DeltaView`, `AnalyzeInputs`, `LevelKind` — are now
-//! `pub(crate)` and reused by `sh_coarsen::classify_section_levels` to compute
+//! `pub(crate)` and reused by `sh_coarsen::classify_direct_levels` to compute
 //! per-cell coarsening levels, which **do** change emitted `delta_subblocks`
 //! bytes on a `--sh-coarsen` bake. Treat those primitives as producer-facing.
 //!

@@ -8,8 +8,8 @@
 //! bricks differ by more than one level. This part is std-only apart from the
 //! shared [`Level`] type and is unit-testable with hand-built inputs.
 //!
-//! **δ — the provider (`classify_section_levels`).** Turns pre-BC6H SH sections
-//! into the α gate's [`BrickClass`] inputs and runs the gate per section. This
+//! **δ — the provider (`classify_direct_levels`).** Turns pre-BC6H SH sections
+//! into the α gate's [`BrickClass`] inputs and runs the gate for id 41. This
 //! part depends on `postretro_level_format` section types and reuses
 //! `sh_analyze`'s `pub(crate)` decode/accumulate helpers (`build_brick_tiles`,
 //! `level_errors`, `tile_magnitude`, …), so — unlike α — it is not std-only.
@@ -294,29 +294,15 @@ fn demote_one(level: Level, l1_eligible: bool) -> Level {
 // ---------------------------------------------------------------------------
 //
 // Turns raw pre-BC6H SH sections into the pure [`BrickClass`] inputs the α gate
-// consumes, then runs the gate. Classification is PER SECTION: coarsening one
-// delta section perturbs only that section's contribution to the composed
-// receiver, so by linearity the induced composed-receiver error equals that
-// section's own reconstruction error. The magnitude denominator and the
-// map-wide darkness floor, however, are the COMPOSED brightness (base indirect +
-// base direct + Σ all three delta sections), shared across sections. All
-// tile-decode / accumulate / reconstruction math is reused verbatim from
-// `sh_analyze` so the numbers match the measurement pass exactly.
-
-/// Which of the three affinity-CSR delta sections (ids 27/41/45) a run targets.
-#[derive(Clone, Copy)]
-pub(crate) enum TargetDeltaSection {
-    /// Indirect delta (id 27).
-    Indirect,
-    /// Direct delta (id 41).
-    Direct,
-    /// Animated-direct delta (id 45).
-    AnimatedDirect,
-}
+// consumes, then runs the gate for id 41. The magnitude denominator and the
+// map-wide darkness floor are the COMPOSED brightness (base indirect + base
+// direct + Σ all three delta sections). Ids 27/45 stay uniform L0 until their
+// runtime amplitudes have finite bake-known bounds. All tile-decode / accumulate
+// / reconstruction math is reused verbatim from `sh_analyze` so the numbers
+// match the measurement pass exactly.
 
 /// Borrowed handles to the three delta sections. All present sections feed the
-/// SHARED composed magnitude; [`TargetDeltaSection`] selects which one's own
-/// reconstruction error becomes the per-section numerator.
+/// shared composed magnitude; id 41 supplies the reconstruction-error numerator.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DeltaSectionsRef<'a> {
     pub indirect: Option<&'a DeltaShVolumesSection>,
@@ -335,16 +321,14 @@ pub(crate) struct SectionGrid<'a> {
     pub validity: &'a [u8],
 }
 
-/// Classify one delta section's per-cell coarsening levels from the composed
-/// receiver. `magnitude` is the COMPOSED brightness (shared across sections);
-/// `error` is THIS section's own reconstruction error (per-section, by
-/// linearity = the composed error it induces). Returns per-cell Level-as-u8,
-/// x-fastest, length == affinity_cell_count.
-pub(crate) fn classify_section_levels(
+/// Classify id 41's per-cell coarsening levels from the composed receiver.
+/// `magnitude` is the composed brightness shared across sections; `error` is
+/// id 41's own reconstruction error. Returns per-cell Level-as-u8, x-fastest,
+/// length == affinity_cell_count.
+pub(crate) fn classify_direct_levels(
     base_indirect: &OctahedralShVolumeSection, // pre-BC6H RGBA16F id34
     base_direct: Option<&DirectShVolumeSection>, // pre-BC6H id35 (may be absent)
     all_deltas: DeltaSectionsRef<'_>,          // the three sections (for composed magnitude)
-    target: TargetDeltaSection,                // which section's levels to produce
     grid: SectionGrid<'_>,                     // affinity dims + origin + spacing + validity
     protect_aabbs: &[[f32; 6]],
     params: &CoarsenParams,
@@ -405,14 +389,8 @@ pub(crate) fn classify_section_levels(
         affinity_dims,
     );
 
-    // The target section's own view. Absent (or affinity-mismatched) ⇒ nothing
-    // to classify: every brick stays L0.
-    let target_view = match target {
-        TargetDeltaSection::Indirect => dv_ind.as_ref(),
-        TargetDeltaSection::Direct => dv_dir.as_ref(),
-        TargetDeltaSection::AnimatedDirect => dv_anim.as_ref(),
-    };
-    let Some(target_view) = target_view else {
+    // Absent or affinity-mismatched id 41 means there is nothing to classify.
+    let Some(target_view) = dv_dir.as_ref() else {
         return vec![Level::L0.to_u8(); brick_count];
     };
 
@@ -854,7 +832,7 @@ mod tests {
         assert_eq!(out, vec![L1, L0, L1]);
     }
 
-    // ---- Provider wiring (classify_section_levels) ----
+    // ---- Provider wiring (classify_direct_levels) ----
     //
     // These prove the PROVIDER wiring (composed magnitude vs per-section error),
     // not α's gate (which is covered above). Fixtures use a single 4×4×4 brick
@@ -958,11 +936,10 @@ mod tests {
             direct: Some(&delta),
             ..Default::default()
         };
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             deltas,
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),
@@ -987,11 +964,10 @@ mod tests {
             direct: Some(&delta),
             ..Default::default()
         };
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             deltas,
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),
@@ -1021,11 +997,10 @@ mod tests {
             direct: Some(&delta),
             ..Default::default()
         };
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             deltas,
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),
@@ -1055,11 +1030,10 @@ mod tests {
             direct: Some(&delta),
             ..Default::default()
         };
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             deltas,
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),
@@ -1079,11 +1053,10 @@ mod tests {
         let dims = [8, 4, 4];
         let validity = all_valid(dims);
         let base = bright_base_indirect(dims, 10.0);
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             DeltaSectionsRef::default(),
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),
@@ -1106,11 +1079,10 @@ mod tests {
             direct: Some(&delta),
             ..Default::default()
         };
-        let out = classify_section_levels(
+        let out = classify_direct_levels(
             &base,
             None,
             deltas,
-            TargetDeltaSection::Direct,
             grid_ref(dims, &validity),
             &[],
             &CoarsenParams::default(),

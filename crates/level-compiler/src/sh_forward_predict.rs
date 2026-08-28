@@ -303,6 +303,7 @@ struct BrickSignal {
 /// scalar — a pre-bake predictor cannot know composed magnitude, so it normalizes
 /// by the local scalar (delivered brightness, distance, or baked direct), the
 /// closest forward analog.
+#[allow(clippy::too_many_arguments)]
 fn brick_signal_scalar<F: Fn(usize, Vec3) -> Option<f32>>(
     scalar: F,
     grid_origin: Vec3,
@@ -1268,7 +1269,10 @@ mod tests {
 
         let dir = directional_light([0.0, -1.0, 0.0], 1.0);
         let uniform = brick_signal(&[&dir], origin, cs, dims, 0, 0, 0, &validity);
-        assert!(uniform.l2_proxy.unwrap() < 1e-5, "directional light is uniform");
+        assert!(
+            uniform.l2_proxy.unwrap() < 1e-5,
+            "directional light is uniform"
+        );
         assert!(uniform.l1_proxy.unwrap() < 1e-5);
         assert!(uniform.mean_scalar > 0.0);
 
@@ -1310,8 +1314,16 @@ mod tests {
         // crosses the quad → occluded delivered magnitude is zero; the clear scene
         // keeps the light's contribution.
         let quad = [
-            [[-100.0, 2.0, -100.0], [100.0, 2.0, -100.0], [100.0, 2.0, 100.0]],
-            [[-100.0, 2.0, -100.0], [100.0, 2.0, 100.0], [-100.0, 2.0, 100.0]],
+            [
+                [-100.0, 2.0, -100.0],
+                [100.0, 2.0, -100.0],
+                [100.0, 2.0, 100.0],
+            ],
+            [
+                [-100.0, 2.0, -100.0],
+                [100.0, 2.0, 100.0],
+                [-100.0, 2.0, 100.0],
+            ],
         ];
         let geo = triangle_geometry(&quad);
         let (bvh, prims, _) = build_bvh(&geo).expect("quad geometry builds a BVH");
@@ -1324,9 +1336,15 @@ mod tests {
         let probe = Vec3::new(0.0, 0.0, 0.0); // below the occluder
 
         let clear = delivered_magnitude(&[&light], probe);
-        assert!(clear > 0.0, "light reaches the probe with no occlusion test");
+        assert!(
+            clear > 0.0,
+            "light reaches the probe with no occlusion test"
+        );
         let occluded = delivered_magnitude_occluded(&[&light], probe, &ctx);
-        assert_eq!(occluded, 0.0, "the occluder between light and probe zeros P2");
+        assert_eq!(
+            occluded, 0.0,
+            "the occluder between light and probe zeros P2"
+        );
 
         // A probe on the light's side of the occluder stays lit under P2.
         let lit_probe = Vec3::new(0.0, 3.5, 0.0);
@@ -1388,9 +1406,7 @@ mod tests {
         let base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection> =
             None;
         let signal = brick_signal_scalar(
-            |probe, _point| {
-                base_direct.and_then(|s| direct_probe_magnitude(s, probe, 4, 1))
-            },
+            |probe, _point| base_direct.and_then(|s| direct_probe_magnitude(s, probe, 4, 1)),
             Vec3::ZERO,
             Vec3::ONE,
             dims,

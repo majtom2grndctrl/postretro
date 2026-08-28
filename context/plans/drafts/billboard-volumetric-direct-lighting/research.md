@@ -71,5 +71,6 @@ sequenceDiagram
 This plan changes direct response only. Indirect SH remains the existing
 view-facing ambient approximation. It is softer fill, not the source of the
 red-light disappearance. Static SDF direct and shadow-map policy are unchanged
-except that static-light-map sources no longer enter billboard's surface-like
-specular loop once their scatter term replaces them.
+except that static-light-map sources no longer enter the isotropic-model
+billboard's surface-like specular loop once their scatter term replaces them; the
+specular loop is retained for specular-shimmer materials, owned downstream.

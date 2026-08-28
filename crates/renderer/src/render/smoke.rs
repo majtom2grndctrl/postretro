@@ -843,7 +843,8 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let (frames, w, h) = frames_with_shared_dimensions(&[frame]).unwrap();
+        let input = [frame];
+        let (frames, w, h) = frames_with_shared_dimensions(&input).unwrap();
         assert_eq!(w, 2);
         assert_eq!(h, 2);
         assert_eq!(frames.len(), 1);
@@ -871,8 +872,8 @@ mod tests {
             width: 1,
             height: 4,
         };
-        let (frames, w, h) =
-            frames_with_shared_dimensions(&[red.clone(), mismatched, blue.clone()]).unwrap();
+        let input = [red.clone(), mismatched, blue.clone()];
+        let (frames, w, h) = frames_with_shared_dimensions(&input).unwrap();
         assert_eq!(w, 2);
         assert_eq!(h, 2);
         assert_eq!(frames.len(), 2);

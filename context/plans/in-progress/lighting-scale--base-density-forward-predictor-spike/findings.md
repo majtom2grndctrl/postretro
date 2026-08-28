@@ -31,6 +31,41 @@ No measured forward predictor can identify that minority cheaply and safely.
 > *both* fixtures, and the per-fixture flip is itself evidence forward-predictability is
 > not robust. **The recommendation is unchanged and better-evidenced.**
 
+## Root cause — why *no* forward predictor clears the bar (adversarial review)
+
+An adversarial review of this NO-PROMOTE call (attacking the conclusion, hunting an untried
+cheap option) confirmed it and named the deeper reason the empirics only circle: **the error
+that forces density is manufactured in composition (base-indirect + direct + delta), which is
+downstream of the base-indirect bake the forward predictor must decide about.** The prior
+spike measured composition amplifying base error ~6-8× (base-L2 mean 0.005-0.015 vs composed-L2
+0.03-0.09); a dark receiver with small composed magnitude can breach the relative gate on small
+base error. So the forward decision point is *structurally blind* to the quantity that creates
+the need for density. This is physics, not a metric artifact — and it caps every forward
+approach regardless of predictor feature or classifier shape. Any reformulation of the oracle
+that is *more* forward-predictable (gate base error against base magnitude, not composed) moves
+in the *unsafe* direction. The predictors are not merely weak; they are asked to forecast a
+downstream product.
+
+Corollaries the review nailed down, so the line is closed without loose ends:
+- **No untried forward input survives.** Of stages baked before id-34 (`STAGE_ORDER` in
+  `pipeline.rs`): the surface direct lightmap is genuinely forward but strictly *dominated by
+  P3* (the richest direct-at-probe field, which already floors at the same FP); the SDF/occluder
+  atlas bakes *after* id-34 (not forward); geometry/BVH were already used (P2, surface-distance).
+- **The one genuinely untried, genuinely cheap option** is an offline multi-feature classifier
+  (a joint rule over the per-brick feature vectors the harness already emits in each family's
+  `bricks[]` — no Rust change, a Python afternoon over the two JSON reports, held-out across
+  fixtures). It is *below the bar to run*: occlusion-test's strongest single feature already
+  recovers **zero** savings at strict near-zero FP (≤0.5 %), so the dense minority is not
+  separable even before a classifier is asked to find the boundary; the winner-flip says a rule
+  trained on one fixture won't generalize; and the structural cap applies regardless. Its only
+  value would be converting a strongly-predicted failure into a measured one — a clean kill, not
+  a promote. Not worth a day given the low stakes; recorded here so it is a *decision*, not a gap.
+- **A low-ray partial pre-pass** (estimate the base-indirect field cheaply, predict from the
+  noisy estimate) is a *new spike with a new hypothesis*, not a reopening of this one — and it
+  fights a smooth-signal-under-Monte-Carlo-noise wall (the smoothness that makes base-indirect
+  coarsenable is exactly what makes it low-SNR to estimate with few rays; noise biases toward
+  over-predicting dense, i.e. safe-by-refusing-to-coarsen). Not obligated by anything here.
+
 ## The two bars, and how each family did
 
 **Cost bar — PASSED decisively by every candidate.** On the heavy realistic fixture

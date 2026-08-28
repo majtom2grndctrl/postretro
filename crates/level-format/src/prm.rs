@@ -1,7 +1,7 @@
 // PRM ("Postretro Mip") texture sidecar file format.
 //
-// One `.prm` file per source PNG texture: it carries precomputed layer-major
-// mip payloads for that texture's four material slots (diffuse, specular,
+// Each `.prm` carries one content-addressed texture bundle with precomputed
+// layer-major mip payloads for up to four material slots (diffuse, specular,
 // normal, emissive), baked at compile time by `prl-build`. World and model
 // sidecars have one layer and are uploaded directly as D2 textures at runtime;
 // multi-layer payloads are parseable and feed a downstream D2Array upload path.
@@ -235,11 +235,9 @@ pub enum PrmReadError {
     Io(#[from] std::io::Error),
 }
 
-/// Errors returned by the `.prm` writer (`PrmFile::to_bytes`). These guard
-/// invariants the wire format cannot express structurally — chiefly that the
-/// BC5 normal-map format is confined to the normal slot and that every slot
-/// has at least one layer. The writer also refuses a stage version that its
-/// exact-version reader would reject.
+/// Errors returned by the `.prm` writer (`PrmFile::to_bytes`). These guard the
+/// same structural invariants as the reader so the writer cannot emit a file
+/// that its exact-version reader rejects.
 #[derive(Debug, Error)]
 pub enum PrmWriteError {
     #[error("stage version mismatch: expected {expected}, got {found}")]
@@ -250,6 +248,34 @@ pub enum PrmWriteError {
 
     #[error("invalid layer_count {layer_count}; must be at least 1")]
     InvalidLayerCount { layer_count: u16 },
+
+    #[error("slot_mask has reserved bits set or is zero: {mask:#010b}")]
+    InvalidSlotMask { mask: u8 },
+
+    #[error(
+        "slot {slot} presence does not match slot_mask: declared={declared}, present={present}"
+    )]
+    SlotPresenceMismatch {
+        slot: u8,
+        declared: bool,
+        present: bool,
+    },
+
+    #[error("slot {slot} invalid dimension: {width}x{height} (must be 1..=4096)")]
+    DimensionTooLarge { slot: u8, width: u16, height: u16 },
+
+    #[error("slot {slot} level_count mismatch: expected {expected}, got {found}")]
+    LevelCountMismatch { slot: u8, expected: u8, found: u8 },
+
+    #[error("slot {slot} payload_bytes mismatch: expected {expected}, got {found}")]
+    PayloadBytesMismatch {
+        slot: u8,
+        expected: u32,
+        found: usize,
+    },
+
+    #[error("encoded body is too large for the wire-format u32 length field")]
+    BodyTooLarge,
 }
 
 /// Number of mip levels for a `(width, height)` chain: `floor(log2(max(w, h))) + 1`.
@@ -325,12 +351,8 @@ impl PrmFile {
     /// `header.slot_mask` are emitted. `header.total_body_bytes` is recomputed
     /// from the actual slot payloads, so callers may leave it as `0`.
     ///
-    /// Fails with `Bc5OnNonNormalSlot` if any non-normal slot carries
-    /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to wire index 2.
-    /// Fails with `StageVersionMismatch` when the supplied header version does
-    /// not match the exact stage version encoded by this writer.
-    /// Fails with `InvalidLayerCount` when every declared slot would have zero
-    /// mip chains.
+    /// Validation mirrors the reader: slot-mask presence, dimensions, mip
+    /// count, payload size, and the BC5 normal-slot restriction must all hold.
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
         if self.header.stage_version != STAGE_VERSION {
             return Err(PrmWriteError::StageVersionMismatch {
@@ -342,8 +364,13 @@ impl PrmFile {
             return Err(PrmWriteError::InvalidLayerCount { layer_count: 0 });
         }
 
-        // Guard the BC5-on-normal-slot-only invariant before emitting anything.
-        // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal, 3 emissive]`).
+        let raw_mask = self.header.slot_mask.bits();
+        if self.header.slot_mask.is_empty() || raw_mask & !PrmSlots::all().bits() != 0 {
+            return Err(PrmWriteError::InvalidSlotMask { mask: raw_mask });
+        }
+
+        // Validate the complete in-memory representation before emitting any
+        // bytes. The normal slot is wire index 2.
         for (i, bit) in [
             PrmSlots::DIFFUSE,
             PrmSlots::SPECULAR,
@@ -353,13 +380,59 @@ impl PrmFile {
         .iter()
         .enumerate()
         {
-            if !self.header.slot_mask.contains(*bit) {
-                continue;
+            let declared = self.header.slot_mask.contains(*bit);
+            let present = self.slots[i].is_some();
+            if declared != present {
+                return Err(PrmWriteError::SlotPresenceMismatch {
+                    slot: i as u8,
+                    declared,
+                    present,
+                });
             }
-            if let Some(slot) = &self.slots[i] {
-                if slot.format == PrmFormat::Bc5RgUnorm && i != 2 {
-                    return Err(PrmWriteError::Bc5OnNonNormalSlot { slot: i as u8 });
-                }
+            let Some(slot) = &self.slots[i] else {
+                continue;
+            };
+
+            if slot.format == PrmFormat::Bc5RgUnorm && i != 2 {
+                return Err(PrmWriteError::Bc5OnNonNormalSlot { slot: i as u8 });
+            }
+            if slot.width == 0
+                || slot.height == 0
+                || slot.width > MAX_DIMENSION
+                || slot.height > MAX_DIMENSION
+            {
+                return Err(PrmWriteError::DimensionTooLarge {
+                    slot: i as u8,
+                    width: slot.width,
+                    height: slot.height,
+                });
+            }
+
+            let expected_levels = match slot.format {
+                PrmFormat::Bc5RgUnorm => bc5_level_count(slot.width, slot.height),
+                _ => expected_level_count(slot.width, slot.height),
+            };
+            if slot.level_count != expected_levels {
+                return Err(PrmWriteError::LevelCountMismatch {
+                    slot: i as u8,
+                    expected: expected_levels,
+                    found: slot.level_count,
+                });
+            }
+
+            let expected_payload = expected_payload_bytes(
+                slot.format,
+                slot.width,
+                slot.height,
+                slot.level_count,
+                self.header.layer_count,
+            );
+            if slot.payload.len() != expected_payload as usize {
+                return Err(PrmWriteError::PayloadBytesMismatch {
+                    slot: i as u8,
+                    expected: expected_payload,
+                    found: slot.payload.len(),
+                });
             }
         }
 
@@ -376,11 +449,15 @@ impl PrmFile {
         .enumerate()
         {
             if self.header.slot_mask.contains(*bit) {
-                if let Some(slot) = &self.slots[i] {
-                    total_body = total_body
-                        .saturating_add(SLOT_HEADER_SIZE as u32)
-                        .saturating_add(slot.payload.len() as u32);
-                }
+                let slot = self.slots[i]
+                    .as_ref()
+                    .expect("slot presence was validated above");
+                let slot_bytes =
+                    u32::try_from(slot.payload.len()).map_err(|_| PrmWriteError::BodyTooLarge)?;
+                total_body = total_body
+                    .checked_add(SLOT_HEADER_SIZE as u32)
+                    .and_then(|total| total.checked_add(slot_bytes))
+                    .ok_or(PrmWriteError::BodyTooLarge)?;
             }
         }
 
@@ -409,7 +486,9 @@ impl PrmFile {
             if !self.header.slot_mask.contains(*bit) {
                 continue;
             }
-            let Some(slot) = &self.slots[i] else { continue };
+            let slot = self.slots[i]
+                .as_ref()
+                .expect("slot presence was validated above");
             buf.push(slot.format as u8);
             buf.push(0); // reserved
             buf.extend_from_slice(&slot.width.to_le_bytes());
@@ -1100,6 +1179,125 @@ mod tests {
             ),
             "writer must not emit a .prm the reader will reject"
         );
+    }
+
+    // Regression: slot-mask/data mismatches and malformed layered payloads
+    // previously serialized into files rejected by the reader.
+    #[test]
+    fn writer_rejects_declared_slot_without_payload() {
+        let mut file = make_four_slot_file();
+        file.slots[0] = None;
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::SlotPresenceMismatch {
+                slot: 0,
+                declared: true,
+                present: false,
+            })
+        ));
+    }
+
+    #[test]
+    fn writer_rejects_payload_for_undeclared_slot() {
+        let mut file = make_four_slot_file();
+        file.header.slot_mask.remove(PrmSlots::EMISSIVE);
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::SlotPresenceMismatch {
+                slot: 3,
+                declared: false,
+                present: true,
+            })
+        ));
+    }
+
+    #[test]
+    fn writer_rejects_empty_slot_mask() {
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::empty(),
+                bundle_hash: [0; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [None, None, None, None],
+        };
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::InvalidSlotMask { mask: 0 })
+        ));
+    }
+
+    #[test]
+    fn writer_rejects_invalid_slot_dimensions() {
+        let mut file = make_four_slot_file();
+        file.slots[0].as_mut().unwrap().width = 0;
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::DimensionTooLarge {
+                slot: 0,
+                width: 0,
+                height: 4,
+            })
+        ));
+    }
+
+    #[test]
+    fn writer_rejects_format_inappropriate_level_count() {
+        let mut normal = make_bc5_slot(8, 8);
+        normal.level_count = expected_level_count(8, 8);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0xB5; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [None, None, Some(normal), None],
+        };
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::LevelCountMismatch {
+                slot: 2,
+                expected: 2,
+                found: 4,
+            })
+        ));
+    }
+
+    #[test]
+    fn writer_rejects_single_chain_payload_for_multiple_layers() {
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE,
+                bundle_hash: [0x42; 32],
+                total_body_bytes: 0,
+                layer_count: 2,
+            },
+            slots: [
+                Some(make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1)),
+                None,
+                None,
+                None,
+            ],
+        };
+
+        assert!(matches!(
+            file.to_bytes(),
+            Err(PrmWriteError::PayloadBytesMismatch {
+                slot: 0,
+                expected: 8,
+                found: 4,
+            })
+        ));
     }
 
     // Regression: the writer emitted PRM\x02 with an arbitrary stage byte,

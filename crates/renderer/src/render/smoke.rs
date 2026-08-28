@@ -145,38 +145,52 @@ const BILLBOARD_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
 );
 
-/// Retain the animation frames that can share one D2-array texture. All frames
-/// must have matching dimensions; frames with mismatched sizes are dropped with
-/// a warning. Returns `None` if no usable frame remains.
-fn frames_with_shared_dimensions(frames: &[SpriteFrame]) -> Option<(Vec<&SpriteFrame>, u32, u32)> {
+/// CPU-only upload plan for one sprite-frame texture array.
+struct SpriteArrayPlan<'a> {
+    frames: &'a [SpriteFrame],
+    width: u32,
+    height: u32,
+    requested_frame_count: u32,
+    fell_back_to_one_layer: bool,
+}
+
+/// Plan a safe D2-array upload from CPU-normalized frames.
+///
+/// Collections over the granted device cap retain frame zero as a usable
+/// one-layer degradation. Returns `None` when the normalized-frame contract is
+/// violated or the device cannot accept even one layer.
+fn plan_sprite_array(
+    frames: &[SpriteFrame],
+    max_texture_array_layers: u32,
+) -> Option<SpriteArrayPlan<'_>> {
     let first = frames.first()?;
-    let w = first.width;
-    let h = first.height;
-    if w == 0 || h == 0 {
+    let width = first.width;
+    let height = first.height;
+    if width == 0 || height == 0 || max_texture_array_layers == 0 {
         return None;
     }
-    let valid: Vec<&SpriteFrame> = frames
+    if frames
         .iter()
-        .enumerate()
-        .filter_map(|(i, f)| {
-            if f.width == w && f.height == h {
-                Some(f)
-            } else {
-                log::warn!(
-                    "[Smoke] Frame {i} size {}x{} differs from frame 0 {}x{} — dropping",
-                    f.width,
-                    f.height,
-                    w,
-                    h,
-                );
-                None
-            }
-        })
-        .collect();
-    if valid.is_empty() {
+        .any(|frame| frame.width != width || frame.height != height)
+    {
         return None;
     }
-    Some((valid, w, h))
+
+    let requested_frame_count = frames.len() as u32;
+    let fell_back_to_one_layer =
+        !sprite_frame_count_fits_device(requested_frame_count, max_texture_array_layers);
+    let upload_frame_count = if fell_back_to_one_layer {
+        1
+    } else {
+        frames.len()
+    };
+    Some(SpriteArrayPlan {
+        frames: &frames[..upload_frame_count],
+        width,
+        height,
+        requested_frame_count,
+        fell_back_to_one_layer,
+    })
 }
 
 /// Whether a sprite collection's D2-array texture fits the device limit.
@@ -193,7 +207,7 @@ fn warn_sprite_frame_count_exceeds_device_limit(
 ) {
     log::warn!(
         "[Smoke] Collection '{collection}' requires {frame_count} sprite frame array layers, \
-         exceeding device maxTextureArrayLayers {max_texture_array_layers}; collection rejected"
+         exceeding device maxTextureArrayLayers {max_texture_array_layers}; falling back to frame 0 as one array layer"
     );
 }
 
@@ -499,6 +513,7 @@ impl SmokePass {
 
     /// Register a sprite collection. Uploads each frame to its own layer of one
     /// RGBA8 texture array and creates the per-collection bind group (group 1).
+    /// Frames must carry the shared dimensions guaranteed by the CPU loader.
     /// Reports and rejects duplicate collection calls, or unusable frame lists,
     /// so caller ordering cannot silently replace a draw contract.
     // This mirrors the renderer-facing collection registration contract; a
@@ -520,20 +535,22 @@ impl SmokePass {
             );
             return;
         }
-        let Some((frames, width, height)) = frames_with_shared_dimensions(frames) else {
-            log::warn!("[Smoke] Collection '{collection}' had no usable frames");
+        let max_texture_array_layers = device.limits().max_texture_array_layers;
+        let Some(plan) = plan_sprite_array(frames, max_texture_array_layers) else {
+            log::warn!("[Smoke] Collection '{collection}' had no usable normalized frame array");
             return;
         };
-        let frame_count = frames.len() as u32;
-        let max_texture_array_layers = device.limits().max_texture_array_layers;
-        if !sprite_frame_count_fits_device(frame_count, max_texture_array_layers) {
+        if plan.fell_back_to_one_layer {
             warn_sprite_frame_count_exceeds_device_limit(
                 collection,
-                frame_count,
+                plan.requested_frame_count,
                 max_texture_array_layers,
             );
-            return;
         }
+        let frames = plan.frames;
+        let width = plan.width;
+        let height = plan.height;
+        let frame_count = frames.len() as u32;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("Sprite Frame Array: {collection}")),
             size: wgpu::Extent3d {
@@ -859,27 +876,27 @@ mod tests {
     }
 
     #[test]
-    fn shared_dimension_frames_reject_empty() {
-        assert!(frames_with_shared_dimensions(&[]).is_none());
+    fn sprite_array_plan_rejects_empty() {
+        assert!(plan_sprite_array(&[], 256).is_none());
     }
 
     #[test]
-    fn shared_dimension_frames_keep_single_frame_payload() {
+    fn sprite_array_plan_keeps_single_frame_payload() {
         let frame = SpriteFrame {
             data: vec![0xFFu8; 4 * 2 * 2], // 2x2 white RGBA
             width: 2,
             height: 2,
         };
         let input = [frame];
-        let (frames, w, h) = frames_with_shared_dimensions(&input).unwrap();
-        assert_eq!(w, 2);
-        assert_eq!(h, 2);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].data, vec![0xFFu8; 4 * 2 * 2]);
+        let plan = plan_sprite_array(&input, 256).unwrap();
+        assert_eq!(plan.width, 2);
+        assert_eq!(plan.height, 2);
+        assert_eq!(plan.frames.len(), 1);
+        assert_eq!(plan.frames[0].data, vec![0xFFu8; 4 * 2 * 2]);
     }
 
     #[test]
-    fn shared_dimension_frames_keep_each_layer_payload_and_drop_mismatches() {
+    fn sprite_array_plan_keeps_each_normalized_layer_payload() {
         let red = SpriteFrame {
             data: vec![
                 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
@@ -894,18 +911,13 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let mismatched = SpriteFrame {
-            data: vec![0xFF; 4 * 4],
-            width: 1,
-            height: 4,
-        };
-        let input = [red.clone(), mismatched, blue.clone()];
-        let (frames, w, h) = frames_with_shared_dimensions(&input).unwrap();
-        assert_eq!(w, 2);
-        assert_eq!(h, 2);
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].data, red.data);
-        assert_eq!(frames[1].data, blue.data);
+        let input = [red.clone(), blue.clone()];
+        let plan = plan_sprite_array(&input, 256).unwrap();
+        assert_eq!(plan.width, 2);
+        assert_eq!(plan.height, 2);
+        assert_eq!(plan.frames.len(), 2);
+        assert_eq!(plan.frames[0].data, red.data);
+        assert_eq!(plan.frames[1].data, blue.data);
     }
 
     #[test]
@@ -924,6 +936,25 @@ mod tests {
     }
 
     #[test]
+    fn oversized_sprite_array_plan_falls_back_to_one_layer() {
+        let frames = vec![
+            SpriteFrame {
+                data: vec![255; 4],
+                width: 1,
+                height: 1,
+            };
+            257
+        ];
+
+        let plan = plan_sprite_array(&frames, 256).expect("frame zero is a safe fallback");
+
+        assert_eq!(plan.requested_frame_count, 257);
+        assert!(plan.fell_back_to_one_layer);
+        assert_eq!(plan.frames.len(), 1);
+        assert_eq!(plan.frames[0].data, vec![255; 4]);
+    }
+
+    #[test]
     fn oversized_sprite_collection_warns_before_gpu_upload() {
         use log::Level;
         use postretro_test_log_capture::LogCapture;
@@ -932,7 +963,7 @@ mod tests {
         warn_sprite_frame_count_exceeds_device_limit("test", 257, 256);
         capture.assert_logged_once(
             Level::Warn,
-            "[Smoke] Collection 'test' requires 257 sprite frame array layers, exceeding device maxTextureArrayLayers 256; collection rejected",
+            "[Smoke] Collection 'test' requires 257 sprite frame array layers, exceeding device maxTextureArrayLayers 256; falling back to frame 0 as one array layer",
         );
     }
 

@@ -127,36 +127,44 @@ re-stitch + sub-4px truncation) is superseded.
 
 - [ ] A multi-layer `PrmFile` round-trips: writing a slot with `layer_count = N`
       and layer-major payload, then parsing it back, yields the same
-      `layer_count`, the same per-slot `level_count` (validated per layer:
-      non-BC5 full, BC5 truncated), and the same bytes.
-- [ ] **Golden:** a `layer_count == 1` bundle (a world/model diffuse+spec+normal
-      case) re-baked under v3 has per-slot **payloads** byte-identical to the same
-      bundle's pre-change payload encoding (one mip chain per slot, unchanged), and
-      `upload_texture_data` produces a **2D** (`D2`) view and single-layer texture
-      for it — the world/model payload encoding and GPU upload are provably
-      untouched; only the file header differs (v3, `layer_count == 1`).
+      `layer_count`, the same single per-slot `level_count` (non-BC5 full, BC5
+      truncated — one header value all layers share, plus the aggregate
+      `× layer_count` payload size the reader checks; there are no per-layer
+      headers), and the same bytes.
+- [ ] **Golden (CPU, always-run):** a `layer_count == 1` bundle (a world/model
+      diffuse+spec+normal case) serialized under v3 has per-slot **payload** regions
+      byte-identical to an explicit committed byte-literal baseline (one mip chain
+      per slot, unchanged) — the world/model payload encoding is provably untouched;
+      only the file header differs (v3, `layer_count == 1`). **GPU/review gate:**
+      `upload_texture_data` still yields a `D2`, single-layer texture for it (checked
+      by code review + the device-gated path, not a headless assertion —
+      `wgpu::TextureView` exposes no view-dimension getter).
 - [ ] `parse_header` rejects `layer_count == 0` as malformed; a stale pre-change
       sidecar is rejected and re-baked — a real v2 file trips the magic
       version-byte check (`magic[3] != 0x02` → `UnsupportedVersion`) before the
       `stage_version` check, which stays the secondary guard for a
-      magic-consistent-but-stale file; the header now reports `STAGE_VERSION == 3`.
-- [ ] The portable-baseline cap constant (`max_texture_array_layers` = 256) is
-      defined on the dependency-free format/compiler side and documented as the
-      contract every array-`.prm` writer must honor (the bake-time *rejection*
-      using it — warn, no sidecar — lands in `billboard-sprite-prm-baking`, which
-      owns the writer). The **runtime** independently rejects a `frame_count`
-      exceeding `device.limits().max_texture_array_layers` before
-      `register_collection` creates its D2Array texture, falling back rather than
-      hitting device validation.
-- [ ] The billboard sprite path renders correctly from the array-based decode
-      fallback: `register_collection` uploads `frame_count` single-mip array
-      layers, `billboard.wgsl` samples `texture_2d_array` at `layer = frame_idx`
-      with the strip UV math (`u = (frame_idx + cd.z)/frame_count`) removed, and
-      an animated collection plays its frames in order (verify visually on
-      `content/dev/maps/campaign-test.prl` smoke).
+      magic-consistent-but-stale file (the re-bake is the existing content cache
+      reacting to the load failure — no new code); the header now reports
+      `STAGE_VERSION == 3`.
+- [ ] **(review gate)** The portable-baseline cap `u32` constant
+      (`max_texture_array_layers` = 256) is defined on the dependency-free
+      format/compiler side and documented as the contract every array-`.prm` writer
+      must honor (the bake-time *rejection* using it — warn, no sidecar — lands in
+      `billboard-sprite-prm-baking`, which owns the writer). **(unit test)** The
+      runtime cap predicate rejects `frame_count > max_layers`;
+      `register_collection` calls it before creating its D2Array texture and, on
+      failure, `warn!`s and falls back rather than hitting device validation.
+- [ ] **(review + naga gate)** `register_collection` uploads `frame_count`
+      single-mip array layers and `billboard.wgsl` samples `texture_2d_array` at
+      `layer = frame_idx` with the strip UV math
+      (`u = (frame_idx + cd.z)/frame_count`) removed (naga-validated).
+      **(manual visual check)** An animated collection plays its frames in order —
+      verify by eye on `content/dev/maps/campaign-test.prl` smoke; there is no
+      automated pass/fail for the on-screen result.
 - [ ] `frame_idx` reaches `fs_main` flat-interpolated on `VertexOutput` (an
-      `@interpolate(flat) u32`), available for the downstream shimmer spec to
-      sample the spec/normal maps by.
+      `@interpolate(flat) u32`) — naga rejects an un-flat integer varying, so the
+      existing naga-validation test guards it. **(review gate)** Its availability to
+      the downstream shimmer spec has no functional consumer yet.
 - [ ] WGSL naga validation passes and the existing
       `billboard_wgsl_sprite_instance_stride_matches_cpu` and `draw_params_layout`
       tests still pass; `SpriteInstance` stride and `SpriteDrawParams` are
@@ -168,7 +176,11 @@ re-stitch + sub-4px truncation) is superseded.
 ### Task 1: `layer_count` in the PRM file header + layered payload sizing
 
 In `crates/level-format/src/prm.rs`, add a `layer_count: u16` to `PrmHeader` (and
-its parse/serialize). Today the file header is 43 bytes with the magic
+its parse/serialize). Adding the field is compile-forced at every `PrmHeader`
+construction site — update them all to `layer_count: 1`, notably the production
+baker in `crates/level-compiler/src/texture_mips.rs` (AC2's "re-baked under v3"
+bundle depends on it emitting `layer_count: 1`). Today the file header is 43 bytes
+with the magic
 `b"PRM\x01"` at bytes 0..4 and one free reserved byte at `data[6]`. Append
 `layer_count` as a little-endian `u16` at bytes 43..45 (after `total_body_bytes`),
 growing the header 43 → 45 and leaving the reserved `data[6]` byte reserved; a
@@ -190,21 +202,32 @@ multiply in `expected_payload_bytes` a `saturating_mul` (matching that function'
 existing saturating arithmetic), so a pathological `layer_count × chain` overflow
 saturates to a clean size mismatch/reject rather than panicking; the
 `from_bytes_partial` `total_body_bytes` cross-check (`u32`, `saturating_add`) then
-rejects the truncated body. Tests: multi-layer
-round-trip; `layer_count == 0` reject; `STAGE_VERSION == 3`; a version-2 fixture
-rejected (via the magic 4th byte, `magic[3] != 0x02` → `UnsupportedVersion`, not
-the secondary `stage_version` check).
+rejects the truncated body. Tests: multi-layer round-trip; `layer_count == 0`
+reject; `STAGE_VERSION == 3`; a version-2 fixture rejected — build it with the
+**old** magic 4th byte (`magic[3] == 0x01`, the pre-change value; the magic byte
+and `STAGE_VERSION` are numbered independently), which now fails `magic[3] != 0x02`
+→ `UnsupportedVersion` before the secondary `stage_version` check. Update the
+in-file churn the field + magic bump force: flip the writer's `b"PRM\x01"` literal
+to `b"PRM\x02"`; invert the existing `unsupported_magic_version_byte_is_rejected`
+test (`0x02` is now the *valid* byte); and fix the hand-built
+`vec![0u8; HEADER_SIZE]` fixtures so their new bytes 43..45 carry
+`layer_count == 1`, not 0.
 
 ### Task 2: `layer_count == 1` golden (world/model upload unchanged)
 
-Add the golden proving the world/model upload path is untouched: a
-`layer_count == 1` bundle (diffuse+spec+normal) uploads through
-`upload_texture_data` (`crates/renderer/src/render/loaded_texture.rs`) with a `D2`
-view and single-layer texture, its per-slot byte plan matching the pre-change
-encoding. `upload_texture_data` and `slot_levels`
-(`crates/render-cpu/src/loaded_texture.rs`) stay as they are — at
-`layer_count == 1` each slot is one chain, so the task asserts the degenerate path
-rather than touching the uploader. The `D2Array` uploader is out of scope.
+Add the golden proving the world/model upload path is untouched. The runnable core
+is CPU-only: a `layer_count == 1` bundle (diffuse+spec+normal) serialized through
+`to_bytes` produces per-slot payload regions byte-identical to an **explicit
+committed byte-literal baseline** (header stripped) — not to bytes recomputed by
+the same `to_bytes`/`slot_levels` code under test, which would be tautological. Pin
+the baseline as a fixture. `upload_texture_data` and `slot_levels`
+(`crates/render-cpu/src/loaded_texture.rs`) stay as they are — at `layer_count == 1`
+each slot is one chain, so the task asserts the degenerate path rather than
+touching the uploader. The D2-view half (that `upload_texture_data` yields a `D2`,
+single-layer texture) is a **GPU/review gate**, not a headless unit assertion:
+`wgpu::TextureView` exposes no view-dimension getter, and `texture.dimension()` /
+`depth_or_array_layers == 1` need a device (renderer GPU tests self-skip headless).
+The `D2Array` uploader is out of scope.
 
 ### Task 3: Migrate the billboard sprite path to `texture_2d_array`
 
@@ -228,12 +251,15 @@ against today); replace `u = (frame_idx + cd.z)/frame_count` with within-layer U
 The `register_smoke_collection` wrapper (`renderer_resources.rs`) and its two call
 sites (`crates/postretro/src/startup/lifecycle.rs`) are unchanged in this task —
 they still pass decoded `SpriteFrame`s; only the upload representation changes.
-Confirm naga validation + the stride/draw-params tests pass.
+If `stitch_frames_to_strip` is replaced by a per-frame upload loop, update or
+retire its unit tests (`stitch_rejects_empty`, `stitch_single_frame`,
+`stitch_two_frames` in `smoke.rs`) in the same change. Confirm naga validation +
+the stride/draw-params tests pass.
 
 ### Task 4: Layer-count gates (portable bake cap + runtime backstop)
 
-Define the bake-time ceiling as a fresh named `const` (value 256 — the portable
-wgpu baseline / WebGPU spec floor for `max_texture_array_layers`) in the
+Define the bake-time ceiling as a fresh named `u32` `const` (value 256 — the
+portable wgpu baseline / WebGPU spec floor for `max_texture_array_layers`) in the
 dependency-free format/compiler side (e.g. `postretro-level-format`). It cannot be
 *sourced from* `wgpu` (that crate is deliberately dependency-free and pulls in no
 `wgpu`), and it cannot reuse the renderer's existing
@@ -242,21 +268,26 @@ crate unreachable from the compiler — so this is a new literal, documented as 
 cap any array `.prm` writer must honor — because a `.prm` is content-addressed and shipped across machines and the
 compiler has no adapter, the bake cap cannot query a device. (The array `.prm`
 *writer* lives in `billboard-sprite-prm-baking`; this task establishes and
-documents the contract + the constant, and the runtime side.) At runtime, before
-`register_collection` calls `create_texture`, reject a `frame_count` (the inline
-D2Array layer count it is about to request as `depth_or_array_layers`) exceeding
-`device.limits().max_texture_array_layers` and fall back rather than trigger
-device validation — `device` is already a `register_collection` parameter. A
-*parsed* `.prm` `layer_count` cannot reach here: the baked-array load that yields
-one is out of scope, so this backstop guards the decode fallback's frame count.
+documents the contract + the constant, and the runtime side.) At runtime, guard
+the sprite `frame_count` against the device cap through a **pure predicate**
+(e.g. `fn array_layers_within_cap(frame_count: u32, max_layers: u32) -> bool`, or
+an existing `array_layers_sufficient`-style helper) so the check is unit-testable
+headless, without a device. `register_collection` calls it before `create_texture`
+(the `frame_count` is the inline D2Array layer count it requests as
+`depth_or_array_layers`, and `device` is already a parameter); on failure it
+`warn!`s (log-capture-observable) and falls back rather than triggering device
+validation. A *parsed* `.prm` `layer_count` cannot reach here: the baked-array load
+that yields one is out of scope, so this backstop guards the decode fallback's
+frame count.
 
 ### Task 5: Documentation
 
-Document the array-layer format extension (`layer_count`, layer-major payload,
-`STAGE_VERSION` 3, world/model = 1) and the billboard sprite path's D2Array
-representation in `context/lib/resource_management.md` (§6 PRM) and
-`context/lib/rendering_pipeline.md` §7.4, and note the strip layout is retired
-for sprites.
+Document the array-layer **format** extension (`layer_count`, layer-major payload,
+`STAGE_VERSION` 3, world/model = 1) where the PRM format lives — `build_pipeline.md`
+(the baked-texture-mips section `prm.rs` points at) — and the billboard sprite
+path's D2Array **representation** in `context/lib/resource_management.md` §6
+(Billboard Sprites) and `context/lib/rendering_pipeline.md` §7.4; note the strip
+layout is retired for sprites.
 
 ## Sequencing
 

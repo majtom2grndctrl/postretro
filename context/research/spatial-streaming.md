@@ -244,3 +244,81 @@ cross-cutting runtime lift (loader, PRL section layout, partial GPU uploads).
   point at `cache.rs` `write_entry`/`get`; `flate2` already in-tree, `zstd` would
   compress float data better) is a cheap parallel win and may belong in the same
   epic's hygiene track.
+
+## 10. Future direction: large-map lighting residency (out of scope)
+
+**This is research direction only.** It makes no implementation decision and is
+out of scope for both the current adaptive-SH-coarsening spec/session and the
+current whole-PRL, level-install loading model.
+
+### What the recent adaptive-SH work adds
+
+The id-41-only production path reduces direct-delta payload/read volume where
+the error and runtime-envelope contracts permit it, but it does not make a
+large level's baked lighting resident by region. The 1.0 m safety fixture still
+retained 186,099,840 B of aggregate delta payload after coarsening, because
+script-mutable (id 27) and animated/script-mutable (id 45) sections correctly
+remain uniform L0 until their runtime amplitudes have a bounded contract.
+That result is useful here: adaptive coarsening is a **within-resident-chunk**
+reduction; streaming chooses **which chunks are resident**. Neither
+substitutes for the other, and a future system should preserve both levers.
+
+### Keep the two "regional" ideas separate
+
+- A **regional BVH** is a culling data-structure choice. The prior
+  `perf-per-region-bvh` plan was archived in favor of visible-cell candidate
+  culling. It may inform cell clustering, but it is neither a required loader
+  structure nor a residency authority.
+- **Resource streaming** is a lifecycle contract: choose clustered-cell units,
+  fetch their baked payloads, upload them through the renderer, then retain or
+  evict them under a budget. Its authority should be clustered cells driven by
+  portal visibility/prediction, as described above—not a second, subsystem
+  specific BVH query.
+
+### Viable staged architecture to investigate
+
+1. Keep one authored level and one logical PRL, but add a compiler-derived
+   cluster directory: stable cluster IDs, cluster bounds/cell membership, and
+   byte ranges (or separately addressable payloads) for each spatial section.
+   This is map-file partitioning, not a requirement to expose multiple maps to
+   gameplay or authors.
+2. Prove clustering and directory determinism without runtime eviction. Use
+   byte/primitive budgets and portal-adjacent clustering; preserve a flat global
+   bake view where SH/SDF baking requires it.
+3. Introduce a residency planner from the existing visible-cell signal plus a
+   conservative prefetch/hysteresis set. Start with one high-value spatial
+   resource, plausibly SH/delta data or geometry, while lightmaps remain whole;
+   the engine currently has no partial texture streaming.
+4. Add asynchronous disk/decode work off the frame path, then renderer-owned
+   GPU upload and eviction. Generalize only after the first subsystem proves
+   atomic install/evict and budget accounting; lightmap layers, SH/base+deltas,
+   geometry/BVH views, SDF, probes, fog, and acoustics can then subscribe to the
+   same cluster state.
+
+### Invariants and risks a future plan must settle
+
+- **Portal/seam continuity:** retain/prefetch enough neighboring clusters that a
+  visible portal never exposes missing geometry, lightmap, SH, fog, or acoustic
+  data. SH reconstruction seams and cross-cluster probe neighborhoods need
+  explicit ownership/halo rules; adaptive L0/L1/L2 data must remain
+  self-consistent at cluster boundaries.
+- **Cross-sector lighting:** a light's influence and its direct/animated delta
+  records may span clusters. Partitioning must preserve the current
+  no-double-counting lighting invariant and cannot assume lights are local;
+  shared/static metadata may be always resident, duplicated by a documented
+  rule, or resolved through a validated cross-cluster reference.
+- **Atomic residency:** a render frame must see a generation-matched set of
+  geometry, visibility/cull metadata, SH base/deltas, and dependent textures—no
+  partial installation that samples a new delta against stale base data. Failed
+  or over-budget requests need a defined conservative fallback or seam gate,
+  never accidental mixed state.
+- **Frame ownership:** I/O, decompression, and CPU preparation stay off the
+  input → game logic → audio → render → present path. GPU allocation, upload,
+  synchronization, and retirement remain renderer-owned.
+- **Network/content parity:** if co-op peers can stream different resident
+  subsets, their logical level/content identity must still agree at admission;
+  residency is local presentation/resource state, not a license to run
+  different level bytes or gameplay collision/visibility data.
+- **Observability:** report per-cluster disk, CPU, and GPU residency; prefetch
+  misses; eviction churn; and seam-gate stalls. A global cap remains the final
+  safety rail, while author-facing regional budgets diagnose pressure earlier.

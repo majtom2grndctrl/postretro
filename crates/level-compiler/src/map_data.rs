@@ -587,9 +587,13 @@ pub struct MapData {
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.
     /// Unioned with the `--sh-protect-aabb` CLI stand-in and fed to
-    /// `sh_coarsen::classify_section_levels` so intersecting 4×4×4 bricks stay
-    /// L0 (dense). Not emitted to the PRL — consumed only during the coarsen bake.
+    /// `sh_coarsen::classify_direct_levels` so intersecting id-41 bricks stay L0
+    /// (dense). Not emitted to the PRL — consumed only during the coarsen bake.
     pub sh_protect_aabbs: Vec<[f32; 6]>,
+    /// Worldspawn `_sh_coarsen "0"` requests the uniform-grid fallback for
+    /// direct SH deltas. Absent or any other value keeps production id-41
+    /// coarsening enabled. Consumed at bake time; not emitted to the PRL.
+    pub uniform_grid_optout: bool,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
     /// space (Y-up, meters). See `context/lib/build_pipeline.md`.

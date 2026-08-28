@@ -41,11 +41,11 @@ impl ScriptMutableDescriptorSlots {
         }
     }
 
-    fn indirect_contains(&self, slot: u32) -> bool {
+    pub(crate) fn indirect_contains(&self, slot: u32) -> bool {
         self.indirect.get(slot as usize).copied().unwrap_or(true)
     }
 
-    fn animated_direct_contains(&self, slot: u32) -> bool {
+    pub(crate) fn animated_direct_contains(&self, slot: u32) -> bool {
         self.animated_direct
             .get(slot as usize)
             .copied()

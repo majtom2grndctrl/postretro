@@ -622,3 +622,59 @@ replace the missing content-rooted manual visual check.
 Result: payload and id-41 traffic improve and corrected I5 remains clean, but
 the uniform P5 cap and composed-error gates fail at all densities.  This is
 Task-1 **no-promote** evidence, not a source-change request.
+
+## Id-41-only 1.0 m validation (2026-08-28)
+
+This supersedes the three-section safety conclusion above. The shipped scope is
+now id-41 direct coarsening only. Ids 27 and 45 emit uniform L0 and their
+adaptive paths are deferred until script and animation amplitudes have a
+bounded runtime contract.
+
+Each fixture used a retained uniform-L0 baseline and a fresh `--sh-coarsen`
+comparison at `--sh-probe-spacing 1.0 --lightmap-density 0.25 --no-cache
+--no-tui`. The comparison bakes used `--sh-delta-max-size 2GiB` solely to
+measure the existing payloads; it is not a cap-policy pass.
+
+| Fixture | Uniform delta payload | Id-41-only delta payload | Id-41 payload, off -> on | Id-41 retained | Aggregate retained |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stress Warren safety | 303,822,432 B | 186,099,840 B | 145,267,200 -> 27,544,608 B | 18.96% | 61.25% |
+| Campaign primary win | 8,686,944 B | 6,284,448 B | 4,592,736 -> 2,190,240 B | 47.69% | 72.34% |
+| Kinematic corroboration | 5,419,296 B | 4,735,296 B | 5,419,296 -> 4,735,296 B | 87.38% | 87.38% |
+
+The id-41 value is the direct-delta read-volume projection. It is also the
+dominant resident-byte change: Campaign direct resident bytes fall from
+4,647,156 to 2,244,660; Kinematic falls from 5,458,168 to 4,774,168.
+Campaign is the primary intentional-lighting win. Kinematic independently
+corroborates a smaller positive direct reduction and contains id 41 only.
+
+### Safety and emitted quality
+
+The id-41 runtime envelope repaired every sampled emitted-quality failure:
+
+| Fixture | Envelope failures, before -> after | L0 restores / smoothing refinements | Emitted `.10/.25` failures | Participating I5 violations |
+| --- | ---: | ---: | ---: | ---: |
+| Stress Warren | 38 -> 0 | 38 / 51 | 0 | 0 in ids 27, 41, and 45 |
+| Campaign | 12 -> 0 | 12 / 13 | 0 | 0 in ids 27, 41, and 45 |
+| Kinematic | 1 -> 0 | 1 / 0 | 0 | 0 in id 41 |
+
+The emitted PRL face scan excludes zero-valid L0 sentinels. Its participating
+result is I5. Raw all-cell L2-to-sentinel-L0 counts remain diagnostics, not
+seams. Ids 27 and 45 are all L0 in these comparisons and retain their baseline
+payload exactly: Stress 82,235,232 B / 76,320,000 B, and Campaign 2,464,128 B
+/ 1,630,080 B. Kinematic emits neither mutable section.
+
+### Remaining promotion blockers
+
+The selected adapter lacks timestamp-query support. Compose dispatch time and
+the net-runtime-savings sign are therefore not evaluable; do not infer them
+from bake or CPU time. The temporary PRL path also uses placeholder materials,
+so a content-rooted manual seam review remains required.
+
+P5 is unresolved. Stress Warren's uniform baseline is 303,822,432 B
+(289.75 MiB), over the proposed unconditional 64 MiB cap. The representative
+uniform baselines are below that cap: Campaign 8,686,944 B (8.29 MiB) and
+Kinematic 5,419,296 B (5.17 MiB). Applying the planned 64 MiB default
+unchanged would fail loud on the Stress safety fixture even though id-41-only
+coarsening passes its quality and I5 gates. Resolve that cap-policy conflict
+before promotion; do not silently coarsen harder or treat the safety fixture
+as a cap pass.

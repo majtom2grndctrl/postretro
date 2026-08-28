@@ -592,7 +592,7 @@ fn payload_bytes(offsets: &[u32], levels: &[u8], valid_masks: &[u64], probe_stri
 
 fn log_mutable_cost(cost: MutableForcedL0Cost) {
     log::info!(
-        "[sh-coarsen] hypothetical mutable id {} forced-L0 cost: {} affected cell(s), {} affected entry/entries, payload {} -> {} bytes, uniform {} bytes, retained ratio {:.6}; diagnostic only",
+        "[sh-coarsen] mutable id {} uniform-L0 policy diagnostic: {} affected cell(s), {} affected entry/entries, payload {} -> {} bytes, uniform {} bytes, retained ratio {:.6}; measurement only",
         cost.section_id,
         cost.affected_cells,
         cost.affected_entries,

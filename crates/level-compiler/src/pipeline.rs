@@ -1518,12 +1518,11 @@ fn combined_protect_aabbs(cli: &[[f32; 6]], map: &[[f32; 6]]) -> Vec<[f32; 6]> {
     combined
 }
 
-/// Classify per-section coarsening levels and stamp them onto each delta
-/// section's `cell_levels`, in place, before valid-probe compaction consumes the
-/// dense payloads. Reads the pre-BC6H base indirect (RGBA16F) for composed
-/// magnitude + the sole probe-validity authority; each section is classified
-/// independently (its own reconstruction error over the shared composed
-/// magnitude). No-op when the base grid is absent/degenerate.
+/// Classify id 41 coarsening levels and stamp them in place before valid-probe
+/// compaction consumes the dense payload. Ids 27 and 45 stay uniform L0 because
+/// their runtime animation/script amplitudes have no finite bake-known bound.
+/// Reads the pre-BC6H base indirect (RGBA16F) for composed magnitude + the sole
+/// probe-validity authority. No-op when the base grid is absent/degenerate.
 fn apply_coarsen_classification(
     args: &Args,
     map_protect_aabbs: &[[f32; 6]],
@@ -1532,6 +1531,11 @@ fn apply_coarsen_classification(
     delta_sections: &mut delta_sections::PostBakeDeltaSections,
     mutable_descriptors: &crate::delta_drop_policy::ScriptMutableDescriptorSlots,
 ) -> anyhow::Result<()> {
+    // Enforce the owner-approved section scope even on degenerate/absent-base
+    // exits. The bake producers currently initialize these arrays to L0, but
+    // this boundary owns the policy rather than relying on that detail.
+    delta_sections.enforce_id41_only_coarsening_policy();
+
     let Some(base) = base_indirect else {
         log::warn!("[sh-coarsen] no base SH volume produced; coarsening skipped (uniform L0)");
         return Ok(());
@@ -1554,86 +1558,53 @@ fn apply_coarsen_classification(
     // union forces every intersecting brick to L0 (dense).
     let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, map_protect_aabbs);
 
-    // Compute all three per-section level arrays under shared immutable borrows
-    // of the (still dense) delta sections, then stamp them in a second mutable
-    // pass — the classifier reads all three sections for the composed magnitude
-    // while producing one section's levels.
-    let (indirect_levels, direct_levels, anim_levels) = {
+    // The direct classifier still reads all three dense sections for the
+    // composed reference magnitude, but produces levels only for id 41.
+    let direct_levels = {
         let all = sh_coarsen::DeltaSectionsRef {
             indirect: delta_sections.indirect.as_ref(),
             direct: delta_sections.direct.as_ref(),
             anim_direct: delta_sections.animated_direct.as_ref(),
         };
-        let classify = |target| {
-            sh_coarsen::classify_section_levels(
+        delta_sections.direct.as_ref().map(|_| {
+            sh_coarsen::classify_direct_levels(
                 base,
                 base_direct,
                 all,
-                target,
                 grid,
                 &protect_aabbs,
                 &params,
             )
-        };
-        (
-            delta_sections
-                .indirect
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::Indirect)),
-            delta_sections
-                .direct
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::Direct)),
-            delta_sections
-                .animated_direct
-                .as_ref()
-                .map(|_| classify(sh_coarsen::TargetDeltaSection::AnimatedDirect)),
-        )
+        })
     };
 
-    // Stamp only when the classifier's level count (base-grid derived) matches
-    // the section's own affinity-cell count. They agree whenever the section
-    // shares the base grid (the normal case); guard the defensive path so an
-    // affinity-mismatched section is never handed a wrong-length `cell_levels`
-    // that would corrupt compaction / the wire contract — leave it uniform L0.
-    let mut sections = 0u32;
-    if let (Some(section), Some(levels)) = (delta_sections.indirect.as_mut(), indirect_levels) {
-        let cells = section.affinity_cell_count();
-        if levels.len() == cells {
-            section.cell_levels = levels;
-            sections += 1;
-        } else {
-            log::warn!(
-                "[sh-coarsen] indirect affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
-                levels.len()
-            );
-        }
-    }
+    // Guard the defensive grid-mismatch path so id 41 is never handed a
+    // wrong-length level array that would corrupt compaction / the wire
+    // contract. All sections remain uniform L0 in that case.
+    let mut direct_classified = false;
     if let (Some(section), Some(levels)) = (delta_sections.direct.as_mut(), direct_levels) {
         let cells = section.affinity_cell_count();
         if levels.len() == cells {
             section.cell_levels = levels;
-            sections += 1;
+            direct_classified = true;
         } else {
+            section
+                .cell_levels
+                .fill(postretro_level_format::sh_reconstruct::Level::L0.to_u8());
             log::warn!(
                 "[sh-coarsen] direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
                 levels.len()
             );
         }
     }
-    if let (Some(section), Some(levels)) = (delta_sections.animated_direct.as_mut(), anim_levels) {
-        let cells = section.affinity_cell_count();
-        if levels.len() == cells {
-            section.cell_levels = levels;
-            sections += 1;
+    log::info!(
+        "[sh-coarsen] id 41 classification {}; ids 27/45 remain uniform L0",
+        if direct_classified {
+            "applied"
         } else {
-            log::warn!(
-                "[sh-coarsen] animated-direct affinity mismatch (levels {} vs {cells} cells); leaving uniform L0",
-                levels.len()
-            );
+            "not applicable"
         }
-    }
-    log::info!("[sh-coarsen] classified coarsening levels for {sections} delta section(s)");
+    );
     crate::sh_runtime_envelope::apply_runtime_safe_envelope(
         base,
         base_direct,

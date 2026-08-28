@@ -587,8 +587,8 @@ pub struct MapData {
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.
     /// Unioned with the `--sh-protect-aabb` CLI stand-in and fed to
-    /// `sh_coarsen::classify_section_levels` so intersecting 4×4×4 bricks stay
-    /// L0 (dense). Not emitted to the PRL — consumed only during the coarsen bake.
+    /// `sh_coarsen::classify_direct_levels` so intersecting id-41 bricks stay L0
+    /// (dense). Not emitted to the PRL — consumed only during the coarsen bake.
     pub sh_protect_aabbs: Vec<[f32; 6]>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine

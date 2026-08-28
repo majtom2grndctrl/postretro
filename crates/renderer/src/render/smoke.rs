@@ -145,11 +145,10 @@ const BILLBOARD_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
 );
 
-/// Stitch a set of animation frames into a single horizontal strip
-/// (`N × H` per frame) for GPU upload. All frames must have matching
-/// dimensions; frames with mismatched sizes are dropped with a warning.
-/// Returns `None` if no frames survive.
-fn stitch_frames_to_strip(frames: &[SpriteFrame]) -> Option<(Vec<u8>, u32, u32, u32)> {
+/// Retain the animation frames that can share one D2-array texture. All frames
+/// must have matching dimensions; frames with mismatched sizes are dropped with
+/// a warning. Returns `None` if no usable frame remains.
+fn frames_with_shared_dimensions(frames: &[SpriteFrame]) -> Option<(Vec<&SpriteFrame>, u32, u32)> {
     let first = frames.first()?;
     let w = first.width;
     let h = first.height;
@@ -177,20 +176,7 @@ fn stitch_frames_to_strip(frames: &[SpriteFrame]) -> Option<(Vec<u8>, u32, u32, 
     if valid.is_empty() {
         return None;
     }
-    let frame_count = valid.len() as u32;
-    let strip_w = w * frame_count;
-    let mut data = vec![0u8; (strip_w * h * 4) as usize];
-    for (fi, frame) in valid.iter().enumerate() {
-        let x_offset = fi as u32 * w;
-        for y in 0..h {
-            let src_row = (y * w * 4) as usize;
-            let dst_row = (y * strip_w * 4 + x_offset * 4) as usize;
-            let row_bytes = (w * 4) as usize;
-            data[dst_row..dst_row + row_bytes]
-                .copy_from_slice(&frame.data[src_row..src_row + row_bytes]);
-        }
-    }
-    Some((data, strip_w, h, frame_count))
+    Some((valid, w, h))
 }
 
 /// One loaded sprite sheet, shared across all emitters whose `collection`
@@ -224,7 +210,7 @@ fn build_draw_params(
 pub struct SmokePass {
     pipeline: wgpu::RenderPipeline,
 
-    /// Group 1 layout: sprite texture + sampler + draw-params uniform.
+    /// Group 1 layout: sprite-frame array + sampler + draw-params uniform.
     /// Retained so per-collection bind groups can be built post-init as
     /// `register_collection` is called.
     sheet_bind_group_layout: wgpu::BindGroupLayout,
@@ -255,14 +241,14 @@ pub struct SmokePass {
     /// frame).
     instance_bind_group: wgpu::BindGroup,
 
-    /// Loaded sprite sheets keyed by collection name. Populated at level load.
+    /// Loaded sprite-frame arrays keyed by collection name. Populated at level load.
     sheets: HashMap<String, SpriteSheet>,
 
-    /// Shared linear sampler for sprite sheets.
+    /// Shared linear sampler for sprite-frame arrays.
     sampler: wgpu::Sampler,
 }
 
-/// Group 1 (sprite sheet) BGL entries: sprite texture (binding 0, FRAGMENT) +
+/// Group 1 (sprite-frame array) BGL entries: sprite texture (binding 0, FRAGMENT) +
 /// sampler (binding 1, FRAGMENT) + draw-params uniform (binding 2,
 /// VERTEX | FRAGMENT — `vs_main` reads `draw_params` for frame count / lifetime
 /// and the spec-intensity term). No storage buffers here. GPU-free so the
@@ -274,7 +260,7 @@ pub(super) fn sprite_sheet_bind_group_layout_entries() -> [wgpu::BindGroupLayout
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -332,7 +318,7 @@ impl SmokePass {
             source: wgpu::ShaderSource::Wgsl(BILLBOARD_SHADER_SOURCE.into()),
         });
 
-        // Group 1: sprite texture (binding 0) + sampler (binding 1)
+        // Group 1: sprite-frame array (binding 0) + sampler (binding 1)
         // + draw-params uniform (binding 2). Entries built from the GPU-free
         // `sprite_sheet_bind_group_layout_entries` so the billboard vertex
         // storage-buffer budget (`billboard_pipeline_vertex_storage_buffer_count`)
@@ -493,11 +479,10 @@ impl SmokePass {
         }
     }
 
-    /// Register a sprite sheet collection. Uploads the stitched strip as a
-    /// single horizontal-strip RGBA8 texture and creates the per-collection
-    /// bind group (group 1). Reports and rejects duplicate collection calls, or
-    /// unusable frame lists, so caller ordering cannot silently replace a draw
-    /// contract.
+    /// Register a sprite collection. Uploads each frame to its own layer of one
+    /// RGBA8 texture array and creates the per-collection bind group (group 1).
+    /// Reports and rejects duplicate collection calls, or unusable frame lists,
+    /// so caller ordering cannot silently replace a draw contract.
     // This mirrors the renderer-facing collection registration contract; a
     // parameter object here would only obscure the one forwarding call site.
     #[allow(clippy::too_many_arguments)]
@@ -517,17 +502,17 @@ impl SmokePass {
             );
             return;
         }
-        let Some((strip_data, strip_w, strip_h, frame_count)) = stitch_frames_to_strip(frames)
-        else {
+        let Some((frames, width, height)) = frames_with_shared_dimensions(frames) else {
             log::warn!("[Smoke] Collection '{collection}' had no usable frames");
             return;
         };
+        let frame_count = frames.len() as u32;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&format!("Sprite Sheet: {collection}")),
+            label: Some(&format!("Sprite Frame Array: {collection}")),
             size: wgpu::Extent3d {
-                width: strip_w,
-                height: strip_h,
-                depth_or_array_layers: 1,
+                width,
+                height,
+                depth_or_array_layers: frame_count,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -536,26 +521,38 @@ impl SmokePass {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &strip_data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(strip_w * 4),
-                rows_per_image: Some(strip_h),
-            },
-            wgpu::Extent3d {
-                width: strip_w,
-                height: strip_h,
-                depth_or_array_layers: 1,
-            },
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        for (layer, frame) in frames.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &frame.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("Sprite Frame Array View: {collection}")),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            mip_level_count: Some(1),
+            array_layer_count: Some(frame_count),
+            ..Default::default()
+        });
 
         let params_bytes = build_draw_params(frame_count, spec_intensity, lifetime, emissive);
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -565,7 +562,7 @@ impl SmokePass {
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("Sprite Sheet Bind Group: {collection}")),
+            label: Some(&format!("Sprite Frame Array Bind Group: {collection}")),
             layout: &self.sheet_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -835,26 +832,26 @@ mod tests {
     }
 
     #[test]
-    fn stitch_rejects_empty() {
-        assert!(stitch_frames_to_strip(&[]).is_none());
+    fn shared_dimension_frames_reject_empty() {
+        assert!(frames_with_shared_dimensions(&[]).is_none());
     }
 
     #[test]
-    fn stitch_single_frame() {
+    fn shared_dimension_frames_keep_single_frame_payload() {
         let frame = SpriteFrame {
             data: vec![0xFFu8; 4 * 2 * 2], // 2x2 white RGBA
             width: 2,
             height: 2,
         };
-        let (data, w, h, count) = stitch_frames_to_strip(&[frame]).unwrap();
+        let (frames, w, h) = frames_with_shared_dimensions(&[frame]).unwrap();
         assert_eq!(w, 2);
         assert_eq!(h, 2);
-        assert_eq!(count, 1);
-        assert_eq!(data.len(), 2 * 2 * 4);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].data, vec![0xFFu8; 4 * 2 * 2]);
     }
 
     #[test]
-    fn stitch_two_frames() {
+    fn shared_dimension_frames_keep_each_layer_payload_and_drop_mismatches() {
         let red = SpriteFrame {
             data: vec![
                 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
@@ -869,13 +866,44 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let (data, w, h, count) = stitch_frames_to_strip(&[red, blue]).unwrap();
-        assert_eq!(w, 4);
+        let mismatched = SpriteFrame {
+            data: vec![0xFF; 4 * 4],
+            width: 1,
+            height: 4,
+        };
+        let (frames, w, h) =
+            frames_with_shared_dimensions(&[red.clone(), mismatched, blue.clone()]).unwrap();
+        assert_eq!(w, 2);
         assert_eq!(h, 2);
-        assert_eq!(count, 2);
-        // First column should be red, third column blue.
-        assert_eq!(data[0..4], [255, 0, 0, 255]);
-        assert_eq!(data[8..12], [0, 0, 255, 255]);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].data, red.data);
+        assert_eq!(frames[1].data, blue.data);
+    }
+
+    #[test]
+    fn sprite_sheet_layout_binds_a_filterable_d2_array_texture() {
+        let entries = sprite_sheet_bind_group_layout_entries();
+        assert!(matches!(
+            entries[0].ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn billboard_shader_samples_the_flat_frame_array_layer() {
+        let shader = include_str!("../shaders/billboard.wgsl");
+        assert!(shader.contains("var sprite_texture: texture_2d_array<f32>;"));
+        assert!(shader.contains("@location(4) @interpolate(flat) frame_idx: u32,"));
+        assert!(shader.contains("out.uv = vec2<f32>(cd.z, cd.w);"));
+        assert!(shader.contains("out.frame_idx = frame_idx;"));
+        assert!(shader.contains("layer: u32,"));
+        assert!(shader.contains("textureDimensions(tex, 0)"));
+        assert!(shader.contains("textureSampleGrad(tex, samp, uv_recon, i32(layer), ddx, ddy);"));
+        assert!(shader.contains("in.frame_idx,"));
     }
 
     /// A dummy packed slice of `n` sprite instances (contents irrelevant to the

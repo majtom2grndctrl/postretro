@@ -24,7 +24,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use crate::affinity_grid::AFFINITY_FACTOR;
 use crate::sh_analyze::{
     AnalyzeInputs, DeltaView, LevelKind, accumulate_delta_for_cell, brick_world_aabb,
-    build_brick_tiles, level_errors, tile_magnitude,
+    build_brick_tiles, level_errors, level_errors_with_l1_zero_fallback, tile_magnitude,
 };
 
 const AF: usize = AFFINITY_FACTOR as usize; // 4
@@ -118,6 +118,10 @@ pub(crate) fn classify_levels(
 
     // --- Phase B — per-brick gate. ---
     let mut levels: Vec<Level> = Vec::with_capacity(bricks.len());
+    // Whether the brick may be represented as L1 after the gate. Seam
+    // smoothing can turn an initially selected L2 into L1, so reconstructable
+    // is insufficient: L1 must independently satisfy the same error contract.
+    let mut l1_eligible: Vec<bool> = Vec::with_capacity(bricks.len());
     // Parallel participation flags: zero-valid bricks do not participate in
     // coarsening or seam-smoothing adjacency.
     let mut participating: Vec<bool> = Vec::with_capacity(bricks.len());
@@ -125,12 +129,13 @@ pub(crate) fn classify_levels(
     for b in bricks {
         if !b.has_any_valid {
             levels.push(Level::L0);
+            l1_eligible.push(false);
             participating.push(false);
             continue;
         }
         participating.push(true);
 
-        let level = if b.mag_p95 < floor {
+        let (level, l1_ok) = if b.mag_p95 < floor {
             // Darkness bypass (spec AC5 / pin P8): a sub-floor brick takes the
             // coarsest evaluable level, skipping the relative comparison
             // entirely. This is stronger than the operating-point selector
@@ -142,11 +147,11 @@ pub(crate) fn classify_levels(
             // spec choice; the clamp only diverges for non-physical dark
             // bricks with large absolute error.
             if b.l2_evaluable {
-                Level::L2
+                (Level::L2, b.l1_evaluable)
             } else if b.l1_evaluable {
-                Level::L1
+                (Level::L1, true)
             } else {
-                Level::L0
+                (Level::L0, false)
             }
         } else {
             // Bright brick: choose the coarsest level passing BOTH thresholds.
@@ -158,14 +163,15 @@ pub(crate) fn classify_levels(
                 && b.l1_p95 / f32::max(b.mag_p95, floor) <= params.rel_p95_max
                 && b.l1_max / f32::max(b.mag_max, floor) <= params.rel_max_max;
             if l2_ok {
-                Level::L2
+                (Level::L2, l1_ok)
             } else if l1_ok {
-                Level::L1
+                (Level::L1, true)
             } else {
-                Level::L0
+                (Level::L0, false)
             }
         };
         levels.push(level);
+        l1_eligible.push(l1_ok);
     }
 
     // --- Phase C — protection (after the gate, before smoothing). ---
@@ -184,10 +190,9 @@ pub(crate) fn classify_levels(
     // Face-adjacency over the x-fastest affinity grid. Repeat sweeps until a
     // full sweep performs zero demotions. Monotone (levels only decrease) so it
     // terminates.
-    // A brick whose L1 is unevaluable (no valid corner) must never be assigned
-    // L1 — by the gate OR by demotion. `demote_one` uses this to skip L1 and
-    // demote such a brick straight to L0.
-    let l1_evaluable: Vec<bool> = bricks.iter().map(|b| b.l1_evaluable).collect();
+    // A brick whose L1 failed its own gate must never be assigned L1 by
+    // demotion. L1 is not assumed to be more accurate than L2 for sparse
+    // corner lattices.
     let [dx, dy, dz] = affinity_dims;
     let (dxu, dyu, dzu) = (dx as usize, dy as usize, dz as usize);
     loop {
@@ -202,18 +207,17 @@ pub(crate) fn classify_levels(
                     // Only inspect the positive-direction neighbors so each
                     // face-adjacent pair is visited once per sweep.
                     if x + 1 < dxu {
-                        demoted |=
-                            smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + 1);
+                        demoted |= smooth_pair(&mut levels, &participating, &l1_eligible, i, i + 1);
                     }
                     if y + 1 < dyu {
                         demoted |=
-                            smooth_pair(&mut levels, &participating, &l1_evaluable, i, i + dxu);
+                            smooth_pair(&mut levels, &participating, &l1_eligible, i, i + dxu);
                     }
                     if z + 1 < dzu {
                         demoted |= smooth_pair(
                             &mut levels,
                             &participating,
-                            &l1_evaluable,
+                            &l1_eligible,
                             i,
                             i + dxu * dyu,
                         );
@@ -246,7 +250,7 @@ fn aabb_overlap(world_min: &[f32; 3], world_max: &[f32; 3], aabb: &[f32; 6]) -> 
 fn smooth_pair(
     levels: &mut [Level],
     participating: &[bool],
-    l1_evaluable: &[bool],
+    l1_eligible: &[bool],
     a: usize,
     b: usize,
 ) -> bool {
@@ -259,23 +263,22 @@ fn smooth_pair(
     }
     // Demote the coarser (numerically higher) endpoint.
     if la > lb {
-        levels[a] = demote_one(levels[a], l1_evaluable[a]);
+        levels[a] = demote_one(levels[a], l1_eligible[a]);
     } else {
-        levels[b] = demote_one(levels[b], l1_evaluable[b]);
+        levels[b] = demote_one(levels[b], l1_eligible[b]);
     }
     true
 }
 
 /// Demote a level by one step: L2→L1, L1→L0, L0 stays. **Exception:** when the
-/// brick's L1 is unevaluable (no valid corner ⇒ `kept_mask(L1) == 0`, which
-/// would store zero tiles and leave every dropped-valid probe
-/// unreconstructable), skip L1 and demote L2 straight to L0. Demoting to the
+/// brick's L1 failed its independent gate (including unevaluable sparse
+/// lattices), skip L1 and demote L2 straight to L0. Demoting to the
 /// finest level still satisfies the ≤1-level seam bound (L0 is never the coarser
 /// endpoint of any pair) and keeps the brick reconstructable.
-fn demote_one(level: Level, l1_evaluable: bool) -> Level {
+fn demote_one(level: Level, l1_eligible: bool) -> Level {
     match level {
         Level::L2 => {
-            if l1_evaluable {
+            if l1_eligible {
                 Level::L1
             } else {
                 Level::L0
@@ -495,7 +498,7 @@ pub(crate) fn classify_section_levels(
                     s_tiles[local] = Some(std::mem::take(&mut acc[local]));
                 }
 
-                let l1 = level_errors(&s_tiles, LevelKind::L1, texels, interior, &weights);
+                let l1 = level_errors_with_l1_zero_fallback(&s_tiles, texels, interior, &weights);
                 let l2 = level_errors(&s_tiles, LevelKind::L2, texels, interior, &weights);
 
                 let (wmin, wmax) = brick_world_aabb(&inputs, dims, cx, cy, cz);
@@ -759,6 +762,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn smoothing_skips_l1_when_l2_passes_but_l1_fails() {
+        // Regression: L1 is not necessarily more accurate than L2 for a sparse
+        // corner lattice. Brick 1 passes L2 but fails L1; the adjacent L0 brick
+        // forces smoothing to refine it. The final post-smoothing level must be
+        // a gate-valid L0, not an unchecked L1.
+        let bricks = vec![
+            at_x(brick(10.0, 10.0, (9.0, 9.0), (9.0, 9.0)), 0), // L0
+            at_x(brick(10.0, 10.0, (5.0, 5.0), (0.1, 0.1)), 1), // L2; L1 fails
+        ];
+        let out = classify_levels(&bricks, [2, 1, 1], &[], &CoarsenParams::default());
+        assert_eq!(
+            out,
+            vec![L0, L0],
+            "smoothing must skip an L1 representation that failed its own gate"
+        );
+    }
+
     // ---- P6/P14 protection ----
 
     #[test]
@@ -901,6 +922,14 @@ mod tests {
         vec![1u8; dims[0] as usize * dims[1] as usize * dims[2] as usize]
     }
 
+    fn only_valid(dims: [u32; 3], locals: &[usize]) -> Vec<u8> {
+        let mut validity = vec![0u8; dims[0] as usize * dims[1] as usize * dims[2] as usize];
+        for &local in locals {
+            validity[local] = 1;
+        }
+        validity
+    }
+
     fn grid_ref<'a>(dims: [u32; 3], validity: &'a [u8]) -> SectionGrid<'a> {
         SectionGrid {
             grid_origin: [0.0; 3],
@@ -971,6 +1000,40 @@ mod tests {
             out,
             vec![L0],
             "high-variance target must stay L0 despite bright composed"
+        );
+    }
+
+    #[test]
+    fn provider_sparse_l1_scores_shader_zero_fallback() {
+        // Regression: Stress-Warren cell 5213 had a valid non-corner target
+        // whose surviving L1 corner had zero trilinear weight. The old scorer
+        // omitted that target, while the emitted shader path reconstructed it
+        // as zero. The zero fallback's real error must reject L1 here.
+        let dims = [4, 4, 4];
+        let validity = only_valid(dims, &[0, 7]);
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_from(|local| match local {
+            0 => 0.5,
+            7 => 50.0,
+            _ => 0.0,
+        });
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let out = classify_section_levels(
+            &base,
+            None,
+            deltas,
+            TargetDeltaSection::Direct,
+            grid_ref(dims, &validity),
+            &[],
+            &CoarsenParams::default(),
+        );
+        assert_eq!(
+            out,
+            vec![L0],
+            "a sparse L1 target represented as zero must contribute to the gate"
         );
     }
 

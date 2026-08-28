@@ -1509,6 +1509,33 @@ pub(crate) fn level_errors(
     interior: usize,
     weights: &[f32],
 ) -> LevelErr {
+    level_errors_impl(tiles, kind, texels, interior, weights, false)
+}
+
+/// Classifier-only L1 score matching the represented compose behavior.
+///
+/// A sparse L1 lattice can have valid targets for which every retained corner
+/// has zero trilinear weight. The compose shaders reconstruct those targets as
+/// zero, so the classifier must score that zero rather than omit the target.
+/// The analysis sweep intentionally retains its historical evaluability
+/// semantics through [`level_errors`].
+pub(crate) fn level_errors_with_l1_zero_fallback(
+    tiles: &[Option<Tile>; PROBES_PER_CELL],
+    texels: usize,
+    interior: usize,
+    weights: &[f32],
+) -> LevelErr {
+    level_errors_impl(tiles, LevelKind::L1, texels, interior, weights, true)
+}
+
+fn level_errors_impl(
+    tiles: &[Option<Tile>; PROBES_PER_CELL],
+    kind: LevelKind,
+    texels: usize,
+    interior: usize,
+    weights: &[f32],
+    l1_zero_fallback: bool,
+) -> LevelErr {
     let _ = interior;
     let mut acc = ErrAccum::default();
     for target_local in 0..PROBES_PER_CELL {
@@ -1516,7 +1543,8 @@ pub(crate) fn level_errors(
             continue;
         };
         let recon = match kind {
-            LevelKind::L1 => reconstruct_l1_tile(tiles, target_local, texels),
+            LevelKind::L1 => reconstruct_l1_tile(tiles, target_local, texels)
+                .or_else(|| l1_zero_fallback.then(|| zero_tile(texels))),
             LevelKind::L2 => reconstruct_l2_tile(tiles, texels),
         };
         let Some(recon) = recon else { continue };

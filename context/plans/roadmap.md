@@ -456,6 +456,10 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Infrastructure
 
+- **Large-map spatial residency** — future epic seed for clustered-cell,
+  portal-driven residency of baked resources (SH, geometry, lightmap layers,
+  and related spatial data). Distinct from regional-BVH culling. Research and
+  staged planning seed: `context/plans/large-map-spatial-residency.md`.
 - **Sector Graph + Portal Culling** — replace the compiler-derived runtime cell/portal graph with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
 - **Audio foundation** — kira integration, spatial audio, reverb zones. → Sequenced as Epic 12 (builds behind the entity event system; independent of the other upcoming epics).

@@ -551,3 +551,74 @@ time. In addition, this map cannot replace the plan's specific
 five raw L2↔L0 violations in both ids 27/45 and still lacks a timestamp-capable
 measurement. Campaign is corroborating evidence for the existing Task-1
 **no-promote** result, not an independent clearance of it.
+
+## Corrected Stress Warren density/error follow-up (2026-08-27)
+
+This supersedes the earlier 10 m Stress Warren diagnostic as gate evidence.
+It is a measurement-only follow-up: source and plan files are unchanged.  Each
+row is a default-off uniform-L0 bake paired with explicit `--sh-coarsen`, using
+`--lightmap-density 0.25 --sh-delta-max-size 2GiB --sh-analyze --no-cache
+--no-tui`; the 2 GiB value prevents silent I3 coarsen-to-fit while measuring
+the raw P5 baseline.  Exact output and analysis paths use
+`/private/tmp/postretro-lighting-scale-sh-adaptive-coarsening-v2/stress-warren-showcase.spacing-<density>.<variant>.(prl|sh-analysis.json)`.
+All outputs are PRL v4 and retain id-27/id-41/id-45 payload versions **5/3/3**.
+
+### Artifacts, volume, resident data, and emitted levels
+
+| Spacing | Uniform SHA-256 | Coarsened SHA-256 | Aggregate delta B, off -> on (ratio) | id-41 B/frame, off -> on (ratio) | Resident delta B, off -> on |
+| --- | --- | --- | ---: | ---: | ---: |
+| 1.25 m | `18a4dbeb8eb06c6f9d202186e1cc2f92163252302b37c3b438aff87a87d2138d` | `672dbfda897fd41816291109350a0de68388ca61430b80e2031531a65f48402b` | 155,055,168 -> 17,095,968 (0.1103x) | 71,071,488 -> 14,249,088 (0.2005x) | 155,469,088 -> 17,509,888 |
+| 1.0 m (ship) | `145fe9b6414c93d50521f7a5c1f22df15f7c13e15983ef6191b57b02d600653c` | `61d4ddb1f65fe5bf62ff044f05ce57aa539bacdb507b32ecf63adc605bec660a` | 303,822,432 -> 30,484,224 (0.1003x) | 145,267,200 -> 25,985,952 (0.1789x) | 304,577,640 -> 31,239,432 |
+| 0.75 m | `2a88d2f5d5a70e179ba17059283b6b83079f25a7592b02c990fccdb16d0d1bfa` | `ecd5ca20def5e3024b11e0a21f15eba5a259cede043396ce282bf0e80fe550af` | 651,254,976 -> 50,258,304 (0.0772x) | 306,455,616 -> 40,527,360 (0.1322x) | 652,967,128 -> 51,970,456 |
+
+The direct id-41 bytes are the selected-section per-frame projection; no
+savings pass threshold is invented.  The uniform payloads are respectively
+2.31x, 4.53x, and 9.70x the 64 MiB P5 limit: none passes that raw cap.
+
+Histograms below are loaded emitted post-smoothing PRL levels (`L0/L1/L2`),
+not analyzer candidates.  Corrected I5 scans exclude zero-valid sentinels.
+
+| Spacing | id 27 uniform -> on | id 41 uniform -> on | id 45 uniform -> on | Participating I5 violations (27/41/45) | Raw all-cell sentinel diagnostic (27/41/45) |
+| --- | --- | --- | --- | --- | --- |
+| 1.25 m | 7296/0/0 -> 362/1/6933 | 7296/0/0 -> 1039/1907/4350 | 7296/0/0 -> 379/66/6851 | 0/0/0 | 949/623/940 |
+| 1.0 m | 13440/0/0 -> 1293/2/12145 | 13440/0/0 -> 2538/2739/8163 | 13440/0/0 -> 1312/69/12059 | 0/0/0 | 2985/2066/2977 |
+| 0.75 m | 30528/0/0 -> 3808/1/26719 | 30528/0/0 -> 5686/4152/20690 | 30528/0/0 -> 3828/77/26623 | 0/0/0 | 6252/4823/6240 |
+
+All three densities pass literal corrected I5.  The raw all-cell pairs are
+sentinel-boundary diagnostics only, not replacement invariant results.
+
+### Composed-error disambiguation
+
+The retained-L0/emitted-PRL decoder reconstructs present id 27/41/45 CSR
+entries, combines the composed RGB interiors, uses emitted L2 means and the
+shader zero fallback for sparse-L1 corners.  Its floor is
+`max(0.02 * map_p95, 1e-6)`; a failure exceeds raw `rel_p95=.10` or
+`rel_max=.25`.  Complete 1.25 m records for all 1,636 failing bricks are
+retained outside Git as
+`stress-warren-showcase.spacing-1.25.error-disambiguation.full.json`, SHA-256
+`d0b2aab81ca988f1cd0d25a9ed26c10b91ce5d8c50be0760fc15bd60d6eb8f71`.
+
+| Spacing | map p95 / floor | Raw / floored failures | Bypassed / bright-gated | Worst bright abs p95/max; rel p95/max | Worst bypass abs p95/max; rel p95/max | Dominant |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| 1.25 m | 2.1947632 / 0.043895264 | 1636 / 1635 | 10 / 1626 | .2548523/1.1226196; .2514301/.9516246 | .0164795/.0494385; .4422604/.4384303 | id 41 |
+| 1.0 m | 2.1497803 / 0.042995606 | 2007 / 2006 | 14 / 1993 | .0878906/1.0166016; .0694110/.7419153 | .0229034/.0503235; .7906242/.6638486 | id 41 |
+| 0.75 m | 2.0895996 / 0.041791992 | 2648 / 2648 | 24 / 2624 | .5349121/1.7324219; .2884793/.8181714 | .0862088/.2859701; 2.1983571/.6040233 | id 41 |
+
+At 1.25 m, bright-gated cell 5213 is dominated by id-41 (absolute
+.2400716/1.0537109; relative .2368479/.8932119).  Bypassed cell 2129 also has
+id-41 absolute .0164795/.0494385, but is only 10 of 1,636 failures.  Flooring
+removes one failure at 1.25 m and 1.0 m, and none at 0.75 m.  Thus a pure
+un-floored metric artifact is rejected; bypass behavior is secondary, while
+bright-gated id-41 composed/control error dominates.  Every representative
+density fails the literal `.10/.25` composed-error gate.
+
+Compiler totals (uniform/coarsened) were 767.97/1049.67 s at 1.25 m,
+1559.46/1767.03 s at 1.0 m, and 2547.06/2188.03 s at 0.75 m.  These are bake
+times, not compose dispatch time.  The selected adapter lacks timestamp
+capability, so GPU compose timing remains unavailable.  No new I1 capture was
+made in this density/error-only follow-up; the prior whole-frame proxy does not
+replace the missing content-rooted manual visual check.
+
+Result: payload and id-41 traffic improve and corrected I5 remains clean, but
+the uniform P5 cap and composed-error gates fail at all densities.  This is
+Task-1 **no-promote** evidence, not a source-change request.

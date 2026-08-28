@@ -125,27 +125,20 @@ re-stitch + sub-4px truncation) is superseded.
 
 ## Acceptance criteria
 
-- [ ] A multi-layer `PrmFile` round-trips: writing a slot with `layer_count = N`
-      and layer-major payload, then parsing it back, yields the same
-      `layer_count`, the same single per-slot `level_count` (non-BC5 full, BC5
-      truncated — one header value all layers share, plus the aggregate
-      `× layer_count` payload size the reader checks; there are no per-layer
-      headers), and the same bytes.
-- [ ] **Golden (CPU, always-run):** a `layer_count == 1` bundle (a world/model
-      diffuse+spec+normal case) serialized under v3 has per-slot **payload** regions
-      byte-identical to an explicit committed byte-literal baseline (one mip chain
-      per slot, unchanged) — the world/model payload encoding is provably untouched;
-      only the file header differs (v3, `layer_count == 1`). **GPU/review gate:**
-      `upload_texture_data` still yields a `D2`, single-layer texture for it (checked
-      by code review + the device-gated path, not a headless assertion —
-      `wgpu::TextureView` exposes no view-dimension getter).
-- [ ] `parse_header` rejects `layer_count == 0` as malformed; a stale pre-change
-      sidecar is rejected and re-baked — a real v2 file trips the magic
-      version-byte check (`magic[3] != 0x02` → `UnsupportedVersion`) before the
-      `stage_version` check, which stays the secondary guard for a
-      magic-consistent-but-stale file (the re-bake is the existing content cache
-      reacting to the load failure — no new code); the header now reports
-      `STAGE_VERSION == 3`.
+- [ ] A multi-layer `PrmFile` round-trips: write a slot with `layer_count = N` and
+      layer-major payload, parse it back, and recover the same `layer_count`,
+      `level_count`, and bytes. The reader validates one shared `level_count`
+      (non-BC5 full, BC5 truncated) and the aggregate `× layer_count` payload size —
+      there are no per-layer headers.
+- [ ] **(CPU, always-run)** A `layer_count == 1` bundle (world/model
+      diffuse+spec+normal) serialized under v3 has per-slot **payload** regions
+      byte-identical to a committed byte-literal baseline; only the file header
+      differs (v3, `layer_count == 1`). **(GPU/review gate)** `upload_texture_data`
+      still yields a `D2`, single-layer texture for it.
+- [ ] `parse_header` rejects `layer_count == 0`. A stale pre-change file is
+      rejected: its old `magic[3] == 0x01` fails the new `magic[3] != 0x02` →
+      `UnsupportedVersion` check, ahead of the `stage_version` guard. A freshly
+      written header reports `STAGE_VERSION == 3`.
 - [ ] **(review gate)** The portable-baseline cap `u32` constant
       (`max_texture_array_layers` = 256) is defined on the dependency-free
       format/compiler side and documented as the contract every array-`.prm` writer
@@ -162,9 +155,9 @@ re-stitch + sub-4px truncation) is superseded.
       verify by eye on `content/dev/maps/campaign-test.prl` smoke; there is no
       automated pass/fail for the on-screen result.
 - [ ] `frame_idx` reaches `fs_main` flat-interpolated on `VertexOutput` (an
-      `@interpolate(flat) u32`) — naga rejects an un-flat integer varying, so the
-      existing naga-validation test guards it. **(review gate)** Its availability to
-      the downstream shimmer spec has no functional consumer yet.
+      `@interpolate(flat) u32`); naga rejects an un-flat integer varying, so the
+      existing naga-validation test guards it. **(review gate)** No functional
+      consumer yet — the downstream shimmer spec will sample by it.
 - [ ] WGSL naga validation passes and the existing
       `billboard_wgsl_sprite_instance_stride_matches_cpu` and `draw_params_layout`
       tests still pass; `SpriteInstance` stride and `SpriteDrawParams` are

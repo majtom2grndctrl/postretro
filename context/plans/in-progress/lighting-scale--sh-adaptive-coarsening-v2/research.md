@@ -736,8 +736,9 @@ direct atlas as a filterable D2Array at group-3 binding 15, after the depth
 moments binding; current billboard and mesh/kinematic shaders retain the
 group-3/group-4 binding-15 `sh_direct_atlas` declarations, and the compose
 shaders retain `rgba16float` storage output. Prior temporary-root whole-frame
-captures are an I1 proxy only, not a direct composed-atlas golden. They do not
-replace the outstanding content-rooted visual review below.
+captures are an I1 proxy only, not a direct composed-atlas golden. The
+content-rooted manual review below supplies the separate material-complete
+visual result.
 
 ### Cap and loader consequences
 
@@ -757,7 +758,8 @@ The final compiler policy changes the prior P5 interpretation:
 Focused compiler tests pin the 256 MiB default, the non-failing attributed
 64 MiB warning, and the no-retry hard failure for a coarsened payload over its
 cap. Focused loader tests use crafted section metadata to prove each delta
-section is rejected before byte borrowing/decode at the 128 MiB floor: id 27
+section first receives allocation-free container-bounds validation, then is
+rejected before decode at the 128 MiB floor: id 27
 and id 45 degrade only their own additive term, while id 41 clears its paired
 entity-shadow selection and id-41 term together. The loader floor is a
 per-section runtime binding protection, not extra aggregate-cap headroom.
@@ -765,18 +767,26 @@ per-section runtime binding protection, not extra aggregate-cap headroom.
 ### Promotion recommendation
 
 **Recommendation: no-promote yet; retain the now-landed id-41 default-on
-implementation pending two promote preconditions.** This is not a failed
-quality, seam, cap-policy, or loader-floor gate. The two conditions are:
+implementation pending one promote precondition.** This is not a failed
+quality, seam, cap-policy, or loader-floor gate.
 
 1. Run the representative compose measurement on an adapter with
    `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`, then record the
    compose-dispatch ratio and net-runtime-savings sign. The current adapter
    lacks those features. Bake duration and CPU time are not substitutes.
-2. Complete a content-rooted manual visual seam review with normal PRM
-   materials. Temporary PRL runs use magenta checkerboard placeholders, so
-   their clean proxy captures are not material-complete visual sign-off.
 
-Once both conditions are satisfied without an objectionable seam or a negative
-net-runtime result, the measured id-41 behavior supports promotion. No further
-Stress-Warren bake is needed to reinterpret the 64 MiB target: it is a warning,
-and the 256 MiB aggregate cap is the enforced production limit.
+The content-rooted manual visual precondition is fulfilled. The reviewer found
+smooth expected spotlight light-to-shadow transitions and an expected hard-ish
+transition under a bridge's cast shadow. No objectionable coarsening seam or
+artifact was reported.
+
+On `campaign-test`, rocket-launcher smoke sometimes appeared unlit where the
+reviewer expected illumination. This is an unattributed future tuning/research
+observation, not a gate failure or evidence against id-41 coarsening. Possible
+causes include direct-light cone/range behavior and per-billboard sampling;
+investigate separately before assigning cause.
+
+Once the timestamp measurement satisfies the remaining condition without a
+negative net-runtime result, the measured id-41 behavior supports promotion.
+No further Stress-Warren bake is needed to reinterpret the 64 MiB target: it
+is a warning, and the 256 MiB aggregate cap is the enforced production limit.

@@ -70,36 +70,42 @@ enum BoundedDeltaSectionData<'a> {
     Data(&'a [u8]),
 }
 
-/// Borrow an optional delta section only after its on-wire raw byte length is
-/// known to fit a single runtime storage-buffer binding. `ContainerMeta` owns
-/// that raw length; borrowing from the complete file then makes `data.len()`
-/// the same checked value without allocating a decoder table first.
+/// Borrow an optional delta section after validating its container bounds, then
+/// reject raw payloads that cannot fit a single runtime storage-buffer binding.
+/// The borrow remains allocation-free, so no decoder table is allocated before
+/// either structural validation or the binding-floor check.
+#[cfg(test)]
 fn read_bounded_delta_section_data<'a>(
     file_data: &'a [u8],
     meta: &prl_format::ContainerMeta,
     section_id: SectionId,
     section_name: &str,
 ) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
-    let Some(entry) = meta.find_section(section_id as u32) else {
+    read_bounded_delta_section_data_with_limit(
+        file_data,
+        meta,
+        section_id,
+        section_name,
+        MAX_DELTA_SECTION_BINDING_BYTES,
+    )
+}
+
+fn read_bounded_delta_section_data_with_limit<'a>(
+    file_data: &'a [u8],
+    meta: &prl_format::ContainerMeta,
+    section_id: SectionId,
+    section_name: &str,
+    max_binding_bytes: u64,
+) -> Result<BoundedDeltaSectionData<'a>, PrlLoadError> {
+    let Some(data) = prl_format::section_data_from_bytes(file_data, meta, section_id as u32)?
+    else {
         return Ok(BoundedDeltaSectionData::Absent);
     };
-    if entry.size > MAX_DELTA_SECTION_BINDING_BYTES {
-        log::warn!(
-            "[PRL] {section_name} raw payload is {} B, above the {} B storage-binding floor; disabling before decode",
-            entry.size,
-            MAX_DELTA_SECTION_BINDING_BYTES,
-        );
-        return Ok(BoundedDeltaSectionData::OverBindingFloor);
-    }
-
-    let data = prl_format::section_data_from_bytes(file_data, meta, section_id as u32)?
-        .expect("section metadata was present immediately before raw-byte lookup");
-    debug_assert_eq!(data.len() as u64, entry.size);
-    if data.len() as u64 > MAX_DELTA_SECTION_BINDING_BYTES {
+    if data.len() as u64 > max_binding_bytes {
         log::warn!(
             "[PRL] {section_name} raw payload is {} B, above the {} B storage-binding floor; disabling before decode",
             data.len(),
-            MAX_DELTA_SECTION_BINDING_BYTES,
+            max_binding_bytes,
         );
         return Ok(BoundedDeltaSectionData::OverBindingFloor);
     }
@@ -1815,6 +1821,16 @@ pub(crate) fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
 }
 
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_delta_binding_limit(path, MAX_DELTA_SECTION_BINDING_BYTES)
+}
+
+/// Internal load entry point with an injectable per-section binding floor.
+/// Production always supplies the desktop floor above; tests use a tiny value
+/// to exercise the complete resolution path without a 128 MiB fixture.
+fn load_prl_with_delta_binding_limit(
+    path: &str,
+    max_delta_section_binding_bytes: u64,
+) -> Result<LevelWorld, PrlLoadError> {
     let path_ref = Path::new(path);
     if !path_ref.exists() {
         return Err(PrlLoadError::FileNotFound(path.to_string()));
@@ -2323,45 +2339,48 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         };
 
     // Optional — absent → SH compose pass falls back to base→total copy.
-    let delta_sh_volumes: Option<DeltaShVolumesSection> = match read_bounded_delta_section_data(
-        &file_data,
-        &meta,
-        SectionId::DeltaShVolumes,
-        "DeltaShVolumes",
-    )? {
-        BoundedDeltaSectionData::Data(data) => {
-            let section = DeltaShVolumesSection::from_bytes(data)?;
+    let delta_sh_volumes: Option<DeltaShVolumesSection> =
+        match read_bounded_delta_section_data_with_limit(
+            &file_data,
+            &meta,
+            SectionId::DeltaShVolumes,
+            "DeltaShVolumes",
+            max_delta_section_binding_bytes,
+        )? {
+            BoundedDeltaSectionData::Data(data) => {
+                let section = DeltaShVolumesSection::from_bytes(data)?;
 
-            // Validation (mirrors the section-version reject path): a mismatched
-            // bake must fail the load with a clear error rather than feed the
-            // compose pass garbage. `sh_volume` (id 34) was loaded above.
-            validate_delta_sh(&section, sh_volume.as_ref())?;
+                // Validation (mirrors the section-version reject path): a mismatched
+                // bake must fail the load with a clear error rather than feed the
+                // compose pass garbage. `sh_volume` (id 34) was loaded above.
+                validate_delta_sh(&section, sh_volume.as_ref())?;
 
-            log::info!(
-                "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
+                log::info!(
+                    "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
                      ({} CSR entr(y/ies), {} delta subblock halves)",
-                section.animation_descriptor_indices.len(),
-                section.affinity_dims[0],
-                section.affinity_dims[1],
-                section.affinity_dims[2],
-                section.affinity_lights.len(),
-                section.delta_subblocks.len(),
-            );
-            Some(section)
-        }
-        BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
-    };
+                    section.animation_descriptor_indices.len(),
+                    section.affinity_dims[0],
+                    section.affinity_dims[1],
+                    section.affinity_dims[2],
+                    section.affinity_lights.len(),
+                    section.delta_subblocks.len(),
+                );
+                Some(section)
+            }
+            BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
+        };
 
     // Optional — malformed animated-direct deltas disable only this additive
     // term. An id-45/id-34 valid-probe descriptor disagreement is different:
     // it would make compact payload offsets address the wrong tiles, so reject
     // the complete load before any renderer buffers are built.
     let animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
-        match read_bounded_delta_section_data(
+        match read_bounded_delta_section_data_with_limit(
             &file_data,
             &meta,
             SectionId::AnimatedDirectShDeltaVolumes,
             "AnimatedDirectShDeltaVolumes",
+            max_delta_section_binding_bytes,
         )? {
             BoundedDeltaSectionData::Data(data) => {
                 match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
@@ -2508,11 +2527,12 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     };
 
     let direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection> =
-        match read_bounded_delta_section_data(
+        match read_bounded_delta_section_data_with_limit(
             &file_data,
             &meta,
             SectionId::DirectShDeltaVolumes,
             "DirectShDeltaVolumes",
+            max_delta_section_binding_bytes,
         )? {
             BoundedDeltaSectionData::Data(data) => {
                 if entity_shadow_lights.is_empty() {
@@ -3086,7 +3106,10 @@ mod tests {
         write_prl_load_fixture(section, name)
     }
 
-    fn mark_section_over_binding_floor(path: &std::path::Path, section_id: SectionId) {
+    fn mark_section_out_of_bounds_above_binding_floor(
+        path: &std::path::Path,
+        section_id: SectionId,
+    ) {
         const PRL_HEADER_SIZE: usize = 8;
         const PRL_SECTION_ENTRY_SIZE: usize = 22;
         const SECTION_SIZE_OFFSET: usize = 12;
@@ -3131,8 +3154,77 @@ mod tests {
         }
     }
 
+    fn empty_delta_sh_section_bytes() -> Vec<u8> {
+        let base = OctahedralShVolumeSection::placeholder();
+        let affinity_dims = base
+            .grid_dimensions
+            .map(|dimension| dimension.div_ceil(AFFINITY_FACTOR as u32));
+        let cell_count = affinity_dims.iter().product::<u32>() as usize;
+        DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: base.tile_dimension,
+            tile_border: base.tile_border,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: (0..cell_count)
+                .map(|cell| valid_probe_mask_for_affinity_cell(&base, affinity_dims, cell))
+                .collect(),
+            cell_levels: vec![0; cell_count],
+            affinity_offsets: vec![0; cell_count + 1],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        }
+        .to_bytes()
+    }
+
+    fn empty_animated_direct_sh_delta_section_bytes() -> Vec<u8> {
+        let base = OctahedralShVolumeSection::placeholder();
+        let affinity_dims = base
+            .grid_dimensions
+            .map(|dimension| dimension.div_ceil(AFFINITY_FACTOR as u32));
+        let cell_count = affinity_dims.iter().product::<u32>() as usize;
+        AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: base.tile_dimension,
+            tile_border: base.tile_border,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: (0..cell_count)
+                .map(|cell| valid_probe_mask_for_affinity_cell(&base, affinity_dims, cell))
+                .collect(),
+            cell_levels: vec![0; cell_count],
+            affinity_offsets: vec![0; cell_count + 1],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        }
+        .to_bytes()
+    }
+
+    fn empty_direct_sh_delta_section_bytes() -> Vec<u8> {
+        let base = OctahedralShVolumeSection::placeholder();
+        let affinity_dims = base
+            .grid_dimensions
+            .map(|dimension| dimension.div_ceil(AFFINITY_FACTOR as u32));
+        let cell_count = affinity_dims.iter().product::<u32>() as usize;
+        DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: base.tile_dimension,
+            tile_border: base.tile_border,
+            valid_probe_masks: (0..cell_count)
+                .map(|cell| valid_probe_mask_for_affinity_cell(&base, affinity_dims, cell))
+                .collect(),
+            cell_levels: vec![0; cell_count],
+            affinity_offsets: vec![0; cell_count + 1],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        }
+        .to_bytes()
+    }
+
+    // Regression: oversized malformed metadata bypassed container-bounds validation.
     #[test]
-    fn binding_floor_rejects_each_delta_section_before_borrowing_bytes() {
+    fn binding_floor_validates_each_delta_section_container_before_degrading() {
         for (section_id, name) in [
             (SectionId::DeltaShVolumes, "DeltaShVolumes"),
             (SectionId::DirectShDeltaVolumes, "DirectShDeltaVolumes"),
@@ -3154,14 +3246,128 @@ mod tests {
                 }],
             };
 
-            let outcome = read_bounded_delta_section_data(&[], &meta, section_id, name)
-                .expect("the binding-floor check must precede byte borrowing");
+            let result = read_bounded_delta_section_data(&[], &meta, section_id, name);
+            assert!(
+                matches!(
+                    result,
+                    Err(PrlLoadError::FormatError(
+                        prl_format::FormatError::SectionOutOfBounds { .. }
+                    ))
+                ),
+                "{name} must reject invalid container bounds before applying the binding floor"
+            );
+        }
+    }
+
+    // Regression: valid over-floor payloads must retain the established degradation path.
+    #[test]
+    fn binding_floor_degrades_each_valid_oversized_delta_section_after_borrowing() {
+        let file_data = [0_u8; 2];
+        for (section_id, name) in [
+            (SectionId::DeltaShVolumes, "DeltaShVolumes"),
+            (SectionId::DirectShDeltaVolumes, "DirectShDeltaVolumes"),
+            (
+                SectionId::AnimatedDirectShDeltaVolumes,
+                "AnimatedDirectShDeltaVolumes",
+            ),
+        ] {
+            let meta = prl_format::ContainerMeta {
+                header: prl_format::Header {
+                    version: prl_format::CURRENT_VERSION,
+                    section_count: 1,
+                },
+                sections: vec![prl_format::SectionEntry {
+                    section_id: section_id as u32,
+                    offset: 0,
+                    size: file_data.len() as u64,
+                    version: 1,
+                }],
+            };
+
+            let outcome =
+                read_bounded_delta_section_data_with_limit(&file_data, &meta, section_id, name, 1)
+                    .expect("valid container bounds must reach the binding-floor policy");
             assert!(matches!(outcome, BoundedDeltaSectionData::OverBindingFloor));
         }
     }
 
     #[test]
-    fn over_binding_floor_id27_degrades_while_malformed_id27_still_fails_load() {
+    fn load_prl_degrades_valid_over_floor_id27_and_id45_independently() {
+        for (section_id, name, data) in [
+            (
+                SectionId::DeltaShVolumes,
+                "DeltaShVolumes",
+                empty_delta_sh_section_bytes(),
+            ),
+            (
+                SectionId::AnimatedDirectShDeltaVolumes,
+                "AnimatedDirectShDeltaVolumes",
+                empty_animated_direct_sh_delta_section_bytes(),
+            ),
+        ] {
+            let binding_floor = u64::try_from(data.len() - 1)
+                .expect("fixture must fit the test-only binding-floor type");
+            let path = write_prl_load_fixture(
+                [prl_format::SectionBlob {
+                    section_id: section_id as u32,
+                    version: 1,
+                    data,
+                }],
+                &format!("postretro_test_{name}_binding_floor_degrade.prl"),
+            );
+
+            let world = load_prl_with_delta_binding_limit(path.to_str().unwrap(), binding_floor)
+                .expect("a valid over-floor optional delta section must degrade, not fail loading");
+            match section_id {
+                SectionId::DeltaShVolumes => assert!(world.delta_sh_volumes.is_none()),
+                SectionId::AnimatedDirectShDeltaVolumes => {
+                    assert!(world.animated_direct_sh_delta_volumes.is_none())
+                }
+                _ => unreachable!("table contains only independently degradable delta sections"),
+            }
+            std::fs::remove_file(path).ok();
+        }
+    }
+
+    #[test]
+    fn load_prl_over_floor_id41_clears_paired_entity_shadow_selection() {
+        let direct_delta = empty_direct_sh_delta_section_bytes();
+        let binding_floor = u64::try_from(direct_delta.len() - 1)
+            .expect("fixture must fit the test-only binding-floor type");
+        let path = write_prl_load_fixture(
+            [
+                static_alpha_lights_blob(),
+                prl_format::SectionBlob {
+                    section_id: SectionId::DirectShVolume as u32,
+                    version: 1,
+                    data: DirectShVolumeSection::placeholder().to_bytes(),
+                },
+                prl_format::SectionBlob {
+                    section_id: SectionId::EntityShadowLights as u32,
+                    version: 1,
+                    data: EntityShadowLightsSection {
+                        light_indices: vec![0],
+                    }
+                    .to_bytes(),
+                },
+                prl_format::SectionBlob {
+                    section_id: SectionId::DirectShDeltaVolumes as u32,
+                    version: 1,
+                    data: direct_delta,
+                },
+            ],
+            "postretro_test_direct_sh_binding_floor_pair_clear.prl",
+        );
+
+        let world = load_prl_with_delta_binding_limit(path.to_str().unwrap(), binding_floor)
+            .expect("an over-floor id-41 section must degrade through the load path");
+        assert!(world.direct_sh_delta_volumes.is_none());
+        assert!(world.entity_shadow_lights.is_empty());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn out_of_bounds_id27_above_binding_floor_still_fails_load() {
         let oversized_path = write_cell_visibility_load_fixture(
             Some(prl_format::SectionBlob {
                 section_id: SectionId::DeltaShVolumes as u32,
@@ -3170,13 +3376,18 @@ mod tests {
             }),
             "postretro_test_delta_sh_over_binding_floor.prl",
         );
-        mark_section_over_binding_floor(&oversized_path, SectionId::DeltaShVolumes);
+        mark_section_out_of_bounds_above_binding_floor(&oversized_path, SectionId::DeltaShVolumes);
 
-        let world = load_prl(oversized_path.to_str().unwrap())
-            .expect("an oversized id-27 section degrades before decoding");
-        assert!(world.delta_sh_volumes.is_none());
+        let err = load_prl(oversized_path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            PrlLoadError::FormatError(prl_format::FormatError::SectionOutOfBounds { .. })
+        ));
         std::fs::remove_file(&oversized_path).ok();
+    }
 
+    #[test]
+    fn malformed_id27_with_valid_container_bounds_still_fails_load() {
         let malformed_path = write_cell_visibility_load_fixture(
             Some(prl_format::SectionBlob {
                 section_id: SectionId::DeltaShVolumes as u32,
@@ -3193,7 +3404,7 @@ mod tests {
     }
 
     #[test]
-    fn over_binding_floor_id45_degrades_without_decoding() {
+    fn out_of_bounds_id45_above_binding_floor_still_fails_load() {
         let path = write_cell_visibility_load_fixture(
             Some(prl_format::SectionBlob {
                 section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
@@ -3202,18 +3413,21 @@ mod tests {
             }),
             "postretro_test_animated_direct_sh_over_binding_floor.prl",
         );
-        mark_section_over_binding_floor(&path, SectionId::AnimatedDirectShDeltaVolumes);
-        let capture = LogCapture::start();
+        mark_section_out_of_bounds_above_binding_floor(
+            &path,
+            SectionId::AnimatedDirectShDeltaVolumes,
+        );
 
-        let world = load_prl(path.to_str().unwrap())
-            .expect("an oversized id-45 section degrades before decoding");
-        assert!(world.animated_direct_sh_delta_volumes.is_none());
-        capture.assert_logged_once(Level::Warn, "AnimatedDirectShDeltaVolumes raw payload is");
+        let err = load_prl(path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            PrlLoadError::FormatError(prl_format::FormatError::SectionOutOfBounds { .. })
+        ));
         std::fs::remove_file(path).ok();
     }
 
     #[test]
-    fn over_binding_floor_id41_clears_the_paired_entity_shadow_selection() {
+    fn out_of_bounds_id41_above_binding_floor_still_fails_load() {
         let path = write_prl_load_fixture(
             vec![
                 static_alpha_lights_blob(),
@@ -3238,12 +3452,13 @@ mod tests {
             ],
             "postretro_test_direct_sh_over_binding_floor.prl",
         );
-        mark_section_over_binding_floor(&path, SectionId::DirectShDeltaVolumes);
+        mark_section_out_of_bounds_above_binding_floor(&path, SectionId::DirectShDeltaVolumes);
 
-        let world = load_prl(path.to_str().unwrap())
-            .expect("an oversized id-41 section degrades before decoding");
-        assert!(world.direct_sh_delta_volumes.is_none());
-        assert!(world.entity_shadow_lights.is_empty());
+        let err = load_prl(path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            PrlLoadError::FormatError(prl_format::FormatError::SectionOutOfBounds { .. })
+        ));
         std::fs::remove_file(path).ok();
     }
 

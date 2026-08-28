@@ -46,6 +46,7 @@ pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_coarsen;
 pub mod sh_group;
+pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
 pub mod size_options;
 pub mod texture_mips;

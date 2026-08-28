@@ -41,6 +41,9 @@ pub mod texture_cache_keys;
 pub mod texture_names;
 pub mod trigger_volumes;
 
+#[cfg(test)]
+mod prm_test_fixtures;
+
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use thiserror::Error;

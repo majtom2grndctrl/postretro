@@ -18,9 +18,10 @@ fn clear_kinematic_mover_frame_state(
 
 impl Renderer {
     /// Upload one draw contract per collection. Level installation resolves every
-    /// emitter and projectile consumer before this boundary; duplicate calls are
-    /// reported and rejected by the smoke pass rather than silently overriding an
-    /// accepted descriptor's cadence or emissive strength.
+    /// emitter and projectile consumer from the CPU-normalized frame list before
+    /// this boundary; duplicate calls are reported and rejected by the smoke pass
+    /// rather than silently overriding an accepted descriptor's cadence or
+    /// emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,

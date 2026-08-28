@@ -59,6 +59,37 @@ pub struct SpriteFrame {
     pub height: u32,
 }
 
+/// Keep the frames that can share one texture-array extent.
+///
+/// Collection loaders call this before returning, so downstream animation
+/// timing and renderer upload observe the same surviving frame count.
+pub fn normalize_sprite_frames(mut frames: Vec<SpriteFrame>) -> Option<Vec<SpriteFrame>> {
+    let first = frames.first()?;
+    let width = first.width;
+    let height = first.height;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut frame_index = 0usize;
+    frames.retain(|frame| {
+        let keep = frame.width == width && frame.height == height;
+        if !keep {
+            log::warn!(
+                "[Smoke] Frame {frame_index} size {}x{} differs from frame 0 {}x{} — dropping",
+                frame.width,
+                frame.height,
+                width,
+                height,
+            );
+        }
+        frame_index += 1;
+        keep
+    });
+
+    (!frames.is_empty()).then_some(frames)
+}
+
 /// Load an authored sprite reference relative to the texture root. A `.png`
 /// reference names one exact frame; every other reference names a sequential
 /// collection directory.
@@ -97,7 +128,8 @@ fn load_frame(path: &Path) -> Option<SpriteFrame> {
 
 /// Load all frames for a sprite collection (e.g., `smoke_00.png`, `spark_01.png`, …)
 /// from `textures/<collection>/`. Returns `None` if no frames are found; startup
-/// callers substitute a 1x1 white frame before renderer registration.
+/// callers substitute a 1x1 white frame before renderer registration. Returned
+/// frames share frame zero's dimensions; mismatches are dropped before return.
 pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<Vec<SpriteFrame>> {
     if collection.is_empty() {
         return None;
@@ -150,11 +182,7 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
         .filter_map(|(_, path)| load_frame(path))
         .collect();
 
-    if frames.is_empty() {
-        None
-    } else {
-        Some(frames)
-    }
+    normalize_sprite_frames(frames)
 }
 
 // --- Tests ---
@@ -167,6 +195,38 @@ mod tests {
     fn frame_duration_basic() {
         assert!((frame_duration(4, 2.0) - 0.5).abs() < 1e-6);
         assert!((frame_duration(0, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sprite_frame_normalization_keeps_only_the_first_frame_extent() {
+        // Regression: startup resolved explicit frame cadence from three decoded
+        // frames while the renderer uploaded only the two matching layers.
+        let frames = vec![
+            SpriteFrame {
+                data: vec![0; 16],
+                width: 2,
+                height: 2,
+            },
+            SpriteFrame {
+                data: vec![0; 4],
+                width: 1,
+                height: 1,
+            },
+            SpriteFrame {
+                data: vec![0; 16],
+                width: 2,
+                height: 2,
+            },
+        ];
+
+        let normalized = normalize_sprite_frames(frames).expect("two frames survive");
+
+        assert_eq!(normalized.len(), 2);
+        assert!(
+            normalized
+                .iter()
+                .all(|frame| (frame.width, frame.height) == (2, 2))
+        );
     }
 
     #[test]

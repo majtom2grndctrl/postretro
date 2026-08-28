@@ -28,7 +28,7 @@ PRL stores a deduplicated texture name list (`TextureNames` section) plus a para
 
 **Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its four slots exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All four are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
 
-**Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
+**Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm` and parses it with `PrmFile::from_bytes_partial`. Legacy world and model loaders upload present slot mip chains only from single-layer sidecars. A valid layered sidecar logs a `warn!` and replaces the full material with placeholders until a `D2Array` PRM upload path exists. A zero key produces a silent placeholder. A corrupt or missing single-layer sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
 
 **Model helper.** `cargo run -p xtask -- bake-model-textures <scene.gltf>` bakes glTF base-color sidecars without compiling a map. Output is `<workspace>/baked/materials/*.prm`: gitignored, regenerable, runtime-required.
 
@@ -200,9 +200,15 @@ Camera-facing textured quads used for pickups, projectiles, and decorative eleme
 
 Loaded from PNG at runtime. Sprite sheets are not used — each frame is an individual PNG. Animated sprites follow the sequential naming convention described in section 1.3.
 
+At collection load, the PNG decode fallback creates one renderer-owned `D2Array`
+texture: each decoded frame becomes one array layer. The former stitched horizontal
+strip layout is retired. This is a runtime PNG path only; it neither adds a baked
+sprite `.prm` sidecar nor a sprite `.prm` loader/uploader. Baked sprite sidecars and
+their `D2Array` PRM upload path remain downstream scope.
+
 ### 6.2 Lighting
 
-Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback paths are defined in `rendering_pipeline.md` §7.3.
+Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback paths are defined in `rendering_pipeline.md` §7.4.
 
 ---
 

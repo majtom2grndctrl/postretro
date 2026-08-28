@@ -125,3 +125,125 @@ which P1 is blind to). No promote/no-promote call is made here.
 - One real bake on the primary fixture: well-formed JSON (20 top-level keys,
   11-row sweep, 802 brick records), non-empty confusion matrix, byte-identical
   `.prl` (hashes above).
+
+## Task 2 — full input-cost family spectrum, all scored vs the same oracle
+
+Extends the Task 1 harness (`crates/level-compiler/src/sh_forward_predict.rs`) with
+the rest of the family, all scored against the **unchanged** Task 1 oracle (S2).
+Every family reduces to one shape — a per-probe scalar field over the brick, then
+the same L2/L1 spatial-variation proxies and the same sweep/confusion scoring;
+families differ only in the per-probe scalar. The JSON gains a `families` map keyed
+`P1`/`P2`/`distance`/`surface_distance`/`P3`; the top-level P1 surface (`sweep`,
+`bricks`, `score_vs_oracle_correlation`, `predictor_eval_seconds`,
+`best_operating_point`, `oracle_histogram`) is preserved unchanged.
+
+Oracle (unchanged from Task 1): 802 non-empty bricks, L0 190 / L1 40 / L2 572,
+map-p95 0.558, floor 0.0112.
+
+### Per-family measured findings (occlusion-test, warm build)
+
+Best near-zero-FP operating point per family (the harness picks the min-FP row when
+no zero-FP row exists — none exists for any contribution-aware family):
+
+| Family | eval wall-time | score↔oracle r | best t | FP-rate (bricks) | recovered-savings | agreement |
+|--------|---------------|----------------|--------|------------------|-------------------|-----------|
+| **P1** contribution geom | **0.0058 s** | −0.198 | 0.01 | **0.1646** (132) | 0.562 (344/612) | 0.503 |
+| **P2** P1 + occlusion | **0.2230 s** | −0.213 | 0.01 | **0.1658** (133) | 0.655 (401/612) | 0.572 |
+| **P3** direct-field ceiling | **0.0133 s** | −0.214 | 0.05 | **0.1658** (133) | 0.665 (407/612) | 0.572 |
+| distance (control) | 0.0022 s | −0.169 | 0.01 | 0.0461 (37) | 0.131 (80/612) | 0.198 |
+| surface_distance (control) | 0.1597 s | +0.026 | 0.075 | 0.0362 (29) | 0.239 (146/612) | 0.279 |
+
+Full FP-vs-recovered sweeps in `occlusion-test.forward-predict.json`
+(`families[*].sweep[]`). FP-floor / recovered-ceiling over the sweep:
+P1 0.1646..0.1920 (rec 0.562..0.788); P2 0.1658..0.1820 (rec 0.655..0.802);
+P3 0.1658..0.1820 (rec 0.655..0.802).
+
+### Reads
+
+- **The ~16.5% unsafe-FP floor is NOT occlusion-driven, and NOT a cheap-signal
+  artifact.** Adding a per-light BVH shadow test (P2) moves the FP floor from 132
+  to 133 bricks — it does not shrink it; occlusion only *raises recovered savings*
+  (0.562 → 0.655) at the same floor. The P3 direct-field **ceiling** — the richest
+  available signal, the actual baked direct-at-probe field — floors at the *same*
+  133 bricks (0.1658). So on this fixture no forward signal, however rich, reaches
+  a near-zero-FP operating point; the FP floor is structural to the fixture, not a
+  poverty of the cheap predictors.
+- **Cost side (per-family, measured).** P1 0.0058 s and the distance control
+  0.0022 s are effectively free; P2's per-light shadow rays cost 0.223 s (≈40× P1,
+  still a small fraction of the base-indirect bake — SH Bake stage 0.25 s warm,
+  and far below a cold 256-ray hemisphere bake); surface_distance 0.160 s is the
+  triangle-scan control. Cost is not the bar that fails — accuracy is.
+- **Distance / surface-distance refutation.** The distance control reaches a low
+  FP (0.046) only by refusing to coarsen — it recovers just 13% of the oracle's
+  coarsenable bricks (80/612); surface_distance has essentially no signal
+  (r = +0.026) and recovers 24% at FP 0.036. Contribution-aware P1/P2 recover
+  56–66% of savings but pay the 16.5% FP; the distance controls trade nearly all
+  the savings away to look safe. This reproduces the archived classifier's
+  invalidation: distance cannot separate coarsenable from dense-needed bricks.
+  (Correlations on this delta-indirect fixture are all weak — contribution-aware
+  −0.20/−0.21 vs distance −0.17 — far below the coarsenability spike's −0.765 for
+  angle-off-cone-axis; the operational separation is in the recovered-savings /
+  FP tradeoff, not the raw Pearson r. P1's delivered-magnitude-*gradient* score
+  remains a much blunter contribution signal than raw angle-off-cone.)
+
+### P3 open-question measurement (id 35 before or after id 34)
+
+**Measured, not assumed: id 35 (base direct) bakes AFTER id 34 (base indirect).**
+The compiler stage order (`pipeline.rs` `STAGE_ORDER`) is ShBake (id 34) →
+DeltaShBake (id 27) → DirectShBake (id 35) → AnimatedDirectShBake; the base-direct
+field does not exist when the base-indirect bake it would predict runs.
+Marginal cost of the direct field: DirectShBake stage **0.20 s** warm (vs ShBake
+0.25 s). Recorded in the report as `p3_direct_baked_before_base_indirect: false`
+with `p3_ordering_note`. **Consequence:** P3 is an accuracy *ceiling* only — never
+a viable cheap pre-bake predictor — and even as a ceiling it does not clear the FP
+bar on this fixture (see above).
+
+### `pub(crate)` visibility added (reported, not hidden)
+
+Three tested primitives were exposed (minimal; no logic change), preferring reuse
+of the existing tested code over re-deriving ray/triangle math (per the task
+guidance and Task 1's finding that most were private):
+
+- `sh_bake::segment_clear` `fn` → `pub(crate) fn` — P2's per-light corner shadow
+  test against the bake BVH (constructs the already-`pub(crate)` `RaytracingCtx`).
+- `sh_analyze::decode_base_direct_tile` `fn` → `pub(crate) fn` — P3 reads the baked
+  id-35 direct tile per probe (reuses the tested decode instead of re-implementing
+  the atlas addressing).
+- `sdf_bake::point_triangle_distance_sq` `fn` → `pub(crate) fn` — the
+  surface-distance control's nearest-triangle kernel (the AABB cheap-reject loop is
+  re-inlined in the harness; only the delicate barycentric kernel is hoisted).
+
+Routing: the bake BVH (`&bvh`, `&bvh_primitives`) and `&geo_result` are now threaded
+from `pipeline.rs::run_sh_forward_predict` into `ForwardPredictInputs` (following
+Task 1's base-section routing at the `run_sh_analysis` seam), as Task 1 anticipated
+for P2 occlusion and the surface-distance control.
+
+### Further drift from the plan's named symbols
+
+- **P1 never predicts L1; distance/surface do occasionally.** L1-evaluability is
+  identical across families (all 8 brick corners present). The delivered-magnitude
+  field is smooth enough that L2 passes before L1 is ever needed, so P1/P2/P3's
+  confusion middle row is ~empty (mirrors Task 1's L1-rarity note and the oracle's
+  own 40 L1 bricks); the distance fields fail L2 but pass L1 slightly more often.
+- **Predictor score anchor renamed** `mean_delivered` → `mean_scalar` in
+  `BrickPrediction` (the field is now a generic per-probe scalar mean — delivered
+  magnitude for P1/P2, distance for the controls, baked direct for P3), and the
+  continuous score is still the L2 proxy.
+
+## Verification (Task 2)
+
+- `cargo check -p postretro-level-compiler` — clean.
+- `cargo test -p postretro-level-compiler --bin prl-build sh_forward_predict` —
+  **14 passed** (Task 1's 9 + 5 new: the occlusion primitive zeros a
+  BVH-blocked light and keeps an unobstructed one; nearest-light-distance is
+  `None` without finite-origin lights; nearest-surface-distance is `None` without
+  geometry; the distance-family brick signal is well-formed; the P3 scalar is
+  `None` without a base-direct section; and the empty-grid S3 case yields a
+  well-formed empty sweep for EVERY family).
+- S1 re-confirmed: `occlusion-test.map` baked with and without
+  `--sh-forward-predict` → SHA256 identical, `1bf9ac8a213cbe5540b106a0779ab07af0a7dbbd88f4661fffd6ff3fd66d5f60`
+  (127,702,229 bytes) on both, matching Task 1's baseline. (~127 MB `.prl` outputs
+  deleted after.)
+- One real harness run: all five families populate `families` with non-empty
+  confusion matrices and 802 brick records each; the top-level P1 surface is
+  unchanged from Task 1.

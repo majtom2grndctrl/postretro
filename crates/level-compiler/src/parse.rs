@@ -904,8 +904,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             // — both feed the same id-41 coarsening protection input (unioned
             // in `pipeline.rs::apply_coarsen_classification`).
             //
-            // The classname is PROVISIONAL: B4's FGD entity pins the final name;
-            // update this string (and the FGD) together when it lands.
             if classname == "sh_protect_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
                 let name = props

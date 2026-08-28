@@ -896,6 +896,29 @@ mod tests {
         }
     }
 
+    /// Direct-delta section for one x-row of all-valid affinity cells, with a
+    /// spatially uniform RGB delta per cell.
+    fn direct_delta_row(values: &[f32]) -> DirectShDeltaVolumesSection {
+        let mut sub = Vec::with_capacity(values.len() * PROBES_PER_CELL * 4);
+        for &value in values {
+            let h = f32_to_f16_bits(value);
+            for _ in 0..PROBES_PER_CELL {
+                sub.extend([h, h, h, 0]);
+            }
+        }
+        DirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [values.len() as u32, 1, 1],
+            tile_dimension: 1,
+            tile_border: 0,
+            valid_probe_masks: vec![u64::MAX; values.len()],
+            cell_levels: vec![0u8; values.len()],
+            affinity_offsets: (0..=values.len() as u32).collect(),
+            affinity_lights: vec![0; values.len()],
+            delta_subblocks: sub,
+        }
+    }
+
     fn all_valid(dims: [u32; 3]) -> Vec<u8> {
         vec![1u8; dims[0] as usize * dims[1] as usize * dims[2] as usize]
     }
@@ -1092,5 +1115,33 @@ mod tests {
             vec![L0],
             "a base-invalid brick must be L0 regardless of the dense section mask"
         );
+    }
+
+    #[test]
+    fn provider_protection_keeps_id41_l0_and_smooths_adjacent_l2_to_l1() {
+        // P1/I2/I5: both direct bricks would normally coarsen to L2. The
+        // mapper/CLI union reaches this provider as `protect_aabbs`; protection
+        // runs before seam smoothing, so the protected first brick remains L0
+        // and its participating face-adjacent neighbor is demoted to L1.
+        let dims = [8, 4, 4];
+        let validity = all_valid(dims);
+        let base = bright_base_indirect(dims, 10.0);
+        let delta = direct_delta_row(&[0.5, 0.5]);
+        let deltas = DeltaSectionsRef {
+            direct: Some(&delta),
+            ..Default::default()
+        };
+        let protect = [[0.1, 0.1, 0.1, 0.2, 0.2, 0.2]];
+
+        let out = classify_direct_levels(
+            &base,
+            None,
+            deltas,
+            grid_ref(dims, &validity),
+            &protect,
+            &CoarsenParams::default(),
+        );
+
+        assert_eq!(out, vec![L0, L1]);
     }
 }

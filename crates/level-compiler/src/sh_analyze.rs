@@ -15,7 +15,7 @@
 //! `brick_world_aabb`, `DeltaView`, `AnalyzeInputs`, `LevelKind` — are now
 //! `pub(crate)` and reused by `sh_coarsen::classify_direct_levels` to compute
 //! per-cell coarsening levels, which **do** change emitted `delta_subblocks`
-//! bytes on a `--sh-coarsen` bake. Treat those primitives as producer-facing.
+//! bytes on the production id-41 path. Treat those primitives as producer-facing.
 //!
 //! See `context/lib/experimental_spikes.md`: a spike cuts scope and hardening,
 //! not rigor. This pass runs entirely CPU-side in the compiler, per 4×4×4 brick
@@ -464,7 +464,7 @@ fn percentile(v: &mut [f32], p: f32) -> f32 {
         return 0.0;
     }
     // NaN-tolerant: a corrupt/garbage atlas texel can decode to NaN, and under
-    // `--sh-coarsen` this stat gates a real bake — treat NaN as equal rather
+    // production coarsening this stat gates a real bake — treat NaN as equal rather
     // than panicking the sort (mirrors the classifier's own guarded sort).
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let idx = ((v.len() as f32 - 1.0) * p).round() as usize;

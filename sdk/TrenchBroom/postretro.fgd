@@ -24,6 +24,14 @@
     // maps need to author this. Non-finite / <= 0 values are warned and the
     // default is used. The `--lightmap-density` CLI flag overrides this KVP.
     _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
+    // Direct SH-delta coarsening is enabled when this key is absent. Choose
+    // Uniform only as a per-map quality fallback; ids 27/45 remain uniform in
+    // either mode.
+    _sh_coarsen(choices) : "Direct SH delta probe density" : 1 =
+    [
+        0 : "Uniform L0 (disable id-41 coarsening)"
+        1 : "Adaptive id 41 (default)"
+    ]
     // Compiler-owned thresholds for selecting baked static lights that may cast
     // runtime shadows onto moving entities. These tune the heuristic per map;
     // individual lights do not carry an opt-in/opt-out KVP.

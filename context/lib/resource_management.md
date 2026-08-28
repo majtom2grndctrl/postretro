@@ -200,9 +200,15 @@ Camera-facing textured quads used for pickups, projectiles, and decorative eleme
 
 Loaded from PNG at runtime. Sprite sheets are not used — each frame is an individual PNG. Animated sprites follow the sequential naming convention described in section 1.3.
 
+At collection load, the PNG decode fallback creates one renderer-owned `D2Array`
+texture: each decoded frame becomes one array layer. The former stitched horizontal
+strip layout is retired. This is a runtime PNG path only; it neither adds a baked
+sprite `.prm` sidecar nor a sprite `.prm` loader/uploader. Baked sprite sidecars and
+their `D2Array` PRM upload path remain downstream scope.
+
 ### 6.2 Lighting
 
-Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback paths are defined in `rendering_pipeline.md` §7.3.
+Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback paths are defined in `rendering_pipeline.md` §7.4.
 
 ---
 

@@ -1675,6 +1675,44 @@ mod tests {
     }
 
     #[test]
+    fn explicit_sprite_cadence_uses_the_normalized_frame_count() {
+        // Regression: three decoded frames produced a three-frame loop period
+        // even when only two shared the renderer's array extent.
+        let frames = vec![
+            postretro_render_cpu::smoke::SpriteFrame {
+                data: vec![0; 16],
+                width: 2,
+                height: 2,
+            },
+            postretro_render_cpu::smoke::SpriteFrame {
+                data: vec![0; 4],
+                width: 1,
+                height: 1,
+            },
+            postretro_render_cpu::smoke::SpriteFrame {
+                data: vec![0; 16],
+                width: 2,
+                height: 2,
+            },
+        ];
+        let frames = postretro_render_cpu::smoke::normalize_sprite_frames(frames)
+            .expect("two frames share the collection extent");
+        let candidates = [sprite_candidate(
+            "plasma.projectile.visual.body",
+            None,
+            0.0,
+            Some(50.0),
+        )];
+
+        let (lifetime, _) =
+            resolve_sprite_collection_draw_contract("sprites/shared", &candidates, frames.len())
+                .expect("one consumer resolves");
+
+        assert!((lifetime - 0.1).abs() <= f32::EPSILON);
+        assert!((lifetime / frames.len() as f32 - 0.05).abs() <= f32::EPSILON);
+    }
+
+    #[test]
     fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {
         use crate::scripting::builtins::data_archetype_test_fixtures::{
             behavior_enemy_descriptor, mesh_descriptor,

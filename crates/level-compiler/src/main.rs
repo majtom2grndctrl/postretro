@@ -561,18 +561,12 @@ struct Args {
     /// analysis JSON. `None` with `sh_analyze` set defaults to
     /// `<output>.sh-analysis.json`. Ignored when `sh_analyze` is false.
     sh_analyze_out: Option<PathBuf>,
-    /// Protection-volume stand-in for the SH analysis. Each entry is a
+    /// Protection-volume stand-in for SH coarsening and analysis. Each entry is a
     /// world-space AABB `[minx, miny, minz, maxx, maxy, maxz]`; any 4×4×4 brick
     /// intersecting any AABB is forced to keep full L0 density in the
-    /// analysis's protected projection. Repeatable. Compiler-only measurement
-    /// input — never stored, never affects emitted bytes.
+    /// id-41 classifier and the analysis's protected projection. Repeatable.
+    /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
-    /// When true, run the delta-SH probe-coarsening classifier before delta
-    /// compaction: each 4×4×4 brick is assigned a per-section coarsening level
-    /// (L0/L1/L2) and coarsened bricks emit fewer stored tiles. Default off,
-    /// which bakes a uniform all-L0 grid byte-identical to the non-coarsened
-    /// path. `--sh-protect-aabb` forces intersecting bricks to L0.
-    sh_coarsen: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -610,7 +604,7 @@ fn help_text() -> String {
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
-         --sh-protect-aabb <AABB>   Force L0 for bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz in the analysis; repeatable (default: none)\n    \
+         --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -646,7 +640,6 @@ where
     let mut sh_analyze = false;
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
-    let mut sh_coarsen = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -776,9 +769,6 @@ where
             "--sh-analyze" => {
                 sh_analyze = true;
             }
-            "--sh-coarsen" => {
-                sh_coarsen = true;
-            }
             "--sh-analyze-out" => {
                 let path = args
                     .next()
@@ -831,7 +821,6 @@ where
         sh_analyze,
         sh_analyze_out,
         sh_protect_aabbs,
-        sh_coarsen,
     })
 }
 
@@ -1945,17 +1934,18 @@ mod tests {
         assert!(!parsed.sh_analyze);
         assert!(parsed.sh_analyze_out.is_none());
         assert!(parsed.sh_protect_aabbs.is_empty());
-        assert!(!parsed.sh_coarsen);
     }
 
     #[test]
-    fn parse_args_sh_coarsen_flag() {
-        let parsed =
+    fn parse_args_rejects_retired_sh_coarsen_flag() {
+        let error =
             parse_args_from(vec!["input.map".to_string(), "--sh-coarsen".to_string()].into_iter())
-                .unwrap();
-        assert!(parsed.sh_coarsen);
-        // Independent of the measurement flag.
-        assert!(!parsed.sh_analyze);
+                .expect_err("the pre-release flag has no compatibility shim");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument: --sh-coarsen")
+        );
     }
 
     #[test]

@@ -174,8 +174,13 @@ Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It 
 
 ## SH Probe Protection Volumes
 
+Direct SH-delta probe coarsening (PRL id 41) is enabled by default. To keep a
+specific map on the uniform L0 grid, set `_sh_coarsen` to `0` on `worldspawn`.
+The compiler skips classification entirely for that map. Animated/scripted
+delta sections ids 27 and 45 remain uniform L0 in either mode.
+
 `sh_protect_volume` is an invisible brush entity that forces every intersecting
-4×4×4 probe brick to L0 (full valid-probe density) in every present coarsened
+4×4×4 probe brick to L0 (full valid-probe density) in the coarsened direct
 delta section. Use it where coarsened lighting changes would be noticeable,
 such as around a small hero prop, a sharp lighting transition, or a gameplay
 focal point.

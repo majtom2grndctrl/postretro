@@ -711,6 +711,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         },
     };
 
+    // Production coarsening is default-on for direct SH deltas. Only the
+    // canonical literal `"0"` opts a map into the byte-identical uniform-L0
+    // path; absent and all other values leave the default enabled.
+    let uniform_grid_optout = get_property(&geo_map, &worldspawn_id, "_sh_coarsen")
+        .is_some_and(|value| value.trim() == "0");
+
     // Worldspawn `nav_*` navigation-bake parameters (meters, or degrees for
     // slope). Optional per-map overrides of the engine defaults in
     // `NavParams::default`; mirrors the `_lightmap_density` precedent above —
@@ -1235,6 +1241,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_waypoints,
         trigger_volumes,
         sh_protect_aabbs,
+        uniform_grid_optout,
         fog_volumes,
         fog_pixel_scale,
         initial_gravity,
@@ -5890,6 +5897,24 @@ mod tests {
             map_data.lightmap_density, None,
             "non-float `_lightmap_density` must warn and fall back to default",
         );
+    }
+
+    #[test]
+    fn parse_map_file_sh_coarsen_absent_keeps_default_enabled() {
+        let map_data = parse_worldspawn_with_kvp("");
+        assert!(!map_data.uniform_grid_optout);
+    }
+
+    #[test]
+    fn parse_map_file_sh_coarsen_zero_selects_uniform_grid() {
+        let map_data = parse_worldspawn_with_kvp("\"_sh_coarsen\" \"0\"");
+        assert!(map_data.uniform_grid_optout);
+    }
+
+    #[test]
+    fn parse_map_file_sh_coarsen_nonzero_keeps_default_enabled() {
+        let map_data = parse_worldspawn_with_kvp("\"_sh_coarsen\" \"1\"");
+        assert!(!map_data.uniform_grid_optout);
     }
 
     #[test]

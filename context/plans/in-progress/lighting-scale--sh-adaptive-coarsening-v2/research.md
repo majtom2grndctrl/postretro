@@ -678,3 +678,105 @@ unchanged would fail loud on the Stress safety fixture even though id-41-only
 coarsening passes its quality and I5 gates. Resolve that cap-policy conflict
 before promotion; do not silently coarsen harder or treat the safety fixture
 as a cap pass.
+
+## Task 5 findings — id-41-only production path (2026-08-28)
+
+This is the final consolidation for the active plan. It supersedes only the
+preceding 64 MiB cap-policy conclusion: the owner selected an unconditional
+256 MiB aggregate compiler cap, a 128 MiB raw per-section loader floor, and a
+64 MiB diagnostic authoring target. Historical three-section and 10 m results
+remain above as investigation records; they are not evidence for the shipped
+id-41-only path.
+
+The 1.0 m pairs below were baked before default activation and the final cap
+policy, with an explicit coarsen control and a 2 GiB measurement override.
+They establish the data-path result; they are **not** claims that a new
+post-policy production bake ran. Payload and direct read-volume retention are
+bytes retained relative to uniform L0, not a retained-brick percentage.
+
+### Fixture roles and measured data
+
+| Fixture | Role | Present delta sections | Aggregate payload, uniform -> id-41-only | Id-41 direct read volume / frame, uniform -> id-41-only | Resident result where recorded |
+| --- | --- | --- | ---: | ---: | --- |
+| `campaign-test.map` | Primary representative intentional-lighting win gate | 27, 41, 45 | 8,686,944 -> 6,284,448 B (72.34%) | 4,592,736 -> 2,190,240 B (47.69%) | Direct: 4,647,156 -> 2,244,660 B (48.30%); aggregate: 72.85% retained |
+| `kinematic-platform.map` | Corroborating intentional-lighting gate; exercises the kinematic path | 41 only | 5,419,296 -> 4,735,296 B (87.38%) | 5,419,296 -> 4,735,296 B (87.38%) | Direct/aggregate: 5,458,168 -> 4,774,168 B (87.47%) |
+| `stress-warren-showcase.map` | Safety/invariant floor case; not the win gate | 27, 41, 45 | 303,822,432 -> 186,099,840 B (61.25%) | 145,267,200 -> 27,544,608 B (18.96%) | Aggregate renderer-upload resident bytes: 61.35% retained; no separate id-41 resident value was recorded |
+
+Campaign is the primary positive direct-read result. Kinematic independently
+has a positive, smaller direct reduction; it deliberately has no id-27 or
+id-45 section, so it corroborates id-41 rather than the full three-section
+aggregate. Stress Warren deliberately stresses dense, enclosed geometry and
+sentinel boundaries; it is not representative evidence for expected win size.
+
+Ids 27 and 45 remain byte-identical uniform-L0 controls. Script-mutable id 27
+and animated/script-mutable id 45 have no finite bake-known runtime amplitude
+bound, so the all-unit bake state cannot prove their runtime error. On Stress,
+their unchanged payload costs are 82,235,232 B (id 27) and 76,320,000 B
+(id 45); on Campaign they are 2,464,128 B and 1,630,080 B. Kinematic emits
+neither. Safe adaptive coarsening for those sections remains separate bounded
+animation/script-contract research.
+
+### Quality and structural checks
+
+| Fixture | Id-41 envelope failures, before -> after | L0 restores / smoothing refinements | Emitted `.10/.25` failures | Participating I5 violations |
+| --- | ---: | ---: | ---: | --- |
+| Stress Warren | 38 -> 0 | 38 / 51 | 0 | 0 in ids 27, 41, 45 |
+| Campaign | 12 -> 0 | 12 / 13 | 0 | 0 in ids 27, 41, 45 |
+| Kinematic | 1 -> 0 | 1 / 0 | 0 | 0 in id 41 |
+
+I5 here is the shipped participating-cell invariant. Zero-valid L0 sentinels
+remain excluded; their raw L2-to-sentinel-L0 counts are diagnostics, not seams.
+The envelope plus post-repair error and I5 results are clean on every measured
+fixture. There is no final id-41 quality-gate failure in these measurements.
+
+The composed-atlas structural contract remains intact. The activation and
+cap/loader commits do not change renderer atlas allocation, compose texture
+stores, or downstream bind groups. The renderer's structural test pins the
+direct atlas as a filterable D2Array at group-3 binding 15, after the depth
+moments binding; current billboard and mesh/kinematic shaders retain the
+group-3/group-4 binding-15 `sh_direct_atlas` declarations, and the compose
+shaders retain `rgba16float` storage output. Prior temporary-root whole-frame
+captures are an I1 proxy only, not a direct composed-atlas golden. They do not
+replace the outstanding content-rooted visual review below.
+
+### Cap and loader consequences
+
+The final compiler policy changes the prior P5 interpretation:
+
+- Stress's id-41-only aggregate is 186,099,840 B (177.48 MiB). It is over the
+  64 MiB authoring target, so the production compiler warns with per-section
+  attribution, but it is below the 256 MiB cap and is valid.
+- Stress's retained uniform baseline is 303,822,432 B (289.75 MiB). A bake
+  producing that aggregate, including a uniform-grid opt-out, exceeds the
+  256 MiB production cap and must fail loudly. This is intended cap policy,
+  not a coarsening-quality failure or a reason to coarsen harder.
+- Campaign and Kinematic are below both the 64 MiB diagnostic target and the
+  256 MiB cap. The preceding consequences follow from the retained measured
+  payloads and the new policy; no new cap-policy map bake is claimed here.
+
+Focused compiler tests pin the 256 MiB default, the non-failing attributed
+64 MiB warning, and the no-retry hard failure for a coarsened payload over its
+cap. Focused loader tests use crafted section metadata to prove each delta
+section is rejected before byte borrowing/decode at the 128 MiB floor: id 27
+and id 45 degrade only their own additive term, while id 41 clears its paired
+entity-shadow selection and id-41 term together. The loader floor is a
+per-section runtime binding protection, not extra aggregate-cap headroom.
+
+### Promotion recommendation
+
+**Recommendation: no-promote yet; retain the now-landed id-41 default-on
+implementation pending two promote preconditions.** This is not a failed
+quality, seam, cap-policy, or loader-floor gate. The two conditions are:
+
+1. Run the representative compose measurement on an adapter with
+   `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`, then record the
+   compose-dispatch ratio and net-runtime-savings sign. The current adapter
+   lacks those features. Bake duration and CPU time are not substitutes.
+2. Complete a content-rooted manual visual seam review with normal PRM
+   materials. Temporary PRL runs use magenta checkerboard placeholders, so
+   their clean proxy captures are not material-complete visual sign-off.
+
+Once both conditions are satisfied without an objectionable seam or a negative
+net-runtime result, the measured id-41 behavior supports promotion. No further
+Stress-Warren bake is needed to reinterpret the 64 MiB target: it is a warning,
+and the 256 MiB aggregate cap is the enforced production limit.

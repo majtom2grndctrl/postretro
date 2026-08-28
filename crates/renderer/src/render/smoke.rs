@@ -151,45 +151,85 @@ struct SpriteArrayPlan<'a> {
     width: u32,
     height: u32,
     requested_frame_count: u32,
-    fell_back_to_one_layer: bool,
+    fallback: Option<SpriteArrayFallback>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpriteArrayFallback {
+    FrameLayerLimit,
+    InvalidInput,
+}
+
+impl SpriteArrayPlan<'_> {
+    fn frame_count(&self) -> u32 {
+        if self.fallback == Some(SpriteArrayFallback::InvalidInput) {
+            1
+        } else {
+            self.frames.len() as u32
+        }
+    }
 }
 
 /// Plan a safe D2-array upload from CPU-normalized frames.
 ///
-/// Collections over the granted device cap retain frame zero as a usable
-/// one-layer degradation. Returns `None` when the normalized-frame contract is
-/// violated or the device cannot accept even one layer.
+/// Collections over the granted array-layer cap retain frame zero as a usable
+/// one-layer degradation. Malformed data and extents beyond the active device
+/// limit use a 1x1 white one-layer fallback. Returns `None` only when the
+/// device cannot accept that fallback.
 fn plan_sprite_array(
     frames: &[SpriteFrame],
     max_texture_array_layers: u32,
+    max_texture_dimension_2d: u32,
 ) -> Option<SpriteArrayPlan<'_>> {
-    let first = frames.first()?;
-    let width = first.width;
-    let height = first.height;
-    if width == 0 || height == 0 || max_texture_array_layers == 0 {
+    if max_texture_array_layers == 0 || max_texture_dimension_2d == 0 {
         return None;
     }
-    if frames
-        .iter()
-        .any(|frame| frame.width != width || frame.height != height)
+    let Some(first) = frames.first() else {
+        return Some(SpriteArrayPlan {
+            frames,
+            width: 1,
+            height: 1,
+            requested_frame_count: 0,
+            fallback: Some(SpriteArrayFallback::InvalidInput),
+        });
+    };
+    let width = first.width;
+    let height = first.height;
+    let expected_rgba_bytes = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    if width == 0
+        || height == 0
+        || width > max_texture_dimension_2d
+        || height > max_texture_dimension_2d
+        || expected_rgba_bytes.is_none()
+        || frames.iter().any(|frame| {
+            frame.width != width
+                || frame.height != height
+                || Some(frame.data.len()) != expected_rgba_bytes
+        })
     {
-        return None;
+        return Some(SpriteArrayPlan {
+            frames,
+            width: 1,
+            height: 1,
+            requested_frame_count: frames.len() as u32,
+            fallback: Some(SpriteArrayFallback::InvalidInput),
+        });
     }
 
     let requested_frame_count = frames.len() as u32;
-    let fell_back_to_one_layer =
-        !sprite_frame_count_fits_device(requested_frame_count, max_texture_array_layers);
-    let upload_frame_count = if fell_back_to_one_layer {
-        1
-    } else {
-        frames.len()
-    };
+    let fallback =
+        (!sprite_frame_count_fits_device(requested_frame_count, max_texture_array_layers))
+            .then_some(SpriteArrayFallback::FrameLayerLimit);
+    let upload_frame_count = if fallback.is_some() { 1 } else { frames.len() };
     Some(SpriteArrayPlan {
         frames: &frames[..upload_frame_count],
         width,
         height,
         requested_frame_count,
-        fell_back_to_one_layer,
+        fallback,
     })
 }
 
@@ -208,6 +248,12 @@ fn warn_sprite_frame_count_exceeds_device_limit(
     log::warn!(
         "[Smoke] Collection '{collection}' requires {frame_count} sprite frame array layers, \
          exceeding device maxTextureArrayLayers {max_texture_array_layers}; falling back to frame 0 as one array layer"
+    );
+}
+
+fn warn_sprite_array_invalid_input(collection: &str) {
+    log::warn!(
+        "[Smoke][invalid-sprite-array] Collection '{collection}' has invalid sprite frame data or an extent unsupported by this device; falling back to a 1x1 white array layer"
     );
 }
 
@@ -535,22 +581,31 @@ impl SmokePass {
             );
             return;
         }
-        let max_texture_array_layers = device.limits().max_texture_array_layers;
-        let Some(plan) = plan_sprite_array(frames, max_texture_array_layers) else {
+        let limits = device.limits();
+        let max_texture_array_layers = limits.max_texture_array_layers;
+        let Some(plan) = plan_sprite_array(
+            frames,
+            max_texture_array_layers,
+            limits.max_texture_dimension_2d,
+        ) else {
             log::warn!("[Smoke] Collection '{collection}' had no usable normalized frame array");
             return;
         };
-        if plan.fell_back_to_one_layer {
-            warn_sprite_frame_count_exceeds_device_limit(
-                collection,
-                plan.requested_frame_count,
-                max_texture_array_layers,
-            );
+        match plan.fallback {
+            Some(SpriteArrayFallback::FrameLayerLimit) => {
+                warn_sprite_frame_count_exceeds_device_limit(
+                    collection,
+                    plan.requested_frame_count,
+                    max_texture_array_layers,
+                );
+            }
+            Some(SpriteArrayFallback::InvalidInput) => warn_sprite_array_invalid_input(collection),
+            None => {}
         }
         let frames = plan.frames;
         let width = plan.width;
         let height = plan.height;
-        let frame_count = frames.len() as u32;
+        let frame_count = plan.frame_count();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("Sprite Frame Array: {collection}")),
             size: wgpu::Extent3d {
@@ -565,7 +620,8 @@ impl SmokePass {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        for (layer, frame) in frames.iter().enumerate() {
+        let fallback_pixel = [255u8; 4];
+        let upload_layer = |layer: u32, data: &[u8]| {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -573,11 +629,11 @@ impl SmokePass {
                     origin: wgpu::Origin3d {
                         x: 0,
                         y: 0,
-                        z: layer as u32,
+                        z: layer,
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &frame.data,
+                data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(width * 4),
@@ -589,6 +645,13 @@ impl SmokePass {
                     depth_or_array_layers: 1,
                 },
             );
+        };
+        if plan.fallback == Some(SpriteArrayFallback::InvalidInput) {
+            upload_layer(0, &fallback_pixel);
+        } else {
+            for (layer, frame) in frames.iter().enumerate() {
+                upload_layer(layer as u32, &frame.data);
+            }
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some(&format!("Sprite Frame Array View: {collection}")),
@@ -876,8 +939,12 @@ mod tests {
     }
 
     #[test]
-    fn sprite_array_plan_rejects_empty() {
-        assert!(plan_sprite_array(&[], 256).is_none());
+    fn sprite_array_plan_uses_one_layer_fallback_for_empty_input() {
+        let plan = plan_sprite_array(&[], 256, 4096).expect("1x1 fallback fits");
+        assert_eq!(plan.width, 1);
+        assert_eq!(plan.height, 1);
+        assert_eq!(plan.frame_count(), 1);
+        assert_eq!(plan.fallback, Some(SpriteArrayFallback::InvalidInput));
     }
 
     #[test]
@@ -888,7 +955,7 @@ mod tests {
             height: 2,
         };
         let input = [frame];
-        let plan = plan_sprite_array(&input, 256).unwrap();
+        let plan = plan_sprite_array(&input, 256, 2).unwrap();
         assert_eq!(plan.width, 2);
         assert_eq!(plan.height, 2);
         assert_eq!(plan.frames.len(), 1);
@@ -912,7 +979,7 @@ mod tests {
             height: 2,
         };
         let input = [red.clone(), blue.clone()];
-        let plan = plan_sprite_array(&input, 256).unwrap();
+        let plan = plan_sprite_array(&input, 256, 2).unwrap();
         assert_eq!(plan.width, 2);
         assert_eq!(plan.height, 2);
         assert_eq!(plan.frames.len(), 2);
@@ -946,12 +1013,92 @@ mod tests {
             257
         ];
 
-        let plan = plan_sprite_array(&frames, 256).expect("frame zero is a safe fallback");
+        let plan = plan_sprite_array(&frames, 256, 1).expect("frame zero is a safe fallback");
 
         assert_eq!(plan.requested_frame_count, 257);
-        assert!(plan.fell_back_to_one_layer);
+        assert_eq!(plan.fallback, Some(SpriteArrayFallback::FrameLayerLimit));
         assert_eq!(plan.frames.len(), 1);
         assert_eq!(plan.frames[0].data, vec![255; 4]);
+    }
+
+    #[test]
+    fn sprite_array_plan_accepts_extents_at_the_device_limit() {
+        let input = [SpriteFrame {
+            data: vec![0; 4 * 3 * 3],
+            width: 3,
+            height: 3,
+        }];
+
+        let plan = plan_sprite_array(&input, 1, 3).expect("extent at limit fits");
+
+        assert_eq!(plan.width, 3);
+        assert_eq!(plan.height, 3);
+        assert_eq!(plan.fallback, None);
+    }
+
+    #[test]
+    fn sprite_array_plan_uses_fallback_for_an_extent_over_the_device_limit() {
+        let input = [SpriteFrame {
+            data: vec![0; 4 * 2 * 3],
+            width: 2,
+            height: 3,
+        }];
+
+        let plan = plan_sprite_array(&input, 1, 2).expect("1x1 fallback fits");
+
+        assert_eq!(plan.width, 1);
+        assert_eq!(plan.height, 1);
+        assert_eq!(plan.frame_count(), 1);
+        assert_eq!(plan.fallback, Some(SpriteArrayFallback::InvalidInput));
+    }
+
+    #[test]
+    fn sprite_array_plan_uses_fallback_for_short_or_long_rgba_payloads() {
+        for data_len in [15, 17] {
+            let input = [SpriteFrame {
+                data: vec![0; data_len],
+                width: 2,
+                height: 2,
+            }];
+
+            let plan = plan_sprite_array(&input, 1, 2).expect("1x1 fallback fits");
+
+            assert_eq!(plan.width, 1, "data length {data_len}");
+            assert_eq!(plan.height, 1, "data length {data_len}");
+            assert_eq!(plan.frame_count(), 1, "data length {data_len}");
+            assert_eq!(plan.fallback, Some(SpriteArrayFallback::InvalidInput));
+        }
+    }
+
+    #[test]
+    fn sprite_array_plan_uses_fallback_when_rgba_byte_count_overflows() {
+        let input = [SpriteFrame {
+            data: Vec::new(),
+            width: u32::MAX,
+            height: u32::MAX,
+        }];
+
+        let plan = plan_sprite_array(&input, 1, u32::MAX).expect("1x1 fallback fits");
+
+        assert_eq!(plan.width, 1);
+        assert_eq!(plan.height, 1);
+        assert_eq!(plan.frame_count(), 1);
+        assert_eq!(plan.fallback, Some(SpriteArrayFallback::InvalidInput));
+    }
+
+    #[test]
+    fn sprite_array_plan_uses_fallback_for_a_zero_extent() {
+        let input = [SpriteFrame {
+            data: Vec::new(),
+            width: 0,
+            height: 1,
+        }];
+
+        let plan = plan_sprite_array(&input, 1, 1).expect("1x1 fallback fits");
+
+        assert_eq!(plan.width, 1);
+        assert_eq!(plan.height, 1);
+        assert_eq!(plan.fallback, Some(SpriteArrayFallback::InvalidInput));
     }
 
     #[test]
@@ -964,6 +1111,19 @@ mod tests {
         capture.assert_logged_once(
             Level::Warn,
             "[Smoke] Collection 'test' requires 257 sprite frame array layers, exceeding device maxTextureArrayLayers 256; falling back to frame 0 as one array layer",
+        );
+    }
+
+    #[test]
+    fn invalid_sprite_collection_warns_before_gpu_upload() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let capture = LogCapture::start();
+        warn_sprite_array_invalid_input("test");
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Smoke][invalid-sprite-array] Collection 'test' has invalid sprite frame data or an extent unsupported by this device; falling back to a 1x1 white array layer",
         );
     }
 

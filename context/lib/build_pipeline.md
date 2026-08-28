@@ -384,10 +384,12 @@ semantics.
 
 World-material and model sidecars remain single-layer (`layer_count = 1`) and use
 their existing 2D runtime upload path. Writers of array-backed sidecars must cap
-`layer_count` at 256, the portable WebGPU/wgpu `max_texture_array_layers` baseline.
-The current renderer validates decoded-PNG sprite collection frame counts against the
-active adapter limit before creating its `D2Array`; parsed array-backed `.prm` upload
-is downstream work and has no renderer path yet.
+`layer_count` at 256, the portable WebGPU/wgpu `max_texture_array_layers` baseline;
+the shared writer rejects larger values. The reader accepts structurally valid larger
+counts so tools and future device-specific consumers can inspect them. Any upload path
+must still validate against its active adapter before allocation. The current renderer
+does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
+parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
 space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT

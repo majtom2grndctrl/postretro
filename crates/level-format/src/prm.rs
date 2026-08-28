@@ -673,6 +673,9 @@ fn parse_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prm_test_fixtures::{
+        SINGLE_LAYER_DIFFUSE_PAYLOAD, SINGLE_LAYER_NORMAL_PAYLOAD, SINGLE_LAYER_SPECULAR_PAYLOAD,
+    };
 
     /// Build a fully-populated `PrmFile` with four slots at modest sizes.
     fn make_four_slot_file() -> PrmFile {
@@ -778,6 +781,66 @@ mod tests {
         assert_eq!(bytes[6], 0, "the existing reserved byte stays at offset 6");
         assert_eq!(&bytes[39..43], &expected_body.to_le_bytes());
         assert_eq!(&bytes[43..45], &2u16.to_le_bytes());
+    }
+
+    #[test]
+    fn single_layer_world_bundle_preserves_legacy_slot_payload_bytes() {
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                bundle_hash: [0xD2; 32],
+                total_body_bytes: 0,
+                layer_count: 1,
+            },
+            slots: [
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8UnormSrgb,
+                    width: 2,
+                    height: 1,
+                    level_count: 2,
+                    payload: vec![
+                        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+                    ],
+                }),
+                Some(PrmSlot {
+                    format: PrmFormat::R8Unorm,
+                    width: 2,
+                    height: 1,
+                    level_count: 2,
+                    payload: vec![0x20, 0x21, 0x22],
+                }),
+                Some(PrmSlot {
+                    format: PrmFormat::Bc5RgUnorm,
+                    width: 4,
+                    height: 4,
+                    level_count: 1,
+                    payload: vec![
+                        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B,
+                        0x3C, 0x3D, 0x3E, 0x3F,
+                    ],
+                }),
+                None,
+            ],
+        };
+
+        let bytes = file.to_bytes().expect("single-layer bundle serializes");
+        assert_eq!(&bytes[0..4], b"PRM\x02");
+        assert_eq!(bytes[4], 3, "golden exercises the v3 header");
+        assert_eq!(&bytes[43..45], &1u16.to_le_bytes());
+
+        // Strip the file header before comparing the committed legacy payload
+        // bytes. Offsets are fixed by this deliberately small three-slot
+        // fixture: each preceding slot occupies its 12-byte slot header plus
+        // its byte-literal payload. Do not derive the expected regions from
+        // `to_bytes` or `slot_levels`; those are the behavior under test.
+        let body = &bytes[HEADER_SIZE..];
+        assert_eq!(&body[12..24], SINGLE_LAYER_DIFFUSE_PAYLOAD);
+        assert_eq!(&body[36..39], SINGLE_LAYER_SPECULAR_PAYLOAD);
+        assert_eq!(&body[51..67], SINGLE_LAYER_NORMAL_PAYLOAD);
+
+        // D2/single-layer upload remains a GPU/review gate: a headless unit
+        // test cannot observe a TextureView's dimension.
     }
 
     #[test]

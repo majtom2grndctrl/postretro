@@ -763,6 +763,7 @@ impl<'a> EmittedDeltaSectionRef<'a> {
 /// does not model runtime light-selection weights, signs, or cross-section
 /// composition.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg(test)]
 pub(crate) struct EmittedReconstructionError {
     pub p95: f32,
     pub max: f32,
@@ -779,6 +780,7 @@ pub(crate) struct EmittedReconstructionError {
 /// L0/L1/L2 sections are measured without assuming a uniform entry stride.
 /// L1 targets unsupported by the sparse kept-corner lattice reconstruct to
 /// zero, matching the shader rather than disappearing from the score.
+#[cfg(test)]
 pub(crate) fn emitted_reconstruction_error_by_cell(
     affinity_offsets: &[u32],
     valid_probe_masks: &[u64],

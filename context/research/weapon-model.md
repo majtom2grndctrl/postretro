@@ -14,43 +14,24 @@ paint the engine into a corner.
 > wieldable kind. Per-instance state is the foundation the looter-shooter vision
 > rests on.
 > **Related:** `context/lib/scripting.md` · `context/lib/entity_model.md` ·
-> `context/lib/input.md` · `context/research/ui-layer.md` ·
-> `context/plans/done/M10--weapon-primitives/`
+> `context/lib/networking.md` · `context/lib/input.md` ·
+> `context/research/ui-layer.md` · `context/plans/done/M10--weapon-primitives/`
 
 ---
 
 ## Amendment (2026-07) — there is no `defineWeapon`
 
-**A weapon archetype is a `weapon` block on `defineEntity`, not a standalone
-`defineWeapon`.** The §9 declaration-surface fork is settled that way; owner
-decision, 2026-07. Every `defineWeapon(...)` form below has been rewritten to
-the settled shape.
+**Settled and shipped:** a weapon archetype is a `weapon` block on
+`defineEntity`, not a standalone `defineWeapon` — the §9 declaration-surface
+fork resolved that way, owner decision 2026-07. Declaration shape and the flat
+stat fields are documented in `context/lib/entity_model.md` (Weapon
+component). Every `defineWeapon(...)` sample below is written in the settled
+block form.
 
-M10 chose the block for expedience and recorded the choice as a known cost
-(`plans/done/M10--weapon-primitives/index.md:101`: *"the §9 declaration-surface
-fork resolves the other way for the looter shape, but the movement parallel
-keeps M10 cheap and consistent"*). That cost is now withdrawn rather than
-carried: the block is the durable surface, and the looter shape is expected to
-grow inside it. Two reasons it holds. Every `define*` in the SDK is a pure
-builder returning manifest data, so a separate constructor buys no registration
-behavior a block lacks (`context/lib/scripting.md` §Mod init). And a wieldable
-is an *entity instance*, so declaring its archetype anywhere but the entity
-surface would split one concept across two authoring forms.
-
-Two further corrections to the samples below, both from shipped source:
-
-- **No `initialStats` wrapper.** Weapon stats are flat on the block —
-  `damage`, `range`, `fireRateMs`, `fireMode`, `resolution`, with `resource`
-  as the one nested tagged union. The `initialStats: { … }` grouping in the
-  original samples was never built.
-- **`augmentSlots` is unbuilt**, as is `defineAugment`. Both remain proposals;
-  they are kept below as design intent, marked. When augments land, their
-  declaration surface should follow the same settled answer unless someone
-  argues otherwise in a spec.
-
-The proposed-but-unbuilt fields in the samples (charge, augment slots, the heat
-and cell resource variants, `secondary`) are still proposals. Only the shape of
-the *declaration* is settled here.
+Still true when reading the samples below: no `initialStats` wrapper (stats
+are flat on the block, with `resource` as the one nested tagged union);
+`augmentSlots` and `defineAugment` remain unbuilt proposals, kept below as
+marked design intent (§3, §9).
 
 ---
 
@@ -126,19 +107,21 @@ Four concepts cover the surface. Archetype, instance, and augment are
 wieldable-general; the stat/fire/resolution/ammo specifics below are the weapon
 kind filling them in.
 
-- **Archetype** — the template. Script-declared as a wieldable block on an
-  entity definition (settled — see the Amendment). For a weapon: base stats, fire mode,
-  resolution mode, a **resource** (the tagged consumable model — ammo, heat, or
-  cell), per-activation `primary`/`secondary` blocks (each declaring its use and
-  the events it emits), and the augment-slot count. Immutable. Many instances per
-  archetype.
+- **Archetype** — the template; many instances share one. Declared as a
+  wieldable block on `defineEntity` (settled — see the Amendment). Base stats
+  (damage, range, fire rate, fire mode, resolution) and the ammo resource
+  variant are built — see `context/lib/entity_model.md` (Weapon component).
+  Still proposed: the per-activation `primary`/`secondary` declaration
+  surface (each declaring its use and the events it emits) and the
+  augment-slot count.
 - **Instance** — a wieldable entity carrying its kind's component (a weapon
-  carries a weapon component): a reference to its
-  archetype, mutable runtime state (for a weapon: cooldown and loaded magazine;
-  later heat, charge), instance rolls, and slotted augments. The reserve it
-  draws from is not here — it's pooled on the owning pawn (§6). The entity id *is*
-  the wieldable's identity — what inventory tracks, what a pickup is, what
-  switching repoints to.
+  carries a weapon component): a reference to its archetype, plus mutable
+  runtime state. Cooldown, loaded magazine, and the pawn-pooled reserve are
+  built (`context/lib/entity_model.md`; reserve placement/ownership:
+  `context/lib/networking.md`). Still proposed: instance rolls, slotted
+  augments, and later heat/charge runtime state. The entity id *is* the
+  wieldable's identity — what inventory tracks, what a pickup is, what
+  switching repoints to (§6 — not yet built).
 - **Augment** — a script-declared, slottable modifier. Carries stat deltas
   (additive *and* multiplicative) and/or behavior hooks (add a damage type, alter
   a fixed classifier like `reloadStyle`/`overheatBehavior`/resolution, attach an
@@ -523,23 +506,15 @@ Violating any of these is cheap to avoid now and expensive to retrofit later.
 ## 8. M10 Mapping (the first thin slice)
 
 The §3 sample is the **long-term vision shape** — the full resource union,
-per-activation blocks, charge, and the unified augment/attachment model. This
-section governs what M10 actually builds *first*. M10 weapon primitives builds,
-consistent with the invariants. The wieldable layer stays thin — just enough for
-one kind — so weapon is concrete while the machinery is named generically:
-
-- A weapon **archetype** descriptor and a weapon component on a wieldable
-  **instance entity** (not the player).
-- Player descriptor names a default weapon → spawn the instance, set the
-  active-wieldable reference. (The future pickup/switch path, used for one kind.)
-- Fire tick reads **effective stats**, which for M10 equal base stats —
-  resolution is an identity passthrough, but the seam exists.
-- Fire tick **returns event names** the caller drains into the reaction system —
-  the `landed` / `jumped` shape from the movement tick.
-- An activation resolves into an **`ActivationOutcome`** — M10 builds only the
-  `Hit(DamagePayload)` variant; the seam stays open for the rest.
-- Hit carries a **damage payload struct** (amount only for now).
-- Typed `activate` / `impact` sound events, co-located on the primary activation.
+per-activation blocks, charge, and the unified augment/attachment model. M10
+weapon primitives shipped the first thin slice, consistent with the
+invariants: an archetype descriptor and weapon component on a wieldable
+instance entity, effective-stats-as-identity-passthrough seam, the fire
+tick's drained event-name return, the `ActivationOutcome::Hit(DamagePayload)`
+baseline, and typed `activate`/`impact` sound events. See
+`context/lib/entity_model.md` (Weapon/AmmoReserve components, weapon state
+machine) and `context/lib/networking.md` (placement, fire-origin composition,
+`WeaponOwners`) for the shipped shape.
 
 M10 leaves these as open seams — not built, not blocked:
 

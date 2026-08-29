@@ -1,9 +1,13 @@
 # Cell Visibility Substrate — Design Intent
 
-> **Status:** design intent / forward-looking substrate — **NOT a ready spec.** Captures what the
-> substrate is, its intended consumers, and — the point of this doc — **how to keep it generalizable
-> and not couple it to whichever consumer lands first.** Build it *with* its first real consumer
-> (draft-plan → orchestrate, one run), not ahead of one.
+> **Status:** The baseline substrate — `perceivable`/`distance`/`aperture` for every Cell pair,
+> baked into PRL section `CellVisibility` (id 46) — shipped via
+> `context/plans/done/cell-visibility-relation/`, built foundation-first ahead of a wired consumer
+> (that plan's *Alternatives rejected* argues the divergence from this doc's original "build with
+> the first consumer" guidance, still below). This doc now holds what's still unbuilt: the
+> sightline/anti-penumbra tightening, the dynamic-geometry/destructible design, and the
+> generalizability gate for the four intended consumers below, none of which reference the
+> substrate yet.
 
 ## What it is
 
@@ -216,30 +220,26 @@ Cell-vocabulary + consumer-side policy, it's generalizable. If the second consum
 
 ## Bake-side contract — keeping the compiler output neutral
 
-The runtime contract keeps the *query* consumer-agnostic. The bake needs the mirror, or the first
-consumer's shape freezes into the PRL — worse than a runtime leak, because it's baked. Precedent is old
-and settled: Quake `vis` bakes **PVS and PHS** from one pass — the visible set (rendering) and the
-hearable set (audio/events), where PHS is PVS dilated one portal-hop. One bake, multiple derived sets;
-the coarser hearable set is the discrete ancestor of the graded coupling axes. We do the continuous
-version of a solved problem.
+The runtime contract keeps the *query* consumer-agnostic. The bake needed the mirror, or the first
+consumer's shape would freeze into the PRL — worse than a runtime leak, because it's baked. Precedent
+is old and settled: Quake `vis` bakes **PVS and PHS** from one pass — the visible set (rendering) and
+the hearable set (audio/events), where PHS is PVS dilated one portal-hop. One bake, multiple derived
+sets; the coarser hearable set is the discrete ancestor of the graded coupling axes.
 
-- **One neutral section — not per-consumer sections.** Bake the Cell-pair relation + graded axes once;
-  consumers derive their own sets. Never a `NetRelevance` / `AudioPAS` section shaped for one consumer.
-- **Full-precision graded axes — consumers quantize.** Emit `distance` / `aperture` at generous
-  fixed-point; never pre-bucket into a consumer's tiers (net send-rate bands, audio attenuation steps).
-  Pre-bucketing is the bake-side form of the runtime "output keyed by client-id" leak.
-- **Cell graph + portals are the only inputs — destructibles included, as dynamic portals.** The bake
-  reads level *geometry* (Cells, portals, destructible-region openings → blocker masks), never entity,
-  light, spawn, gameplay, or trigger-logic data. A destructible's open/closed state is a runtime input
-  like a door bit, not a bake input. Consulting gameplay freezes consumer policy into the level.
-- **Invariants are the contract, not the algorithm.** The invariant hierarchy above holds; any method
-  satisfying it is legal. The **v1 bake computes the sightline separating-plane PVS for `perceivable` and
-  Dijkstra for `distance`** — any *conservative* sightline construction qualifies (it need not be the
-  tightest anti-penumbra, only zero-false-negative). What defers is the `aperture` scalar, extracted from
-  the same planes later. Lock the output *contract* (the tuple + hierarchy) now; a looser-but-conservative
-  sightline test may tighten later without touching any consumer.
-- **Optional section → conservative fallback.** A map compiled without the section: consumers treat all
-  Cells as mutually perceivable (safe, unoptimized). Incrementally adoptable, non-breaking. Not an error.
+**Shipped as designed** — one neutral `CellVisibility` section (id 46) carrying `perceivable` +
+`distance` + `aperture` together at full fixed-point precision (no consumer-side bucketing), reading
+only Cell/portal geometry, with a conservative all-perceivable fallback when the section is absent.
+Built and documented: `context/lib/build_pipeline.md` §PRL section IDs (id 46); code in
+`level-compiler/src/cell_visibility_bake.rs`, `level-format/src/cell_visibility.rs`.
+
+**One correction to the record:** `perceivable` shipped as connected-component portal-reachability,
+not the sightline separating-plane construction this doc originally specified for v1 —
+`context/plans/done/cell-visibility-relation/` made that call explicitly (see its *Alternatives
+rejected*), leaning on the graded axes for discrimination instead. The sightline tightening itself
+stays deferred, unbuilt design (*What it is* above, `perf-anti-penumbra-pvs`); if it lands, it is an
+additive axis, never a redefinition of the now-shipped `perceivable`. Destructibles remain outside
+the bake in practice, not just by policy — the cell-graph-and-portals-only input contract is shaped
+to accept them as dynamic portals (*Dynamic geometry* above), but that consumption isn't wired.
 
 ## Build guidance
 

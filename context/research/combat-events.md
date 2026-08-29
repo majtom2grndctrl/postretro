@@ -1,10 +1,5 @@
 # Combat Events — Design Exploration
 
-> **Superseded API sketch.** Section 5's `defineCombatHandler` / `getCombatEvent`
-> / `onKill` / `grant("player.health", 25)` surface is superseded by the shipped
-> impact-policy substrate and E16 resource grants. Section 2's principles and
-> Section 6's attribution model remain valid design context.
-
 **Date investigated:** 2026-06-19
 **Status:** Pre-spec exploration. Not yet a draft plan. Captures the long-term
 target so the first limited-scope sprints don't paint the engine into a corner.
@@ -72,14 +67,18 @@ durable form, not a compromise.
 
 ## 3. The Combat Event
 
-One schema. Three moments. The moments differ in *when* they fire and *which*
-fields are meaningful, not in their type.
+**Impact and Kill shipped in a different shape than sketched below.** The
+shipped substrate is `@impact.*` reads, `defineImpactEvent` policies, and a
+per-entity-state keystone — not the three-moment schema this section
+originally proposed. See `context/lib/scripting.md` §2 ("Impact-policy
+composition", "Impact-policy evaluation") and `context/lib/entity_model.md`
+§3 (death / kill-credit). The source-id ledger shipped as designed
+(`context/plans/done/E16--source-id-ledger/`).
 
-| Moment | Verb | Fires | Frequency | Field shape |
-|--------|------|-------|-----------|-------------|
-| **Impact** | `onImpact` | Per damage application (one pellet, one tick of DoT) | High | Singular — one weapon, one zone, one target |
-| **Attack** | `onDamage` | Per attack, after its impacts resolve | Medium | Aggregate — sums, counts, per-bucket reductions |
-| **Kill** | `onKill` | Per confirmed death, once, from the sweep | Low | Reduction over the target's whole damage history |
+The per-attack aggregate moment (`onDamage`) is still unbuilt: an attack
+fires once, after its impacts resolve, carrying reductions over that
+attack's impacts — sums, counts, per-bucket totals — rather than one
+impact's singular facts.
 
 **Why per-impact *and* aggregate.** An elemental shotgun whose fire affix
 applies to two of three pellets has no single element, no single zone, no single
@@ -100,12 +99,6 @@ impacts resolve together. Hitscan does — every pellet lands in one fire tick �
 so the aggregate is clean today. Traveling projectiles (impacts arriving over
 several ticks) reopen "what is the window," and are deferred alongside
 projectiles themselves.
-
-**Field validity by moment.** A field reads its real value only on the moment
-where it is defined; elsewhere it reads the IR type-zero (`0.0` / `false`), per
-the evaluator's totality contract — no nulls. The attacker's movement state is
-meaningful on an impact, noise on a DoT kill. The attribution ledger is complete
-at the kill, partial on a single impact.
 
 ---
 
@@ -171,149 +164,10 @@ the source-id ledger. *Grant* — requires the engine resource-grant chokepoint 
 
 ## 5. Author API
 
-End-state shapes, written to win the marathon — the complete intended surface,
-not the first slice. Mirrors the existing SDK idiom: `define*` builders,
-manifest-declared descriptors with optional `levels` scoping (like reactions and
-crossings, `scripting.md` §2), the `runtime` IR namespace and `read(name)` leaf
-(§11), and a `combat` reference tree obtained inside a handler (parallel to
-`getGameState()`). TypeScript shown; Luau is the behavioral twin
-(`require("postretro")`).
-
-```ts
-// Proposed design.
-import {
-  defineMod, defineStore, defineCombatHandler,
-  getCombatEvent, is, runtime, addStore, grant, fire,
-} from "postretro";
-```
-
-**Currencies are declared store slots.** Mod-owned, freely written by combat
-policy. Engine resources (`player.health`, `player.ammo`) are never declared
-here — they are engine-owned and granted, not set.
-
-```ts
-// Proposed design.
-const { state: progression } = defineStore("progression", {
-  xp:        { type: "number", default: 0, persist: true },
-  styleMeter:{ type: "number", default: 0 },
-  // Per-weapon proficiency — the original motivating case. One slot per class.
-  xpByWeapon:{ type: "number", default: 0, perKey: true }, // xpByWeapon.shotgun, …
-});
-```
-
-**The simplest handler — flat accumulate, no IR.** A `do` of `addStore` is a
-read-modify-write the engine performs; a constant delta needs no command buffer.
-`when` is the subscription filter (a categorical/boolean predicate over the
-event) so the handler only fires for matching events.
-
-```ts
-// Proposed design.
-// "Count enemies cleared in room 3" — worldQuery/map tags applied at setup, a
-// counter incremented per kill.
-defineCombatHandler({
-  on: "kill",
-  when: is(getCombatEvent().target, "room3Enemy"),
-  do: addStore("progression.kills", 1),
-});
-```
-
-**Computed reward — behavior-IR over the combat scope.** `do` of an IR
-expression binds a `CombatScope` (the event's facts) composed with the store
-(read current, write back). Headshot kills are worth double:
-
-```ts
-// Proposed design.
-const c = getCombatEvent();
-defineCombatHandler({
-  on: "kill",
-  when: is(c.target, "grunt"),
-  do: addStore("progression.xp", runtime.select(c.killShotWasHeadshot, 100, 50)),
-});
-```
-
-**Mobility-rewarded combat (Titanfall / Turbo Overkill).** The reward reads the
-killer's movement state:
-
-```ts
-// Proposed design.
-const c = getCombatEvent();
-defineCombatHandler({
-  on: "kill",
-  do: addStore("progression.styleMeter",
-    runtime.select(is(c.attackerState, "sliding"), 50, 10)),
-});
-```
-
-**Per-weapon proficiency** — attribution decides the bucket. The credited
-weapon is a categorical fact; the per-key slot it writes is chosen from it:
-
-```ts
-// Proposed design.
-const c = getCombatEvent();
-defineCombatHandler({
-  on: "kill",
-  do: addStore(byCredit("progression.xpByWeapon", c.lastHitWeapon), 25),
-});
-```
-
-**Resource economy (Doom Eternal).** Granting engine resources uses `grant`, the
-blessed chokepoint — never a store write, because health/ammo are engine-owned
-and readonly to scripts:
-
-```ts
-// Proposed design.
-defineCombatHandler({ on: "kill", when: c.wasGloryKill,            do: grant("player.health", 25) });
-defineCombatHandler({ on: "kill", when: is(c.lastHitWeapon, "chainsaw"), do: grant("player.ammo", 20) });
-```
-
-**Damage numbers / on-hit feedback (Borderlands).** The high-frequency
-per-impact moment drives presentation. (UI binding is `ui-layer.md`'s surface;
-shown here only to demonstrate the event reaches it.)
-
-```ts
-// Proposed design.
-defineCombatHandler({
-  on: "impact",
-  do: fire("showDamageNumber", { value: c.damage, crit: c.wasCrit }),
-});
-```
-
-**Player death is one more kill handler.** `playerDied` is not a distinct event:
-
-```ts
-// Proposed design.
-defineCombatHandler({
-  on: "kill",
-  when: c.targetIsPlayer,
-  do: fire("playerDied"), // a named reaction the mod wires to its death-flow policy
-});
-```
-
-**Attribution granularity is a weapon-descriptor choice.** Each damage producer
-stamps a **source id**, defaulting to its canonical name. A mod that credits by
-damage-type instead of weapon overrides it:
-
-```ts
-// A weapon archetype is a `weapon` block on defineEntity — there is no
-// defineWeapon (see the Amendment in weapon-model.md). `creditSource` is shipped.
-const flamethrower = defineEntity({
-  name: "flamethrower",
-  components: {
-    weapon: {
-      // …
-      creditSource: "fire", // ledger keys on "fire", not "flamethrower" — per-element credit
-    },
-  },
-});
-```
-
-The `do` verbs in one place:
-
-| Verb | Effect | Path |
-|------|--------|------|
-| `fire(name, args?)` | Dispatch a named reaction/event | Existing reaction registry (`scripting.md` §10) |
-| `addStore(slot, delta)` | Read-modify-write a mod currency. `delta` constant → no IR; `delta` a `runtime` expr → IR | Mod store slot (script-capability) |
-| `grant(resource, amount)` | Add to an engine-owned resource | Blessed resource chokepoint (inverse of `applyDamage`) |
+Shipped as the impact-policy authoring surface — `defineImpactEvent`,
+`@impact.*` scope reads, `grantHealth`/`grantAmmo` — not the
+`defineCombatHandler` / `getCombatEvent` / `grant(...)` sketch below. See
+`context/lib/scripting.md` §2 and §10.8 (Additive Resource Grants).
 
 ---
 
@@ -353,15 +207,8 @@ would extend, so nothing here forecloses it.
 
 ## 7. Engine Ownership
 
-**Two emission sites, one schema.** The damage chokepoint emits impacts (and the
-per-attack aggregate); the death sweep emits kills. They populate the same
-schema but are produced at different frame stages
-(`entity_model.md` §5: weapon fire tick → death sweep). Keeping them separate is
-load-bearing — see the kill-authority principle (§2). A hit that kills carries an
-informational `combat.killed` for immediate feedback (gib, damage-number color);
-the authoritative kill — economy, counters, attribution — fires once from the
-sweep, covering DoT, environmental, and animation-deferred deaths a co-located
-hit would miss.
+**Impact/Kill emission shipped in a different shape** — see §3's pointer to
+`context/lib/scripting.md` §2 and `context/lib/entity_model.md` §3.
 
 **The combat scope is a new `BindingScope`.** It composes the event's facts
 (read-only) with the mod store (read/write, script-capability). Behavior-IR is

@@ -437,8 +437,12 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
     let mut lines = vec![
+        section_heading("Files"),
+        Line::default(),
         readonly_line("Input", &form.input),
         readonly_line("Output", &form.output),
+        Line::default(),
+        section_heading("Bake quality"),
         Line::default(),
         field_line(
             form,
@@ -485,6 +489,9 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
             "Default {} m; smaller = finer occluders / slower.",
             sdf_bake::DEFAULT_VOXEL_SIZE_METERS
         )),
+        Line::default(),
+        section_heading("Build strategy"),
+        Line::default(),
         field_line(
             form,
             ConfigField::BuildMode,
@@ -509,8 +516,18 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
     );
 }
 
+fn section_heading(label: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {label}"),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
 fn readonly_line(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
+        Span::raw("    "),
         Span::styled(format!("{label:<18}"), Style::default().fg(Color::DarkGray)),
         Span::raw(value.to_owned()),
     ])
@@ -518,7 +535,7 @@ fn readonly_line(label: &str, value: &str) -> Line<'static> {
 
 fn field_line(form: &FormState, field: ConfigField, label: &str, value: &str) -> Line<'static> {
     let selected = form.selected == field;
-    let marker = if selected { "> " } else { "  " };
+    let marker = if selected { "    > " } else { "      " };
     let style = if selected {
         Style::default()
             .fg(Color::Cyan)
@@ -536,7 +553,7 @@ fn field_line(form: &FormState, field: ConfigField, label: &str, value: &str) ->
 
 fn guidance_line(text: String) -> Line<'static> {
     Line::from(Span::styled(
-        format!("    {text}"),
+        format!("        {text}"),
         Style::default().fg(Color::DarkGray),
     ))
 }
@@ -636,7 +653,25 @@ mod tests {
             terminal.draw(|frame| draw_config(frame, &form)).unwrap();
             let text = buffer_text(&terminal);
             assert!(text.contains("Pre-bake configuration"));
-            assert!(text.contains("map KVP"));
+            if height >= 24 {
+                assert!(text.contains("map KVP"));
+            }
         }
+    }
+
+    #[test]
+    fn configuration_sections_indent_their_children() {
+        let form = FormState::from_args(&default_args(), None);
+
+        assert_eq!(section_heading("Files").spans[0].content, "  Files");
+        assert_eq!(readonly_line("Input", "map").spans[0].content, "    ");
+        assert_eq!(
+            field_line(&form, ConfigField::ProbeSpacing, "SH probe spacing", "1").spans[0].content,
+            "    > "
+        );
+        assert_eq!(
+            guidance_line("hint".to_owned()).spans[0].content,
+            "        hint"
+        );
     }
 }

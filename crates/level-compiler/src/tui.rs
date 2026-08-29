@@ -9,14 +9,17 @@ use crate::logger::{CapturedRecord, LogSink};
 use crate::pipeline::{StageDescriptor, StageId};
 use crate::reporter::{Reporter, StageProgress};
 
+mod tui_config;
 mod tui_progress;
 mod tui_render;
+mod tui_steps;
 mod tui_terminal;
 mod tui_worker;
 
 use tui_progress::RemainingEstimate;
 
-pub use tui_worker::run_tui;
+pub(crate) use tui_config::{ConfigOutcome, run_config_screen};
+pub(crate) use tui_worker::{run_tui, run_tui_after_config};
 
 const MAX_LOG_RECORDS: usize = 500;
 const ACTIVITY_FRAMES: [&str; 4] = [

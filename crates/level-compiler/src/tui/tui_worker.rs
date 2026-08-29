@@ -3,7 +3,7 @@
 
 use std::any::Any;
 use std::io::{self, Stdout};
-use std::panic::{AssertUnwindSafe, PanicHookInfo};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,38 +18,10 @@ use crate::pipeline::StageDescriptor;
 use crate::reporter::Reporter;
 
 use super::tui_render::{TuiPhase, draw};
-use super::tui_terminal::TerminalSession;
+use super::tui_terminal::{TerminalSession, TuiSession, panic_message};
 use super::{LogScrollAction, TuiReporter};
 
 const TICK: Duration = Duration::from_millis(80);
-
-type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
-
-/// Temporarily silence the process panic hook while the alternate screen owns
-/// stdout. The panic payload is retained by `catch_unwind`/`JoinHandle`, then
-/// reported once after terminal restoration. This is process-global, so its
-/// lifetime is deliberately limited to the interactive session.
-struct DeferredPanicHook {
-    previous: Option<PanicHook>,
-}
-
-impl DeferredPanicHook {
-    fn install() -> Self {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        Self {
-            previous: Some(previous),
-        }
-    }
-}
-
-impl Drop for DeferredPanicHook {
-    fn drop(&mut self) {
-        if let Some(previous) = self.previous.take() {
-            std::panic::set_hook(previous);
-        }
-    }
-}
 
 /// Run a compiler bake on a worker while the caller thread exclusively owns
 /// terminal input and rendering.
@@ -57,7 +29,7 @@ impl Drop for DeferredPanicHook {
 /// The caller owns CLI gating and supplies the parsed map's planned stages.
 /// The closure keeps terminal orchestration independent from compile argument
 /// ownership while making the worker boundary explicit.
-pub fn run_tui<F>(
+pub(crate) fn run_tui<F>(
     planned: Vec<StageDescriptor>,
     logs: LogSink,
     governor: Arc<Governor>,
@@ -66,9 +38,36 @@ pub fn run_tui<F>(
 where
     F: FnOnce(Arc<dyn Reporter>, Arc<Governor>) -> anyhow::Result<()> + Send + 'static,
 {
-    let panic_hook = DeferredPanicHook::install();
+    let session = TuiSession::enter().inspect_err(|_| logs.print_warning_summary())?;
+    run_tui_after_config(session, logs.clone(), move || {
+        (planned, logs, governor, bake)
+    })
+}
+
+/// Keep the alternate-screen session alive while constructing the bake work,
+/// then run that work under the same panic boundary. The configuration path
+/// uses this entry point so cache setup cannot panic with the hook suppressed
+/// but outside the recovery boundary.
+pub(crate) fn run_tui_after_config<P, F>(
+    session: TuiSession,
+    recovery_logs: LogSink,
+    prepare: P,
+) -> anyhow::Result<()>
+where
+    P: FnOnce() -> (Vec<StageDescriptor>, LogSink, Arc<Governor>, F),
+    F: FnOnce(Arc<dyn Reporter>, Arc<Governor>) -> anyhow::Result<()> + Send + 'static,
+{
+    // Keep the hook guard outside `catch_unwind`: dropping it calls
+    // `std::panic::set_hook`, which must only happen after any terminal panic
+    // has been caught. The terminal itself moves into the catch boundary so
+    // its Drop still restores cooked mode during the unwind.
+    let TuiSession {
+        terminal,
+        _panic_hook: panic_hook,
+    } = session;
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        run_tui_session(planned, logs, governor, bake)
+        let (planned, logs, governor, bake) = prepare();
+        run_tui_session(terminal, planned, logs, governor, bake)
     }));
     drop(panic_hook);
     match outcome {
@@ -79,27 +78,34 @@ where
         // original payload so the true panic still propagates. The terminal is
         // already cooked (session dropped in `run_tui_session`), so printing on
         // the normal screen here is safe.
-        Err(payload) => match payload.downcast::<WorkerPanicPayload>() {
-            Ok(worker) => {
-                let inner = worker.0;
-                eprintln!(
-                    "prl-build panicked during the bake: {}",
-                    panic_message(inner.as_ref())
-                );
-                std::panic::resume_unwind(inner)
+        Err(payload) => {
+            // `terminal` was moved into the catch boundary, so it has already
+            // restored cooked mode; the hook was restored immediately above.
+            // This clone shares the reporter's exactly-once summary claim.
+            recovery_logs.print_warning_summary();
+            match payload.downcast::<WorkerPanicPayload>() {
+                Ok(worker) => {
+                    let inner = worker.0;
+                    eprintln!(
+                        "prl-build panicked during the bake: {}",
+                        panic_message(inner.as_ref())
+                    );
+                    std::panic::resume_unwind(inner)
+                }
+                Err(payload) => {
+                    eprintln!(
+                        "prl-build panicked in the TUI: {}",
+                        panic_message(payload.as_ref())
+                    );
+                    std::panic::resume_unwind(payload)
+                }
             }
-            Err(payload) => {
-                eprintln!(
-                    "prl-build panicked in the TUI: {}",
-                    panic_message(payload.as_ref())
-                );
-                std::panic::resume_unwind(payload)
-            }
-        },
+        }
     }
 }
 
 fn run_tui_session<F>(
+    mut terminal_session: TerminalSession,
     planned: Vec<StageDescriptor>,
     logs: LogSink,
     governor: Arc<Governor>,
@@ -115,18 +121,25 @@ where
     let detach_logs = logs.clone();
     let requested_permits = governor.permits();
     let reporter = Arc::new(TuiReporter::new(&planned, logs));
-    let mut session = TerminalSession::enter()?;
     let worker_reporter: Arc<dyn Reporter> = reporter.clone();
     let worker_governor = Arc::clone(&governor);
-    let mut worker = Some(
-        thread::Builder::new()
-            .name("prl-build-tui-worker".to_owned())
-            .spawn(move || bake(worker_reporter, worker_governor))?,
-    );
+    let mut worker = match thread::Builder::new()
+        .name("prl-build-tui-worker".to_owned())
+        .spawn(move || bake(worker_reporter, worker_governor))
+    {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            // `TuiReporter` prints its warning summary on Drop. Restore the
+            // normal terminal first so that fallback presentation cannot land
+            // in the alternate screen.
+            drop(terminal_session);
+            return Err(error.into());
+        }
+    };
 
     let render_outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         render_loop(
-            &mut session.terminal,
+            &mut terminal_session.terminal,
             &reporter,
             &governor,
             worker.as_ref().expect("worker is available"),
@@ -146,14 +159,14 @@ where
             };
             completed_outcome = Some(outcome);
             std::panic::catch_unwind(AssertUnwindSafe(|| {
-                wait_for_completion_key(&mut session.terminal, &reporter, &governor, phase)
+                wait_for_completion_key(&mut terminal_session.terminal, &reporter, &governor, phase)
             }))
         }
         other => other.map(|result| result.map(|_| ())),
     };
     // A quit or terminal error must never leave cooperative workers parked.
     governor.set_paused(false);
-    drop(session);
+    drop(terminal_session);
 
     let worker_outcome = if let Some(outcome) = completed_outcome {
         outcome
@@ -256,20 +269,22 @@ fn finish_run(
         WorkerOutcome::Panicked(payload) => {
             reporter.finalize_failure();
             reporter.print_final_summary();
+            match render {
+                Ok(Err(terminal_error)) => {
+                    eprintln!("TUI also encountered a terminal error: {terminal_error}");
+                }
+                Err(payload) => {
+                    eprintln!(
+                        "TUI also panicked while presenting the compiler panic: {}",
+                        panic_message(payload.as_ref())
+                    );
+                }
+                Ok(Ok(())) => {}
+            }
             // Tag the origin so the outer handler labels this a bake panic, not a
             // TUI panic, then resume with the original payload preserved inside.
             std::panic::resume_unwind(Box::new(WorkerPanicPayload(payload)))
         }
-    }
-}
-
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
-    if let Some(message) = payload.downcast_ref::<String>() {
-        message
-    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
-        message
-    } else {
-        "non-string panic payload"
     }
 }
 

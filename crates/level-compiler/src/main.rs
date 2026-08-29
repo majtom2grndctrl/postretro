@@ -394,9 +394,64 @@ fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
     }
 }
 
+fn stage_cache_is_enabled(args: &Args) -> bool {
+    !args.release && !args.no_cache
+}
+
+/// Derive the cache handle from the final build arguments.
+///
+/// The pipeline treats `Some` as the warm approximate path and `None` as the
+/// exact ship path. Keep this after the optional TUI configuration screen so
+/// its build-mode choice has the same effect as equivalent CLI flags.
+fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
+    if !stage_cache_is_enabled(args) {
+        if args.release {
+            log::info!("[prl-build] release bake: exact lighting, cache bypassed");
+        } else {
+            log::info!("[prl-build] cache disabled via --no-cache");
+        }
+        return None;
+    }
+
+    let dir = args.cache_dir.clone().unwrap_or_else(|| {
+        cache::find_workspace_root(args.input.as_ref())
+            .unwrap_or_else(|| {
+                args.input
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf()
+            })
+            .join(".build-caches")
+            .join("prl-cache")
+    });
+    match cache::StageCache::new(&dir) {
+        Ok(cache) => {
+            log::info!("[prl-build] cache directory: {}", dir.display());
+            // Bound the cache before this build writes a fresh generation:
+            // content addressing never reclaims orphaned generations, so an
+            // LRU sweep at build start is what keeps the directory from
+            // growing without limit. Off the bake path (one readdir + a few
+            // unlinks); best-effort, never fails the build.
+            cache.prune_to_budget(args.cache_max_bytes);
+            Some(cache)
+        }
+        Err(error) => {
+            log::warn!(
+                "[prl-build] cache disabled: failed to create {}: {error}",
+                dir.display()
+            );
+            None
+        }
+    }
+}
+
+fn should_run_config_screen(reporter_mode: ReporterMode, args: &Args) -> bool {
+    reporter_mode == ReporterMode::Tui && !args.quality_flag_supplied
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
-    let args = parse_args()?;
+    let mut args = parse_args()?;
     // Install capture immediately after argument parsing so every subsequent
     // early exit can emit the same exactly-once warning summary as a bake.
     let log_sink = logger::install(args.verbose)?;
@@ -430,57 +485,10 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
-    // Construct stage cache. Default dir = <workspace-root>/.build-caches/prl-cache/.
-    // --no-cache and --release both disable the cache entirely (no directory is
-    // created), selecting the exact ship path (exact monolithic lightmap + exact
-    // whole-volume SH). --release is the intent-named equivalent of the mechanical
-    // --no-cache; routing both to `None` means the warm/cold branches in the
-    // pipeline need no change. --cache-dir <path> overrides the default location
-    // for warm builds; when --no-cache or --release is also supplied, the cache
-    // stays disabled.
-    let stage_cache: Option<cache::StageCache> = if args.release || args.no_cache {
-        if args.release {
-            log::info!("[prl-build] release bake: exact lighting, cache bypassed");
-        } else {
-            log::info!("[prl-build] cache disabled via --no-cache");
-        }
-        None
-    } else {
-        let dir = args.cache_dir.clone().unwrap_or_else(|| {
-            cache::find_workspace_root(args.input.as_ref())
-                .unwrap_or_else(|| {
-                    args.input
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .to_path_buf()
-                })
-                .join(".build-caches")
-                .join("prl-cache")
-        });
-        match cache::StageCache::new(&dir) {
-            Ok(c) => {
-                log::info!("[prl-build] cache directory: {}", dir.display());
-                // Bound the cache before this build writes a fresh generation:
-                // content addressing never reclaims orphaned generations, so an
-                // LRU sweep at build start is what keeps the directory from
-                // growing without limit. Off the bake path (one readdir + a few
-                // unlinks); best-effort, never fails the build.
-                c.prune_to_budget(args.cache_max_bytes);
-                Some(c)
-            }
-            Err(e) => {
-                log::warn!(
-                    "[prl-build] cache disabled: failed to create {}: {e}",
-                    dir.display()
-                );
-                None
-            }
-        }
-    };
-
     let governor = std::sync::Arc::new(governor::Governor::new(args.jobs, false));
     match reporter_mode {
         ReporterMode::Plain => {
+            let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
             let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
             let result = pipeline::run(&args, stage_cache, started, pipeline_reporter, governor);
@@ -500,10 +508,59 @@ fn main() -> anyhow::Result<()> {
                     return Err(error);
                 }
             };
+            // P9: quality choices are intentionally absent from this call.
+            // Stage presence is content-driven from map lights, so the plan
+            // stays valid when the subsequent screen edits bake parameters.
             let planned = pipeline::planned_stages(&prepared.map_data.lights);
-            tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
-                pipeline::run_prepared(&args, stage_cache, started, reporter, governor, prepared)
-            })
+            let tui_session = if should_run_config_screen(reporter_mode, &args) {
+                match tui::run_config_screen(
+                    &mut args,
+                    prepared.map_data.lightmap_density,
+                    &log_sink,
+                ) {
+                    Ok(tui::ConfigOutcome::Start(session)) => Some(session),
+                    Ok(tui::ConfigOutcome::Cancel) => {
+                        println!("Configuration cancelled — no bake started.");
+                        log_sink.print_warning_summary();
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        log_sink.print_warning_summary();
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+            match tui_session {
+                Some(session) => tui::run_tui_after_config(session, log_sink.clone(), move || {
+                    let stage_cache = construct_stage_cache(&args);
+                    let bake = move |reporter, governor| {
+                        pipeline::run_prepared(
+                            &args,
+                            stage_cache,
+                            started,
+                            reporter,
+                            governor,
+                            prepared,
+                        )
+                    };
+                    (planned, log_sink, governor, bake)
+                }),
+                None => {
+                    let stage_cache = construct_stage_cache(&args);
+                    tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                        pipeline::run_prepared(
+                            &args,
+                            stage_cache,
+                            started,
+                            reporter,
+                            governor,
+                            prepared,
+                        )
+                    })
+                }
+            }
         }
     }
 }
@@ -560,7 +617,7 @@ fn default_jobs() -> usize {
 }
 
 #[derive(Debug)]
-struct Args {
+pub struct Args {
     input: PathBuf,
     output: PathBuf,
     verbose: bool,
@@ -602,6 +659,9 @@ struct Args {
     /// the warm/cold branches need no change — both flags route the stage cache
     /// to `None`. Passing both is fine (identical effect, no conflict).
     release: bool,
+    /// True when any quality-setting flag was supplied explicitly. The TUI
+    /// configuration screen only appears for the unqualified interactive path.
+    quality_flag_supplied: bool,
     /// When true, store the baked lightmap irradiance atlas uncompressed as
     /// `Rgba16Float` instead of the default BC6H. BC6H is the default (smaller
     /// on disk and in VRAM); the uncompressed form is larger and exists for
@@ -692,6 +752,7 @@ where
     let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
     let mut no_cache = false;
     let mut release = false;
+    let mut quality_flag_supplied = false;
     let mut uncompressed_irradiance = false;
     let mut jobs = default_jobs();
     let mut tui = TuiPreference::Auto;
@@ -746,6 +807,7 @@ where
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             "--sh-probe-spacing" => {
+                quality_flag_supplied = true;
                 let spacing_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--sh-probe-spacing requires a value"))?;
@@ -758,6 +820,7 @@ where
                 probe_spacing = parsed;
             }
             "--lightmap-density" => {
+                quality_flag_supplied = true;
                 let density_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--lightmap-density requires a value"))?;
@@ -770,6 +833,7 @@ where
                 lightmap_density = Some(parsed);
             }
             "--soft-shadow-samples" => {
+                quality_flag_supplied = true;
                 let samples_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--soft-shadow-samples requires a value"))?;
@@ -785,6 +849,7 @@ where
                 soft_shadow_samples = parsed;
             }
             "--sdf-voxel-size" => {
+                quality_flag_supplied = true;
                 let voxel_str = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--sdf-voxel-size requires a value"))?;
@@ -817,9 +882,11 @@ where
             }
             "--no-cache" => {
                 no_cache = true;
+                quality_flag_supplied = true;
             }
             "--release" => {
                 release = true;
+                quality_flag_supplied = true;
             }
             "--uncompressed-irradiance" => {
                 uncompressed_irradiance = true;
@@ -873,6 +940,7 @@ where
         delta_section_config,
         no_cache,
         release,
+        quality_flag_supplied,
         uncompressed_irradiance,
         jobs,
         tui,
@@ -1989,6 +2057,55 @@ mod tests {
     }
 
     #[test]
+    fn parser_marks_every_quality_flag_as_explicitly_supplied() {
+        let cases: &[&[&str]] = &[
+            &["--sh-probe-spacing", "0.5"],
+            &["--lightmap-density", "0.03"],
+            &["--soft-shadow-samples", "8"],
+            &["--sdf-voxel-size", "0.25"],
+            &["--release"],
+            &["--no-cache"],
+        ];
+
+        for quality_args in cases {
+            let parsed = parse_args_from(
+                std::iter::once("input.map".to_owned())
+                    .chain(quality_args.iter().map(|argument| (*argument).to_owned())),
+            )
+            .unwrap();
+            assert!(
+                parsed.quality_flag_supplied,
+                "{quality_args:?} must suppress the pre-bake screen"
+            );
+        }
+    }
+
+    #[test]
+    fn only_tui_without_quality_flags_runs_the_configuration_screen() {
+        let default_args = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+        assert!(should_run_config_screen(ReporterMode::Tui, &default_args));
+        assert!(!should_run_config_screen(
+            ReporterMode::Plain,
+            &default_args
+        ));
+
+        let quality_args =
+            parse_args_from(["input.map", "--release"].into_iter().map(str::to_owned)).unwrap();
+        assert!(!should_run_config_screen(ReporterMode::Tui, &quality_args));
+
+        let non_quality_args = parse_args_from(
+            ["input.map", "--cache-dir", "cache"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(should_run_config_screen(
+            ReporterMode::Tui,
+            &non_quality_args
+        ));
+    }
+
+    #[test]
     fn parse_args_pvs_flag_rejected() {
         let args = vec!["input.map".to_string(), "--pvs".to_string()];
         assert!(
@@ -2238,6 +2355,25 @@ mod tests {
         assert!(
             parsed.release || parsed.no_cache,
             "release must bypass the stage cache like no-cache"
+        );
+    }
+
+    #[test]
+    fn final_build_mode_selects_exact_or_warm_stage_cache_path() {
+        let mut args = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+
+        args.release = true;
+        args.no_cache = true;
+        assert!(
+            !stage_cache_is_enabled(&args),
+            "production must derive stage_cache == None for the exact path"
+        );
+
+        args.release = false;
+        args.no_cache = false;
+        assert!(
+            stage_cache_is_enabled(&args),
+            "rapid iteration must derive a warm Some(stage_cache) path"
         );
     }
 

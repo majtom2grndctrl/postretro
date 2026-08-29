@@ -10,8 +10,8 @@ around it, while static-light occlusion and animated brightness still apply.
 
 ### In scope
 
-- A camera-independent, normal-free direct-scatter field for isotropic-model
-  (default) billboards — those not flagged as specular-shimmer materials.
+- A camera-independent, normal-free direct-scatter field for all particle
+  billboards.
 - Static `static_light_map` direct transport and animated baked direct deltas.
 - Isotropic dynamic point, spot, and directional direct response for billboards.
 - Existing probe-depth visibility, light reach, animation scales, and optional
@@ -28,15 +28,13 @@ around it, while static-light occlusion and animated brightness still apply.
 
 ## Design decisions
 
-1. **Isotropic scatter is the default billboard lighting model.** For a
-   billboard using the default (isotropic, smoke-class) model — every billboard
-   not flagged as a specular-shimmer material — the renderer samples a
-   normal-free RGB direct-scatter field at the sprite centre. It replaces that
-   billboard's baked direct-SH surface response for `static_light_map` lights;
-   it does not choose another fake surface normal. Specular-shimmer-flagged
-   billboards use a separate model owned by the downstream
-   billboard-specular-shimmer spec (see *Cross-spec coordination*); this spec
-   builds only the isotropic path.
+1. **Normal-free scatter is the billboard direct-lighting model.** For every
+   particle billboard, the renderer samples a normal-free RGB direct-scatter
+   field at the sprite centre. It replaces the billboard's baked direct-SH
+   surface response for `static_light_map` lights and the old surface-like
+   static-specular term; it does not choose another fake surface normal. This
+   scatter path is the model for every billboard — there is no per-material split
+   — with the legacy-fallback branch (Design decision 6) the only other path.
 2. **Bake before cosine convolution.** The base field sums each reaching
    static light's `incident_radiance_at_point` multiplied by the same
    `soft_visibility` used by direct SH. The animated field stores the matching
@@ -49,16 +47,14 @@ around it, while static-light occlusion and animated brightness still apply.
 4. **Dynamic direct has no Lambert cosine.** The billboard loop keeps its
    existing influence, falloff, and spot-cone gates, then adds color times
    attenuation without `dot(N, L)`. Its current unshadowed policy remains.
-5. **No double count.** When scatter data is usable, an isotropic-model
-   billboard does not sample `DirectShVolumeSection`, and its `static_light_map`
-   entries do not add the old surface-like static-specular term — scatter
-   replaces that term for isotropic billboards. The static-specular path is not
-   deleted: specular-shimmer-flagged billboards retain it, owned by the
-   downstream billboard-specular-shimmer spec (see *Cross-spec coordination*).
-   The double-count guarantee is per material: an isotropic billboard uses
-   scatter XOR the old specular, never both. Static SDF entries keep their
-   current path. Meshes and movers keep their direct-SH/promotion behavior
-   unchanged.
+5. **No double count.** When scatter data is usable, a billboard does not
+   sample `DirectShVolumeSection`, and its `static_light_map` entries do not add
+   the old surface-like static-specular term — scatter replaces both, with no
+   receiver normal in play. The static-specular loop is not deleted from the
+   shader: it remains reachable only by the legacy-fallback branch (Design
+   decision 6), which reproduces current behavior when scatter data is absent. It
+   is not a reservation for any other spec. Static SDF entries keep their current
+   path. Meshes and movers keep their direct-SH/promotion behavior unchanged.
 6. **Safe legacy fallback.** Both new sections are optional. Missing,
    malformed, or mutually incompatible scatter data selects the exact current
    billboard direct path. If section 45 is present, section 47 must validate
@@ -85,11 +81,11 @@ around it, while static-light occlusion and animated brightness still apply.
       version, dimensions, CSR shape, descriptor mapping, or payload length.
       Invalid optional data falls back to legacy billboard direct lighting
       without failing the level load.
-- [ ] `[unit]` The isotropic-model billboard's static-light-map direct path has
-      no camera-facing `NdotL` or static-specular contribution, while its dynamic
-      path retains range/cone rejection and has no Lambert cosine. The shader
-      still contains the static-specular term (retained for shimmer materials,
-      gated downstream); it is not evaluated on the isotropic path.
+- [ ] `[unit]` On the scatter path, the billboard's static-light-map direct has
+      no camera-facing `NdotL` or static-specular contribution, and its dynamic
+      path retains range/cone rejection with no Lambert cosine. The
+      static-specular loop is reached only on the legacy-fallback branch, never
+      on the scatter path.
 - [ ] `[unit]` Existing direct-SH compose behavior and the billboard
       vertex-stage storage-buffer budget remain unchanged after extracting the
       renderer seam needed for the scatter resource.
@@ -148,15 +144,15 @@ compose, but it never applies static-promotion subtraction because billboards
 are not promotion receivers.
 
 In `billboard.wgsl`, depth-aware trilinear interpolation reads the scatter
-texture at the sprite centre when usable. For the isotropic (default) model,
-route static-light-map direct through that result instead of the static-specular
-term, and retain the existing static-SDF behavior. Do **not** delete the
-static-specular term from the shader — leave it in place so the downstream
-billboard-specular-shimmer spec can gate it per material; this spec only stops
-the isotropic path from evaluating it (see *Cross-spec coordination*). Make
-runtime dynamic direct isotropic by removing only the Lambert cosine after
-existing influence/range/cone work. Preserve the legacy shader branch when
-scatter is unavailable.
+texture at the sprite centre when usable. On the scatter path, route
+static-light-map direct through that result instead of the static-specular term
+and the direct-SH surface response, and retain the existing static-SDF behavior.
+The static-specular loop stays in the shader but is reached only by the
+legacy-fallback branch (Design decision 6); the scatter path does not evaluate
+it, and this spec reserves nothing there for another spec. Make runtime dynamic
+direct isotropic by removing only the Lambert cosine after existing
+influence/range/cone work. Preserve the legacy shader branch when scatter is
+unavailable.
 
 ### Task 5: Regression fixture and durable documentation
 
@@ -198,19 +194,17 @@ Both new sections are little-endian and optional.
 
 ## Cross-spec coordination
 
-Billboard lighting is a per-material choice between two models: the isotropic
-(default, smoke-class) scatter model this spec builds, and a specular-shimmer
-model built by the downstream billboard-specular-shimmer spec. That spec owns the
-per-material lighting-model flag and the retained static-specular path; this spec
-does not design the flag mechanism. This spec's scatter path applies only to the
-isotropic (default) model — billboards not flagged as shimmer materials — and it
-does **not** delete the shader's static-specular term. It leaves that term in
-place, dormant on the isotropic path, so the shimmer spec can gate it per
-material. The two specs partition billboard lighting by model and must not revert
-each other: this spec must not delete the specular term the shimmer spec depends
-on, and the shimmer spec must not route isotropic billboards away from scatter. If
-both are in flight, whichever lands second confirms the other's path is intact
-rather than overwriting it. Pinned as an Invariant row below.
+This spec makes normal-free scatter the billboard direct model for every
+billboard on the scatter path; the old vertex-stage static-specular loop is not
+evaluated there and survives only on this spec's own legacy-fallback branch (no
+reservation for another spec). The downstream `billboard-specular-shimmer` spec
+adds a second, opt-in billboard lighting model (per-fragment specular from a
+baked normal map) and owns the per-material split between the two — the
+classification flag, the fragment-stage specular path, and the re-scoping of
+scatter to the non-shimmer default. That partition is entirely shimmer's to
+build. Shimmer depends on this spec only for the established default (scatter for
+all billboards); it builds its own per-fragment specular path rather than
+inheriting one.
 
 **`billboard.wgsl` / `VertexOutput` merge coordination with `prm-array-layers`.**
 The foundational `prm-array-layers` spec restructures `billboard.wgsl` — the
@@ -226,10 +220,10 @@ with the `frame_idx` field. No dependency, only a merge point.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Isotropic-model billboards are normal-free: smoke direct color is independent of camera direction. Shimmer-flagged materials are outside this invariant. | Task 3 bakes normal-free transport; Task 4 samples it without `N = V` on the isotropic path. | Legacy fallback must remain explicit; on the isotropic path, no static-light-map specular or direct-SH double path. The retained specular term is gated to shimmer materials downstream. | AC 1, 5, 7 |
+| Billboards are normal-free on the scatter path: smoke direct color is independent of camera direction. | Task 3 bakes normal-free transport; Task 4 samples it without `N = V`. | Legacy fallback must remain explicit; on the scatter path, no static-light-map specular or direct-SH double path. | AC 1, 5, 7 |
 | Baked occlusion and cone reach remain authoritative. | Task 3 reuses direct-bake radiance, visibility, and reach logic. | Task 4 may only interpolate baked values; it cannot replace them with `spec_lights`. | AC 2, 3 |
 | Animated scatter and animated direct SH describe the same light scale. | Task 2 pins the shared descriptor map; Task 3 emits matching deltas. | Task 4 compose uses the shared active/color/brightness values and treats mismatch as absent. | AC 4, 5 |
-| No receiver double-counts a physical direct term (per material). | Task 4 replaces the isotropic billboard's static-light-map direct SH with scatter. | An isotropic billboard uses scatter XOR the old specular, never both; the retained specular path serves shimmer materials only. Static promotion remains mesh-only; SDF and dynamic policies stay disjoint. | AC 5, 7 |
+| No receiver double-counts a physical direct term. | Task 4 replaces the billboard's static-light-map direct SH with scatter on the scatter path. | A billboard on the scatter path uses scatter, not the old specular or direct-SH; the vertex-stage specular loop is confined to the legacy-fallback branch. Static promotion remains mesh-only; SDF and dynamic policies stay disjoint. | AC 5, 7 |
 
 ## Open questions
 

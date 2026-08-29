@@ -1,81 +1,32 @@
 # Co-op Session and Lobby — Design Intent
 
-> **Read this when:** planning how a player connects to a hosted session — mod matching, server-chosen maps, session/player identity, or the authoring surface for a lobby.
-> **Status:** design intent for Epic 15, not shipped behavior. Nothing here exists in code.
-> **Related:** [Networking](../lib/networking.md) · [Boot Sequence](../lib/boot_sequence.md) §4 · [Scripting](../lib/scripting.md) §§11–12 · [Roadmap](../plans/roadmap.md) Epic 15
+> **Read this when:** drafting the **Lobby authoring surface** spec — the session scope and its
+> join predicate, session-phase-as-authored-store-slot, lifecycle reaction addresses, or roster
+> display. Mod matching, server-chosen maps, and session/player identity have shipped.
+> **Status:** design intent for the one still-open piece of Epic 15's session/lobby work. Session
+> lifecycle and seat/session-identity/roster are shipped (`done/E15--session-lifecycle`,
+> `done/E15--seat-session-identity-roster`); the Lobby authoring surface is not.
+> **Related:** [Networking](../lib/networking.md) · [Boot Sequence](../lib/boot_sequence.md) §4 ·
+> [Scripting](../lib/scripting.md) §§11–12 · [Roadmap](../plans/roadmap.md) Epic 15 ·
+> `context/plans/done/E15--session-lifecycle` · `context/plans/done/E15--seat-session-identity-roster`
 
 ---
 
-## 1. The gap
+## 1. Shipped
 
-Today a co-op session has no join flow. Both peers are launched with the same map on the
-command line, the client computes the same fingerprint, and the handshake passes. There is
-no lobby, no mod check, no server map authority, and no identity for a player beyond the
-pawn they happen to be driving.
+Three of the four capabilities this note originally scoped have shipped: mod match at connect,
+server-chosen maps (the split handshake, the relevel protocol, host-named map authority), and
+session identity that survives a level transition (session id, seat, player id) —
+`context/plans/done/E15--session-lifecycle`, `context/plans/done/E15--seat-session-identity-roster`.
+The durable shape lives in `context/lib/networking.md`: the two-gate handshake and the
+admission-vs-content-parity split (§Two-gate handshake, §Admission and content parity), the
+four-stage slot lifecycle (§Slot lifecycle), the session-state ledger enumerating
+connection/seat/roster (§Session-state ledger), and the mod-identity id-gates/version-never-gates
+split (§Mod identity). The rejoin key and seat-hold window question this note originally left open
+is answered there too (seat-hold window + reclaim-by-player-id on rejoin).
 
-Four capabilities are wanted, and they are one design because they share one blocker:
-
-1. Connect naming a **mod**; the server accepts only matching mods.
-2. The **server** decides which map loads; clients follow.
-3. **Session identity** — who is in the session, stable across level transitions.
-4. A **scripting API** for the lobby, including author-decided join policy.
-
----
-
-## 2. The ordering problem
-
-This is the crux, and it inverts a shipped invariant.
-
-Gate 2 of the handshake carries the static-kinematic fingerprint, and the host queues every
-handshake until its own level installs one (`networking.md` §Two-gate handshake). Acceptance
-therefore *requires a loaded map on both sides*. But "the server chooses the map" means the
-client must connect **before** it knows which map to load. A client cannot fingerprint a map
-it has not been told about.
-
-So the handshake splits in two, along a seam it does not have today:
-
-| Stage | Proves | When |
-|---|---|---|
-| **Admission** | wire/app protocol, mod identity | once, at connect — no map involved |
-| **Content parity** | static-kinematic fingerprint | at every level install, for the session's life |
-
-Content parity moving from *once per connection* to *once per level* is the change that
-makes everything else possible. It also overturns `networking.md` §Two-gate handshake:
-"A connection is bound to that fingerprint for its lifetime. Installing different static
-mover content closes it." That rule exists because there is no relevel protocol — closing
-the connection is the only safe response to content the peer cannot validate. Give the
-session a level-transition protocol and the correct response becomes *follow the host*, not
-*disconnect*.
-
-**Two live defects live in this same seam.** They are not extra scope; they are the same work.
-
-- **Co-op level transitions do not exist.** The host runs no net reset on unload, no
-  server→client relevel message exists (`ServerMessage` carries time-sync and shot verdicts
-  only), clients never follow the host, and there is no reconnect path. The transport is not
-  even polled across the unload→install window, so a slow load times clients out.
-- **The fingerprint fails open.** It hashes the mover list and mover collision geometry.
-  A map with no movers hashes identically to every other map with no movers, so the gate
-  passes and no cleanup runs — clients stay attached to a host where their pawns no longer
-  exist. Silent stale-state corruption, strictly worse than a disconnect.
-
----
-
-## 3. Three identities, kept separate
-
-Collapsing any two of these is what makes per-player state resist design. They have
-different lifetimes and different trust properties.
-
-| Identity | Minted by | Lifetime | Answers |
-|---|---|---|---|
-| **Session id** | host, once per hosted run | the session | "which session is this?" |
-| **Seat** | host, on admission | the session; survives level transitions | "which participant?" |
-| **Player id** | client, once per device | across sessions; persisted client-side | "which human?" |
-
-**Seat** is the durable per-player key the engine keys session-scoped state by. The existing
-per-player address (`PlayerId::{Local, Remote}` in the trigger system) stays what it is —
-a within-level pawn/connection address, rebuilt each level. E17 explicitly said not to invent
-a heavyweight identity system, and this does not replace that one; it adds a parallel key
-that outlives the level, which is the property nothing has today.
+One trust-posture line is worth keeping intact here, because a shipped spec cites it directly
+(`done/E15--seat-session-identity-roster/index.md`):
 
 **Player id is client-asserted.** There is no account service and none is planned — this is
 built for groups of friends. A client can claim any player id. That is the same trust posture
@@ -83,62 +34,12 @@ as client-authoritative hit declaration (`networking.md` §Combat authority) and
 stated plainly rather than dressed up: the player id makes *rejoin restores your progression*
 work, and it is not an authentication mechanism.
 
-Seat release on disconnect versus holding it for a rejoin window is a real decision with a
-gameplay consequence (drop mid-level, lose the session's accumulated per-player state). It
-needs the rejoin key above to be settled first.
+What remains is the fourth capability: a scripting API for the lobby, including author-decided
+join policy — the **Lobby authoring surface** (open, `roadmap.md` ~line 205).
 
 ---
 
-## 4. Mod match is a compatibility check, not a security check
-
-Two mechanisms, two jobs — conflating them is the obvious mistake.
-
-- **Mod identity is declared.** The manifest declares an id and a version. The **id** gates
-  admission — it is the namespace that makes a map catalog id resolvable on both peers. The
-  **version** is carried for display and never compared. Neither catches tampering, and
-  neither should claim to.
-- **Compatibility is hashed, not declared.** Two content digests decide whether peers can
-  play together: one over the mod's simulated surface — per entity type, the canonical name
-  and the player-movement descriptor a client predicts with, minus that descriptor's
-  render-only view-feel field — and one over the level's (mover authoring plus static world
-  collision). Host-authoritative fields (health, weapon, behavior) and presentation
-  fields (light, emitter, mesh) stay unhashed, because server authority already absorbs
-  them; state-slot parity is owned by the shipped replicated-slot schema fingerprint both
-  peers already compare. Prediction correctness depends on byte-level parity of what a
-  client simulates against, not on anyone's honesty — and not on an author remembering to
-  bump a string. The full tiering of what server authority absorbs and what it cannot is in
-  [Co-op Content Compatibility](./coop-content-compatibility.md).
-- **A declared mismatch closes; a hashed one holds.** Only the id can refuse a connection,
-  because only the id is immutable for a connection's lifetime. Both digests can be
-  reinstalled while a peer is connected — the level digest at every install, the mod digest
-  at every staged reload — so a divergence on either demotes the peer and tells it why,
-  and it re-participates when the two sides agree again.
-
-> **History note.** Before the session-lifecycle spec, this section said the manifest declares
-> an id and a version and the host compares **both**, catching "wrong mod, stale version."
-> That is the position the digests overturn: a declared version does not track the breaking
-> surface in either direction — it blocks a friend over a lighting tweak, and it stays put
-> when someone retunes player movement. Recorded so the change reads as a decision rather
-> than as how it always was.
-
-A content hash over the *whole* mod was considered and is wrong here: it breaks every dev
-iteration loop (hot reload changes the hash mid-session), makes legitimate client-side
-differences fatal, and buys a property — tamper detection — that is an explicit non-goal
-(`index.md` §4, anti-cheat). Scoping the digest to the fields a client actually simulates
-against keeps the property and drops the breakage.
-
-The manifest carries a mod name today and no id or version. Adding them is small; the
-consequence is that mod identity becomes a wire-visible contract.
-
-**Why mod match and server map authority are one spec.** The host names the map by **catalog
-id**, not by path — `LevelSource::Catalog` already exists and resolves against the
-engine-global map catalog, which survives level unload. A catalog id is only resolvable on
-the client because the mods match. The mod check is the precondition that makes one string
-sufficient to move a session between levels.
-
----
-
-## 5. Ownership split — engine nouns, authored verbs
+## 2. Ownership split — engine nouns, authored verbs
 
 The VM drops after load (`scripting.md` §1). There is no live script at runtime. So the
 obvious API — `onJoinRequest(player) => allow | deny` — is **structurally impossible**: it is
@@ -184,76 +85,37 @@ live endpoint accepting connections — not a new top-level app state.
 
 ---
 
-## 6. Constraints a design must not violate
+## 3. Constraints for the lobby authoring surface
 
-- **Host-as-client is already committed.** The roadmap's shipping host model is a local
-  headless server process plus the host's own client over loopback; `--host` / `--connect` is
-  an intermediate dev shape. So map authority must be **server-owned with an authorized
-  requester**, never "the host's local load broadcasts." Designing against today's
-  listen-server shape bakes in an assumption the roadmap has already overturned — cheap to
-  honor now, expensive to retrofit.
-- **`loadLevel` changes meaning.** It is a shipped system reaction that today always loads
-  locally. In a session it becomes a request the server may refuse, and on a non-authoritative
-  client it is inert. That is a semantic change to a published primitive
-  (`index.md` §2, primitive surface is a contract).
 - **The IR cannot iterate**, and slots hold only numbers and booleans. A roster is a list.
   Nothing in the authoring surface can loop over players, so any per-player fan-out goes
   through tag/activators targeting or an engine-owned projection — never an authored loop.
 - **Clients do not write the save file**, and client-authored writes to server slots are a
   stated Phase 3.5 non-goal. A guest's progression reaching their own device reverses a
   shipped rule and is deliberate work, not an assumption a lobby spec may smuggle.
-- **The store is never cleared on level unload.** Anything keyed by a pawn id resets at every
-  level change while global slots survive.
 - **Networked mod sync and mid-level mod hot-swap are non-goals** (`boot_sequence.md` §8).
   Matching mods is in scope; shipping them to a client is not. Scripts are small enough to
   send (160K against 337M of art in the dev mod) but sending them fixes only the script-side
   third of the breaking surface, inverts boot ordering, and feeds peer-controlled input to a
   C interpreter — reasoned through in
   [Co-op Content Compatibility](./coop-content-compatibility.md) §5.
-- **Session state must be enumerable, not scattered.** What survives a level transition should
-  be a named set, because a future host migration is that same set plus a live-world layer,
-  handed to a different destination. Level unload already clears the world and keeps the store;
-  the risk is a transition built as ad-hoc patches to whichever tables happen to break, which
-  works and leaves no boundary anyone can later serialize. Name the boundary — building a
-  serializer for it is the later spec's job, not this band's.
 
 ---
 
-## 7. Spec sequence
+## 4. Remaining spec
 
-Three specs, in dependency order. The first is engine-only; the second unblocks per-player
-mod state; the third is the authoring surface.
-
-1. **Session lifecycle.** Split the handshake into admission and content parity; add mod
-   id/version to the manifest; demote rather than close on a level change; the relevel
-   message and client-follow; host-side net reset on unload; transport polling across the
-   load window; the fail-open fix. The largest spec, and the one that fixes both live
-   defects. Ready: `plans/ready/E15--session-lifecycle/`.
-2. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
-   player id, and the engine-published roster facts the UI and the predicate read.
-3. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle
-   reaction addresses, and the reference lobby in the dev mod.
-
-Spec 1 was first scoped as two — admission, then transitions — and merged after direction
-review. The split failed on its own evidence: the admission half had to pull the fail-open
-fix across the seam because its central invariant failed silently without it, and both its
-headline criteria were claims about surviving a window the other half owned. The work
-divides by layer (gate, wire, engine lifecycle), not by capability.
-
-`E16--per-player-currency` is parked on spec 2 — its shapes were all attempts to key
-per-player state without a durable identity.
+**Lobby authoring surface.** The session scope and its join predicate, the lifecycle
+reaction addresses, and the reference lobby in the dev mod.
 
 ---
 
-## 8. Open questions
+## 5. Open questions
 
 - **Roster display has no expressible shape.** Slots are scalars and the IR cannot iterate, so
   a variable-length player list cannot be read by any authoring surface that exists. Either
   the engine publishes indexed projections (capped, and ugly) or the UI gains a repeated-row
   construct fed by an engine-owned collection. This is likely a `ui.md` question, not a
   netcode one, and it is unsolved.
-- **Rejoin key and seat-hold window.** Whether a dropped player's seat is held, for how long,
-  and what key reclaims it. Depends on how much the client-asserted player id is trusted.
 - **Where a session starts.** Whether a host boots into a lobby by default, or the lobby is a
   frontend menu the mod opts into. Affects whether session phase is engine-mandatory.
 - **Dedicated server with no local player.** A headless server has no seat 0. Whether the
@@ -261,7 +123,7 @@ per-player state without a durable identity.
 
 ---
 
-## 9. Non-goals
+## 6. Non-goals
 
 - Matchmaking, discovery, relay, NAT traversal — direct connect only (`index.md` §4).
 - Authentication, anti-cheat, tamper-resistant identity.

@@ -110,6 +110,25 @@ fn resolve_sprite_collection_draw_contract(
     ))
 }
 
+fn map_billboard_sprite_collections(
+    entities: &[postretro_level_format::map_entity::MapEntityRecord],
+) -> std::collections::HashSet<String> {
+    entities
+        .iter()
+        .filter(|entity| entity.classname == "billboard_emitter")
+        .map(|entity| {
+            entity
+                .key_values
+                .iter()
+                .rev()
+                .find_map(|(key, value)| (key == "sprite").then_some(value.as_str()))
+                .filter(|sprite| !sprite.is_empty())
+                .unwrap_or("smoke")
+                .to_string()
+        })
+        .collect()
+}
+
 fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
     if let Some(id) = entry.catalog_id.as_ref() {
         LevelSource::Catalog(id.clone())
@@ -1099,6 +1118,11 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             use postretro_entities::{ComponentKind, ComponentValue};
             let texture_root = self.content_root.join("textures");
+            let map_billboard_collections = self
+                .level
+                .as_ref()
+                .map(|world| map_billboard_sprite_collections(&world.map_entities))
+                .unwrap_or_default();
             let projectile_sprites = {
                 let data_registry = script_ctx.data_registry.borrow();
                 projectile_presentation_assets(&data_registry.entities).1
@@ -1168,9 +1192,12 @@ impl App {
                     &collection,
                     &texture_root,
                     &prm_cache_root,
-                    0.3,
-                    lifetime,
-                    emissive,
+                    render::SpriteCollectionRegistration {
+                        baked_sidecar_eligible: map_billboard_collections.contains(&collection),
+                        spec_intensity: 0.3,
+                        lifetime,
+                        emissive,
+                    },
                 );
                 particle_render.register_sprite(&collection);
             }
@@ -1180,9 +1207,12 @@ impl App {
                 collection,
                 &texture_root,
                 &prm_cache_root,
-                0.45,
-                weapon::impact_lifetime(),
-                0.0,
+                render::SpriteCollectionRegistration {
+                    baked_sidecar_eligible: false,
+                    spec_intensity: 0.45,
+                    lifetime: weapon::impact_lifetime(),
+                    emissive: 0.0,
+                },
             );
             particle_render.register_sprite(collection);
         }
@@ -1668,6 +1698,43 @@ mod tests {
 
         assert!((lifetime - 0.2).abs() <= f32::EPSILON);
         assert!(emissive.abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn baked_sprite_eligibility_comes_only_from_map_billboard_emitters() {
+        use postretro_level_format::map_entity::MapEntityRecord;
+
+        let entities = [
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![("sprite".to_string(), "smoke".to_string())],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![
+                    ("sprite".to_string(), "ignored".to_string()),
+                    ("sprite".to_string(), "sparks".to_string()),
+                ],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![("sprite".to_string(), String::new())],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "data_archetype".to_string(),
+                key_values: vec![("sprite".to_string(), "descriptor_only".to_string())],
+                ..Default::default()
+            },
+        ];
+
+        let collections = map_billboard_sprite_collections(&entities);
+        assert!(collections.contains("smoke"));
+        assert!(collections.contains("sparks"));
+        assert!(!collections.contains("ignored"));
+        assert!(!collections.contains("descriptor_only"));
     }
 
     #[test]

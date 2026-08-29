@@ -90,7 +90,11 @@ pub fn collection_frame_paths(
         }
     }
 
-    frame_paths.sort_by_key(|(frame_number, _)| *frame_number);
+    frame_paths.sort_by(|(left_number, left_path), (right_number, right_path)| {
+        left_number
+            .cmp(right_number)
+            .then_with(|| left_path.cmp(right_path))
+    });
     frame_paths.into_iter().map(|(_, path)| path).collect()
 }
 
@@ -175,6 +179,27 @@ mod tests {
         assert_eq!(
             collection_frame_paths(&root, "smoke", SpriteSlot::Normal),
             vec![root.join("smoke/smoke_01_normal.png")]
+        );
+
+        fs::remove_dir_all(&root).expect("fixture root must be removed");
+    }
+
+    #[test]
+    fn collection_frame_paths_breaks_equal_numeric_suffix_ties_by_path() {
+        let root = temp_texture_root("equal-index-order");
+        write_frame(&root, "smoke_1.png", b"one");
+        write_frame(&root, "smoke_01.png", b"zero one");
+        write_frame(&root, "smoke_2.png", b"two");
+
+        // Regression: equal numeric suffixes inherited unspecified read_dir order.
+        let diffuse = collection_frame_paths(&root, "smoke", SpriteSlot::Diffuse);
+        let diffuse_names: Vec<_> = diffuse
+            .iter()
+            .map(|path| path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            diffuse_names,
+            ["smoke_01.png", "smoke_1.png", "smoke_2.png"]
         );
 
         fs::remove_dir_all(&root).expect("fixture root must be removed");

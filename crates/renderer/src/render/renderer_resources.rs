@@ -19,17 +19,16 @@ fn clear_kinematic_mover_frame_state(
 impl Renderer {
     /// Upload one draw contract per collection. Level installation resolves every
     /// emitter and projectile consumer's frame count before this boundary; the
-    /// smoke pass owns its baked-sidecar attempt and PNG-decode fallback. Duplicate
-    /// calls are reported and rejected rather than silently overriding an accepted
-    /// descriptor's cadence or emissive strength.
+    /// smoke pass owns its baked-sidecar attempt and PNG-decode fallback. The
+    /// eligibility flag is true only for map-authored billboard emitters. Duplicate
+    /// calls are reported and rejected rather than silently overriding an
+    /// accepted descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection: &str,
         texture_root: &Path,
         prm_cache_root: &Path,
-        spec_intensity: f32,
-        lifetime: f32,
-        emissive: f32,
+        registration: SpriteCollectionRegistration,
     ) {
         let Self {
             device,
@@ -46,9 +45,7 @@ impl Renderer {
             collection,
             texture_root,
             prm_cache_root,
-            spec_intensity,
-            lifetime,
-            emissive,
+            registration,
         );
     }
 

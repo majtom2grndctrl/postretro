@@ -22,7 +22,7 @@ pub use postretro_renderer::{
     ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE,
     KinematicMoverInstance, LevelGeometry, LightTermMask, LocatorDiagnostics, MoverOccluderAabb,
     PortalOverlayState, PresentHandle, Renderer, SdfShadowMode, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode, level_world_to_geometry,
+    SpatialDiagnostics, SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
 };
 
 #[cfg(feature = "dev-tools")]

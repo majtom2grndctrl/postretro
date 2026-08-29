@@ -110,6 +110,25 @@ fn resolve_sprite_collection_draw_contract(
     ))
 }
 
+fn map_billboard_sprite_collections(
+    entities: &[postretro_level_format::map_entity::MapEntityRecord],
+) -> std::collections::HashSet<String> {
+    entities
+        .iter()
+        .filter(|entity| entity.classname == "billboard_emitter")
+        .map(|entity| {
+            entity
+                .key_values
+                .iter()
+                .rev()
+                .find_map(|(key, value)| (key == "sprite").then_some(value.as_str()))
+                .filter(|sprite| !sprite.is_empty())
+                .unwrap_or("smoke")
+                .to_string()
+        })
+        .collect()
+}
+
 fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
     if let Some(id) = entry.catalog_id.as_ref() {
         LevelSource::Catalog(id.clone())
@@ -1099,6 +1118,11 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             use postretro_entities::{ComponentKind, ComponentValue};
             let texture_root = self.content_root.join("textures");
+            let map_billboard_collections = self
+                .level
+                .as_ref()
+                .map(|world| map_billboard_sprite_collections(&world.map_entities))
+                .unwrap_or_default();
             let projectile_sprites = {
                 let data_registry = script_ctx.data_registry.borrow();
                 projectile_presentation_assets(&data_registry.entities).1
@@ -1145,19 +1169,16 @@ impl App {
             }
 
             for (collection, candidates) in collections {
-                let frames =
+                // Keep the draw-contract frame count sourced from the runtime
+                // sprite loader. A direct `.png` remains one frame here; baked
+                // collection sidecars never become a second shader-facing count.
+                let frame_count =
                     postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
-                        .unwrap_or_else(|| {
-                            vec![postretro_render_cpu::smoke::SpriteFrame {
-                                data: vec![255, 255, 255, 255],
-                                width: 1,
-                                height: 1,
-                            }]
-                        });
+                        .map_or(1, |frames| frames.len());
                 let (lifetime, emissive) = match resolve_sprite_collection_draw_contract(
                     &collection,
                     &candidates,
-                    frames.len(),
+                    frame_count,
                 ) {
                     Ok(contract) => contract,
                     Err(reason) => {
@@ -1167,26 +1188,31 @@ impl App {
                         continue;
                     }
                 };
-                renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime, emissive);
+                renderer.register_smoke_collection(
+                    &collection,
+                    &texture_root,
+                    &prm_cache_root,
+                    render::SpriteCollectionRegistration {
+                        baked_sidecar_eligible: map_billboard_collections.contains(&collection),
+                        spec_intensity: 0.3,
+                        lifetime,
+                        emissive,
+                    },
+                );
                 particle_render.register_sprite(&collection);
             }
 
             let collection = weapon::impact_sprite_collection();
-            let frames =
-                postretro_render_cpu::smoke::load_collection_frames(&texture_root, collection)
-                    .unwrap_or_else(|| {
-                        vec![postretro_render_cpu::smoke::SpriteFrame {
-                            data: vec![255, 255, 255, 255],
-                            width: 1,
-                            height: 1,
-                        }]
-                    });
             renderer.register_smoke_collection(
                 collection,
-                &frames,
-                0.45,
-                weapon::impact_lifetime(),
-                0.0,
+                &texture_root,
+                &prm_cache_root,
+                render::SpriteCollectionRegistration {
+                    baked_sidecar_eligible: false,
+                    spec_intensity: 0.45,
+                    lifetime: weapon::impact_lifetime(),
+                    emissive: 0.0,
+                },
             );
             particle_render.register_sprite(collection);
         }
@@ -1672,6 +1698,43 @@ mod tests {
 
         assert!((lifetime - 0.2).abs() <= f32::EPSILON);
         assert!(emissive.abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn baked_sprite_eligibility_comes_only_from_map_billboard_emitters() {
+        use postretro_level_format::map_entity::MapEntityRecord;
+
+        let entities = [
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![("sprite".to_string(), "smoke".to_string())],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![
+                    ("sprite".to_string(), "ignored".to_string()),
+                    ("sprite".to_string(), "sparks".to_string()),
+                ],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "billboard_emitter".to_string(),
+                key_values: vec![("sprite".to_string(), String::new())],
+                ..Default::default()
+            },
+            MapEntityRecord {
+                classname: "data_archetype".to_string(),
+                key_values: vec![("sprite".to_string(), "descriptor_only".to_string())],
+                ..Default::default()
+            },
+        ];
+
+        let collections = map_billboard_sprite_collections(&entities);
+        assert!(collections.contains("smoke"));
+        assert!(collections.contains("sparks"));
+        assert!(!collections.contains("ignored"));
+        assert!(!collections.contains("descriptor_only"));
     }
 
     #[test]

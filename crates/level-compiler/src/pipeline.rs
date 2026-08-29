@@ -8,9 +8,9 @@ use crate::bake_control::BakeControl;
 use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
-    Args, bake_model_textures, compile_worldspawn_data_script, map_needs_sdf_atlas,
-    resolve_content_root, resolve_lightmap_density, resolve_prm_root_via_cargo,
-    resolve_texture_root,
+    Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
+    map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density,
+    resolve_prm_root_via_cargo, resolve_texture_root,
 };
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
@@ -1451,6 +1451,7 @@ fn run_after_parsing(
         texture_mips::bake_texture_mips(&geo_result.texture_names.names, &texture_root, &prm_root)?;
     let content_root = resolve_content_root(&args.input);
     bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
+    bake_sprite_textures(&map_data.map_entities, &texture_root, &prm_root);
     finish_stage(
         &mut timings,
         reporter.as_ref(),

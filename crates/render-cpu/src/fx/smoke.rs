@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use postretro_level_format::sprite_collection::{SpriteSlot, collection_frame_paths};
+
 // --- Constants ---
 
 /// Soft upper bound on live sprites per emitter, enforced by the emitter
@@ -136,50 +138,26 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
     }
 
     let collection_dir = texture_root.join(collection);
-    let read_dir = match std::fs::read_dir(&collection_dir) {
-        Ok(d) => d,
-        Err(_) => {
+    let frame_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Diffuse);
+
+    if frame_paths.is_empty() {
+        if collection_dir.is_dir() {
+            log::warn!(
+                "[Smoke] No {collection}_NN.png frames found in '{}'",
+                collection_dir.display()
+            );
+        } else {
             log::warn!(
                 "[Smoke] Collection directory '{}' not found — no frames loaded",
                 collection_dir.display()
             );
-            return None;
         }
-    };
-
-    // Collect all `<collection>_NN.png` paths and sort by numeric suffix.
-    let prefix = format!("{collection}_");
-    let mut frame_paths: Vec<(u32, std::path::PathBuf)> = Vec::new();
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        let stem = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_lowercase(),
-            None => continue,
-        };
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !ext.eq_ignore_ascii_case("png") {
-            continue;
-        }
-        if let Some(suffix) = stem.strip_prefix(prefix.as_str()) {
-            if let Ok(n) = suffix.parse::<u32>() {
-                frame_paths.push((n, path));
-            }
-        }
-    }
-
-    if frame_paths.is_empty() {
-        log::warn!(
-            "[Smoke] No {collection}_NN.png frames found in '{}'",
-            collection_dir.display()
-        );
         return None;
     }
 
-    frame_paths.sort_by_key(|(n, _)| *n);
-
     let frames: Vec<SpriteFrame> = frame_paths
         .iter()
-        .filter_map(|(_, path)| load_frame(path))
+        .filter_map(|path| load_frame(path))
         .collect();
 
     normalize_sprite_frames(frames)
@@ -189,7 +167,16 @@ pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<V
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    fn png_bytes(color: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba(color));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
 
     #[test]
     fn frame_duration_basic() {
@@ -227,6 +214,39 @@ mod tests {
                 .iter()
                 .all(|frame| (frame.width, frame.height) == (2, 2))
         );
+    }
+
+    #[test]
+    fn collection_decode_uses_shared_tie_break_order_for_duplicate_numeric_suffixes() {
+        // Regression: the fallback sorted only by numeric suffix, so equal
+        // suffixes could disagree with baked array-layer order.
+        let texture_root = std::env::temp_dir().join(format!(
+            "postretro_smoke_shared_order_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let collection_dir = texture_root.join("smoke");
+        fs::create_dir_all(&collection_dir).unwrap();
+        fs::write(
+            collection_dir.join("smoke_1.png"),
+            png_bytes([0, 0, 255, 255]),
+        )
+        .unwrap();
+        fs::write(
+            collection_dir.join("smoke_01.png"),
+            png_bytes([255, 0, 0, 255]),
+        )
+        .unwrap();
+
+        let frames = load_collection_frames(&texture_root, "smoke").expect("frames decode");
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].data, [255, 0, 0, 255]);
+        assert_eq!(frames[1].data, [0, 0, 255, 255]);
+        fs::remove_dir_all(texture_root).unwrap();
     }
 
     #[test]

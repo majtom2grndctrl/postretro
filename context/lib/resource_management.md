@@ -200,11 +200,16 @@ Camera-facing textured quads used for pickups, projectiles, and decorative eleme
 
 Loaded from PNG at runtime. Sprite sheets are not used — each frame is an individual PNG. Animated sprites follow the sequential naming convention described in section 1.3.
 
-At collection load, the PNG decode fallback creates one renderer-owned `D2Array`
-texture: each decoded frame becomes one array layer. The former stitched horizontal
-strip layout is retired. This is a runtime PNG path only; it neither adds a baked
-sprite `.prm` sidecar nor a sprite `.prm` loader/uploader. Baked sprite sidecars and
-their `D2Array` PRM upload path remain downstream scope.
+Map-placed `_NN` collections prefer a content-addressed layered `.prm` sidecar at
+load: every frame is one `D2Array` layer with its own mip chain. The renderer
+re-hashes diffuse/specular/normal frame sets through the shared sprite-collection
+key, validates that the sidecar `layer_count` matches the shared directory frame
+count, and falls back without aborting when the sidecar is missing or invalid.
+The baked path uses linear mip filtering; the fallback remains a renderer-owned,
+single-mip `D2Array` with one decoded frame per layer. Direct `.png` references,
+runtime-only descriptor sprites, and impact sprites therefore retain the same
+decode fallback. Optional baked specular/normal arrays are retained on the sprite
+sheet for the later billboard material path, but are not yet sampled.
 
 ### 6.2 Lighting
 

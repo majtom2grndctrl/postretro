@@ -106,8 +106,7 @@ use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
-
-use postretro_render_cpu::smoke::SpriteFrame;
+pub use smoke::SpriteCollectionRegistration;
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
 // reachable here at their original `render::*` paths.

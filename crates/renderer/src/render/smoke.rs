@@ -9,13 +9,37 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::path::Path;
 
 use wgpu::util::DeviceExt;
 
+use postretro_level_format::prm::{
+    PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot,
+    PrmSlots, cache_filename_for_key,
+};
+use postretro_level_format::sprite_collection::{
+    SpriteSlot, collection_frame_paths, sprite_collection_filename_key,
+};
+use postretro_render_cpu::loaded_texture::{header_mip_count, slot_layer_levels};
 use postretro_render_cpu::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
+
+use super::loaded_texture::{prm_format_to_wgpu, upload_texture_array_data};
 
 /// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;
+
+/// Level-install policy and draw constants for one sprite collection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpriteCollectionRegistration {
+    /// True only when the collection comes from a map-authored billboard emitter.
+    pub baked_sidecar_eligible: bool,
+    /// Per-collection static-light specular response.
+    pub spec_intensity: f32,
+    /// Animation loop and particle lifetime in seconds.
+    pub lifetime: f32,
+    /// Additive HDR self-illumination strength.
+    pub emissive: f32,
+}
 
 /// Storage-buffer dynamic-offset alignment required by wgpu / WebGPU
 /// (`min_storage_buffer_offset_alignment`, 256 on every targeted backend).
@@ -160,6 +184,142 @@ enum SpriteArrayFallback {
     InvalidInput,
 }
 
+/// CPU-only description of a parsed layered sprite `.prm` upload.
+///
+/// `array_layer_count` is checked against the shared collection directory scan
+/// before this plan is accepted. The lifecycle's draw contract independently
+/// keeps its existing decoded-PNG frame-count source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BakedSpriteArrayPlan {
+    array_layer_count: u32,
+    mip_level_count: u32,
+    lod_max_clamp: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpriteTextureLimits {
+    max_texture_array_layers: u32,
+    max_texture_dimension_2d: u32,
+}
+
+/// Parsed layered sidecar data accepted for the baked sprite upload path.
+type ParsedBakedSpriteArray = (
+    PrmHeader,
+    [Result<PrmSlot, PrmReadError>; 4],
+    BakedSpriteArrayPlan,
+);
+
+/// Validate the parts of a parsed `.prm` required by the baked sprite path and
+/// describe its D2-array texture/sampler configuration.
+///
+/// Missing or malformed declared slots decline the baked path so the caller can
+/// retain the PNG decode fallback. The PRM reader already validates the
+/// layer-major payload byte lengths; this plan pins the separate runtime frame
+/// count contract before any GPU upload starts.
+fn plan_baked_sprite_array(
+    header: &PrmHeader,
+    slots: &[Result<PrmSlot, PrmReadError>; 4],
+    collection_frame_count: usize,
+    limits: SpriteTextureLimits,
+) -> Option<BakedSpriteArrayPlan> {
+    if usize::from(header.layer_count) != collection_frame_count
+        || u32::from(header.layer_count) > PORTABLE_MAX_TEXTURE_ARRAY_LAYERS
+        || u32::from(header.layer_count) > limits.max_texture_array_layers
+        || !header.slot_mask.contains(PrmSlots::DIFFUSE)
+        || header.slot_mask.contains(PrmSlots::EMISSIVE)
+    {
+        return None;
+    }
+
+    let diffuse = slots[0].as_ref().ok()?;
+    if diffuse.format != PrmFormat::Rgba8UnormSrgb
+        || u32::from(diffuse.width) > limits.max_texture_dimension_2d
+        || u32::from(diffuse.height) > limits.max_texture_dimension_2d
+    {
+        return None;
+    }
+    for (slot_index, slot_flag, expected_format) in [
+        (1, PrmSlots::SPECULAR, PrmFormat::R8Unorm),
+        (2, PrmSlots::NORMAL, PrmFormat::Bc5RgUnorm),
+    ] {
+        if !header.slot_mask.contains(slot_flag) {
+            continue;
+        }
+        let slot = slots[slot_index].as_ref().ok()?;
+        if slot.format != expected_format
+            || (slot.width, slot.height) != (diffuse.width, diffuse.height)
+            || u32::from(slot.width) > limits.max_texture_dimension_2d
+            || u32::from(slot.height) > limits.max_texture_dimension_2d
+        {
+            return None;
+        }
+    }
+
+    let mip_level_count = header_mip_count(slots);
+    Some(BakedSpriteArrayPlan {
+        array_layer_count: u32::from(header.layer_count),
+        mip_level_count,
+        lod_max_clamp: mip_level_count.saturating_sub(1) as f32,
+    })
+}
+
+/// Parse a collection's content-addressed sidecar and accept it only when it
+/// still describes the shared collection directory's frame count. Any failure
+/// is a normal cache miss: callers continue through the PNG fallback path.
+fn load_baked_sprite_array(
+    texture_root: &Path,
+    prm_cache_root: &Path,
+    collection: &str,
+    collection_frame_count: usize,
+    limits: SpriteTextureLimits,
+) -> Option<ParsedBakedSpriteArray> {
+    let key = sprite_collection_filename_key(texture_root, collection);
+    let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+    let bytes = std::fs::read(&prm_path).ok()?;
+    let (header_result, slots) = PrmFile::from_bytes_partial(&bytes);
+    let header = match header_result {
+        Ok(header) => header,
+        Err(error) => {
+            log::warn!(
+                "[Smoke] Collection '{collection}' sidecar {} failed to parse: {error}; using PNG fallback",
+                prm_path.display()
+            );
+            return None;
+        }
+    };
+    if header.bundle_hash != key {
+        log::warn!(
+            "[Smoke] Collection '{collection}' sidecar {} does not match its lookup key; using PNG fallback",
+            prm_path.display()
+        );
+        return None;
+    }
+    let Some(plan) = plan_baked_sprite_array(&header, &slots, collection_frame_count, limits)
+    else {
+        log::warn!(
+            "[Smoke] Collection '{collection}' sidecar {} is incompatible with its collection or device limits; using PNG fallback",
+            prm_path.display()
+        );
+        return None;
+    };
+    Some((header, slots, plan))
+}
+
+fn is_direct_sprite_reference(collection: &str) -> bool {
+    Path::new(collection)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+}
+
+fn should_attempt_baked_sprite_load(
+    baked_sidecar_eligible: bool,
+    collection: &str,
+    collection_frame_count: usize,
+) -> bool {
+    baked_sidecar_eligible && collection_frame_count > 0 && !is_direct_sprite_reference(collection)
+}
+
 impl SpriteArrayPlan<'_> {
     fn frame_count(&self) -> u32 {
         if self.fallback == Some(SpriteArrayFallback::InvalidInput) {
@@ -265,6 +425,24 @@ pub struct SpriteSheet {
     /// Number of animation frames. 1 when the collection has a single PNG.
     #[allow(dead_code)]
     pub frame_count: u32,
+    /// Owns the baked specular resource alongside its retained view.
+    #[allow(dead_code)]
+    specular_texture: Option<wgpu::Texture>,
+    /// Baked optional specular array, retained for the billboard material path
+    /// that will consume it. It is intentionally not added to this bind group.
+    #[allow(dead_code)]
+    pub specular_view: Option<wgpu::TextureView>,
+    /// Owns the baked normal resource alongside its retained view.
+    #[allow(dead_code)]
+    normal_texture: Option<wgpu::Texture>,
+    /// Baked optional normal array, retained for the billboard material path
+    /// that will consume it. It is intentionally not added to this bind group.
+    #[allow(dead_code)]
+    pub normal_view: Option<wgpu::TextureView>,
+    /// Slots parsed from the baked sidecar. Decode fallback sheets are
+    /// diffuse-only, matching their runtime PNG upload.
+    #[allow(dead_code)]
+    pub slot_mask: PrmSlots,
 }
 
 /// Pack `SpriteDrawParams` bytes for a
@@ -560,20 +738,18 @@ impl SmokePass {
     /// Register a sprite collection. Uploads each frame to its own layer of one
     /// RGBA8 texture array and creates the per-collection bind group (group 1).
     /// Frames must carry the shared dimensions guaranteed by the CPU loader.
+    /// Only map-emitter collections may opt into baked sidecars; every other
+    /// source stays on the decoded-PNG path.
     /// Reports and rejects duplicate collection calls, or unusable frame lists,
     /// so caller ordering cannot silently replace a draw contract.
-    // This mirrors the renderer-facing collection registration contract; a
-    // parameter object here would only obscure the one forwarding call site.
-    #[allow(clippy::too_many_arguments)]
     pub fn register_collection(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         collection: &str,
-        frames: &[SpriteFrame],
-        spec_intensity: f32,
-        lifetime: f32,
-        emissive: f32,
+        texture_root: &Path,
+        prm_cache_root: &Path,
+        registration: SpriteCollectionRegistration,
     ) {
         if self.sheets.contains_key(collection) {
             log::warn!(
@@ -581,10 +757,152 @@ impl SmokePass {
             );
             return;
         }
+
+        let collection_frame_count =
+            collection_frame_paths(texture_root, collection, SpriteSlot::Diffuse).len();
         let limits = device.limits();
+        let sprite_texture_limits = SpriteTextureLimits {
+            max_texture_array_layers: limits.max_texture_array_layers,
+            max_texture_dimension_2d: limits.max_texture_dimension_2d,
+        };
+        let baked_sprite = should_attempt_baked_sprite_load(
+            registration.baked_sidecar_eligible,
+            collection,
+            collection_frame_count,
+        )
+        .then(|| {
+            load_baked_sprite_array(
+                texture_root,
+                prm_cache_root,
+                collection,
+                collection_frame_count,
+                sprite_texture_limits,
+            )
+            .map(|(header, slots, plan)| (header, slots, plan, collection_frame_count))
+        })
+        .flatten();
+        if let Some((header, slots, baked_plan, collection_frame_count)) = baked_sprite {
+            let diffuse_slot = slots[0]
+                .as_ref()
+                .expect("baked sprite plan requires a parsed diffuse slot");
+            debug_assert!(u32::from(diffuse_slot.level_count) <= baked_plan.mip_level_count);
+            let diffuse_layers = slot_layer_levels(diffuse_slot, header.layer_count);
+            let (_diffuse_texture, diffuse_view) = upload_texture_array_data(
+                device,
+                queue,
+                prm_format_to_wgpu(diffuse_slot.format),
+                &diffuse_layers,
+                baked_plan.array_layer_count,
+                u32::from(diffuse_slot.level_count),
+                &format!("Baked Sprite Diffuse Array: {collection}"),
+            );
+
+            let (specular_texture, specular_view) = if header.slot_mask.contains(PrmSlots::SPECULAR)
+            {
+                let slot = slots[1]
+                    .as_ref()
+                    .expect("baked sprite plan requires declared specular slots to parse");
+                debug_assert!(u32::from(slot.level_count) <= baked_plan.mip_level_count);
+                let layers = slot_layer_levels(slot, header.layer_count);
+                let (texture, view) = upload_texture_array_data(
+                    device,
+                    queue,
+                    prm_format_to_wgpu(slot.format),
+                    &layers,
+                    baked_plan.array_layer_count,
+                    u32::from(slot.level_count),
+                    &format!("Baked Sprite Specular Array: {collection}"),
+                );
+                (Some(texture), Some(view))
+            } else {
+                (None, None)
+            };
+            let (normal_texture, normal_view) = if header.slot_mask.contains(PrmSlots::NORMAL) {
+                let slot = slots[2]
+                    .as_ref()
+                    .expect("baked sprite plan requires declared normal slots to parse");
+                debug_assert!(u32::from(slot.level_count) <= baked_plan.mip_level_count);
+                let layers = slot_layer_levels(slot, header.layer_count);
+                let (texture, view) = upload_texture_array_data(
+                    device,
+                    queue,
+                    prm_format_to_wgpu(slot.format),
+                    &layers,
+                    baked_plan.array_layer_count,
+                    u32::from(slot.level_count),
+                    &format!("Baked Sprite Normal Array: {collection}"),
+                );
+                (Some(texture), Some(view))
+            } else {
+                (None, None)
+            };
+
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(&format!("Baked Sprite Mip Sampler: {collection}")),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                lod_max_clamp: baked_plan.lod_max_clamp,
+                ..Default::default()
+            });
+            let frame_count = collection_frame_count as u32;
+            let params_bytes = build_draw_params(
+                frame_count,
+                registration.spec_intensity,
+                registration.lifetime,
+                registration.emissive,
+            );
+            let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Sprite Draw Params: {collection}")),
+                contents: &params_bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!(
+                    "Baked Sprite Frame Array Bind Group: {collection}"
+                )),
+                layout: &self.sheet_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.sheets.insert(
+                collection.to_string(),
+                SpriteSheet {
+                    bind_group,
+                    frame_count,
+                    specular_texture,
+                    specular_view,
+                    normal_texture,
+                    normal_view,
+                    slot_mask: header.slot_mask,
+                },
+            );
+            return;
+        }
+
+        // A cache miss, malformed sidecar, or direct PNG reference reaches the
+        // unchanged decoded-frame array upload below. Keep this after the baked
+        // branch so a valid sidecar never pays the PNG pixel-decode cost.
+        let frames = postretro_render_cpu::smoke::load_sprite_frames(texture_root, collection)
+            .unwrap_or_default();
         let max_texture_array_layers = limits.max_texture_array_layers;
         let Some(plan) = plan_sprite_array(
-            frames,
+            &frames,
             max_texture_array_layers,
             limits.max_texture_dimension_2d,
         ) else {
@@ -661,7 +979,12 @@ impl SmokePass {
             ..Default::default()
         });
 
-        let params_bytes = build_draw_params(frame_count, spec_intensity, lifetime, emissive);
+        let params_bytes = build_draw_params(
+            frame_count,
+            registration.spec_intensity,
+            registration.lifetime,
+            registration.emissive,
+        );
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Sprite Draw Params: {collection}")),
             contents: &params_bytes,
@@ -692,6 +1015,11 @@ impl SmokePass {
             SpriteSheet {
                 bind_group,
                 frame_count,
+                specular_texture: None,
+                specular_view: None,
+                normal_texture: None,
+                normal_view: None,
+                slot_mask: PrmSlots::DIFFUSE,
             },
         );
     }
@@ -818,7 +1146,310 @@ impl SmokePass {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    use postretro_level_format::prm::{STAGE_VERSION, bc5_level_count, expected_level_count};
+
+    static NEXT_SPRITE_PRM_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_sprite_prm_fixture_root(test_name: &str) -> std::path::PathBuf {
+        let id = NEXT_SPRITE_PRM_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "postretro_baked_sprite_{test_name}_{}_{}",
+            std::process::id(),
+            id
+        ));
+        fs::create_dir_all(root.join("smoke")).expect("fixture collection must be created");
+        root
+    }
+
+    fn layered_slot(format: PrmFormat, fill: u8) -> PrmSlot {
+        let width = 4;
+        let height = 4;
+        let level_count = match format {
+            PrmFormat::Bc5RgUnorm => bc5_level_count(width, height),
+            _ => expected_level_count(width, height),
+        };
+        let mut payload = Vec::new();
+        for layer in 0..2 {
+            for level in 0..level_count {
+                let level_width = ((width as u32) >> level).max(1);
+                let level_height = ((height as u32) >> level).max(1);
+                let level_size = postretro_render_cpu::loaded_texture::level_byte_size(
+                    format,
+                    level_width,
+                    level_height,
+                );
+                payload.extend(vec![
+                    fill.wrapping_add(layer * 0x10).wrapping_add(level);
+                    level_size
+                ]);
+            }
+        }
+        PrmSlot {
+            format,
+            width,
+            height,
+            level_count,
+            payload,
+        }
+    }
+
+    fn companion_bearing_sprite_prm(bundle_hash: [u8; 32]) -> PrmFile {
+        PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                bundle_hash,
+                total_body_bytes: 0,
+                layer_count: 2,
+            },
+            slots: [
+                Some(layered_slot(PrmFormat::Rgba8UnormSrgb, 0x10)),
+                Some(layered_slot(PrmFormat::R8Unorm, 0x20)),
+                Some(layered_slot(PrmFormat::Bc5RgUnorm, 0x30)),
+                None,
+            ],
+        }
+    }
+
+    fn portable_sprite_texture_limits() -> SpriteTextureLimits {
+        SpriteTextureLimits {
+            max_texture_array_layers: PORTABLE_MAX_TEXTURE_ARRAY_LAYERS,
+            max_texture_dimension_2d: 4096,
+        }
+    }
+
+    #[test]
+    fn companion_sidecar_uses_the_shared_sprite_key_and_baked_plan_values() {
+        let texture_root = temp_sprite_prm_fixture_root("companion-plan");
+        fs::write(
+            texture_root.join("smoke/smoke_00.png"),
+            b"diffuse frame zero",
+        )
+        .expect("diffuse frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_01.png"),
+            b"diffuse frame one",
+        )
+        .expect("diffuse frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_00_spec.png"),
+            b"spec frame zero",
+        )
+        .expect("spec frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_01_spec.png"),
+            b"spec frame one",
+        )
+        .expect("spec frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_00_normal.png"),
+            b"normal frame zero",
+        )
+        .expect("normal frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_01_normal.png"),
+            b"normal frame one",
+        )
+        .expect("normal frame must be written");
+
+        let cache_root = texture_root.join("cache");
+        fs::create_dir_all(&cache_root).expect("fixture cache must be created");
+        let key = sprite_collection_filename_key(&texture_root, "smoke");
+        let filename = format!("{}.prm", cache_filename_for_key(&key));
+        let fixture_path = cache_root.join(&filename);
+        fs::write(
+            &fixture_path,
+            companion_bearing_sprite_prm(key)
+                .to_bytes()
+                .expect("fixture PRM must serialize"),
+        )
+        .expect("fixture sidecar must be written");
+        assert_eq!(
+            fixture_path.file_name().and_then(|name| name.to_str()),
+            Some(filename.as_str()),
+            "fixture filename must use the shared sprite collection key"
+        );
+
+        let (header, slots, plan) = load_baked_sprite_array(
+            &texture_root,
+            &cache_root,
+            "smoke",
+            2,
+            portable_sprite_texture_limits(),
+        )
+        .expect("shared key must resolve the companion-bearing sidecar");
+        assert_eq!(header.layer_count, 2);
+        assert_eq!(
+            header.slot_mask,
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL
+        );
+        assert!(slots[1].is_ok(), "specular slot must parse");
+        assert!(slots[2].is_ok(), "normal slot must parse");
+        assert_eq!(plan.array_layer_count, 2);
+        assert_eq!(plan.mip_level_count, 3);
+        assert_eq!(plan.lod_max_clamp, 2.0);
+
+        fs::remove_dir_all(&texture_root).expect("fixture root must be removed");
+    }
+
+    #[test]
+    fn mismatched_baked_header_layer_count_declines_to_the_png_fallback_plan() {
+        let file = companion_bearing_sprite_prm([0xA5; 32]);
+        let bytes = file.to_bytes().expect("fixture PRM must serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("fixture header must parse");
+
+        assert!(
+            plan_baked_sprite_array(&header, &slots, 3, portable_sprite_texture_limits()).is_none(),
+            "a sidecar whose layer count differs from the collection frame count must fall back"
+        );
+    }
+
+    #[test]
+    fn incompatible_sprite_slot_schema_declines_to_png_fallback() {
+        // Regression: generic PRM validation admitted the legacy RGBA normal
+        // format even though sprite sidecars require BC5 normal arrays.
+        let texture_root = temp_sprite_prm_fixture_root("incompatible-schema");
+        fs::write(
+            texture_root.join("smoke/smoke_00.png"),
+            b"diffuse frame zero",
+        )
+        .unwrap();
+        fs::write(
+            texture_root.join("smoke/smoke_01.png"),
+            b"diffuse frame one",
+        )
+        .unwrap();
+        let cache_root = texture_root.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let key = sprite_collection_filename_key(&texture_root, "smoke");
+        let mut file = companion_bearing_sprite_prm(key);
+        file.slots[2] = Some(layered_slot(PrmFormat::Rgba8Unorm, 0x30));
+        fs::write(
+            cache_root.join(format!("{}.prm", cache_filename_for_key(&key))),
+            file.to_bytes()
+                .expect("generic PRM schema remains serializable"),
+        )
+        .unwrap();
+
+        assert!(
+            load_baked_sprite_array(
+                &texture_root,
+                &cache_root,
+                "smoke",
+                2,
+                portable_sprite_texture_limits(),
+            )
+            .is_none(),
+            "an incompatible sprite schema must use the PNG fallback"
+        );
+
+        fs::remove_dir_all(texture_root).unwrap();
+    }
+
+    #[test]
+    fn baked_sprite_plan_declines_device_layer_and_dimension_limit_overruns() {
+        let file = companion_bearing_sprite_prm([0xA5; 32]);
+        let bytes = file.to_bytes().expect("fixture PRM must serialize");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("fixture header must parse");
+
+        assert!(
+            plan_baked_sprite_array(
+                &header,
+                &slots,
+                2,
+                SpriteTextureLimits {
+                    max_texture_array_layers: 1,
+                    max_texture_dimension_2d: 4096,
+                },
+            )
+            .is_none(),
+            "a portable sidecar must still fit the active device layer cap"
+        );
+        assert!(
+            plan_baked_sprite_array(
+                &header,
+                &slots,
+                2,
+                SpriteTextureLimits {
+                    max_texture_array_layers: 2,
+                    max_texture_dimension_2d: 2,
+                },
+            )
+            .is_none(),
+            "a portable sidecar must still fit the active device dimension cap"
+        );
+    }
+
+    #[test]
+    fn mismatched_baked_bundle_hash_declines_to_png_fallback() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let texture_root = temp_sprite_prm_fixture_root("bundle-hash-mismatch");
+        fs::write(
+            texture_root.join("smoke/smoke_00.png"),
+            b"diffuse frame zero",
+        )
+        .expect("diffuse frame must be written");
+        fs::write(
+            texture_root.join("smoke/smoke_01.png"),
+            b"diffuse frame one",
+        )
+        .expect("diffuse frame must be written");
+        let cache_root = texture_root.join("cache");
+        fs::create_dir_all(&cache_root).expect("fixture cache must be created");
+        let lookup_key = sprite_collection_filename_key(&texture_root, "smoke");
+        let fixture_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&lookup_key)));
+        fs::write(
+            &fixture_path,
+            companion_bearing_sprite_prm([0x5A; 32])
+                .to_bytes()
+                .expect("fixture PRM must serialize"),
+        )
+        .expect("fixture sidecar must be written");
+
+        let capture = LogCapture::start();
+        assert!(
+            load_baked_sprite_array(
+                &texture_root,
+                &cache_root,
+                "smoke",
+                2,
+                portable_sprite_texture_limits(),
+            )
+            .is_none(),
+            "a sidecar stored under the lookup filename must still carry that key"
+        );
+        capture.assert_logged_once(Level::Warn, "does not match its lookup key");
+
+        fs::remove_dir_all(&texture_root).expect("fixture root must be removed");
+    }
+
+    #[test]
+    fn direct_png_references_never_attempt_the_collection_sidecar_path() {
+        assert!(is_direct_sprite_reference("effects/impact.PNG"));
+        assert!(!is_direct_sprite_reference("smoke"));
+    }
+
+    #[test]
+    fn baked_sidecar_attempt_requires_map_eligible_numbered_collection() {
+        assert!(should_attempt_baked_sprite_load(true, "smoke", 2));
+        assert!(!should_attempt_baked_sprite_load(false, "smoke", 2));
+        assert!(!should_attempt_baked_sprite_load(false, "impact", 2));
+        assert!(!should_attempt_baked_sprite_load(
+            true,
+            "effects/impact.png",
+            1
+        ));
+        assert!(!should_attempt_baked_sprite_load(true, "missing", 0));
+    }
 
     /// Billboard shader must parse cleanly and declare the expected entry
     /// points. Parses the full concatenated source (billboard + the shared

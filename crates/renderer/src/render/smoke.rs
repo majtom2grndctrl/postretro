@@ -14,8 +14,8 @@ use std::path::Path;
 use wgpu::util::DeviceExt;
 
 use postretro_level_format::prm::{
-    PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmHeader, PrmReadError, PrmSlot, PrmSlots,
-    cache_filename_for_key,
+    PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot,
+    PrmSlots, cache_filename_for_key,
 };
 use postretro_level_format::sprite_collection::{
     SpriteSlot, collection_frame_paths, sprite_collection_filename_key,
@@ -226,27 +226,32 @@ fn plan_baked_sprite_array(
         || u32::from(header.layer_count) > PORTABLE_MAX_TEXTURE_ARRAY_LAYERS
         || u32::from(header.layer_count) > limits.max_texture_array_layers
         || !header.slot_mask.contains(PrmSlots::DIFFUSE)
-        || slots[0].is_err()
+        || header.slot_mask.contains(PrmSlots::EMISSIVE)
     {
         return None;
     }
 
-    for (slot_index, slot_flag) in [
-        PrmSlots::DIFFUSE,
-        PrmSlots::SPECULAR,
-        PrmSlots::NORMAL,
-        PrmSlots::EMISSIVE,
-    ]
-    .into_iter()
-    .enumerate()
+    let diffuse = slots[0].as_ref().ok()?;
+    if diffuse.format != PrmFormat::Rgba8UnormSrgb
+        || u32::from(diffuse.width) > limits.max_texture_dimension_2d
+        || u32::from(diffuse.height) > limits.max_texture_dimension_2d
     {
-        if header.slot_mask.contains(slot_flag) {
-            let slot = slots[slot_index].as_ref().ok()?;
-            if u32::from(slot.width) > limits.max_texture_dimension_2d
-                || u32::from(slot.height) > limits.max_texture_dimension_2d
-            {
-                return None;
-            }
+        return None;
+    }
+    for (slot_index, slot_flag, expected_format) in [
+        (1, PrmSlots::SPECULAR, PrmFormat::R8Unorm),
+        (2, PrmSlots::NORMAL, PrmFormat::Bc5RgUnorm),
+    ] {
+        if !header.slot_mask.contains(slot_flag) {
+            continue;
+        }
+        let slot = slots[slot_index].as_ref().ok()?;
+        if slot.format != expected_format
+            || (slot.width, slot.height) != (diffuse.width, diffuse.height)
+            || u32::from(slot.width) > limits.max_texture_dimension_2d
+            || u32::from(slot.height) > limits.max_texture_dimension_2d
+        {
+            return None;
         }
     }
 
@@ -1146,7 +1151,7 @@ mod tests {
 
     use super::*;
 
-    use postretro_level_format::prm::{PrmFormat, STAGE_VERSION};
+    use postretro_level_format::prm::{STAGE_VERSION, bc5_level_count, expected_level_count};
 
     static NEXT_SPRITE_PRM_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1164,7 +1169,10 @@ mod tests {
     fn layered_slot(format: PrmFormat, fill: u8) -> PrmSlot {
         let width = 4;
         let height = 4;
-        let level_count = 3;
+        let level_count = match format {
+            PrmFormat::Bc5RgUnorm => bc5_level_count(width, height),
+            _ => expected_level_count(width, height),
+        };
         let mut payload = Vec::new();
         for layer in 0..2 {
             for level in 0..level_count {
@@ -1202,7 +1210,7 @@ mod tests {
             slots: [
                 Some(layered_slot(PrmFormat::Rgba8UnormSrgb, 0x10)),
                 Some(layered_slot(PrmFormat::R8Unorm, 0x20)),
-                Some(layered_slot(PrmFormat::Rgba8Unorm, 0x30)),
+                Some(layered_slot(PrmFormat::Bc5RgUnorm, 0x30)),
                 None,
             ],
         }
@@ -1300,6 +1308,48 @@ mod tests {
             plan_baked_sprite_array(&header, &slots, 3, portable_sprite_texture_limits()).is_none(),
             "a sidecar whose layer count differs from the collection frame count must fall back"
         );
+    }
+
+    #[test]
+    fn incompatible_sprite_slot_schema_declines_to_png_fallback() {
+        // Regression: generic PRM validation admitted the legacy RGBA normal
+        // format even though sprite sidecars require BC5 normal arrays.
+        let texture_root = temp_sprite_prm_fixture_root("incompatible-schema");
+        fs::write(
+            texture_root.join("smoke/smoke_00.png"),
+            b"diffuse frame zero",
+        )
+        .unwrap();
+        fs::write(
+            texture_root.join("smoke/smoke_01.png"),
+            b"diffuse frame one",
+        )
+        .unwrap();
+        let cache_root = texture_root.join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let key = sprite_collection_filename_key(&texture_root, "smoke");
+        let mut file = companion_bearing_sprite_prm(key);
+        file.slots[2] = Some(layered_slot(PrmFormat::Rgba8Unorm, 0x30));
+        fs::write(
+            cache_root.join(format!("{}.prm", cache_filename_for_key(&key))),
+            file.to_bytes()
+                .expect("generic PRM schema remains serializable"),
+        )
+        .unwrap();
+
+        assert!(
+            load_baked_sprite_array(
+                &texture_root,
+                &cache_root,
+                "smoke",
+                2,
+                portable_sprite_texture_limits(),
+            )
+            .is_none(),
+            "an incompatible sprite schema must use the PNG fallback"
+        );
+
+        fs::remove_dir_all(texture_root).unwrap();
     }
 
     #[test]

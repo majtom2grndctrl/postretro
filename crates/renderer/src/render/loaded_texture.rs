@@ -134,7 +134,108 @@ pub fn upload_texture_data(
     (texture, view)
 }
 
-fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
+/// Upload layer-major mip chains to a `texture_2d_array`.
+///
+/// `layers` is ordered by array layer; each inner vector is ordered by mip
+/// level. The explicit counts come from the CPU-side upload plan and are
+/// asserted against the payload shape before the GPU descriptor is built.
+/// Logical dimensions and BC5 copy layout follow `upload_texture_data`.
+pub fn upload_texture_array_data(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    layers: &[Vec<(u32, u32, &[u8])>],
+    array_layer_count: u32,
+    mip_level_count: u32,
+    label: &str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let bytes_per_pixel: Option<u32> = match format {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(4),
+        wgpu::TextureFormat::R8Unorm => Some(1),
+        wgpu::TextureFormat::Bc5RgUnorm => None,
+        other => panic!("upload_texture_array_data: unsupported format {other:?}"),
+    };
+    assert_eq!(
+        layers.len(),
+        array_layer_count as usize,
+        "upload_texture_array_data: layer payload count must match array_layer_count"
+    );
+    let first_layer = layers
+        .first()
+        .expect("upload_texture_array_data: layers must contain at least layer 0");
+    assert_eq!(
+        first_layer.len(),
+        mip_level_count as usize,
+        "upload_texture_array_data: layer 0 mip count must match mip_level_count"
+    );
+    let (mip0_w, mip0_h, _) = first_layer
+        .first()
+        .copied()
+        .expect("upload_texture_array_data: each layer must contain mip 0");
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: mip0_w,
+            height: mip0_h,
+            depth_or_array_layers: array_layer_count,
+        },
+        mip_level_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    for (layer, levels) in layers.iter().enumerate() {
+        assert_eq!(
+            levels.len(),
+            mip_level_count as usize,
+            "upload_texture_array_data: every layer must have the planned mip count"
+        );
+        for (level, (level_w, level_h, bytes)) in levels.iter().enumerate() {
+            let (bytes_per_row, rows_per_image) = match bytes_per_pixel {
+                Some(bpp) => (bpp * level_w, *level_h),
+                None => (level_w.div_ceil(4) * 16, level_h.div_ceil(4)),
+            };
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(rows_per_image),
+                },
+                wgpu::Extent3d {
+                    width: *level_w,
+                    height: *level_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{label} View")),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        mip_level_count: Some(mip_level_count),
+        array_layer_count: Some(array_layer_count),
+        ..Default::default()
+    });
+    (texture, view)
+}
+
+pub(super) fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
     match format {
         PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,

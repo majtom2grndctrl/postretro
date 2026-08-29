@@ -1145,19 +1145,16 @@ impl App {
             }
 
             for (collection, candidates) in collections {
-                let frames =
+                // Keep the draw-contract frame count sourced from the runtime
+                // sprite loader. A direct `.png` remains one frame here; baked
+                // collection sidecars never become a second shader-facing count.
+                let frame_count =
                     postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
-                        .unwrap_or_else(|| {
-                            vec![postretro_render_cpu::smoke::SpriteFrame {
-                                data: vec![255, 255, 255, 255],
-                                width: 1,
-                                height: 1,
-                            }]
-                        });
+                        .map_or(1, |frames| frames.len());
                 let (lifetime, emissive) = match resolve_sprite_collection_draw_contract(
                     &collection,
                     &candidates,
-                    frames.len(),
+                    frame_count,
                 ) {
                     Ok(contract) => contract,
                     Err(reason) => {
@@ -1167,23 +1164,22 @@ impl App {
                         continue;
                     }
                 };
-                renderer.register_smoke_collection(&collection, &frames, 0.3, lifetime, emissive);
+                renderer.register_smoke_collection(
+                    &collection,
+                    &texture_root,
+                    &prm_cache_root,
+                    0.3,
+                    lifetime,
+                    emissive,
+                );
                 particle_render.register_sprite(&collection);
             }
 
             let collection = weapon::impact_sprite_collection();
-            let frames =
-                postretro_render_cpu::smoke::load_collection_frames(&texture_root, collection)
-                    .unwrap_or_else(|| {
-                        vec![postretro_render_cpu::smoke::SpriteFrame {
-                            data: vec![255, 255, 255, 255],
-                            width: 1,
-                            height: 1,
-                        }]
-                    });
             renderer.register_smoke_collection(
                 collection,
-                &frames,
+                &texture_root,
+                &prm_cache_root,
                 0.45,
                 weapon::impact_lifetime(),
                 0.0,

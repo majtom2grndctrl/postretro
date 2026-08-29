@@ -47,6 +47,49 @@ pub fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     out
 }
 
+/// Splits a layer-major mip payload for a `texture_2d_array` upload.
+///
+/// The `.prm` header owns `layer_count`; every layer carries the full mip chain
+/// described by `slot`, in layer order. `slot_levels` intentionally remains the
+/// single-layer counterpart for `texture_2d` callers.
+pub fn slot_layer_levels(slot: &PrmSlot, layer_count: u16) -> Vec<Vec<(u32, u32, &[u8])>> {
+    let format = slot.format;
+    let layer_byte_size = (0..slot.level_count)
+        .map(|n| {
+            let w = ((slot.width as u32) >> n).max(1);
+            let h = ((slot.height as u32) >> n).max(1);
+            level_byte_size(format, w, h)
+        })
+        .sum::<usize>();
+    debug_assert_eq!(
+        slot.payload.len(),
+        layer_byte_size * usize::from(layer_count),
+        "layer-major slot payload length must equal the per-layer mip-chain byte size times \
+         layer_count (layer_count={}, width={}, height={}, format={:?})",
+        layer_count,
+        slot.width,
+        slot.height,
+        format,
+    );
+
+    let mut layers = Vec::with_capacity(layer_count as usize);
+    let mut layer_offset = 0usize;
+    for _ in 0..layer_count {
+        let mut levels = Vec::with_capacity(slot.level_count as usize);
+        let mut level_offset = layer_offset;
+        for n in 0..slot.level_count {
+            let w = ((slot.width as u32) >> n).max(1);
+            let h = ((slot.height as u32) >> n).max(1);
+            let size = level_byte_size(format, w, h);
+            levels.push((w, h, &slot.payload[level_offset..level_offset + size]));
+            level_offset += size;
+        }
+        layers.push(levels);
+        layer_offset += layer_byte_size;
+    }
+    layers
+}
+
 /// Maximum mip levels across all four slots. Takes the max (not diffuse-only)
 /// so a corrupted diffuse with intact siblings doesn't clamp those siblings to
 /// LOD 0. Defaults to 1 when no slot parses cleanly — disables mip filtering
@@ -234,5 +277,25 @@ mod tests {
         assert_eq!(levels.len(), 2);
         assert_eq!((levels[0].0, levels[0].1, levels[0].2.len()), (8, 8, 64));
         assert_eq!((levels[1].0, levels[1].1, levels[1].2.len()), (4, 4, 16));
+    }
+
+    #[test]
+    fn slot_layer_levels_splits_each_layer_major_mip_chain() {
+        let slot = PrmSlot {
+            format: PrmFormat::Rgba8UnormSrgb,
+            width: 2,
+            height: 2,
+            level_count: 2,
+            payload: [vec![0x11; 16], vec![0x22; 4], vec![0x33; 16], vec![0x44; 4]].concat(),
+        };
+
+        let layers = slot_layer_levels(&slot, 2);
+        assert_eq!(layers.len(), 2);
+        assert_eq!((layers[0][0].0, layers[0][0].1), (2, 2));
+        assert_eq!(layers[0][0].2, &[0x11; 16]);
+        assert_eq!((layers[0][1].0, layers[0][1].1), (1, 1));
+        assert_eq!(layers[0][1].2, &[0x22; 4]);
+        assert_eq!(layers[1][0].2, &[0x33; 16]);
+        assert_eq!(layers[1][1].2, &[0x44; 4]);
     }
 }

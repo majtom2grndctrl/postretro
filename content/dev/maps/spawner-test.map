@@ -16,8 +16,9 @@
 // enclosed interior joined by that internal doorway, so the world hull is
 // sealed with no leak. Worldspawn brush order: floor, ceiling, west, east,
 // south, north walls, east block south of nook, east block north of nook,
-// closet back wall, closet lintel. Every brush is an axis-aligned box wound
-// normal-inward, so there are no degenerate duplicate-point faces.
+// closet back wall, closet lintel, and the billboard-scatter comparison wall.
+// Every brush is an axis-aligned box wound normal-inward, so there are no
+// degenerate duplicate-point faces.
 // Scripts-first authoring: the trigger names no reaction and commands no mover,
 // so prl-build prints a benign [inert trigger] note. That is a static-view
 // false positive; the compiler cannot see the onTriggerEvent binding in
@@ -122,6 +123,17 @@
 ( 288 80 128 ) ( 176 80 128 ) ( 176 80 96 ) debug_ceiling_grey 0 0 0 1 1
 ( 288 96 96 ) ( 288 160 128 ) ( 288 160 96 ) debug_ceiling_grey 0 0 0 1 1
 }
+// brush 10
+// The low wall blocks the red spotlight's ray to the comparison emitter while
+// leaving room to walk around it. The station is on the light-facing west side.
+{
+( 144 160 0 ) ( 144 96 96 ) ( 144 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 96 96 ) ( 152 96 0 ) ( 144 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 96 0 ) ( 152 160 0 ) ( 144 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 160 96 ) ( 152 96 96 ) ( 144 96 96 ) debug_ceiling_grey 0 0 0 1 1
+( 152 160 96 ) ( 144 160 96 ) ( 144 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 152 96 0 ) ( 152 160 96 ) ( 152 160 0 ) debug_ceiling_grey 0 0 0 1 1
+}
 }
 // entity 1
 {
@@ -198,6 +210,43 @@
 "_tags" "closet_spawner"
 }
 // entity 7
+// Static red billboard-direct-scatter station. The player starts on the
+// light-facing side with a clear path through x 80..120 to the lit emitter.
+// Its matching smoke behind brush 10 remains in the spotlight cone but must be
+// dark by occlusion; stepping sideways around the wall also exposes the cone
+// edge. Keep this separate from the alarm below, which stays script-animated.
+{
+"classname" "light_spot"
+"origin" "80 128 96"
+"angles" "-50 0 0"
+"_cone" "30"
+"_cone2" "40"
+"_falloff_range" "192"
+"light" "500"
+"_color" "255 0 0"
+"_shadow_type" "static_light_map"
+}
+// entity 8
+{
+"classname" "billboard_emitter"
+"origin" "120 128 32"
+"sprite" "smoke_puff"
+"rate" "2.0"
+"lifetime" "2.0"
+"spread" "0.2"
+"buoyancy" "0.0"
+}
+// entity 9
+{
+"classname" "billboard_emitter"
+"origin" "176 128 16"
+"sprite" "smoke_puff"
+"rate" "2.0"
+"lifetime" "2.0"
+"spread" "0.2"
+"buoyancy" "0.0"
+}
+// entity 10
 {
 "classname" "light_spot"
 "origin" "24 -216 104"
@@ -210,7 +259,7 @@
 "_tags" "alarm_light"
 "_shadow_type" "static_light_map"
 }
-// entity 8
+// entity 11
 {
 "classname" "light_spot"
 "origin" "8 248 8"
@@ -218,7 +267,7 @@
 "_falloff_range" "50"
 "angles" "0 0 0"
 }
-// entity 9
+// entity 12
 // Both receiver fixtures stay in the main room, away from the closet doorway
 // and the spawner's local +X fan-out, but inside alarm_light's cone.
 {
@@ -227,7 +276,7 @@
 "angles" "0 45 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }
-// entity 10
+// entity 13
 {
 "classname" "billboard_emitter"
 "origin" "112 -72 32"

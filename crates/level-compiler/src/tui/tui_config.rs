@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::{Args, lightmap_bake, resolve_lightmap_density, sdf_bake, sh_bake};
+use crate::{Args, lightmap_bake, resolve_lightmap_density, sh_bake};
 
 use super::tui_terminal::TerminalSession;
 
@@ -23,28 +23,28 @@ pub enum ConfigOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BuildMode {
-    RapidIteration,
+    IncrementalBuild,
     Production,
 }
 
 impl BuildMode {
     fn toggle(&mut self) {
         *self = match self {
-            Self::RapidIteration => Self::Production,
-            Self::Production => Self::RapidIteration,
+            Self::IncrementalBuild => Self::Production,
+            Self::Production => Self::IncrementalBuild,
         };
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::RapidIteration => "Rapid iteration",
+            Self::IncrementalBuild => "Incremental build",
             Self::Production => "Production",
         }
     }
 
     fn guidance(self) -> &'static str {
         match self {
-            Self::RapidIteration => {
+            Self::IncrementalBuild => {
                 "Warm cache + approximate grouped indirect SH (fast, not shippable)."
             }
             Self::Production => "Exact whole-volume SH + monolithic lightmap (slow, shippable).",
@@ -57,16 +57,14 @@ enum ConfigField {
     ProbeSpacing,
     LightmapDensity,
     SoftShadowSamples,
-    VoxelSize,
     BuildMode,
 }
 
 impl ConfigField {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::ProbeSpacing,
         Self::LightmapDensity,
         Self::SoftShadowSamples,
-        Self::VoxelSize,
         Self::BuildMode,
     ];
 
@@ -109,7 +107,6 @@ struct FormState {
     probe_spacing: String,
     lightmap_density: String,
     soft_shadow_samples: String,
-    voxel_size: String,
     lightmap_density_touched: bool,
     density_source: DensitySource,
     build_mode: BuildMode,
@@ -137,7 +134,6 @@ impl FormState {
             )
             .to_string(),
             soft_shadow_samples: args.soft_shadow_samples.to_string(),
-            voxel_size: args.voxel_size.to_string(),
             // The screen is gated off for CLI density overrides. Keep the form
             // defensive anyway: a density supplied to this form is already an
             // explicit value and should not be discarded if it is confirmed.
@@ -146,7 +142,7 @@ impl FormState {
             build_mode: if args.release || args.no_cache {
                 BuildMode::Production
             } else {
-                BuildMode::RapidIteration
+                BuildMode::IncrementalBuild
             },
             selected: ConfigField::ProbeSpacing,
             editing: None,
@@ -167,7 +163,6 @@ impl FormState {
             ConfigField::ProbeSpacing => Some(&self.probe_spacing),
             ConfigField::LightmapDensity => Some(&self.lightmap_density),
             ConfigField::SoftShadowSamples => Some(&self.soft_shadow_samples),
-            ConfigField::VoxelSize => Some(&self.voxel_size),
             ConfigField::BuildMode => None,
         }
     }
@@ -177,7 +172,6 @@ impl FormState {
             ConfigField::ProbeSpacing => Some(&mut self.probe_spacing),
             ConfigField::LightmapDensity => Some(&mut self.lightmap_density),
             ConfigField::SoftShadowSamples => Some(&mut self.soft_shadow_samples),
-            ConfigField::VoxelSize => Some(&mut self.voxel_size),
             ConfigField::BuildMode => None,
         }
     }
@@ -272,7 +266,7 @@ enum ValidatedField {
 /// Apply the parser's quality limits to an in-progress form field.
 fn validate_field(field: ConfigField, value: &str) -> Result<ValidatedField, String> {
     match field {
-        ConfigField::ProbeSpacing | ConfigField::LightmapDensity | ConfigField::VoxelSize => {
+        ConfigField::ProbeSpacing | ConfigField::LightmapDensity => {
             let parsed = value
                 .parse::<f32>()
                 .map_err(|_| "must be a positive number of meters".to_owned())?;
@@ -316,13 +310,12 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
 
     args.probe_spacing = metric(ConfigField::ProbeSpacing)?;
     args.soft_shadow_samples = samples;
-    args.voxel_size = metric(ConfigField::VoxelSize)?;
     args.lightmap_density = form
         .lightmap_density_touched
         .then(|| metric(ConfigField::LightmapDensity))
         .transpose()?;
     match form.build_mode {
-        BuildMode::RapidIteration => {
+        BuildMode::IncrementalBuild => {
             args.release = false;
             args.no_cache = false;
         }
@@ -482,17 +475,6 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
             lightmap_bake::SOFT_PROBE_SAMPLES
         ),
     );
-    append_field(
-        &mut lines,
-        form,
-        ConfigField::VoxelSize,
-        "SDF voxel size",
-        format!("{} m", form.voxel_size),
-        format!(
-            "Default {} m; smaller = finer occluders / slower.",
-            sdf_bake::DEFAULT_VOXEL_SIZE_METERS
-        ),
-    );
     lines.extend([Line::default(), section_heading("Build strategy")]);
     append_field(
         &mut lines,
@@ -598,11 +580,7 @@ mod tests {
 
     #[test]
     fn validation_matches_cli_metric_and_sample_boundaries() {
-        for field in [
-            ConfigField::ProbeSpacing,
-            ConfigField::LightmapDensity,
-            ConfigField::VoxelSize,
-        ] {
+        for field in [ConfigField::ProbeSpacing, ConfigField::LightmapDensity] {
             match validate_field(field, "0.25") {
                 Ok(ValidatedField::Metric(value)) => {
                     assert!((value - 0.25).abs() < f32::EPSILON);
@@ -652,12 +630,14 @@ mod tests {
         let mut args = default_args();
         let mut form = FormState::from_args(&args, None);
 
+        assert_eq!(BuildMode::IncrementalBuild.label(), "Incremental build");
+
         form.build_mode = BuildMode::Production;
         apply_outcome(&mut args, &form).unwrap();
         assert!(args.release);
         assert!(!args.no_cache);
 
-        form.build_mode = BuildMode::RapidIteration;
+        form.build_mode = BuildMode::IncrementalBuild;
         apply_outcome(&mut args, &form).unwrap();
         assert!(!args.release);
         assert!(!args.no_cache);
@@ -713,7 +693,22 @@ mod tests {
         assert!(text.contains("Default 0.04 m/texel; smaller = finer / slower."));
         assert!(!text.contains("Default 1 m; smaller = denser SH / slower."));
         assert!(!text.contains("softer penumbra"));
-        assert!(!text.contains("finer occluders"));
         assert!(!text.contains("Warm cache + approximate"));
+        assert!(!text.contains("SDF voxel size"));
+    }
+
+    #[test]
+    fn configuration_keeps_cli_voxel_size_unchanged() {
+        let mut args = crate::parse_args_from(
+            ["input.map", "--sdf-voxel-size", "0.25"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        let form = FormState::from_args(&args, None);
+
+        apply_outcome(&mut args, &form).unwrap();
+
+        assert!((args.voxel_size - 0.25).abs() < f32::EPSILON);
     }
 }

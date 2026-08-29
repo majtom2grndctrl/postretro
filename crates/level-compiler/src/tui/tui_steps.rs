@@ -187,6 +187,7 @@ fn step_rows(state: &TuiState) -> Vec<StepRow<'_>> {
             total: members.len(),
         });
         if Some(section_index) == open {
+            rows.push(StepRow::Spacer);
             rows.extend(members.into_iter().map(StepRow::Step));
         }
     }
@@ -387,10 +388,11 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(rows[5], StepRow::Step(_)));
+        assert!(matches!(rows[5], StepRow::Spacer));
+        assert!(matches!(rows[6], StepRow::Step(_)));
 
-        let StepRow::Step(step) = &rows[5] else {
-            unreachable!("the open section follows its header with a step");
+        let StepRow::Step(step) = &rows[6] else {
+            unreachable!("the open section separates its header from the first step");
         };
         assert_eq!(step_line(step).spans[0].content, "  ");
     }

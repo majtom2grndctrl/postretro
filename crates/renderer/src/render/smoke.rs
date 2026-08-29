@@ -17,7 +17,9 @@ use postretro_level_format::prm::{
     PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmHeader, PrmReadError, PrmSlot, PrmSlots,
     cache_filename_for_key,
 };
-use postretro_level_format::sprite_collection::sprite_collection_filename_key;
+use postretro_level_format::sprite_collection::{
+    SpriteSlot, collection_frame_paths, sprite_collection_filename_key,
+};
 use postretro_render_cpu::loaded_texture::{header_mip_count, slot_layer_levels};
 use postretro_render_cpu::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
 
@@ -171,10 +173,9 @@ enum SpriteArrayFallback {
 
 /// CPU-only description of a parsed layered sprite `.prm` upload.
 ///
-/// `array_layer_count` is checked against the runtime PNG-decode frame count
-/// before this plan is accepted. The draw contract deliberately continues to
-/// use that runtime count, rather than treating the sidecar header as a second
-/// shader-facing source of truth.
+/// `array_layer_count` is checked against the shared collection directory scan
+/// before this plan is accepted. The lifecycle's draw contract independently
+/// keeps its existing decoded-PNG frame-count source.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BakedSpriteArrayPlan {
     array_layer_count: u32,
@@ -192,9 +193,9 @@ struct BakedSpriteArrayPlan {
 fn plan_baked_sprite_array(
     header: &PrmHeader,
     slots: &[Result<PrmSlot, PrmReadError>; 4],
-    runtime_frame_count: usize,
+    collection_frame_count: usize,
 ) -> Option<BakedSpriteArrayPlan> {
-    if usize::from(header.layer_count) != runtime_frame_count
+    if usize::from(header.layer_count) != collection_frame_count
         || u32::from(header.layer_count) > PORTABLE_MAX_TEXTURE_ARRAY_LAYERS
         || !header.slot_mask.contains(PrmSlots::DIFFUSE)
         || slots[0].is_err()
@@ -225,13 +226,13 @@ fn plan_baked_sprite_array(
 }
 
 /// Parse a collection's content-addressed sidecar and accept it only when it
-/// still describes the runtime's decoded PNG frame count. Any failure is a
-/// normal cache miss: callers continue through the PNG fallback path.
+/// still describes the shared collection directory's frame count. Any failure
+/// is a normal cache miss: callers continue through the PNG fallback path.
 fn load_baked_sprite_array(
     texture_root: &Path,
     prm_cache_root: &Path,
     collection: &str,
-    runtime_frame_count: usize,
+    collection_frame_count: usize,
 ) -> Option<(
     PrmHeader,
     [Result<PrmSlot, PrmReadError>; 4],
@@ -251,9 +252,9 @@ fn load_baked_sprite_array(
             return None;
         }
     };
-    let Some(plan) = plan_baked_sprite_array(&header, &slots, runtime_frame_count) else {
+    let Some(plan) = plan_baked_sprite_array(&header, &slots, collection_frame_count) else {
         log::warn!(
-            "[Smoke] Collection '{collection}' sidecar {} is incompatible with its runtime frame count; using PNG fallback",
+            "[Smoke] Collection '{collection}' sidecar {} is incompatible with its collection frame count; using PNG fallback",
             prm_path.display()
         );
         return None;
@@ -709,23 +710,20 @@ impl SmokePass {
             return;
         }
 
-        // The decoded PNG count remains the draw-contract source of truth.
-        // Retaining the decoded frames here also lets a stale or malformed
-        // sidecar immediately fall through to the existing runtime path.
-        let frames = postretro_render_cpu::smoke::load_sprite_frames(texture_root, collection)
-            .unwrap_or_default();
-        let runtime_frame_count = frames.len();
         let baked_sprite = (!is_direct_sprite_reference(collection))
             .then(|| {
+                let collection_frame_count =
+                    collection_frame_paths(texture_root, collection, SpriteSlot::Diffuse).len();
                 load_baked_sprite_array(
                     texture_root,
                     prm_cache_root,
                     collection,
-                    runtime_frame_count,
+                    collection_frame_count,
                 )
+                .map(|(header, slots, plan)| (header, slots, plan, collection_frame_count))
             })
             .flatten();
-        if let Some((header, slots, baked_plan)) = baked_sprite {
+        if let Some((header, slots, baked_plan, collection_frame_count)) = baked_sprite {
             let diffuse_slot = slots[0]
                 .as_ref()
                 .expect("baked sprite plan requires a parsed diffuse slot");
@@ -792,7 +790,7 @@ impl SmokePass {
                 lod_max_clamp: baked_plan.lod_max_clamp,
                 ..Default::default()
             });
-            let frame_count = runtime_frame_count as u32;
+            let frame_count = collection_frame_count as u32;
             let params_bytes = build_draw_params(frame_count, spec_intensity, lifetime, emissive);
             let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("Sprite Draw Params: {collection}")),
@@ -834,6 +832,11 @@ impl SmokePass {
             return;
         }
 
+        // A cache miss, malformed sidecar, or direct PNG reference reaches the
+        // unchanged decoded-frame array upload below. Keep this after the baked
+        // branch so a valid sidecar never pays the PNG pixel-decode cost.
+        let frames = postretro_render_cpu::smoke::load_sprite_frames(texture_root, collection)
+            .unwrap_or_default();
         let limits = device.limits();
         let max_texture_array_layers = limits.max_texture_array_layers;
         let Some(plan) = plan_sprite_array(
@@ -1220,7 +1223,7 @@ mod tests {
 
         assert!(
             plan_baked_sprite_array(&header, &slots, 3).is_none(),
-            "a sidecar whose layer count differs from the decoded frame count must fall back"
+            "a sidecar whose layer count differs from the collection frame count must fall back"
         );
     }
 

@@ -685,8 +685,8 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     ) {
         anyhow::ensure!(
             scatter.animation_descriptor_indices == direct.animation_descriptor_indices
-                && scatter.affinity_cell_count as usize
-                    == direct.affinity_offsets.len().saturating_sub(1)
+                && scatter.affinity_factor == direct.affinity_factor
+                && scatter.affinity_dims == direct.affinity_dims
                 && scatter.affinity_offsets == direct.affinity_offsets
                 && scatter.affinity_lights == direct.affinity_lights,
             "AnimatedBillboardDirectScatterDeltaVolumes must duplicate AnimatedDirectShDeltaVolumes descriptor and CSR layout"

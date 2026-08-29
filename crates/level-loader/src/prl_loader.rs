@@ -911,19 +911,21 @@ pub(crate) fn validate_animated_billboard_direct_scatter_delta_volumes(
             "animation_descriptor_indices do not match AnimatedDirectShDeltaVolumes (id 45)",
         ));
     }
-    let expected_cell_count =
-        u32::try_from(animated_direct.affinity_cell_count()).map_err(|_| {
-            section_validation(
-                SECTION,
-                "id-45 affinity cell count exceeds the u32 wire range",
-            )
-        })?;
-    if section.affinity_cell_count != expected_cell_count {
+    if section.affinity_factor != animated_direct.affinity_factor {
         return Err(section_validation(
             SECTION,
             format!(
-                "affinity_cell_count {} does not match AnimatedDirectShDeltaVolumes count {expected_cell_count}",
-                section.affinity_cell_count
+                "affinity_factor {} does not match AnimatedDirectShDeltaVolumes factor {}",
+                section.affinity_factor, animated_direct.affinity_factor
+            ),
+        ));
+    }
+    if section.affinity_dims != animated_direct.affinity_dims {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_dims {:?} do not match AnimatedDirectShDeltaVolumes dimensions {:?}",
+                section.affinity_dims, animated_direct.affinity_dims
             ),
         ));
     }
@@ -2539,7 +2541,7 @@ fn load_prl_with_delta_binding_limit(
     // term. An id-45/id-34 valid-probe descriptor disagreement is different:
     // it would make compact payload offsets address the wrong tiles, so reject
     // the complete load before any renderer buffers are built.
-    let animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
+    let parsed_animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
         match read_bounded_delta_section_data_with_limit(
             &file_data,
             &meta,
@@ -2551,12 +2553,6 @@ fn load_prl_with_delta_binding_limit(
                 match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
                     Ok(section) => {
                         match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
-                            Ok(()) if section.affinity_lights.is_empty() => {
-                                log::info!(
-                                    "[PRL] AnimatedDirectShDeltaVolumes has no usable CSR entries; treating section as absent"
-                                );
-                                None
-                            }
                             Ok(()) => {
                                 log::info!(
                                     "[PRL] AnimatedDirectShDeltaVolumes: {} animated light(s), affinity grid {}×{}×{} ({} CSR entr(y/ies), {} delta subblock halves)",
@@ -2643,7 +2639,7 @@ fn load_prl_with_delta_binding_limit(
         .is_some();
     let mut animated_billboard_direct_scatter_delta_volumes: Option<
         AnimatedBillboardDirectScatterDeltaVolumesSection,
-    > = match animated_direct_sh_delta_volumes.as_ref() {
+    > = match parsed_animated_direct_sh_delta_volumes.as_ref() {
         Some(animated_direct) => match read_soft_optional_scatter_section_data(
             &file_data,
             &meta,
@@ -2712,6 +2708,12 @@ fn load_prl_with_delta_binding_limit(
     if billboard_direct_scatter_volume.is_none() {
         animated_billboard_direct_scatter_delta_volumes = None;
     }
+
+    // A structurally valid empty id-45 section still participates in the
+    // id-45/id-48 companion contract (P7), but the direct-SH runtime has no
+    // animation work to allocate for it.
+    let animated_direct_sh_delta_volumes = parsed_animated_direct_sh_delta_volumes
+        .filter(|section| !section.affinity_lights.is_empty());
 
     // Optional — absent when the map has no static direct SH/static lights.
     // Dynamic objects fall back to indirect-only.

@@ -230,7 +230,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `baked/materials/` |
 | SdfAtlas | 33 | When the map has SDF static occluder data |
 | OctahedralShVolume | 34 | When compiled with lighting; base indirect irradiance as layer-aware octahedral atlas tiles |
-| DirectShVolume | 35 | When the map has static baked lights; dense baked static-direct layer-aware octahedral irradiance for entities/billboards; BC6H at rest; no depth moments (read from id 34); same tile geometry and layer assignment as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION` |
+| DirectShVolume | 35 | When the map has static baked lights; dense baked static-direct layer-aware octahedral irradiance for movers/skinned meshes and legacy billboard fallback; BC6H at rest; no depth moments (read from id 34); same tile geometry and layer assignment as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION` |
 | NavMesh | 36 | When the map has walkable navigation; baked regions/portals for runtime pathfinding |
 | CellDrawIndex | 37 | When the BVH has non-empty leaves (omitted for zero-leaf maps); independent of portal presence. Per-cell CSR of owned BVH-leaf spans driving the runtime candidate cull (`rendering_pipeline.md` §7.1) |
 | Cells | 38 | Always; runtime visibility units, preserving compiler spatial ids for cells, portal endpoints, fog masks, BVH leaf `cell_id`, and diagnostics |

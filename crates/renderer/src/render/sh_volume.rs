@@ -531,8 +531,9 @@ impl ShVolumeResources {
         let billboard_direct_scatter = BillboardDirectScatterResources::new(
             device,
             queue,
-            billboard_direct_scatter_section,
-            animated_billboard_direct_scatter_delta_section,
+            present,
+            billboard_direct_scatter_section.filter(|_| present),
+            animated_billboard_direct_scatter_delta_section.filter(|_| present),
         );
 
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {

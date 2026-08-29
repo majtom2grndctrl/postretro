@@ -254,12 +254,13 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // Each decoded frame occupies one texture-array layer, so the UV remains
     // within the frame's native dimensions.
 
-    // Full lighting, hoisted from the fragment stage (SH indirect + either
-    // normal-free scatter or legacy SH direct, static-specular, and dynamic-light loops). Every input derives from the
-    // sprite center (`sprite_pos`) and the camera-facing normal `N = V`, so the
-    // term is constant across the quad — computing it once per vertex and
-    // interpolating reproduces the prior per-fragment value with no visible
-    // change. The SH reads use `textureSampleLevel`/`textureLoad` and the loops
+    // Full lighting, hoisted from the fragment stage. SH indirect and the legacy
+    // direct-SH, static-specular, and runtime-direct branches use the sprite
+    // center (`sprite_pos`) and camera-facing normal `N = V`. The scatter baked
+    // direct and runtime-direct branches are normal-free. The term is constant
+    // across the quad, so per-vertex evaluation and interpolation reproduce the
+    // prior per-fragment value with no visible change. The SH reads use
+    // `textureSampleLevel`/`textureLoad` and the loops
     // use only arithmetic / buffer reads (no implicit derivatives), all valid in
     // the vertex stage. Loop control flow stays uniform: every iteration count
     // (`chunk_count`, `light_count`) is a uniform value and every `continue`/
@@ -592,12 +593,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         ddy,
     );
 
-    // The fragment shader does NO lighting. The full lighting term —
-    // ambient floor + baked indirect + baked static direct + static specular +
-    // dynamic diffuse — is computed per-vertex and arrives interpolated. Every lighting input
-    // derives from the sprite center and the camera-facing `N = V`, so the term
-    // is constant across the quad and the interpolated value equals the prior
-    // per-fragment result. See `vs_main` / `VertexOutput.lighting`.
+    // The fragment shader does NO lighting. The full term is computed per-vertex
+    // and arrives interpolated: ambient floor, indirect, baked direct, plus the
+    // legacy-only static specular and runtime-direct branches. Indirect and
+    // legacy branches use camera-facing `N = V`; scatter baked and runtime
+    // direct are normal-free. The term is constant across the quad, so the
+    // interpolated value equals the prior per-fragment result. See `vs_main` /
+    // `VertexOutput.lighting`.
     let lighting = in.lighting;
     let lit_rgb = sprite_sample.rgb * lighting * in.opacity;
     // Emissive is self-only: it intentionally does not use LightTermMask.

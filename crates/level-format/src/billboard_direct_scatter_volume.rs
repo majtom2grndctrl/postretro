@@ -4,7 +4,7 @@
 use crate::FormatError;
 
 /// Section-internal epoch for the billboard direct-scatter base grid.
-pub const BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION: u32 = 1;
+pub const BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION: u8 = 1;
 
 /// One `Rgba16Float` value in f16 bit representation.
 pub const BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT: usize = 4;
@@ -12,7 +12,7 @@ pub const BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT: usize = 4;
 /// Binary f16 representation of `1.0`, used in the alpha validity channel.
 pub const BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16: u16 = 0x3c00;
 
-const HEADER_SIZE: usize = 40;
+const HEADER_SIZE: usize = 37;
 
 /// Dense, normal-free baked static direct scatter for billboard shading.
 ///
@@ -23,7 +23,7 @@ const HEADER_SIZE: usize = 40;
 /// On disk (little-endian):
 ///
 /// ```text
-/// u32     version (= BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION)
+/// u8      version (= BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION)
 /// f32x3   grid_origin
 /// f32x3   cell_size
 /// u32x3   grid_dimensions
@@ -74,7 +74,7 @@ impl BillboardDirectScatterVolumeSection {
             ))
         })?;
 
-        bytes.extend_from_slice(&BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION.to_le_bytes());
+        bytes.push(BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION);
         for value in self.grid_origin {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -91,10 +91,10 @@ impl BillboardDirectScatterVolumeSection {
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        if data.len() < 4 {
+        if data.is_empty() {
             return Err(truncated("header"));
         }
-        let version = read_u32(data, 0);
+        let version = data[0];
         if version != BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION {
             return Err(invalid_data(format!(
                 "billboard direct scatter volume section version {version}, expected {BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION} — recompile the .prl with the current `prl-build`"
@@ -104,9 +104,9 @@ impl BillboardDirectScatterVolumeSection {
             return Err(truncated("header"));
         }
 
-        let grid_origin = [read_f32(data, 4), read_f32(data, 8), read_f32(data, 12)];
-        let cell_size = [read_f32(data, 16), read_f32(data, 20), read_f32(data, 24)];
-        let grid_dimensions = [read_u32(data, 28), read_u32(data, 32), read_u32(data, 36)];
+        let grid_origin = [read_f32(data, 1), read_f32(data, 5), read_f32(data, 9)];
+        let cell_size = [read_f32(data, 13), read_f32(data, 17), read_f32(data, 21)];
+        let grid_dimensions = [read_u32(data, 25), read_u32(data, 29), read_u32(data, 33)];
         let scatter_f16_count = checked_total_probes(grid_dimensions)
             .and_then(|count| count.checked_mul(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT))
             .ok_or_else(|| {
@@ -130,11 +130,13 @@ impl BillboardDirectScatterVolumeSection {
         }
 
         let mut scatter_rgba = Vec::new();
-        scatter_rgba.try_reserve_exact(scatter_f16_count).map_err(|error| {
-            invalid_data(format!(
+        scatter_rgba
+            .try_reserve_exact(scatter_f16_count)
+            .map_err(|error| {
+                invalid_data(format!(
                 "billboard direct scatter cannot reserve {scatter_f16_count} f16 values: {error}"
             ))
-        })?;
+            })?;
         for offset in (HEADER_SIZE..expected_len).step_by(std::mem::size_of::<u16>()) {
             scatter_rgba.push(read_u16(data, offset));
         }
@@ -261,7 +263,7 @@ mod tests {
     #[test]
     fn billboard_direct_scatter_volume_rejects_version_and_nonbinary_validity() {
         let mut stale = sample_section().to_bytes();
-        stale[..4].copy_from_slice(&(BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION - 1).to_le_bytes());
+        stale[0] = BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION - 1;
         assert!(
             BillboardDirectScatterVolumeSection::from_bytes(&stale)
                 .expect_err("stale version must reject")
@@ -279,6 +281,17 @@ mod tests {
         let mut bytes = sample_section().to_bytes();
         bytes.pop();
         assert!(BillboardDirectScatterVolumeSection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn billboard_direct_scatter_volume_uses_exact_u8_header_offsets() {
+        let bytes = sample_section().to_bytes();
+
+        assert_eq!(bytes.len(), HEADER_SIZE + 16);
+        assert_eq!(bytes[0], BILLBOARD_DIRECT_SCATTER_VOLUME_VERSION);
+        assert_eq!(&bytes[1..13], &[0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64]);
+        assert_eq!(&bytes[13..25], &[0, 0, 0, 63, 0, 0, 128, 63, 0, 0, 0, 64]);
+        assert_eq!(&bytes[25..37], &[2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
     }
 
     #[test]

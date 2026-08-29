@@ -54,13 +54,12 @@ impl BillboardDirectScatterComposeResources {
             return Self { pipeline: None };
         };
 
-        let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
+        let affinity_dimensions = delta.affinity_dims;
+        debug_assert_eq!(delta.affinity_factor, 4);
         debug_assert_eq!(
-            affinity_dimensions[0]
-                .saturating_mul(affinity_dimensions[1])
-                .saturating_mul(affinity_dimensions[2]),
-            delta.affinity_cell_count,
-            "section-48 CSR must cover the same 4×4×4 grid lattice as section 45",
+            affinity_dimensions,
+            grid_dimensions.map(|dimension| dimension.div_ceil(delta.affinity_factor as u32)),
+            "section-48 CSR must cover the same affinity grid as section 45",
         );
         let grid_bytes = scatter_grid_bytes(grid_dimensions, affinity_dimensions);
         let delta_bytes = pad_storage_bytes(u16_slice_to_bytes(&delta.delta_rgba), 4);

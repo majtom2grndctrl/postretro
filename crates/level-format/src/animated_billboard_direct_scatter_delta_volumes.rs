@@ -4,14 +4,14 @@
 use crate::FormatError;
 
 /// Section-internal epoch for dense animated billboard direct-scatter deltas.
-pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION: u32 = 1;
+pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION: u8 = 1;
 
 /// A direct-scatter delta CSR entry always stores one 4×4×4 probe block.
 pub const BILLBOARD_DIRECT_SCATTER_PROBES_PER_AFFINITY_ENTRY: usize = 64;
 /// One `Rgba16Float` value has four f16 channel values.
 pub const BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT: usize = 4;
 
-const HEADER_SIZE: usize = 12;
+const HEADER_SIZE: usize = 18;
 
 /// Dense animated direct-scatter deltas for billboards.
 ///
@@ -25,11 +25,12 @@ const HEADER_SIZE: usize = 12;
 /// On disk (all little-endian):
 ///
 /// ```text
-/// u32     version (= ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION)
+/// u8      version (= ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION)
+/// u8      affinity_factor
+/// u32x3   affinity_dims
 /// u32     animated_light_count
-/// u32     affinity_cell_count
 /// u32 × animated_light_count      animation_descriptor_indices
-/// u32 × (affinity_cell_count + 1) affinity_offsets
+/// u32 × (product(affinity_dims) + 1) affinity_offsets
 /// u32 × affinity_offsets[-1]      affinity_lights
 /// u16 × (affinity_offsets[-1] × 64 × 4) delta_rgba
 /// ```
@@ -38,9 +39,10 @@ pub struct AnimatedBillboardDirectScatterDeltaVolumesSection {
     /// One descriptor index per AnimatedBakedLights entry; `u32::MAX` remains
     /// the shared no-op sentinel.
     pub animation_descriptor_indices: Vec<u32>,
-    /// Number of id-45 affinity cells, retained so this standalone section can
-    /// delimit its CSR offset table.
-    pub affinity_cell_count: u32,
+    /// Affinity-cell scale copied from id 45.
+    pub affinity_factor: u8,
+    /// Affinity-grid dimensions copied from id 45.
+    pub affinity_dims: [u32; 3],
     /// CSR offsets copied from id 45.
     pub affinity_offsets: Vec<u32>,
     /// AnimatedBakedLights indices copied from id 45.
@@ -50,6 +52,13 @@ pub struct AnimatedBillboardDirectScatterDeltaVolumesSection {
 }
 
 impl AnimatedBillboardDirectScatterDeltaVolumesSection {
+    pub fn affinity_cell_count(&self) -> Option<usize> {
+        usize::try_from(self.affinity_dims[0])
+            .ok()?
+            .checked_mul(usize::try_from(self.affinity_dims[1]).ok()?)?
+            .checked_mul(usize::try_from(self.affinity_dims[2]).ok()?)
+    }
+
     pub fn expected_delta_f16_count(&self) -> Option<usize> {
         self.affinity_lights
             .len()
@@ -108,11 +117,12 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
             ))
         })?;
 
-        bytes.extend_from_slice(
-            &ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION.to_le_bytes(),
-        );
+        bytes.push(ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION);
+        bytes.push(self.affinity_factor);
+        for dimension in self.affinity_dims {
+            bytes.extend_from_slice(&dimension.to_le_bytes());
+        }
         bytes.extend_from_slice(&(self.animation_descriptor_indices.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&self.affinity_cell_count.to_le_bytes());
         for descriptor in &self.animation_descriptor_indices {
             bytes.extend_from_slice(&descriptor.to_le_bytes());
         }
@@ -132,15 +142,16 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
         if data.len() < HEADER_SIZE {
             return Err(truncated("header"));
         }
-        let version = read_u32(data, 0);
+        let version = data[0];
         if version != ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION {
             return Err(invalid_data(format!(
                 "animated billboard direct scatter delta volumes section version {version}, expected {ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION} — recompile the .prl with the current `prl-build`"
             )));
         }
-        let animated_light_count = usize_from_u32(read_u32(data, 4), "animated_light_count")?;
-        let affinity_cell_count = read_u32(data, 8);
-        let affinity_cell_count_usize = usize_from_u32(affinity_cell_count, "affinity_cell_count")?;
+        let affinity_factor = data[1];
+        let affinity_dims = [read_u32(data, 2), read_u32(data, 6), read_u32(data, 10)];
+        let animated_light_count = usize_from_u32(read_u32(data, 14), "animated_light_count")?;
+        let affinity_cell_count_usize = checked_affinity_cell_count(affinity_dims)?;
 
         let descriptor_bytes = checked_bytes(
             animated_light_count,
@@ -251,7 +262,8 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
 
         let section = Self {
             animation_descriptor_indices,
-            affinity_cell_count,
+            affinity_factor,
+            affinity_dims,
             affinity_offsets,
             affinity_lights,
             delta_rgba,
@@ -264,7 +276,12 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
         u32::try_from(self.animation_descriptor_indices.len()).map_err(|_| {
             invalid_data("animated billboard scatter animated light count exceeds u32")
         })?;
-        let affinity_cell_count = usize_from_u32(self.affinity_cell_count, "affinity_cell_count")?;
+        let affinity_cell_count = self.affinity_cell_count().ok_or_else(|| {
+            invalid_data(format!(
+                "animated billboard scatter affinity_dims {:?} overflow affinity cell count",
+                self.affinity_dims
+            ))
+        })?;
         let expected_offsets_len = affinity_cell_count.checked_add(1).ok_or_else(|| {
             invalid_data("animated billboard scatter offset count overflows usize")
         })?;
@@ -319,6 +336,18 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
         }
         Ok(())
     }
+}
+
+fn checked_affinity_cell_count(dimensions: [u32; 3]) -> crate::Result<usize> {
+    usize::try_from(dimensions[0])
+        .ok()
+        .and_then(|count| count.checked_mul(usize::try_from(dimensions[1]).ok()?))
+        .and_then(|count| count.checked_mul(usize::try_from(dimensions[2]).ok()?))
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "animated billboard scatter affinity_dims {dimensions:?} overflow affinity cell count"
+            ))
+        })
 }
 
 fn validate_offsets(offsets: &[u32]) -> crate::Result<()> {
@@ -391,7 +420,8 @@ mod tests {
     fn sample_section() -> AnimatedBillboardDirectScatterDeltaVolumesSection {
         AnimatedBillboardDirectScatterDeltaVolumesSection {
             animation_descriptor_indices: vec![7, u32::MAX],
-            affinity_cell_count: 2,
+            affinity_factor: 4,
+            affinity_dims: [2, 1, 1],
             affinity_offsets: vec![0, 1, 2],
             affinity_lights: vec![0, 1],
             delta_rgba: vec![
@@ -423,9 +453,7 @@ mod tests {
     #[test]
     fn animated_billboard_direct_scatter_deltas_reject_version_csr_and_payload_errors() {
         let mut stale = sample_section().to_bytes();
-        stale[..4].copy_from_slice(
-            &(ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION - 1).to_le_bytes(),
-        );
+        stale[0] = ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION - 1;
         assert!(AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&stale).is_err());
 
         let mut bad_csr = sample_section();
@@ -446,6 +474,27 @@ mod tests {
         let mut section = sample_section();
         section.delta_rgba[3] = 1;
         assert!(section.try_to_bytes().is_err());
+    }
+
+    #[test]
+    fn animated_billboard_direct_scatter_deltas_use_exact_header_offsets() {
+        let bytes = sample_section().to_bytes();
+
+        assert_eq!(
+            bytes[0],
+            ANIMATED_BILLBOARD_DIRECT_SCATTER_DELTA_VOLUMES_VERSION
+        );
+        assert_eq!(bytes[1], 4);
+        assert_eq!(&bytes[2..14], &[2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(&bytes[14..18], &[2, 0, 0, 0]);
+    }
+
+    #[test]
+    fn animated_billboard_direct_scatter_deltas_reject_dimensions_that_misframe_csr() {
+        let mut bytes = sample_section().to_bytes();
+        bytes[2..6].copy_from_slice(&3u32.to_le_bytes());
+
+        assert!(AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&bytes).is_err());
     }
 
     #[test]

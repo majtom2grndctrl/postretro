@@ -526,7 +526,7 @@ fn field_line(form: &FormState, field: ConfigField, label: &str, value: &str) ->
     } else {
         Style::default()
     };
-    let cursor = (form.editing == Some(field)).then_some("|").unwrap_or("");
+    let cursor = if form.editing == Some(field) { "|" } else { "" };
     Line::from(vec![
         Span::styled(marker, style),
         Span::styled(format!("{label:<18}"), style),

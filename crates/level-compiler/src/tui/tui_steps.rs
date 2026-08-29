@@ -1,4 +1,5 @@
 //! Compile-steps sidebar rendering.
+//! See: `context/lib/build_pipeline.md`.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};

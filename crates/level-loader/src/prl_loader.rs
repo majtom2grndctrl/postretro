@@ -9,9 +9,14 @@ use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::billboard_direct_scatter_volume::{
+    BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT, BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16,
+    BillboardDirectScatterVolumeSection,
+};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
 use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
 use postretro_level_format::cell_locator::CellLocatorSection;
@@ -110,6 +115,26 @@ fn read_bounded_delta_section_data_with_limit<'a>(
         return Ok(BoundedDeltaSectionData::OverBindingFloor);
     }
     Ok(BoundedDeltaSectionData::Data(data))
+}
+
+/// Read an optional scatter section without allowing a bad optional entry to
+/// reject the map. Unlike core sections, billboard scatter selects an additive
+/// optimization; a malformed container range must choose the legacy path.
+fn read_soft_optional_scatter_section_data<'a>(
+    file_data: &'a [u8],
+    meta: &prl_format::ContainerMeta,
+    section_id: SectionId,
+    section_name: &str,
+) -> Option<&'a [u8]> {
+    match prl_format::section_data_from_bytes(file_data, meta, section_id as u32) {
+        Ok(data) => data,
+        Err(error) => {
+            log::warn!(
+                "[PRL] {section_name} has an invalid optional container entry; disabling billboard direct scatter: {error}"
+            );
+            None
+        }
+    }
 }
 
 fn derive_material_with_warning(
@@ -787,6 +812,146 @@ pub(crate) fn validate_animated_direct_sh_delta(
         ));
     }
 
+    Ok(())
+}
+
+/// Validate id 47 against the base octahedral SH grid. The scatter term is
+/// intentionally normal-free, but positions and binary validity are shared so
+/// the billboard sampler can use id-34's x-fastest probe addressing.
+pub(crate) fn validate_billboard_direct_scatter_volume(
+    section: &BillboardDirectScatterVolumeSection,
+    base: Option<&OctahedralShVolumeSection>,
+) -> Result<(), PrlLoadError> {
+    const SECTION: &str = "BillboardDirectScatterVolume";
+    let Some(base) = base else {
+        return Err(section_validation(
+            SECTION,
+            "section requires an OctahedralShVolume base grid",
+        ));
+    };
+    if section.grid_origin != base.grid_origin {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "grid_origin {:?} does not match OctahedralShVolume grid_origin {:?}",
+                section.grid_origin, base.grid_origin
+            ),
+        ));
+    }
+    if section.cell_size != base.cell_size {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "cell_size {:?} does not match OctahedralShVolume cell_size {:?}",
+                section.cell_size, base.cell_size
+            ),
+        ));
+    }
+    if section.grid_dimensions != base.grid_dimensions {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "grid_dimensions {:?} does not match OctahedralShVolume grid_dimensions {:?}",
+                section.grid_dimensions, base.grid_dimensions
+            ),
+        ));
+    }
+    let expected_probe_count = base.total_probes();
+    if base.probes.len() != expected_probe_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "OctahedralShVolume has {} probe metadata records for {expected_probe_count} grid probes",
+                base.probes.len()
+            ),
+        ));
+    }
+    let expected_scatter_f16_count = expected_probe_count
+        .checked_mul(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT)
+        .ok_or_else(|| section_validation(SECTION, "scatter payload length overflows usize"))?;
+    if section.scatter_rgba.len() != expected_scatter_f16_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "scatter_rgba length {}, expected {expected_scatter_f16_count}",
+                section.scatter_rgba.len()
+            ),
+        ));
+    }
+    for (probe, expected_validity) in base.probes.iter().enumerate() {
+        let found = section.scatter_rgba[probe * BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT + 3];
+        let expected = if expected_validity.validity == 0 {
+            0
+        } else {
+            BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16
+        };
+        if found != expected {
+            return Err(section_validation(
+                SECTION,
+                format!(
+                    "scatter_rgba probe {probe} alpha {found:#06x} does not mirror OctahedralShVolume validity as {expected:#06x}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate id 48's duplicated animated descriptor map and CSR layout against
+/// its authoritative id-45 sibling. Id 45 remains the owner of validity and
+/// coarsening; id 48 has only dense 4×4×4 delta values.
+pub(crate) fn validate_animated_billboard_direct_scatter_delta_volumes(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    animated_direct: &AnimatedDirectShDeltaVolumesSection,
+) -> Result<(), PrlLoadError> {
+    const SECTION: &str = "AnimatedBillboardDirectScatterDeltaVolumes";
+    if section.animation_descriptor_indices != animated_direct.animation_descriptor_indices {
+        return Err(section_validation(
+            SECTION,
+            "animation_descriptor_indices do not match AnimatedDirectShDeltaVolumes (id 45)",
+        ));
+    }
+    let expected_cell_count =
+        u32::try_from(animated_direct.affinity_cell_count()).map_err(|_| {
+            section_validation(
+                SECTION,
+                "id-45 affinity cell count exceeds the u32 wire range",
+            )
+        })?;
+    if section.affinity_cell_count != expected_cell_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_cell_count {} does not match AnimatedDirectShDeltaVolumes count {expected_cell_count}",
+                section.affinity_cell_count
+            ),
+        ));
+    }
+    if section.affinity_offsets != animated_direct.affinity_offsets {
+        return Err(section_validation(
+            SECTION,
+            "affinity_offsets do not match AnimatedDirectShDeltaVolumes (id 45)",
+        ));
+    }
+    if section.affinity_lights != animated_direct.affinity_lights {
+        return Err(section_validation(
+            SECTION,
+            "affinity_lights do not match AnimatedDirectShDeltaVolumes (id 45)",
+        ));
+    }
+    let expected_delta_f16_count = section
+        .expected_delta_f16_count()
+        .ok_or_else(|| section_validation(SECTION, "dense delta payload length overflows usize"))?;
+    if section.delta_rgba.len() != expected_delta_f16_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "delta_rgba length {}, expected {expected_delta_f16_count} (= {} CSR entries × 64 RGBA16F values)",
+                section.delta_rgba.len(),
+                section.affinity_lights.len(),
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -2428,6 +2593,126 @@ fn load_prl_with_delta_binding_limit(
             BoundedDeltaSectionData::Absent | BoundedDeltaSectionData::OverBindingFloor => None,
         };
 
+    // Optional normal-free direct scatter for billboard lighting. This is an
+    // optimization with a legacy direct-light fallback, so all parse and
+    // cross-validation failures deliberately clear it instead of rejecting a
+    // map that otherwise loads.
+    let mut billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection> =
+        match read_soft_optional_scatter_section_data(
+            &file_data,
+            &meta,
+            SectionId::BillboardDirectScatterVolume,
+            "BillboardDirectScatterVolume",
+        ) {
+            Some(data) => match BillboardDirectScatterVolumeSection::from_bytes(data) {
+                Ok(section) => {
+                    match validate_billboard_direct_scatter_volume(&section, sh_volume.as_ref()) {
+                        Ok(()) => {
+                            log::info!(
+                                "[PRL] BillboardDirectScatterVolume: {}×{}×{} grid ({} RGBA16F scatter halves)",
+                                section.grid_dimensions[0],
+                                section.grid_dimensions[1],
+                                section.grid_dimensions[2],
+                                section.scatter_rgba.len(),
+                            );
+                            Some(section)
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "[PRL] BillboardDirectScatterVolume unusable; disabling billboard direct scatter: {error}"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[PRL] BillboardDirectScatterVolume malformed; disabling billboard direct scatter: {error}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+    let id45_present = meta
+        .find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
+        .is_some();
+    let id48_present = meta
+        .find_section(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32)
+        .is_some();
+    let mut animated_billboard_direct_scatter_delta_volumes: Option<
+        AnimatedBillboardDirectScatterDeltaVolumesSection,
+    > = match animated_direct_sh_delta_volumes.as_ref() {
+        Some(animated_direct) => match read_soft_optional_scatter_section_data(
+            &file_data,
+            &meta,
+            SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+            "AnimatedBillboardDirectScatterDeltaVolumes",
+        ) {
+            Some(data) => match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data)
+            {
+                Ok(section) => match validate_animated_billboard_direct_scatter_delta_volumes(
+                    &section,
+                    animated_direct,
+                ) {
+                    Ok(()) => {
+                        log::info!(
+                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes: {} CSR entr(y/ies), {} dense delta halves",
+                            section.affinity_lights.len(),
+                            section.delta_rgba.len(),
+                        );
+                        Some(section)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
+                        );
+                        None
+                    }
+                },
+                Err(error) => {
+                    log::warn!(
+                        "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        },
+        None => None,
+    };
+
+    // The id-45 layout is authoritative whenever present. A static-only map
+    // needs only id 47; an animated map needs both the usable id-45 layout and
+    // its id-48 dense companion. Id 48 without id 45 is likewise an invalid
+    // pair. Keep both fields absent so downstream code cannot accidentally mix
+    // scatter with the legacy animated-direct path.
+    let scatter_pair_is_usable = match (id45_present, id48_present) {
+        (false, false) => true,
+        (true, true) => animated_billboard_direct_scatter_delta_volumes.is_some(),
+        (true, false) => false,
+        (false, true) => false,
+    };
+    if billboard_direct_scatter_volume.is_some() && !scatter_pair_is_usable {
+        let reason = match (id45_present, id48_present) {
+            (true, false) => {
+                "AnimatedDirectShDeltaVolumes (id 45) is present without AnimatedBillboardDirectScatterDeltaVolumes (id 48)"
+            }
+            (false, true) => {
+                "AnimatedBillboardDirectScatterDeltaVolumes (id 48) is present without AnimatedDirectShDeltaVolumes (id 45)"
+            }
+            (true, true) => "the id-45/id-48 animated scatter pair is unusable",
+            (false, false) => "the static-only scatter pair is unexpectedly unusable",
+        };
+        log::warn!("[PRL] {reason}; disabling billboard direct scatter");
+        billboard_direct_scatter_volume = None;
+        animated_billboard_direct_scatter_delta_volumes = None;
+    }
+    if billboard_direct_scatter_volume.is_none() {
+        animated_billboard_direct_scatter_delta_volumes = None;
+    }
+
     // Optional — absent when the map has no static direct SH/static lights.
     // Dynamic objects fall back to indirect-only.
     let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
@@ -2939,6 +3224,8 @@ fn load_prl_with_delta_binding_limit(
         direct_sh_volume,
         direct_sh_delta_volumes,
         animated_direct_sh_delta_volumes,
+        billboard_direct_scatter_volume,
+        animated_billboard_direct_scatter_delta_volumes,
         entity_shadow_lights,
         shadowmask_atlas,
         data_script,

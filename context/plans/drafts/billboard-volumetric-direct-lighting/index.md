@@ -36,8 +36,8 @@ around it, while static-light occlusion and animated brightness still apply.
    scatter path is the model for every billboard — there is no per-material split
    — with the legacy-fallback branch (Design decision 6) the only other path.
 2. **Bake before cosine convolution.** The base field sums each reaching
-   static light's `incident_radiance_at_point` multiplied by the same
-   `soft_visibility` used by direct SH. The animated field stores the matching
+   static light's `incident_radiance_at_point` radiance (its `.0` tuple element)
+   multiplied by the same `soft_visibility` used by direct SH. The animated field stores the matching
    per-light peak delta. Both retain light color, falloff, cone, reach culling,
    and baked occlusion without a receiver normal.
 3. **Animated scatter compose mirrors the direct-SH compose.** Before the
@@ -52,7 +52,11 @@ around it, while static-light occlusion and animated brightness still apply.
    `BAKED_DIRECT_ANIMATED` light-term-mask bit re-dispatches, and one settle
    frame follows active→inactive. The dispatch gate keys off each descriptor's
    active flag, never its per-frame evaluated scale, so a curve crossing 0 while
-   active still re-dispatches and settles to base. When `BAKED_DIRECT_ANIMATED`
+   active still re-dispatches and settles to base. The re-dispatch predicate
+   mirrors `direct_compose_should_dispatch`'s whole-mask compare against its own
+   `last_composed_mask` (the `BAKED_DIRECT_ANIMATED` bit is one input, not the
+   whole rule) so a dev-tools toggle of any direct bit recomposes scatter in
+   lock-step with the direct atlas. When `BAKED_DIRECT_ANIMATED`
    is clear the compose zeroes Σ, matching Pass B, so billboard scatter and mesh
    animated-direct never describe different light scales in the same frame. It
    does not reuse direct-SH tiles.
@@ -70,8 +74,11 @@ around it, while static-light occlusion and animated brightness still apply.
    replaces that subtracted read with the full, **unsubtracted** static
    contribution, so the scatter path must not also add the promoted runtime term
    for those lights. On the scatter path the billboard runtime loop therefore
-   iterates only the genuine dynamic tier — records `[0, dynamic_tier_count)`,
-   excluding the appended promoted static records — so a promoted static light
+   iterates only the genuine dynamic tier — records `[0, light_count)`, the
+   existing dynamic-tier count already in the shared uniform
+   (`FrameUniforms.light_count`, offset 80..84; `total_light_count = light_count
+   + promoted static records`), excluding the appended promoted static records —
+   so a promoted static light
    reaches smoke only through its baked scatter value, never twice. The scatter
    compose consequently applies **no** promotion subtraction (unlike
    `direct_sh_compose`); that is correct only because the scatter loop drops the
@@ -103,7 +110,7 @@ around it, while static-light occlusion and animated brightness still apply.
       visible light radiance; an occluded source contributes zero. The test
       covers point, spot, and directional lights.
 - [ ] `[unit]` Animated scatter uses the same descriptor index, active state,
-      brightness, and color scale as section 47 (animated direct SH). At zero
+      brightness, and color scale as section 45 (animated direct SH). At zero
       scale it is base-only; at unit scale it adds exactly the baked peak delta.
       With the `BAKED_DIRECT_ANIMATED` mask bit clear, the composed scatter is
       base-only (pin-table row P1).
@@ -115,8 +122,9 @@ around it, while static-light occlusion and animated brightness still apply.
 - [ ] `[unit]` On the scatter path, the billboard's static-light-map direct has
       no camera-facing `NdotL` or static-specular contribution, its dynamic
       path retains range/cone rejection with no Lambert cosine, and its runtime
-      loop iterates only `[0, dynamic_tier_count)` so a promoted static light is
-      counted exactly once (via scatter). The static-specular loop is reached
+      loop iterates only `[0, light_count)` (the existing dynamic-tier count) so
+      a promoted static light is counted exactly once (via scatter). The
+      static-specular loop is reached
       only on the legacy-fallback branch, never on the scatter path.
 - [ ] `[unit]` After extracting the renderer seam, existing direct-SH compose
       behavior is unchanged, the billboard vertex-stage storage-buffer budget is
@@ -147,8 +155,9 @@ Register `BillboardDirectScatterVolume` (ID 47) and
 are the next free IDs. Section 47 carries a versioned base grid mirroring the
 section-34 origin, cell size, dimensions, and x-fastest probe order; each probe
 is one `Rgba16Float` value (RGB = normal-free static direct scatter, A = the
-per-probe validity weight mirrored from section 34). Section 48 is versioned and
-**reuses section 45's descriptor-index table and CSR (`affinity_offsets` /
+per-probe validity mirrored from section 34, binary 0/1). Section 48 is
+versioned and **reuses section 45's `animation_descriptor_indices` table and CSR
+(`affinity_offsets` /
 `affinity_lights`, keyed by `AnimatedBakedLights`)** but defines its own dense
 payload: no `valid_probe_masks` / `cell_levels` and no coarsening — a fixed
 `4×4×4 = 64`-probe block per CSR entry, each probe one `Rgba16Float` (RGB =
@@ -167,8 +176,9 @@ Add a focused compiler module rather than extending `direct_sh_bake.rs`
 (`crates/level-compiler/src/`, ~2,274 lines). Reuse the direct baker's
 static-light filtering and affinity reach decomposition, plus
 `incident_radiance_at_point` (`sh_bake.rs`, the pre-cosine normal-free RGB
-radiance) and `soft_visibility` (`lightmap_bake.rs`) — the same `pub(crate)`
-helpers `direct_sh_bake.rs` itself calls. Emit one base RGB value per valid
+radiance — its `.0` tuple element) and `soft_visibility` (`lightmap_bake.rs`) —
+`pub(crate)` helpers reachable from a new `level-compiler` module, used today via
+`bake_probe_direct_rgb` (`sh_bake.rs`), which `direct_sh_bake.rs` calls. Emit one base RGB value per valid
 probe for static-light-map sources and one dense 64-probe peak RGB delta per
 animated baked light/cell. The base and delta must share the existing grid and
 section-45 `AnimatedBakedLights` indexing. Version/cache the new bake outputs
@@ -183,27 +193,31 @@ group 3 binding 17, `VERTEX | FRAGMENT`-visible (billboards light per vertex, so
 the scatter read replaces the per-vertex `sample_sh_direct` read); do not change
 existing bindings. The section-48 CSR storage buffers stay `COMPUTE`-visible
 only — never `VERTEX` — matching the existing `anim_descriptors` / `anim_samples`
-discipline, so the vertex-stage storage-buffer count is unchanged. Add a
-`has_scatter` flag to the billboard params uniform beside `has_direct` (keep
-`has_direct` at offset 116..120), and a `dynamic_tier_count` field alongside
-`total_light_count`; the renderer sets `has_scatter` false whenever sections
-47/48 are absent, invalid, or incompatible, and binds binding 17 to a dummy
-1×1×1 `Rgba16Float` texture in that case so the bind-group layout never varies
-with map content.
+discipline, so the vertex-stage storage-buffer count is unchanged. Add a single
+`has_scatter` flag to the shared 128-byte `FrameUniforms` ABI (the 4-way
+contract mirrored by the Rust writer, `forward.wgsl`, `billboard.wgsl`, and
+`wireframe.wgsl`) in its one free slot at offset 112..116 (the retired
+`_dynamic_direct_pad`); `UNIFORM_SIZE` stays 128. Add no new dynamic-tier count:
+the existing `FrameUniforms.light_count` (offset 80..84) already is it
+(`total_light_count = light_count + promoted static records`). The renderer sets
+`has_scatter` false whenever sections 47/48 are absent, invalid, or
+incompatible, and binds binding 17 to a dummy 1×1×1 `Rgba16Float` texture in
+that case so the bind-group layout never varies with map content.
 
 The compose compute pass mirrors `direct_sh_compose` per Design decision 3
-(shared buffers, `time`/`light_term_mask`, dispatch site and predicate,
-copy-through seed and settle frame). It never applies static-promotion
-subtraction — correct only because the scatter runtime loop drops promoted
-records (below).
+(shared buffers, `time`/`light_term_mask`, dispatch site and whole-mask
+predicate, copy-through seed and settle frame), and registers as a
+`POSTRETRO_GPU_TIMING` pass alongside `animated_direct_sh_compose`. It never
+applies static-promotion subtraction — correct only because the scatter runtime
+loop drops promoted records (below).
 
 In `billboard.wgsl`, when `has_scatter != 0`, depth-aware trilinear
 interpolation reads the scatter texture at the sprite centre (weighting probes
 by the A-channel validity as the SH read does), routes static-light-map direct
 through that result instead of the static-specular term and the direct-SH
 surface response, retains the existing static-SDF behavior, and bounds the
-runtime dynamic-direct loop to `[0, dynamic_tier_count)` so promoted static
-records are not double-counted. The static-specular loop stays in the shader but
+runtime dynamic-direct loop to `[0, light_count)` (the existing dynamic-tier
+count) so promoted static records are not double-counted. The static-specular loop stays in the shader but
 is reached only when `has_scatter == 0` (the legacy-fallback branch); the
 scatter path does not evaluate it, and this spec reserves nothing there for
 another spec. Make runtime dynamic direct isotropic by removing only the Lambert
@@ -240,8 +254,8 @@ Both new sections are little-endian and optional.
 
 | Section | ID | Header | Payload | Empty encoding |
 |---|---:|---|---|---|
-| `BillboardDirectScatterVolume` | 47 | `u8 version`, `f32×3 grid_origin`, `f32×3 cell_size`, `u32×3 grid_dimensions` | `f16×4` per x-fastest probe (`x*y*z` probes); RGB = normal-free static direct scatter, A = section-34 validity weight | Omitted entirely when no static-light-map source contributes; never emitted as an all-zero grid. |
-| `AnimatedBillboardDirectScatterDeltaVolumes` | 48 | `u8 version`, `u8 affinity_factor`, `u32×3 affinity_dims`, `u32 animated_light_count`, `u32×animated_light_count descriptor_indices` | CSR offsets, CSR `AnimatedBakedLights` indices, then a dense `64 × f16×4` block per CSR entry (x-fastest within the 4×4×4 block); RGB = delta, A = reserved zero. No `valid_probe_masks` / `cell_levels`. Payload length = `affinity_lights.len() × 64 × f16×4`. | offsets of zero for every cell, no indices or payload. |
+| `BillboardDirectScatterVolume` | 47 | `u8 version`, `f32×3 grid_origin`, `f32×3 cell_size`, `u32×3 grid_dimensions` | `f16×4` per x-fastest probe (`x*y*z` probes); RGB = normal-free static direct scatter, A = section-34 per-probe validity (binary 0/1) | Omitted entirely when no static-light-map source contributes; never emitted as an all-zero grid. |
+| `AnimatedBillboardDirectScatterDeltaVolumes` | 48 | `u8 version`, `u8 affinity_factor`, `u32×3 affinity_dims`, `u32 animated_light_count`, `u32×animated_light_count animation_descriptor_indices` | CSR offsets, CSR `AnimatedBakedLights` indices, then a dense `64 × f16×4` block per CSR entry (x-fastest within the 4×4×4 block); RGB = delta, A = reserved zero. No `valid_probe_masks` / `cell_levels`. Payload length = `affinity_lights.len() × 64 × f16×4`. | offsets of zero for every cell, no indices or payload. |
 
 ## Boundary inventory
 
@@ -250,8 +264,8 @@ Both new sections are little-endian and optional.
 | Base scatter | `BillboardDirectScatterVolumeSection` | section 47 | sampled 3D texture | n/a |
 | Animated scatter | `AnimatedBillboardDirectScatterDeltaVolumesSection` | section 48 | compose CSR buffers | n/a |
 | Scatter texture | renderer-owned resource | n/a | group 3 binding 17 (`VERTEX \| FRAGMENT`) | n/a |
-| Scatter-usable flag | billboard params uniform `has_scatter` | n/a | uniform beside `has_direct` | n/a |
-| Dynamic-tier bound | billboard params uniform `dynamic_tier_count` | n/a | runtime-loop bound on scatter path | n/a |
+| Scatter-usable flag | shared `FrameUniforms` `has_scatter` (offset 112..116) | n/a | uniform, 4-way ABI | n/a |
+| Dynamic-tier bound | existing `FrameUniforms.light_count` (offset 80..84) | n/a | scatter-path runtime-loop bound | n/a |
 | Animation key | `AnimatedBakedLights` index | section-48 descriptor/CSR index | compose descriptor index | existing light animation |
 
 ## Pin table
@@ -266,9 +280,12 @@ Task 5. Sections named by their final IDs (47 base, 48 animated).
 | P3 | Animated light active, curve ramps through scale 0 | Frame where evaluated scale == 0, active flag still set | Scatter compose still dispatches; composed texture == base (Σ = 0), not the prior frame's base+delta. |
 | P4 | Descriptor mutated by scripting bridge on tick N | Bridge write → per-frame descriptor flush → scatter compose + direct compose in one encoder | Both composes read the identical flushed descriptor/sample/`time`; scatter binds the live shared buffers, owns no private copy. |
 | P5 | Sim rate ≠ render rate | Several render frames per descriptor update | Every render frame both composes read the same `time` and descriptor sample; scatter never reads a different sample than the direct compose. |
-| P6 | Section 45 present, section 48 absent, mid-session reload | Reload swaps to this map | Scatter disabled whole; `has_scatter` false; binding 17 → dummy 1×1×1; billboard samples legacy direct-SH path and `total_light_count`; no dangling texture/CSR; bind-group layout unchanged. |
+| P6 | Section 45 present, section 48 absent (or present-but-invalid/incompatible), mid-session reload | Reload swaps to this map | Scatter disabled whole; `has_scatter` false; binding 17 → dummy 1×1×1; billboard samples legacy direct-SH path and `total_light_count`; no dangling texture/CSR; bind-group layout unchanged. |
 | P7 | Section 48 present, empty CSR (zero animated lights) | Level load → every frame | Compose seeds and writes base (Σ over N=0 = base); billboard scatter == base; no skipped-dispatch stale window. |
 | P8 | Promoted static light near a mesh, also reaching smoke | Frame with light promoted at weight `w` | Mesh: `(1−w)` baked-SH-subtracted + `w` runtime term. Billboard scatter path: full static scatter, runtime loop skips the promoted record → light counted once, no `w`-scaled double add. |
+| P9 | Sections 47+48 valid; promotion fires this frame | `light_count` snapshotted in the per-frame uniform flush → `lights` buffer rebuilt (dynamic prefix patched in place, N promoted records appended) → billboard scatter draw | Scatter loop bound `[0, light_count)` still equals the dynamic-prefix record count; the promoted tail `[light_count, total_light_count)` is never read; no dropped dynamic light, no read into a promoted record. Promotion cannot move the boundary. |
+| P10 | Section 48 present, then an in-session state change tries to invalidate scatter without a reload | Any in-session frame | `has_scatter`, binding 17 (real vs dummy), and the loop-bound choice are all load-fixed and never mutated per-frame; the only present→absent transition is a reload (P6). No frame exists where `has_scatter` is set but binding 17 is the dummy, or the loop is bounded to `light_count` while sampling the legacy atlas. |
+| P11 | Sections valid; dev-tools clears `BAKED_DIRECT_STATIC` (animated bit unchanged) | Frame T mask change → both composes evaluated | Scatter compose re-dispatches on the whole-mask change (same predicate as the direct compose), so the scatter texture drops static in lock-step with the direct atlas; billboard scatter never shows a term the mask has cleared. |
 
 ## Cross-spec coordination
 
@@ -301,7 +318,7 @@ with the `frame_idx` field. No dependency, only a merge point.
 | Billboards are normal-free on the scatter path: smoke direct color is independent of camera direction. | Task 3 bakes normal-free transport; Task 4 samples it without `N = V`. | Legacy fallback must remain explicit; on the scatter path, no static-light-map specular or direct-SH double path. | AC 1, 6, 8 |
 | Baked occlusion and cone reach remain authoritative. | Task 3 reuses direct-bake radiance, visibility, and reach logic. | Task 4 may only interpolate baked values; it cannot replace them with `spec_lights`. | AC 2, 3 |
 | Animated scatter and animated direct SH describe the same light scale. | Task 2 pins the shared descriptor map; Task 3 emits matching deltas; Task 4 compose shares live buffers, `time`, and the `BAKED_DIRECT_ANIMATED` mask gate. | Task 4 compose uses the shared active/color/brightness values and the mask gate, and treats mismatch as absent. | AC 4, 5, P1 |
-| No receiver double-counts a physical direct term, promotion included. | Task 4 replaces the billboard's static-light-map direct SH with unsubtracted scatter and bounds the runtime loop to `[0, dynamic_tier_count)`. | On the scatter path a promoted static light reaches smoke only through scatter, never also through a `w`-scaled runtime term; the scatter compose applies no promotion subtraction because the loop drops promoted records. Static promotion behavior for meshes/movers is unchanged; SDF and dynamic policies stay disjoint. | AC 6, P8 |
+| No receiver double-counts a physical direct term, promotion included. | Task 4 replaces the billboard's static-light-map direct SH with unsubtracted scatter and bounds the runtime loop to `[0, light_count)` (the existing dynamic-tier count). | On the scatter path a promoted static light reaches smoke only through scatter, never also through a `w`-scaled runtime term; the scatter compose applies no promotion subtraction because the loop drops promoted records. The dynamic prefix `[0, light_count)` is immovable by promotion (P9). Static promotion behavior for meshes/movers is unchanged; SDF and dynamic policies stay disjoint. | AC 6, P8, P9 |
 
 ## Open questions
 

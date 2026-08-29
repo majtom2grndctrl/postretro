@@ -32,8 +32,12 @@ enum ScatterBindingMode {
 /// This decision is intentionally level-fixed. It is made while resources are
 /// created, never while a frame is rendered, so group-3's layout and the
 /// `has_scatter` uniform cannot drift apart during an animation.
-fn scatter_binding_mode(has_base: bool, has_animated_companion: bool) -> ScatterBindingMode {
-    match (has_base, has_animated_companion) {
+fn scatter_binding_mode(
+    base_sh_usable: bool,
+    has_base: bool,
+    has_animated_companion: bool,
+) -> ScatterBindingMode {
+    match (base_sh_usable && has_base, has_animated_companion) {
         (false, _) => ScatterBindingMode::Legacy,
         (true, false) => ScatterBindingMode::Static,
         (true, true) => ScatterBindingMode::Animated,
@@ -44,10 +48,12 @@ impl BillboardDirectScatterResources {
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        base_sh_usable: bool,
         base: Option<&BillboardDirectScatterVolumeSection>,
         animated: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
     ) -> Self {
-        let (base_texture, has_scatter) = upload_base_texture(device, queue, base);
+        let (base_texture, has_scatter) =
+            upload_base_texture(device, queue, base.filter(|_| base_sh_usable));
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Billboard Direct Scatter Base View"),
             dimension: Some(wgpu::TextureViewDimension::D3),
@@ -57,7 +63,7 @@ impl BillboardDirectScatterResources {
         // A section-48 companion is exposed by the loader only when it is a
         // validated lockstep sibling of section 45. Still require a usable base
         // here: a device-limit fallback must select the legacy billboard path.
-        let binding_mode = scatter_binding_mode(has_scatter, animated.is_some());
+        let binding_mode = scatter_binding_mode(base_sh_usable, has_scatter, animated.is_some());
         let has_animated_deltas = binding_mode == ScatterBindingMode::Animated;
         let (sampled_view, composed_storage_view) = if has_animated_deltas {
             let dimensions = base
@@ -238,19 +244,28 @@ mod tests {
     #[test]
     fn load_fixed_binding_selection_preserves_static_and_invalid_companion_contracts() {
         assert_eq!(
-            scatter_binding_mode(true, false),
+            scatter_binding_mode(true, true, false),
             ScatterBindingMode::Static,
             "a valid section-47 map without section 48 must take scatter"
         );
         assert_eq!(
-            scatter_binding_mode(true, true),
+            scatter_binding_mode(true, true, true),
             ScatterBindingMode::Animated,
             "a validated companion must sample the composed map"
         );
         assert_eq!(
-            scatter_binding_mode(false, true),
+            scatter_binding_mode(true, false, true),
             ScatterBindingMode::Legacy,
             "an unavailable base (including a rejected section 48 pair) must bind the dummy and take legacy lighting"
+        );
+    }
+
+    #[test]
+    fn unusable_base_sh_forces_legacy_scatter_binding_even_when_sections_are_present() {
+        assert_eq!(
+            scatter_binding_mode(false, true, true),
+            ScatterBindingMode::Legacy,
+            "a device-limit SH fallback must bind the dummy scatter texture and clear has_scatter"
         );
     }
 }

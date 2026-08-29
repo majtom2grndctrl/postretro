@@ -34,12 +34,12 @@ use crate::sh_group::geometry_content_hash;
 /// Cache stage for dense, normal-free static billboard scatter.
 pub const BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "billboard_direct_scatter";
 /// Bump only when the static scatter calculation or its cached payload changes.
-pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 1;
+pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 2;
 
 /// Cache stage for dense, normal-free animated billboard scatter deltas.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard_direct_scatter";
 /// Bump only when the animated scatter calculation or its cached payload changes.
-pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 1;
+pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 2;
 
 const RAY_EPSILON: f32 = 1.0e-3;
 // Matches `sh_bake`'s direct-light seed with its ray axis fixed at zero, so a
@@ -181,7 +181,6 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
         }
     }
 
-    let affinity_cell_count = direct_deltas.affinity_offsets.len().saturating_sub(1);
     let cells = csr_entry_cells(&direct_deltas.affinity_offsets);
     control.publish_total(direct_deltas.affinity_lights.len());
     let entries = inputs.animated_lights.entries();
@@ -206,7 +205,8 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
         .collect();
     let section = AnimatedBillboardDirectScatterDeltaVolumesSection {
         animation_descriptor_indices: direct_deltas.animation_descriptor_indices.clone(),
-        affinity_cell_count: affinity_cell_count as u32,
+        affinity_factor: direct_deltas.affinity_factor,
+        affinity_dims: direct_deltas.affinity_dims,
         affinity_offsets: direct_deltas.affinity_offsets.clone(),
         affinity_lights: direct_deltas.affinity_lights.clone(),
         delta_rgba,
@@ -447,7 +447,8 @@ fn animated_layout_matches(
     scatter: &AnimatedBillboardDirectScatterDeltaVolumesSection,
 ) -> bool {
     scatter.animation_descriptor_indices == direct.animation_descriptor_indices
-        && scatter.affinity_cell_count as usize == direct.affinity_offsets.len().saturating_sub(1)
+        && scatter.affinity_factor == direct.affinity_factor
+        && scatter.affinity_dims == direct.affinity_dims
         && scatter.affinity_offsets == direct.affinity_offsets
         && scatter.affinity_lights == direct.affinity_lights
 }
@@ -789,7 +790,8 @@ mod tests {
         };
         let scatter = AnimatedBillboardDirectScatterDeltaVolumesSection {
             animation_descriptor_indices: direct.animation_descriptor_indices.clone(),
-            affinity_cell_count: 2,
+            affinity_factor: direct.affinity_factor,
+            affinity_dims: direct.affinity_dims,
             affinity_offsets: direct.affinity_offsets.clone(),
             affinity_lights: direct.affinity_lights.clone(),
             delta_rgba: vec![0; 2 * 64 * 4],

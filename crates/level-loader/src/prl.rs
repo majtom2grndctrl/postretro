@@ -1296,7 +1296,8 @@ mod tests {
     use crate::load_prl;
     use crate::prl_loader::{
         convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
-        validate_cell_draw_index, validate_delta_sh, validate_direct_sh_delta,
+        validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
+        validate_delta_sh, validate_direct_sh_delta,
         validate_entity_shadow_light_selection,
     };
     use postretro_level_format::SectionId;
@@ -1424,7 +1425,8 @@ mod tests {
     ) -> AnimatedBillboardDirectScatterDeltaVolumesSection {
         AnimatedBillboardDirectScatterDeltaVolumesSection {
             animation_descriptor_indices: animated_direct.animation_descriptor_indices.clone(),
-            affinity_cell_count: animated_direct.affinity_cell_count() as u32,
+            affinity_factor: animated_direct.affinity_factor,
+            affinity_dims: animated_direct.affinity_dims,
             affinity_offsets: animated_direct.affinity_offsets.clone(),
             affinity_lights: animated_direct.affinity_lights.clone(),
             delta_rgba: vec![0; animated_direct.affinity_lights.len() * 64 * 4],
@@ -1502,6 +1504,25 @@ mod tests {
         // factor 4: 8→2, 9→3, 1→1, 4→1, 5→2.
         assert_eq!(expected_affinity_dims([8, 9, 1], 4), [2, 3, 1]);
         assert_eq!(expected_affinity_dims([4, 5, 16], 4), [1, 2, 4]);
+    }
+
+    #[test]
+    fn validate_animated_billboard_scatter_requires_id45_factor_and_dimensions() {
+        let direct = animated_direct_delta_section_for([2, 1, 1]);
+        let mut scatter = animated_billboard_direct_scatter_delta_section_for(&direct);
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_ok()
+        );
+
+        scatter.affinity_factor = direct.affinity_factor + 1;
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_err()
+        );
+        scatter.affinity_factor = direct.affinity_factor;
+        scatter.affinity_dims = [1, 2, 1];
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_err()
+        );
     }
 
     #[test]
@@ -5532,11 +5553,61 @@ mod tests {
     }
 
     #[test]
+    fn load_prl_retains_scatter_for_valid_empty_animated_pair() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let affinity_dims = expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR);
+        let cell_count = affinity_dims.iter().product::<u32>() as usize;
+        let animated_direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0; cell_count],
+            affinity_offsets: vec![0; cell_count + 1],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_empty_animated_billboard_direct_scatter_pair.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("a valid empty id-45/id-48 pair must keep billboard scatter");
+
+        assert!(world.billboard_direct_scatter_volume.is_some());
+        assert_eq!(
+            world.animated_billboard_direct_scatter_delta_volumes,
+            Some(animated_scatter),
+            "P7 requires an animated compose path that can seed the base with an empty sum"
+        );
+        assert!(
+            world.animated_direct_sh_delta_volumes.is_none(),
+            "an empty id-45 section carries pair validity but no direct-SH runtime work"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn load_prl_soft_drops_billboard_scatter_with_invalid_version_or_base_dimensions() {
         let base = base_octahedral_section([1, 1, 1]);
         let valid_scatter = billboard_direct_scatter_section_for(&base);
         let mut stale_version = valid_scatter.to_bytes();
-        stale_version[..4].copy_from_slice(&0u32.to_le_bytes());
+        stale_version[0] = 0;
         let mut truncated_payload = valid_scatter.to_bytes();
         truncated_payload.pop();
         let wrong_dimensions =
@@ -5590,9 +5661,9 @@ mod tests {
         ));
         let mut malformed_scatter =
             animated_billboard_direct_scatter_delta_section_for(&animated_direct).to_bytes();
-        // Header (12 bytes) + one descriptor mapping (4 bytes) → CSR's
+        // Header (18 bytes) + one descriptor mapping (4 bytes) → CSR's
         // leading offset. A nonzero start invalidates the optional CSR shape.
-        malformed_scatter[16..20].copy_from_slice(&1u32.to_le_bytes());
+        malformed_scatter[22..26].copy_from_slice(&1u32.to_le_bytes());
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),

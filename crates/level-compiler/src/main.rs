@@ -241,11 +241,7 @@ fn bake_sprite_textures_with<Bake>(
     Bake: FnMut(&Path, &str, &Path) -> Option<[u8; 32]>,
 {
     for collection in billboard_sprite_collections(entities) {
-        if bake_collection(texture_root, collection, prm_cache_root).is_none() {
-            log::warn!(
-                "[prl-build] failed to bake sprite collection '{collection}'; runtime PNG decode fallback remains available"
-            );
-        }
+        let _ = bake_collection(texture_root, collection, prm_cache_root);
     }
 }
 
@@ -1530,6 +1526,9 @@ mod tests {
 
     #[test]
     fn sprite_texture_bake_continues_after_a_collection_has_no_sidecar() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
         let entities = vec![
             map_entity("billboard_emitter", &[("sprite", "missing")]),
             map_entity("billboard_emitter", &[("sprite", "smoke")]),
@@ -1537,6 +1536,7 @@ mod tests {
         let texture_root = Path::new("content/base/textures");
         let cache_root = Path::new("baked/materials");
         let mut baked = Vec::new();
+        let capture = LogCapture::start();
 
         bake_sprite_textures_with(
             &entities,
@@ -1546,11 +1546,18 @@ mod tests {
                 assert_eq!(observed_texture_root, texture_root);
                 assert_eq!(observed_cache_root, cache_root);
                 baked.push(collection.to_string());
+                if collection == "missing" {
+                    log::warn!(
+                        "[prl-build] sprite collection 'missing' has no diffuse frames — skipping .prm bake"
+                    );
+                }
                 (collection == "smoke").then_some([1; 32])
             },
         );
 
         assert_eq!(baked, vec!["missing", "smoke"]);
+        capture.assert_logged_once(Level::Warn, "has no diffuse frames");
+        capture.assert_not_logged(Level::Warn, "failed to bake sprite collection");
     }
 
     #[test]

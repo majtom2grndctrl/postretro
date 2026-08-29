@@ -236,15 +236,15 @@ impl Renderer {
             let animated_direct_sh_debug_override = self.full().animated_direct_sh_debug_override;
             #[cfg(not(feature = "dev-tools"))]
             let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
-            let direct_sh_active = self
-                .full()
+            let full = self.full();
+            let direct_sh_active = full
                 .promoted_static_weights
                 .iter()
                 .any(|weight| *weight > 0.0)
-                || self
-                    .full()
+                || full
                     .sh_volume_resources
-                    .animated_direct_has_active_descriptor()
+                    .direct
+                    .has_active_animated_descriptor(&full.sh_volume_resources.animation)
                 || direct_sh_debug_override.active()
                 || animated_direct_sh_debug_override.active();
             let frame_light_term_mask = self.frame_light_term_mask();

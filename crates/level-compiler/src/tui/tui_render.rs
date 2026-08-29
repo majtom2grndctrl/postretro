@@ -10,14 +10,15 @@ use crate::governor::Governor;
 use crate::logger::CapturedRecord;
 
 use super::tui_progress::progress_text;
-use super::{ACTIVITY_FRAMES, LogScroll, StepState, StepStatus, TuiReporter, TuiState};
+use super::tui_steps::draw_steps;
+use super::{LogScroll, StepState, StepStatus, TuiReporter, TuiState};
 
 const MIN_FULL_WIDTH: u16 = 68;
 const MIN_FULL_HEIGHT: u16 = 18;
-const PRIMARY: Color = Color::Cyan;
-const SECONDARY: Color = Color::Blue;
+pub(super) const PRIMARY: Color = Color::Cyan;
+pub(super) const SECONDARY: Color = Color::Blue;
 const DIVIDER: Color = Color::Gray;
-const MUTED: Color = Color::DarkGray;
+pub(super) const MUTED: Color = Color::DarkGray;
 const PROGRESS_FILLED: &str = "\u{2588}";
 const PROGRESS_EMPTY: &str = "\u{2591}";
 const CORE_LEGEND_COLUMN: usize = 17;
@@ -166,91 +167,11 @@ fn draw_full(
     draw_controls(frame, vertical[2], governor, max_permits, phase);
 }
 
-fn draw_steps(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let block = Block::default()
-        .title(Span::styled(
-            " Compile steps ",
-            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::RIGHT)
-        .border_style(divider_style())
-        .padding(Padding::horizontal(2));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let footer_height = 3.min(inner.height);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
-        .split(inner);
-    let visible = sections[0].height as usize;
-    let offset = active_scroll_offset(state.steps.len(), visible, state.active_index());
-    let lines = state
-        .steps
-        .iter()
-        .skip(offset)
-        .take(visible)
-        .map(step_line)
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines), sections[0]);
-
-    if let Some(active) = state
-        .active_index()
-        .and_then(|index| state.steps.get(index))
-    {
-        let (progress, eta) = progress_text(active);
-        let mut lines = vec![
-            Line::from(Span::styled(progress, Style::default().fg(PRIMARY))),
-            Line::from(Span::styled(eta, Style::default().fg(SECONDARY))),
-        ];
-        if let Some(bar) = progress_bar_line(active, sections[1].width) {
-            lines.insert(1, bar);
-        }
-        let footer = Paragraph::new(lines);
-        frame.render_widget(footer, sections[1]);
-    }
-}
-
-fn active_scroll_offset(total: usize, visible: usize, active: Option<usize>) -> usize {
-    if visible == 0 || total <= visible {
-        return 0;
-    }
-    let Some(active) = active else {
-        // No active step (e.g. all steps Done/Skipped): scroll to the bottom
-        // so the most recently completed steps stay visible instead of
-        // pinning to the top of the list.
-        return total.saturating_sub(visible);
-    };
-    active
-        .saturating_sub(visible / 2)
-        .min(total.saturating_sub(visible))
-}
-
-fn step_line(step: &StepState) -> Line<'static> {
-    let (marker, style) = match step.status {
-        StepStatus::Pending => ("\u{00b7}  ", Style::default().fg(MUTED)),
-        StepStatus::Active => (
-            ACTIVITY_FRAMES[step.activity_index],
-            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
-        ),
-        StepStatus::Done => ("\u{2713}  ", Style::default()),
-        StepStatus::Skipped => ("\u{2013}  ", Style::default().fg(MUTED)),
-        StepStatus::Failed => (
-            "!  ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-    };
-    Line::from(vec![
-        Span::styled(format!("{marker} "), style),
-        Span::styled(step.label, style),
-    ])
-}
-
-fn divider_style() -> Style {
+pub(super) fn divider_style() -> Style {
     Style::default().fg(DIVIDER).add_modifier(Modifier::DIM)
 }
 
-fn progress_bar_line(step: &StepState, width: u16) -> Option<Line<'static>> {
+pub(super) fn progress_bar_line(step: &StepState, width: u16) -> Option<Line<'static>> {
     let progress = step.progress.as_ref()?;
     let total = progress.total()?;
     let track_width = usize::from(width.saturating_sub(2));
@@ -467,6 +388,8 @@ fn draw_compact(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ACTIVITY_FRAMES;
+    use super::super::tui_steps::step_line;
     use super::*;
     use crate::logger::LogSink;
     use crate::pipeline::{StageDescriptor, StageId};
@@ -672,26 +595,6 @@ mod tests {
 
         assert!(progress_bar_line(&step, 3).is_none());
         assert!(progress_bar_line(&step, 4).is_some());
-    }
-
-    #[test]
-    fn scrolling_keeps_active_step_visible() {
-        assert_eq!(active_scroll_offset(21, 5, Some(0)), 0);
-        let offset = active_scroll_offset(21, 5, Some(12));
-        assert!(offset <= 12 && 12 < offset + 5);
-        assert_eq!(active_scroll_offset(21, 5, Some(20)), 16);
-    }
-
-    #[test]
-    fn no_active_step_scrolls_to_bottom_when_overflowing() {
-        // All steps Done/Skipped (active_index() is None) with more steps
-        // than fit the viewport should show the tail, not pin to the top.
-        assert_eq!(active_scroll_offset(21, 5, None), 16);
-        // Fits within the viewport: no scrolling needed.
-        assert_eq!(active_scroll_offset(5, 5, None), 0);
-        assert_eq!(active_scroll_offset(3, 5, None), 0);
-        // No visible rows: always zero.
-        assert_eq!(active_scroll_offset(21, 0, None), 0);
     }
 
     #[test]

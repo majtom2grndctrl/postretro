@@ -69,6 +69,7 @@ const STEP_SECTIONS: &[StepSection] = &[
 ];
 
 enum StepRow<'a> {
+    Spacer,
     Header {
         label: &'static str,
         status: StepStatus,
@@ -81,6 +82,7 @@ enum StepRow<'a> {
 impl StepRow<'_> {
     fn line(&self) -> Line<'static> {
         match self {
+            Self::Spacer => Line::default(),
             Self::Header {
                 label,
                 status,
@@ -89,9 +91,11 @@ impl StepRow<'_> {
             } => {
                 let (marker, style) = step_marker(*status, 0);
                 Line::from(vec![
+                    Span::raw(" "),
                     Span::styled(format!("{marker} "), style),
                     Span::styled(*label, style.add_modifier(Modifier::BOLD)),
                     Span::styled(format!(" {done}/{total}"), Style::default().fg(MUTED)),
+                    Span::raw(" "),
                 ])
             }
             Self::Step(step) => step_line(step),
@@ -169,6 +173,9 @@ fn step_rows(state: &TuiState) -> Vec<StepRow<'_>> {
         let members = section_members(state, section);
         if members.is_empty() {
             continue;
+        }
+        if !rows.is_empty() {
+            rows.push(StepRow::Spacer);
         }
         rows.push(StepRow::Header {
             label: section.label,
@@ -253,6 +260,7 @@ pub(super) fn active_scroll_offset(total: usize, visible: usize, active: Option<
 pub(super) fn step_line(step: &StepState) -> Line<'static> {
     let (marker, style) = step_marker(step.status, step.activity_index);
     Line::from(vec![
+        Span::raw("  "),
         Span::styled(format!("{marker} "), style),
         Span::styled(step.label, style),
     ])
@@ -360,6 +368,31 @@ mod tests {
         assert!(text.contains("Lighting 0/11"));
         assert!(text.contains("Pack 0/3"));
         assert!(text.contains("Lightmap Bake"));
+    }
+
+    #[test]
+    fn accordion_rows_space_sections_and_indent_expanded_steps() {
+        let mut state = state();
+        state.begin_step(StageId::LightmapBake);
+        let rows = step_rows(&state);
+
+        assert!(matches!(rows[0], StepRow::Header { label: "Parse", .. }));
+        assert!(matches!(rows[1], StepRow::Spacer));
+        assert!(matches!(rows[2], StepRow::Header { label: "World", .. }));
+        assert!(matches!(rows[3], StepRow::Spacer));
+        assert!(matches!(
+            rows[4],
+            StepRow::Header {
+                label: "Lighting",
+                ..
+            }
+        ));
+        assert!(matches!(rows[5], StepRow::Step(_)));
+
+        let StepRow::Step(step) = &rows[5] else {
+            unreachable!("the open section follows its header with a step");
+        };
+        assert_eq!(step_line(step).spans[0].content, "  ");
     }
 
     #[test]

@@ -540,8 +540,8 @@ mod tests {
         assert_eq!(step.activity_index, 1);
         assert_eq!(ACTIVITY_FRAMES[step.activity_index].chars().count(), 3);
         let advanced = render_step(&step);
-        assert_ne!(&initial[..3], &advanced[..3]);
-        assert_eq!(&initial[4..], &advanced[4..]);
+        assert_ne!(&initial[2..5], &advanced[2..5]);
+        assert_eq!(&initial[6..], &advanced[6..]);
         step.observe_liveness();
         assert_eq!(step.activity_index, 1);
         assert_eq!(advanced, render_step(&step));
@@ -1019,8 +1019,9 @@ mod tests {
             .unwrap();
         assert_eq!(failed.status, StepStatus::Failed);
         let rendered = step_line(failed);
-        assert_eq!(rendered.spans[0].content, "!   ");
-        assert_eq!(rendered.spans[1].content, "Lightmap Bake");
+        assert_eq!(rendered.spans[0].content, "  ");
+        assert_eq!(rendered.spans[1].content, "!   ");
+        assert_eq!(rendered.spans[2].content, "Lightmap Bake");
         drop(state);
 
         let governor = Governor::new(1, false);

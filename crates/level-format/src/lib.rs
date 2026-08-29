@@ -2,10 +2,12 @@
 // See: context/lib/build_pipeline.md §PRL Compilation, §Baked texture mips
 
 pub mod alpha_lights;
+pub mod animated_billboard_direct_scatter_delta_volumes;
 pub mod animated_direct_sh_delta_volumes;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod animated_lightmap_atlas;
+pub mod billboard_direct_scatter_volume;
 pub mod bsp;
 pub mod bvh;
 pub mod cell_draw_index;
@@ -277,6 +279,16 @@ pub enum SectionId {
     /// details; absent data deliberately falls back conservatively at runtime.
     /// See `cell_visibility::CellVisibilitySection`.
     CellVisibility = 46,
+
+    /// Dense normal-free direct-scatter samples for billboards. The grid
+    /// mirrors `OctahedralShVolume` and carries one `Rgba16Float` sample per
+    /// probe. See `billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection`.
+    BillboardDirectScatterVolume = 47,
+
+    /// Dense animated direct-scatter deltas for billboards. Its descriptor
+    /// mapping and CSR layout mirror `AnimatedDirectShDeltaVolumes` (id 45).
+    /// See `animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection`.
+    AnimatedBillboardDirectScatterDeltaVolumes = 48,
 }
 
 impl SectionId {
@@ -316,6 +328,8 @@ impl SectionId {
             44 => Some(Self::TriggerVolumes),
             45 => Some(Self::AnimatedDirectShDeltaVolumes),
             46 => Some(Self::CellVisibility),
+            47 => Some(Self::BillboardDirectScatterVolume),
+            48 => Some(Self::AnimatedBillboardDirectScatterDeltaVolumes),
             _ => None,
         }
     }

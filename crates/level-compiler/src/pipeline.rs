@@ -135,7 +135,7 @@ impl StageId {
     }
 }
 
-const ORDERED_STAGES: [StageId; 23] = [
+pub(crate) const ORDERED_STAGES: [StageId; 23] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,

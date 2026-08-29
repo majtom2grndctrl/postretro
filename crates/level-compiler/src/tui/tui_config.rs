@@ -327,10 +327,10 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
             args.no_cache = false;
         }
         BuildMode::Production => {
-            // Keep the intent and mechanical flags together so every downstream
-            // cache check selects the exact ship path.
+            // `release` alone selects the exact ship path; preserve `no_cache`
+            // as the distinct CLI-only cache-bypass choice.
             args.release = true;
-            args.no_cache = true;
+            args.no_cache = false;
         }
     }
     Ok(())
@@ -620,7 +620,7 @@ mod tests {
         form.build_mode = BuildMode::Production;
         apply_outcome(&mut args, &form).unwrap();
         assert!(args.release);
-        assert!(args.no_cache);
+        assert!(!args.no_cache);
 
         form.build_mode = BuildMode::RapidIteration;
         apply_outcome(&mut args, &form).unwrap();

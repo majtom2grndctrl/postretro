@@ -2,6 +2,8 @@
 // See: context/lib/rendering_pipeline.md
 mod animated_direct_sh_compose;
 mod animated_lightmap;
+mod billboard_direct_scatter;
+mod billboard_direct_scatter_compose;
 mod bloom;
 mod bloom_profile;
 #[cfg(feature = "dev-tools")]
@@ -91,6 +93,7 @@ use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use billboard_direct_scatter_compose::BillboardDirectScatterComposeResources;
 use bloom::BloomPass;
 pub use bloom_profile::{BloomRenderProfile, BloomResolution};
 use direct_sh_compose::{

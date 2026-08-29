@@ -122,6 +122,17 @@ pub(crate) fn request_renderer_device(
             MAX_VERTEX_STORAGE_BUFFERS
         );
     }
+    #[cfg(debug_assertions)]
+    {
+        const MAX_VERTEX_SAMPLED_TEXTURES: u32 = 16;
+        debug_assert!(
+            billboard_pipeline_vertex_sampled_texture_count() <= MAX_VERTEX_SAMPLED_TEXTURES,
+            "billboard pipeline VERTEX sampled-texture count ({}) exceeds the WebGPU/Metal design budget ({}); \
+             trim vertex visibility or consolidate billboard texture inputs rather than raising the device limit",
+            billboard_pipeline_vertex_sampled_texture_count(),
+            MAX_VERTEX_SAMPLED_TEXTURES,
+        );
+    }
     const REQUIRED_STORAGE_TEXTURES: u32 = 4;
     // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
     // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -573,6 +584,8 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_SMOKE] = "smoke";
         pass_labels[TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE] = "animated_direct_sh_compose";
         pass_labels[TIMING_PAIR_BLOOM] = "bloom";
+        pass_labels[TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE] =
+            "billboard_direct_scatter_compose";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None
@@ -600,6 +613,7 @@ pub(crate) fn build_initial_uniform_data(
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: false,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
+        has_scatter: false,
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,

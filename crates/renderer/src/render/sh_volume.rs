@@ -1,7 +1,9 @@
 // SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
@@ -10,15 +12,19 @@ use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
-    BIND_ANIM_SAMPLES, BIND_DYNAMIC_DIRECT_PARAMS, BIND_SCRIPTED_LIGHT_DESCRIPTORS,
-    BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS, BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO,
-    BIND_SH_TOTAL_ATLAS, DEFAULT_PROBE_OCCLUSION, DYNAMIC_DIRECT_PARAMS_SIZE,
-    SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32, SCRIPTED_FLOATS_PER_LIGHT,
-    SH_GRID_INFO_SIZE, ShGridInfoParams, build_animation_buffers, build_grid_info_bytes,
-    f32_to_f16_bits, probe_occlusion_seed_from_fast_env,
+    BIND_ANIM_SAMPLES, BIND_BILLBOARD_DIRECT_SCATTER, BIND_DYNAMIC_DIRECT_PARAMS,
+    BIND_SCRIPTED_LIGHT_DESCRIPTORS, BIND_SH_ATLAS_SAMPLER, BIND_SH_DEPTH_MOMENTS,
+    BIND_SH_DIRECT_ATLAS, BIND_SH_GRID_INFO, BIND_SH_TOTAL_ATLAS, DEFAULT_PROBE_OCCLUSION,
+    DYNAMIC_DIRECT_PARAMS_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
+    SCRIPTED_FLOATS_PER_LIGHT, SH_GRID_INFO_SIZE, ShGridInfoParams, build_animation_buffers,
+    build_grid_info_bytes, f32_to_f16_bits, probe_occlusion_seed_from_fast_env,
 };
 use wgpu::util::DeviceExt;
 
+use super::billboard_direct_scatter::{
+    BillboardDirectScatterResources,
+    append_shared_bind_group_layout_entries as append_billboard_scatter_layout_entries,
+};
 use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
@@ -57,6 +63,9 @@ pub struct ShVolumeResources {
     /// Direct-SH resources are a sibling owner to the indirect SH atlas. They
     /// retain the shared binding and mesh-only dynamic-direct uniform contract.
     pub(super) direct: DirectShResources,
+    /// Normal-free static/animated direct scatter sampled only by billboards.
+    /// Its real/dummy binding selection is level-load fixed.
+    pub(super) billboard_direct_scatter: BillboardDirectScatterResources,
     #[allow(dead_code)]
     pub present: bool,
     /// Probe grid dimensions (in cells, x/y/z).
@@ -130,6 +139,9 @@ pub(super) struct ShVolumeSections<'a> {
     pub direct: Option<&'a DirectShVolumeSection>,
     pub direct_delta: Option<&'a DirectShDeltaVolumesSection>,
     pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+    pub billboard_direct_scatter: Option<&'a BillboardDirectScatterVolumeSection>,
+    pub animated_billboard_direct_scatter_delta:
+        Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
 }
 
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
@@ -285,6 +297,8 @@ impl ShVolumeResources {
             direct: direct_section,
             direct_delta: direct_delta_section,
             animated_direct_delta: animated_direct_delta_section,
+            billboard_direct_scatter: billboard_direct_scatter_section,
+            animated_billboard_direct_scatter_delta: animated_billboard_direct_scatter_delta_section,
         } = sections;
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
@@ -514,6 +528,12 @@ impl ShVolumeResources {
             animated_direct_delta_section,
             usable.map(DirectAtlasLayout::from_sh_section),
         );
+        let billboard_direct_scatter = BillboardDirectScatterResources::new(
+            device,
+            queue,
+            billboard_direct_scatter_section,
+            animated_billboard_direct_scatter_delta_section,
+        );
 
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("SH Octahedral Atlas Sampler"),
@@ -558,6 +578,12 @@ impl ShVolumeResources {
             wgpu::BindGroupEntry {
                 binding: postretro_render_cpu::sh_volume::BIND_SH_DIRECT_ATLAS,
                 resource: wgpu::BindingResource::TextureView(&direct.atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: BIND_BILLBOARD_DIRECT_SCATTER,
+                resource: wgpu::BindingResource::TextureView(
+                    &billboard_direct_scatter.sampled_view,
+                ),
             },
         ];
 
@@ -607,6 +633,7 @@ impl ShVolumeResources {
             mesh_bind_group,
             mesh_bind_group_layout,
             direct,
+            billboard_direct_scatter,
             present,
             grid_dimensions,
             atlas_dimensions,
@@ -763,6 +790,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         count: None,
     });
     append_shared_bind_group_layout_entries(&mut entries);
+    append_billboard_scatter_layout_entries(&mut entries);
     entries
 }
 
@@ -1363,6 +1391,10 @@ mod tests {
             // group-4 superset at the same binding index). Forward/fog leave it
             // undeclared, which the subset check below permits.
             BIND_SH_DIRECT_ATLAS,
+            // Billboard-only, normal-free direct-scatter volume. It is
+            // VERTEX-only, leaving forward's full fragment texture budget
+            // untouched.
+            BIND_BILLBOARD_DIRECT_SCATTER,
         ]
         .into_iter()
         .collect();

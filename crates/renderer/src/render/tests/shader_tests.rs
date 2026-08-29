@@ -209,9 +209,9 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
     let billboard_src = include_str!("../../shaders/billboard.wgsl");
     assert!(
         billboard_src.contains(
-            "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+            "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
         ),
-        "billboards must zero their dynamic-plus-promoted loop when the dynamic-direct bit is off",
+        "scatter billboards must stop their runtime loop at the dynamic prefix while legacy direct-SH still consumes the promoted tail",
     );
 
     let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
@@ -244,9 +244,9 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
         "billboard vertex lighting must derive every local term gate from group-0's mask",
     );
     assert!(
-        src.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+        src.contains("if uniforms.has_scatter == 0u && use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
             && src.contains(
-                "let light_count = select(0u, uniforms.total_light_count, use_dynamic_direct);"
+                "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
             )
             && src.contains(
                 "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
@@ -256,6 +256,48 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
     assert!(
         !src.contains("uniforms.dynamic_direct_isolation"),
         "billboard SH terms must rely only on the compose atlases",
+    );
+}
+
+#[test]
+fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
+    let src = include_str!("../../shaders/billboard.wgsl");
+    assert!(
+        src.contains("@group(3) @binding(17) var billboard_direct_scatter: texture_3d<f32>;")
+            && src
+                .contains("fn sample_billboard_direct_scatter(world_pos: vec3<f32>) -> vec3<f32>")
+            && src.contains("let is_valid = sample.a >= 0.5;")
+            && src.contains("sh_probe_weight(")
+            && src.contains("vec3<f32>(0.0),\n            is_valid,\n            false,"),
+        "scatter must use the depth-aware SH weighting convention without supplying a sprite normal",
+    );
+    assert!(
+        src.contains(
+            "direct_scatter = uniforms.direct_scale * sample_billboard_direct_scatter(sprite_pos);"
+        ) && src.contains("} else if uniforms.has_direct != 0u {")
+            && src.contains("sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);"),
+        "scatter must replace only the static direct-SH read; unavailable maps retain legacy direct SH",
+    );
+    assert!(
+        src.contains("if uniforms.has_scatter == 0u && use_specular")
+            && src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"),
+        "static specular and the promoted tail must remain available solely on the legacy path",
+    );
+
+    let scatter_dynamic = src
+        .split("if uniforms.has_scatter != 0u {")
+        .nth(2)
+        .expect("dynamic scatter branch must exist")
+        .split("} else {")
+        .next()
+        .expect("dynamic scatter branch must close before legacy branch");
+    assert!(
+        scatter_dynamic.contains("light.color_and_falloff_model.xyz * attenuation")
+            && !scatter_dynamic.contains("NdotL")
+            && src.contains("let influence = light_influence[i];")
+            && src.contains("if inf_radius <= 1.0e30 {")
+            && src.contains("let cone = cone_attenuation("),
+        "scatter dynamic lighting must preserve influence/range/cone rejection without a Lambert cosine",
     );
 }
 

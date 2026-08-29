@@ -247,6 +247,13 @@ impl Renderer {
                     .has_active_animated_descriptor(&full.sh_volume_resources.animation)
                 || direct_sh_debug_override.active()
                 || animated_direct_sh_debug_override.active();
+            // This intentionally keys on descriptor activity rather than the
+            // curve's current evaluated scale: an active zero-valued curve
+            // still needs composition for a later nonzero sample.
+            let billboard_direct_scatter_active = full
+                .sh_volume_resources
+                .billboard_direct_scatter
+                .has_active_animated_descriptor(&full.sh_volume_resources.animation);
             let frame_light_term_mask = self.frame_light_term_mask();
             {
                 let Self { queue, full, .. } = self;
@@ -261,6 +268,10 @@ impl Renderer {
                     .frame_timing
                     .as_ref()
                     .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE));
+                let billboard_direct_scatter_ts = full
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
                     encoder,
@@ -277,6 +288,16 @@ impl Renderer {
                             animated: animated_direct_sh_ts,
                         },
                     },
+                );
+                // Shares the already-flushed descriptor/sample buffers with
+                // animated direct SH. This stays before every billboard draw,
+                // so its initial copy-through is visible on the first frame.
+                full.billboard_direct_scatter_compose.dispatch_if_needed(
+                    encoder,
+                    &full.uniform_bind_group,
+                    billboard_direct_scatter_active,
+                    frame_light_term_mask,
+                    billboard_direct_scatter_ts,
                 );
             }
         }
@@ -1039,5 +1060,35 @@ impl Renderer {
                 candidate.post_submit(device);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn billboard_scatter_compose_is_after_shared_descriptor_flush_and_before_sprite_draw() {
+        let frame_update = include_str!("renderer_frame.rs");
+        assert_eq!(
+            frame_update
+                .matches("upload_descriptors_if_dirty(queue)")
+                .count(),
+            1,
+            "animated direct-SH and direct scatter must share one descriptor flush"
+        );
+
+        let render = include_str!("renderer_render_frame.rs");
+        let direct = render
+            .find("full.direct_sh_compose.dispatch_if_needed(")
+            .expect("direct-SH compose dispatch must remain present");
+        let scatter = render
+            .find("full.billboard_direct_scatter_compose.dispatch_if_needed(")
+            .expect("scatter compose dispatch must be recorded");
+        let sprites = render
+            .find("label: Some(\"Billboard Sprite Pass\")")
+            .expect("billboard draw pass must remain present");
+        assert!(
+            direct < scatter && scatter < sprites,
+            "shared descriptors must flush, then direct/scatter composition must finish before the first billboard draw"
+        );
     }
 }

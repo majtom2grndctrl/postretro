@@ -128,8 +128,19 @@ pub(super) fn draw_steps(frame: &mut ratatui::Frame<'_>, area: Rect, state: &Tui
         rows.iter()
             .position(|row| row.is_active_step(Some(step.id)))
     });
+    let frontier_row = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(row_index, row)| match row {
+            StepRow::Step(step) if step.status != StepStatus::Pending => {
+                Some((stage_index(step.id), row_index))
+            }
+            _ => None,
+        })
+        .max_by_key(|(stage_index, _)| *stage_index)
+        .map(|(_, row_index)| row_index);
     let visible = sections[0].height as usize;
-    let offset = active_scroll_offset(rows.len(), visible, active_row);
+    let offset = active_scroll_offset(rows.len(), visible, active_row.or(frontier_row));
     let lines = rows
         .iter()
         .skip(offset)
@@ -266,7 +277,9 @@ fn step_marker(status: StepStatus, activity_index: usize) -> (&'static str, Styl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logger::LogSink;
     use crate::pipeline::StageDescriptor;
+    use crate::reporter::Reporter;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -421,6 +434,39 @@ mod tests {
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
         assert!(text.contains("!"));
+    }
+
+    #[test]
+    fn failure_at_minimum_full_layout_keeps_lighting_frontier_visible() {
+        let reporter = super::super::TuiReporter::new(
+            &pipeline::ORDERED_STAGES
+                .iter()
+                .copied()
+                .map(descriptor)
+                .collect::<Vec<_>>(),
+            LogSink::default(),
+        );
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.finalize_failure();
+
+        let mut terminal = Terminal::new(TestBackend::new(68, 18)).unwrap();
+        terminal
+            .draw(|frame| {
+                // The steps pane inside the 68x18 full layout is 32x14 at y=1.
+                let state = reporter.lock();
+                draw_steps(frame, Rect::new(0, 1, 32, 14), &state);
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("Lighting 0/11"));
+        assert!(text.contains("!   Lightmap Bake"));
     }
 
     #[test]

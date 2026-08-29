@@ -76,9 +76,12 @@ little and avoids a second pass. Per-entry stays in this spec.
 
 ## Acceptance criteria
 
-- [ ] A warm no-edit rebuild of `campaign-test.map` logs a cache hit for every present stage among
-      `DeltaShBake`, `AnimatedDirectShBake`, `DirectShDeltaBake`, `CellVisibility`, `ChunkLightList`, and
-      each of those stages' Build-Summary times drops to decode-only (no per-probe ray work).
+- [ ] A warm no-edit rebuild of `campaign-test.map` registers a cache hit for every present stage among
+      `DeltaShBake`, `AnimatedDirectShBake`, `DirectShDeltaBake`, `CellVisibility`, `ChunkLightList` — the two
+      whole-section wrappers via their `[cache] … hit` log line, the three delta stages via the helper's
+      returned all-hit tally (they carry no per-stage log). That the freed per-probe ray work drops each
+      stage's Build-Summary time to decode-only is the intended human-observable effect, checked by inspection,
+      not an automated metric.
 - [ ] For each of the five sections, warm (cached) output is **byte-identical** to the `--no-cache` output
       for the same map — for the three delta sections, after the full downstream post-bake pipeline (exact-zero
       drop, coarsening, valid-probe compaction, payload cap), not merely after the drop. Verified by a test
@@ -90,8 +93,10 @@ little and avoids a second pass. Per-entry stays in this spec.
       lights. A dynamic-light-only edit yields a `ChunkLightList` cache hit — its key covers only static lights.
 - [ ] `--no-cache` and `--release` runs neither read nor write any of the five new cache entries and produce
       output identical to a build with the cache directory deleted.
-- [ ] Bumping any one of the five new `stage_version` constants makes the next build miss that stage and
-      re-bake, then hit on the following build. Verified per stage.
+- [ ] Each stage's `stage_version` is folded into its `CacheKey`, so two versions produce different keys: an
+      entry written at version N misses at version N+1, then hits again at N+1. Verified per stage by a
+      key-difference test (a compile-time const cannot be bumped mid-run), which needs each stage's key builder
+      reachable from tests.
 - [ ] A corrupted or truncated cache entry for any of the five stages is treated as a miss (rebake), not a
       crash — matching the existing `StageCache` corruption contract.
 
@@ -110,7 +115,12 @@ it builds a `CacheKey` folding `{ geometry hash, affinity_dims, entry cell coord
 probe validity bytes, the single light's `postcard` encoding, and the light's `u64` seed index (the axis its
 soft-visibility seed is derived from — `static_index`/`source_index` for the direct bakes; for the indirect
 bake the seed is position-derived, implied by cell coord + validity, so it folds `0`) }`, returns the cached
-sub-block bytes on hit, else calls the closure and `put`s the result. It returns sub-blocks in the exact
+sub-block bytes on hit, else calls the closure and `put`s the result. The per-cell probe validity the helper
+folds is the 64-bit mask of which of the cell's 64 probes are valid; `delta_sh_bake` computes it with the same
+`probe_is_valid_pub(tree, exterior_leaves, pos)` gate the closure applies while baking (the indirect bake
+gates probes inline and does not build this mask today), so the key captures the tree / exterior-leaf
+dependence that `geometry_content_hash` does **not** cover (see `direct_cache_key`'s per-probe validity fold).
+It returns sub-blocks in the exact
 CSR-entry order so the caller reassembles the pre-drop section unchanged, plus a small hit/miss tally
 (entries served from cache vs baked) so tests and callers can assert localization without wall-clock timing.
 With `cache == None` it bakes every entry and reports every entry as a miss (the `--no-cache`/`--release`
@@ -126,10 +136,15 @@ input) must never enter a cache key. Thread `stage_cache.as_ref()` into the `Del
 `BakeControl` accounting correct: the delta path advances **per entry**, not per section, so `advance(1)` must
 fire for every CSR entry whether it hits or misses (today it lives inside the `par_iter` body that becomes the
 bake closure — the helper must lift it out so hits still advance), with `publish_total(affinity_lights.len())`
-emitted once. Take the governor permit only on a miss, around the closure call. (Do not copy
+emitted once. Take the governor permit only on a miss, around the closure call (a `governor().checkpoint()` on the hit path
+keeps pause responsive on an all-hit rebuild; not AC-load-bearing). (Do not copy
 `bake_direct_sh_volume_cached_controlled`'s re-emit literally — that is a whole-section skip re-emitting
 `advance(total)` once; here the grain is per entry.) Define a new `stage_id`/`stage_version` for this bake (none exist in the module today;
-`DIRECT_SH_STAGE_ID` is taken by the base direct bake). This is the thin slice: it falsifies the
+`DIRECT_SH_STAGE_ID` is taken by the base direct bake). The three delta bakes' `stage_id`s must be distinct
+string literals: all three sub-block payloads are identically-shaped `Vec<u16>`, and a seed-0 light folds the
+same `0` seed in every bake, so the `stage_id` is the sole guard against one bake's entry being served for
+another — a duplicated id would cross-serve silently, and no per-section byte-identity check (each stage baked
+in isolation) would catch it (Task 6's shared-cache cross-bake test does). This is the thin slice: it falsifies the
 per-entry-cache → reassemble → drop boundary before the other two bakes fan out. AC: byte-identity (indirect
 section), single-light localization, `--no-cache` path, version bump, corruption.
 
@@ -178,14 +193,19 @@ version bump, corruption.
 
 Wrap `cell_visibility_bake::cell_visibility_bake(tree, portals, control)` in a whole-section `StageCache`
 memo. The section depends only on BSP leaf topology and the portal graph — **no lights** — so its cache key
-folds `{ the whole-map geometry fingerprint (`sh_group::geometry_content_hash`), the portal front/back leaf
-adjacency pairs, and the fixed `CELL_VISIBILITY_DISTANCE_CAP` / `CELL_VISIBILITY_FANOUT_K` constants }`. The
-geometry hash is required, not just leaf count + adjacency pairs: the coupling pass grades each kept pair by
-distance and aperture computed from portal-polygon centroids / `minimum_width` and leaf `bounds`
-(`cell_visibility_bake::portal_edges` → `portal_metrics`, plus the leaf-centroid distances in
-`portal_hub_graph`), so a geometry edit that shifts a portal polygon or leaf bounds while preserving leaf
-count and the front/back index pairs would otherwise hit and serve stale coupling records. Lights stay absent
-from the key, so a light-only edit (no geometry change → stable hash) still hits.
+folds exactly what the bake reads from `tree` and `portals`: `{ leaf count, per-leaf `bounds` + `is_solid`,
+the portal front/back leaf adjacency pairs, per-portal polygon centroid + `minimum_width` (aperture), and the
+fixed `CELL_VISIBILITY_DISTANCE_CAP` / `CELL_VISIBILITY_FANOUT_K` constants }` (a hash of those; the hashing
+mechanism is the implementer's). Do **not** key on `sh_group::geometry_content_hash` here: it hashes
+`GeometryResult` (render geometry only — vertices, faces, texture names), which by construction excludes the
+BSP tree, leaf solidity/exterior status, and portal polygons — the shipped `direct_sh_bake::direct_cache_key`
+folds per-probe validity separately for exactly this reason ("derives from tree / exterior_leaves, which the
+geometry content hash does not cover"). The coupling pass grades each kept pair by distance and aperture from
+portal-polygon centroids / `minimum_width` and leaf `bounds` (`cell_visibility_bake::portal_edges` →
+`portal_metrics`, plus the leaf-centroid distances in `portal_hub_graph`) and gates on leaf `is_solid`, so a
+structural edit that changes the tree/portals while leaving render geometry — and thus a geometry hash —
+unchanged (a clip or non-rendered brush, a solidity flip, a moved portal) must still miss. Lights stay absent
+from the key, so a light-only edit still hits.
 Mind the payload API: `to_bytes()` is **fallible** (`-> Result`) and `from_bytes(data, expected_cell_count)`
 takes an extra `expected_cell_count: u32` — pass `tree.leaves.len() as u32` on the hit-decode path. On a hit,
 return the decoded section's `to_bytes()` bytes as today (the call site currently does
@@ -201,15 +221,18 @@ hit, `--no-cache` path, version bump, corruption.
 Wrap `chunk_light_list_bake::bake_chunk_light_list(inputs, cell_size, cap)` in a whole-section `StageCache`
 memo. It returns `Result<ChunkLightListSection, ChunkLightListError>` and takes **no `BakeControl`** (serial
 bake), so its wrapper has no worker to re-`publish_total` against. The cache key folds
-`{ geometry content hash (`sh_group::geometry_content_hash`), the portal front/back leaf adjacency pairs, the
-ordered `postcard` encoding of the static (`!is_dynamic`) light set in its compacted bake order, and the
-`cell_size_meters` / `per_chunk_cap` parameters }`. Fold the compacted static set **in order** — not each
-light's `AlphaLightsNs` global index: the bake reads only the compacted `!is_dynamic` slot (`enumerate()` over
-the filtered set) and seeds nothing off a global index, so a dynamic-light add/remove/reorder shifts static
-lights' global indices without changing the bake output, and folding the global index would force a false
-miss on exactly the dynamic-light-only edit this stage is meant to hit. (The bake's solid/exterior flood
-inputs — `exterior_leaves` — are functions of geometry and portals, already covered by the hash and adjacency
-pairs.) Because only static slots feed the bake, a dynamic-light-only edit reuses the cached section. Preserve the existing error path: a genuine
+`{ geometry content hash (`sh_group::geometry_content_hash`), a BSP-`tree` fingerprint covering leaf
+solidity/exterior status and the point-location partition `find_leaf_for_point` walks, the portal front/back
+leaf adjacency pairs, the ordered `postcard` encoding of the static (`!is_dynamic`) light set in its compacted
+bake order, and the `cell_size_meters` / `per_chunk_cap` parameters }`. Fold the compacted static set **in
+order** — not each light's `AlphaLightsNs` global index: the bake reads only the compacted `!is_dynamic` slot
+(`enumerate()` over the filtered set) and seeds nothing off a global index, so a dynamic-light
+add/remove/reorder shifts static lights' global indices without changing the bake output, and folding the
+global index would force a false miss on exactly the dynamic-light-only edit this stage is meant to hit. The
+tree fingerprint is required because the bake's solid/exterior bypass (`find_leaf_for_point` + `leaf.is_solid`
++ `exterior_leaves`) reads leaf solidity/exterior, which `geometry_content_hash` does **not** cover (same
+rationale as `direct_cache_key`'s validity fold — render geometry alone is not enough). Because only static
+slots feed the bake, a dynamic-light-only edit reuses the cached section. Preserve the existing error path: a genuine
 `ChunkLightListError::PayloadTooLarge` from a miss-path bake still surfaces as a build error; a cache
 decode/validation failure is a soft miss (rebake). Thread `stage_cache.as_ref()` into the `ChunkLightList`
 call site in `pipeline.rs`. Define a new `stage_id`/`stage_version`. AC: byte-identity, dynamic-light-only
@@ -226,7 +249,16 @@ bake, edit one light, rebake through the same cache, and assert only that light'
 rest hit (per-entry hit/miss counts). For `CellVisibility`, assert a light-only edit hits; for
 `ChunkLightList`, assert a dynamic-light-only edit hits. Write one test per row of the **Ordering pins** table
 below (P1–P13) — those rows enumerate the collision, boundary-crossing, and zero/empty orderings this suite
-must nail down rather than restate here. These consume all five stages' cache paths, so this task runs last.
+must nail down rather than restate here. Add one check the pins do not cover: bake at least two (ideally all
+three) delta stages through a **single** shared temp-dir `StageCache` in one run and assert cross-stage
+non-interference — this is what catches a duplicated `stage_id`, which per-section byte-identity (each stage
+baked in isolation) cannot. Two harness notes: the full-downstream byte-identity check (P12) needs a base
+`OctahedralShVolumeSection` whose grid matches the delta affinity dims plus a
+`ScriptMutableDescriptorSlots::empty(slot_count)` to drive `PostBakeDeltaSections`' drop → coarsening →
+valid-probe compaction → payload cap (both reachable in-crate); and the version-bump contract is a
+key-difference test — a compile-time const cannot be bumped mid-run, so each stage's key builder must be
+test-visible and version N vs N+1 must yield different `CacheKey`s. These consume all five stages' cache paths,
+so this task runs last.
 
 ## Sequencing
 
@@ -254,8 +286,12 @@ wrappers in unrelated files. All four touch distinct files.
 - Delta call sites in `pipeline.rs`: `DeltaShBake` (~line 835), `AnimatedDirectShBake` (~line 949),
   `DirectShDeltaBake` (~line 1012). Graph call sites: `CellVisibility` (~line 435), `ChunkLightList`
   (~line 1215). `stage_cache: Option<StageCache>` is a pipeline param; pass `stage_cache.as_ref()`.
-- Reuse `sh_group::geometry_content_hash` for the geometry fingerprint in all new keys (lockstep with the
-  existing SH/lightmap invalidation on any geometry edit).
+- Geometry fingerprinting differs by stage, because `sh_group::geometry_content_hash` hashes `GeometryResult`
+  (render geometry only) and never covers BSP leaf solidity/exterior or portal polygons — see
+  `direct_cache_key`. The three **delta** keys fold `geometry_content_hash` **plus** the per-cell probe
+  validity mask (which carries the tree/exterior dependence). `CellVisibility` folds the `tree`+`portal` reads
+  directly (leaf bounds/solidity, portal adjacency + polygon centroid/aperture), not `geometry_content_hash`.
+  `ChunkLightList` folds `geometry_content_hash` plus a tree solidity/exterior fingerprint.
 - `BakeControl` accounting is **per entry** for the delta bakes: `publish_total(N)` once, `advance(1)` per
   CSR entry regardless of hit/miss (lift the advance out of the bake closure), governor permit taken only on a
   miss. This is not the whole-section skip-and-re-emit of
@@ -270,7 +306,7 @@ wrappers in unrelated files. All four touch distinct files.
 | Per-entry delta cache is exact (single-light entries, per-bake seed axis: `static_index`/`source_index`/position) | Existing bake code; preserved by Tasks 1–3 | A refactor that changes the soft-visibility seed axis, folds an index other than the seed axis, or sums >1 light per sub-block, breaks byte-identity | AC "byte-identical"; Task 6 |
 | `ScriptMutableDescriptorSlots` never enters a cache key; the drop is a downstream `pipeline.rs` pass over the reassembled pre-drop section, not run by the bakes | Tasks 1–3 | Folding mutable-slot state into a delta key would desync warm/cold and miss script-curve changes | Task 6 delta byte-identity |
 | Single-animated-light edit re-bakes only that light's CSR entries | Task 1 helper; Tasks 2–3 | A key that folds the whole light set (not the per-entry light) would coarsen invalidation | AC "single light"; Task 6 |
-| `CellVisibility` key excludes lights but folds geometry (the coupling pass reads portal-polygon + leaf-bounds geometry); `ChunkLightList` key covers only static lights, folded by compacted order not global index | Task 4, Task 5 | Under-keying cell-vis geometry serves stale coupling; folding lights into the cell-vis key, or dynamic lights / global indices into the chunk key, would miss on benign edits | AC "light-only / dynamic-only hit"; Task 6 |
+| `CellVisibility` key excludes lights but folds the `tree`+`portal` reads (leaf bounds/solidity, portal adjacency + polygon centroid/aperture) — not `geometry_content_hash`, which omits BSP/leaf solidity; `ChunkLightList` folds a tree solidity/exterior fingerprint + the static set by compacted order (not global index) | Task 4, Task 5 | Keying cell-vis on `geometry_content_hash` alone (render geometry) misses a solidity/portal-polygon change → stale coupling; folding lights into the cell-vis key, or dynamic lights / global indices into the chunk key, would miss on benign edits | AC "light-only / dynamic-only hit"; Task 6 |
 | `--no-cache`/`--release` neither read nor write the five entries; exact uncached path | Tasks 1–5 | A wrapper that consults the cache before checking `Option<&StageCache>` is `None` | AC "--no-cache"; Task 6 |
 | Corrupt entry is a miss, not a crash | Tasks 1–5 | Fallible `to_bytes`/`from_bytes` (CellVisibility) and panic-on-invalid `to_bytes` (animated-direct) mishandled | AC "corruption"; Task 6 |
 
@@ -282,7 +318,7 @@ the prose does not otherwise make checkable.
 
 | # | Scenario | Ordering under test | Expected outcome |
 |---|---|---|---|
-| P1 | Geometry edit: move a wall / widen a doorway so a portal polygon and leaf bounds shift, **leaf count and every front/back leaf index pair unchanged** | build A caches `CellVisibility` → build B, changed polygon geometry | Build B **misses** and rebakes; `coupled_pairs` differ from A (geometry hash changed). |
+| P1 | Structural edit that shifts a portal polygon / leaf bounds / leaf solidity, **leaf count and every front/back leaf index pair unchanged** (include a clip- or non-rendered-brush edit that does not change render geometry) | build A caches `CellVisibility` → build B, changed tree/portal geometry | Build B **misses** and rebakes; `coupled_pairs` differ from A (the folded tree+portal fingerprint changed even though `geometry_content_hash` may not have). |
 | P2 | Light-only edit (no geometry change) | build A caches `CellVisibility` → build B edits a light | Build B **hits**; holds simultaneously with P1. |
 | P3 | Direct-delta warm hit, stats reconstruction | reassemble pre-drop section from cache → recompute stats from pre-drop section + `selected` | Recomputed `DirectDeltaBakeStats` equal the `--no-cache` build's and today's pre-drop values (`csr_entry_count`, `byte_total`, `total_bytes`); computed **before** `apply_exact_zero_drop_policy`. |
 | P4 | Dynamic-light **add**: insert an `is_dynamic` light ahead of a static light in `AlphaLightsNs` | build A `[S,D]` → build B `[D2,S,D]` | `ChunkLightList` **hits** in B (compacted static slot of S unchanged, output identical). |

@@ -9,7 +9,7 @@ use postretro_level_format::prm::{
     STAGE_VERSION, bc5_level_count, cache_filename_for_key, expected_level_count,
 };
 use postretro_level_format::sprite_collection::{
-    SpriteSlot, collection_frame_paths, sprite_collection_filename_key,
+    SpriteSlot, collection_frame_paths, sprite_collection_key_from_frame_bytes,
 };
 
 mod bake;
@@ -441,19 +441,58 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct SpriteFrameSource {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+}
+
 struct DecodedSpriteFrame {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
 }
 
-fn decode_sprite_frames(paths: &[std::path::PathBuf]) -> anyhow::Result<Vec<DecodedSpriteFrame>> {
+fn read_sprite_frame_sources(
+    paths: &[std::path::PathBuf],
+) -> anyhow::Result<Vec<SpriteFrameSource>> {
     paths
         .iter()
         .map(|path| {
             let bytes = std::fs::read(path)
                 .map_err(|error| anyhow::anyhow!("reading PNG {}: {error}", path.display()))?;
-            let (rgba, width, height) = decode_png_rgba(&bytes, path)?;
+            Ok(SpriteFrameSource {
+                path: path.clone(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn sprite_collection_key_for_sources(
+    diffuse_sources: &[SpriteFrameSource],
+    spec_sources: &[SpriteFrameSource],
+    normal_sources: &[SpriteFrameSource],
+) -> [u8; 32] {
+    let diffuse_bytes = diffuse_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    let spec_bytes = spec_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    let normal_bytes = normal_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    sprite_collection_key_from_frame_bytes(&diffuse_bytes, &spec_bytes, &normal_bytes)
+}
+
+fn decode_sprite_frames(sources: &[SpriteFrameSource]) -> anyhow::Result<Vec<DecodedSpriteFrame>> {
+    sources
+        .iter()
+        .map(|source| {
+            let (rgba, width, height) = decode_png_rgba(&source.bytes, &source.path)?;
             Ok(DecodedSpriteFrame {
                 rgba,
                 width,
@@ -492,10 +531,10 @@ fn companions_match_diffuse_paths(
 
 /// Bake one map-visible sprite collection into a layered `.prm` sidecar.
 ///
-/// Sprite frame scans are shared with the runtime fallback, so a successful
-/// bake's array-layer order and its cache filename are both derived from the
-/// same source PNG set. Invalid source collections deliberately degrade to no
-/// sidecar: runtime retains its PNG decode fallback.
+/// Sprite frame scans are shared with the runtime fallback. A successful bake's
+/// layer payload and cache filename derive from one source-byte snapshot.
+/// Invalid source collections deliberately degrade to no sidecar: runtime
+/// retains its PNG decode fallback.
 pub fn bake_sprite_collection(
     texture_root: &Path,
     collection: &str,
@@ -516,7 +555,39 @@ pub fn bake_sprite_collection(
         return None;
     }
 
-    let diffuse_frames = match decode_sprite_frames(&diffuse_paths) {
+    let spec_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Spec);
+    let normal_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Normal);
+    let diffuse_sources = match read_sprite_frame_sources(&diffuse_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot diffuse frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let spec_sources = match read_sprite_frame_sources(&spec_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot specular frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let normal_sources = match read_sprite_frame_sources(&normal_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot normal frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let filename_key =
+        sprite_collection_key_for_sources(&diffuse_sources, &spec_sources, &normal_sources);
+
+    let diffuse_frames = match decode_sprite_frames(&diffuse_sources) {
         Ok(frames) => frames,
         Err(error) => {
             log::warn!(
@@ -548,10 +619,7 @@ pub fn bake_sprite_collection(
         }
     };
 
-    let spec_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Spec);
-    let normal_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Normal);
     let layer_count = diffuse_paths.len() as u16;
-    let filename_key = sprite_collection_filename_key(texture_root, collection);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
     let mut slots: [Option<PrmSlot>; 4] = [None, None, None, None];
@@ -580,7 +648,7 @@ pub fn bake_sprite_collection(
                 "[prl-build] sprite collection '{collection}' has incomplete specular companion frames — omitting the specular slot"
             );
         } else {
-            match decode_sprite_frames(&spec_paths) {
+            match decode_sprite_frames(&spec_sources) {
                 Ok(spec_frames) if frames_share_dimensions(&spec_frames, width, height) => {
                     let mut payload = Vec::new();
                     for frame in spec_frames {
@@ -617,7 +685,7 @@ pub fn bake_sprite_collection(
                 "[prl-build] sprite collection '{collection}' has incomplete normal companion frames — omitting the normal slot"
             );
         } else {
-            match decode_sprite_frames(&normal_paths) {
+            match decode_sprite_frames(&normal_sources) {
                 Ok(normal_frames) if !frames_share_dimensions(&normal_frames, width, height) => {
                     log::warn!(
                         "[prl-build] sprite collection '{collection}' has normal companion dimensions that do not match diffuse — omitting the normal slot"
@@ -992,6 +1060,7 @@ mod tests {
 
     use log::Level;
     use postretro_level_format::prm::PrmReadError;
+    use postretro_level_format::sprite_collection::sprite_collection_filename_key;
     use postretro_test_log_capture::LogCapture;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -1141,6 +1210,37 @@ mod tests {
         assert_eq!(normal.payload.len(), 16 * 2, "one BC5 block per layer");
         assert!(slots[3].is_err(), "emissive is absent from sprite bundles");
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_bake_key_uses_the_retained_source_snapshot() {
+        // Regression: the payload decoded one read while a later key scan
+        // could observe different bytes for the same frame.
+        let root = unique_temp_dir("sprite-source-snapshot");
+        let texture_root = root.join("textures");
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00.png",
+            &solid_png_bytes(4, 4, [255, 0, 0, 255]),
+        );
+        let paths = collection_frame_paths(&texture_root, "smoke", SpriteSlot::Diffuse);
+        let sources = read_sprite_frame_sources(&paths).expect("source snapshot reads");
+        let snapshot_key = sprite_collection_key_for_sources(&sources, &[], &[]);
+
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00.png",
+            &solid_png_bytes(4, 4, [0, 0, 255, 255]),
+        );
+
+        assert_ne!(
+            snapshot_key,
+            sprite_collection_filename_key(&texture_root, "smoke"),
+            "a later filesystem version must not rename the retained bake snapshot"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -98,17 +98,23 @@ pub fn collection_frame_paths(
     frame_paths.into_iter().map(|(_, path)| path).collect()
 }
 
-/// Content-addressed filename key for a sprite collection's physical PNG sets.
+/// Computes a sprite collection key from one exact source-byte snapshot.
 ///
-/// The hash stream has a sprite-only domain byte, followed by the present-slot
-/// mask and each present slot in diffuse/spec/normal order. Every slot carries
-/// its tag and frame count before its raw PNG bytes, making slot boundaries and
-/// numeric frame order part of the sidecar address.
-pub fn sprite_collection_filename_key(texture_root: &Path, collection: &str) -> [u8; 32] {
-    let slots =
-        SLOT_ORDER.map(|slot| (slot, collection_frame_paths(texture_root, collection, slot)));
-    let mask = slots.iter().fold(0u8, |mask, (slot, paths)| {
-        if paths.is_empty() {
+/// Callers that also decode or bake the frames can retain the bytes they read
+/// and pass them here, preventing a second filesystem read from naming output
+/// for a different source version.
+pub fn sprite_collection_key_from_frame_bytes(
+    diffuse_frames: &[&[u8]],
+    spec_frames: &[&[u8]],
+    normal_frames: &[&[u8]],
+) -> [u8; 32] {
+    let slots = [
+        (SpriteSlot::Diffuse, diffuse_frames),
+        (SpriteSlot::Spec, spec_frames),
+        (SpriteSlot::Normal, normal_frames),
+    ];
+    let mask = slots.iter().fold(0u8, |mask, (slot, frames)| {
+        if frames.is_empty() {
             mask
         } else {
             mask | slot.mask_bit()
@@ -117,21 +123,45 @@ pub fn sprite_collection_filename_key(texture_root: &Path, collection: &str) -> 
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(&[SPRITE_COLLECTION_DOMAIN_TAG, mask]);
-    for (slot, paths) in slots {
-        if paths.is_empty() {
+    for (slot, frames) in slots {
+        if frames.is_empty() {
             continue;
         }
 
         hasher.update(&[slot.tag()]);
-        hasher.update(&(paths.len() as u32).to_le_bytes());
-        for path in paths {
-            // The scan is the frame-count source of truth. If a file vanishes
-            // between scanning and hashing, retain that count and make this a
-            // cache miss rather than panicking during level load.
-            hasher.update(&fs::read(path).unwrap_or_default());
+        hasher.update(&(frames.len() as u32).to_le_bytes());
+        for bytes in frames {
+            hasher.update(bytes);
         }
     }
     *hasher.finalize().as_bytes()
+}
+
+/// Content-addressed filename key for a sprite collection's physical PNG sets.
+///
+/// The hash stream has a sprite-only domain byte, followed by the present-slot
+/// mask and each present slot in diffuse/spec/normal order. Every slot carries
+/// its tag and frame count before its raw PNG bytes, making slot boundaries and
+/// numeric frame order part of the sidecar address.
+pub fn sprite_collection_filename_key(texture_root: &Path, collection: &str) -> [u8; 32] {
+    let [diffuse_paths, spec_paths, normal_paths] =
+        SLOT_ORDER.map(|slot| collection_frame_paths(texture_root, collection, slot));
+    let read_frames = |paths: Vec<PathBuf>| {
+        paths
+            .into_iter()
+            // The scan is the frame-count source of truth. If a file vanishes
+            // between scanning and hashing, retain that count and make this a
+            // cache miss rather than panicking during level load.
+            .map(|path| fs::read(path).unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    let diffuse_bytes = read_frames(diffuse_paths);
+    let spec_bytes = read_frames(spec_paths);
+    let normal_bytes = read_frames(normal_paths);
+    let diffuse_refs = diffuse_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let spec_refs = spec_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let normal_refs = normal_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    sprite_collection_key_from_frame_bytes(&diffuse_refs, &spec_refs, &normal_refs)
 }
 
 #[cfg(test)]

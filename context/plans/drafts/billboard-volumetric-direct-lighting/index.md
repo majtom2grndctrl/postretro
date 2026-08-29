@@ -111,7 +111,9 @@ around it, while static-light occlusion and animated brightness still apply.
       covers point, spot, and directional lights.
 - [ ] `[unit]` Animated scatter uses the same descriptor index, active state,
       brightness, and color scale as section 45 (animated direct SH). At zero
-      scale it is base-only; at unit scale it adds exactly the baked peak delta.
+      scale it is base-only; at unit scale it adds exactly the baked peak delta
+      (the exact-delta arithmetic is checked by a CPU mirror of the compose
+      `base + Σ scale×delta`, since the GPU output is not directly unit-testable).
       With the `BAKED_DIRECT_ANIMATED` mask bit clear, the composed scatter is
       base-only (pin-table row P1).
 - [ ] `[unit]` Section 47/48 round-trip and loader validation reject bad
@@ -119,18 +121,25 @@ around it, while static-light occlusion and animated brightness still apply.
       (section 48 payload length = `affinity_lights.len() × 64 × f16×4`).
       Invalid optional data falls back to legacy billboard direct lighting
       without failing the level load.
-- [ ] `[unit]` On the scatter path, the billboard's static-light-map direct has
-      no camera-facing `NdotL` or static-specular contribution, its dynamic
-      path retains range/cone rejection with no Lambert cosine, and its runtime
-      loop iterates only `[0, light_count)` (the existing dynamic-tier count) so
-      a promoted static light is counted exactly once (via scatter). The
-      static-specular loop is reached
-      only on the legacy-fallback branch, never on the scatter path.
+- [ ] `[shader-source gate + unit slot-ordering]` On the scatter path
+      (`has_scatter != 0`), the `billboard.wgsl` source omits camera-facing
+      `NdotL` and the static-specular loop, and bounds the runtime dynamic-direct
+      loop with `light_count` (not `total_light_count`), while the dynamic path
+      keeps range/cone rejection with no Lambert cosine — verified as an
+      `include_str!` source gate over `billboard.wgsl` (per the `shader_tests`
+      idiom). A CPU slot-ordering test confirms promoted static records append
+      after `light_count`, so the bound excludes them. The static-specular loop
+      is reached only on the legacy branch. (The pixel-level "counted exactly
+      once" truth is manual GPU — AC 1.)
 - [ ] `[unit]` After extracting the renderer seam, existing direct-SH compose
-      behavior is unchanged, the billboard vertex-stage storage-buffer budget is
-      unchanged (section-48 CSR buffers are COMPUTE-visible only, never VERTEX),
-      and the vertex-stage sampled-texture count with binding 17 added stays
-      within the downlevel/WebGPU default of 16.
+      behavior is unchanged, and the billboard vertex-stage storage-buffer budget
+      is unchanged (section-48 CSR buffers are COMPUTE-visible only, never
+      VERTEX). With binding 17 added VERTEX-only, the **forward** pipeline's
+      fragment sampled-texture count stays `== 16` (binding 17 adds nothing to
+      the shared fragment budget) and the billboard vertex-stage sampled-texture
+      count stays within the downlevel/WebGPU default of 16 — asserted via a new
+      `vertex_sampled_textures` budget helper alongside the existing
+      `vertex_storage_buffers` / forward fragment-count guards.
 - [ ] `[manual GPU]` An animated red baked light pulses billboard scatter with
       the wall/other dynamic receivers, has no camera-side pop, and adds a
       measurable but bounded compose cost to `POSTRETRO_GPU_TIMING`.
@@ -142,10 +151,13 @@ around it, while static-light occlusion and animated brightness still apply.
 Split the direct-atlas/compose ownership out of `sh_volume.rs`
 (`crates/renderer/src/render/`, ~2,257 lines) before extending it. Keep the
 shared SH bind-group construction and existing direct-SH resources
-behavior-preserving: current bindings, Case-1/Case-2 compose dispatch, mesh
-binding 16, and the billboard vertex storage-budget guard must keep their
-contracts. The extracted seam becomes the owner for the new billboard scatter
-texture and compose pass.
+behavior-preserving: current bindings, the `direct_compose_should_dispatch`
+predicate and its load/active/zero-transition states, mesh binding 16, and the
+billboard vertex storage-budget guard must keep their contracts. If the shared
+group-3 BGL builder (`sh_bind_group_layout_entries`) moves, re-point or
+re-export it so the budget guards that count it — `pipeline_layout.rs` and
+`tests/pipeline_budget_tests.rs` — still resolve. The extracted seam becomes the
+owner for the new billboard scatter texture and compose pass.
 
 ### Task 2: Add optional direct-scatter PRL sections and loader validation
 
@@ -168,7 +180,10 @@ against the base SH grid. Validate section 48 against section 45's affinity
 layout and descriptor map, and its payload length against
 `affinity_lights.len() × 64 × f16×4`. Treat either parse/validation failure, or
 a missing section 48 for a map carrying section 45, as absent scatter data and
-select the legacy billboard path; do not reject the map.
+select the legacy billboard path; do not reject the map. Do **not** copy the
+adjacent section-45 (`AnimatedDirectShDeltaVolumes`) loader validation, which
+hard-fails (returns `Err`) on mismatch — 47/48 validation returns absent
+(the scatter data is dropped), never `Err`.
 
 ### Task 3: Bake base and animated normal-free scatter
 
@@ -176,11 +191,16 @@ Add a focused compiler module rather than extending `direct_sh_bake.rs`
 (`crates/level-compiler/src/`, ~2,274 lines). Reuse the direct baker's
 static-light filtering and affinity reach decomposition, plus
 `incident_radiance_at_point` (`sh_bake.rs`, the pre-cosine normal-free RGB
-radiance — its `.0` tuple element) and `soft_visibility` (`lightmap_bake.rs`) —
-`pub(crate)` helpers reachable from a new `level-compiler` module, used today via
-`bake_probe_direct_rgb` (`sh_bake.rs`), which `direct_sh_bake.rs` calls. Emit one base RGB value per valid
-probe for static-light-map sources and one dense 64-probe peak RGB delta per
-animated baked light/cell. The base and delta must share the existing grid and
+radiance — its `.0` tuple element) and `soft_visibility` (`lightmap_bake.rs`),
+both `pub(crate)` helpers reachable from a new `level-compiler` module. Do
+**not** call `bake_probe_direct_rgb` (`sh_bake.rs`) — it applies
+`apply_cosine_lobe_rgb` and SH projection, which would reintroduce the receiver
+normal this bake exists to avoid; reimplement the inner light loop to sum the
+pre-cosine `incident_radiance_at_point(...).0 × soft_visibility` directly. Emit
+one base RGB value per valid probe for static-light-map sources and one dense
+64-probe peak RGB delta per animated baked light/cell (peak = the delta at the
+animation's maximum brightness state, matching section 45's unit-scale delta).
+The base and delta must share the existing grid and
 section-45 `AnimatedBakedLights` indexing. Version/cache the new bake outputs
 independently; changing their radiance or payload computation invalidates only
 their cache stages. Append both optional sections during PRL assembly.
@@ -189,27 +209,38 @@ their cache stages. Append both optional sections during PRL assembly.
 
 Add renderer-owned upload resources for the base 3D scatter texture, an optional
 composed texture, and the section-48 CSR buffers. Append the sampled texture at
-group 3 binding 17, `VERTEX | FRAGMENT`-visible (billboards light per vertex, so
-the scatter read replaces the per-vertex `sample_sh_direct` read); do not change
-existing bindings. The section-48 CSR storage buffers stay `COMPUTE`-visible
-only — never `VERTEX` — matching the existing `anim_descriptors` / `anim_samples`
-discipline, so the vertex-stage storage-buffer count is unchanged. Add a single
-`has_scatter` flag to the shared 128-byte `FrameUniforms` ABI (the 4-way
-contract mirrored by the Rust writer, `forward.wgsl`, `billboard.wgsl`, and
-`wireframe.wgsl`) in its one free slot at offset 112..116 (the retired
-`_dynamic_direct_pad`); `UNIFORM_SIZE` stays 128. Add no new dynamic-tier count:
-the existing `FrameUniforms.light_count` (offset 80..84) already is it
-(`total_light_count = light_count + promoted static records`). The renderer sets
-`has_scatter` false whenever sections 47/48 are absent, invalid, or
-incompatible, and binds binding 17 to a dummy 1×1×1 `Rgba16Float` texture in
-that case so the bind-group layout never varies with map content.
+group 3 binding 17, **`VERTEX`-visible only** — billboards light per vertex, so
+the scatter read replaces the per-vertex `sample_sh_direct` read, and the
+forward and fog pipelines share this group-3 BGL. Forward sits at exactly 16
+fragment sampled textures (the downlevel/WebGPU floor); a `FRAGMENT`-visible
+entry here would push it to 17 and panic `create_pipeline_layout`, so binding 17
+must NOT carry `FRAGMENT`. Do not change existing bindings. The section-48 CSR
+storage buffers stay `COMPUTE`-visible only — never `VERTEX` — matching the
+existing `anim_descriptors` / `anim_samples` discipline, so the vertex-stage
+storage-buffer count is unchanged. Add a single `has_scatter` flag to the shared
+128-byte `FrameUniforms` ABI (the 4-way contract mirrored by the Rust writer,
+`forward.wgsl`, `billboard.wgsl`, and `wireframe.wgsl`) in its one free slot at
+offset 112..116 (the retired `_dynamic_direct_pad`); `UNIFORM_SIZE` stays 128.
+Update the `frame_uniforms.rs` tests that assert the 112..116 (and 104..128)
+tail is zero. Add no new dynamic-tier count: the existing
+`FrameUniforms.light_count` (offset 80..84) already is it (`total_light_count =
+light_count + promoted static records`). The renderer sets `has_scatter` false
+whenever sections 47/48 are absent, invalid, or incompatible, and binds binding
+17 to a dummy 1×1×1 `Rgba16Float` texture in that case so the bind-group layout
+never varies with map content.
 
-The compose compute pass mirrors `direct_sh_compose` per Design decision 3
-(shared buffers, `time`/`light_term_mask`, dispatch site and whole-mask
-predicate, copy-through seed and settle frame), and registers as a
-`POSTRETRO_GPU_TIMING` pass alongside `animated_direct_sh_compose`. It never
-applies static-promotion subtraction — correct only because the scatter runtime
-loop drops promoted records (below).
+The compose compute pass mirrors `direct_sh_compose` (template:
+`direct_sh_compose.rs` and `direct_compose_should_dispatch`) — Task 4's agent
+should follow that source, since the full contract is: bind the same live shared
+animation descriptor and sample buffers and group-0 `time` / `light_term_mask`;
+dispatch at the same site, after the same per-frame descriptor flush, and before
+the billboard draw in the same encoder; predicate = copy-through base-seed on
+level load (before the first billboard draw), re-dispatch on a whole-mask change
+against its own `last_composed_mask`, active-flag gate (not evaluated scale), one
+settle frame after active→inactive; zero Σ when `BAKED_DIRECT_ANIMATED` is clear.
+Register it as a `POSTRETRO_GPU_TIMING` pass alongside
+`animated_direct_sh_compose`. It never applies static-promotion subtraction —
+correct only because the scatter runtime loop drops promoted records (below).
 
 In `billboard.wgsl`, when `has_scatter != 0`, depth-aware trilinear
 interpolation reads the scatter texture at the sprite centre (weighting probes
@@ -263,15 +294,22 @@ Both new sections are little-endian and optional.
 |---|---|---|---|---|
 | Base scatter | `BillboardDirectScatterVolumeSection` | section 47 | sampled 3D texture | n/a |
 | Animated scatter | `AnimatedBillboardDirectScatterDeltaVolumesSection` | section 48 | compose CSR buffers | n/a |
-| Scatter texture | renderer-owned resource | n/a | group 3 binding 17 (`VERTEX \| FRAGMENT`) | n/a |
+| Scatter texture | renderer-owned resource | n/a | group 3 binding 17 (`VERTEX`-only) | n/a |
 | Scatter-usable flag | shared `FrameUniforms` `has_scatter` (offset 112..116) | n/a | uniform, 4-way ABI | n/a |
 | Dynamic-tier bound | existing `FrameUniforms.light_count` (offset 80..84) | n/a | scatter-path runtime-loop bound | n/a |
 | Animation key | `AnimatedBakedLights` index | section-48 descriptor/CSR index | compose descriptor index | existing light animation |
 
 ## Pin table
 
-Concrete orderings the renderer must honor; each row is a unit test target for
-Task 5. Sections named by their final IDs (47 base, 48 animated).
+Concrete orderings the renderer must honor. Sections named by their final IDs
+(47 base, 48 animated). **Testability:** P1, P3, P5, P6, P7, P9, P10, P11 are
+writable headless as CPU-predicate or `include_str!` shader-source gates (P3/P11
+mirror the existing `direct_compose_should_dispatch` tests; P9 = the loop-bound
+source gate plus the `light_count`-vs-`total_light_count` slot-ordering test).
+P2 (copy-through before the first billboard draw) and P4 (one flushed descriptor
+shared by both composes) need a dispatch-order / flush-count seam Task 4 must add
+to be headless-testable. P8's "counted once" pixel truth is manual GPU (AC 1);
+its headless surrogate is P9.
 
 | # | Scenario | Ordering | Expected outcome |
 |---|---|---|---|

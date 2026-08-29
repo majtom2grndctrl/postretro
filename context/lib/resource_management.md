@@ -203,7 +203,7 @@ Loaded from PNG at runtime. Sprite sheets are not used — each frame is an indi
 Map-placed `_NN` collections prefer a content-addressed layered `.prm` sidecar at
 load: every frame is one `D2Array` layer with its own mip chain. The renderer
 re-hashes diffuse/specular/normal frame sets through the shared sprite-collection
-key, validates that the sidecar `layer_count` matches the runtime-decoded frame
+key, validates that the sidecar `layer_count` matches the shared directory frame
 count, and falls back without aborting when the sidecar is missing or invalid.
 The baked path uses linear mip filtering; the fallback remains a renderer-owned,
 single-mip `D2Array` with one decoded frame per layer. Direct `.png` references,

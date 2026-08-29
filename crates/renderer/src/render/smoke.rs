@@ -183,6 +183,13 @@ struct BakedSpriteArrayPlan {
     lod_max_clamp: f32,
 }
 
+/// Parsed layered sidecar data accepted for the baked sprite upload path.
+type ParsedBakedSpriteArray = (
+    PrmHeader,
+    [Result<PrmSlot, PrmReadError>; 4],
+    BakedSpriteArrayPlan,
+);
+
 /// Validate the parts of a parsed `.prm` required by the baked sprite path and
 /// describe its D2-array texture/sampler configuration.
 ///
@@ -233,11 +240,7 @@ fn load_baked_sprite_array(
     prm_cache_root: &Path,
     collection: &str,
     collection_frame_count: usize,
-) -> Option<(
-    PrmHeader,
-    [Result<PrmSlot, PrmReadError>; 4],
-    BakedSpriteArrayPlan,
-)> {
+) -> Option<ParsedBakedSpriteArray> {
     let key = sprite_collection_filename_key(texture_root, collection);
     let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
     let bytes = std::fs::read(&prm_path).ok()?;

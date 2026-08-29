@@ -204,6 +204,68 @@ fn bake_model_textures(
     );
 }
 
+/// Return the sprite collections referenced by map-visible billboard emitters.
+///
+/// This mirrors the runtime's map-KVP conversion: `sprite` is last-value-wins,
+/// and an absent or empty value keeps the emitter's documented `smoke` default.
+/// The returned order follows map entity order so bake diagnostics are stable.
+fn billboard_sprite_collections(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    let mut collections = Vec::new();
+
+    for entity in entities {
+        if entity.classname != "billboard_emitter" {
+            continue;
+        }
+        let sprite = entity
+            .key_values
+            .iter()
+            .rev()
+            .find_map(|(key, value)| (key == "sprite").then_some(value.as_str()))
+            .filter(|sprite| !sprite.is_empty())
+            .unwrap_or("smoke");
+        if seen.insert(sprite) {
+            collections.push(sprite);
+        }
+    }
+
+    collections
+}
+
+fn bake_sprite_textures_with<Bake>(
+    entities: &[map_data::MapEntityRecord],
+    texture_root: &Path,
+    prm_cache_root: &Path,
+    mut bake_collection: Bake,
+) where
+    Bake: FnMut(&Path, &str, &Path) -> Option<[u8; 32]>,
+{
+    for collection in billboard_sprite_collections(entities) {
+        if bake_collection(texture_root, collection, prm_cache_root).is_none() {
+            log::warn!(
+                "[prl-build] failed to bake sprite collection '{collection}'; runtime PNG decode fallback remains available"
+            );
+        }
+    }
+}
+
+/// Bake layered sprite sidecars for the collections referenced by map emitters.
+///
+/// A failed or missing sidecar is intentionally non-fatal: the runtime retains
+/// its PNG decode fallback for billboard sprites.
+fn bake_sprite_textures(
+    entities: &[map_data::MapEntityRecord],
+    texture_root: &Path,
+    prm_cache_root: &Path,
+) {
+    bake_sprite_textures_with(
+        entities,
+        texture_root,
+        prm_cache_root,
+        texture_mips::bake_sprite_collection,
+    );
+}
+
 /// Whether the SDF occluder atlas must bake — true iff any light carries the
 /// `sdf` shadow type.
 ///
@@ -1440,6 +1502,55 @@ mod tests {
             prop_mesh_model_handles(&entities),
             vec!["models/first.gltf", "models/second.gltf"]
         );
+    }
+
+    #[test]
+    fn billboard_sprite_collections_use_last_value_default_and_map_order_deduplication() {
+        let entities = vec![
+            map_entity("prop_mesh", &[("sprite", "ignored")]),
+            map_entity("billboard_emitter", &[]),
+            map_entity("billboard_emitter", &[("sprite", "sparks")]),
+            map_entity("billboard_emitter", &[("sprite", "smoke")]),
+            map_entity(
+                "billboard_emitter",
+                &[("sprite", "ignored"), ("sprite", "flame")],
+            ),
+            map_entity("billboard_emitter", &[("sprite", "")]),
+            map_entity(
+                "billboard_emitter",
+                &[("sprite", "flame"), ("sprite", "sparks")],
+            ),
+        ];
+
+        assert_eq!(
+            billboard_sprite_collections(&entities),
+            vec!["smoke", "sparks", "flame"]
+        );
+    }
+
+    #[test]
+    fn sprite_texture_bake_continues_after_a_collection_has_no_sidecar() {
+        let entities = vec![
+            map_entity("billboard_emitter", &[("sprite", "missing")]),
+            map_entity("billboard_emitter", &[("sprite", "smoke")]),
+        ];
+        let texture_root = Path::new("content/base/textures");
+        let cache_root = Path::new("baked/materials");
+        let mut baked = Vec::new();
+
+        bake_sprite_textures_with(
+            &entities,
+            texture_root,
+            cache_root,
+            |observed_texture_root, collection, observed_cache_root| {
+                assert_eq!(observed_texture_root, texture_root);
+                assert_eq!(observed_cache_root, cache_root);
+                baked.push(collection.to_string());
+                (collection == "smoke").then_some([1; 32])
+            },
+        );
+
+        assert_eq!(baked, vec!["missing", "smoke"]);
     }
 
     #[test]

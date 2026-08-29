@@ -512,9 +512,13 @@ fn main() -> anyhow::Result<()> {
             // Stage presence is content-driven from map lights, so the plan
             // stays valid when the subsequent screen edits bake parameters.
             let planned = pipeline::planned_stages(&prepared.map_data.lights);
-            if should_run_config_screen(reporter_mode, &args) {
-                match tui::run_config_screen(&mut args, prepared.map_data.lightmap_density) {
-                    Ok(tui::ConfigOutcome::Start) => {}
+            let tui_session = if should_run_config_screen(reporter_mode, &args) {
+                match tui::run_config_screen(
+                    &mut args,
+                    prepared.map_data.lightmap_density,
+                    &log_sink,
+                ) {
+                    Ok(tui::ConfigOutcome::Start(session)) => Some(session),
                     Ok(tui::ConfigOutcome::Cancel) => {
                         println!("Configuration cancelled — no bake started.");
                         log_sink.print_warning_summary();
@@ -525,11 +529,38 @@ fn main() -> anyhow::Result<()> {
                         return Err(error);
                     }
                 }
+            } else {
+                None
+            };
+            match tui_session {
+                Some(session) => tui::run_tui_after_config(session, log_sink.clone(), move || {
+                    let stage_cache = construct_stage_cache(&args);
+                    let bake = move |reporter, governor| {
+                        pipeline::run_prepared(
+                            &args,
+                            stage_cache,
+                            started,
+                            reporter,
+                            governor,
+                            prepared,
+                        )
+                    };
+                    (planned, log_sink, governor, bake)
+                }),
+                None => {
+                    let stage_cache = construct_stage_cache(&args);
+                    tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                        pipeline::run_prepared(
+                            &args,
+                            stage_cache,
+                            started,
+                            reporter,
+                            governor,
+                            prepared,
+                        )
+                    })
+                }
             }
-            let stage_cache = construct_stage_cache(&args);
-            tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
-                pipeline::run_prepared(&args, stage_cache, started, reporter, governor, prepared)
-            })
         }
     }
 }

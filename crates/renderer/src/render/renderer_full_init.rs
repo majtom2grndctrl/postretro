@@ -209,6 +209,9 @@ pub(crate) fn build_full_renderer(
             direct: geometry.and_then(|g| g.direct_sh_volume),
             direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
             animated_direct_delta: geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
+            billboard_direct_scatter: geometry.and_then(|g| g.billboard_direct_scatter_volume),
+            animated_billboard_direct_scatter_delta: geometry
+                .and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
         },
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
@@ -537,6 +540,14 @@ pub(crate) fn build_full_renderer(
         &promoted_static_weight_buffer,
         &uniform_bind_group_layout,
     );
+    let billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::new(
+        device,
+        &sh_volume_resources.billboard_direct_scatter,
+        &sh_volume_resources.animation,
+        geometry.and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
+        &uniform_bind_group_layout,
+        sh_volume_resources.grid_dimensions,
+    );
     // Only allocate the promoted-slot depth cache when the map has a non-empty
     // entity-shadow selection; an empty/absent selection can never promote a
     // light, so the cache arrays would be pure wasted VRAM.
@@ -583,6 +594,7 @@ pub(crate) fn build_full_renderer(
         frozen_time: 0.0,
         sh_compose,
         direct_sh_compose,
+        billboard_direct_scatter_compose,
         lightmap_resources,
         animated_lightmap,
         lights_buffer,

@@ -181,6 +181,10 @@ pub struct FrameUniforms {
     /// for the billboard path (the mesh path reads its own copy from the
     /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
     pub dynamic_direct_scale: f32,
+    /// Whether the normal-free billboard direct-scatter volume is available.
+    /// This is level-load fixed: the renderer chooses the real or dummy
+    /// group-3 binding at load/reload and never switches it per frame.
+    pub has_scatter: bool,
     /// Whether a baked DIRECT SH section is present. When false the dynamic
     /// shaders skip the direct sample (direct = 0), falling back to
     /// indirect-only. Owned here (and mirrored in the mesh uniform).
@@ -218,10 +222,8 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let force_vis: u32 = u.sdf_force_visibility_one as u32;
     bytes[104..108].copy_from_slice(&force_vis.to_ne_bytes());
     bytes[108..112].copy_from_slice(&u.dynamic_direct_scale.to_ne_bytes());
-    // 112..116 is reserved zero padding after the billboard-only
-    // dynamic-direct isolation selector was retired. `bytes` is zero-initialized
-    // so `has_direct` and `total_light_count` retain their fixed ABI offsets.
-    bytes[112..116].fill(0);
+    let has_scatter: u32 = u.has_scatter as u32;
+    bytes[112..116].copy_from_slice(&has_scatter.to_ne_bytes());
     let has_direct: u32 = u.has_direct as u32;
     bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
     let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
@@ -250,6 +252,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -288,6 +291,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -316,6 +320,7 @@ mod tests {
                 sdf_shadow_mode: SdfShadowMode::On,
                 sdf_force_visibility_one: force,
                 dynamic_direct_scale: 0.0,
+                has_scatter: false,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -342,6 +347,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: true,
@@ -365,6 +371,7 @@ mod tests {
                 sdf_shadow_mode: mode,
                 sdf_force_visibility_one: false,
                 dynamic_direct_scale: 0.0,
+                has_scatter: false,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -389,6 +396,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::ShadowmaskRawPoolVisibility,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -414,6 +422,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.25,
+            has_scatter: true,
             has_direct: true,
             total_light_count: 11,
             spec_shadowmask_force_one: false,
@@ -425,7 +434,7 @@ mod tests {
             light_term_mask.bits(),
             "LightTermMask must remain at the fixed group-0 88..92 ABI slot",
         );
-        assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(data[120..124].try_into().unwrap()), 11);
         assert!(data[124..128].iter().all(|&b| b == 0));
@@ -449,6 +458,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
@@ -499,6 +509,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: false,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,

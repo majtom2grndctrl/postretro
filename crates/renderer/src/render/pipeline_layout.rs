@@ -147,7 +147,8 @@ pub(crate) const TIMING_PAIR_PROMOTED_DEPTH_CACHE: usize = 7;
 pub(crate) const TIMING_PAIR_SMOKE: usize = 8;
 pub(crate) const TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE: usize = 9;
 pub(crate) const TIMING_PAIR_BLOOM: usize = 10;
-pub(crate) const TIMING_PAIR_COUNT: usize = 11;
+pub(crate) const TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE: usize = 11;
+pub(crate) const TIMING_PAIR_COUNT: usize = 12;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -155,7 +156,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 11;
 //   80..84   light_count  84..88  time  88..92   light_term_mask  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
-//   112..116 reserved pad  116..120 has_direct
+//   112..116 has_scatter  116..120 has_direct
 //   120..124 total_light_count  124..128 spec_shadowmask_force_one
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
@@ -168,7 +169,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 11;
 // is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
 // The dynamic-direct tail (Task 6 of baked-static-direct-sh): repurposes the
 // old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
-// 16-byte row carries reserved padding + `has_direct` +
+// 16-byte row carries `has_scatter` + `has_direct` +
 // `total_light_count`; Task 3 repurposes that row's trailing word as
 // `spec_shadowmask_force_one`.
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
@@ -375,6 +376,21 @@ pub(crate) fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> 
         .count() as u32
 }
 
+/// Count BGL entries charged against `max_sampled_textures_per_shader_stage` in
+/// the VERTEX stage. Billboard lighting samples its SH/direct/scatter volumes
+/// in `vs_main`, so the sampled-texture budget needs the same layout-derived
+/// guard that protects its storage-buffer budget.
+#[cfg(debug_assertions)]
+pub(crate) fn vertex_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.visibility.contains(wgpu::ShaderStages::VERTEX)
+                && matches!(entry.ty, wgpu::BindingType::Texture { .. })
+        })
+        .count() as u32
+}
+
 /// Single source of truth for the billboard pipeline's VERTEX-stage storage-buffer
 /// budget. Sums the vertex-visible storage entries across the exact BGLs that
 /// compose the Billboard Pipeline Layout (see `SmokePass::new` for the matching
@@ -397,6 +413,18 @@ pub(crate) fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
         + vertex_storage_buffers(&lighting_bind_group_layout_entries())
         + vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries())
         + vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries())
+}
+
+/// Layout-derived billboard VERTEX sampled-texture inventory. Group 3 owns the
+/// indirect atlas, depth moments, legacy direct atlas, and normal-free scatter
+/// volume; the latter is VERTEX-only so forward's fragment budget stays fixed.
+#[cfg(debug_assertions)]
+pub(crate) fn billboard_pipeline_vertex_sampled_texture_count() -> u32 {
+    vertex_sampled_textures(&uniform_bind_group_layout_entries())
+        + vertex_sampled_textures(&smoke::sprite_sheet_bind_group_layout_entries())
+        + vertex_sampled_textures(&lighting_bind_group_layout_entries())
+        + vertex_sampled_textures(&sh_volume::sh_bind_group_layout_entries())
+        + vertex_sampled_textures(&smoke::sprite_instance_bind_group_layout_entries())
 }
 
 /// Single source of truth for the forward ("Textured") pipeline's sampled-texture

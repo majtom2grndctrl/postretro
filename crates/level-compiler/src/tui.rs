@@ -11,6 +11,7 @@ use crate::reporter::{Reporter, StageProgress};
 
 mod tui_progress;
 mod tui_render;
+mod tui_steps;
 mod tui_terminal;
 mod tui_worker;
 

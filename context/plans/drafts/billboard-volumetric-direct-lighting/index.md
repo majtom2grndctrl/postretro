@@ -92,9 +92,12 @@ around it, while static-light occlusion and animated brightness still apply.
    malformed, or mutually incompatible scatter data selects the exact current
    billboard direct path — the `has_scatter` uniform flag (Task 4) is cleared,
    the shader samples the direct-SH atlas and iterates `total_light_count` as
-   today. If section 47 is present, section 48 must validate against it; a
-   missing or invalid section 48 disables the scatter feature as a whole instead
-   of silently omitting animated direct light.
+   today. Section 48 (animated scatter) exists only for maps that carry
+   section 45 (animated baked lights): if section 45 is present, section 48 must
+   validate against section 45's affinity and descriptor map, and a missing or
+   invalid section 48 disables the scatter feature as a whole rather than
+   silently omitting animated direct light. A map with only static scatter
+   (section 47, no section 45) needs no section 48.
 
 ## Acceptance criteria
 
@@ -208,16 +211,25 @@ their cache stages. Append both optional sections during PRL assembly.
 ### Task 4: Compose and consume scatter in the billboard pass
 
 Add renderer-owned upload resources for the base 3D scatter texture, an optional
-composed texture, and the section-48 CSR buffers. Append the sampled texture at
+composed texture, and the section-48 CSR buffers. Binding 17 resolves like the
+direct-SH atlas at binding 15: it samples the composed texture when animated
+scatter (section 48) is present, the base scatter texture when only static
+scatter (section 47) exists, and the 1×1×1 dummy when scatter is unavailable.
+Append the sampled texture at
 group 3 binding 17, **`VERTEX`-visible only** — billboards light per vertex, so
 the scatter read replaces the per-vertex `sample_sh_direct` read, and the
 forward and fog pipelines share this group-3 BGL. Forward sits at exactly 16
 fragment sampled textures (the downlevel/WebGPU floor); a `FRAGMENT`-visible
 entry here would push it to 17 and panic `create_pipeline_layout`, so binding 17
-must NOT carry `FRAGMENT`. Do not change existing bindings. The section-48 CSR
-storage buffers stay `COMPUTE`-visible only — never `VERTEX` — matching the
-existing `anim_descriptors` / `anim_samples` discipline, so the vertex-stage
-storage-buffer count is unchanged. Add a single `has_scatter` flag to the shared
+must NOT carry `FRAGMENT`. Do not change existing bindings. Add a
+`vertex_sampled_textures` budget helper (mirroring the existing
+`vertex_storage_buffers`) and assert with it that the forward fragment
+sampled-texture count stays 16 and the billboard vertex sampled-texture count
+stays within the downlevel default (AC 7). The section-48 CSR storage buffers
+stay `COMPUTE`-visible only — never `VERTEX` (the load-bearing property shared
+with `anim_descriptors` / `anim_samples`, which protects the billboard vertex
+storage budget), so the vertex-stage storage-buffer count is unchanged. Add a
+single `has_scatter` flag to the shared
 128-byte `FrameUniforms` ABI (the 4-way contract mirrored by the Rust writer,
 `forward.wgsl`, `billboard.wgsl`, and `wireframe.wgsl`) in its one free slot at
 offset 112..116 (the retired `_dynamic_direct_pad`); `UNIFORM_SIZE` stays 128.
@@ -225,9 +237,11 @@ Update the `frame_uniforms.rs` tests that assert the 112..116 (and 104..128)
 tail is zero. Add no new dynamic-tier count: the existing
 `FrameUniforms.light_count` (offset 80..84) already is it (`total_light_count =
 light_count + promoted static records`). The renderer sets `has_scatter` false
-whenever sections 47/48 are absent, invalid, or incompatible, and binds binding
-17 to a dummy 1×1×1 `Rgba16Float` texture in that case so the bind-group layout
-never varies with map content.
+when section 47 is absent or invalid, or when section 45 is present but section
+48 is absent, invalid, or incompatible (a valid static-only map — section 47, no
+section 45 — keeps `has_scatter` true and samples the base texture); in the
+`has_scatter == 0` case it binds binding 17 to a dummy 1×1×1 `Rgba16Float`
+texture so the bind-group layout never varies with map content.
 
 The compose compute pass mirrors `direct_sh_compose` (template:
 `direct_sh_compose.rs` and `direct_compose_should_dispatch`) — Task 4's agent
@@ -267,7 +281,13 @@ and timing check in `context/lib/rendering_pipeline.md` §7.4, and update adjace
 billboard-lighting references that still describe all direct terms as `N = V` —
 including §9's "For meshes and billboards, direct SH subtraction handles the
 handoff", which must now note the scatter path drops promoted records instead of
-subtracting.
+subtracting. Also scope §4's billboard statements that now hold only on the
+legacy branch — the "billboards sample the composed direct-SH atlas at binding
+15, gated by `has_direct`" line, the "billboards receive the same pulse/color
+term" via id 45 line, and the receiver-table Billboard row (direct-SH base | id
+45 composed delta) — to the legacy path, since on the scatter path billboards
+read neither binding 15 nor id 45. Add the new scatter-compose pass to §12's
+"Passes measured" list.
 
 ## Sequencing
 

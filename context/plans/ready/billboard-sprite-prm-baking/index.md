@@ -107,8 +107,9 @@ of every sprite source is owned by the separate `sprite-png-retirement` spec
   descriptor-spawned sprites, and the hardcoded weapon-impact effect
   (`weapon::impact_sprite_collection()` → `"impact"`). The compiler cannot see the
   latter two, and single-frame `.png` references are not this slice's target.
-  They all keep working on the runtime decode fallback (see *Open questions*);
-  their PRM migration is owned by `sprite-png-retirement`, not this spec.
+  They all keep working on the runtime decode fallback (see *Cross-spec
+  coordination*); their PRM migration is owned by `sprite-png-retirement`, not
+  this spec.
 - **A PRM format or `STAGE_VERSION` change.** The layered v3 format
   (`layer_count`, layer-major payload) already shipped in `prm-array-layers`;
   this spec is a new producer/consumer of it, not a format change. See *Wire
@@ -689,20 +690,6 @@ may also carry the SPECULAR and NORMAL slots the format already defines
 added, so `pack.rs` and the PRL header version are untouched. The PRM
 `STAGE_VERSION` does **not** bump: the layered format already exists at v3; this
 spec only adds a new producer/consumer of it.
-
-## Open questions
-
-- **Descriptor-spawned, weapon-impact, and direct-`.png` sprites.** The compiler
-  sees only `billboard_emitter` map placements. Collections introduced by
-  data-script descriptors or the hardcoded `"impact"` effect
-  (`weapon::impact_sprite_collection()`), and direct single-frame `.png`
-  references, bake no sidecar and keep rendering on the runtime decode fallback
-  this spec preserves. Baking them (e.g. a compiler allowlist of engine-built-in
-  collections like `"smoke"` / `"impact"`, or a descriptor-manifest pass) and
-  retiring the decode path once every source is baked is owned by
-  `sprite-png-retirement` (see *Cross-spec coordination*), not this slice.
-  Runtime-bake-on-first-load stays out — runtime baking is an explicit engine
-  non-goal.
 
 ## Sources
 

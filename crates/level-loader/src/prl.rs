@@ -1297,8 +1297,7 @@ mod tests {
     use crate::prl_loader::{
         convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
         validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
-        validate_delta_sh, validate_direct_sh_delta,
-        validate_entity_shadow_light_selection,
+        validate_delta_sh, validate_direct_sh_delta, validate_entity_shadow_light_selection,
     };
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{

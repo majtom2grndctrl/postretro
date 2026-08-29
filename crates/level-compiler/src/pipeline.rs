@@ -1893,37 +1893,41 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 23);
-        assert_eq!(with_sdf.len(), 23);
+        assert_eq!(without_sdf.len(), 24);
+        assert_eq!(with_sdf.len(), 24);
         assert_eq!(
             without_sdf
                 .iter()
-                .map(|stage| stage.label)
+                .map(|stage| (stage.id, stage.label))
                 .collect::<Vec<_>>(),
             vec![
-                "Parsing",
-                "DataScript",
-                "TexValidation",
-                "Partitioning",
-                "Visibility",
-                "Geometry",
-                "BVH Build",
-                "Cell Visibility",
-                "NavMesh",
-                "Lightmap Bake",
-                "SH Bake",
-                "Delta SH Bake",
-                "Direct SH Bake",
-                "Animated Direct SH Bake",
-                "EntityShadowLights",
-                "Direct SH Delta Bake",
-                "ShadowmaskAtlas",
-                "ChunkLightList",
-                "AnimLightChunks",
-                "AnimWeightMaps",
-                "SDF Atlas Bake",
-                "TextureMips",
-                "Packing",
+                (StageId::Parsing, "Parsing"),
+                (StageId::DataScript, "DataScript"),
+                (StageId::TextureValidation, "TexValidation"),
+                (StageId::Partitioning, "Partitioning"),
+                (StageId::Visibility, "Visibility"),
+                (StageId::Geometry, "Geometry"),
+                (StageId::BvhBuild, "BVH Build"),
+                (StageId::CellVisibility, "Cell Visibility"),
+                (StageId::NavMesh, "NavMesh"),
+                (StageId::LightmapBake, "Lightmap Bake"),
+                (StageId::ShBake, "SH Bake"),
+                (StageId::DeltaShBake, "Delta SH Bake"),
+                (StageId::DirectShBake, "Direct SH Bake"),
+                (StageId::AnimatedDirectShBake, "Animated Direct SH Bake"),
+                (StageId::EntityShadowLights, "EntityShadowLights"),
+                (StageId::DirectShDeltaBake, "Direct SH Delta Bake"),
+                (
+                    StageId::BillboardDirectScatterBake,
+                    "Billboard Direct Scatter Bake",
+                ),
+                (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
+                (StageId::ChunkLightList, "ChunkLightList"),
+                (StageId::AnimatedLightChunks, "AnimLightChunks"),
+                (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
+                (StageId::SdfAtlasBake, "SDF Atlas Bake"),
+                (StageId::TextureMips, "TextureMips"),
+                (StageId::Packing, "Packing"),
             ]
         );
         assert!(
@@ -1932,8 +1936,12 @@ mod tests {
                 .filter(|stage| stage.id != StageId::SdfAtlasBake)
                 .all(|stage| stage.predicted_present)
         );
-        assert!(!without_sdf[20].predicted_present);
-        assert!(with_sdf[20].predicted_present);
+        let sdf_index = without_sdf
+            .iter()
+            .position(|stage| stage.id == StageId::SdfAtlasBake)
+            .expect("planned stages include SDF atlas bake");
+        assert!(!without_sdf[sdf_index].predicted_present);
+        assert!(with_sdf[sdf_index].predicted_present);
     }
 
     #[test]

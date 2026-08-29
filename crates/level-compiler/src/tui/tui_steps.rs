@@ -38,6 +38,7 @@ const LIGHTING_STAGES: &[StageId] = &[
     StageId::AnimatedDirectShBake,
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
+    StageId::BillboardDirectScatterBake,
     StageId::ShadowmaskAtlas,
     StageId::ChunkLightList,
     StageId::AnimatedLightChunks,
@@ -353,7 +354,7 @@ mod tests {
         state.begin_step(StageId::EntityShadowLights);
         state.begin_step(StageId::DirectShDeltaBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Lighting 0/11"));
+        assert!(text.contains("Lighting 0/12"));
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
         assert!(!text.contains("Parse 0/3\nParsing"));
@@ -366,7 +367,7 @@ mod tests {
         let text = rendered(&mut state, 40, 30);
         assert!(text.contains("Parse 0/3"));
         assert!(text.contains("World 0/6"));
-        assert!(text.contains("Lighting 0/11"));
+        assert!(text.contains("Lighting 0/12"));
         assert!(text.contains("Pack 0/3"));
         assert!(text.contains("Lightmap Bake"));
     }
@@ -500,7 +501,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(text.contains("Lighting 0/11"));
+        assert!(text.contains("Lighting 0/12"));
         assert!(text.contains("!   Lightmap Bake"));
     }
 

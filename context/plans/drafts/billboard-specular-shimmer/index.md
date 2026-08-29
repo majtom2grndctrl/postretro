@@ -45,8 +45,9 @@ shipping the maps; a collection without them is unchanged.
   `billboard-sprite-prm-baking` spec; this spec consumes the baked slots. See
   *Prerequisites*.
 - **The isotropic-scatter model itself.** Owned by
-  `billboard-volumetric-direct-lighting`; this spec is the sibling model it
-  reserves the opt-in for. See *Prerequisites* and *Cross-spec coordination*.
+  `billboard-volumetric-direct-lighting`, which makes scatter the default for all
+  billboards. This spec is the sibling model and introduces the per-material
+  split that carves shimmer materials out of that default. See *Prerequisites*.
 - **Per-texel dynamic-light specular.** The dynamic-tier billboard loop stays
   diffuse-only (sharp per-light highlights on billboards read as artifact — the
   existing shader comment). Shimmer's per-fragment specular runs on the static
@@ -163,7 +164,7 @@ comes from `N'`, not `L`).
 
 ## Prerequisites
 
-This spec consumes three upstream pieces that must land before its review begins:
+This spec consumes two upstream pieces that must land before its review begins:
 
 1. **`prm-array-layers` (lands first, foundational)** migrates the billboard
    sprite texture path from a stitched strip to per-frame `texture_2d_array`
@@ -180,13 +181,32 @@ This spec consumes three upstream pieces that must land before its review begins
    the loaded slot mask and the slot texture views to the billboard pass.
    Shimmer consumes: the slot mask (classification) and the two texture views
    (binding).
-3. **`billboard-volumetric-direct-lighting` (amended)** scopes its normal-free
-   isotropic-scatter path to non-shimmer (default) billboards and preserves —
-   does not delete — the static-specular path for shimmer-flagged materials.
-   Shimmer owns that preserved path's per-fragment form.
 
-If any of the three is not yet merged when this spec is picked up, that is a
-sequencing block, not a scope change here.
+If either is not yet merged when this spec is picked up, that is a sequencing
+block, not a scope change here.
+
+This spec **owns** the per-material billboard-lighting split: the shimmer
+classification flag, the per-fragment specular path, and the re-scoping of the
+default model to non-shimmer collections. It does not inherit a partition or a
+dormant path from another spec.
+
+**Baseline note — reconcile before this spec's own review.** The sibling
+`billboard-volumetric-direct-lighting` spec makes normal-free scatter the direct
+model for *all* billboards on its scatter path; the vertex-stage static-specular
+loop is no longer evaluated there and survives only on that spec's
+legacy-fallback branch. That scatter shader is the baseline this spec builds on,
+not today's shader: the non-shimmer default is scatter (no `N = V` vertex
+specular to keep unchanged), and the static-specular loop is not on the primary
+path to "move" to the fragment stage — shimmer builds its per-fragment
+Blinn-Phong fresh, mirroring the world forward path (`forward.wgsl`). Sections
+written against today's shader — Decision 2's "isotropic stays per-vertex /
+constancy comment survives," the *Prior commitments* bullet that reuses the
+billboard vertex specular loop verbatim, and the AC/Invariant that assert
+non-shimmer output is byte-for-byte identical to *pre-spec* billboard output —
+describe the wrong baseline and must be re-drafted against the scatter shader
+(identical-to-*scatter*, not identical-to-today) in this spec's own
+draft/validate pass. If `billboard-volumetric-direct-lighting` has not landed
+when this spec is picked up, that is the sequencing block above.
 
 ## Acceptance criteria
 

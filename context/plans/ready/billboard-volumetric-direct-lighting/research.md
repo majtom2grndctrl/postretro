@@ -27,7 +27,7 @@ proxy.
 ```mermaid
 sequenceDiagram
     participant C as prl-build
-    participant F as PRL sections 46/47
+    participant F as PRL sections 47/48
     participant L as level-loader
     participant R as renderer compose
     participant B as billboard vertex shader
@@ -43,8 +43,8 @@ sequenceDiagram
 
 ## Fixed contracts
 
-- Existing section IDs 34, 35, and 45 remain unchanged. New sections use IDs
-  46 and 47; their payloads are optional.
+- Existing section IDs 34, 35, 45, and 46 (`CellVisibility`) remain unchanged.
+  New sections use the next free IDs 47 and 48; their payloads are optional.
 - Existing shared SH bindings 0, 1, 2, 10, 11, 12, 14, and 15 stay at their
   current numbers. The scatter texture is appended at binding 17. Mesh binding
   16 remains its dynamic-direct uniform.
@@ -71,6 +71,6 @@ sequenceDiagram
 This plan changes direct response only. Indirect SH remains the existing
 view-facing ambient approximation. It is softer fill, not the source of the
 red-light disappearance. Static SDF direct and shadow-map policy are unchanged
-except that static-light-map sources no longer enter the isotropic-model
-billboard's surface-like specular loop once their scatter term replaces them; the
-specular loop is retained for specular-shimmer materials, owned downstream.
+except that static-light-map sources no longer enter the billboard's surface-like
+specular loop on the scatter path once their scatter term replaces them; that
+vertex-stage specular loop survives only on the legacy-fallback branch.

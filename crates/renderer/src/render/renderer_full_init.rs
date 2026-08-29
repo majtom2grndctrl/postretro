@@ -530,8 +530,8 @@ pub(crate) fn build_full_renderer(
     });
     let direct_sh_compose = DirectShComposeResources::new(
         device,
-        &sh_volume_resources,
-        geometry.and_then(|g| g.direct_sh_volume),
+        &sh_volume_resources.direct,
+        &sh_volume_resources.animation,
         geometry.and_then(|g| g.direct_sh_delta_volumes),
         geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,

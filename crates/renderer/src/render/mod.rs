@@ -9,6 +9,7 @@ mod debug_lines;
 #[cfg(feature = "dev-tools")]
 mod debug_ui;
 mod direct_sh_compose;
+mod direct_sh_resources;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;

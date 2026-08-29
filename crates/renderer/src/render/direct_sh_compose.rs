@@ -3,7 +3,6 @@
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
-use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
@@ -15,7 +14,8 @@ use postretro_render_cpu::sh_compose::{
 use super::animated_direct_sh_compose::{
     AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
 };
-use super::sh_volume::ShVolumeResources;
+use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
+use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
 pub(super) const BIND_DELTA_SUBBLOCKS: u32 = 20;
@@ -101,17 +101,6 @@ struct DirectShComposePipeline {
     animated_add: Option<AnimatedDirectShComposePipeline>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct DirectComposeLayout {
-    pub(super) grid_dimensions: [u32; 3],
-    pub(super) atlas_dimensions: [u32; 2],
-    pub(super) tile_dimension: u32,
-    pub(super) tile_border: u32,
-    pub(super) atlas_tiles_per_row: u32,
-    pub(super) tiles_per_layer: u32,
-    pub(super) atlas_layer_count: u32,
-}
-
 struct DirectPromotionStorage {
     buffers: DirectDeltaComposeBuffers,
     subblock_bytes: Vec<u8>,
@@ -168,8 +157,8 @@ impl DirectShComposeResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
-        sh: &ShVolumeResources,
-        direct_section: Option<&DirectShVolumeSection>,
+        direct: &DirectShResources,
+        animation: &AnimatedLightBuffers,
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
@@ -179,8 +168,8 @@ impl DirectShComposeResources {
             // Case 2 is selected only at level load from section presence.
             Some(animated_delta) => Self::new_case2(
                 device,
-                sh,
-                direct_section,
+                direct,
+                animation,
                 delta,
                 animated_delta,
                 weights_buffer,
@@ -188,37 +177,29 @@ impl DirectShComposeResources {
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
-            None => Self::new_case1(device, sh, direct_section, delta, weights_buffer),
+            None => Self::new_case1(device, direct, delta, weights_buffer),
         }
     }
 
     fn new_case1(
         device: &wgpu::Device,
-        sh: &ShVolumeResources,
-        direct_section: Option<&DirectShVolumeSection>,
+        direct: &DirectShResources,
         delta: Option<&DirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
     ) -> Self {
-        let Some(section) = direct_section else {
+        if !direct.has_direct_base {
             return Self::disabled();
-        };
+        }
         let delta = delta.filter(|delta| !delta.affinity_lights.is_empty());
-        let Some(composed_storage_view) = sh.direct_composed_storage_view.as_ref() else {
+        let Some(composed_storage_view) = direct.composed_storage_view.as_ref() else {
             return Self::disabled();
         };
-
-        let layout = DirectComposeLayout {
-            grid_dimensions: section.grid_dimensions,
-            atlas_dimensions: section.atlas_dimensions,
-            tile_dimension: section.tile_dimension,
-            tile_border: section.tile_border,
-            atlas_tiles_per_row: section.atlas_tiles_per_row,
-            tiles_per_layer: section.tiles_per_layer,
-            atlas_layer_count: section.layer_count,
+        let Some(layout) = direct.compose_layout else {
+            return Self::disabled();
         };
         let pipeline = build_promotion_pass(
             device,
-            sh,
+            direct,
             layout,
             delta,
             weights_buffer,
@@ -228,8 +209,8 @@ impl DirectShComposeResources {
         log::info!(
             "[Renderer] Direct SH compose: {} selected-light CSR entr(y/ies), atlas {}×{}",
             delta.map_or(0, |delta| delta.affinity_lights.len()),
-            section.atlas_dimensions[0],
-            section.atlas_dimensions[1],
+            layout.atlas_dimensions[0],
+            layout.atlas_dimensions[1],
         );
 
         Self {
@@ -240,23 +221,23 @@ impl DirectShComposeResources {
     #[allow(clippy::too_many_arguments)]
     fn new_case2(
         device: &wgpu::Device,
-        sh: &ShVolumeResources,
-        direct_section: Option<&DirectShVolumeSection>,
+        direct: &DirectShResources,
+        animation: &AnimatedLightBuffers,
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let Some(intermediate_storage_view) = sh.direct_intermediate_storage_view.as_ref() else {
+        let Some(intermediate_storage_view) = direct.intermediate_storage_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(intermediate_sampled_view) = sh.direct_intermediate_sampled_view.as_ref() else {
+        let Some(intermediate_sampled_view) = direct.intermediate_sampled_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(composed_storage_view) = sh.direct_composed_storage_view.as_ref() else {
+        let Some(composed_storage_view) = direct.composed_storage_view.as_ref() else {
             return Self::disabled();
         };
-        let Some(layout) = direct_compose_layout(direct_section, sh) else {
+        let Some(layout) = direct.compose_layout else {
             return Self::disabled();
         };
 
@@ -265,7 +246,7 @@ impl DirectShComposeResources {
         // buffers, then writes the intermediate that Pass B always consumes.
         let mut pass_a = build_promotion_pass(
             device,
-            sh,
+            direct,
             layout,
             delta,
             weights_buffer,
@@ -273,7 +254,7 @@ impl DirectShComposeResources {
         );
         pass_a.animated_add = Some(build_animated_direct_pass(
             device,
-            sh,
+            animation,
             layout,
             animated_delta,
             intermediate_sampled_view,
@@ -370,36 +351,10 @@ impl DirectShComposeResources {
     }
 }
 
-fn direct_compose_layout(
-    direct_section: Option<&DirectShVolumeSection>,
-    sh: &ShVolumeResources,
-) -> Option<DirectComposeLayout> {
-    if let Some(section) = direct_section {
-        return Some(DirectComposeLayout {
-            grid_dimensions: section.grid_dimensions,
-            atlas_dimensions: section.atlas_dimensions,
-            tile_dimension: section.tile_dimension,
-            tile_border: section.tile_border,
-            atlas_tiles_per_row: section.atlas_tiles_per_row,
-            tiles_per_layer: section.tiles_per_layer,
-            atlas_layer_count: section.layer_count,
-        });
-    }
-    sh.present.then_some(DirectComposeLayout {
-        grid_dimensions: sh.grid_dimensions,
-        atlas_dimensions: sh.atlas_dimensions,
-        tile_dimension: sh.tile_dimension,
-        tile_border: sh.tile_border,
-        atlas_tiles_per_row: sh.atlas_tiles_per_row,
-        tiles_per_layer: sh.tiles_per_layer,
-        atlas_layer_count: sh.atlas_layer_count,
-    })
-}
-
 fn build_promotion_pass(
     device: &wgpu::Device,
-    sh: &ShVolumeResources,
-    layout: DirectComposeLayout,
+    direct: &DirectShResources,
+    layout: DirectAtlasLayout,
     delta: Option<&DirectShDeltaVolumesSection>,
     weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
@@ -501,7 +456,7 @@ fn build_promotion_pass(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&sh.direct_base_atlas_view),
+                resource: wgpu::BindingResource::TextureView(&direct.base_atlas_view),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_BASE_SAMPLER,

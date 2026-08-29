@@ -443,63 +443,65 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
         readonly_line("Output", &form.output),
         Line::default(),
         section_heading("Bake quality"),
-        Line::default(),
-        field_line(
-            form,
-            ConfigField::ProbeSpacing,
-            "SH probe spacing",
-            &format!("{} m", form.probe_spacing),
-        ),
-        guidance_line(format!(
+    ];
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::ProbeSpacing,
+        "SH probe spacing",
+        format!("{} m", form.probe_spacing),
+        format!(
             "Default {} m; smaller = denser SH / slower.",
             sh_bake::DEFAULT_PROBE_SPACING
-        )),
-        field_line(
-            form,
-            ConfigField::LightmapDensity,
-            "Lightmap density",
-            &format!(
-                "{} m/texel ({})",
-                form.lightmap_density,
-                form.density_source_label()
-            ),
         ),
-        guidance_line(format!(
+    );
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::LightmapDensity,
+        "Lightmap density",
+        format!(
+            "{} m/texel ({})",
+            form.lightmap_density,
+            form.density_source_label()
+        ),
+        format!(
             "Default {} m/texel; smaller = finer / slower.",
             lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS
-        )),
-        field_line(
-            form,
-            ConfigField::SoftShadowSamples,
-            "Soft-shadow samples",
-            &form.soft_shadow_samples,
         ),
-        guidance_line(format!(
+    );
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::SoftShadowSamples,
+        "Soft-shadow samples",
+        form.soft_shadow_samples.clone(),
+        format!(
             "Default {}; higher = softer penumbra / slower (minimum {}).",
             lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
             lightmap_bake::SOFT_PROBE_SAMPLES
-        )),
-        field_line(
-            form,
-            ConfigField::VoxelSize,
-            "SDF voxel size",
-            &format!("{} m", form.voxel_size),
         ),
-        guidance_line(format!(
+    );
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::VoxelSize,
+        "SDF voxel size",
+        format!("{} m", form.voxel_size),
+        format!(
             "Default {} m; smaller = finer occluders / slower.",
             sdf_bake::DEFAULT_VOXEL_SIZE_METERS
-        )),
-        Line::default(),
-        section_heading("Build strategy"),
-        Line::default(),
-        field_line(
-            form,
-            ConfigField::BuildMode,
-            "Build mode",
-            form.build_mode.label(),
         ),
-        guidance_line(form.build_mode.guidance().to_owned()),
-    ];
+    );
+    lines.extend([Line::default(), section_heading("Build strategy")]);
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::BuildMode,
+        "Build mode",
+        form.build_mode.label().to_owned(),
+        form.build_mode.guidance().to_owned(),
+    );
     if let Some(error) = &form.validation_error {
         lines.push(Line::from(Span::styled(
             format!("Invalid value: {error}"),
@@ -533,9 +535,24 @@ fn readonly_line(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
+fn append_field(
+    lines: &mut Vec<Line<'static>>,
+    form: &FormState,
+    field: ConfigField,
+    label: &str,
+    value: String,
+    guidance: String,
+) {
+    lines.push(Line::default());
+    lines.push(field_line(form, field, label, &value));
+    if form.selected == field {
+        lines.push(guidance_line(guidance));
+    }
+}
+
 fn field_line(form: &FormState, field: ConfigField, label: &str, value: &str) -> Line<'static> {
     let selected = form.selected == field;
-    let marker = if selected { "    > " } else { "      " };
+    let marker = if selected { "> " } else { "  " };
     let style = if selected {
         Style::default()
             .fg(Color::Cyan)
@@ -545,8 +562,9 @@ fn field_line(form: &FormState, field: ConfigField, label: &str, value: &str) ->
     };
     let cursor = if form.editing == Some(field) { "|" } else { "" };
     Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{label:<26}"), style),
         Span::styled(marker, style),
-        Span::styled(format!("{label:<18}"), style),
         Span::styled(format!("{value}{cursor}"), style),
     ])
 }
@@ -667,11 +685,35 @@ mod tests {
         assert_eq!(readonly_line("Input", "map").spans[0].content, "    ");
         assert_eq!(
             field_line(&form, ConfigField::ProbeSpacing, "SH probe spacing", "1").spans[0].content,
-            "    > "
+            "    "
+        );
+        assert_eq!(
+            field_line(&form, ConfigField::ProbeSpacing, "SH probe spacing", "1").spans[1].content,
+            "SH probe spacing          "
+        );
+        assert_eq!(
+            field_line(&form, ConfigField::ProbeSpacing, "SH probe spacing", "1").spans[2].content,
+            "> "
         );
         assert_eq!(
             guidance_line("hint".to_owned()).spans[0].content,
             "        hint"
         );
+    }
+
+    #[test]
+    fn configuration_only_shows_guidance_for_the_selected_field() {
+        let mut form = FormState::from_args(&default_args(), None);
+        form.selected = ConfigField::LightmapDensity;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| draw_config(frame, &form)).unwrap();
+        let text = buffer_text(&terminal);
+
+        assert!(text.contains("Default 0.04 m/texel; smaller = finer / slower."));
+        assert!(!text.contains("Default 1 m; smaller = denser SH / slower."));
+        assert!(!text.contains("softer penumbra"));
+        assert!(!text.contains("finer occluders"));
+        assert!(!text.contains("Warm cache + approximate"));
     }
 }

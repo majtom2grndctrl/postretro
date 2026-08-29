@@ -13,12 +13,13 @@ use crate::{
     resolve_prm_root_via_cargo, resolve_texture_root,
 };
 use crate::{
-    animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
-    cell_draw_index_bake, cell_visibility_bake, chunk_light_list_bake, delta_sections,
-    delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks, geometry,
-    kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data, navmesh_bake,
-    pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_group,
-    shadowmask_bake, texture_mips, texture_validation, trigger_volumes, visibility,
+    animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
+    billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
+    chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
+    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer,
+    map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake,
+    sh_coarsen, sh_group, shadowmask_bake, texture_mips, texture_validation, trigger_volumes,
+    visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -60,6 +61,7 @@ pub enum StageId {
     AnimatedDirectShBake,
     EntityShadowLights,
     DirectShDeltaBake,
+    BillboardDirectScatterBake,
     ShadowmaskAtlas,
     ChunkLightList,
     AnimatedLightChunks,
@@ -96,6 +98,7 @@ impl StageId {
             Self::AnimatedDirectShBake => "Animated Direct SH Bake",
             Self::EntityShadowLights => "EntityShadowLights",
             Self::DirectShDeltaBake => "Direct SH Delta Bake",
+            Self::BillboardDirectScatterBake => "Billboard Direct Scatter Bake",
             Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::ChunkLightList => "ChunkLightList",
             Self::AnimatedLightChunks => "AnimLightChunks",
@@ -124,6 +127,7 @@ impl StageId {
             Self::AnimatedDirectShBake => "Animated direct SH delta bake...",
             Self::EntityShadowLights => "Entity shadow light selection...",
             Self::DirectShDeltaBake => "Direct SH delta volume bake...",
+            Self::BillboardDirectScatterBake => "Billboard direct scatter bake...",
             Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::ChunkLightList => "Chunk light list bake...",
             Self::AnimatedLightChunks => "Animated light chunks...",
@@ -135,7 +139,7 @@ impl StageId {
     }
 }
 
-pub(crate) const ORDERED_STAGES: [StageId; 23] = [
+pub(crate) const ORDERED_STAGES: [StageId; 24] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -152,6 +156,7 @@ pub(crate) const ORDERED_STAGES: [StageId; 23] = [
     StageId::AnimatedDirectShBake,
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
+    StageId::BillboardDirectScatterBake,
     StageId::ShadowmaskAtlas,
     StageId::ChunkLightList,
     StageId::AnimatedLightChunks,
@@ -1161,6 +1166,73 @@ fn run_after_parsing(
         );
     }
 
+    // Billboard scatter is deliberately baked after `PostBakeDeltaSections`
+    // finalizes id 45. The animated scatter section must duplicate id 45's
+    // descriptor and CSR layout exactly, including any exact-zero entry drops.
+    let stage_start = begin_stage(reporter.as_ref(), StageId::BillboardDirectScatterBake);
+    let scatter_inputs = billboard_direct_scatter_bake::BillboardDirectScatterBakeInputs {
+        sh_ctx: &sh_ctx,
+        portals: &generated_portals,
+        animated_lights: &animated_baked_lights,
+    };
+    let scatter_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
+    let mut billboard_direct_scatter_volume_section =
+        billboard_direct_scatter_bake::bake_billboard_direct_scatter_volume_cached_controlled(
+            &scatter_inputs,
+            &sh_config,
+            stage_cache.as_ref(),
+            &scatter_control,
+        );
+    let animated_scatter_control =
+        BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
+    let animated_billboard_direct_scatter_delta_volumes_section =
+        billboard_direct_scatter_volume_section.as_ref().and_then(|_| {
+            delta_sections.animated_direct.as_ref().and_then(|direct_deltas| {
+                billboard_direct_scatter_bake::bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
+                    &scatter_inputs,
+                    &sh_config,
+                    direct_deltas,
+                    stage_cache.as_ref(),
+                    &animated_scatter_control,
+                )
+            })
+        });
+    if billboard_direct_scatter_volume_section.is_some()
+        && delta_sections.animated_direct.is_some()
+        && animated_billboard_direct_scatter_delta_volumes_section.is_none()
+    {
+        log::warn!(
+            "[Compiler] BillboardDirectScatterVolume withheld because its required animated scatter companion could not be baked"
+        );
+        billboard_direct_scatter_volume_section = None;
+    }
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::BillboardDirectScatterBake,
+        stage_start,
+        billboard_direct_scatter_volume_section.is_some(),
+    );
+    if args.verbose {
+        match (
+            billboard_direct_scatter_volume_section.as_ref(),
+            animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        ) {
+            (Some(base), Some(animated)) => log::info!(
+                "BillboardDirectScatter: {} base probes, {} animated CSR entries",
+                base.total_probes().unwrap_or_default(),
+                animated.affinity_lights.len(),
+            ),
+            (Some(base), None) => log::info!(
+                "BillboardDirectScatter: {} base probes, no animated deltas",
+                base.total_probes().unwrap_or_default(),
+            ),
+            (None, _) => {
+                log::info!("BillboardDirectScatter: skipped (no static_light_map direct source)")
+            }
+        }
+    }
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live
     // governor, but not the completed LightmapBake progress stage: that stage
@@ -1463,7 +1535,7 @@ fn run_after_parsing(
     let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
 
     let portals_section = pack::encode_portals(&generated_portals);
-    pack::pack_and_write_portals(
+    pack::pack_and_write_portals_with_billboard_scatter(
         &args.output,
         &geo_result,
         &name_to_key,
@@ -1497,6 +1569,8 @@ fn run_after_parsing(
         cell_draw_index_bytes,
         Some(cell_visibility_bytes),
         delta_sections.animated_direct.as_ref(),
+        billboard_direct_scatter_volume_section.as_ref(),
+        animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
     )?;
     finish_stage(
         &mut timings,

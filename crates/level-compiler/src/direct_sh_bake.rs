@@ -110,7 +110,9 @@ fn empty_section() -> DirectShVolumeSection {
 /// Returns `(lights, global_indices)`: `global_indices[i]` is `lights[i]`'s
 /// position in the full `static_lights` slice (the soft-visibility seed axis that
 /// keeps culled and unculled bakes byte-identical).
-fn static_direct_lights<'a>(static_lights: &[&'a MapLight]) -> (Vec<&'a MapLight>, Vec<u64>) {
+pub(crate) fn static_direct_lights<'a>(
+    static_lights: &[&'a MapLight],
+) -> (Vec<&'a MapLight>, Vec<u64>) {
     let mut lights = Vec::new();
     let mut global_indices = Vec::new();
     for (i, &light) in static_lights.iter().enumerate() {
@@ -133,17 +135,17 @@ fn static_direct_lights<'a>(static_lights: &[&'a MapLight]) -> (Vec<&'a MapLight
 /// `decompose_affinity_for_lights` — i.e. the post-`static_direct_lights` set —
 /// NOT the global `static_lights` slice. The caller maps them back to global
 /// indices for the soft-visibility seed.
-struct ReachIndex {
+pub(crate) struct ReachIndex {
     /// `cell_lights[c]` is the ascending list of `direct_lights` indices reaching
     /// affinity cell `c` (linear x-fastest index in the affinity grid).
-    cell_lights: Vec<Vec<u32>>,
+    pub(crate) cell_lights: Vec<Vec<u32>>,
     affinity_dims: [u32; 3],
 }
 
 impl ReachIndex {
     /// Affinity-cell linear index (x-fastest) for a probe at grid coords
     /// `(px, py, pz)`. One affinity cell spans `AFFINITY_FACTOR` probes per axis.
-    fn cell_for_probe(&self, px: u32, py: u32, pz: u32) -> usize {
+    pub(crate) fn cell_for_probe(&self, px: u32, py: u32, pz: u32) -> usize {
         let cx = px / AFFINITY_FACTOR;
         let cy = py / AFFINITY_FACTOR;
         let cz = pz / AFFINITY_FACTOR;
@@ -155,7 +157,7 @@ impl ReachIndex {
 
 /// Build the per-cell reaching-light index by running the reach decomposition over
 /// `direct_lights` and inverting the per-light CSR into a cell-keyed one.
-fn build_reach_index(
+pub(crate) fn build_reach_index(
     inputs: &DirectBakeInputs<'_, '_>,
     direct_lights: &[&MapLight],
     probe_spacing: f32,

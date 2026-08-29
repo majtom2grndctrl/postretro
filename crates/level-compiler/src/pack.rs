@@ -10,9 +10,11 @@ use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
     AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::bsp::BspLeavesSection;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::{
@@ -533,6 +535,82 @@ fn locator_child(child: &BspChild) -> CellLocatorChild {
     }
 }
 
+/// Compatibility entry point for callers without billboard scatter sections.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_and_write_portals(
+    output: &Path,
+    geo_result: &GeometryResult,
+    texture_cache_keys: &HashMap<String, [u8; 32]>,
+    leaves: &BspLeavesSection,
+    tree: &BspTree,
+    portals: &PortalsSection,
+    exterior_leaves: &HashSet<usize>,
+    bvh: &BvhSection,
+    bvh_chunk_ranges: &[(u32, u32)],
+    alpha_lights: &AlphaLightsSection,
+    light_influence: &LightInfluenceSection,
+    sh_volume: &OctahedralShVolumeSection,
+    direct_sh_volume: Option<&DirectShVolumeSection>,
+    entity_shadow_lights: Option<&EntityShadowLightsSection>,
+    direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+    shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    lightmap: &LightmapSection,
+    chunk_light_list: &ChunkLightListSection,
+    animated_light_chunks: Option<&AnimatedLightChunksSection>,
+    animated_light_weight_maps: Option<&AnimatedLightWeightMapsSection>,
+    light_tags: Option<&LightTagsSection>,
+    delta_sh_volumes: Option<&DeltaShVolumesSection>,
+    data_script: Option<&DataScriptSection>,
+    map_entities: Option<&MapEntitySection>,
+    fog_volumes: &FogVolumesSection,
+    fog_cell_masks: Option<&FogCellMasksSection>,
+    sdf_atlas: Option<&SdfAtlasSection>,
+    navmesh: Option<&NavMeshSection>,
+    kinematic_geometry: Option<&KinematicGeometrySection>,
+    trigger_volumes: Option<&TriggerVolumesSection>,
+    cell_draw_index_bytes: Option<Vec<u8>>,
+    cell_visibility_bytes: Option<Vec<u8>>,
+    animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
+) -> anyhow::Result<()> {
+    pack_and_write_portals_with_billboard_scatter(
+        output,
+        geo_result,
+        texture_cache_keys,
+        leaves,
+        tree,
+        portals,
+        exterior_leaves,
+        bvh,
+        bvh_chunk_ranges,
+        alpha_lights,
+        light_influence,
+        sh_volume,
+        direct_sh_volume,
+        entity_shadow_lights,
+        direct_sh_delta_volumes,
+        shadowmask_atlas,
+        lightmap,
+        chunk_light_list,
+        animated_light_chunks,
+        animated_light_weight_maps,
+        light_tags,
+        delta_sh_volumes,
+        data_script,
+        map_entities,
+        fog_volumes,
+        fog_cell_masks,
+        sdf_atlas,
+        navmesh,
+        kinematic_geometry,
+        trigger_volumes,
+        cell_draw_index_bytes,
+        cell_visibility_bytes,
+        animated_direct_sh_delta_volumes,
+        None,
+        None,
+    )
+}
+
 /// Write all required sections (geometry, texture names, texture cache keys,
 /// cells, cell locator, portals, BVH, alpha lights, light influence,
 /// lightmap, chunk light list, SH volume, and FogVolumes) and conditionally
@@ -551,7 +629,7 @@ fn locator_child(child: &BspChild) -> CellLocatorChild {
 /// authored PNG slots found) get an all-zero key, matching the baker's
 /// "nothing to bake" sentinel.
 #[allow(clippy::too_many_arguments)]
-pub fn pack_and_write_portals(
+pub fn pack_and_write_portals_with_billboard_scatter(
     output: &Path,
     geo_result: &GeometryResult,
     texture_cache_keys: &HashMap<String, [u8; 32]>,
@@ -590,7 +668,30 @@ pub fn pack_and_write_portals(
     // for old PRLs; current compiler output always provides it.
     cell_visibility_bytes: Option<Vec<u8>>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
+    billboard_direct_scatter_volume: Option<&BillboardDirectScatterVolumeSection>,
+    animated_billboard_direct_scatter_delta_volumes: Option<
+        &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    >,
 ) -> anyhow::Result<()> {
+    let scatter_pair_required =
+        billboard_direct_scatter_volume.is_some() && animated_direct_sh_delta_volumes.is_some();
+    anyhow::ensure!(
+        animated_billboard_direct_scatter_delta_volumes.is_some() == scatter_pair_required,
+        "BillboardDirectScatterVolume requires AnimatedBillboardDirectScatterDeltaVolumes exactly when AnimatedDirectShDeltaVolumes is present"
+    );
+    if let (Some(direct), Some(scatter)) = (
+        animated_direct_sh_delta_volumes,
+        animated_billboard_direct_scatter_delta_volumes,
+    ) {
+        anyhow::ensure!(
+            scatter.animation_descriptor_indices == direct.animation_descriptor_indices
+                && scatter.affinity_cell_count as usize
+                    == direct.affinity_offsets.len().saturating_sub(1)
+                && scatter.affinity_offsets == direct.affinity_offsets
+                && scatter.affinity_lights == direct.affinity_lights,
+            "AnimatedBillboardDirectScatterDeltaVolumes must duplicate AnimatedDirectShDeltaVolumes descriptor and CSR layout"
+        );
+    }
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
     let texture_cache_keys_section = TextureCacheKeysSection {
@@ -655,6 +756,17 @@ pub fn pack_and_write_portals(
         .map_err(|error| {
             anyhow::anyhow!("AnimatedDirectShDeltaVolumes violates its wire contract: {error}")
         })?;
+    let billboard_direct_scatter_volume_bytes =
+        billboard_direct_scatter_volume.map(|s| s.to_bytes());
+    let animated_billboard_direct_scatter_delta_volumes_bytes =
+        animated_billboard_direct_scatter_delta_volumes
+            .map(AnimatedBillboardDirectScatterDeltaVolumesSection::try_to_bytes)
+            .transpose()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"
+                )
+            })?;
     let data_script_bytes = data_script.map(|s| s.to_bytes());
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
     let fog_volumes_bytes = fog_volumes.to_bytes();
@@ -770,6 +882,16 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::AnimatedDirectShDeltaVolumes as u32,
         animated_direct_sh_delta_volumes_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::BillboardDirectScatterVolume as u32,
+        billboard_direct_scatter_volume_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+        animated_billboard_direct_scatter_delta_volumes_bytes.clone(),
     );
     append_optional_section(
         &mut sections,
@@ -905,6 +1027,26 @@ pub fn pack_and_write_portals(
             "  AnimatedDirectShDeltaVolumes: {} bytes ({} animated light(s), {} CSR entries)",
             bytes.len(),
             section.animation_descriptor_indices.len(),
+            section.affinity_lights.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (
+        billboard_direct_scatter_volume,
+        &billboard_direct_scatter_volume_bytes,
+    ) {
+        log::info!(
+            "  BillboardDirectScatterVolume: {} bytes ({} probes)",
+            bytes.len(),
+            section.total_probes().unwrap_or_default(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (
+        animated_billboard_direct_scatter_delta_volumes,
+        &animated_billboard_direct_scatter_delta_volumes_bytes,
+    ) {
+        log::info!(
+            "  AnimatedBillboardDirectScatterDeltaVolumes: {} bytes ({} CSR entries)",
+            bytes.len(),
             section.affinity_lights.len(),
         );
     }

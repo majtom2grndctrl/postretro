@@ -5,8 +5,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, bc5_level_count,
-    cache_filename_for_key, expected_level_count,
+    PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots,
+    STAGE_VERSION, bc5_level_count, cache_filename_for_key, expected_level_count,
+};
+use postretro_level_format::sprite_collection::{
+    SpriteSlot, collection_frame_paths, sprite_collection_key_from_frame_bytes,
 };
 
 mod bake;
@@ -438,6 +441,335 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct SpriteFrameSource {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+}
+
+struct DecodedSpriteFrame {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+fn read_sprite_frame_sources(
+    paths: &[std::path::PathBuf],
+) -> anyhow::Result<Vec<SpriteFrameSource>> {
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::read(path)
+                .map_err(|error| anyhow::anyhow!("reading PNG {}: {error}", path.display()))?;
+            Ok(SpriteFrameSource {
+                path: path.clone(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn sprite_collection_key_for_sources(
+    diffuse_sources: &[SpriteFrameSource],
+    spec_sources: &[SpriteFrameSource],
+    normal_sources: &[SpriteFrameSource],
+) -> [u8; 32] {
+    let diffuse_bytes = diffuse_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    let spec_bytes = spec_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    let normal_bytes = normal_sources
+        .iter()
+        .map(|source| source.bytes.as_slice())
+        .collect::<Vec<_>>();
+    sprite_collection_key_from_frame_bytes(&diffuse_bytes, &spec_bytes, &normal_bytes)
+}
+
+fn decode_sprite_frames(sources: &[SpriteFrameSource]) -> anyhow::Result<Vec<DecodedSpriteFrame>> {
+    sources
+        .iter()
+        .map(|source| {
+            let (rgba, width, height) = decode_png_rgba(&source.bytes, &source.path)?;
+            Ok(DecodedSpriteFrame {
+                rgba,
+                width,
+                height,
+            })
+        })
+        .collect()
+}
+
+fn frames_share_dimensions(frames: &[DecodedSpriteFrame], width: u32, height: u32) -> bool {
+    frames
+        .iter()
+        .all(|frame| (frame.width, frame.height) == (width, height))
+}
+
+fn companions_match_diffuse_paths(
+    diffuse_paths: &[std::path::PathBuf],
+    companion_paths: &[std::path::PathBuf],
+    companion_suffix: &str,
+) -> bool {
+    diffuse_paths.len() == companion_paths.len()
+        && diffuse_paths
+            .iter()
+            .zip(companion_paths)
+            .all(|(diffuse, companion)| {
+                let Some(diffuse_stem) = diffuse.file_stem().and_then(|stem| stem.to_str()) else {
+                    return false;
+                };
+                let Some(companion_stem) = companion.file_stem().and_then(|stem| stem.to_str())
+                else {
+                    return false;
+                };
+                companion_stem == format!("{diffuse_stem}_{companion_suffix}")
+            })
+}
+
+/// Bake one map-visible sprite collection into a layered `.prm` sidecar.
+///
+/// Sprite frame scans are shared with the runtime fallback. A successful bake's
+/// layer payload and cache filename derive from one source-byte snapshot.
+/// Invalid source collections deliberately degrade to no sidecar: runtime
+/// retains its PNG decode fallback.
+pub fn bake_sprite_collection(
+    texture_root: &Path,
+    collection: &str,
+    cache_root: &Path,
+) -> Option<[u8; 32]> {
+    let diffuse_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Diffuse);
+    if diffuse_paths.is_empty() {
+        log::warn!(
+            "[prl-build] sprite collection '{collection}' has no diffuse frames — skipping .prm bake"
+        );
+        return None;
+    }
+    if diffuse_paths.len() > PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as usize {
+        log::warn!(
+            "[prl-build] sprite collection '{collection}' has {} diffuse frames, exceeding the portable array-layer limit of {PORTABLE_MAX_TEXTURE_ARRAY_LAYERS} — skipping .prm bake",
+            diffuse_paths.len()
+        );
+        return None;
+    }
+
+    let spec_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Spec);
+    let normal_paths = collection_frame_paths(texture_root, collection, SpriteSlot::Normal);
+    let diffuse_sources = match read_sprite_frame_sources(&diffuse_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot diffuse frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let spec_sources = match read_sprite_frame_sources(&spec_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot specular frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let normal_sources = match read_sprite_frame_sources(&normal_paths) {
+        Ok(sources) => sources,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to snapshot normal frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let filename_key =
+        sprite_collection_key_for_sources(&diffuse_sources, &spec_sources, &normal_sources);
+
+    let diffuse_frames = match decode_sprite_frames(&diffuse_sources) {
+        Ok(frames) => frames,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to decode diffuse frames for sprite collection '{collection}' — skipping .prm bake: {error}"
+            );
+            return None;
+        }
+    };
+    let Some(first_diffuse) = diffuse_frames.first() else {
+        log::warn!(
+            "[prl-build] sprite collection '{collection}' has no decodable diffuse frames — skipping .prm bake"
+        );
+        return None;
+    };
+    let (width, height) = (first_diffuse.width, first_diffuse.height);
+    if !frames_share_dimensions(&diffuse_frames, width, height) {
+        log::warn!(
+            "[prl-build] sprite collection '{collection}' has ragged diffuse frame dimensions — skipping .prm bake"
+        );
+        return None;
+    }
+    let (width_u16, height_u16) = match (u16::try_from(width), u16::try_from(height)) {
+        (Ok(width), Ok(height)) => (width, height),
+        _ => {
+            log::warn!(
+                "[prl-build] sprite collection '{collection}' frame dimensions {width}x{height} exceed the .prm representation — skipping .prm bake"
+            );
+            return None;
+        }
+    };
+
+    let layer_count = diffuse_paths.len() as u16;
+    let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
+
+    let mut slots: [Option<PrmSlot>; 4] = [None, None, None, None];
+    let mut slot_mask = PrmSlots::DIFFUSE;
+    let lut = build_srgb_to_linear_lut();
+    let mut diffuse_payload = Vec::new();
+    for frame in &diffuse_frames {
+        diffuse_payload.extend_from_slice(&build_diffuse_chain(
+            &frame.rgba,
+            frame.width,
+            frame.height,
+            &lut,
+        ));
+    }
+    slots[0] = Some(PrmSlot {
+        format: PrmFormat::Rgba8UnormSrgb,
+        width: width_u16,
+        height: height_u16,
+        level_count: expected_level_count(width_u16, height_u16),
+        payload: diffuse_payload,
+    });
+
+    if !spec_paths.is_empty() {
+        if !companions_match_diffuse_paths(&diffuse_paths, &spec_paths, "spec") {
+            log::warn!(
+                "[prl-build] sprite collection '{collection}' has incomplete specular companion frames — omitting the specular slot"
+            );
+        } else {
+            match decode_sprite_frames(&spec_sources) {
+                Ok(spec_frames) if frames_share_dimensions(&spec_frames, width, height) => {
+                    let mut payload = Vec::new();
+                    for frame in spec_frames {
+                        let r8: Vec<u8> =
+                            frame.rgba.chunks_exact(4).map(|pixel| pixel[0]).collect();
+                        payload.extend_from_slice(&build_specular_chain(&r8, width, height));
+                    }
+                    slots[1] = Some(PrmSlot {
+                        format: PrmFormat::R8Unorm,
+                        width: width_u16,
+                        height: height_u16,
+                        level_count: expected_level_count(width_u16, height_u16),
+                        payload,
+                    });
+                    slot_mask |= PrmSlots::SPECULAR;
+                }
+                Ok(_) => {
+                    log::warn!(
+                        "[prl-build] sprite collection '{collection}' has specular companion dimensions that do not match diffuse — omitting the specular slot"
+                    );
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[prl-build] failed to decode specular companion frames for sprite collection '{collection}' — omitting the specular slot: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    if !normal_paths.is_empty() {
+        if !companions_match_diffuse_paths(&diffuse_paths, &normal_paths, "normal") {
+            log::warn!(
+                "[prl-build] sprite collection '{collection}' has incomplete normal companion frames — omitting the normal slot"
+            );
+        } else {
+            match decode_sprite_frames(&normal_sources) {
+                Ok(normal_frames) if !frames_share_dimensions(&normal_frames, width, height) => {
+                    log::warn!(
+                        "[prl-build] sprite collection '{collection}' has normal companion dimensions that do not match diffuse — omitting the normal slot"
+                    );
+                }
+                Ok(normal_frames) => {
+                    let level_count = bc5_level_count(width_u16, height_u16);
+                    if level_count == 0 {
+                        log::warn!(
+                            "[prl-build] sprite collection '{collection}' normal companion frames are below the BC5 4x4 minimum — omitting the normal slot"
+                        );
+                    } else {
+                        let mut payload = Vec::new();
+                        for frame in normal_frames {
+                            payload.extend_from_slice(&build_normal_bc5_chain(
+                                &frame.rgba,
+                                width,
+                                height,
+                            ));
+                        }
+                        slots[2] = Some(PrmSlot {
+                            format: PrmFormat::Bc5RgUnorm,
+                            width: width_u16,
+                            height: height_u16,
+                            level_count,
+                            payload,
+                        });
+                        slot_mask |= PrmSlots::NORMAL;
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[prl-build] failed to decode normal companion frames for sprite collection '{collection}' — omitting the normal slot: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Cache validation includes the collection's source-set key, array depth,
+    // slot mask, and complete parsing of every declared slot. The key has a
+    // sprite domain discriminator, so it cannot collide with world/model keys.
+    if let Ok(bytes) = std::fs::read(&prm_path) {
+        let (header, parsed_slots) = PrmFile::from_bytes_partial(&bytes);
+        if let Ok(header) = header {
+            if header.bundle_hash == filename_key
+                && header.layer_count == layer_count
+                && header.slot_mask == slot_mask
+                && cache_entry_has_valid_declared_slots(&header, &parsed_slots)
+            {
+                return Some(filename_key);
+            }
+        }
+    }
+
+    let prm = PrmFile {
+        header: PrmHeader {
+            stage_version: STAGE_VERSION,
+            slot_mask,
+            bundle_hash: filename_key,
+            total_body_bytes: 0,
+            layer_count,
+        },
+        slots,
+    };
+    let encoded = match prm.to_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log::warn!(
+                "[prl-build] failed to encode sprite collection '{collection}' .prm — skipping bake: {error}"
+            );
+            return None;
+        }
+    };
+    if let Err(error) = atomic_write(&prm_path, &encoded) {
+        log::warn!(
+            "[prl-build] failed to write sprite collection '{collection}' .prm — skipping bake: {error}"
+        );
+        return None;
+    }
+
+    Some(filename_key)
+}
+
 /// Bake one base-color PNG as a diffuse-only `.prm` under `cache_root`.
 /// Returns the 32-byte filename key used for the cache sidecar.
 pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::Result<[u8; 32]> {
@@ -726,7 +1058,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use log::Level;
     use postretro_level_format::prm::PrmReadError;
+    use postretro_level_format::sprite_collection::sprite_collection_filename_key;
+    use postretro_test_log_capture::LogCapture;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -773,6 +1108,276 @@ mod tests {
         PrmFile { header, slots }
             .to_bytes()
             .expect("layered cache fixture serializes")
+    }
+
+    fn write_sprite_frame(texture_root: &Path, collection: &str, filename: &str, bytes: &[u8]) {
+        let collection_dir = texture_root.join(collection);
+        std::fs::create_dir_all(&collection_dir).unwrap();
+        std::fs::write(collection_dir.join(filename), bytes).unwrap();
+    }
+
+    #[test]
+    fn sprite_collection_bake_writes_layer_major_diffuse_and_companion_slots() {
+        let root = unique_temp_dir("sprite-layered-slots");
+        let texture_root = root.join("textures");
+        let cache_root = root.join("cache");
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00.png",
+            &solid_png_bytes(4, 4, [255, 0, 0, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_01.png",
+            &solid_png_bytes(4, 4, [0, 0, 255, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00_spec.png",
+            &solid_png_bytes(4, 4, [32, 0, 0, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_01_spec.png",
+            &solid_png_bytes(4, 4, [224, 0, 0, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00_normal.png",
+            &solid_png_bytes(4, 4, [128, 128, 255, 255]),
+        );
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_01_normal.png",
+            &solid_png_bytes(4, 4, [255, 128, 128, 255]),
+        );
+
+        let key = bake_sprite_collection(&texture_root, "smoke", &cache_root)
+            .expect("valid sprite collection should bake");
+        let runtime_key = sprite_collection_filename_key(&texture_root, "smoke");
+        assert_eq!(key, runtime_key, "compiler and runtime share the cache key");
+        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&runtime_key)));
+        assert!(cache_path.is_file(), "shared key names the emitted sidecar");
+
+        let bytes = std::fs::read(cache_path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("sprite .prm header parses");
+        assert_eq!(header.stage_version, STAGE_VERSION);
+        assert_eq!(header.bundle_hash, runtime_key);
+        assert_eq!(header.layer_count, 2);
+        assert_eq!(
+            header.slot_mask,
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL
+        );
+
+        let diffuse = slots[0].as_ref().expect("diffuse slot parses");
+        assert_eq!(diffuse.format, PrmFormat::Rgba8UnormSrgb);
+        assert_eq!(
+            (diffuse.width, diffuse.height, diffuse.level_count),
+            (4, 4, 3)
+        );
+        // Each layer is an independent complete 4x4 → 2x2 → 1x1 chain.
+        // Uniform red and blue frames must therefore retain their own color at
+        // every level, proving the payload is layer-major rather than a
+        // cross-frame strip mip chain.
+        let per_layer_bytes = 4 * 4 * 4 + 2 * 2 * 4 + 4;
+        assert_eq!(diffuse.payload.len(), per_layer_bytes * 2);
+        for (layer, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].iter().enumerate() {
+            for pixel in diffuse.payload[layer * per_layer_bytes..(layer + 1) * per_layer_bytes]
+                .chunks_exact(4)
+            {
+                assert_eq!(pixel, color, "layer {layer} lost its frame identity");
+            }
+        }
+
+        let specular = slots[1].as_ref().expect("specular slot parses");
+        assert_eq!(specular.format, PrmFormat::R8Unorm);
+        assert_eq!(
+            (specular.width, specular.height, specular.level_count),
+            (4, 4, 3)
+        );
+        assert_eq!(specular.payload.len(), (16 + 4 + 1) * 2);
+
+        let normal = slots[2].as_ref().expect("normal slot parses");
+        assert_eq!(normal.format, PrmFormat::Bc5RgUnorm);
+        assert_eq!((normal.width, normal.height, normal.level_count), (4, 4, 1));
+        assert_eq!(normal.payload.len(), 16 * 2, "one BC5 block per layer");
+        assert!(slots[3].is_err(), "emissive is absent from sprite bundles");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_bake_key_uses_the_retained_source_snapshot() {
+        // Regression: the payload decoded one read while a later key scan
+        // could observe different bytes for the same frame.
+        let root = unique_temp_dir("sprite-source-snapshot");
+        let texture_root = root.join("textures");
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00.png",
+            &solid_png_bytes(4, 4, [255, 0, 0, 255]),
+        );
+        let paths = collection_frame_paths(&texture_root, "smoke", SpriteSlot::Diffuse);
+        let sources = read_sprite_frame_sources(&paths).expect("source snapshot reads");
+        let snapshot_key = sprite_collection_key_for_sources(&sources, &[], &[]);
+
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00.png",
+            &solid_png_bytes(4, 4, [0, 0, 255, 255]),
+        );
+
+        assert_ne!(
+            snapshot_key,
+            sprite_collection_filename_key(&texture_root, "smoke"),
+            "a later filesystem version must not rename the retained bake snapshot"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_incomplete_or_mismatched_companions_omit_only_their_slots() {
+        let root = unique_temp_dir("sprite-incomplete-companions");
+        let texture_root = root.join("textures");
+        let cache_root = root.join("cache");
+        for frame in ["00", "01"] {
+            write_sprite_frame(
+                &texture_root,
+                "smoke",
+                &format!("smoke_{frame}.png"),
+                &png_bytes(4, 4),
+            );
+        }
+        // Missing the _01 spec frame makes the specular set incomplete.
+        write_sprite_frame(
+            &texture_root,
+            "smoke",
+            "smoke_00_spec.png",
+            &png_bytes(4, 4),
+        );
+        // Both normal frames exist, but their geometry cannot form the diffuse
+        // array's layers and must be omitted independently of specular.
+        for frame in ["00", "01"] {
+            write_sprite_frame(
+                &texture_root,
+                "smoke",
+                &format!("smoke_{frame}_normal.png"),
+                &png_bytes(2, 4),
+            );
+        }
+
+        let capture = LogCapture::start();
+        let key = bake_sprite_collection(&texture_root, "smoke", &cache_root)
+            .expect("diffuse still bakes when companions are invalid");
+        capture.assert_logged_once(Level::Warn, "incomplete specular companion frames");
+        capture.assert_logged_once(
+            Level::Warn,
+            "normal companion dimensions that do not match diffuse",
+        );
+
+        let bytes = std::fs::read(cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
+            .unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(header.unwrap().slot_mask, PrmSlots::DIFFUSE);
+        assert!(slots[0].is_ok());
+        assert!(slots[1].is_err());
+        assert!(slots[2].is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_sub_four_normal_companions_are_omitted_with_a_warning() {
+        let root = unique_temp_dir("sprite-sub-four-normal");
+        let texture_root = root.join("textures");
+        let cache_root = root.join("cache");
+        for frame in ["00", "01"] {
+            write_sprite_frame(
+                &texture_root,
+                "sparks",
+                &format!("sparks_{frame}.png"),
+                &png_bytes(2, 2),
+            );
+            write_sprite_frame(
+                &texture_root,
+                "sparks",
+                &format!("sparks_{frame}_normal.png"),
+                &png_bytes(2, 2),
+            );
+        }
+
+        let capture = LogCapture::start();
+        let key = bake_sprite_collection(&texture_root, "sparks", &cache_root)
+            .expect("diffuse remains valid below the BC5 floor");
+        capture.assert_logged_once(Level::Warn, "below the BC5 4x4 minimum");
+
+        let bytes = std::fs::read(cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
+            .unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(header.unwrap().slot_mask, PrmSlots::DIFFUSE);
+        assert!(slots[2].is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_without_diffuse_frames_refuses_the_bake() {
+        let root = unique_temp_dir("sprite-empty-diffuse");
+        let capture = LogCapture::start();
+        assert_eq!(
+            bake_sprite_collection(&root, "smoke", &root.join("cache")),
+            None
+        );
+        capture.assert_logged_once(Level::Warn, "has no diffuse frames");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_ragged_diffuse_frames_refuse_the_bake() {
+        let root = unique_temp_dir("sprite-ragged-diffuse");
+        let texture_root = root.join("textures");
+        write_sprite_frame(&texture_root, "smoke", "smoke_00.png", &png_bytes(4, 4));
+        write_sprite_frame(&texture_root, "smoke", "smoke_01.png", &png_bytes(2, 4));
+
+        let capture = LogCapture::start();
+        assert_eq!(
+            bake_sprite_collection(&texture_root, "smoke", &root.join("cache")),
+            None
+        );
+        capture.assert_logged_once(Level::Warn, "ragged diffuse frame dimensions");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sprite_collection_over_portable_layer_cap_refuses_the_bake() {
+        let root = unique_temp_dir("sprite-layer-cap");
+        let texture_root = root.join("textures");
+        let frame = png_bytes(1, 1);
+        for index in 0..=PORTABLE_MAX_TEXTURE_ARRAY_LAYERS {
+            write_sprite_frame(
+                &texture_root,
+                "smoke",
+                &format!("smoke_{index:03}.png"),
+                &frame,
+            );
+        }
+
+        let capture = LogCapture::start();
+        assert_eq!(
+            bake_sprite_collection(&texture_root, "smoke", &root.join("cache")),
+            None
+        );
+        capture.assert_logged_once(Level::Warn, "exceeding the portable array-layer limit");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

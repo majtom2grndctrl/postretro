@@ -17,6 +17,7 @@ percent-encoding = { workspace = true, optional = true }
 glam.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

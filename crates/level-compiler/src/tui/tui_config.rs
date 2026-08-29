@@ -2,6 +2,7 @@
 //! See: `context/lib/build_pipeline.md`.
 
 use std::io::{self, Stdout};
+use std::panic::AssertUnwindSafe;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
@@ -11,12 +12,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::{Args, lightmap_bake, resolve_lightmap_density, sh_bake};
+use crate::{Args, lightmap_bake, logger::LogSink, resolve_lightmap_density, sh_bake};
 
-use super::tui_terminal::TerminalSession;
+use super::tui_terminal::{TuiSession, panic_message};
+
+pub(crate) enum ConfigOutcome {
+    Start(TuiSession),
+    Cancel,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConfigOutcome {
+enum FormOutcome {
     Start,
     Cancel,
 }
@@ -329,28 +335,49 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
     Ok(())
 }
 
-/// Run the pre-bake form in a terminal session, restoring the terminal before
-/// returning its outcome or propagating an input/render error.
-pub fn run_config_screen(
+/// Run the pre-bake form in an interactive session. Confirming the form keeps
+/// that session alive for the bake TUI, while cancellation and errors restore
+/// the normal terminal as the session drops.
+pub(crate) fn run_config_screen(
     args: &mut Args,
     worldspawn_lightmap_density: Option<f32>,
+    logs: &LogSink,
 ) -> anyhow::Result<ConfigOutcome> {
     let mut form = FormState::from_args(args, worldspawn_lightmap_density);
-    let outcome = {
-        let mut session = TerminalSession::enter()?;
-        render_loop(&mut session.terminal, &mut form)
-    }?;
-
-    if outcome == ConfigOutcome::Start {
-        apply_outcome(args, &form).map_err(anyhow::Error::msg)?;
+    let mut session = TuiSession::enter()?;
+    // Keep `session` outside the catch boundary. On a configuration panic its
+    // terminal and panic-hook guards must be dropped only after the unwind has
+    // been caught; `std::panic::set_hook` is forbidden while unwinding.
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let outcome = render_loop(&mut session.terminal.terminal, &mut form)?;
+        if outcome == FormOutcome::Start {
+            apply_outcome(args, &form).map_err(anyhow::Error::msg)?;
+        }
+        Ok::<_, anyhow::Error>(outcome)
+    }));
+    match outcome {
+        Ok(Ok(FormOutcome::Start)) => Ok(ConfigOutcome::Start(session)),
+        Ok(Ok(FormOutcome::Cancel)) => Ok(ConfigOutcome::Cancel),
+        Ok(Err(error)) => Err(error),
+        Err(payload) => {
+            // Restore cooked mode before re-installing the caller's hook or
+            // printing the diagnostic. The panic was caught above, so neither
+            // cleanup operation runs during unwinding.
+            drop(session);
+            logs.print_warning_summary();
+            eprintln!(
+                "prl-build panicked in the pre-bake configuration TUI: {}",
+                panic_message(payload.as_ref())
+            );
+            std::panic::resume_unwind(payload);
+        }
     }
-    Ok(outcome)
 }
 
 fn render_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     form: &mut FormState,
-) -> io::Result<ConfigOutcome> {
+) -> io::Result<FormOutcome> {
     loop {
         terminal.draw(|frame| draw_config(frame, form))?;
         match event::read()? {
@@ -367,12 +394,12 @@ fn render_loop(
     }
 }
 
-fn handle_key(form: &mut FormState, key: KeyEvent) -> Option<ConfigOutcome> {
+fn handle_key(form: &mut FormState, key: KeyEvent) -> Option<FormOutcome> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Some(ConfigOutcome::Cancel);
+        return Some(FormOutcome::Cancel);
     }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Some(ConfigOutcome::Cancel),
+        KeyCode::Esc | KeyCode::Char('q') => Some(FormOutcome::Cancel),
         KeyCode::Up => {
             form.move_selection(-1);
             None
@@ -405,7 +432,7 @@ fn handle_key(form: &mut FormState, key: KeyEvent) -> Option<ConfigOutcome> {
             form.append_character(character);
             None
         }
-        KeyCode::Enter if form.validate_all() => Some(ConfigOutcome::Start),
+        KeyCode::Enter if form.validate_all() => Some(FormOutcome::Start),
         KeyCode::Enter => None,
         _ => None,
     }

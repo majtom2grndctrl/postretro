@@ -11,7 +11,7 @@ use crate::logger::CapturedRecord;
 
 use super::tui_progress::progress_text;
 use super::tui_steps::draw_steps;
-use super::{LogScroll, StepState, StepStatus, TuiReporter, TuiState};
+use super::{ACTIVITY_FRAMES, LogScroll, StepState, StepStatus, TuiReporter, TuiState};
 
 const MIN_FULL_WIDTH: u16 = 68;
 const MIN_FULL_HEIGHT: u16 = 18;

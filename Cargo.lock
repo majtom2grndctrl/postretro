@@ -3753,6 +3753,7 @@ name = "postretro-level-format"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
+ "blake3",
  "criterion",
  "glam",
  "gltf",

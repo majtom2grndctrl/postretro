@@ -135,6 +135,12 @@ fn resolve_sprite_collection_draw_contract(
         }
 
         if let Some(required) = candidate.spec_exponent {
+            if !render::sprite_specular_exponent_is_valid(required) {
+                return Err(format!(
+                    "collection `{collection}` has invalid specular exponent from `{}` ({required}); expected a finite value greater than zero",
+                    candidate.source,
+                ));
+            }
             if let Some((chosen, chosen_source)) = spec_exponent
                 && chosen.to_bits() != required.to_bits()
             {
@@ -1810,6 +1816,27 @@ mod tests {
                 .expect("matching authored specular values resolve one draw contract");
         assert!((spec_intensity - 0.75).abs() <= f32::EPSILON);
         assert!((spec_exponent - 12.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn sprite_collection_draw_contract_rejects_invalid_specular_exponents() {
+        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let candidates = [sprite_candidate(
+                "invalid material",
+                None,
+                0.0,
+                None,
+                Some(invalid),
+                None,
+            )];
+
+            let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+                .expect_err("invalid exponents must reject the collection before registration");
+
+            assert!(error.contains("invalid specular exponent"));
+            assert!(error.contains("invalid material"));
+            assert!(error.contains("finite value greater than zero"));
+        }
     }
 
     #[test]

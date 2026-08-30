@@ -616,9 +616,10 @@ pub struct LevelWorld {
     /// has no animated baked lights or the optional section is malformed.
     #[cfg(feature = "load-prl")]
     pub animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection>,
-    /// Normal-free static direct scatter for billboard shading. `None` selects
-    /// legacy billboard direct lighting. A usable animated companion (id 48)
-    /// is required whenever id 45 is present.
+    /// Normal-free direct-scatter base for billboard shading. RGB may be zero
+    /// when it anchors animated-only id-48 deltas. `None` selects legacy
+    /// billboard direct lighting. A usable id-48 companion is required whenever
+    /// id 45 is present.
     #[cfg(feature = "load-prl")]
     pub billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection>,
     /// Dense animated billboard direct-scatter deltas. This is exposed only
@@ -5547,6 +5548,70 @@ mod tests {
         assert_eq!(
             world.animated_billboard_direct_scatter_delta_volumes,
             Some(animated_scatter)
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_accepts_zero_base_as_animated_scatter_anchor() {
+        // Regression: all-zero RGB is valid for id 47 only when it anchors a
+        // structurally valid animated id-45/id-48 pair.
+        let mut base = base_octahedral_section([1, 1, 1]);
+        base.probes[0].validity = 1;
+        let compact_layout = postretro_level_format::octahedral::irradiance_atlas_array_layout(
+            [1, 1, 1],
+            base.tile_dimension,
+            8192,
+        )
+        .expect("one valid probe must have a compact atlas layout");
+        base.compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
+        base.compact_atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
+        base.compact_atlas_tiles_per_layer = compact_layout.tiles_per_layer;
+        base.compact_atlas_layer_count = compact_layout.layer_count;
+        base.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas = vec![
+            0;
+            compact_layout.atlas_width as usize
+                * compact_layout.atlas_height as usize
+                * compact_layout.layer_count as usize
+                * 8
+        ];
+        let base_scatter = billboard_direct_scatter_section_for(&base);
+        assert_eq!(base_scatter.scatter_rgba[0..4], [0, 0, 0, 0x3c00]);
+
+        let mut animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        animated_direct.valid_probe_masks[0] = 1;
+        animated_direct.delta_subblocks =
+            vec![0; postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let mut animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        animated_scatter.delta_rgba[0] = 0x3c00;
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base),
+            billboard_direct_scatter_blob(base_scatter.clone()),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_only_billboard_direct_scatter_pair.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("an animated-only zero base plus matching delta companion must load");
+
+        assert_eq!(world.billboard_direct_scatter_volume, Some(base_scatter));
+        assert_eq!(
+            world.animated_billboard_direct_scatter_delta_volumes,
+            Some(animated_scatter),
+            "the zero base is a valid anchor, not a request for legacy fallback"
         );
         std::fs::remove_file(&tmp).ok();
     }

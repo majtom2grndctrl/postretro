@@ -20,6 +20,10 @@ const HEADER_SIZE: usize = 37;
 /// 34). RGB is static scatter; alpha is the binary validity mirror of the
 /// corresponding id-34 probe (`0.0` or `1.0`).
 ///
+/// RGB may be zero at every valid probe only when this section anchors a valid
+/// animated `static_light_map` scatter companion (id 48). Static-only maps with
+/// no contributing direct source omit this section instead.
+///
 /// On disk (little-endian):
 ///
 /// ```text

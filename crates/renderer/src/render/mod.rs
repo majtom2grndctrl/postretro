@@ -116,7 +116,8 @@ pub use smoke::SpriteCollectionRegistration;
 // reachable here at their original `render::*` paths.
 pub(crate) use postretro_render_cpu::fog_mask::*;
 pub(crate) use postretro_render_cpu::frame_uniforms::{
-    FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE, build_uniform_data,
+    BillboardScatterMode, FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE,
+    build_uniform_data,
 };
 pub use postretro_render_cpu::frame_uniforms::{LightTermMask, SdfShadowMode};
 pub(crate) use postretro_render_cpu::material_plan::{

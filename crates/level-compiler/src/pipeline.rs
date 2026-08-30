@@ -1180,6 +1180,15 @@ fn run_after_parsing(
         billboard_direct_scatter_bake::bake_billboard_direct_scatter_volume_cached_controlled(
             &scatter_inputs,
             &sh_config,
+            delta_sections
+                .animated_direct
+                .as_ref()
+                .is_some_and(|section| {
+                    billboard_direct_scatter_bake::has_animated_static_light_map_entries(
+                        section,
+                        &animated_baked_lights,
+                    )
+                }),
             stage_cache.as_ref(),
             &scatter_control,
         );
@@ -1227,9 +1236,9 @@ fn run_after_parsing(
                 "BillboardDirectScatter: {} base probes, no animated deltas",
                 base.total_probes().unwrap_or_default(),
             ),
-            (None, _) => {
-                log::info!("BillboardDirectScatter: skipped (no static_light_map direct source)")
-            }
+            (None, _) => log::info!(
+                "BillboardDirectScatter: skipped (no static_light_map direct source or animated scatter entries)"
+            ),
         }
     }
 

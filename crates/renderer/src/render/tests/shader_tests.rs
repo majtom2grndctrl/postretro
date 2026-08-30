@@ -227,6 +227,8 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
 
     for constant in [
         "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
+        "const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;",
+        "const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;",
         "const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;",
         "const LIGHT_TERM_SPECULAR: u32 = 0x40u;",
     ] {
@@ -240,11 +242,21 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
             && src.contains(
                 "let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"
             )
+            && src.contains(
+                "let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;"
+            )
+            && src.contains(
+                "let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;"
+            )
             && src.contains("let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;"),
         "billboard vertex lighting must derive every local term gate from group-0's mask",
     );
     assert!(
-        src.contains("if uniforms.has_scatter == 0u && use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+        src.contains("const SCATTER_MODE_COMPOSED_ANIMATED: u32 = 2u;")
+            && src.contains("let use_baked_direct_scatter = use_baked_direct_static")
+            && src.contains("|| (uniforms.has_scatter == SCATTER_MODE_COMPOSED_ANIMATED && use_baked_direct_animated);")
+            && src.contains("if use_baked_direct_scatter {")
+            && src.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
             && src.contains(
                 "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
             )
@@ -279,14 +291,35 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
         "scatter must replace only the static direct-SH read; unavailable maps retain legacy direct SH",
     );
     assert!(
-        src.contains("if uniforms.has_scatter == 0u && use_specular")
+        src.contains("if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl)")
             && src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"),
-        "static specular and the promoted tail must remain available solely on the legacy path",
+        "scatter must exclude static-light-map specular while the promoted tail remains available solely on the legacy path",
     );
 
-    let scatter_dynamic = src
+    // Regression: section 47 bakes only static-light-map transport. Gating the
+    // whole spec_lights loop on the legacy branch dropped static SDF lights.
+    let static_specular = src
+        .split("var static_specular = vec3<f32>(0.0);")
+        .nth(1)
+        .expect("billboard shader must retain the static specular loop")
+        .split("// Dynamic direct")
+        .next()
+        .expect("static specular loop must precede dynamic direct");
+    assert!(
+        static_specular.contains("if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl) {")
+            && static_specular.contains("continue;")
+            && src.contains("fn spec_light_is_sdf(sl: SpecLight) -> bool {")
+            && src.contains("return sl.color_and_pad.w > 0.5;"),
+        "scatter must retain SDF SpecLight handling and skip only static-light-map records",
+    );
+
+    let runtime_direct = src
+        .split("for (var i: u32 = 0u; i < dynamic_count; i = i + 1u) {")
+        .nth(1)
+        .expect("billboard shader must retain the runtime direct loop");
+    let scatter_dynamic = runtime_direct
         .split("if uniforms.has_scatter != 0u {")
-        .nth(2)
+        .nth(1)
         .expect("dynamic scatter branch must exist")
         .split("} else {")
         .next()
@@ -298,6 +331,25 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
             && src.contains("if inf_radius <= 1.0e30 {")
             && src.contains("let cone = cone_attenuation("),
         "scatter dynamic lighting must preserve influence/range/cone rejection without a Lambert cosine",
+    );
+}
+
+#[test]
+fn billboard_scatter_sampling_accepts_animated_direct_without_static_direct() {
+    // Regression: static-off/animated-on compose produced an animated scatter
+    // texture, but the billboard discarded it behind the static-only gate.
+    let src = include_str!("../../shaders/billboard.wgsl");
+    assert!(
+        src.contains("const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;")
+            && src.contains("const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;")
+            && src.contains(
+                "|| (uniforms.has_scatter == SCATTER_MODE_COMPOSED_ANIMATED && use_baked_direct_animated);"
+            )
+            && src.contains("if use_baked_direct_scatter {")
+            && src.contains(
+                "direct_scatter = uniforms.direct_scale * sample_billboard_direct_scatter(sprite_pos);"
+            ),
+        "composed scatter must remain visible under animated-only direct while static-base mode cannot borrow that bit",
     );
 }
 

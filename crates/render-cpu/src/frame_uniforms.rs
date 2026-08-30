@@ -150,6 +150,34 @@ impl Default for LightTermMask {
     }
 }
 
+/// Level-load-fixed interpretation of the `has_scatter` ABI word. Both real
+/// resource modes stay nonzero so existing availability checks remain valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BillboardScatterMode {
+    Unavailable = 0,
+    StaticBase = 1,
+    ComposedAnimated = 2,
+}
+
+impl BillboardScatterMode {
+    pub const fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+
+    /// CPU mirror of the billboard shader's baked-direct mask gate.
+    pub const fn light_term_enabled(self, mask: LightTermMask) -> bool {
+        match self {
+            Self::Unavailable => false,
+            Self::StaticBase => mask.contains(LightTermMask::BAKED_DIRECT_STATIC),
+            Self::ComposedAnimated => {
+                mask.contains(LightTermMask::BAKED_DIRECT_STATIC)
+                    || mask.contains(LightTermMask::BAKED_DIRECT_ANIMATED)
+            }
+        }
+    }
+}
+
 pub struct FrameUniforms {
     pub view_proj: Mat4,
     pub camera_position: Vec3,
@@ -181,10 +209,10 @@ pub struct FrameUniforms {
     /// for the billboard path (the mesh path reads its own copy from the
     /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
     pub dynamic_direct_scale: f32,
-    /// Whether the normal-free billboard direct-scatter volume is available.
-    /// This is level-load fixed: the renderer chooses the real or dummy
-    /// group-3 binding at load/reload and never switches it per frame.
-    pub has_scatter: bool,
+    /// Level-load-fixed billboard scatter resource mode. Zero means the dummy
+    /// binding and legacy path; nonzero values select a real base or composed
+    /// group-3 texture without changing this ABI slot.
+    pub has_scatter: BillboardScatterMode,
     /// Whether a baked DIRECT SH section is present. When false the dynamic
     /// shaders skip the direct sample (direct = 0), falling back to
     /// indirect-only. Owned here (and mirrored in the mesh uniform).
@@ -252,7 +280,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -278,6 +306,62 @@ mod tests {
     }
 
     #[test]
+    fn billboard_scatter_mode_distinguishes_static_base_from_composed_texture() {
+        // Regression: a 47-only resource used animated-direct's bit as an
+        // accidental alternate gate for its immutable static base.
+        let mut animated_only = LightTermMask::ALL;
+        animated_only.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+
+        assert!(!BillboardScatterMode::Unavailable.is_available());
+        assert!(!BillboardScatterMode::Unavailable.light_term_enabled(animated_only));
+        assert!(BillboardScatterMode::StaticBase.is_available());
+        assert!(
+            !BillboardScatterMode::StaticBase.light_term_enabled(animated_only),
+            "a 47-only base must stay dark when static direct is disabled"
+        );
+        assert!(BillboardScatterMode::ComposedAnimated.is_available());
+        assert!(
+            BillboardScatterMode::ComposedAnimated.light_term_enabled(animated_only),
+            "a composed 47+48 texture must remain visible under the animated-only mask"
+        );
+    }
+
+    #[test]
+    fn uniform_data_encodes_scatter_modes_in_the_existing_has_scatter_word() {
+        let mut uniforms = FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            light_term_mask: LightTermMask::ALL,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 1.0,
+            has_scatter: BillboardScatterMode::Unavailable,
+            has_direct: false,
+            total_light_count: 0,
+            spec_shadowmask_force_one: false,
+        };
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            0
+        );
+        uniforms.has_scatter = BillboardScatterMode::StaticBase;
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            1
+        );
+        uniforms.has_scatter = BillboardScatterMode::ComposedAnimated;
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            2
+        );
+    }
+
+    #[test]
     fn uniform_data_encodes_sdf_shadow_flags_at_correct_offset() {
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
@@ -291,7 +375,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -320,7 +404,7 @@ mod tests {
                 sdf_shadow_mode: SdfShadowMode::On,
                 sdf_force_visibility_one: force,
                 dynamic_direct_scale: 0.0,
-                has_scatter: false,
+                has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -347,7 +431,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: true,
@@ -371,7 +455,7 @@ mod tests {
                 sdf_shadow_mode: mode,
                 sdf_force_visibility_one: false,
                 dynamic_direct_scale: 0.0,
-                has_scatter: false,
+                has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -396,7 +480,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::ShadowmaskRawPoolVisibility,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -422,7 +506,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.25,
-            has_scatter: true,
+            has_scatter: BillboardScatterMode::StaticBase,
             has_direct: true,
             total_light_count: 11,
             spec_shadowmask_force_one: false,
@@ -458,7 +542,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
@@ -509,7 +593,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
-            has_scatter: false,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,

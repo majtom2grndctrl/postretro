@@ -25,7 +25,7 @@ struct Uniforms {
     // --- dynamic-direct tail (baked-static-direct-sh Task 6) ---
     // Multiplies the baked DIRECT SH term (0..1).
     direct_scale: f32,
-    // Normal-free direct-scatter availability, set only at level load/reload.
+    // Load-fixed scatter mode: 0 unavailable, 1 static base, 2 composed animated.
     has_scatter: u32,
     // 0 when the baked DIRECT SH section is absent → skip the direct sample.
     has_direct: u32,
@@ -55,7 +55,7 @@ struct GpuLight {
 
 struct SpecLight {
     position_and_range: vec4<f32>,
-    color_and_pad: vec4<f32>,
+    color_and_pad: vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
     cone_dir_and_type: vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
     // x = cos(inner), y = cos(outer), z = shadowmask channel (0..3) or
     // none sentinel (4); z is inert and unread in the billboard path.
@@ -219,6 +219,13 @@ fn camera_right_up(vp: mat4x4<f32>) -> mat2x3<f32> {
     return mat2x3<f32>(r, u);
 }
 
+// Mirrors `SPEC_LIGHT_SDF_FLAG` from the CPU-side SpecLight packer. Scatter
+// replaces static-light-map direct transport only; SDF static lights remain on
+// their existing spec_lights path because section 47 does not bake them.
+fn spec_light_is_sdf(sl: SpecLight) -> bool {
+    return sl.color_and_pad.w > 0.5;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let sprite_index = vidx / 6u;
@@ -270,11 +277,16 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     let N = V;
     const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;
     const LIGHT_TERM_BAKED_DIRECT_STATIC: u32 = 0x08u;
+    const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
+    const SCATTER_MODE_COMPOSED_ANIMATED: u32 = 2u;
     const LIGHT_TERM_DYNAMIC_DIRECT: u32 = 0x20u;
     const LIGHT_TERM_SPECULAR: u32 = 0x40u;
     let light_terms = uniforms.light_term_mask;
     let use_ambient_floor = (light_terms & LIGHT_TERM_AMBIENT_FLOOR) != 0u;
     let use_baked_direct_static = (light_terms & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;
+    let use_baked_direct_animated = (light_terms & LIGHT_TERM_BAKED_DIRECT_ANIMATED) != 0u;
+    let use_baked_direct_scatter = use_baked_direct_static
+        || (uniforms.has_scatter == SCATTER_MODE_COMPOSED_ANIMATED && use_baked_direct_animated);
     let use_dynamic_direct = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;
     let use_specular = (light_terms & LIGHT_TERM_SPECULAR) != 0u;
 
@@ -282,19 +294,22 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     var sh_direct = vec3<f32>(0.0);
     var direct_scatter = vec3<f32>(0.0);
     if uniforms.has_scatter != 0u {
-        if (use_baked_direct_static) {
+        if use_baked_direct_scatter {
             direct_scatter = uniforms.direct_scale * sample_billboard_direct_scatter(sprite_pos);
         }
     } else if uniforms.has_direct != 0u {
         sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);
     }
-    // Scatter contains all baked direct transport for the scatter path. It is
-    // deliberately normal-free and has no promotion subtraction, so promoted
-    // static records never enter that path's runtime light loop.
+    // Scatter contains the static-light-map baked direct transport for the
+    // scatter path. It is deliberately normal-free and has no promotion
+    // subtraction, so promoted static records never enter that path's runtime
+    // light loop. Static SDF lights remain in the spec_lights loop below.
     let sh_lighting = sh_ambient + sh_direct + direct_scatter;
 
     // Multi-source static specular via the chunk light list, hoisted from the
-    // fragment stage. Evaluated at the sprite center `sprite_pos`.
+    // fragment stage. Evaluated at the sprite center `sprite_pos`. Legacy maps
+    // consume every static record; scatter maps retain only SDF records because
+    // section 47 replaces static-light-map direct transport.
     //
     // Chunk-list fallback: when `has_chunk_grid == 0` (no chunk index built),
     // fall back to SH + dynamic only. Iterating the full spec buffer here would
@@ -303,7 +318,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // early-skip delivers.
     var static_specular = vec3<f32>(0.0);
     let spec_int = max(draw_params.params.y, 0.0);
-    if uniforms.has_scatter == 0u && use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
+    if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
         let local = sprite_pos - chunk_grid.grid_origin;
         let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
         let dims = vec3<i32>(chunk_grid.dims);
@@ -317,6 +332,9 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
             for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
                 let light_idx = chunk_indices[chunk_offset + j];
                 let sl = spec_lights[light_idx];
+                if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl) {
+                    continue;
+                }
                 let to_light = sl.position_and_range.xyz - sprite_pos;
                 let dist = length(to_light);
                 let range = sl.position_and_range.w;
@@ -594,11 +612,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
 
     // The fragment shader does NO lighting. The full term is computed per-vertex
-    // and arrives interpolated: ambient floor, indirect, baked direct, plus the
-    // legacy-only static specular and runtime-direct branches. Indirect and
-    // legacy branches use camera-facing `N = V`; scatter baked and runtime
-    // direct are normal-free. The term is constant across the quad, so the
-    // interpolated value equals the prior per-fragment result. See `vs_main` /
+    // and arrives interpolated: ambient floor, indirect, baked direct, plus
+    // static specular and runtime direct. Static-light-map specular is
+    // legacy-only; SDF static specular remains on both paths. Indirect and
+    // specular use camera-facing `N = V`; scatter baked and runtime direct are
+    // normal-free. The term is constant across the quad, so the interpolated
+    // value equals the prior per-fragment result. See `vs_main` /
     // `VertexOutput.lighting`.
     let lighting = in.lighting;
     let lit_rgb = sprite_sample.rgb * lighting * in.opacity;

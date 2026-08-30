@@ -91,11 +91,12 @@ and moving the specular evaluation into the fragment stage.
 - The billboard shader already runs a multi-source Blinn-Phong static-specular
   loop over the chunk light list (`billboard.wgsl` `vs_main`, the `use_specular`
   block gated by `LIGHT_TERM_SPECULAR`; helper `blinn_phong`; the exponent is a
-  bare `4.0` literal passed at the `static_specular` call site, and `spec_int`
-  reads `draw_params.params.y`). Shimmer reuses this loop's light-gathering,
-  cone, and attenuation math verbatim; it moves the loop to the fragment stage,
-  swaps `N = V` for `N'`, modulates strength by the spec mask, and takes the
-  exponent from `params2.y`.
+  bare `4.0` literal passed to the `blinn_phong` call that accumulates
+  `static_specular`, and `spec_int` reads `draw_params.params.y`). Shimmer reuses
+  this loop's light-gathering, cone, and attenuation math; it moves the loop to
+  the fragment stage, swaps `N = V` for `N'`, modulates strength by the spec
+  mask, takes the exponent from `params2.y`, and drops the scatter-map SDF-only
+  light filter volumetric added (Decision 6).
 - The world/model forward path already samples a per-texel specular mask
   (`spec_texture`, group 1 binding 2, R8) and a tangent-space normal map
   (`t_normal`, group 1 binding 4) in `forward.wgsl`, decoding the normal through
@@ -223,6 +224,22 @@ billboard path. A "static sparkle mask, no moving glint" look, if later wanted,
 is a distinct third classification (spec-without-normal → mask-modulated
 center-evaluated highlight), not a tweak to shimmer. Not built here.
 
+### Decision 6 — Shimmer specular runs over all static lights, not the scatter-map SDF subset
+
+Volumetric's vertex loop skips non-SDF static lights in a scatter map
+(`has_scatter != 0 && !spec_light_is_sdf(sl)` → `continue`): their diffuse
+transport moved into the normal-free scatter volume, so re-adding it would
+double-count. Shimmer's fragment loop keeps that filter **off** — specular is a
+view-dependent lobe the isotropic scatter volume cannot carry, so a non-SDF
+light's glint is a distinct term, additive over its baked diffuse, not a
+double-count (the engine invariant forbids double-counting one contribution, not
+layering different lobes). The chunk light list physically retains every static
+record — `spec_lights` packs a per-record SDF flag
+(`crates/lighting/src/spec_buffer.rs`), shared with forward specular and SDF
+K-selection — so the fragment loop reaches non-SDF lights by omitting the
+continue, no repack. Without this, a shimmer sprite in a scatter-baked map would
+glint only under SDF lights, silently defeating the AC 1 demo.
+
 ## Prerequisites
 
 This spec consumes three upstream pieces:
@@ -242,33 +259,30 @@ This spec consumes three upstream pieces:
    the loaded slot mask and the slot texture views (`SpriteSheet::specular_view`
    / `normal_view`, D2Array) to the billboard pass. Shimmer consumes: the slot
    mask (classification) and the two views (binding).
-3. **`billboard-volumetric-direct-lighting` (amended, NOT yet merged)** scopes
-   its normal-free isotropic-scatter path to non-shimmer (default) billboards
-   and preserves — does not delete — the static-specular path for shimmer-flagged
-   materials. Shimmer owns that preserved path's per-fragment form.
+3. **`billboard-volumetric-direct-lighting` (merged)** added the normal-free
+   isotropic-scatter path (PRL sections 47/48, `has_scatter` mode + `direct_scale`
+   in `FrameUniforms`, scatter volume at group 3 binding 17) and **preserved** —
+   did not delete — the static-specular loop this spec relocates, now carrying a
+   per-light `has_scatter && !spec_light_is_sdf` filter (Decision 6). Shimmer owns
+   that loop's per-fragment form.
 
-Prerequisites 1 and 2 are merged (`context/plans/done/`). Prerequisite 3 is
-still a draft; the current billboard shader retains the static-specular path
-this spec relocates, so this spec is authored against present source. **This spec
-must not be orchestrated until prerequisite 3 merges** — see *Cross-spec
-coordination*. That is a sequencing block, not a scope change here.
+All three prerequisites are merged (`context/plans/done/` for 1–2; volumetric
+landed on the current branch). The billboard shader carries the preserved
+static-specular loop this spec relocates and the scatter machinery it composes
+with, so the spec is authored against present source — see *Cross-spec
+coordination* for the shared surface.
 
 ## Cross-spec coordination
 
-`billboard-volumetric-direct-lighting` and this spec both edit the billboard
-static-specular loop, and their landing order matters:
-
-- **If volumetric lands first:** its amendment must keep the static-specular
-  loop present and gate the isotropic-scatter path on the (non-)shimmer flag, so
-  this spec finds the loop to relocate. This spec then moves the loop's
-  shimmer-flagged form to the fragment stage.
-- **If this spec were to land first (disallowed):** the volumetric refactor
-  would collide with a loop already split across stages. Hence the sequencing
-  block above — this spec waits on the volumetric amendment.
-
-The single shared surface is the `vs_main` static-specular loop and its
-`params.y` / `params2` read sites; both specs must agree the loop stays gated by
-`use_specular` + `has_chunk_grid` + `spec_int > 0.0` + the cell-in-bounds check.
+Volumetric landed first and preserved the `vs_main` static-specular loop rather
+than deleting it; this spec relocates that loop's shimmer-flagged form to the
+fragment stage. The shared surface is that loop and its `params.y` / `params2`
+read sites. Volumetric left it gated by `use_specular` + `has_chunk_grid` +
+`spec_int > 0.0` + the cell-in-bounds check, plus a per-light
+`has_scatter && !spec_light_is_sdf` continue. Shimmer's fragment form keeps the
+four grid-safety guards and drops the per-light continue (Decision 6): the vertex
+loop stays scatter-aware for non-shimmer collections, while the fragment loop
+evaluates every static light.
 
 ## Acceptance criteria
 
@@ -324,11 +338,13 @@ The single shared surface is the `vs_main` static-specular loop and its
       authored value is honored, not silently dropped. (Pin table P1, P2, P11,
       P12, P13.)
 - [ ] `[unit]` The shader validates (naga). `[review]` The fragment shimmer path
-      replicates the full vertex guard stack (`use_specular`,
+      replicates the vertex loop's grid-safety guards (`use_specular`,
       `has_chunk_grid != 0`, `spec_int > 0.0`, cell-in-bounds) before indexing
-      the chunk buffers. `[manual GPU]` A shimmer collection placed outside the
-      chunk grid, or on a level with `has_chunk_grid == 0`, renders zero static
-      specular with no GPU fault. (Pin table P9.)
+      the chunk buffers — and omits its per-light scatter/SDF continue (Decision
+      6), so the loop evaluates every static record. `[manual GPU]` A shimmer
+      collection placed outside the chunk grid, or on a level with
+      `has_chunk_grid == 0`, renders zero static specular with no GPU fault. (Pin
+      table P9.)
 - [ ] `[manual GPU]` A spinning shimmer sprite's glint pattern rotates with the
       sprite (the tangent frame tracks `rotation`, threaded flat at location 5),
       and the sprite viewed at distance does not shimmer-crawl (the normal/spec
@@ -391,12 +407,16 @@ and per-light `L` from it.
   modulate strength — the mask is the optional modulator (Decision 1); a fixture
   `_spec` frame exercises its sub-1.0 effect visually (manual, not unit-gated).
   Run the chunk-light-list Blinn-Phong loop with `N'`,
-  `spec_int = max(params.y, 0.0)`, exponent `params2.y`, replicating the **full**
-  vertex guard stack — `LIGHT_TERM_SPECULAR` (`use_specular`),
+  `spec_int = max(params.y, 0.0)`, exponent `params2.y`. Replicate the vertex
+  loop's **grid-safety** guards — `LIGHT_TERM_SPECULAR` (`use_specular`),
   `has_chunk_grid != 0`, `spec_int > 0.0`, and the
   `all(cell >= 0) && all(cell < dims)` bounds check before indexing
-  `chunk_offsets`/`chunk_indices` — differing only in the normal (`N'` vs
-  `N = V`). Add the fragment term to `in.lighting`.
+  `chunk_offsets`/`chunk_indices`. Do **not** replicate the vertex loop's
+  per-light `has_scatter != 0 && !spec_light_is_sdf(sl)` continue: shimmer
+  specular evaluates every static record in the chunk list, not the SDF-only
+  subset a scatter map's vertex loop keeps (Decision 6). The loop otherwise
+  differs from the vertex form only in the normal (`N'` vs `N = V`). Add the
+  fragment term to `in.lighting`.
 
 The group-2 chunk-light storage buffers are already `VERTEX | FRAGMENT`-visible
 on the shared lighting BGL, so the fragment becoming a reader needs no visibility
@@ -509,12 +529,12 @@ them (AC 1–4, AC 6–8) write from these rows rather than restating them.
 | P1 | Non-shimmer collection authors `spec_intensity ≠ 0.3` | Resolve (load) → pack → vertex read | Isotropic vertex path reads the authored value from `params.y`; no stale copy. |
 | P2 | Candidate supplies `spec_exponent ≠ 4.0` (non-shimmer) | Resolve → pack → vertex read | Resolved into `params2.y`; the vertex path reads its exponent from `params2.y` (not the old `4.0` literal), so an authored value is honored, not dropped. |
 | P3 | Shimmer collection (NORMAL present), chunk grid built | Vertex stage | Vertex loop skipped (`params2.x != 0`); `out.lighting` excludes static_specular. |
-| P4 | Shimmer collection | Fragment stage | Fragment computes static_specular with `N'` and adds to `in.lighting`; term counted exactly once (vs P3). |
+| P4 | Shimmer collection | Fragment stage | Fragment computes static_specular with `N'` over every static light (scatter/SDF continue off, Decision 6) and adds to `in.lighting`; term counted exactly once (vs P3). |
 | P5 | Non-shimmer collection | Vertex + fragment | Rendered result output-identical to pre-spec; fragment shimmer branch not taken. Golden pixel-equality (AC 3). |
 | P6 | PNG-fallback collection (diffuse-only smoke) | Register branch (PNG) | `build_draw_params` writes 32 bytes; `shimmer_flag = 0`, resolved intensity/exponent packed (not zeros); bind group binds placeholder at b3/b4. No binding-size mismatch. |
 | P7 | Diffuse-only collection registered at level load | `register_collection` (before any draw) | Shared 1×1 D2Array placeholder views already exist (created in `SmokePass::new`); bind group builds successfully. |
 | P8 | NORMAL-slot presence | Register | Shimmer flag (`params2.x`) and binding-3/4 real-vs-placeholder selection derive from the same `slot_mask.contains(NORMAL)` read; flag=1 ⇒ real normal view bound, never placeholder. |
-| P9 | Shimmer sprite outside chunk grid, or `has_chunk_grid == 0` | Fragment stage | Fragment replicates all guards + cell-in-bounds; static_specular = 0, no OOB read, no black sprite. |
+| P9 | Shimmer sprite outside chunk grid, or `has_chunk_grid == 0` | Fragment stage | Fragment replicates the grid-safety guards + cell-in-bounds; static_specular = 0, no OOB read, no black sprite. |
 | P10 | Spinning shimmer sprite | Vertex (emit rotation) → fragment (rebuild frame) | `rotation` at `@location(5) @interpolate(flat)`; `out.world_position` stays sprite center; fragment rebuilds `(right,up,V)` from `view_proj` + `camera_position` + `in.world_position`, rotated by `rotation`. Glint rotates with sprite (AC 8). |
 | P11 | Two candidates for one collection, differing `spec_intensity`, either order | Resolve (load) | Rejected regardless of candidate order, with the lifetime/emissive conflict-message shape. |
 | P12 | Zero candidates supply spec params (N=0) | Resolve (load) | Defaults `spec_intensity = 0.3`, `spec_exponent = 4.0`. |

@@ -261,6 +261,35 @@ fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
     );
 }
 
+// Shimmer evaluates the static chunk-light list in `fs_main`. The shared BGLs
+// already carry group 2's five light/chunk storage entries and group 3's three
+// animated/scripted-light storage entries at FRAGMENT visibility; asserting the
+// exact layout-derived count catches a new entry or widened visibility before a
+// real GPU rejects the pipeline at the WebGPU downlevel limit of eight.
+#[cfg(debug_assertions)]
+#[test]
+fn billboard_pipeline_fragment_storage_request_matches_bgl_definitions() {
+    let per_group = [
+        fragment_storage_buffers(&uniform_bind_group_layout_entries()), // group 0
+        fragment_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries()), // group 1
+        fragment_storage_buffers(&lighting_bind_group_layout_entries()), // group 2
+        fragment_storage_buffers(&sh_volume::sh_bind_group_layout_entries()), // group 3
+        fragment_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries()), // group 6
+    ];
+    assert_eq!(
+        per_group,
+        [0, 0, 5, 3, 0],
+        "billboard BGL fragment storage-buffer inventory changed"
+    );
+
+    let derived: u32 = per_group.iter().sum();
+    assert_eq!(billboard_pipeline_fragment_storage_buffer_count(), derived);
+    assert_eq!(
+        derived, 8,
+        "shimmer consumes the full downlevel fragment budget"
+    );
+}
+
 /// Binding 17 is VERTEX-only so it must not move forward's already-full
 /// fragment inventory, while billboard's VERTEX inventory stays below the
 /// same WebGPU/Metal 16-texture ceiling.

@@ -1296,7 +1296,8 @@ mod tests {
     use super::*;
     use crate::load_prl;
     use crate::prl_loader::{
-        convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
+        convert_alpha_lights, expected_affinity_dims, load_prl_with_scatter_pack_limit,
+        valid_probe_mask_for_affinity_cell,
         validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
         validate_delta_sh, validate_direct_sh_delta, validate_entity_shadow_light_selection,
     };
@@ -5662,6 +5663,54 @@ mod tests {
         assert!(
             world.animated_direct_sh_delta_volumes.is_none(),
             "an empty id-45 section carries pair validity but no direct-SH runtime work"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // Regression: a structurally valid dense id-48 payload could be retained
+    // until renderer allocation even when it exceeded the scatter size policy.
+    #[test]
+    fn load_prl_soft_drops_oversized_id48_before_dense_decode() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let animated_scatter_bytes = animated_scatter.to_bytes();
+        let test_cap = u64::try_from(animated_scatter_bytes.len() - 1)
+            .expect("fixture size must fit the scatter-cap type");
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+                version: 1,
+                data: animated_scatter_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_oversized_animated_billboard_scatter.prl",
+        );
+
+        let world = load_prl_with_scatter_pack_limit(tmp.to_str().unwrap(), test_cap)
+            .expect("oversized optional id 48 must preserve level load");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        assert!(
+            world.animated_direct_sh_delta_volumes.is_some(),
+            "the independent id-48 cap must not change id-45 availability"
         );
         std::fs::remove_file(&tmp).ok();
     }

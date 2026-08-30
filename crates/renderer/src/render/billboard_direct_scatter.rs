@@ -46,8 +46,26 @@ impl BillboardDirectScatterResources {
         base: Option<&BillboardDirectScatterVolumeSection>,
         animated: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
     ) -> Self {
-        let (base_texture, has_scatter) =
-            upload_base_texture(device, queue, base.filter(|_| base_sh_usable));
+        let animated_fits_device = animated
+            .map(|section| scatter_storage_buffers_fit(section, &device.limits()))
+            .unwrap_or(true);
+        if animated.is_some() && !animated_fits_device {
+            log::error!(
+                "[Renderer] Billboard direct scatter compose buffers exceed device storage limits (max binding {} B, max buffer {} B); using legacy billboard lighting for this level",
+                device.limits().max_storage_buffer_binding_size,
+                device.limits().max_buffer_size,
+            );
+        }
+        let animated = animated.filter(|_| animated_fits_device);
+        // Section 48 is a required companion whenever the loader exposes an
+        // animated scatter pair. If its GPU resources are unavailable, do not
+        // silently retain the static base: select whole-scatter legacy mode.
+        let scatter_pair_gpu_usable = animated_fits_device;
+        let (base_texture, has_scatter) = upload_base_texture(
+            device,
+            queue,
+            base.filter(|_| base_sh_usable && scatter_pair_gpu_usable),
+        );
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Billboard Direct Scatter Base View"),
             dimension: Some(wgpu::TextureViewDimension::D3),
@@ -57,7 +75,11 @@ impl BillboardDirectScatterResources {
         // A section-48 companion is exposed by the loader only when it is a
         // validated lockstep sibling of section 45. Still require a usable base
         // here: a device-limit fallback must select the legacy billboard path.
-        let binding_mode = scatter_binding_mode(base_sh_usable, has_scatter, animated.is_some());
+        let binding_mode = scatter_binding_mode(
+            base_sh_usable && scatter_pair_gpu_usable,
+            has_scatter,
+            animated.is_some(),
+        );
         let has_animated_deltas = binding_mode == BillboardScatterMode::ComposedAnimated;
         let (sampled_view, composed_storage_view) = if has_animated_deltas {
             let dimensions = base
@@ -202,6 +224,50 @@ fn scatter_fits(dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
         .all(|&dimension| dimension > 0 && dimension <= limits.max_texture_dimension_3d)
 }
 
+fn scatter_storage_buffers_fit(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    limits: &wgpu::Limits,
+) -> bool {
+    let Some(buffer_bytes) = scatter_storage_buffer_bytes(section) else {
+        return false;
+    };
+    buffer_bytes.into_iter().all(|bytes| {
+        bytes <= limits.max_storage_buffer_binding_size && bytes <= limits.max_buffer_size
+    })
+}
+
+/// Byte lengths after the same empty-buffer padding used by the compose
+/// uploader: dense deltas, CSR offsets, CSR lights, descriptor indices.
+fn scatter_storage_buffer_bytes(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+) -> Option<[u64; 4]> {
+    Some([
+        padded_slice_bytes(section.delta_rgba.len(), std::mem::size_of::<u16>(), 4)?,
+        padded_slice_bytes(
+            section.affinity_offsets.len(),
+            std::mem::size_of::<u32>(),
+            8,
+        )?,
+        padded_slice_bytes(section.affinity_lights.len(), std::mem::size_of::<u32>(), 4)?,
+        padded_slice_bytes(
+            section.animation_descriptor_indices.len(),
+            std::mem::size_of::<u32>(),
+            4,
+        )?,
+    ])
+}
+
+fn padded_slice_bytes(
+    element_count: usize,
+    element_size: usize,
+    empty_minimum: u64,
+) -> Option<u64> {
+    let bytes = u64::try_from(element_count)
+        .ok()?
+        .checked_mul(element_size as u64)?;
+    Some(if bytes == 0 { empty_minimum } else { bytes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +299,50 @@ mod tests {
         assert!(scatter_fits([16, 1, 8], &limits));
         assert!(!scatter_fits([0, 1, 1], &limits));
         assert!(!scatter_fits([1, 17, 1], &limits));
+    }
+
+    #[test]
+    fn animated_scatter_falls_back_when_any_storage_buffer_exceeds_device_limits() {
+        let mut section = AnimatedBillboardDirectScatterDeltaVolumesSection {
+            animation_descriptor_indices: vec![0],
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_rgba: vec![0; 64 * 4],
+        };
+        let exact_bytes = scatter_storage_buffer_bytes(&section).expect("fixture sizes");
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: exact_bytes[0],
+            max_buffer_size: exact_bytes[0],
+            ..Default::default()
+        };
+        assert!(scatter_storage_buffers_fit(&section, &limits));
+
+        let binding_limited = wgpu::Limits {
+            max_storage_buffer_binding_size: exact_bytes[0] - 1,
+            ..limits.clone()
+        };
+        assert!(!scatter_storage_buffers_fit(&section, &binding_limited));
+        assert_eq!(
+            scatter_binding_mode(
+                scatter_storage_buffers_fit(&section, &binding_limited),
+                true,
+                true,
+            ),
+            BillboardScatterMode::Unavailable,
+            "a failed animated-buffer guard must select dummy/legacy mode, not static scatter",
+        );
+
+        section.delta_rgba.clear();
+        section.affinity_offsets.resize(4, 0);
+        let csr_bytes = scatter_storage_buffer_bytes(&section).expect("resized CSR sizes")[1];
+        let buffer_limited = wgpu::Limits {
+            max_storage_buffer_binding_size: csr_bytes,
+            max_buffer_size: csr_bytes - 1,
+            ..Default::default()
+        };
+        assert!(!scatter_storage_buffers_fit(&section, &buffer_limited));
     }
 
     #[test]

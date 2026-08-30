@@ -10,7 +10,10 @@ use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
     AlphaLightsSection, AlphaShadowType,
 };
-use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
+    AnimatedBillboardDirectScatterDeltaVolumesSection,
+    MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -62,6 +65,24 @@ const NAVMESH_CONTAINER_VERSION: u16 = 1;
 mod pack_sections;
 
 use pack_sections::{append_optional_section, serialize_bvh_with_chunk_ranges};
+
+fn scatter_section_fits_pack_cap(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+) -> bool {
+    scatter_section_fits_pack_cap_with_limit(
+        section,
+        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+    )
+}
+
+fn scatter_section_fits_pack_cap_with_limit(
+    section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
+    max_encoded_bytes: u64,
+) -> bool {
+    section
+        .encoded_len()
+        .is_some_and(|bytes| bytes <= max_encoded_bytes)
+}
 
 fn append_navmesh_section(sections: &mut Vec<SectionBlob>, data: Option<&[u8]>) {
     if let Some(bytes) = data {
@@ -692,6 +713,23 @@ pub fn pack_and_write_portals_with_billboard_scatter(
             "AnimatedBillboardDirectScatterDeltaVolumes must duplicate AnimatedDirectShDeltaVolumes descriptor and CSR layout"
         );
     }
+    let scatter_pair_fits_pack_cap = animated_billboard_direct_scatter_delta_volumes
+        .is_none_or(scatter_section_fits_pack_cap);
+    if !scatter_pair_fits_pack_cap {
+        log::warn!(
+            "[Compiler] Billboard direct scatter sections 47/48 withheld during packing: section 48 exceeds the {} byte encoded pack cap",
+            MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+        );
+    }
+    let (billboard_direct_scatter_volume, animated_billboard_direct_scatter_delta_volumes) =
+        if scatter_pair_fits_pack_cap {
+            (
+                billboard_direct_scatter_volume,
+                animated_billboard_direct_scatter_delta_volumes,
+            )
+        } else {
+            (None, None)
+        };
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
     let texture_cache_keys_section = TextureCacheKeysSection {
@@ -1572,6 +1610,28 @@ mod tests {
             !direct_sh_delta_has_valid_csr_shape(&section),
             "the pack guard must reject a dense-64 payload when the descriptor stores only two tiles"
         );
+    }
+
+    #[test]
+    fn scatter_pack_guard_withholds_encoded_section_above_cap() {
+        let section = AnimatedBillboardDirectScatterDeltaVolumesSection {
+            animation_descriptor_indices: vec![0],
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_rgba: vec![0; 64 * 4],
+        };
+        let encoded_bytes = section.encoded_len().expect("fixture encoded size");
+
+        assert!(scatter_section_fits_pack_cap_with_limit(
+            &section,
+            encoded_bytes,
+        ));
+        assert!(!scatter_section_fits_pack_cap_with_limit(
+            &section,
+            encoded_bytes - 1,
+        ));
     }
 
     fn placeholder_lightmap() -> LightmapSection {

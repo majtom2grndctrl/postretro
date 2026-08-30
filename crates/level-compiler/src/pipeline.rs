@@ -1175,23 +1175,38 @@ fn run_after_parsing(
         portals: &generated_portals,
         animated_lights: &animated_baked_lights,
     };
-    let scatter_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
-    let mut billboard_direct_scatter_volume_section =
-        billboard_direct_scatter_bake::bake_billboard_direct_scatter_volume_cached_controlled(
-            &scatter_inputs,
-            &sh_config,
-            delta_sections
-                .animated_direct
-                .as_ref()
-                .is_some_and(|section| {
-                    billboard_direct_scatter_bake::has_animated_static_light_map_entries(
-                        section,
-                        &animated_baked_lights,
-                    )
-                }),
-            stage_cache.as_ref(),
-            &scatter_control,
+    let animated_scatter_layout_fits_pack_cap =
+        delta_sections
+            .animated_direct
+            .as_ref()
+            .is_none_or(|direct_deltas| {
+                billboard_direct_scatter_bake::animated_scatter_layout_fits_pack_cap(direct_deltas)
+            });
+    if !animated_scatter_layout_fits_pack_cap {
+        log::warn!(
+            "[Compiler] Billboard direct scatter sections 47/48 withheld: finalized section-45 layout would exceed section 48's encoded pack cap"
         );
+    }
+    let scatter_control = BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
+    let mut billboard_direct_scatter_volume_section = animated_scatter_layout_fits_pack_cap
+        .then(|| {
+            billboard_direct_scatter_bake::bake_billboard_direct_scatter_volume_cached_controlled(
+                &scatter_inputs,
+                &sh_config,
+                delta_sections
+                    .animated_direct
+                    .as_ref()
+                    .is_some_and(|section| {
+                        billboard_direct_scatter_bake::has_animated_static_light_map_entries(
+                            section,
+                            &animated_baked_lights,
+                        )
+                    }),
+                stage_cache.as_ref(),
+                &scatter_control,
+            )
+        })
+        .flatten();
     let animated_scatter_control =
         BakeControl::new(Arc::clone(&governor), &StageProgress::indeterminate());
     let animated_billboard_direct_scatter_delta_volumes_section =

@@ -11,6 +11,12 @@ pub const BILLBOARD_DIRECT_SCATTER_PROBES_PER_AFFINITY_ENTRY: usize = 64;
 /// One `Rgba16Float` value has four f16 channel values.
 pub const BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT: usize = 4;
 
+/// Maximum encoded section-48 size accepted across compiler packing and level
+/// loading. This is a cross-boundary resource policy, not an on-wire field.
+/// The dense 64-probe RGBA16F block dominates the section, so 64 MiB keeps its
+/// eventual storage buffer below the portable 128 MiB binding floor.
+pub const MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES: u64 = 64 * 1024 * 1024;
+
 const HEADER_SIZE: usize = 18;
 
 /// Dense animated direct-scatter deltas for billboards.
@@ -64,6 +70,44 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
             .len()
             .checked_mul(BILLBOARD_DIRECT_SCATTER_PROBES_PER_AFFINITY_ENTRY)?
             .checked_mul(BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT)
+    }
+
+    /// Exact encoded length for a layout that duplicates id 45's descriptor
+    /// and CSR tables. Compiler policy uses this before materializing dense
+    /// deltas; pack policy uses it before serialization.
+    pub fn encoded_len_for_layout(
+        animation_descriptor_count: usize,
+        affinity_offset_count: usize,
+        affinity_entry_count: usize,
+    ) -> Option<u64> {
+        let descriptor_bytes = u64::try_from(animation_descriptor_count)
+            .ok()?
+            .checked_mul(std::mem::size_of::<u32>() as u64)?;
+        let offset_bytes = u64::try_from(affinity_offset_count)
+            .ok()?
+            .checked_mul(std::mem::size_of::<u32>() as u64)?;
+        let light_bytes = u64::try_from(affinity_entry_count)
+            .ok()?
+            .checked_mul(std::mem::size_of::<u32>() as u64)?;
+        let payload_bytes = u64::try_from(affinity_entry_count)
+            .ok()?
+            .checked_mul(BILLBOARD_DIRECT_SCATTER_PROBES_PER_AFFINITY_ENTRY as u64)?
+            .checked_mul(BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT as u64)?
+            .checked_mul(std::mem::size_of::<u16>() as u64)?;
+
+        (HEADER_SIZE as u64)
+            .checked_add(descriptor_bytes)?
+            .checked_add(offset_bytes)?
+            .checked_add(light_bytes)?
+            .checked_add(payload_bytes)
+    }
+
+    pub fn encoded_len(&self) -> Option<u64> {
+        Self::encoded_len_for_layout(
+            self.animation_descriptor_indices.len(),
+            self.affinity_offsets.len(),
+            self.affinity_lights.len(),
+        )
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -487,6 +531,7 @@ mod tests {
         assert_eq!(bytes[1], 4);
         assert_eq!(&bytes[2..14], &[2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
         assert_eq!(&bytes[14..18], &[2, 0, 0, 0]);
+        assert_eq!(sample_section().encoded_len(), Some(bytes.len() as u64));
     }
 
     #[test]

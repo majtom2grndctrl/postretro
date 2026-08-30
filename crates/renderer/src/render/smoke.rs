@@ -31,11 +31,6 @@ use super::loaded_texture::{prm_format_to_wgpu, upload_texture_array_data};
 /// `params2` starts at byte 16.
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 32;
 
-/// Current default for the broad billboard Blinn-Phong highlight. The draw
-/// contract will eventually route a per-collection authored value, but no draw
-/// may leave the shader exponent at zero in the meantime.
-const DEFAULT_SPRITE_SPECULAR_EXPONENT: f32 = 4.0;
-
 /// Level-install policy and draw constants for one sprite collection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpriteCollectionRegistration {
@@ -43,6 +38,8 @@ pub struct SpriteCollectionRegistration {
     pub baked_sidecar_eligible: bool,
     /// Per-collection static-light specular response.
     pub spec_intensity: f32,
+    /// Per-collection static-light Blinn-Phong exponent.
+    pub spec_exponent: f32,
     /// Animation loop and particle lifetime in seconds.
     pub lifetime: f32,
     /// Additive HDR self-illumination strength.
@@ -464,12 +461,14 @@ fn sprite_shimmer_flag(slot_mask: PrmSlots) -> f32 {
 }
 
 /// Pack `SpriteDrawParams` bytes for a
-/// (frame_count, spec_intensity, lifetime, emissive, slot_mask) tuple.
+/// (frame_count, spec_intensity, lifetime, emissive, spec_exponent, slot_mask)
+/// tuple.
 fn build_draw_params(
     frame_count: u32,
     spec_intensity: f32,
     lifetime: f32,
     emissive: f32,
+    spec_exponent: f32,
     slot_mask: PrmSlots,
 ) -> [u8; SPRITE_DRAW_PARAMS_SIZE] {
     let mut bytes = [0u8; SPRITE_DRAW_PARAMS_SIZE];
@@ -480,7 +479,7 @@ fn build_draw_params(
     bytes[12..16].copy_from_slice(&emissive.to_ne_bytes());
     // params2.x = shimmer classification; params2.y = static-spec exponent.
     bytes[16..20].copy_from_slice(&sprite_shimmer_flag(slot_mask).to_ne_bytes());
-    bytes[20..24].copy_from_slice(&DEFAULT_SPRITE_SPECULAR_EXPONENT.to_ne_bytes());
+    bytes[20..24].copy_from_slice(&spec_exponent.to_ne_bytes());
     bytes
 }
 
@@ -1010,6 +1009,7 @@ impl SmokePass {
                 registration.spec_intensity,
                 registration.lifetime,
                 registration.emissive,
+                registration.spec_exponent,
                 header.slot_mask,
             );
             let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1149,6 +1149,7 @@ impl SmokePass {
             registration.spec_intensity,
             registration.lifetime,
             registration.emissive,
+            registration.spec_exponent,
             PrmSlots::DIFFUSE,
         );
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1689,7 +1690,7 @@ mod tests {
 
     #[test]
     fn draw_params_layout() {
-        let bytes = build_draw_params(8, 0.3, 3.0, 2.5, PrmSlots::DIFFUSE | PrmSlots::NORMAL);
+        let bytes = build_draw_params(8, 0.3, 3.0, 2.5, 12.0, PrmSlots::DIFFUSE | PrmSlots::NORMAL);
         assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
         // `params` retains the former 16-byte layout exactly.
         let count = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
@@ -1703,16 +1704,17 @@ mod tests {
         let shimmer = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
         assert_eq!(shimmer, 1.0);
         let exponent = f32::from_ne_bytes(bytes[20..24].try_into().unwrap());
-        assert!((exponent - DEFAULT_SPRITE_SPECULAR_EXPONENT).abs() < 1e-6);
+        assert!((exponent - 12.0).abs() < 1e-6);
         assert_eq!(bytes[24..32], [0; 8]);
     }
 
     #[test]
-    fn diffuse_only_draw_params_keep_shimmer_clear_and_reserved_bytes_zero() {
-        let bytes = build_draw_params(8, 0.3, 3.0, 0.0, PrmSlots::DIFFUSE);
+    fn diffuse_only_draw_params_keep_shimmer_clear_and_pack_default_exponent() {
+        let bytes = build_draw_params(8, 0.3, 3.0, 0.0, 4.0, PrmSlots::DIFFUSE);
         assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
         assert_eq!(bytes[12..16], [0; 4]);
         assert_eq!(f32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 0.0);
+        assert_eq!(f32::from_ne_bytes(bytes[20..24].try_into().unwrap()), 4.0);
         assert_eq!(bytes[24..32], [0; 8]);
     }
 

@@ -106,10 +106,9 @@ struct ShGridInfo {
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
 // Animated-layer bindings must exist in the bind group layout so we can reuse
-// the same group 3 bind group as the forward pass. The billboard lighting
-// path does not evaluate animated layers (one sample per sprite vertex, not
-// per fragment — animated pulses on smoke are invisible at this fidelity), so
-// the bindings are declared but never read.
+// the same group 3 bind group as the forward pass. Billboard does not evaluate
+// these descriptor/sample buffers directly; it samples the pre-composed atlas
+// per vertex, so the bindings are declared but never read here.
 struct AnimationDescriptor {
     period: f32,
     phase: f32,
@@ -179,9 +178,8 @@ struct VertexOutput {
     // Every lighting input derives from the sprite center
     // (`world_position`, identical at all four quad corners) and the
     // camera-facing `N = V`, so this term is constant across the quad —
-    // interpolation reproduces the corner value exactly, matching the prior
-    // per-fragment result with no visible change. The fragment shader does NO
-    // lighting; it only samples the sprite texture and premultiplies.
+    // interpolation reproduces the corner value exactly. `fs_main` samples the
+    // sprite material and adds the shimmer-only static-specular lobe.
     @location(3) lighting: vec3<f32>,
     // Integer texture-array layer; flat interpolation keeps all fragments of a
     // quad on the frame selected from its sprite age.
@@ -681,7 +679,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Retain every safety guard from the vertex static-specular loop before
         // touching chunk-list buffers. Unlike the isotropic scatter path, do
         // not omit non-SDF records: this view-dependent lobe is not represented
-        // in the normal-free scatter volume.
+        // in the normal-free scatter volume. Billboard has no static-light
+        // shadowmask binding, so this lobe is not static-occlusion-tested.
         if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
             let local = in.world_position - chunk_grid.grid_origin;
             let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));

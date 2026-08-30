@@ -217,10 +217,11 @@
 // is its nearby non-shimmer control. Strafe across the pair while facing them:
 // the static spotlight and camera motion sweep the shimmer highlight across
 // smoke_puff, while the control keeps its uniform center-evaluated glint.
-// The matching shimmer smoke behind brush 10 remains in the spotlight cone but
-// must be dark by occlusion; stepping sideways around the wall also exposes
-// the cone edge. Keep this separate from the alarm below, which stays
-// script-animated.
+// A second diffuse-only smoke probe sits behind brush 10. Its baked direct
+// scatter must be dark by occlusion; stepping sideways around the wall also
+// exposes the cone edge. This is separate from the front shimmer comparison
+// because shimmer static specular has no static-light shadowmask binding. Keep
+// both stations separate from the alarm below, which stays script-animated.
 {
 "classname" "light_spot"
 "origin" "80 128 96"
@@ -246,7 +247,7 @@
 {
 "classname" "billboard_emitter"
 "origin" "176 128 16"
-"sprite" "smoke_puff"
+"sprite" "smoke_puff_isotropic"
 "rate" "2.0"
 "lifetime" "2.0"
 "spread" "0.2"

@@ -46,6 +46,11 @@ pub struct SpriteCollectionRegistration {
     pub emissive: f32,
 }
 
+/// Whether a static-light Blinn-Phong exponent is safe to pack for the shader.
+pub fn sprite_specular_exponent_is_valid(spec_exponent: f32) -> bool {
+    spec_exponent.is_finite() && spec_exponent > 0.0
+}
+
 /// Storage-buffer dynamic-offset alignment required by wgpu / WebGPU
 /// (`min_storage_buffer_offset_alignment`, 256 on every targeted backend).
 /// Each collection's region in the shared instance buffer starts at a multiple
@@ -891,6 +896,13 @@ impl SmokePass {
         prm_cache_root: &Path,
         registration: SpriteCollectionRegistration,
     ) {
+        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
+            log::warn!(
+                "[Smoke] collection '{collection}' rejected: specular exponent must be finite and greater than zero (got {})",
+                registration.spec_exponent,
+            );
+            return;
+        }
         if self.sheets.contains_key(collection) {
             log::warn!(
                 "[Smoke] duplicate collection '{collection}' rejected; level installation must resolve one draw contract"
@@ -1722,6 +1734,15 @@ mod tests {
         assert_eq!(f32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 0.0);
         assert_eq!(f32::from_ne_bytes(bytes[20..24].try_into().unwrap()), 4.0);
         assert_eq!(bytes[24..32], [0; 8]);
+    }
+
+    #[test]
+    fn sprite_registration_exponent_contract_accepts_only_finite_positive_values() {
+        assert!(sprite_specular_exponent_is_valid(4.0));
+        assert!(sprite_specular_exponent_is_valid(f32::MIN_POSITIVE));
+        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!sprite_specular_exponent_is_valid(invalid));
+        }
     }
 
     #[test]

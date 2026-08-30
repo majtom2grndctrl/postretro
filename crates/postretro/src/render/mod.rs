@@ -23,6 +23,7 @@ pub use postretro_renderer::{
     KinematicMoverInstance, LevelGeometry, LightTermMask, LocatorDiagnostics, MoverOccluderAabb,
     PortalOverlayState, PresentHandle, Renderer, SdfShadowMode, SpatialCellSetDiagnostics,
     SpatialDiagnostics, SpriteCollectionRegistration, WorldWireframeMode, level_world_to_geometry,
+    sprite_specular_exponent_is_valid,
 };
 
 #[cfg(feature = "dev-tools")]

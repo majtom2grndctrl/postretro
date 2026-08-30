@@ -12,6 +12,11 @@ pub const BIND_SCRIPTED_LIGHT_DESCRIPTORS: u32 = 13;
 pub const BIND_SH_DEPTH_MOMENTS: u32 = BIND_SCRIPTED_LIGHT_DESCRIPTORS + 1;
 pub const BIND_SH_DIRECT_ATLAS: u32 = BIND_SH_DEPTH_MOMENTS + 1;
 pub const BIND_DYNAMIC_DIRECT_PARAMS: u32 = BIND_SH_DIRECT_ATLAS + 1;
+/// Billboard-only normal-free direct-scatter volume. This remains outside the
+/// mesh-only dynamic-direct extension at binding 16, so the shared group-3
+/// layout can expose it to the billboard vertex stage without changing mesh
+/// bindings.
+pub const BIND_BILLBOARD_DIRECT_SCATTER: u32 = BIND_DYNAMIC_DIRECT_PARAMS + 1;
 pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 
 /// Byte size of `ShGridInfo` — six `vec4` slots to satisfy std140 alignment

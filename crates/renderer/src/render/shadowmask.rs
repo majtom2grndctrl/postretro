@@ -222,6 +222,8 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: &entity_shadow_lights,
             shadowmask_atlas: Some(&atlas),
             sdf_atlas: None,

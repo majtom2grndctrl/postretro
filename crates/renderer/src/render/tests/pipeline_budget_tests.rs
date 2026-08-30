@@ -260,3 +260,31 @@ fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
              visibility or consolidate rather than raising the limit"
     );
 }
+
+/// Binding 17 is VERTEX-only so it must not move forward's already-full
+/// fragment inventory, while billboard's VERTEX inventory stays below the
+/// same WebGPU/Metal 16-texture ceiling.
+#[cfg(debug_assertions)]
+#[test]
+fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_vertex_stage() {
+    let per_group = [
+        vertex_sampled_textures(&uniform_bind_group_layout_entries()),
+        vertex_sampled_textures(&smoke::sprite_sheet_bind_group_layout_entries()),
+        vertex_sampled_textures(&lighting_bind_group_layout_entries()),
+        vertex_sampled_textures(&sh_volume::sh_bind_group_layout_entries()),
+        vertex_sampled_textures(&smoke::sprite_instance_bind_group_layout_entries()),
+    ];
+    assert_eq!(per_group, [0, 0, 0, 4, 0]);
+    let total: u32 = per_group.iter().sum();
+    assert_eq!(billboard_pipeline_vertex_sampled_texture_count(), total);
+    assert!(total <= 16);
+
+    let scatter = sh_volume::sh_bind_group_layout_entries()
+        .into_iter()
+        .find(|entry| {
+            entry.binding == postretro_render_cpu::sh_volume::BIND_BILLBOARD_DIRECT_SCATTER
+        })
+        .expect("shared group 3 must bind billboard direct scatter at 17");
+    assert_eq!(scatter.visibility, wgpu::ShaderStages::VERTEX);
+    assert_eq!(forward_pipeline_sampled_texture_count(true), 16);
+}

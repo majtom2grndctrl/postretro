@@ -82,6 +82,8 @@ impl Renderer {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: &[],
             shadowmask_atlas: None,
             sdf_atlas: None,
@@ -352,6 +354,9 @@ impl Renderer {
                 direct: geometry.direct_sh_volume,
                 direct_delta: geometry.direct_sh_delta_volumes,
                 animated_direct_delta: geometry.animated_direct_sh_delta_volumes,
+                billboard_direct_scatter: geometry.billboard_direct_scatter_volume,
+                animated_billboard_direct_scatter_delta: geometry
+                    .animated_billboard_direct_scatter_delta_volumes,
             },
             // Runtime-spawned lights append after the full-authored prefix.
             geometry.lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
@@ -410,12 +415,20 @@ impl Renderer {
         );
         full.direct_sh_compose = DirectShComposeResources::new(
             device,
-            &full.sh_volume_resources,
-            geometry.direct_sh_volume,
+            &full.sh_volume_resources.direct,
+            &full.sh_volume_resources.animation,
             geometry.direct_sh_delta_volumes,
             geometry.animated_direct_sh_delta_volumes,
             &full.promoted_static_weight_buffer,
             &full.uniform_bind_group_layout,
+        );
+        full.billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::new(
+            device,
+            &full.sh_volume_resources.billboard_direct_scatter,
+            &full.sh_volume_resources.animation,
+            geometry.animated_billboard_direct_scatter_delta_volumes,
+            &full.uniform_bind_group_layout,
+            full.sh_volume_resources.grid_dimensions,
         );
         #[cfg(feature = "dev-tools")]
         {

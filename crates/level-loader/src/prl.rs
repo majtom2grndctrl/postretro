@@ -9,11 +9,15 @@ use glam::Vec3;
 #[cfg(feature = "load-prl")]
 use postretro_level_format as prl_format;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+#[cfg(feature = "load-prl")]
+use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 #[cfg(feature = "load-prl")]
@@ -612,6 +616,17 @@ pub struct LevelWorld {
     /// has no animated baked lights or the optional section is malformed.
     #[cfg(feature = "load-prl")]
     pub animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection>,
+    /// Normal-free direct-scatter base for billboard shading. RGB may be zero
+    /// when it anchors animated-only id-48 deltas. `None` selects legacy
+    /// billboard direct lighting. A usable id-48 companion is required whenever
+    /// id 45 is present.
+    #[cfg(feature = "load-prl")]
+    pub billboard_direct_scatter_volume: Option<BillboardDirectScatterVolumeSection>,
+    /// Dense animated billboard direct-scatter deltas. This is exposed only
+    /// with a usable `billboard_direct_scatter_volume` base.
+    #[cfg(feature = "load-prl")]
+    pub animated_billboard_direct_scatter_delta_volumes:
+        Option<AnimatedBillboardDirectScatterDeltaVolumesSection>,
     /// Runtime level-light indices selected by the compiler for static-light
     /// entity-shadow promotion. Empty for maps without direct SH/static lights,
     /// maps whose compiler selection found no eligible lights, or maps whose
@@ -743,6 +758,10 @@ impl LevelWorld {
             direct_sh_delta_volumes: None,
             #[cfg(feature = "load-prl")]
             animated_direct_sh_delta_volumes: None,
+            #[cfg(feature = "load-prl")]
+            billboard_direct_scatter_volume: None,
+            #[cfg(feature = "load-prl")]
+            animated_billboard_direct_scatter_delta_volumes: None,
             #[cfg(feature = "load-prl")]
             entity_shadow_lights: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -1277,9 +1296,10 @@ mod tests {
     use super::*;
     use crate::load_prl;
     use crate::prl_loader::{
-        convert_alpha_lights, expected_affinity_dims, valid_probe_mask_for_affinity_cell,
-        validate_cell_draw_index, validate_delta_sh, validate_direct_sh_delta,
-        validate_entity_shadow_light_selection,
+        convert_alpha_lights, expected_affinity_dims, load_prl_with_scatter_pack_limit,
+        valid_probe_mask_for_affinity_cell,
+        validate_animated_billboard_direct_scatter_delta_volumes, validate_cell_draw_index,
+        validate_delta_sh, validate_direct_sh_delta, validate_entity_shadow_light_selection,
     };
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
@@ -1305,7 +1325,9 @@ mod tests {
     use postretro_render_data::geometry::BvhLeaf;
     use postretro_test_log_capture::LogCapture;
 
+    use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
     use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+    use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
     };
@@ -1384,6 +1406,34 @@ mod tests {
         }
     }
 
+    fn billboard_direct_scatter_section_for(
+        base: &OctahedralShVolumeSection,
+    ) -> BillboardDirectScatterVolumeSection {
+        let mut scatter_rgba = vec![0; base.total_probes() * 4];
+        for (probe, metadata) in base.probes.iter().enumerate() {
+            scatter_rgba[probe * 4 + 3] = if metadata.validity == 0 { 0 } else { 0x3c00 };
+        }
+        BillboardDirectScatterVolumeSection {
+            grid_origin: base.grid_origin,
+            cell_size: base.cell_size,
+            grid_dimensions: base.grid_dimensions,
+            scatter_rgba,
+        }
+    }
+
+    fn animated_billboard_direct_scatter_delta_section_for(
+        animated_direct: &AnimatedDirectShDeltaVolumesSection,
+    ) -> AnimatedBillboardDirectScatterDeltaVolumesSection {
+        AnimatedBillboardDirectScatterDeltaVolumesSection {
+            animation_descriptor_indices: animated_direct.animation_descriptor_indices.clone(),
+            affinity_factor: animated_direct.affinity_factor,
+            affinity_dims: animated_direct.affinity_dims,
+            affinity_offsets: animated_direct.affinity_offsets.clone(),
+            affinity_lights: animated_direct.affinity_lights.clone(),
+            delta_rgba: vec![0; animated_direct.affinity_lights.len() * 64 * 4],
+        }
+    }
+
     fn base_octahedral_section(grid_dimensions: [u32; 3]) -> OctahedralShVolumeSection {
         let probe_count =
             grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
@@ -1455,6 +1505,25 @@ mod tests {
         // factor 4: 8→2, 9→3, 1→1, 4→1, 5→2.
         assert_eq!(expected_affinity_dims([8, 9, 1], 4), [2, 3, 1]);
         assert_eq!(expected_affinity_dims([4, 5, 16], 4), [1, 2, 4]);
+    }
+
+    #[test]
+    fn validate_animated_billboard_scatter_requires_id45_factor_and_dimensions() {
+        let direct = animated_direct_delta_section_for([2, 1, 1]);
+        let mut scatter = animated_billboard_direct_scatter_delta_section_for(&direct);
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_ok()
+        );
+
+        scatter.affinity_factor = direct.affinity_factor + 1;
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_err()
+        );
+        scatter.affinity_factor = direct.affinity_factor;
+        scatter.affinity_dims = [1, 2, 1];
+        assert!(
+            validate_animated_billboard_direct_scatter_delta_volumes(&scatter, &direct).is_err()
+        );
     }
 
     #[test]
@@ -1706,6 +1775,8 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -1800,6 +1871,8 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -1848,6 +1921,8 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
+            billboard_direct_scatter_volume: None,
+            animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -2236,6 +2311,26 @@ mod tests {
     ) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn billboard_direct_scatter_blob(
+        section: BillboardDirectScatterVolumeSection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::BillboardDirectScatterVolume as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn animated_billboard_direct_scatter_delta_blob(
+        section: AnimatedBillboardDirectScatterDeltaVolumesSection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
             version: 1,
             data: section.to_bytes(),
         }
@@ -5391,6 +5486,429 @@ mod tests {
 
         assert!(world.animated_direct_sh_delta_volumes.is_none());
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_keeps_static_billboard_direct_scatter_without_animated_sections() {
+        let base = base_octahedral_section([2, 1, 1]);
+        let scatter = billboard_direct_scatter_section_for(&base);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base),
+            billboard_direct_scatter_blob(scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_static_billboard_direct_scatter.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("static-only billboard scatter must load without animated companions");
+
+        assert_eq!(world.billboard_direct_scatter_volume, Some(scatter));
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_exposes_billboard_direct_scatter_only_with_matching_animated_pair() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_billboard_direct_scatter_pair.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("matching billboard scatter companions must load");
+
+        assert!(world.billboard_direct_scatter_volume.is_some());
+        assert_eq!(
+            world.animated_billboard_direct_scatter_delta_volumes,
+            Some(animated_scatter)
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_accepts_zero_base_as_animated_scatter_anchor() {
+        // Regression: all-zero RGB is valid for id 47 only when it anchors a
+        // structurally valid animated id-45/id-48 pair.
+        let mut base = base_octahedral_section([1, 1, 1]);
+        base.probes[0].validity = 1;
+        let compact_layout = postretro_level_format::octahedral::irradiance_atlas_array_layout(
+            [1, 1, 1],
+            base.tile_dimension,
+            8192,
+        )
+        .expect("one valid probe must have a compact atlas layout");
+        base.compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
+        base.compact_atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
+        base.compact_atlas_tiles_per_layer = compact_layout.tiles_per_layer;
+        base.compact_atlas_layer_count = compact_layout.layer_count;
+        base.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas = vec![
+            0;
+            compact_layout.atlas_width as usize
+                * compact_layout.atlas_height as usize
+                * compact_layout.layer_count as usize
+                * 8
+        ];
+        let base_scatter = billboard_direct_scatter_section_for(&base);
+        assert_eq!(base_scatter.scatter_rgba[0..4], [0, 0, 0, 0x3c00]);
+
+        let mut animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        animated_direct.valid_probe_masks[0] = 1;
+        animated_direct.delta_subblocks =
+            vec![0; postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE];
+        let mut animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        animated_scatter.delta_rgba[0] = 0x3c00;
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base),
+            billboard_direct_scatter_blob(base_scatter.clone()),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_only_billboard_direct_scatter_pair.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("an animated-only zero base plus matching delta companion must load");
+
+        assert_eq!(world.billboard_direct_scatter_volume, Some(base_scatter));
+        assert_eq!(
+            world.animated_billboard_direct_scatter_delta_volumes,
+            Some(animated_scatter),
+            "the zero base is a valid anchor, not a request for legacy fallback"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_retains_scatter_for_valid_empty_animated_pair() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let affinity_dims = expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR);
+        let cell_count = affinity_dims.iter().product::<u32>() as usize;
+        let animated_direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0; cell_count],
+            cell_levels: vec![0; cell_count],
+            affinity_offsets: vec![0; cell_count + 1],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_empty_animated_billboard_direct_scatter_pair.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("a valid empty id-45/id-48 pair must keep billboard scatter");
+
+        assert!(world.billboard_direct_scatter_volume.is_some());
+        assert_eq!(
+            world.animated_billboard_direct_scatter_delta_volumes,
+            Some(animated_scatter),
+            "P7 requires an animated compose path that can seed the base with an empty sum"
+        );
+        assert!(
+            world.animated_direct_sh_delta_volumes.is_none(),
+            "an empty id-45 section carries pair validity but no direct-SH runtime work"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // Regression: a structurally valid dense id-48 payload could be retained
+    // until renderer allocation even when it exceeded the scatter size policy.
+    #[test]
+    fn load_prl_soft_drops_oversized_id48_before_dense_decode() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        let animated_scatter_bytes = animated_scatter.to_bytes();
+        let test_cap = u64::try_from(animated_scatter_bytes.len() - 1)
+            .expect("fixture size must fit the scatter-cap type");
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+                version: 1,
+                data: animated_scatter_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_oversized_animated_billboard_scatter.prl",
+        );
+
+        let world = load_prl_with_scatter_pack_limit(tmp.to_str().unwrap(), test_cap)
+            .expect("oversized optional id 48 must preserve level load");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        assert!(
+            world.animated_direct_sh_delta_volumes.is_some(),
+            "the independent id-48 cap must not change id-45 availability"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_soft_drops_billboard_scatter_with_invalid_version_or_base_dimensions() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let valid_scatter = billboard_direct_scatter_section_for(&base);
+        let mut stale_version = valid_scatter.to_bytes();
+        stale_version[0] = 0;
+        let mut truncated_payload = valid_scatter.to_bytes();
+        truncated_payload.pop();
+        let wrong_dimensions =
+            billboard_direct_scatter_section_for(&base_octahedral_section([2, 1, 1])).to_bytes();
+
+        for (name, scatter_data) in [
+            (
+                "postretro_test_billboard_scatter_stale_version.prl",
+                stale_version,
+            ),
+            (
+                "postretro_test_billboard_scatter_short_payload.prl",
+                truncated_payload,
+            ),
+            (
+                "postretro_test_billboard_scatter_wrong_dimensions.prl",
+                wrong_dimensions,
+            ),
+        ] {
+            let sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                octahedral_sh_volume_blob(base.clone()),
+                prl_format::SectionBlob {
+                    section_id: SectionId::BillboardDirectScatterVolume as u32,
+                    version: 1,
+                    data: scatter_data,
+                },
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+            ];
+            let tmp = write_prl_fixture(sections, name);
+            let world = load_prl(tmp.to_str().unwrap())
+                .expect("invalid optional billboard scatter must not reject the map");
+            assert!(world.billboard_direct_scatter_volume.is_none());
+            assert!(
+                world
+                    .animated_billboard_direct_scatter_delta_volumes
+                    .is_none()
+            );
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
+    #[test]
+    fn load_prl_soft_drops_billboard_scatter_with_invalid_animated_csr_shape() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let mut malformed_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct).to_bytes();
+        // Header (18 bytes) + one descriptor mapping (4 bytes) → CSR's
+        // leading offset. A nonzero start invalidates the optional CSR shape.
+        malformed_scatter[22..26].copy_from_slice(&1u32.to_le_bytes());
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+                version: 1,
+                data: malformed_scatter,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_billboard_scatter_bad_csr.prl");
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("malformed optional animated scatter CSR must not reject the map");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_soft_drops_billboard_scatter_when_descriptor_mapping_disagrees_with_id45() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let mut animated_scatter =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct);
+        animated_scatter.animation_descriptor_indices[0] = 0;
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            animated_billboard_direct_scatter_delta_blob(animated_scatter),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_billboard_scatter_descriptor_mapping_mismatch.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("descriptor disagreement must fall back without rejecting the map");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_soft_drops_billboard_scatter_with_invalid_dense_payload_length() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let mut truncated_payload =
+            animated_billboard_direct_scatter_delta_section_for(&animated_direct).to_bytes();
+        truncated_payload.pop();
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
+                version: 1,
+                data: truncated_payload,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_billboard_scatter_bad_payload_length.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("bad optional animated scatter payload must not reject the map");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_disables_billboard_scatter_when_id45_lacks_id48() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base.clone()),
+            billboard_direct_scatter_blob(billboard_direct_scatter_section_for(&base)),
+            animated_direct_sh_delta_blob(animated_direct),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_billboard_scatter_missing_animated_companion.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("missing optional id-48 companion must not reject the map");
+        assert!(world.billboard_direct_scatter_volume.is_none());
+        assert!(
+            world
+                .animated_billboard_direct_scatter_delta_volumes
+                .is_none()
+        );
         std::fs::remove_file(&tmp).ok();
     }
 

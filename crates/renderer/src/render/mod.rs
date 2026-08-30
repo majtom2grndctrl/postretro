@@ -2,6 +2,8 @@
 // See: context/lib/rendering_pipeline.md
 mod animated_direct_sh_compose;
 mod animated_lightmap;
+mod billboard_direct_scatter;
+mod billboard_direct_scatter_compose;
 mod bloom;
 mod bloom_profile;
 #[cfg(feature = "dev-tools")]
@@ -9,6 +11,7 @@ mod debug_lines;
 #[cfg(feature = "dev-tools")]
 mod debug_ui;
 mod direct_sh_compose;
+mod direct_sh_resources;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
@@ -90,6 +93,7 @@ use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use billboard_direct_scatter_compose::BillboardDirectScatterComposeResources;
 use bloom::BloomPass;
 pub use bloom_profile::{BloomRenderProfile, BloomResolution};
 use direct_sh_compose::{
@@ -112,7 +116,8 @@ pub use smoke::SpriteCollectionRegistration;
 // reachable here at their original `render::*` paths.
 pub(crate) use postretro_render_cpu::fog_mask::*;
 pub(crate) use postretro_render_cpu::frame_uniforms::{
-    FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE, build_uniform_data,
+    BillboardScatterMode, FrameUniforms, SDF_SHADOW_FLAG_ATLAS_PRESENT, UNIFORM_SIZE,
+    build_uniform_data,
 };
 pub use postretro_render_cpu::frame_uniforms::{LightTermMask, SdfShadowMode};
 pub(crate) use postretro_render_cpu::material_plan::{

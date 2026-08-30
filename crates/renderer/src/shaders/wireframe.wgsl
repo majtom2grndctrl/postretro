@@ -42,9 +42,8 @@ struct Uniforms {
     // stride in lockstep with forward.wgsl (128 bytes). See forward.wgsl for
     // semantics.
     _dynamic_direct_scale_inert: u32,
-    // Reserved group-0 padding at 112..116 after retirement of billboard's
-    // dynamic-direct isolation selector.
-    _dynamic_direct_pad: u32,
+    // `has_scatter` mode in billboard.wgsl (offset 112..116), inert here.
+    _has_scatter_inert: u32,
     _has_direct_inert: u32,
     _total_light_count_inert: u32,
     // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), never

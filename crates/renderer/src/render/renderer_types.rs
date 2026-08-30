@@ -374,6 +374,15 @@ pub struct LevelGeometry<'a> {
     pub animated_direct_sh_delta_volumes: Option<
         &'a postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
     >,
+    /// Normal-free static direct scatter for billboard receivers. The renderer
+    /// selects its legacy fallback when this is absent or cannot fit the GPU.
+    pub billboard_direct_scatter_volume: Option<
+        &'a postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection,
+    >,
+    /// Dense section-48 animated deltas paired by the loader with section 45.
+    pub animated_billboard_direct_scatter_delta_volumes: Option<
+        &'a postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection,
+    >,
     /// Selection-order list of global level-light indices eligible for runtime
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],
@@ -645,6 +654,9 @@ pub(super) struct FullRenderer {
     /// selected static direct deltas; in that path the base direct atlas remains
     /// bound and no composed direct texture exists.
     pub(super) direct_sh_compose: DirectShComposeResources,
+    /// Optional section-48 compose. Static-only scatter binds its base directly,
+    /// while unavailable content keeps the billboard legacy path selected.
+    pub(super) billboard_direct_scatter_compose: BillboardDirectScatterComposeResources,
 
     /// Absent Lightmap section → 1×1 white/neutral placeholder; no shader branch.
     pub(super) lightmap_resources: LightmapResources,

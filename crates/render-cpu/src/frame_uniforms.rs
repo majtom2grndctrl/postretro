@@ -150,6 +150,34 @@ impl Default for LightTermMask {
     }
 }
 
+/// Level-load-fixed interpretation of the `has_scatter` ABI word. Both real
+/// resource modes stay nonzero so existing availability checks remain valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BillboardScatterMode {
+    Unavailable = 0,
+    StaticBase = 1,
+    ComposedAnimated = 2,
+}
+
+impl BillboardScatterMode {
+    pub const fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+
+    /// CPU mirror of the billboard shader's baked-direct mask gate.
+    pub const fn light_term_enabled(self, mask: LightTermMask) -> bool {
+        match self {
+            Self::Unavailable => false,
+            Self::StaticBase => mask.contains(LightTermMask::BAKED_DIRECT_STATIC),
+            Self::ComposedAnimated => {
+                mask.contains(LightTermMask::BAKED_DIRECT_STATIC)
+                    || mask.contains(LightTermMask::BAKED_DIRECT_ANIMATED)
+            }
+        }
+    }
+}
+
 pub struct FrameUniforms {
     pub view_proj: Mat4,
     pub camera_position: Vec3,
@@ -181,6 +209,10 @@ pub struct FrameUniforms {
     /// for the billboard path (the mesh path reads its own copy from the
     /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
     pub dynamic_direct_scale: f32,
+    /// Level-load-fixed billboard scatter resource mode. Zero means the dummy
+    /// binding and legacy path; nonzero values select a real base or composed
+    /// group-3 texture without changing this ABI slot.
+    pub has_scatter: BillboardScatterMode,
     /// Whether a baked DIRECT SH section is present. When false the dynamic
     /// shaders skip the direct sample (direct = 0), falling back to
     /// indirect-only. Owned here (and mirrored in the mesh uniform).
@@ -218,10 +250,8 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let force_vis: u32 = u.sdf_force_visibility_one as u32;
     bytes[104..108].copy_from_slice(&force_vis.to_ne_bytes());
     bytes[108..112].copy_from_slice(&u.dynamic_direct_scale.to_ne_bytes());
-    // 112..116 is reserved zero padding after the billboard-only
-    // dynamic-direct isolation selector was retired. `bytes` is zero-initialized
-    // so `has_direct` and `total_light_count` retain their fixed ABI offsets.
-    bytes[112..116].fill(0);
+    let has_scatter: u32 = u.has_scatter as u32;
+    bytes[112..116].copy_from_slice(&has_scatter.to_ne_bytes());
     let has_direct: u32 = u.has_direct as u32;
     bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
     let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
@@ -250,6 +280,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -275,6 +306,62 @@ mod tests {
     }
 
     #[test]
+    fn billboard_scatter_mode_distinguishes_static_base_from_composed_texture() {
+        // Regression: a 47-only resource used animated-direct's bit as an
+        // accidental alternate gate for its immutable static base.
+        let mut animated_only = LightTermMask::ALL;
+        animated_only.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+
+        assert!(!BillboardScatterMode::Unavailable.is_available());
+        assert!(!BillboardScatterMode::Unavailable.light_term_enabled(animated_only));
+        assert!(BillboardScatterMode::StaticBase.is_available());
+        assert!(
+            !BillboardScatterMode::StaticBase.light_term_enabled(animated_only),
+            "a 47-only base must stay dark when static direct is disabled"
+        );
+        assert!(BillboardScatterMode::ComposedAnimated.is_available());
+        assert!(
+            BillboardScatterMode::ComposedAnimated.light_term_enabled(animated_only),
+            "a composed 47+48 texture must remain visible under the animated-only mask"
+        );
+    }
+
+    #[test]
+    fn uniform_data_encodes_scatter_modes_in_the_existing_has_scatter_word() {
+        let mut uniforms = FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            light_term_mask: LightTermMask::ALL,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 1.0,
+            has_scatter: BillboardScatterMode::Unavailable,
+            has_direct: false,
+            total_light_count: 0,
+            spec_shadowmask_force_one: false,
+        };
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            0
+        );
+        uniforms.has_scatter = BillboardScatterMode::StaticBase;
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            1
+        );
+        uniforms.has_scatter = BillboardScatterMode::ComposedAnimated;
+        assert_eq!(
+            u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
+            2
+        );
+    }
+
+    #[test]
     fn uniform_data_encodes_sdf_shadow_flags_at_correct_offset() {
         let data = build_uniform_data(&FrameUniforms {
             view_proj: Mat4::IDENTITY,
@@ -288,6 +375,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -316,6 +404,7 @@ mod tests {
                 sdf_shadow_mode: SdfShadowMode::On,
                 sdf_force_visibility_one: force,
                 dynamic_direct_scale: 0.0,
+                has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -342,6 +431,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: true,
@@ -365,6 +455,7 @@ mod tests {
                 sdf_shadow_mode: mode,
                 sdf_force_visibility_one: false,
                 dynamic_direct_scale: 0.0,
+                has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
@@ -389,6 +480,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::ShadowmaskRawPoolVisibility,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
@@ -414,6 +506,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 0.25,
+            has_scatter: BillboardScatterMode::StaticBase,
             has_direct: true,
             total_light_count: 11,
             spec_shadowmask_force_one: false,
@@ -425,7 +518,7 @@ mod tests {
             light_term_mask.bits(),
             "LightTermMask must remain at the fixed group-0 88..92 ABI slot",
         );
-        assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(data[120..124].try_into().unwrap()), 11);
         assert!(data[124..128].iter().all(|&b| b == 0));
@@ -449,6 +542,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
@@ -499,6 +593,7 @@ mod tests {
             sdf_shadow_mode: SdfShadowMode::On,
             sdf_force_visibility_one: false,
             dynamic_direct_scale: 1.0,
+            has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
             total_light_count: 0,
             spec_shadowmask_force_one: false,

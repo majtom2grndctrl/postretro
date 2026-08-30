@@ -87,6 +87,10 @@ pub fn level_world_to_geometry<'a>(
         direct_sh_volume: world.direct_sh_volume.as_ref(),
         direct_sh_delta_volumes: world.direct_sh_delta_volumes.as_ref(),
         animated_direct_sh_delta_volumes: world.animated_direct_sh_delta_volumes.as_ref(),
+        billboard_direct_scatter_volume: world.billboard_direct_scatter_volume.as_ref(),
+        animated_billboard_direct_scatter_delta_volumes: world
+            .animated_billboard_direct_scatter_delta_volumes
+            .as_ref(),
         entity_shadow_lights: &world.entity_shadow_lights,
         shadowmask_atlas: world.shadowmask_atlas.as_ref(),
         sdf_atlas: world.sdf_atlas.as_ref(),

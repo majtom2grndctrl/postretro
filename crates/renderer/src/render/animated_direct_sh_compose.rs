@@ -12,10 +12,11 @@ use postretro_render_cpu::sh_compose::{
 use super::direct_sh_compose::{
     BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
     BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
-    DirectComposeLayout, nearest_sampler, sampler_bgl_entry, storage_bgl_entry,
-    storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
+    nearest_sampler, sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry,
+    texture_bgl_entry, uniform_bgl_entry,
 };
-use super::sh_volume::ShVolumeResources;
+use super::direct_sh_resources::DirectAtlasLayout;
+use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
 /// `AnimatedBakedLights` namespace used by section 45, not the promotion
@@ -69,8 +70,8 @@ pub(super) struct AnimatedDirectShComposePipeline {
 
 pub(super) fn build_animated_direct_pass(
     device: &wgpu::Device,
-    sh: &ShVolumeResources,
-    layout: DirectComposeLayout,
+    animation: &AnimatedLightBuffers,
+    layout: DirectAtlasLayout,
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
     intermediate_sampled_view: &wgpu::TextureView,
     output_storage_view: &wgpu::TextureView,
@@ -210,11 +211,11 @@ pub(super) fn build_animated_direct_pass(
             },
             wgpu::BindGroupEntry {
                 binding: BIND_ANIMATION_DESCRIPTORS,
-                resource: sh.animation.descriptors.as_entire_binding(),
+                resource: animation.descriptors.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_ANIMATION_SAMPLES,
-                resource: sh.animation.anim_samples.as_entire_binding(),
+                resource: animation.anim_samples.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_AFFINITY_LIGHTS,

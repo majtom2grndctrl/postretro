@@ -285,7 +285,11 @@ impl Renderer {
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,
             dynamic_direct_scale: full.dynamic_direct_scale,
-            has_direct: full.sh_volume_resources.has_direct,
+            has_scatter: full
+                .sh_volume_resources
+                .billboard_direct_scatter
+                .has_scatter,
+            has_direct: full.sh_volume_resources.direct.has_direct,
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
@@ -303,6 +307,7 @@ impl Renderer {
         // a trimmed camera uniform (no group-0 tail), so its direct scale and
         // level-fixed `has_direct` flag reach it through this dedicated uniform.
         full.sh_volume_resources
+            .direct
             .write_dynamic_direct_params(queue, full.dynamic_direct_scale);
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).

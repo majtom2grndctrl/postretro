@@ -1,7 +1,9 @@
 // Billboard sprite pass: camera-facing quads for env_smoke_emitter entities,
 // lit by the full lighting stack (ambient floor, SH ambient, static multi-source
-// specular via the chunk light list, and dynamic direct diffuse). Alpha-additive,
-// depth test enabled, depth write disabled.
+// specular via the chunk light list, and dynamic direct diffuse). Isotropic
+// collections keep static specular per vertex; NORMAL-slot shimmer collections
+// reconstruct it per fragment. Alpha-additive, depth test enabled, depth write
+// disabled.
 //
 // See: context/lib/rendering_pipeline.md §7.4
 
@@ -41,6 +43,10 @@ struct Uniforms {
 // --- Group 1: sprite-frame texture array + sampler ---
 @group(1) @binding(0) var sprite_texture: texture_2d_array<f32>;
 @group(1) @binding(1) var sprite_sampler: sampler;
+// Optional sprite-PRM slots. The renderer binds shared neutral D2-array views
+// when a collection is not shimmer, so the bind-group contract stays fixed.
+@group(1) @binding(3) var sprite_specular: texture_2d_array<f32>;
+@group(1) @binding(4) var sprite_normal: texture_2d_array<f32>;
 
 // --- Group 2: dynamic lights, spec-only buffer, chunk grid (shared with forward) ---
 struct GpuLight {
@@ -143,7 +149,7 @@ struct SpriteInstance {
 };
 @group(6) @binding(0) var<storage, read> sprites: array<SpriteInstance>;
 
-// --- Per-draw push: frame count + specular intensity ---
+// --- Per-draw push: sprite timing, intensity, and material classification ---
 // A single uniform buffer carrying per-collection draw parameters. Lives in
 // group 1 binding 2 so it rides with the sprite sheet bind group; a separate
 // group would burn a bind group slot we don't have spare.
@@ -153,6 +159,10 @@ struct SpriteDrawParams {
     // z = lifetime (f32, seconds).
     // w = additive emissive strength (f32).
     params: vec4<f32>,
+    // x = shimmer flag (NORMAL slot present; 0.0 or 1.0).
+    // y = static-specular Blinn-Phong exponent.
+    // zw = reserved for future per-collection material controls.
+    params2: vec4<f32>,
 };
 @group(1) @binding(2) var<uniform> draw_params: SpriteDrawParams;
 
@@ -163,8 +173,9 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_position: vec3<f32>,
     @location(2) opacity: f32,
-    // Full lighting term computed per-vertex: ambient floor + pre-composed
-    // indirect/direct SH + multi-source static-specular + dynamic-direct diffuse.
+    // Per-vertex lighting: ambient floor + pre-composed indirect/direct SH +
+    // isotropic multi-source static-specular + dynamic-direct diffuse. Shimmer
+    // adds its normal-mapped static-specular lobe in `fs_main` instead.
     // Every lighting input derives from the sprite center
     // (`world_position`, identical at all four quad corners) and the
     // camera-facing `N = V`, so this term is constant across the quad —
@@ -175,6 +186,9 @@ struct VertexOutput {
     // Integer texture-array layer; flat interpolation keeps all fragments of a
     // quad on the frame selected from its sprite age.
     @location(4) @interpolate(flat) frame_idx: u32,
+    // Per-instance rotation must not interpolate across the two triangles;
+    // fragment shimmer rotates its camera-facing tangent frame by this angle.
+    @location(5) @interpolate(flat) rotation: f32,
 };
 
 // Corner lookup table: the vertex shader expands each sprite into two triangles
@@ -261,12 +275,11 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // Each decoded frame occupies one texture-array layer, so the UV remains
     // within the frame's native dimensions.
 
-    // Full lighting, hoisted from the fragment stage. SH indirect and the legacy
-    // direct-SH, static-specular, and runtime-direct branches use the sprite
-    // center (`sprite_pos`) and camera-facing normal `N = V`. The scatter baked
-    // direct and runtime-direct branches are normal-free. The term is constant
-    // across the quad, so per-vertex evaluation and interpolation reproduce the
-    // prior per-fragment value with no visible change. The SH reads use
+    // Per-vertex lighting. SH indirect/direct, isotropic static-specular, and
+    // runtime-direct branches use the sprite center (`sprite_pos`) and
+    // camera-facing normal `N = V`. Shimmer skips this static-specular loop and
+    // evaluates it per fragment from the normal-map tangent frame. The scatter
+    // baked direct and runtime-direct branches are normal-free. The SH reads use
     // `textureSampleLevel`/`textureLoad` and the loops
     // use only arithmetic / buffer reads (no implicit derivatives), all valid in
     // the vertex stage. Loop control flow stays uniform: every iteration count
@@ -318,7 +331,8 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // early-skip delivers.
     var static_specular = vec3<f32>(0.0);
     let spec_int = max(draw_params.params.y, 0.0);
-    if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
+    if use_specular && draw_params.params2.x == 0.0
+        && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
         let local = sprite_pos - chunk_grid.grid_origin;
         let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
         let dims = vec3<i32>(chunk_grid.dims);
@@ -344,8 +358,14 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
                 let L = to_light / max(dist, 0.0001);
                 let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
                 let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
-                // Broad highlight on smoke: low specular exponent.
-                let contribution = blinn_phong(L, V, N, sl.color_and_pad.xyz, 4.0, spec_int) * (atten * cone);
+                let contribution = blinn_phong(
+                    L,
+                    V,
+                    N,
+                    sl.color_and_pad.xyz,
+                    draw_params.params2.y,
+                    spec_int,
+                ) * (atten * cone);
                 static_specular = static_specular + contribution;
             }
         }
@@ -429,6 +449,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     out.opacity = opacity;
     out.lighting = lighting;
     out.frame_idx = frame_idx;
+    out.rotation = rotation;
     return out;
 }
 
@@ -611,15 +632,102 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         ddy,
     );
 
-    // The fragment shader does NO lighting. The full term is computed per-vertex
-    // and arrives interpolated: ambient floor, indirect, baked direct, plus
-    // static specular and runtime direct. Static-light-map specular is
-    // legacy-only; SDF static specular remains on both paths. Indirect and
-    // specular use camera-facing `N = V`; scatter baked and runtime direct are
-    // normal-free. The term is constant across the quad, so the interpolated
-    // value equals the prior per-fragment result. See `vs_main` /
-    // `VertexOutput.lighting`.
-    let lighting = in.lighting;
+    // Isotropic collections keep the complete static-specular term in the
+    // vertex result. Shimmer collections skip that vertex loop and calculate
+    // exactly one static-specular term here from their per-texel normal/mask.
+    var shimmer_specular = vec3<f32>(0.0);
+    if draw_params.params2.x != 0.0 {
+        let normal_sample = sample_post_retro(
+            sprite_normal,
+            sprite_sampler,
+            in.uv,
+            in.frame_idx,
+            ddx,
+            ddy,
+        );
+        // Inline BC5 decode: reconstruct tangent-space +Z from RG. Do not use
+        // the world material helper because its 2D sampler/input contract does
+        // not apply to sprite D2-array layers.
+        let tangent_xy = normal_sample.rg * 2.0 - vec2<f32>(1.0);
+        let tangent_z = sqrt(max(1.0 - dot(tangent_xy, tangent_xy), 0.0));
+        let tangent_normal = normalize(vec3<f32>(tangent_xy, tangent_z));
+
+        // Billboards have no authored tangent basis. Rebuild the camera-facing
+        // basis and rotate it with the sprite so its normal-map glint spins with
+        // the quad. `world_position` intentionally remains the sprite center.
+        let camera_basis = camera_right_up(uniforms.view_proj);
+        let base_right = camera_basis[0];
+        let base_up = camera_basis[1];
+        let cs = cos(in.rotation);
+        let sn = sin(in.rotation);
+        let right = base_right * cs + base_up * sn;
+        let up = -base_right * sn + base_up * cs;
+        let V = normalize(uniforms.camera_position - in.world_position);
+        let N = normalize(
+            right * tangent_normal.x + up * tangent_normal.y + V * tangent_normal.z,
+        );
+        let spec_mask = sample_post_retro(
+            sprite_specular,
+            sprite_sampler,
+            in.uv,
+            in.frame_idx,
+            ddx,
+            ddy,
+        ).r;
+
+        const LIGHT_TERM_SPECULAR: u32 = 0x40u;
+        let use_specular = (uniforms.light_term_mask & LIGHT_TERM_SPECULAR) != 0u;
+        let spec_int = max(draw_params.params.y, 0.0) * spec_mask;
+        // Retain every safety guard from the vertex static-specular loop before
+        // touching chunk-list buffers. Unlike the isotropic scatter path, do
+        // not omit non-SDF records: this view-dependent lobe is not represented
+        // in the normal-free scatter volume.
+        if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {
+            let local = in.world_position - chunk_grid.grid_origin;
+            let cell = vec3<i32>(floor(local / max(chunk_grid.cell_size, 1.0e-6)));
+            let dims = vec3<i32>(chunk_grid.dims);
+            if all(cell >= vec3<i32>(0)) && all(cell < dims) {
+                let ci = u32(cell.z) * chunk_grid.dims.x * chunk_grid.dims.y
+                       + u32(cell.y) * chunk_grid.dims.x
+                       + u32(cell.x);
+                let pair = chunk_offsets[ci];
+                let chunk_offset = pair.x;
+                let chunk_count = pair.y;
+                for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
+                    let light_idx = chunk_indices[chunk_offset + j];
+                    let sl = spec_lights[light_idx];
+                    let to_light = sl.position_and_range.xyz - in.world_position;
+                    let dist = length(to_light);
+                    let range = sl.position_and_range.w;
+                    if range > 0.0 && dist > range {
+                        continue;
+                    }
+                    let L = to_light / max(dist, 0.0001);
+                    let atten = select(
+                        1.0,
+                        max(1.0 - dist / max(range, 0.001), 0.0),
+                        range > 0.0,
+                    );
+                    let cone = cone_attenuation_cos(
+                        L,
+                        sl.cone_dir_and_type.xyz,
+                        sl.cone_cos.x,
+                        sl.cone_cos.y,
+                    );
+                    shimmer_specular = shimmer_specular + blinn_phong(
+                        L,
+                        V,
+                        N,
+                        sl.color_and_pad.xyz,
+                        draw_params.params2.y,
+                        spec_int,
+                    ) * (atten * cone);
+                }
+            }
+        }
+    }
+
+    let lighting = in.lighting + shimmer_specular;
     let lit_rgb = sprite_sample.rgb * lighting * in.opacity;
     // Emissive is self-only: it intentionally does not use LightTermMask.
     let emissive_rgb = sprite_sample.rgb * draw_params.params.w * in.opacity;

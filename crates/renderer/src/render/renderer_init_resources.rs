@@ -133,6 +133,23 @@ pub(crate) fn request_renderer_device(
             MAX_VERTEX_SAMPLED_TEXTURES,
         );
     }
+    // Shimmer's static-light loop is fragment-stage, so its five group-2
+    // light/chunk storage entries combine with group 3's three shared
+    // animation/scripted-light entries at the WebGPU downlevel limit of eight.
+    // Keep this layout-derived debug guard alongside the vertex counterpart;
+    // headless unit coverage pins the exact per-group inventory.
+    #[cfg(debug_assertions)]
+    {
+        const MAX_FRAGMENT_STORAGE_BUFFERS: u32 = 8;
+        debug_assert!(
+            billboard_pipeline_fragment_storage_buffer_count() <= MAX_FRAGMENT_STORAGE_BUFFERS,
+            "billboard pipeline FRAGMENT-visible storage-buffer count ({}) exceeds the \
+             downlevel-default max_storage_buffers_per_shader_stage ({}); trim fragment \
+             visibility or consolidate rather than raising the device limit",
+            billboard_pipeline_fragment_storage_buffer_count(),
+            MAX_FRAGMENT_STORAGE_BUFFERS,
+        );
+    }
     const REQUIRED_STORAGE_TEXTURES: u32 = 4;
     // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
     // WebGPU spec floor (128 MiB) on maps with many animated lights because

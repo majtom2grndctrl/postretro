@@ -411,6 +411,7 @@ pub(crate) fn build_full_renderer(
     // See: context/lib/rendering_pipeline.md §7.4
     let smoke_pass = SmokePass::new(
         device,
+        queue,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &lighting_bind_group_layout,

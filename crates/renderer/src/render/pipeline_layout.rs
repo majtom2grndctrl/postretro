@@ -376,6 +376,27 @@ pub(crate) fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> 
         .count() as u32
 }
 
+/// Count BGL entries charged against `max_storage_buffers_per_shader_stage` in
+/// the FRAGMENT stage. Billboard shimmer moves its static-light loop into
+/// `fs_main`, so this layout-derived inventory guards the same downlevel limit
+/// as the existing vertex counter without widening any shared BGL visibility.
+#[cfg(debug_assertions)]
+pub(crate) fn fragment_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.visibility.contains(wgpu::ShaderStages::FRAGMENT)
+                && matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+        })
+        .count() as u32
+}
+
 /// Count BGL entries charged against `max_sampled_textures_per_shader_stage` in
 /// the VERTEX stage. Billboard lighting samples its SH/direct/scatter volumes
 /// in `vs_main`, so the sampled-texture budget needs the same layout-derived
@@ -413,6 +434,21 @@ pub(crate) fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
         + vertex_storage_buffers(&lighting_bind_group_layout_entries())
         + vertex_storage_buffers(&sh_volume::sh_bind_group_layout_entries())
         + vertex_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries())
+}
+
+/// Single source of truth for the billboard pipeline's FRAGMENT-stage
+/// storage-buffer budget. Shimmer's per-texel static-specular loop reads the
+/// five group-2 light/chunk buffers; group 3's three animated/scripted-light
+/// buffers remain fragment-visible as part of the shared layout even though
+/// the billboard shader does not read them. Together they reach the WebGPU
+/// downlevel ceiling of eight, so their visibility must not grow.
+#[cfg(debug_assertions)]
+pub(crate) fn billboard_pipeline_fragment_storage_buffer_count() -> u32 {
+    fragment_storage_buffers(&uniform_bind_group_layout_entries())
+        + fragment_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries())
+        + fragment_storage_buffers(&lighting_bind_group_layout_entries())
+        + fragment_storage_buffers(&sh_volume::sh_bind_group_layout_entries())
+        + fragment_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries())
 }
 
 /// Layout-derived billboard VERTEX sampled-texture inventory. Group 3 owns the

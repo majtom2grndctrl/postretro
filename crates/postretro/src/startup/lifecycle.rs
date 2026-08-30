@@ -46,11 +46,16 @@ pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
 #[cfg(feature = "dev-tools")]
 const DEV_LEVEL_CYCLE_TARGET: &str = "content/dev/maps/combat-demo.prl";
 
+const DEFAULT_SPRITE_SPECULAR_INTENSITY: f32 = 0.3;
+const DEFAULT_SPRITE_SPECULAR_EXPONENT: f32 = 4.0;
+
 #[derive(Debug, Clone)]
 struct SpriteCollectionCandidate {
     collection: String,
     lifetime: Option<f32>,
     emissive: f32,
+    spec_intensity: Option<f32>,
+    spec_exponent: Option<f32>,
     frame_duration_ms: Option<f32>,
     source: String,
 }
@@ -61,6 +66,8 @@ impl From<ProjectileSpriteCollection> for SpriteCollectionCandidate {
             collection: value.collection,
             lifetime: value.lifetime,
             emissive: value.emissive,
+            spec_intensity: None,
+            spec_exponent: None,
             frame_duration_ms: value.frame_duration_ms,
             source: value.source,
         }
@@ -71,9 +78,11 @@ fn resolve_sprite_collection_draw_contract(
     collection: &str,
     candidates: &[SpriteCollectionCandidate],
     frame_count: usize,
-) -> Result<(f32, f32), String> {
+) -> Result<(f32, f32, f32, f32), String> {
     let mut lifetime: Option<(f32, &str)> = None;
     let mut emissive: Option<(f32, &str)> = None;
+    let mut spec_intensity: Option<(f32, &str)> = None;
+    let mut spec_exponent: Option<(f32, &str)> = None;
 
     for candidate in candidates {
         let required_lifetime = candidate
@@ -102,11 +111,37 @@ fn resolve_sprite_collection_draw_contract(
             ));
         }
         emissive.get_or_insert((candidate.emissive, &candidate.source));
+
+        if let Some(required) = candidate.spec_intensity {
+            if let Some((chosen, chosen_source)) = spec_intensity
+                && chosen.to_bits() != required.to_bits()
+            {
+                return Err(format!(
+                    "collection `{collection}` has conflicting specular intensities from `{chosen_source}` ({chosen}) and `{}` ({required})",
+                    candidate.source,
+                ));
+            }
+            spec_intensity.get_or_insert((required, &candidate.source));
+        }
+
+        if let Some(required) = candidate.spec_exponent {
+            if let Some((chosen, chosen_source)) = spec_exponent
+                && chosen.to_bits() != required.to_bits()
+            {
+                return Err(format!(
+                    "collection `{collection}` has conflicting specular exponents from `{chosen_source}` ({chosen}) and `{}` ({required})",
+                    candidate.source,
+                ));
+            }
+            spec_exponent.get_or_insert((required, &candidate.source));
+        }
     }
 
     Ok((
         lifetime.map_or(1.0, |(value, _)| value),
         emissive.map_or(0.0, |(value, _)| value),
+        spec_intensity.map_or(DEFAULT_SPRITE_SPECULAR_INTENSITY, |(value, _)| value),
+        spec_exponent.map_or(DEFAULT_SPRITE_SPECULAR_EXPONENT, |(value, _)| value),
     ))
 }
 
@@ -1159,6 +1194,8 @@ impl App {
                         collection: c.sprite.clone(),
                         lifetime: Some(c.lifetime),
                         emissive: 0.0,
+                        spec_intensity: None,
+                        spec_exponent: None,
                         frame_duration_ms: None,
                         source: format!("billboard emitter {id}"),
                     });
@@ -1175,26 +1212,28 @@ impl App {
                 let frame_count =
                     postretro_render_cpu::smoke::load_sprite_frames(&texture_root, &collection)
                         .map_or(1, |frames| frames.len());
-                let (lifetime, emissive) = match resolve_sprite_collection_draw_contract(
-                    &collection,
-                    &candidates,
-                    frame_count,
-                ) {
-                    Ok(contract) => contract,
-                    Err(reason) => {
-                        log::warn!(
-                            "[Loader] {reason}; skipping the collection so no accepted descriptor is silently overridden"
-                        );
-                        continue;
-                    }
-                };
+                let (lifetime, emissive, spec_intensity, spec_exponent) =
+                    match resolve_sprite_collection_draw_contract(
+                        &collection,
+                        &candidates,
+                        frame_count,
+                    ) {
+                        Ok(contract) => contract,
+                        Err(reason) => {
+                            log::warn!(
+                                "[Loader] {reason}; skipping the collection so no accepted descriptor is silently overridden"
+                            );
+                            continue;
+                        }
+                    };
                 renderer.register_smoke_collection(
                     &collection,
                     &texture_root,
                     &prm_cache_root,
                     render::SpriteCollectionRegistration {
                         baked_sidecar_eligible: map_billboard_collections.contains(&collection),
-                        spec_intensity: 0.3,
+                        spec_intensity,
+                        spec_exponent,
                         lifetime,
                         emissive,
                     },
@@ -1210,6 +1249,7 @@ impl App {
                 render::SpriteCollectionRegistration {
                     baked_sidecar_eligible: false,
                     spec_intensity: 0.45,
+                    spec_exponent: DEFAULT_SPRITE_SPECULAR_EXPONENT,
                     lifetime: weapon::impact_lifetime(),
                     emissive: 0.0,
                 },
@@ -1643,12 +1683,16 @@ mod tests {
         source: &str,
         lifetime: Option<f32>,
         emissive: f32,
+        spec_intensity: Option<f32>,
+        spec_exponent: Option<f32>,
         frame_duration_ms: Option<f32>,
     ) -> SpriteCollectionCandidate {
         SpriteCollectionCandidate {
             collection: "sprites/shared".to_string(),
             lifetime,
             emissive,
+            spec_intensity,
+            spec_exponent,
             frame_duration_ms,
             source: source.to_string(),
         }
@@ -1657,8 +1701,22 @@ mod tests {
     #[test]
     fn shared_projectile_collection_rejects_conflicting_draw_contracts() {
         let candidates = [
-            sprite_candidate("plasma.projectile.visual.body", None, 2.0, Some(50.0)),
-            sprite_candidate("rocket.projectile.visual.body", None, 1.0, Some(80.0)),
+            sprite_candidate(
+                "plasma.projectile.visual.body",
+                None,
+                2.0,
+                None,
+                None,
+                Some(50.0),
+            ),
+            sprite_candidate(
+                "rocket.projectile.visual.body",
+                None,
+                1.0,
+                None,
+                None,
+                Some(80.0),
+            ),
         ];
 
         let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
@@ -1672,8 +1730,15 @@ mod tests {
     #[test]
     fn projectile_and_emitter_collection_rejects_conflicting_emissive_contracts() {
         let candidates = [
-            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None),
-            sprite_candidate("plasma.projectile.visual.trail", Some(0.2), 3.0, None),
+            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None, None, None),
+            sprite_candidate(
+                "plasma.projectile.visual.trail",
+                Some(0.2),
+                3.0,
+                None,
+                None,
+                None,
+            ),
         ];
 
         let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
@@ -1687,17 +1752,102 @@ mod tests {
     #[test]
     fn compatible_shared_sprite_consumers_resolve_one_draw_contract() {
         let candidates = [
-            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None),
-            sprite_candidate("plasma.projectile.visual.trail", Some(0.2), 0.0, None),
-            sprite_candidate("plasma.projectile.visual.body", None, 0.0, None),
+            sprite_candidate("billboard emitter 7", Some(0.2), 0.0, None, None, None),
+            sprite_candidate(
+                "plasma.projectile.visual.trail",
+                Some(0.2),
+                0.0,
+                None,
+                None,
+                None,
+            ),
+            sprite_candidate("plasma.projectile.visual.body", None, 0.0, None, None, None),
         ];
 
-        let (lifetime, emissive) =
+        let (lifetime, emissive, spec_intensity, spec_exponent) =
             resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
                 .expect("identical consumers and a cadence-less body are compatible");
 
         assert!((lifetime - 0.2).abs() <= f32::EPSILON);
         assert!(emissive.abs() <= f32::EPSILON);
+        assert!((spec_intensity - DEFAULT_SPRITE_SPECULAR_INTENSITY).abs() <= f32::EPSILON);
+        assert!((spec_exponent - DEFAULT_SPRITE_SPECULAR_EXPONENT).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn sprite_collection_draw_contract_resolves_specular_overrides_and_zero_candidate_defaults() {
+        let (_, _, default_intensity, default_exponent) =
+            resolve_sprite_collection_draw_contract("sprites/shared", &[], 4)
+                .expect("no consumers retain the default draw contract");
+        assert!((default_intensity - DEFAULT_SPRITE_SPECULAR_INTENSITY).abs() <= f32::EPSILON);
+        assert!((default_exponent - DEFAULT_SPRITE_SPECULAR_EXPONENT).abs() <= f32::EPSILON);
+
+        let candidates = [
+            sprite_candidate(
+                "plasma.projectile.visual.trail",
+                Some(0.2),
+                0.0,
+                Some(0.75),
+                Some(12.0),
+                None,
+            ),
+            sprite_candidate(
+                "plasma.projectile.visual.body",
+                None,
+                0.0,
+                Some(0.75),
+                Some(12.0),
+                None,
+            ),
+        ];
+
+        let (_, _, spec_intensity, spec_exponent) =
+            resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+                .expect("matching authored specular values resolve one draw contract");
+        assert!((spec_intensity - 0.75).abs() <= f32::EPSILON);
+        assert!((spec_exponent - 12.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn sprite_collection_draw_contract_rejects_conflicting_specular_intensity_in_both_orders() {
+        for candidates in [
+            [
+                sprite_candidate("first", None, 0.0, Some(0.3), None, None),
+                sprite_candidate("second", None, 0.0, Some(0.6), None, None),
+            ],
+            [
+                sprite_candidate("second", None, 0.0, Some(0.6), None, None),
+                sprite_candidate("first", None, 0.0, Some(0.3), None, None),
+            ],
+        ] {
+            let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+                .expect_err("conflicting intensity overrides must reject the collection");
+
+            assert!(error.contains("conflicting specular intensities"));
+            assert!(error.contains("first"));
+            assert!(error.contains("second"));
+        }
+    }
+
+    #[test]
+    fn sprite_collection_draw_contract_rejects_conflicting_specular_exponent_in_both_orders() {
+        for candidates in [
+            [
+                sprite_candidate("first", None, 0.0, None, Some(4.0), None),
+                sprite_candidate("second", None, 0.0, None, Some(8.0), None),
+            ],
+            [
+                sprite_candidate("second", None, 0.0, None, Some(8.0), None),
+                sprite_candidate("first", None, 0.0, None, Some(4.0), None),
+            ],
+        ] {
+            let error = resolve_sprite_collection_draw_contract("sprites/shared", &candidates, 4)
+                .expect_err("conflicting exponent overrides must reject the collection");
+
+            assert!(error.contains("conflicting specular exponents"));
+            assert!(error.contains("first"));
+            assert!(error.contains("second"));
+        }
     }
 
     #[test]
@@ -1764,10 +1914,12 @@ mod tests {
             "plasma.projectile.visual.body",
             None,
             0.0,
+            None,
+            None,
             Some(50.0),
         )];
 
-        let (lifetime, _) =
+        let (lifetime, _, _, _) =
             resolve_sprite_collection_draw_contract("sprites/shared", &candidates, frames.len())
                 .expect("one consumer resolves");
 

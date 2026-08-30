@@ -46,7 +46,7 @@ pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
 #[cfg(feature = "dev-tools")]
 const DEV_LEVEL_CYCLE_TARGET: &str = "content/dev/maps/combat-demo.prl";
 
-const DEFAULT_SPRITE_SPECULAR_INTENSITY: f32 = 6.0;
+const DEFAULT_SPRITE_SPECULAR_INTENSITY: f32 = 2.0;
 const DEFAULT_SPRITE_SPECULAR_EXPONENT: f32 = 4.0;
 
 fn weapon_impact_sprite_registration() -> render::SpriteCollectionRegistration {

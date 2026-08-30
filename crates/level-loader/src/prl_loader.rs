@@ -9,7 +9,10 @@ use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
-use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
+    AnimatedBillboardDirectScatterDeltaVolumesSection,
+    MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -135,6 +138,38 @@ fn read_soft_optional_scatter_section_data<'a>(
             None
         }
     }
+}
+
+enum BoundedScatterSectionData<'a> {
+    Absent,
+    OverPackCap,
+    Data(&'a [u8]),
+}
+
+/// Apply section 48's encoded-size policy after validating container bounds
+/// but before its dense decoder allocates descriptor, CSR, or delta vectors.
+fn read_bounded_scatter_section_data_with_limit<'a>(
+    file_data: &'a [u8],
+    meta: &prl_format::ContainerMeta,
+    max_encoded_bytes: u64,
+) -> BoundedScatterSectionData<'a> {
+    let Some(data) = read_soft_optional_scatter_section_data(
+        file_data,
+        meta,
+        SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
+        "AnimatedBillboardDirectScatterDeltaVolumes",
+    ) else {
+        return BoundedScatterSectionData::Absent;
+    };
+    if data.len() as u64 > max_encoded_bytes {
+        log::warn!(
+            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes is {} B, above the {} B encoded section cap; disabling billboard direct scatter before decode",
+            data.len(),
+            max_encoded_bytes,
+        );
+        return BoundedScatterSectionData::OverPackCap;
+    }
+    BoundedScatterSectionData::Data(data)
 }
 
 fn derive_material_with_warning(
@@ -1988,15 +2023,44 @@ pub(crate) fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
 }
 
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
-    load_prl_with_delta_binding_limit(path, MAX_DELTA_SECTION_BINDING_BYTES)
+    load_prl_with_section_limits(
+        path,
+        MAX_DELTA_SECTION_BINDING_BYTES,
+        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+    )
 }
 
 /// Internal load entry point with an injectable per-section binding floor.
 /// Production always supplies the desktop floor above; tests use a tiny value
 /// to exercise the complete resolution path without a 128 MiB fixture.
+#[cfg(test)]
 fn load_prl_with_delta_binding_limit(
     path: &str,
     max_delta_section_binding_bytes: u64,
+) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_section_limits(
+        path,
+        max_delta_section_binding_bytes,
+        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn load_prl_with_scatter_pack_limit(
+    path: &str,
+    max_scatter_section_bytes: u64,
+) -> Result<LevelWorld, PrlLoadError> {
+    load_prl_with_section_limits(
+        path,
+        MAX_DELTA_SECTION_BINDING_BYTES,
+        max_scatter_section_bytes,
+    )
+}
+
+fn load_prl_with_section_limits(
+    path: &str,
+    max_delta_section_binding_bytes: u64,
+    max_scatter_section_bytes: u64,
 ) -> Result<LevelWorld, PrlLoadError> {
     let path_ref = Path::new(path);
     if !path_ref.exists() {
@@ -2640,41 +2704,41 @@ fn load_prl_with_delta_binding_limit(
     let mut animated_billboard_direct_scatter_delta_volumes: Option<
         AnimatedBillboardDirectScatterDeltaVolumesSection,
     > = match parsed_animated_direct_sh_delta_volumes.as_ref() {
-        Some(animated_direct) => match read_soft_optional_scatter_section_data(
+        Some(animated_direct) => match read_bounded_scatter_section_data_with_limit(
             &file_data,
             &meta,
-            SectionId::AnimatedBillboardDirectScatterDeltaVolumes,
-            "AnimatedBillboardDirectScatterDeltaVolumes",
+            max_scatter_section_bytes,
         ) {
-            Some(data) => match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data)
-            {
-                Ok(section) => match validate_animated_billboard_direct_scatter_delta_volumes(
-                    &section,
-                    animated_direct,
-                ) {
-                    Ok(()) => {
-                        log::info!(
-                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes: {} CSR entr(y/ies), {} dense delta halves",
-                            section.affinity_lights.len(),
-                            section.delta_rgba.len(),
-                        );
-                        Some(section)
-                    }
+            BoundedScatterSectionData::Data(data) => {
+                match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(data) {
+                    Ok(section) => match validate_animated_billboard_direct_scatter_delta_volumes(
+                        &section,
+                        animated_direct,
+                    ) {
+                        Ok(()) => {
+                            log::info!(
+                                "[PRL] AnimatedBillboardDirectScatterDeltaVolumes: {} CSR entr(y/ies), {} dense delta halves",
+                                section.affinity_lights.len(),
+                                section.delta_rgba.len(),
+                            );
+                            Some(section)
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
+                            );
+                            None
+                        }
+                    },
                     Err(error) => {
                         log::warn!(
-                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes unusable; disabling billboard direct scatter: {error}"
+                            "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
                         );
                         None
                     }
-                },
-                Err(error) => {
-                    log::warn!(
-                        "[PRL] AnimatedBillboardDirectScatterDeltaVolumes malformed; disabling billboard direct scatter: {error}"
-                    );
-                    None
                 }
-            },
-            None => None,
+            }
+            BoundedScatterSectionData::Absent | BoundedScatterSectionData::OverPackCap => None,
         },
         None => None,
     };

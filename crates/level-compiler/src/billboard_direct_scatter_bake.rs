@@ -8,6 +8,7 @@ use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
     AnimatedBillboardDirectScatterDeltaVolumesSection,
     BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT,
     BILLBOARD_DIRECT_SCATTER_PROBES_PER_AFFINITY_ENTRY,
+    MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
 };
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::billboard_direct_scatter_volume::{
@@ -139,6 +140,29 @@ pub(crate) fn has_animated_static_light_map_entries(
     })
 }
 
+/// Predict section 48's exact packed size from finalized id 45 before a cache
+/// lookup or dense bake can materialize its 64-probe blocks.
+pub(crate) fn animated_scatter_layout_fits_pack_cap(
+    direct_deltas: &AnimatedDirectShDeltaVolumesSection,
+) -> bool {
+    animated_scatter_layout_fits_pack_cap_with_limit(
+        direct_deltas,
+        MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+    )
+}
+
+fn animated_scatter_layout_fits_pack_cap_with_limit(
+    direct_deltas: &AnimatedDirectShDeltaVolumesSection,
+    max_encoded_bytes: u64,
+) -> bool {
+    AnimatedBillboardDirectScatterDeltaVolumesSection::encoded_len_for_layout(
+        direct_deltas.animation_descriptor_indices.len(),
+        direct_deltas.affinity_offsets.len(),
+        direct_deltas.affinity_lights.len(),
+    )
+    .is_some_and(|bytes| bytes <= max_encoded_bytes)
+}
+
 /// Bake unit-radiance animated scatter deltas. The supplied section-45 output
 /// is the authority for descriptor mapping and CSR entry order; this function
 /// copies that layout verbatim and only supplies the dense 4×4×4 RGB blocks.
@@ -149,6 +173,13 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<AnimatedBillboardDirectScatterDeltaVolumesSection> {
+    if !animated_scatter_layout_fits_pack_cap(direct_deltas) {
+        log::warn!(
+            "[Compiler] AnimatedBillboardDirectScatterDeltaVolumes skipped: predicted encoded section exceeds the {} byte pack cap",
+            MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+        );
+        return None;
+    }
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
         return None;
@@ -810,6 +841,41 @@ mod tests {
         assert!(animated_layout_matches(&direct, &scatter));
         assert_eq!(scatter.delta_rgba.len(), 2 * 64 * 4);
         assert!(scatter.delta_rgba.chunks_exact(4).all(|rgba| rgba[3] == 0));
+    }
+
+    // Regression: retained script-mutable id-45 CSR entries can have empty
+    // direct-SH payloads while still requiring dense 512-byte id-48 blocks.
+    #[test]
+    fn animated_scatter_compiler_cap_counts_dense_bytes_before_bake_or_cache() {
+        let direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [2, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![0; 2],
+            cell_levels: vec![0; 2],
+            affinity_offsets: vec![0, 1, 2],
+            affinity_lights: vec![0, 0],
+            delta_subblocks: Vec::new(),
+        };
+        let encoded_bytes =
+            AnimatedBillboardDirectScatterDeltaVolumesSection::encoded_len_for_layout(
+                direct.animation_descriptor_indices.len(),
+                direct.affinity_offsets.len(),
+                direct.affinity_lights.len(),
+            )
+            .expect("fixture layout must have a finite encoded size");
+
+        assert!(animated_scatter_layout_fits_pack_cap_with_limit(
+            &direct,
+            encoded_bytes,
+        ));
+        assert!(!animated_scatter_layout_fits_pack_cap_with_limit(
+            &direct,
+            encoded_bytes - 1,
+        ));
+        assert_eq!(encoded_bytes, 18 + 4 + 12 + 8 + 2 * 64 * 4 * 2);
     }
 
     #[test]

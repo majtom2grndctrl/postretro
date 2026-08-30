@@ -49,6 +49,16 @@ const DEV_LEVEL_CYCLE_TARGET: &str = "content/dev/maps/combat-demo.prl";
 const DEFAULT_SPRITE_SPECULAR_INTENSITY: f32 = 0.3;
 const DEFAULT_SPRITE_SPECULAR_EXPONENT: f32 = 4.0;
 
+fn weapon_impact_sprite_registration() -> render::SpriteCollectionRegistration {
+    render::SpriteCollectionRegistration {
+        baked_sidecar_eligible: false,
+        spec_intensity: 0.45,
+        spec_exponent: DEFAULT_SPRITE_SPECULAR_EXPONENT,
+        lifetime: weapon::impact_lifetime(),
+        emissive: 0.0,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SpriteCollectionCandidate {
     collection: String,
@@ -1246,13 +1256,7 @@ impl App {
                 collection,
                 &texture_root,
                 &prm_cache_root,
-                render::SpriteCollectionRegistration {
-                    baked_sidecar_eligible: false,
-                    spec_intensity: 0.45,
-                    spec_exponent: DEFAULT_SPRITE_SPECULAR_EXPONENT,
-                    lifetime: weapon::impact_lifetime(),
-                    emissive: 0.0,
-                },
+                weapon_impact_sprite_registration(),
             );
             particle_render.register_sprite(collection);
         }
@@ -1806,6 +1810,17 @@ mod tests {
                 .expect("matching authored specular values resolve one draw contract");
         assert!((spec_intensity - 0.75).abs() <= f32::EPSILON);
         assert!((spec_exponent - 12.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn weapon_impact_sprite_registration_retains_authored_specular_defaults() {
+        // Regression: weapon impacts bypass shared candidate resolution and need their own guard.
+        let registration = weapon_impact_sprite_registration();
+
+        assert!((registration.spec_intensity - 0.45).abs() <= f32::EPSILON);
+        assert!(
+            (registration.spec_exponent - DEFAULT_SPRITE_SPECULAR_EXPONENT).abs() <= f32::EPSILON
+        );
     }
 
     #[test]

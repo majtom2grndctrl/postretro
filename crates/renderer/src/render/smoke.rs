@@ -483,6 +483,12 @@ fn build_draw_params(
     bytes
 }
 
+/// Neutral optional-slot texels for the shared sprite D2-array placeholders.
+/// The specular mask is fully enabled (R = 1.0); the normal is a flat RG
+/// encoding with an opaque alpha channel.
+const SPRITE_SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [255];
+const SPRITE_NORMAL_PLACEHOLDER_PIXEL: [u8; 4] = [128, 128, 255, 255];
+
 /// Create one renderer-owned D2-array fallback layer for an optional shimmer
 /// input. Every sprite bind group always supplies bindings 3 and 4; collections
 /// without a `NORMAL` slot select these neutral views instead of failing load.
@@ -842,14 +848,14 @@ impl SmokePass {
                 queue,
                 "Sprite Specular Placeholder Array",
                 wgpu::TextureFormat::R8Unorm,
-                &[255],
+                &SPRITE_SPECULAR_PLACEHOLDER_PIXEL,
             );
         let (normal_placeholder_texture, normal_placeholder_view) = create_sprite_placeholder_array(
             device,
             queue,
             "Sprite Normal Placeholder Array",
             wgpu::TextureFormat::Rgba8Unorm,
-            &[128, 128, 255, 255],
+            &SPRITE_NORMAL_PLACEHOLDER_PIXEL,
         );
 
         Self {
@@ -1977,6 +1983,14 @@ mod tests {
         }
         assert_eq!(entries[3].visibility, wgpu::ShaderStages::FRAGMENT);
         assert_eq!(entries[4].visibility, wgpu::ShaderStages::FRAGMENT);
+    }
+
+    #[test]
+    fn sprite_placeholder_pixels_encode_neutral_optional_material_inputs() {
+        // These CPU bytes are uploaded into the one-layer D2-array views used
+        // whenever a sprite collection lacks an optional material slot.
+        assert_eq!(SPRITE_SPECULAR_PLACEHOLDER_PIXEL, [255]);
+        assert_eq!(SPRITE_NORMAL_PLACEHOLDER_PIXEL, [128, 128, 255, 255]);
     }
 
     #[test]

@@ -97,16 +97,17 @@ pub(crate) fn request_renderer_device(
         forward_pipeline_sampled_texture_count(cube_array_supported),
         REQUIRED_SAMPLED_TEXTURES
     );
-    // Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
-    // static-specular, dynamic-diffuse); the group-6 instance storage buffer is
-    // VERTEX-read (see §7.4). wgpu charges `max_storage_buffers_per_shader_stage` against
-    // the BGL *entry* set per stage — every VERTEX-visible storage entry across the
-    // Billboard Pipeline Layout's groups counts, read or not. The downlevel/WebGPU
-    // default ceiling (we do not raise it — broad hardware compat for a
-    // modder-friendly retro FPS) is 8. Six are genuinely vertex-read; if a shared
-    // BGL re-widens an unused storage entry to VERTEX the count hits 9 and pipeline
-    // creation fails on real GPUs (headless CI never triggers it). debug-only for
-    // the same reason as the texture budget above.
+    // Billboard SH, direct scatter, dynamic diffuse, and isotropic static
+    // specular run in `vs_main`; shimmer static specular runs in `fs_main`.
+    // The group-6 instance storage buffer is VERTEX-read (see §7.4). wgpu
+    // charges `max_storage_buffers_per_shader_stage` against the BGL entry set
+    // per stage — every VERTEX-visible storage entry across the Billboard
+    // Pipeline Layout's groups counts, read or not. The downlevel/WebGPU default
+    // ceiling (we do not raise it — broad hardware compat for a modder-friendly
+    // retro FPS) is 8. Six are genuinely vertex-read; if a shared BGL re-widens
+    // an unused storage entry to VERTEX the count hits 9 and pipeline creation
+    // fails on real GPUs (headless CI never triggers it). debug-only for the same
+    // reason as the texture budget above.
     // Gated as a block: both the helper and the budget const are debug-only,
     // so neither is referenced in release (where the helper does not exist).
     #[cfg(debug_assertions)]

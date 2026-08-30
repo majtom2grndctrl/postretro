@@ -206,17 +206,18 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     );
 }
 
-// Regression: billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
-// static-specular, dynamic-diffuse) and the group-6 instance storage buffer is
-// VERTEX-read. wgpu charges `max_storage_buffers_per_shader_stage`
-// against the BGL *entry* set per stage — every VERTEX-visible storage entry in
-// the Billboard Pipeline Layout counts, whether or not vs_main reads it. The hoist
-// initially left the three group-3 anim/scripted-light storage buffers marked
-// VERTEX-visible, pushing the count to 9 > the downlevel-default 8 and crashing
-// `create_pipeline_layout` on real GPUs ("Too many bindings of type StorageBuffers
-// in Stage VERTEX") — uncatchable in CI, which has no GPU. This re-derives the
-// count from the same GPU-free BGL builders the layout is composed from and pins
-// it at <= 8. Mirrors `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
+// Regression: billboard SH, direct scatter, dynamic diffuse, and isotropic
+// static specular run in `vs_main`; shimmer static specular runs in `fs_main`.
+// The group-6 instance storage buffer is VERTEX-read. wgpu charges
+// `max_storage_buffers_per_shader_stage` against the BGL entry set per stage —
+// every VERTEX-visible storage entry in the Billboard Pipeline Layout counts,
+// whether or not vs_main reads it. The hoist initially left the three group-3
+// anim/scripted-light storage buffers marked VERTEX-visible, pushing the count
+// to 9 > the downlevel-default 8 and crashing `create_pipeline_layout` on real
+// GPUs ("Too many bindings of type StorageBuffers in Stage VERTEX") —
+// uncatchable in CI, which has no GPU. This re-derives the count from the same
+// GPU-free BGL builders the layout is composed from and pins it at <= 8. Mirrors
+// `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
 #[cfg(debug_assertions)]
 #[test]
 fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {

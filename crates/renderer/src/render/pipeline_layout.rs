@@ -299,11 +299,10 @@ pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntr
 //          3=ChunkGridInfo, 4=chunk offsets, 5=chunk indices. All buffers, no
 // textures.
 pub(crate) fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
-    // Billboard hoists its static-specular and dynamic-light loops into the
-    // vertex stage, so group 2 must be VERTEX-visible too. This is additive —
-    // the forward (FRAGMENT) and fog (COMPUTE) pipelines still bind the same
-    // group; wgpu validates the widened visibility at pipeline creation. The
-    // mesh pipeline reuses only groups 0 and 1, so it is unaffected.
+    // Billboard evaluates isotropic static specular and dynamic direct in the
+    // vertex stage, while shimmer static specular reads the same records in the
+    // fragment stage. Group 2 therefore needs both visibilities. The forward
+    // pipeline also reads it in FRAGMENT; mesh reuses only groups 0 and 1.
     let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -357,8 +356,8 @@ pub(crate) fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) 
 /// visibility includes VERTEX. wgpu charges this limit against the BGL *entry* set
 /// of a pipeline layout per stage — a vertex-visible storage entry counts even if
 /// no vertex shader actually reads it (exactly the over-broad-visibility trap that
-/// hoisting billboard lighting into `vs_main` fell into). The downlevel/WebGPU
-/// default ceiling is 8.
+/// hoisting billboard's vertex-read lighting into `vs_main` fell into). The
+/// downlevel/WebGPU default ceiling is 8.
 #[cfg(debug_assertions)]
 pub(crate) fn vertex_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
@@ -418,15 +417,16 @@ pub(crate) fn vertex_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) ->
 /// group order: 0 camera, 1 sheet, 2 lighting, 3 SH volume, 6 instance). GPU-free,
 /// so it runs in unit tests and `Renderer::new` without a device.
 ///
-/// Billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
-/// static-specular, dynamic-diffuse); the group-6 instance storage buffer is
-/// VERTEX-read. The genuinely vertex-read storage buffers are: group 2's five
-/// (`lights`, `light_influence`, `spec_lights`, `chunk_offsets`, `chunk_indices`)
-/// and group 6's one (`sprites`) — six total. The three group-3 anim/scripted-light
-/// storage buffers are read only in the fragment/compute stages, so they must NOT
-/// carry VERTEX visibility (see `sh_bind_group_layout_entries`); if they did, this
-/// would report 9 and pipeline creation would fail on real GPUs with the
-/// downlevel-default limit of 8.
+/// Billboard SH, direct scatter, dynamic diffuse, and isotropic static specular
+/// run in `vs_main`; shimmer static specular runs in `fs_main`. The group-6
+/// instance storage buffer is VERTEX-read. The vertex-read buffers are group
+/// 2's five (`lights`, `light_influence`, `spec_lights`, `chunk_offsets`,
+/// `chunk_indices`) and group 6's one (`sprites`) — six total. The three group-3
+/// anim/scripted-light storage buffers are read only in the fragment/compute
+/// stages, so they must NOT carry VERTEX visibility (see
+/// `sh_bind_group_layout_entries`); if they did, this would report 9 and
+/// pipeline creation would fail on real GPUs with the downlevel-default limit
+/// of 8.
 #[cfg(debug_assertions)]
 pub(crate) fn billboard_pipeline_vertex_storage_buffer_count() -> u32 {
     vertex_storage_buffers(&uniform_bind_group_layout_entries())

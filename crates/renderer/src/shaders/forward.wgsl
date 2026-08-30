@@ -51,8 +51,9 @@ struct Uniforms {
     // 16-byte row so the struct stride is exactly 128 — wgpu rejects the
     // pipeline if the CPU-side `UNIFORM_SIZE` and WGSL-derived stride drift.
     dynamic_direct_scale: f32,
-    // Level-load-fixed normal-free billboard direct-scatter availability.
-    // Forward does not read it; the field preserves the shared 128-byte ABI.
+    // Level-load-fixed billboard scatter mode: 0 unavailable, 1 static base,
+    // 2 composed animated. Forward does not read it; the field preserves the
+    // shared 128-byte ABI.
     has_scatter: u32,
     has_direct: u32,
     total_light_count: u32,

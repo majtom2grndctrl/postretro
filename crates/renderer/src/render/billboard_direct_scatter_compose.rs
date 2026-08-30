@@ -396,6 +396,18 @@ mod tests {
             changed,
             LightTermMask::ALL,
         ));
+
+        // P11 regression: clearing static direct must schedule the compose that
+        // removes the base before a composed texture is sampled via animated.
+        let mut static_disabled = LightTermMask::ALL;
+        static_disabled.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        assert!(scatter_compose_should_dispatch(
+            false,
+            false,
+            false,
+            static_disabled,
+            LightTermMask::ALL,
+        ));
     }
 
     #[test]
@@ -461,6 +473,20 @@ mod tests {
                 &[[2.0, 3.0, 4.0]],
             ),
             [1.0, 2.0, 3.0],
+        );
+
+        let mut static_disabled = LightTermMask::ALL;
+        static_disabled.set_enabled(LightTermMask::BAKED_DIRECT_STATIC, false);
+        assert_rgb_close(
+            compose_scatter_reference(
+                [1.0, 2.0, 3.0],
+                static_disabled,
+                &[1],
+                &[0, 1],
+                &[[99.0; 3], scale],
+                &[[2.0, 3.0, 4.0]],
+            ),
+            [1.0, 3.0, 1.0],
         );
     }
 

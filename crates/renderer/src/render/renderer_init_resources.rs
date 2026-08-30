@@ -613,7 +613,7 @@ pub(crate) fn build_initial_uniform_data(
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: false,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
-        has_scatter: false,
+        has_scatter: BillboardScatterMode::Unavailable,
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,

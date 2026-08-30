@@ -23,7 +23,7 @@ use crate::direct_sh_bake::{
 };
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility};
-use crate::map_data::MapLight;
+use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, incident_radiance_at_point,
@@ -54,18 +54,20 @@ pub struct BillboardDirectScatterBakeInputs<'a, 'b> {
     pub animated_lights: &'a AnimatedBakedLights<'b>,
 }
 
-/// Bake static normal-free direct scatter. `None` means there is no
-/// `static_light_map` source at all; callers must omit section 47 rather than
-/// serializing an all-zero grid, which keeps legacy billboard lighting selected.
+/// Bake the normal-free direct-scatter base. A zero-RGB base is emitted only
+/// when an animated scatter section with entries needs section 47 as its grid
+/// and validity anchor. Static-only maps with no contributing
+/// `static_light_map` source still omit section 47.
 pub fn bake_billboard_direct_scatter_volume_cached_controlled(
     inputs: &BillboardDirectScatterBakeInputs<'_, '_>,
     config: &ShConfig,
+    animated_anchor_required: bool,
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<BillboardDirectScatterVolumeSection> {
     let static_lights = static_light_refs(inputs.sh_ctx);
     let (direct_lights, global_indices) = static_direct_lights(&static_lights);
-    if direct_lights.is_empty() {
+    if !scatter_base_required(!direct_lights.is_empty(), animated_anchor_required) {
         return None;
     }
 
@@ -119,6 +121,22 @@ pub fn bake_billboard_direct_scatter_volume_cached_controlled(
         cache.put(&key, &section.to_bytes());
     }
     Some(section)
+}
+
+fn scatter_base_required(has_static_direct: bool, has_animated_entries: bool) -> bool {
+    has_static_direct || has_animated_entries
+}
+
+pub(crate) fn has_animated_static_light_map_entries(
+    direct_deltas: &AnimatedDirectShDeltaVolumesSection,
+    animated_lights: &AnimatedBakedLights<'_>,
+) -> bool {
+    direct_deltas.affinity_lights.iter().any(|&index| {
+        animated_lights
+            .entries()
+            .get(index as usize)
+            .is_some_and(|entry| entry.light.shadow_type == ShadowType::StaticLightMap)
+    })
 }
 
 /// Bake unit-radiance animated scatter deltas. The supplied section-45 output
@@ -286,14 +304,6 @@ fn static_probe_scatter(
         .get(reach.cell_for_probe(px, py, pz))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let lights: Vec<&MapLight> = reaching
-        .iter()
-        .map(|&index| direct_lights[index as usize])
-        .collect();
-    let seeds: Vec<u64> = reaching
-        .iter()
-        .map(|&index| global_indices[index as usize])
-        .collect();
     let ray_ctx = RaytracingCtx {
         bvh: inputs.sh_ctx.bvh,
         primitives: inputs.sh_ctx.primitives,
@@ -301,8 +311,10 @@ fn static_probe_scatter(
     };
     encode_static_scatter(
         vec3_from(layout.probe_positions[probe_index]),
-        &lights,
-        &seeds,
+        reaching.iter().map(|&index| {
+            let index = index as usize;
+            (direct_lights[index], global_indices[index])
+        }),
         probe_index as u64,
         |from, to| segment_clear(&ray_ctx, from, to),
     )
@@ -363,14 +375,13 @@ fn bake_animated_scatter_block(
     out
 }
 
-fn encode_static_scatter(
+fn encode_static_scatter<'a>(
     probe: Vec3,
-    lights: &[&MapLight],
-    global_indices: &[u64],
+    lights: impl IntoIterator<Item = (&'a MapLight, u64)>,
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> [u16; 4] {
-    let radiance = visible_radiance_sum(probe, lights, global_indices, probe_index, trace);
+    let radiance = visible_radiance_sum(probe, lights, probe_index, trace);
     [
         f32_to_f16_bits(radiance.x),
         f32_to_f16_bits(radiance.y),
@@ -386,7 +397,7 @@ fn encode_animated_scatter(
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> [u16; 4] {
-    let radiance = visible_radiance_sum(probe, &[light], &[source_index], probe_index, trace);
+    let radiance = visible_radiance_sum(probe, [(light, source_index)], probe_index, trace);
     [
         f32_to_f16_bits(radiance.x),
         f32_to_f16_bits(radiance.y),
@@ -398,15 +409,14 @@ fn encode_animated_scatter(
 /// Direct radiance without a surface cosine or SH projection. `light` remains
 /// the only authority for point falloff, spotlight cones, and directional
 /// intensity; `soft_visibility` remains the shadow authority.
-fn visible_radiance_sum(
+fn visible_radiance_sum<'a>(
     probe: Vec3,
-    lights: &[&MapLight],
-    global_indices: &[u64],
+    lights: impl IntoIterator<Item = (&'a MapLight, u64)>,
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> Vec3 {
     let mut sum = Vec3::ZERO;
-    for (&light, &global_index) in lights.iter().zip(global_indices) {
+    for (light, global_index) in lights {
         let Some((radiance, direction)) = incident_radiance_at_point(light, probe) else {
             continue;
         };
@@ -613,7 +623,7 @@ mod tests {
     use crate::bvh_build::build_bvh;
     use crate::geometry::{FaceIndexRange, GeometryResult};
     use crate::light_namespaces::StaticBakedLights;
-    use crate::map_data::{FalloffModel, LightAnimation, LightType, ShadowType};
+    use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
 
     fn light(light_type: LightType) -> MapLight {
@@ -721,7 +731,8 @@ mod tests {
                 .expect("fixture must reach probe")
                 .0
         });
-        let actual = visible_radiance_sum(probe, &lights, &[0, 1, 2], 0, |_, _| true);
+        let actual =
+            visible_radiance_sum(probe, lights.iter().copied().zip([0, 1, 2]), 0, |_, _| true);
 
         assert_vec3_close(actual, expected);
     }
@@ -729,9 +740,9 @@ mod tests {
     #[test]
     fn visible_scatter_is_zero_for_an_occluded_light() {
         let point = light(LightType::Point);
-        let actual = visible_radiance_sum(Vec3::ZERO, &[&point], &[0], 0, |_, _| false);
+        let actual = visible_radiance_sum(Vec3::ZERO, [(&point, 0)], 0, |_, _| false);
 
-        assert_eq!(actual, Vec3::ZERO);
+        assert_vec3_close(actual, Vec3::ZERO);
     }
 
     #[test]
@@ -747,11 +758,11 @@ mod tests {
         point.origin = DVec3::new(0.5, -0.5, 0.0);
         let probe = Vec3::new(0.5, -0.5, -2.0);
 
-        let actual = visible_radiance_sum(probe, &[&point], &[0], 0, |from, to| {
+        let actual = visible_radiance_sum(probe, [(&point, 0)], 0, |from, to| {
             segment_clear(&trace_ctx, from, to)
         });
 
-        assert_eq!(actual, Vec3::ZERO);
+        assert_vec3_close(actual, Vec3::ZERO);
     }
 
     #[test]
@@ -766,12 +777,11 @@ mod tests {
 
         let actual = visible_radiance_sum(
             Vec3::ZERO,
-            &[&out_of_range, &outside_cone],
-            &[0, 1],
+            [(&out_of_range, 0), (&outside_cone, 1)],
             0,
             |_, _| true,
         );
-        assert_eq!(actual, Vec3::ZERO);
+        assert_vec3_close(actual, Vec3::ZERO);
     }
 
     #[test]
@@ -804,6 +814,8 @@ mod tests {
 
     #[test]
     fn animated_scatter_bake_preserves_final_section_45_mapping_and_unit_scale() {
+        // Regression: an animated-only static-light-map emitter previously
+        // produced id 45 but no id 47, which cascaded into no id 48.
         let mut animated = light(LightType::Point);
         animated.animation = Some(LightAnimation {
             period: 1.0,
@@ -847,6 +859,29 @@ mod tests {
             affinity_lights: vec![0],
             delta_subblocks: Vec::new(),
         };
+        assert!(has_animated_static_light_map_entries(
+            &direct,
+            &animated_lights
+        ));
+
+        let base = bake_billboard_direct_scatter_volume_cached_controlled(
+            &inputs,
+            &ShConfig { probe_spacing: 1.0 },
+            has_animated_static_light_map_entries(&direct, &animated_lights),
+            None,
+            &BakeControl::unrestricted(),
+        )
+        .expect("animated-only scatter entries require a section-47 anchor");
+        assert!(base.scatter_rgba.chunks_exact(4).all(|rgba| {
+            rgba[..3] == [0, 0, 0]
+                && (rgba[3] == 0 || rgba[3] == BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16)
+        }));
+        assert!(
+            base.scatter_rgba
+                .chunks_exact(4)
+                .any(|rgba| rgba[3] == BILLBOARD_DIRECT_SCATTER_VALIDITY_ONE_F16),
+            "the zero-RGB anchor must still carry usable probe validity"
+        );
 
         let scatter = bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
             &inputs,
@@ -876,5 +911,35 @@ mod tests {
         let static_lights = vec![&sdf];
         let (direct, _) = static_direct_lights(&static_lights);
         assert!(direct.is_empty());
+        assert!(!scatter_base_required(false, false));
+        assert!(scatter_base_required(false, true));
+
+        let mut animated_sdf = sdf.clone();
+        animated_sdf.animation = Some(LightAnimation {
+            period: 1.0,
+            phase: 0.0,
+            brightness: Some(vec![0.0, 1.0]),
+            color: None,
+            direction: None,
+            start_active: true,
+        });
+        let animated_sdf = vec![animated_sdf];
+        let animated_sdf_namespace = AnimatedBakedLights::from_lights(&animated_sdf);
+        let direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: Vec::new(),
+        };
+        assert!(!has_animated_static_light_map_entries(
+            &direct,
+            &animated_sdf_namespace
+        ));
     }
 }

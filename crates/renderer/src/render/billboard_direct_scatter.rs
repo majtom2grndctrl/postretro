@@ -3,6 +3,7 @@
 
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
+use postretro_render_cpu::frame_uniforms::BillboardScatterMode;
 use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 use postretro_render_cpu::sh_volume::BIND_BILLBOARD_DIRECT_SCATTER;
 use wgpu::util::DeviceExt;
@@ -12,21 +13,14 @@ use super::sh_volume::AnimatedLightBuffers;
 /// Renderer-owned textures for the billboard direct-scatter path. The sampled
 /// view is selected only during level load: static maps sample the uploaded
 /// base, animated maps sample the compose target, and unavailable maps bind a
-/// valid 1×1×1 dummy while `has_scatter` remains false.
+/// valid 1×1×1 dummy while `has_scatter` remains zero.
 pub(super) struct BillboardDirectScatterResources {
-    pub(super) has_scatter: bool,
+    pub(super) has_scatter: BillboardScatterMode,
     pub(super) has_animated_deltas: bool,
     pub(super) base_view: wgpu::TextureView,
     pub(super) sampled_view: wgpu::TextureView,
     pub(super) composed_storage_view: Option<wgpu::TextureView>,
     animated_descriptor_indices: Vec<u32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScatterBindingMode {
-    Legacy,
-    Static,
-    Animated,
 }
 
 /// This decision is intentionally level-fixed. It is made while resources are
@@ -36,11 +30,11 @@ fn scatter_binding_mode(
     base_sh_usable: bool,
     has_base: bool,
     has_animated_companion: bool,
-) -> ScatterBindingMode {
+) -> BillboardScatterMode {
     match (base_sh_usable && has_base, has_animated_companion) {
-        (false, _) => ScatterBindingMode::Legacy,
-        (true, false) => ScatterBindingMode::Static,
-        (true, true) => ScatterBindingMode::Animated,
+        (false, _) => BillboardScatterMode::Unavailable,
+        (true, false) => BillboardScatterMode::StaticBase,
+        (true, true) => BillboardScatterMode::ComposedAnimated,
     }
 }
 
@@ -64,7 +58,7 @@ impl BillboardDirectScatterResources {
         // validated lockstep sibling of section 45. Still require a usable base
         // here: a device-limit fallback must select the legacy billboard path.
         let binding_mode = scatter_binding_mode(base_sh_usable, has_scatter, animated.is_some());
-        let has_animated_deltas = binding_mode == ScatterBindingMode::Animated;
+        let has_animated_deltas = binding_mode == BillboardScatterMode::ComposedAnimated;
         let (sampled_view, composed_storage_view) = if has_animated_deltas {
             let dimensions = base
                 .expect("a usable animated scatter companion requires its base section")
@@ -99,7 +93,7 @@ impl BillboardDirectScatterResources {
         };
 
         Self {
-            has_scatter,
+            has_scatter: binding_mode,
             has_animated_deltas,
             base_view,
             sampled_view,
@@ -245,17 +239,17 @@ mod tests {
     fn load_fixed_binding_selection_preserves_static_and_invalid_companion_contracts() {
         assert_eq!(
             scatter_binding_mode(true, true, false),
-            ScatterBindingMode::Static,
+            BillboardScatterMode::StaticBase,
             "a valid section-47 map without section 48 must take scatter"
         );
         assert_eq!(
             scatter_binding_mode(true, true, true),
-            ScatterBindingMode::Animated,
+            BillboardScatterMode::ComposedAnimated,
             "a validated companion must sample the composed map"
         );
         assert_eq!(
             scatter_binding_mode(true, false, true),
-            ScatterBindingMode::Legacy,
+            BillboardScatterMode::Unavailable,
             "an unavailable base (including a rejected section 48 pair) must bind the dummy and take legacy lighting"
         );
     }
@@ -264,8 +258,26 @@ mod tests {
     fn unusable_base_sh_forces_legacy_scatter_binding_even_when_sections_are_present() {
         assert_eq!(
             scatter_binding_mode(false, true, true),
-            ScatterBindingMode::Legacy,
+            BillboardScatterMode::Unavailable,
             "a device-limit SH fallback must bind the dummy scatter texture and clear has_scatter"
         );
+    }
+
+    #[test]
+    fn load_fixed_scatter_modes_preserve_nonzero_availability_semantics() {
+        assert_eq!(BillboardScatterMode::Unavailable as u32, 0);
+        assert!(BillboardScatterMode::StaticBase.is_available());
+        assert!(BillboardScatterMode::ComposedAnimated.is_available());
+        assert_ne!(BillboardScatterMode::StaticBase as u32, 0);
+        assert_ne!(BillboardScatterMode::ComposedAnimated as u32, 0);
+    }
+
+    #[test]
+    fn animated_only_pair_selects_composed_scatter_without_legacy_fallback() {
+        // Regression: animated-only maps now have a zero-base id-47 anchor;
+        // they must still select the composed resource rather than legacy SH.
+        let mode = scatter_binding_mode(true, true, true);
+        assert_eq!(mode, BillboardScatterMode::ComposedAnimated);
+        assert!(mode.is_available());
     }
 }

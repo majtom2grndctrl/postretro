@@ -156,7 +156,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 12;
 //   80..84   light_count  84..88  time  88..92   light_term_mask  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
-//   112..116 has_scatter  116..120 has_direct
+//   112..116 has_scatter mode  116..120 has_direct
 //   120..124 total_light_count  124..128 spec_shadowmask_force_one
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
@@ -169,7 +169,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 12;
 // is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
 // The dynamic-direct tail (Task 6 of baked-static-direct-sh): repurposes the
 // old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
-// 16-byte row carries `has_scatter` + `has_direct` +
+// 16-byte row carries load-fixed `has_scatter` mode + `has_direct` +
 // `total_light_count`; Task 3 repurposes that row's trailing word as
 // `spec_shadowmask_force_one`.
 // Only billboard.wgsl reads these (the mesh path uses its own group-4

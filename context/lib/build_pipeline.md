@@ -242,7 +242,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | TriggerVolumes | 44 | When the map has at least one `trigger_volume` or `switch`; trigger AABBs, direct mover commands, and named enter/exit events |
 | AnimatedDirectShDeltaVolumes | 45 | When the map has animated baked lights; sparse per-animated-light direct-SH delta tiles composed into the dynamic-receiver atlas, with a per-affinity-cell coarsening level |
 | CellVisibility | 46 | Optional, versioned, strictly parsed baked Cell→Cell coupling relation: per-cell reachability component IDs plus canonically ordered coupled-pair distance/aperture graded records. Missing → conservative all-perceivable, no-graded-detail fallback. Id 14 (`LeafPvs`) is a retired hole; do not reuse |
-| BillboardDirectScatterVolume | 47 | Optional dense normal-free static direct-scatter grid for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Invalid or missing data selects legacy billboard direct lighting |
+| BillboardDirectScatterVolume | 47 | Optional dense normal-free direct-scatter base for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Static-only maps omit it when no `static_light_map` source contributes. A map with animated-only `static_light_map` scatter entries may emit an all-zero RGB base solely as the required grid/validity anchor for a valid id-48 companion. Invalid or missing data selects legacy billboard direct lighting |
 | AnimatedBillboardDirectScatterDeltaVolumes | 48 | Optional dense animated billboard direct-scatter deltas: reuses id-45 descriptor mapping and CSR affinity layout, but stores fixed dense 4×4×4 `Rgba16Float` RGB deltas per CSR entry (reserved zero alpha). Required with id 47 whenever id 45 is present; a missing or invalid pair selects legacy billboard direct lighting |
 
 **Coarsened delta sections (ids 27, 41, 45):** The wire representation supports an independent L0/L1/L2 level for every affinity cell in each section. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Production adaptively classifies id 41 only. Ids 27 and 45 intentionally emit uniform L0 until animation and script amplitudes have bounded runtime contracts. Protection AABBs force intersecting bricks to L0 in an adaptively classified section before one-level seam smoothing.
@@ -319,7 +319,7 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 
 **Location.** `.build-caches/prl-cache/` at the workspace root (the parent directory containing `Cargo.toml`). Created automatically on first build. Safe to delete at any time — the next build recreates it.
 
-**Participating stages.** Lightmap bake and SH volume bake, plus the ShadowmaskAtlas memo, animated-light weight-map, SDF-atlas, and navmesh stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
+**Participating stages.** Lightmap bake and SH volume bake, plus the ShadowmaskAtlas memo, static and animated billboard direct-scatter, animated-light weight-map, SDF-atlas, and navmesh stages. Parse, BSP, portals, geometry, and BVH run uncached — they are fast enough that caching yields no measurable speedup.
 
 **Cache grain (lightmap + SH).** These two channels are cached *per element*, not per whole stage, so editing one light refreshes only the affected entries:
 
@@ -334,7 +334,7 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 
 | Component | Form |
 |-----------|------|
-| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"lightmap_section"` (composited-section memo), `"shadowmask_atlas"` (selected-light section memo), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, `"sdf_atlas"`, or `"navmesh"` |
+| `stage_id` | string literal — `"lightmap_layer"` (per-light), `"lightmap_section"` (composited-section memo), `"shadowmask_atlas"` (selected-light section memo), `"sh_group"` (per-probe-group), `"billboard_direct_scatter"` (static scatter), `"animated_billboard_direct_scatter"` (animated scatter deltas), `"animated_lm_weight_maps"`, `"sdf_atlas"`, or `"navmesh"` |
 | `stage_version` | `u32` cache epoch in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own epoch and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
 | `input_hash` | Stage-defined blake3 over serialized inputs/config — covers the data the stage reads. Postcard serialization is the common pattern; stages may use a fixed-order byte stream when that is the stage contract. |
 

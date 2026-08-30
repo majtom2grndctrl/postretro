@@ -36,7 +36,7 @@ shipping the maps; a collection without them is unchanged.
   per-collection specular intensity stays in `params.y`.
 - Resolving per-collection specular intensity and exponent through the sprite
   draw-contract path — the chokepoint that already resolves lifetime/emissive —
-  with the current values as defaults (`0.3`/`0.45` intensity, `4.0` exponent).
+  with the current values as defaults (`6.0`/`0.45` intensity, `4.0` exponent).
   This centralizes intensity and replaces the shader's hardcoded exponent; both
   stages read intensity from `params.y` and exponent from `params2.y`. The
   candidate override fields default to `None` — the map-facing authoring surface
@@ -117,7 +117,7 @@ and moving the specular evaluation into the fragment stage.
 - Per-collection draw parameters (lifetime, emissive) resolve through
   `SpriteCollectionCandidate` → `resolve_sprite_collection_draw_contract`
   (`crates/postretro/src/startup/lifecycle.rs`); `spec_intensity` is currently a
-  field of `SpriteCollectionRegistration` set at each register call site (`0.3`
+  field of `SpriteCollectionRegistration` set at each register call site (`6.0`
   for map/projectile collections, `0.45` for weapon-impact), not resolved in
   that contract, and the exponent is not carried at all. Shimmer moves the
   specular intensity and exponent into the same per-collection contract that
@@ -211,7 +211,7 @@ variation is negligible and the shimmer comes from `N'`, not `L`.
 
 This spec lands the per-collection draw-contract wiring for specular intensity
 and exponent — resolved alongside lifetime/emissive, with conflict rejection and
-defaults (`0.3`/`0.45` intensity, `4.0` exponent). No map/FGD surface populates
+defaults (`6.0`/`0.45` intensity, `4.0` exponent). No map/FGD surface populates
 the candidate override fields yet, so map collections resolve to the defaults;
 that authoring surface is future. A per-instance override on `billboard_emitter`
 is likewise not built. Both layer on the same `params2` / draw-contract path
@@ -329,7 +329,7 @@ evaluates every static light.
 - [ ] `[unit]` The per-collection specular intensity and exponent resolve
       through the draw-contract path: a directly-constructed candidate that
       supplies them resolves to the declared values; one supplying neither
-      resolves to the defaults (intensity `0.3`, exponent `4.0`); the
+      resolves to the defaults (intensity `6.0`, exponent `4.0`); the
       weapon-impact registration keeps its `0.45`. Conflicting candidate values
       are rejected order-independently (the lifetime/emissive message shape);
       zero candidates → the defaults. `build_draw_params` packs intensity →
@@ -434,7 +434,7 @@ they are resolved data, not hardcoded constants.
 
 Extend `SpriteCollectionCandidate` and `resolve_sprite_collection_draw_contract`
 (`crates/postretro/src/startup/lifecycle.rs`) to resolve `spec_intensity`
-(default `0.3`) and `spec_exponent` (default `4.0`) alongside lifetime/emissive —
+(default `6.0`) and `spec_exponent` (default `4.0`) alongside lifetime/emissive —
 same `get_or_insert` + `to_bits` conflict rejection and `map_or` defaulting. The
 candidate's spec fields are `Option<f32>` defaulting to `None`; nothing populates
 them from map data in this spec (the map-facing authoring surface is future,
@@ -526,7 +526,7 @@ them (AC 1–4, AC 6–8) write from these rows rather than restating them.
 
 | # | Scenario | Ordering / stage | Expected outcome |
 |---|---|---|---|
-| P1 | Non-shimmer collection authors `spec_intensity ≠ 0.3` | Resolve (load) → pack → vertex read | Isotropic vertex path reads the authored value from `params.y`; no stale copy. |
+| P1 | Non-shimmer collection authors `spec_intensity ≠ 6.0` | Resolve (load) → pack → vertex read | Isotropic vertex path reads the authored value from `params.y`; no stale copy. |
 | P2 | Candidate supplies `spec_exponent ≠ 4.0` (non-shimmer) | Resolve → pack → vertex read | Resolved into `params2.y`; the vertex path reads its exponent from `params2.y` (not the old `4.0` literal), so an authored value is honored, not dropped. |
 | P3 | Shimmer collection (NORMAL present), chunk grid built | Vertex stage | Vertex loop skipped (`params2.x != 0`); `out.lighting` excludes static_specular. |
 | P4 | Shimmer collection | Fragment stage | Fragment computes static_specular with `N'` over every static light (scatter/SDF continue off, Decision 6) and adds to `in.lighting`; term counted exactly once (vs P3). |
@@ -537,7 +537,7 @@ them (AC 1–4, AC 6–8) write from these rows rather than restating them.
 | P9 | Shimmer sprite outside chunk grid, or `has_chunk_grid == 0` | Fragment stage | Fragment replicates the grid-safety guards + cell-in-bounds; static_specular = 0, no OOB read, no black sprite. |
 | P10 | Spinning shimmer sprite | Vertex (emit rotation) → fragment (rebuild frame) | `rotation` at `@location(5) @interpolate(flat)`; `out.world_position` stays sprite center; fragment rebuilds `(right,up,V)` from `view_proj` + `camera_position` + `in.world_position`, rotated by `rotation`. Glint rotates with sprite (AC 8). |
 | P11 | Two candidates for one collection, differing `spec_intensity`, either order | Resolve (load) | Rejected regardless of candidate order, with the lifetime/emissive conflict-message shape. |
-| P12 | Zero candidates supply spec params (N=0) | Resolve (load) | Defaults `spec_intensity = 0.3`, `spec_exponent = 4.0`. |
+| P12 | Zero candidates supply spec params (N=0) | Resolve (load) | Defaults `spec_intensity = 6.0`, `spec_exponent = 4.0`. |
 | P13 | weapon-impact collection | Register (outside resolve loop) | Keeps `0.45` intensity via its `SpriteCollectionRegistration` field + default `4.0` exponent; not routed through the map-candidate resolve path. |
 | P14 | Non-shimmer collection at the **default** exponent (vertex loop now reads `params2.y`, was the `4.0` literal) | Pack (`build_draw_params`, zero-init buffer) → vertex read | `build_draw_params` — the single packer — writes `params2.y = 4.0` unconditionally. An omitted write leaves the zero-filled `0.0` → `pow(NdH, 0) = 1` → whole-sprite specular blowout; AC 4's default-packing assertion catches the omission in a unit test. Asymmetry: `params2.x` zero-filling to `0.0` is benign (correct for non-shimmer); only `params2.y` is load-bearing. |
 

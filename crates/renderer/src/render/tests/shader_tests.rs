@@ -222,8 +222,11 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 }
 
 #[test]
-fn billboard_light_term_mask_gates_per_vertex_terms() {
+fn billboard_light_term_mask_gates_vertex_and_shimmer_terms() {
     let src = include_str!("../../shaders/billboard.wgsl");
+    let (vertex, fragment) = src
+        .split_once("@fragment\nfn fs_main")
+        .expect("billboard shader must define fs_main");
 
     for constant in [
         "const LIGHT_TERM_AMBIENT_FLOOR: u32 = 0x01u;",
@@ -252,18 +255,19 @@ fn billboard_light_term_mask_gates_per_vertex_terms() {
         "billboard vertex lighting must derive every local term gate from group-0's mask",
     );
     assert!(
-        src.contains("const SCATTER_MODE_COMPOSED_ANIMATED: u32 = 2u;")
-            && src.contains("let use_baked_direct_scatter = use_baked_direct_static")
-            && src.contains("|| (uniforms.has_scatter == SCATTER_MODE_COMPOSED_ANIMATED && use_baked_direct_animated);")
-            && src.contains("if use_baked_direct_scatter {")
-            && src.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
-            && src.contains(
+        vertex.contains("const SCATTER_MODE_COMPOSED_ANIMATED: u32 = 2u;")
+            && vertex.contains("let use_baked_direct_scatter = use_baked_direct_static")
+            && vertex.contains("|| (uniforms.has_scatter == SCATTER_MODE_COMPOSED_ANIMATED && use_baked_direct_animated);")
+            && vertex.contains("if use_baked_direct_scatter {")
+            && vertex.contains("if use_specular && draw_params.params2.x == 0.0")
+            && fragment.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+            && vertex.contains(
                 "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
             )
-            && src.contains(
+            && vertex.contains(
                 "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
             ),
-        "billboard static specular, dynamic diffuse, and ambient floor must be independently gated in vs_main",
+        "billboard isotropic static specular, shimmer static specular, dynamic diffuse, and ambient floor must remain independently gated in their shader stages",
     );
     assert!(
         !src.contains("uniforms.dynamic_direct_isolation"),
@@ -331,6 +335,29 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
             && src.contains("if inf_radius <= 1.0e30 {")
             && src.contains("let cone = cone_attenuation("),
         "scatter dynamic lighting must preserve influence/range/cone rejection without a Lambert cosine",
+    );
+}
+
+#[test]
+fn billboard_shimmer_static_specular_keeps_every_static_chunk_light() {
+    let fragment = include_str!("../../shaders/billboard.wgsl")
+        .split("@fragment\nfn fs_main")
+        .nth(1)
+        .expect("billboard shader must define fs_main");
+    let shimmer_loop = fragment
+        .split("var shimmer_specular = vec3<f32>(0.0);")
+        .nth(1)
+        .expect("fragment shader must define shimmer static specular")
+        .split("let lighting = in.lighting + shimmer_specular;")
+        .next()
+        .expect("shimmer loop must precede final lighting composition");
+
+    assert!(
+        shimmer_loop.contains("let sl = spec_lights[light_idx];")
+            && !shimmer_loop.contains("spec_light_is_sdf(sl)")
+            && !shimmer_loop.contains("shadowmask_atlas")
+            && !shimmer_loop.contains("shadowmask_visibility"),
+        "shimmer must evaluate every static chunk-light record without an unavailable static-light shadowmask",
     );
 }
 

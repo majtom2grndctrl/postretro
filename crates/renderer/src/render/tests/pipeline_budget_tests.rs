@@ -206,17 +206,18 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     );
 }
 
-// Regression: billboard lighting runs in `vs_main` (per-vertex SH indirect+direct,
-// static-specular, dynamic-diffuse) and the group-6 instance storage buffer is
-// VERTEX-read. wgpu charges `max_storage_buffers_per_shader_stage`
-// against the BGL *entry* set per stage — every VERTEX-visible storage entry in
-// the Billboard Pipeline Layout counts, whether or not vs_main reads it. The hoist
-// initially left the three group-3 anim/scripted-light storage buffers marked
-// VERTEX-visible, pushing the count to 9 > the downlevel-default 8 and crashing
-// `create_pipeline_layout` on real GPUs ("Too many bindings of type StorageBuffers
-// in Stage VERTEX") — uncatchable in CI, which has no GPU. This re-derives the
-// count from the same GPU-free BGL builders the layout is composed from and pins
-// it at <= 8. Mirrors `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
+// Regression: billboard SH, direct scatter, dynamic diffuse, and isotropic
+// static specular run in `vs_main`; shimmer static specular runs in `fs_main`.
+// The group-6 instance storage buffer is VERTEX-read. wgpu charges
+// `max_storage_buffers_per_shader_stage` against the BGL entry set per stage —
+// every VERTEX-visible storage entry in the Billboard Pipeline Layout counts,
+// whether or not vs_main reads it. The hoist initially left the three group-3
+// anim/scripted-light storage buffers marked VERTEX-visible, pushing the count
+// to 9 > the downlevel-default 8 and crashing `create_pipeline_layout` on real
+// GPUs ("Too many bindings of type StorageBuffers in Stage VERTEX") —
+// uncatchable in CI, which has no GPU. This re-derives the count from the same
+// GPU-free BGL builders the layout is composed from and pins it at <= 8. Mirrors
+// `forward_pipeline_sampled_texture_request_matches_bgl_definitions`.
 #[cfg(debug_assertions)]
 #[test]
 fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
@@ -258,6 +259,35 @@ fn billboard_pipeline_vertex_storage_request_matches_bgl_definitions() {
         "billboard pipeline VERTEX-visible storage-buffer count ({derived}) exceeds the \
              downlevel-default max_storage_buffers_per_shader_stage of 8; trim VERTEX \
              visibility or consolidate rather than raising the limit"
+    );
+}
+
+// Shimmer evaluates the static chunk-light list in `fs_main`. The shared BGLs
+// already carry group 2's five light/chunk storage entries and group 3's three
+// animated/scripted-light storage entries at FRAGMENT visibility; asserting the
+// exact layout-derived count catches a new entry or widened visibility before a
+// real GPU rejects the pipeline at the WebGPU downlevel limit of eight.
+#[cfg(debug_assertions)]
+#[test]
+fn billboard_pipeline_fragment_storage_request_matches_bgl_definitions() {
+    let per_group = [
+        fragment_storage_buffers(&uniform_bind_group_layout_entries()), // group 0
+        fragment_storage_buffers(&smoke::sprite_sheet_bind_group_layout_entries()), // group 1
+        fragment_storage_buffers(&lighting_bind_group_layout_entries()), // group 2
+        fragment_storage_buffers(&sh_volume::sh_bind_group_layout_entries()), // group 3
+        fragment_storage_buffers(&smoke::sprite_instance_bind_group_layout_entries()), // group 6
+    ];
+    assert_eq!(
+        per_group,
+        [0, 0, 5, 3, 0],
+        "billboard BGL fragment storage-buffer inventory changed"
+    );
+
+    let derived: u32 = per_group.iter().sum();
+    assert_eq!(billboard_pipeline_fragment_storage_buffer_count(), derived);
+    assert_eq!(
+        derived, 8,
+        "shimmer consumes the full downlevel fragment budget"
     );
 }
 

@@ -110,7 +110,7 @@ use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
-pub use smoke::SpriteCollectionRegistration;
+pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
 // reachable here at their original `render::*` paths.

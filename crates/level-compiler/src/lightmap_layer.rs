@@ -5,13 +5,13 @@
 use glam::Vec3;
 use rayon::prelude::*;
 
-use crate::affinity_grid::{light_aabb, AABB_PADDING_METERS};
+use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::{chart_interior_dims, chart_texel_world_position, ChartPlacement};
+use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    light_texel_contribution_and_visibility, segment_clear, texel_seed, Chart, CompositedAtlas,
+    Chart, CompositedAtlas, light_texel_contribution_and_visibility, segment_clear, texel_seed,
 };
 use crate::map_data::{LightType, MapLight};
 use glam::DVec3;
@@ -615,8 +615,8 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
     use rayon::ThreadPoolBuilder;
-    use std::sync::mpsc;
     use std::sync::Arc;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -1241,7 +1241,7 @@ mod tests {
         blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_width
         blob.extend_from_slice(&1u32.to_ne_bytes()); // atlas_height
         blob.extend_from_slice(&u32::MAX.to_ne_bytes()); // count = u32::MAX
-                                                         // No body bytes — the implied body cannot match.
+        // No body bytes — the implied body cannot match.
         assert!(LightmapLayer::from_bytes(&blob).is_none());
     }
 
@@ -1601,7 +1601,7 @@ mod tests {
     #[test]
     #[ignore = "full-fixture lightmap bake; run with --ignored"]
     fn lightmap_composite_equals_monolithic_on_fixtures() {
-        use crate::fixture_pipeline::{load_fixture, GATE_FIXTURES};
+        use crate::fixture_pipeline::{GATE_FIXTURES, load_fixture};
 
         for &name in GATE_FIXTURES {
             let fx = load_fixture(name);

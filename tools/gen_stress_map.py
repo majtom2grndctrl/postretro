@@ -13,22 +13,23 @@ entity, mover, trigger, and animated-lighting paths under load.
 
 The binding engine constraint
 -----------------------------
-prl-build rejects any map with more than 4096 geometry-bearing BSP leaves
+prl-build rejects any map with more than 131072 geometry-bearing BSP leaves
 (`MAX_CELL_ID_EXCLUSIVE` in `bvh_build.rs`): the runtime visible-cell bitmask
-is a fixed 4096-bit structure. This -- not coordinates or buffer widths -- is
+is a fixed 131072-bit structure. This -- not coordinates or buffer widths -- is
 what caps room count. Every doorway and shaft fragments the empty space into
 extra leaves, so the trade-off is direct: more connectivity per room => fewer
-rooms fit under the 4096 cap. `--door-prob` / `--shaft-prob` expose that knob.
-Watch the "geometry leaves" line prl-build prints and keep it under 4096.
+rooms fit under the 131072 cap. `--door-prob` / `--shaft-prob` expose that knob.
+Watch the "geometry leaves" line prl-build prints and keep it under 131072.
 Arenas also spend leaves (an arena is an open multi-storey volume with a
 mezzanine ledge and stairs), so a map with `--arenas` needs a smaller grid.
 
 Design (why it compiles and does not leak)
 ------------------------------------------
-* A uniform axis-aligned 3D lattice of cells. Axis-aligned grids are the
-  best case for the brush BSP splitter (clean axis-aligned cuts, almost no
-  spanning brushes), so the tree stays shallow well under the
-  MAX_RECURSION_DEPTH=256 guard in `partition/brush_bsp.rs`.
+* A uniform axis-aligned 3D lattice of isolated room footprints separated by
+  reserved corridor bands. Axis-aligned grids are the best case for the brush
+  BSP splitter (clean axis-aligned cuts, almost no spanning brushes), so the
+  tree stays shallow well under the MAX_RECURSION_DEPTH=256 guard in
+  `partition/brush_bsp.rs`.
 * Coordinates stay inside the classic Quake +/-16384-unit envelope. Input is
   parsed as f32 (`parse.rs`), whose integers are exact to 16.7M, so every
   vertex here is represented exactly.
@@ -42,19 +43,18 @@ Design (why it compiles and does not leak)
   (never on the grid edge) so every one of their four entryways opens into a
   neighbouring room rather than the void.
 
-Varying room sizes
-------------------
-Each layer is tiled greedily with random rectangular blocks (1x1..2x2 cells),
-so rooms come in several footprints while every room stays a clean rectangular
-box that never overlaps a neighbour. Interior shared walls inside one room are
-omitted (the cells fuse into one air volume). Rooms are connected as a maze:
-per layer a randomized spanning tree (plus a few `--door-prob` braid doors)
-decides which shared walls get a doorway, and adjacent doorways alternate
-between two disjoint end-slots of their walls so a room's entry and exit doors
-never line up -- no straight line of sight ever crosses a third room (you can
-still see through one doorway into the adjacent room). Vertical shafts punch holes
-through interior slabs to portal-connect the stacked layers; the shaft pattern
-shifts every layer so shafts never stack into a vertical sightline.
+Reserved corridor layout
+------------------------
+Every ordinary lattice cell is one room. Adjacent room footprints have a 384 u
+band of dedicated, sealed corridor airspace between them; the corridor floor
+and low roof are emitted separately from room floors and walls. A chosen maze
+edge opens matching doorways from both rooms into that band, never directly
+from one room into another. Corridor-grid intersections provide corners, and
+sparse diagonal guide fins add an angled treatment entirely within allocated
+junction space. Arenas are the deliberate multi-cell exception and consume the
+bands inside their own footprint. Vertical shafts punch holes through interior
+room slabs to portal-connect the stacked layers; the shaft pattern shifts every
+layer so shafts never stack into a vertical sightline.
 
 All coordinates are emitted in Quake units (Z-up); prl-build applies the
 1 unit = 0.0254 m scale and the Z-up -> Y-up swizzle.
@@ -63,7 +63,8 @@ Gameplay content (opt-in)
 -------------------------
 The stress skeleton doubles as a gameplay playground. All of the following are
 off by default so the bare `stress-warren.map` stays a pure geometry/BVH probe;
-`--preset warren` turns the whole set on at a grid size that fits the leaf cap.
+`--preset warren` turns the whole set on at a conservative grid size for a
+feature-heavy map.
 
 * `--arenas N` carves N large open-area rooms. Each arena is a multi-cell block
   sized so its interior is never smaller than a regulation NFL football field
@@ -79,7 +80,11 @@ off by default so the bare `stress-warren.map` stays a pure geometry/BVH probe;
 * `--weapons N` pre-places N wieldable weapon pickups (the dev mod's reference
   pistol/shotgun and the two fixture wieldables), touchable world items.
 * `--doors N` upgrades N maze doorways to automatic sliding `kinematic_mover`
-  doors: a touch `trigger_volume` opens them and `auto_close_ms` shuts them.
+  doors. `--door-activation use` makes their `trigger_volume`s require the
+  action button; `auto_close_ms` shuts them afterwards.
+* `--monster-closets N` adds sealed closet pods. Their one-shot touch trigger
+  starts the door and calls a generated data-script reaction that fires only
+  that pod's `entity_spawner`.
 * `--lifts N` replaces the jump-stairs in N shafts with a ping-pong lift
   platform that carries the player between the two layers.
 * Animated lights. When lights are on, a fraction (`--animated-frac`) of the
@@ -90,16 +95,13 @@ off by default so the bare `stress-warren.map` stays a pure geometry/BVH probe;
   map with animated lights at `--lightmap-density 0.25`: the warren's large
   faces collapse animated chunks into overlapping weight-map atlas rects at the
   coarser 0.5 and the packer aborts (0.25 clears it, under the atlas cap).
-* Light promotability. A baked light is either *promotable* (`_bake_only 0` --
-  kept as a runtime entity, so a script/gameplay can drive it) or *bake-only*
-  (`_bake_only 1` -- folded into the lightmap with no runtime entity). Each lit
-  room's single high-brightness fixture is promotable; its steady coverage
-  lights are bake-only. Animated coverage lights stay promotable (a
-  script-driven one *must* keep a runtime entity for `setLightAnimation` to
-  reach it). The net per-room invariant is at least one and at most three
-  promotable lights (`MAX_PROMOTABLE_PER_ROOM`); arenas follow the same rule.
-  (Runtime `--lights dynamic` lights are a separate, always-runtime axis and are
-  not part of this baked-light accounting.)
+* Static room-lighting contract. When room lights are enabled, the normal
+  contract is four baked spotlights plus one dim bake-only point light per room.
+  `--preset warren` uses that contract with static lights only. Animated
+  coverage lights are an explicit opt-in and remain promotable because a script
+  must be able to address them. Dynamic lighting remains available through the
+  explicit `--lights dynamic` / `mixed` stress modes; lift-car lights are always
+  dynamic because they move with their carrier.
 
 Usage
 -----
@@ -118,7 +120,7 @@ spacing a map this large would bake millions of probes and gigabytes):
         -o content/dev/maps/stress-warren.prl --sh-probe-spacing 10.0 --no-cache
 
 Push the room count up by enlarging the grid and/or lowering --door-prob, and
-watch that the compile stays under the 4096 BSP-leaf cap (see below).
+watch both compile cost and the 131072 BSP-leaf cap (see below).
 
 Lightmap-array overflow preset
 ------------------------------
@@ -188,13 +190,20 @@ import random
 import sys
 
 # --- Lattice geometry (Quake units) ---------------------------------------
-PITCH_XY = 1280   # cell pitch on X and Y; interior = PITCH_XY - WALL_T = 1024
+PITCH_XY = 1280   # isolated room outer width/depth; interior = 1024 x 1024
 WALL_T = 256      # wall thickness -> horizontal room interior 1024 x 1024 (>= 1024)
-PITCH_Z = 384     # vertical cell pitch; interior height = PITCH_Z - SLAB_T = 256
-SLAB_T = 128      # floor/ceiling slab thickness (>= 256-tall rooms)
+# A lattice step deliberately includes a dedicated band of corridor airspace.
+# Rooms never occupy this band: a doorway now joins a room wall to a corridor,
+# rather than cutting a shared wall between two room interiors.
+CORRIDOR_BAND = 384
+LATTICE_PITCH_XY = PITCH_XY + CORRIDOR_BAND
+STORY_H = 256     # one navigable storey (6.50 m at the map's inch scale)
+ROOM_STORIES = 2  # lattice rooms are deliberately at least two storeys tall
+SLAB_T = 128      # floor/ceiling slab thickness
+PITCH_Z = STORY_H * ROOM_STORIES + SLAB_T  # room interior = 512 u / 13.0 m
 
 DOOR_W = 256      # doorway opening width
-DOOR_H = 192      # doorway opening height (leaves a solid lintel under the ceiling)
+DOOR_H = STORY_H  # doorway/hall clearance; rooms remain open above it
 # Half-depth of a door's touch trigger along the passage normal. The shut leaf
 # occupies +/-WALL_T/2 (128 u) of the wall, so the trigger must reach well past
 # that into BOTH rooms or only one approach touches it. 384 leaves ~256 u of
@@ -202,6 +211,17 @@ DOOR_H = 192      # doorway opening height (leaves a solid lintel under the ceil
 # never crosses to the far wall -- and the player opens the door from either side.
 DOOR_TRIGGER_REACH = 384
 SHAFT = 384       # vertical shaft opening (square hole in interior slabs)
+
+# Every room is a tall, two-storey volume. The reserved corridor grid occupies
+# only the lower storey, with its own floor and low roof. Its intersections are
+# where routes turn; small diagonal guide fins give selected junctions an angled
+# treatment without ever entering a room footprint.
+CORRIDOR_CEIL_T = 32
+CORRIDOR_GUIDE_T = 40
+CORRIDOR_GUIDE_LEN = 176
+HALLWAY_SPOT_SPACING = 768   # ~19.5 m: at least one baked spot every 20 m
+HALLWAY_SPOT_FALLOFF = 1024
+HALLWAY_SPOT_INTENSITY = 180
 
 # Textures from the bundled "50-free-textures" collection. Each diffuse has a
 # `_n` (normal) and `_s` (specular) sibling, which prl-build auto-resolves into
@@ -233,7 +253,7 @@ def pick(pool, key):
 # dynamic shadows under both dynamic light types (the spot-shadow depth pass and
 # the point cube-shadow face passes both rasterize cone-culled world geometry --
 # see rendering_pipeline.md §4, §7.1), and (c) carve the room's empty leaf into
-# several BSP leaves, so they spend the 4096-leaf budget and lower room count.
+# several BSP leaves, so they spend the BSP-leaf budget and lower room count.
 CRATE_EDGE = 112      # crate cube edge (Quake units, ~2.8 m)
 CRATE_MARGIN = 192    # keep stacks this far from interior walls (clear of doors)
 
@@ -287,6 +307,120 @@ def box_brush(x0, y0, z0, x1, y1, z1, tex_side, tex_top, tex_bottom):
         f"( {x1} {y0} {z0} ) ( {x1} {y1} {z1} ) ( {x1} {y1} {z0} ) {s(tex_side)}\n"   # +X
         "}\n"
     )
+
+
+def oriented_box_brush(cx, cy, dx, dy, length, width, z0, z1,
+                       tex_side, tex_top, tex_bottom):
+    """An XY-rotated rectangular prism using Standard-map brush planes.
+
+    ``(dx, dy)`` is the longitudinal direction.  Keeping the prism convex lets
+    corridor legs be diagonal without changing the BSP-facing source format.
+    """
+    norm = math.hypot(dx, dy)
+    if norm == 0:
+        raise ValueError("oriented box direction must be non-zero")
+    ux, uy = dx / norm, dy / norm
+    vx, vy = -uy, ux
+    half_l, half_w = length / 2, width / 2
+
+    def point(s, t, z):
+        return (cx + ux * s + vx * t, cy + uy * s + vy * t, z)
+
+    def fmt(point):
+        return "( {:.3f} {:.3f} {:.3f} )".format(*point)
+
+    p = point
+    s = lambda t: f"{t} 0 0 0 1 1"
+    return (
+        "{\n"
+        f"{fmt(p(-half_l, half_w, z0))} {fmt(p(-half_l, -half_w, z1))} {fmt(p(-half_l, -half_w, z0))} {s(tex_side)}\n"
+        f"{fmt(p(-half_l, -half_w, z0))} {fmt(p(half_l, -half_w, z1))} {fmt(p(half_l, -half_w, z0))} {s(tex_side)}\n"
+        f"{fmt(p(-half_l, -half_w, z0))} {fmt(p(half_l, half_w, z0))} {fmt(p(-half_l, half_w, z0))} {s(tex_bottom)}\n"
+        f"{fmt(p(-half_l, half_w, z1))} {fmt(p(half_l, -half_w, z1))} {fmt(p(-half_l, -half_w, z1))} {s(tex_top)}\n"
+        f"{fmt(p(half_l, half_w, z0))} {fmt(p(-half_l, half_w, z1))} {fmt(p(-half_l, half_w, z0))} {s(tex_side)}\n"
+        f"{fmt(p(half_l, -half_w, z0))} {fmt(p(half_l, half_w, z1))} {fmt(p(half_l, half_w, z0))} {s(tex_side)}\n"
+        "}\n"
+    )
+
+
+def room_bounds(starts, index):
+    """Return the solid outer span of one room on a lattice axis."""
+    return starts[index], starts[index] + PITCH_XY
+
+
+def emit_reserved_corridor_grid(brushes, x0s, y0s, zf, tex, junction_seed,
+                                arena_at=None, hallway_lights=None):
+    """Emit the one-storey corridor network that occupies reserved XY bands.
+
+    The vertical bands span a whole map row; horizontal bands fill only the
+    room columns, so their floor/roof brushes meet at faces rather than overlap
+    at every junction.  Room walls bound these bands on both sides.  Therefore
+    every door opens from a room into allocated corridor airspace, never into a
+    neighbouring room or a wall that the corridor also occupies.
+    """
+    nx, ny = len(x0s), len(y0s)
+    arena_at = arena_at or (lambda _i, _j: False)
+    z0, z1 = zf - SLAB_T // 2, zf + SLAB_T // 2
+    roof0 = zf + STORY_H
+    # The playable corridor remains one-storey high (its visible underside is
+    # roof0), but the solid roof continues through the unused upper-storey band
+    # and overlaps the next room slab. That makes each reserved band a true
+    # solid separator above the hallway rather than a thin ceiling merely
+    # touching tall-room walls at T-junctions.
+    roof1 = zf + PITCH_Z
+    def floor_and_roof(ax0, ay0, ax1, ay1):
+        brushes.append(box_brush(ax0, ay0, z0, ax1, ay1, z1, tex, tex, tex))
+        brushes.append(box_brush(ax0, ay0, roof0, ax1, ay1, roof1, tex, tex, tex))
+        if hallway_lights is None:
+            return
+        length = max(ax1 - ax0, ay1 - ay0)
+        count = max(1, math.ceil(length / HALLWAY_SPOT_SPACING))
+        for n in range(count):
+            fraction = (n + 0.5) / count
+            px = round(ax0 + (ax1 - ax0) * fraction)
+            py = round(ay0 + (ay1 - ay0) * fraction)
+            hallway_lights.append(light_entity(
+                "static", (px, py, roof0 - 24), (255, 244, 214),
+                HALLWAY_SPOT_FALLOFF, HALLWAY_SPOT_INTENSITY, True, None,
+                bake_only=False))
+
+    # Split the north/south bands at every room/gap boundary. An arena consumes
+    # a band only when it occupies both cells on the two sides; a band bordering
+    # an arena is still a real corridor serving that arena's perimeter doorway.
+    for i in range(nx - 1):
+        for j in range(ny):
+            if not (arena_at(i, j) and arena_at(i + 1, j)):
+                floor_and_roof(x0s[i] + PITCH_XY, y0s[j],
+                               x0s[i + 1], y0s[j] + PITCH_XY)
+        for j in range(ny - 1):
+            if not all(arena_at(ii, jj)
+                       for ii in (i, i + 1) for jj in (j, j + 1)):
+                floor_and_roof(x0s[i] + PITCH_XY, y0s[j] + PITCH_XY,
+                               x0s[i + 1], y0s[j + 1])
+    # East/west bands only fill room columns, avoiding coplanar overlap with
+    # north/south bands while retaining connected cross-junction airspace.
+    for j in range(ny - 1):
+        for i in range(nx):
+            if not (arena_at(i, j) and arena_at(i, j + 1)):
+                floor_and_roof(x0s[i], y0s[j] + PITCH_XY,
+                               x0s[i] + PITCH_XY, y0s[j + 1])
+
+    # A sparse 45-degree guide fin makes selected cross-junctions visibly
+    # angled. It stays entirely inside the reserved intersection and leaves
+    # generous passage on both sides, so it cannot cut into a room or seal the
+    # corridor network.
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            if ((i * 11 + j * 7 + junction_seed) % 3 != 0
+                    or all(arena_at(ii, jj)
+                           for ii in (i, i + 1) for jj in (j, j + 1))):
+                continue
+            cx = (x0s[i] + PITCH_XY + x0s[i + 1]) / 2
+            cy = (y0s[j] + PITCH_XY + y0s[j + 1]) / 2
+            brushes.append(oriented_box_brush(
+                cx, cy, 1, 1 if (i + j + junction_seed) % 2 else -1,
+                CORRIDOR_GUIDE_LEN, CORRIDOR_GUIDE_T, zf, roof0,
+                tex, tex, tex))
 
 
 def wall_box(brushes, x0, y0, x1, y1, zf, zc, tex):
@@ -374,34 +508,21 @@ def emit_slab(brushes, x0, y0, x1, y1, zc, holed, ftex, ctex):
 
 
 def tile_layer(nx, ny, rng, blocked):
-    """Greedy random rectangular tiling of one layer.
+    """Assign one isolated room footprint to every unblocked lattice cell.
 
-    Returns room_id[(i,j)] -> int. Blocks are 1x1..2x2, so room footprints vary
-    while every room is a clean non-overlapping rectangle. Cells in `blocked`
-    (reserved for arenas) get no room id and are never absorbed into a block.
+    The old 1x1..2x2 greedy tiling merged cells. That is incompatible with
+    reserved corridor bands: a merged room would either consume a band or leave
+    a corridor passing through its interior. Ordinary rooms are consequently
+    uniform here; arenas remain the intentional multi-cell room type.
     """
     room = {}
     rid = 0
-    # Seed the reserved arena cells as occupied so the greedy fill neither
-    # assigns them a room nor grows a 2x2 block across one.
-    reserved = object()
-    for c in blocked:
-        room[c] = reserved
     for j in range(ny):
         for i in range(nx):
-            if (i, j) in room:
+            if (i, j) in blocked:
                 continue
-            w = 2 if (i + 1 < nx and (i + 1, j) not in room and rng.random() < 0.45) else 1
-            h = 2 if (j + 1 < ny and (i, j + 1) not in room and rng.random() < 0.45) else 1
-            # only take the 2x2 corner if it is free
-            if w == 2 and h == 2 and (i + 1, j + 1) in room:
-                h = 1
-            for dj in range(h):
-                for di in range(w):
-                    room[(i + di, j + dj)] = rid
+            room[(i, j)] = rid
             rid += 1
-    for c in blocked:
-        del room[c]
     return room
 
 
@@ -448,8 +569,8 @@ def emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, tex, rng):
 # shaft's centre column is kept clear so the air portal that connects the two
 # layers (and stops the flood-fill from sealing the upper layer) stays open.
 STAIR_RISE = 48      # vertical gain per step (Quake u). Jump apex ~= 60 u
-                     # (jump_velocity 5.5 m/s vs g 9.81 m/s^2), so 48 u clears
-                     # with margin while still climbing 384 u in 8 hops.
+# (jump_velocity 5.5 m/s vs g 9.81 m/s^2), so 48 u clears
+                     # with margin while still climbing a 640 u layer in 14 hops.
 STAIR_R = 96         # spiral ring radius (platform centre from shaft centre)
 STAIR_HALF = 56      # platform half-extent -> 112 u square (player dia ~= 31 u)
 STAIR_THICK = 24     # platform slab thickness
@@ -544,17 +665,18 @@ NFL_FIELD_SHORT_U = 160 * 12   # 1920 world units (inches): width
 def arena_cell_span():
     """(aw, ah) cells an arena must span so its INTERIOR clears an NFL field.
 
-    Interior extent along an axis is `span * PITCH_XY - WALL_T` (the perimeter
-    walls eat WALL_T total). Solving `span * PITCH_XY - WALL_T >= field_dim` for
-    the two field dimensions and rounding up gives the minimum cell span; the
-    long field axis maps to X (`aw`), the short axis to Y (`ah`). At the stock
-    PITCH_XY=1280 this is 4 x 2 cells (5120 x 2560 u outer, 4864 x 2304 u
-    interior -- both clear 4320 x 1920). A coarser PITCH_XY needs fewer cells,
-    a finer one more; either way the interior is guaranteed >= the field. The
-    floor of 2 keeps the two-storey mezzanine/staircase geometry well-formed.
+    An arena consumes the corridor bands inside its own footprint, so its outer
+    extent is `span * LATTICE_PITCH_XY - CORRIDOR_BAND`. Subtracting WALL_T for
+    the perimeter walls gives its playable interior. Solving that expression
+    against the field dimensions gives the minimum span. At the stock sizes this
+    is still 4 x 2 cells, comfortably above 4320 x 1920 u. The floor of 2 keeps
+    the two-storey mezzanine/staircase geometry well-formed.
     """
-    aw = max(2, math.ceil((NFL_FIELD_LONG_U + WALL_T) / PITCH_XY))
-    ah = max(2, math.ceil((NFL_FIELD_SHORT_U + WALL_T) / PITCH_XY))
+    def span_for(length):
+        return math.ceil((length + WALL_T + CORRIDOR_BAND) / LATTICE_PITCH_XY)
+
+    aw = max(2, span_for(NFL_FIELD_LONG_U))
+    ah = max(2, span_for(NFL_FIELD_SHORT_U))
     return aw, ah
 
 
@@ -565,15 +687,15 @@ def plan_arenas(nx, ny, nz, n_arenas, spawn_cell):
     arena interior is never smaller than a regulation NFL football field. Every
     arena stays fully interior (its footprint and a one-cell frame around it are
     inside the grid) so all four side walls face a neighbouring room -- never
-    the exterior -- and never covers the player spawn cell. Arenas are anchored
-    at the ground layer and span `alayers` storeys (2 by default, clamped to the
-    grid height). Returns a list of arena dicts. Grids too small to seat one
+    the exterior -- and never covers the player spawn cell. A lattice cell is
+    already two storeys tall, so arenas occupy one such cell layer. Returns a
+    list of arena dicts. Grids too small to seat one
     field-sized arena (plus its frame) yield an empty list -- the caller warns.
     """
     if n_arenas <= 0:
         return []
     aw, ah = arena_cell_span()
-    alayers = min(2, nz)
+    alayers = 1
     arenas = []
     reserved = set()
     # Candidate lower-left corners keeping the aw x ah footprint one cell off
@@ -599,7 +721,7 @@ def plan_arenas(nx, ny, nz, n_arenas, spawn_cell):
     return arenas
 
 
-def emit_arena(brushes, X, Y, Z, arena, rng):
+def emit_arena(brushes, X, X_END, Y, Y_END, Z, arena, rng):
     """Emit one arena's shell + mezzanine + staircase and return placement info.
 
     Geometry: four full-height perimeter walls each holding one ground-level
@@ -613,8 +735,11 @@ def emit_arena(brushes, X, Y, Z, arena, rng):
     """
     i0, j0, i1, j1 = arena["i0"], arena["j0"], arena["i1"], arena["j1"]
     k0, k1 = arena["k0"], arena["k1"]
-    x0, x1 = X[i0], X[i1]
-    y0, y1 = Y[j0], Y[j1]
+    # An arena is the intentional exception to ordinary one-cell rooms: it
+    # consumes the bands inside its reserved multi-cell footprint, leaving its
+    # outer perimeter walls facing the surrounding corridor grid.
+    x0, x1 = X[i0], X_END[i1 - 1]
+    y0, y1 = Y[j0], Y_END[j1 - 1]
     zf = Z[k0] + SLAB_T // 2             # interior floor top
     zc = Z[k1] - SLAB_T // 2             # interior ceiling bottom
     wtex = pick(WALL_TEX, i0 + j0)
@@ -635,9 +760,10 @@ def emit_arena(brushes, X, Y, Z, arena, rng):
     brushes.append(box_brush(x0, y0, zcl - SLAB_T // 2, x1, y1, zcl + SLAB_T // 2,
                              ftex, ftex, ctex))
 
-    # Mezzanine ledge at the single interior boundary: footprint minus a wide
-    # centred gap, so an upper-level player can jump down through it.
-    zm = Z[k0 + 1]
+    # Mezzanine at the first-storey height: footprint minus a wide centred gap,
+    # so an upper-level player can jump down through it.  A lattice cell now
+    # contains both storeys, rather than borrowing a neighbouring cell layer.
+    zm = zf + STORY_H
     mz0, mz1 = zm - SLAB_T // 2, zm + SLAB_T // 2
     g0x, g1x = x0 + ARENA_MEZZ_WALK, x1 - ARENA_MEZZ_WALK
     g0y, g1y = y0 + ARENA_MEZZ_WALK, y1 - ARENA_MEZZ_WALK
@@ -669,21 +795,17 @@ LIGHT_MARGIN = 192          # keep scattered lights this far off the interior wa
 LIGHT_CRATE_CLEARANCE = 200 # keep a light at least this far (manhattan) from a crate
 
 # Per-room cap on *promotable* baked lights -- lights kept as runtime entities
-# (`_bake_only 0`) rather than folded into the lightmap (`_bake_only 1`). A
-# promotable light is heavier (it loads as a runtime light and can be driven by
-# a script), so a lit room keeps a small, bounded set: exactly one guaranteed
-# (the bright ceiling fixture) and never more than three total (fixture + up to
-# two animated coverage lights). See emit_room_lights.
+# (`_bake_only 0`) rather than folded into the lightmap (`_bake_only 1`). The
+# normal room contract has none; only explicit animated coverage lights are
+# promotable, so the small cap prevents that opt-in from turning into a runtime
+# lighting load.
 MAX_PROMOTABLE_PER_ROOM = 3
 
-# Brightness tiers so the promotable ceiling fixture is unambiguously the room's
-# high point of light and bake-only fill reads as dimmer. The fixture peaks well
-# above any coverage light; promotable (dynamic or animated) coverage sits at the
-# coverage base; bake-only coverage is dimmed below that base.
-FIXTURE_INTENSITY = 600      # promotable ceiling fixture -- the room's high point
-COVERAGE_INTENSITY = 200     # coverage base (point); spotlights add COVERAGE_SPOT_BONUS
-COVERAGE_SPOT_BONUS = 20     # spotlights read a touch brighter than point coverage
-BAKE_ONLY_DIM = 0.55         # bake-only coverage intensity as a fraction of its base
+# Every normally lit room has four bright baked spots and one intentionally dim
+# bake-only point fill. The point prevents completely black corners without
+# becoming a fifth dominant fixture.
+DIM_POINT_INTENSITY = 80
+SPOT_INTENSITY = 220
 
 
 def scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng):
@@ -706,7 +828,7 @@ def scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng):
 
 
 def light_entity(mode, origin, color, falloff, intensity, spot, rng,
-                 animate=None, bake_only=False):
+                 animate=None, bake_only=False, carrier=None):
     """Return a light entity block (list of "key value" lines + classname).
 
     mode: 'dynamic' -> light_dynamic / light_dynamic_spot (runtime, unbaked:
@@ -719,8 +841,11 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng,
                   at runtime via setLightAnimation (which reserves the animated
                   bake automatically).
     `bake_only` marks a `_bake_only 1` fixture (bakes, no runtime entity).
+    `carrier` attaches a dynamic light to a named kinematic mover.
     """
     cr, cg, cb = color
+    if carrier and mode != "dynamic":
+        raise ValueError("only dynamic lights can be carried by movers")
     if mode == "static":
         cls = "light"
         # `_light_size` is the bake-only emitter radius (metres) that drives the
@@ -748,6 +873,8 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng,
            f'"light" "{intensity}"', f'"_color" "{cr} {cg} {cb}"',
            f'"_falloff_range" "{falloff}"', '"delay" "0"', '"style" "0"']
     out += extra
+    if carrier:
+        out.append(f'"carrier" "{carrier}"')
     out.append("}")
     return out
 
@@ -768,14 +895,14 @@ def weapon_entity(origin, cls):
             '"angles" "0 0 0"', "}"]
 
 
-def door_entities(idx, axis, line, dcenter, zf, tag):
+def door_entities(idx, axis, line, dcenter, zf, tag, activation):
     """A sliding automatic door filling a maze doorway.
 
     Returns a list of entity blocks: the `kinematic_mover` door leaf (authored
-    shut, sliding up out of the opening), its two waypoints, and a touch
-    `trigger_volume` in the passage that opens it (`auto_close_ms` shuts it). The
-    trigger reaches DOOR_TRIGGER_REACH into BOTH rooms the door joins, so the
-    player opens it approaching from either side.
+    shut, sliding up out of the opening), its two waypoints, and a
+    `trigger_volume` in the passage that opens it (`auto_close_ms` shuts it).
+    `activation` is either `touch` or `use`; the latter requires the player's
+    action button while they overlap the same two-sided passage volume.
     axis 'x' => wall on X=line, opening in Y at dcenter; 'y' => the transpose.
     """
     h = WALL_T // 2
@@ -805,7 +932,7 @@ def door_entities(idx, axis, line, dcenter, zf, tag):
     wp_open = ["{", '"classname" "kinematic_waypoint"', f'"name" "{opn}"',
                f'"origin" "{cx} {cy} {cz + DOOR_H}"', "}"]
 
-    trig = ["{", '"classname" "trigger_volume"', '"activation" "touch"',
+    trig = ["{", '"classname" "trigger_volume"', f'"activation" "{activation}"',
             f'"target_tag" "{tag}"', '"command" "start"',
             '"fire_mode" "multiple"', '"rearm_ms" "3000"']
     trig += box_brush(tx0, ty0, zf, tx1, ty1, zf + DOOR_H,
@@ -814,47 +941,147 @@ def door_entities(idx, axis, line, dcenter, zf, tag):
     return [mover, wp_shut, wp_open, trig]
 
 
-LIFT_HALF = 168      # platform half-extent (< SHAFT//2 = 192, fits the hole)
-LIFT_THICK = 24      # platform slab thickness
+# A closet is a small, sealed pod built inside an existing tall room. Its door
+# pulls out into the parent room rather than up through the closet lintel, so
+# the mover never intersects static brushwork at either waypoint.
+CLOSET_W = 512
+CLOSET_D = 384
+CLOSET_WALL_T = 40
+CLOSET_TRIGGER_REACH = 256
+CLOSET_ENEMY_COUNT = 2
+
+
+def monster_closet_entities(idx, cx, front_y, zf, zc):
+    """Return (static_brushes, entities) for one touch-activated monster closet.
+
+    The trigger simultaneously starts the tagged door directly and fires a
+    uniquely named data-script reaction, which in turn activates only this
+    closet's `entity_spawner`.  The once-only trigger makes the reveal and
+    spawn deterministic even if a player revisits the doorway.
+    """
+    x0, x1 = cx - CLOSET_W // 2, cx + CLOSET_W // 2
+    y0, y1 = front_y, front_y + CLOSET_D
+    d0, d1 = cx - DOOR_W // 2, cx + DOOR_W // 2
+    ztop = zf + DOOR_H
+    tex = MOVER_TEX
+    brushes = [
+        box_brush(x0, y0, zf, x0 + CLOSET_WALL_T, y1, zc, tex, tex, tex),
+        box_brush(x1 - CLOSET_WALL_T, y0, zf, x1, y1, zc, tex, tex, tex),
+        box_brush(x0, y1 - CLOSET_WALL_T, zf, x1, y1, zc, tex, tex, tex),
+        box_brush(x0 + CLOSET_WALL_T, y0, ztop,
+                  x1 - CLOSET_WALL_T, y0 + CLOSET_WALL_T, zc, tex, tex, tex),
+        box_brush(x0 + CLOSET_WALL_T, y0, zf, d0, y0 + CLOSET_WALL_T, ztop,
+                  tex, tex, tex),
+        box_brush(d1, y0, zf, x1 - CLOSET_WALL_T, y0 + CLOSET_WALL_T, ztop,
+                  tex, tex, tex),
+    ]
+    tag = f"warren_closet_door_{idx}"
+    spawner_tag = f"warren_closet_spawner_{idx}"
+    shut = f"warren_closet_{idx}_shut"
+    opn = f"warren_closet_{idx}_open"
+    door_cy = y0 + CLOSET_WALL_T // 2
+    door_cz = zf + DOOR_H // 2
+    mover = ["{", '"classname" "kinematic_mover"', f'"path" "{shut}"',
+             '"speed" "4"', '"move_mode" "once"', '"start_on_spawn" "0"',
+             '"block_policy" "reverse"', f'"_tags" "{tag}"']
+    mover += box_brush(d0, y0, zf, d1, y0 + CLOSET_WALL_T, ztop,
+                       tex, tex, tex).rstrip("\n").split("\n")
+    mover.append("}")
+    trigger = ["{", '"classname" "trigger_volume"',
+               f'"name" "warren_closet_trigger_{idx}"', '"activation" "touch"',
+               f'"target_tag" "{tag}"', '"command" "start"',
+               f'"on_fire" "warren.closet.{idx}.spawn"',
+               '"fire_mode" "once"', '"enabled_on_spawn" "1"']
+    trigger += box_brush(d0, y0 - CLOSET_TRIGGER_REACH, zf,
+                         d1, y0 + CLOSET_WALL_T, ztop,
+                         tex, tex, tex).rstrip("\n").split("\n")
+    trigger.append("}")
+    spawner = ["{", '"classname" "entity_spawner"',
+               f'"origin" "{cx} {y1 - 96} {zf + 16}"', '"angles" "0 180 0"',
+               f'"archetype" "{ENEMY_CLASS}"', f'"count" "{CLOSET_ENEMY_COUNT}"',
+               f'"_tags" "{spawner_tag}"', "}"]
+    return brushes, [mover,
+                      ["{", '"classname" "kinematic_waypoint"', f'"name" "{shut}"',
+                       f'"next" "{opn}"', f'"origin" "{cx} {door_cy} {door_cz}"', "}"],
+                      ["{", '"classname" "kinematic_waypoint"', f'"name" "{opn}"',
+                       f'"origin" "{cx} {door_cy - DOOR_W - 32} {door_cz}"', "}"],
+                      trigger, spawner]
+
+
+LIFT_HALF = 168      # car half-extent (< SHAFT//2 = 192, fits the hole)
+LIFT_FLOOR_T = 24
+LIFT_WALL_T = 40
+LIFT_CAR_H = STORY_H
+LIFT_CEIL_T = 24
 
 
 def lift_entities(idx, cx, cy, zf_low, climb, tag):
-    """A ping-pong lift platform carrying the player between two layers.
+    """A multi-brush, ping-pong elevator car between two room layers.
 
-    Returns the `kinematic_mover` platform (authored at the lower floor) and its
-    two waypoints. `start_on_spawn 1` + `ping_pong` makes it cycle on its own.
+    The floor, three cabin walls, and ceiling belong to one `kinematic_mover`,
+    which is the engine's supported moving-group form.  Every other car gets a
+    carried dynamic cabin light to exercise the mover/light binding path.
     """
     z0 = zf_low
-    z1 = z0 + LIFT_THICK
-    cz = z0 + LIFT_THICK // 2
+    z1 = z0 + LIFT_FLOOR_T
+    cz = z0 + LIFT_FLOOR_T // 2
     low = f"warren_lift_{idx}_low"
     high = f"warren_lift_{idx}_high"
-    mover = ["{", '"classname" "kinematic_mover"', f'"path" "{low}"',
+    name = f"warren_lift_{idx}"
+    mover = ["{", '"classname" "kinematic_mover"', f'"name" "{name}"',
+             f'"path" "{low}"',
              '"speed" "6"', '"wait_ms" "1400"', '"move_mode" "ping_pong"',
              '"start_on_spawn" "1"', '"block_policy" "reverse"',
              f'"_tags" "{tag}"']
     mover += box_brush(cx - LIFT_HALF, cy - LIFT_HALF, z0,
                        cx + LIFT_HALF, cy + LIFT_HALF, z1,
                        MOVER_TEX, MOVER_TEX, MOVER_TEX).rstrip("\n").split("\n")
+    # Three walls leave the -Y face open for boarding from the shaft stair.
+    wall_z1 = z0 + LIFT_CAR_H
+    for x0, y0, x1, y1 in (
+        (cx - LIFT_HALF, cy + LIFT_HALF - LIFT_WALL_T,
+         cx + LIFT_HALF, cy + LIFT_HALF),
+        (cx - LIFT_HALF, cy - LIFT_HALF,
+         cx - LIFT_HALF + LIFT_WALL_T, cy + LIFT_HALF),
+        (cx + LIFT_HALF - LIFT_WALL_T, cy - LIFT_HALF,
+         cx + LIFT_HALF, cy + LIFT_HALF),
+    ):
+        mover += box_brush(x0, y0, z1, x1, y1, wall_z1,
+                           MOVER_TEX, MOVER_TEX, MOVER_TEX).rstrip("\n").split("\n")
+    mover += box_brush(cx - LIFT_HALF, cy - LIFT_HALF,
+                       wall_z1, cx + LIFT_HALF, cy + LIFT_HALF,
+                       wall_z1 + LIFT_CEIL_T,
+                       MOVER_TEX, MOVER_TEX, MOVER_TEX).rstrip("\n").split("\n")
     mover.append("}")
     wp_low = ["{", '"classname" "kinematic_waypoint"', f'"name" "{low}"',
               f'"next" "{high}"', f'"origin" "{cx} {cy} {cz}"', "}"]
     wp_high = ["{", '"classname" "kinematic_waypoint"', f'"name" "{high}"',
                f'"origin" "{cx} {cy} {cz + climb}"', "}"]
-    return [mover, wp_low, wp_high]
+    entities = [mover, wp_low, wp_high]
+    if idx % 2 == 0:
+        entities.append(light_entity(
+            "dynamic", (cx, cy, wall_z1 - 32), (140, 217, 255),
+            600, 420, False, None, carrier=name))
+    return entities
 
 
 def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
              crates_per_room, spot_frac, static_frac, lights_per_room, stairs,
-             n_arenas, n_enemies, n_weapons, n_doors, n_lifts, animated_frac):
+             n_arenas, n_enemies, n_weapons, n_doors, door_activation, n_lifts,
+             n_closets, animated_frac):
     rng = random.Random(seed)
     spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
     # center the grid near origin
-    ox = -(nx * PITCH_XY) // 2
-    oy = -(ny * PITCH_XY) // 2
+    ox = -(nx * LATTICE_PITCH_XY - CORRIDOR_BAND) // 2
+    oy = -(ny * LATTICE_PITCH_XY - CORRIDOR_BAND) // 2
     oz = 0
-    X = [ox + i * PITCH_XY for i in range(nx + 1)]
-    Y = [oy + j * PITCH_XY for j in range(ny + 1)]
+    # X/Y hold room starts, not shared cell boundaries. Each following start is
+    # separated by a real corridor band; X_END/Y_END hold the opposite room
+    # walls. This distinction is the core reserved-airspace invariant.
+    X = [ox + i * LATTICE_PITCH_XY for i in range(nx)]
+    Y = [oy + j * LATTICE_PITCH_XY for j in range(ny)]
+    X_END = [x + PITCH_XY for x in X]
+    Y_END = [y + PITCH_XY for y in Y]
     Z = [oz + k * PITCH_Z for k in range(nz + 1)]
 
     # Player spawn cell (kept clear of arenas): interior of (min(1,nx-1), min(1,ny-1), 0).
@@ -918,11 +1145,11 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                 if i > 0 and not is_arena(i - 1, j, k) and layers[k][(i - 1, j)] != r:
                     p = tuple(sorted((r, layers[k][(i - 1, j)])))
                     pair_bounds.setdefault(p, []).append(
-                        ((k, "x", i, j), Y[j], Y[j + 1]))
+                        ((k, "x", i, j), Y[j], Y_END[j]))
                 if j > 0 and not is_arena(i, j - 1, k) and layers[k][(i, j - 1)] != r:
                     p = tuple(sorted((r, layers[k][(i, j - 1)])))
                     pair_bounds.setdefault(p, []).append(
-                        ((k, "y", i, j), X[i], X[i + 1]))
+                        ((k, "y", i, j), X[i], X_END[i]))
         rooms_k = {layers[k][(i, j)]
                    for j in range(ny) for i in range(nx) if not is_arena(i, j, k)}
         # Randomized Kruskal: shuffle adjacencies; keep an edge if it joins two
@@ -976,10 +1203,14 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
             shafts.add((k, i, j))
 
     brushes = []
+    # Hallway lights are static whenever the map uses a baked-light mode. The
+    # explicit dynamic-only mode remains bake-free for renderer stress tests.
+    corridor_lights = [] if lights_mode in ("static", "mixed") else None
 
-    # Vertical walls. For each cell, emit its low-X and low-Y boundary, plus the
-    # far edges. Interior boundaries between two cells of the same room are open.
-    # Any boundary touching an arena cell is skipped (the arena owns it).
+    # Vertical room walls. Every ordinary room owns four walls; a selected maze
+    # edge cuts matching door openings in the two room-to-corridor interfaces.
+    # No room wall is shared with another room, so corridor airspace cannot cut
+    # through either a room interior or a shared wall.
     for k in range(nz):
         zf = Z[k] + SLAB_T // 2
         zc = Z[k + 1] - SLAB_T // 2
@@ -989,48 +1220,63 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                     continue
                 r = room_of(i, j, k)
                 wt = pick(WALL_TEX, r)               # wall texture varies by room
-                # X-boundary at X[i] (between cell i-1 and i)
-                if i == 0:
-                    emit_wall(brushes, "x", X[0], Y[j], Y[j + 1], zf, zc, None, wt)
-                elif not is_arena(i - 1, j, k) and room_of(i - 1, j, k) != r:
-                    emit_wall(brushes, "x", X[i], Y[j], Y[j + 1], zf, zc,
-                              doors.get((k, "x", i, j)), wt)
-                if i == nx - 1:
-                    emit_wall(brushes, "x", X[nx], Y[j], Y[j + 1], zf, zc, None, wt)
-                # Y-boundary at Y[j]
-                if j == 0:
-                    emit_wall(brushes, "y", Y[0], X[i], X[i + 1], zf, zc, None, wt)
-                elif not is_arena(i, j - 1, k) and room_of(i, j - 1, k) != r:
-                    emit_wall(brushes, "y", Y[j], X[i], X[i + 1], zf, zc,
-                              doors.get((k, "y", i, j)), wt)
-                if j == ny - 1:
-                    emit_wall(brushes, "y", Y[ny], X[i], X[i + 1], zf, zc, None, wt)
+                emit_wall(brushes, "x", X[i], Y[j], Y_END[j], zf, zc,
+                          doors.get((k, "x", i, j)) if i > 0 else None, wt)
+                emit_wall(brushes, "x", X_END[i], Y[j], Y_END[j], zf, zc,
+                          doors.get((k, "x", i + 1, j)) if i < nx - 1 else None, wt)
+                emit_wall(brushes, "y", Y[j], X[i], X_END[i], zf, zc,
+                          doors.get((k, "y", i, j)) if j > 0 else None, wt)
+                emit_wall(brushes, "y", Y_END[j], X[i], X_END[i], zf, zc,
+                          doors.get((k, "y", i, j + 1)) if j < ny - 1 else None, wt)
 
-    # Horizontal slabs at every Z-boundary, full cell footprint. Top and bottom
-    # boundaries (k==0, k==nz) are always solid (seal). Interior boundaries get a
-    # sparse shaft so layers are portal-connected. Boundaries an arena owns are
-    # skipped (the arena emits its own floor/ceiling/mezzanine).
+        # Ordinary rooms seal the exterior along their own spans. Bridge the
+        # reserved corridor gaps on the four outer edges as well; without these
+        # short pieces the corridor network would be open to the exterior at
+        # every perimeter junction.
+        for j in range(ny - 1):
+            emit_wall(brushes, "x", X[0], Y_END[j], Y[j + 1], zf, zc, None,
+                      pick(WALL_TEX, k + j))
+            emit_wall(brushes, "x", X_END[-1], Y_END[j], Y[j + 1], zf, zc,
+                      None, pick(WALL_TEX, k + j + nx))
+        for i in range(nx - 1):
+            emit_wall(brushes, "y", Y[0], X_END[i], X[i + 1], zf, zc, None,
+                      pick(WALL_TEX, k + i))
+            emit_wall(brushes, "y", Y_END[-1], X_END[i], X[i + 1], zf, zc,
+                      None, pick(WALL_TEX, k + i + ny))
+
+    # Room floor/ceiling slabs. Dedicated corridor floors/low roofs are emitted
+    # separately below, filling every gap between these footprints without
+    # overlapping them. Top and bottom boundaries are solid; interior room slabs
+    # get sparse shafts so layers remain portal-connected.
     for k in range(nz + 1):
         for j in range(ny):
             for i in range(nx):
                 if (k, i, j) in arena_slab_cells:
                     continue
                 holed = (k, i, j) in shafts
-                emit_slab(brushes, X[i], Y[j], X[i + 1], Y[j + 1], Z[k], holed,
+                emit_slab(brushes, X[i], Y[j], X_END[i], Y_END[j], Z[k], holed,
                           pick(FLOOR_TEX, i + j), pick(CEIL_TEX, i + j + k))
+
+    # The corridor grid is a sealed, lower-storey network in the reserved bands
+    # between rooms. Cross-junctions naturally provide corners; sparse diagonal
+    # guide fins provide angled treatment without entering room space.
+    for k in range(nz):
+        emit_reserved_corridor_grid(
+            brushes, X, Y, Z[k] + SLAB_T // 2, pick(WALL_TEX, k), seed + k,
+            lambda i, j, k=k: is_arena(i, j, k), corridor_lights)
 
     # Arenas: open two-storey volumes with entryways, a mezzanine ledge + gap,
     # and a walkable staircase. Placed after the lattice so they overwrite the
     # (skipped) cells they reserve.
     arena_rooms = []
     for a in arenas:
-        arena_rooms.append(emit_arena(brushes, X, Y, Z, a, rng))
+        arena_rooms.append(emit_arena(brushes, X, X_END, Y, Y_END, Z, a, rng))
 
     # Vertical traversal: thread a climbable jump-stair spiral up through every
     # shaft so the upper layers are reachable on foot (and the rising spiral
     # makes the easy-to-miss ceiling gap visible). Off by default? No -- a map
     # with unreachable upper layers is broken; --no-stairs opts out only if the
-    # extra step brushes threaten a large grid's 4096 BSP-leaf budget. Shafts
+    # extra step brushes threaten a large grid's BSP-leaf budget. Shafts
     # chosen as lifts get a platform instead of stairs (below).
     lift_shafts = set(sorted(shafts)[:max(0, n_lifts)])
     nstairs = 0
@@ -1038,39 +1284,40 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
         for (k, i, j) in sorted(shafts):
             if (k, i, j) in lift_shafts:
                 continue
-            scx = (X[i] + X[i + 1]) // 2
-            scy = (Y[j] + Y[j + 1]) // 2
+            scx = (X[i] + X_END[i]) // 2
+            scy = (Y[j] + Y_END[j]) // 2
             zf_low = Z[k - 1] + SLAB_T // 2
             stex = pick(WALL_TEX, k + i + j)
             nstairs += emit_shaft_stairs(brushes, scx, scy, zf_low, PITCH_Z, stex)
 
-    spx = (X[si] + X[si + 1]) // 2
-    spy = (Y[sj] + Y[sj + 1]) // 2
+    spx = (X[si] + X_END[si]) // 2
+    spy = (Y[sj] + Y_END[sj]) // 2
     spz = Z[0] + SLAB_T // 2 + 32
 
     # --- Per-room props: crate stacks + lights -----------------------------
     # Both need the room's interior rect, so invert cell -> room once (rooms are
     # single-layer). Arena cells are excluded (arenas are lit separately below).
     entities = []          # gameplay + light entity blocks (list-of-lines each)
-    lights = []            # kept separate only for the summary line
+    lights = corridor_lights or []  # kept separate only for the summary line
     n_script_lights = 0
     ncrates = 0
     room_rects = []        # (floor_z, ceil_z, x0i, x1i, y0i, y1i) for content placement
     # Shared animation budget (one-element list so callees can decrement it);
     # caps total animated baked lights at ANIMATED_LIGHT_CAP (see the const).
     anim_budget = [ANIMATED_LIGHT_CAP if animated_frac > 0 else 0]
-    if lights_mode != "none" or crates_per_room > 0 or n_enemies or n_weapons:
+    if (lights_mode != "none" or crates_per_room > 0 or n_enemies or n_weapons
+            or n_closets):
         room_cells = {}
         for k in range(nz):
             for (i, j), r in layers[k].items():
                 room_cells.setdefault(r, (k, []))[1].append((i, j))
-        nlit = 0
+        nlit = len(lights)
         for r in sorted(room_cells):
             k, cells = room_cells[r]
             i0 = min(c[0] for c in cells); i1 = max(c[0] for c in cells)
             j0 = min(c[1] for c in cells); j1 = max(c[1] for c in cells)
-            x0i, x1i = X[i0] + WALL_T // 2, X[i1 + 1] - WALL_T // 2
-            y0i, y1i = Y[j0] + WALL_T // 2, Y[j1 + 1] - WALL_T // 2
+            x0i, x1i = X[i0] + WALL_T // 2, X_END[i1] - WALL_T // 2
+            y0i, y1i = Y[j0] + WALL_T // 2, Y_END[j1] - WALL_T // 2
             zf = Z[k] + SLAB_T // 2                  # interior floor
             zc = Z[k + 1] - SLAB_T // 2              # interior ceiling
             room_rects.append((zf, zc, x0i, x1i, y0i, y1i))
@@ -1089,7 +1336,7 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
 
             if lights_mode != "none" and r % max(1, light_every) == 0:
                 added, ns = emit_room_lights(
-                    lights, x0i, x1i, y0i, y1i, zc, crate_bases, rng,
+                    lights, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng,
                     lights_mode, lights_per_room, spot_stride, static_frac,
                     animated_frac, nlit, anim_budget)
                 nlit += added
@@ -1099,7 +1346,8 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
     # near the ceiling, clear of the central gap.
     for ar in arena_rooms:
         added, ns = emit_room_lights(
-            lights, ar["x0i"], ar["x1i"], ar["y0i"], ar["y1i"], ar["ceil_z"],
+            lights, ar["x0i"], ar["x1i"], ar["y0i"], ar["y1i"], ar["floor_z"],
+            ar["ceil_z"],
             [], rng, lights_mode if lights_mode != "none" else "static",
             max(3, lights_per_room), spot_stride, static_frac, animated_frac,
             len(lights), anim_budget) if lights_mode != "none" else (0, 0)
@@ -1148,28 +1396,46 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
         k, axis, i, j = key
         dcenter = doors[key]
         zf = Z[k] + SLAB_T // 2
+        # The mover occupies the lower-index room's interface with the
+        # corridor; its trigger reaches across the dedicated band and into that
+        # room, never through another room's interior.
         line = X[i] if axis == "x" else Y[j]
         entities.extend(door_entities(ndoors, axis, line, dcenter, zf,
-                                      f"warren_door_{ndoors}"))
+                                      f"warren_door_{ndoors}", door_activation))
         ndoors += 1
+
+    # --- Gameplay: sealed monster-closet pods ------------------------------
+    # Spread pods over regular rooms (not arenas) and keep their pull-out doors
+    # on the room's +Y half.  A minimum lattice room is 1024 u wide/deep, so the
+    # 512 x 384 pod plus its 256 u trigger approach stays inside that room.
+    requested_closets = max(0, n_closets)
+    nclosets = 0
+    closet_rects = list(room_rects)
+    random.Random(seed ^ 0xC105E7).shuffle(closet_rects)
+    for zf, zc, x0i, x1i, y0i, y1i in closet_rects[:requested_closets]:
+        if x1i - x0i < CLOSET_W or y1i - y0i < CLOSET_D + CLOSET_TRIGGER_REACH:
+            continue
+        closet_brushes, closet_entities = monster_closet_entities(
+            nclosets, (x0i + x1i) // 2, y0i + CLOSET_TRIGGER_REACH, zf, zc)
+        brushes.extend(closet_brushes)
+        entities.extend(closet_entities)
+        nclosets += 1
 
     # --- Gameplay: lifts in the reserved shafts ----------------------------
     nlifts = 0
     for (k, i, j) in sorted(lift_shafts):
-        scx = (X[i] + X[i + 1]) // 2
-        scy = (Y[j] + Y[j + 1]) // 2
+        scx = (X[i] + X_END[i]) // 2
+        scy = (Y[j] + Y_END[j]) // 2
         zf_low = Z[k - 1] + SLAB_T // 2
         entities.extend(lift_entities(nlifts, scx, scy, zf_low, PITCH_Z,
                                      f"warren_lift_{nlifts}"))
         nlifts += 1
 
-    data_script = SCRIPT_DATA_SCRIPT if n_script_lights > 0 else None
-
     return (brushes, (spx, spy, spz), total_rooms, entities, lights, ncrates,
-            nstairs, len(arena_rooms), ndoors, nlifts, data_script)
+            nstairs, len(arena_rooms), ndoors, nlifts, nclosets, n_script_lights)
 
 
-def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
+def emit_room_lights(out, x0i, x1i, y0i, y1i, zf, zc, crate_bases, rng, lights_mode,
                      lights_per_room, spot_stride, static_frac, animated_frac,
                      global_idx, anim_budget):
     """Append one room's lights to `out`; return (count, script_light_count).
@@ -1182,22 +1448,11 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     half via an authored `brightness_curve` (KVP-driven) and half via the
     `warren_script_pulse` tag the data script pulses (script-driven).
 
-    Promotability. A baked light is either *promotable* (`_bake_only 0` -- kept
-    as a runtime entity) or *bake-only* (`_bake_only 1` -- no runtime entity).
-    Each lit room gets exactly one guaranteed promotable light: the bright
-    ceiling fixture (now promotable, not bake-only). Its steady coverage lights
-    are bake-only. Animated coverage lights stay promotable -- a script-driven
-    one MUST keep a runtime entity for `setLightAnimation` to reach it (bake-only
-    lights are dropped from the compiler's script light table), and KVP-driven
-    ones are kept promotable for uniformity. The count of promotable lights is
-    held in [1, MAX_PROMOTABLE_PER_ROOM]: the fixture guarantees >= 1, and once
-    the cap is reached the remaining coverage lights bake only (so an animated
-    one is downgraded to a steady bake-only light rather than breaking the cap).
-
-    Brightness. The promotable fixture is the room's high point of light
-    (FIXTURE_INTENSITY); coverage lights sit at COVERAGE_INTENSITY; and bake-only
-    fill is dimmed by BAKE_ONLY_DIM below that, so every promotable light reads
-    brighter than the baked fill around it.
+    Static room contract. Every static/mixed room receives one dim bake-only
+    point fill and `lights_per_room` coverage lights. The normal settings use
+    four static spots. Steady static coverage is also bake-only; animation is an
+    explicit opt-in that promotes only the selected coverage lights so a script
+    can address them. Dynamic and mixed modes remain deliberate stress overrides.
     """
     cz = zc - 24
     lx0, lx1 = x0i + LIGHT_MARGIN, x1i - LIGHT_MARGIN
@@ -1207,18 +1462,17 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
     added = 0
     promotable = 0    # runtime-present (`_bake_only 0`) baked lights this room
 
-    # One high-brightness fixture per room (steady, near ceiling centre). It is
-    # PROMOTABLE (`_bake_only 0`): the room's guaranteed runtime-present light,
-    # which satisfies the ">= 1 promotable per room" floor. A baked-tier light,
-    # so it only belongs on maps that already bake: skip it under
-    # `--lights dynamic`, whose whole point is a bake-free runtime-light stress
-    # (adding a static light would force the lightmap/SH bake it avoids).
+    # One dim bake-only point fill per room. Its range reaches the far floor
+    # corner, including the room's vertical distance, so it remains useful in
+    # large arenas rather than only brightening their centre.
     if lights_mode in ("static", "mixed"):
         bx, by = (x0i + x1i) // 2, (y0i + y1i) // 2
+        dim_falloff = math.ceil(math.sqrt(
+            ((x1i - x0i) / 2) ** 2 + ((y1i - y0i) / 2) ** 2 + (cz - zf) ** 2
+        ) + LIGHT_MARGIN)
         out.append(light_entity("static", (bx, by, cz), (255, 244, 214),
-                                1800, FIXTURE_INTENSITY, False, rng, animate=None,
-                                bake_only=False))
-        promotable += 1
+                                dim_falloff, DIM_POINT_INTENSITY, False, rng, animate=None,
+                                bake_only=True))
         added += 1
     per = max(1, lights_per_room)
     for s in range(per):
@@ -1226,7 +1480,7 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
         color = LIGHT_COLORS[nlit % len(LIGHT_COLORS)]
         spot = (spot_stride > 0 and nlit % spot_stride == 0)
         falloff = 1600 if spot else 1400
-        intensity = COVERAGE_INTENSITY + (COVERAGE_SPOT_BONUS if spot else 0)
+        intensity = SPOT_INTENSITY if spot else DIM_POINT_INTENSITY
         if lights_mode == "mixed":
             this_mode = "static" if rng.random() < static_frac else "dynamic"
         else:
@@ -1256,24 +1510,15 @@ def emit_room_lights(out, x0i, x1i, y0i, y1i, zc, crate_bases, rng, lights_mode,
                 promotable += 1       # animated coverage light is runtime-present
             else:
                 bake_only = True      # steady (or cap-reached) coverage: bake only
-        # Bake-only fill is dimmed below the coverage base so every promotable
-        # light (the fixture especially) reads brighter than the baked fill --
-        # the fixture stays the room's high point of light.
-        if bake_only:
-            intensity = int(intensity * BAKE_ONLY_DIM)
         out.append(light_entity(this_mode, (px, py, cz), color, falloff,
                                 intensity, spot, rng, animate=animate,
                                 bake_only=bake_only))
         nlit += 1
         added += 1
-    # Invariant: a baked (static/mixed) space keeps between one and
-    # MAX_PROMOTABLE_PER_ROOM promotable (`_bake_only 0`) lights -- the bright
-    # fixture guarantees the floor, the loop's cap guarantees the ceiling. Pure
-    # `--lights dynamic` bakes nothing, so the baked-promotable rule is moot.
+    # Only animated coverage lights are promotable. Pure `--lights dynamic`
+    # bakes nothing, so the baked-promotable rule is moot.
     if lights_mode in ("static", "mixed"):
-        assert 1 <= promotable <= MAX_PROMOTABLE_PER_ROOM, (
-            f"promotable light count {promotable} outside "
-            f"[1, {MAX_PROMOTABLE_PER_ROOM}]")
+        assert 0 <= promotable <= MAX_PROMOTABLE_PER_ROOM
     return added, n_script
 
 
@@ -1318,6 +1563,44 @@ def write_map(path, brushes, spawn, nx, ny, nz, entities, data_script):
         f.write("\n".join(lines) + "\n")
 
 
+def write_generated_data_script(path, script_lights, closet_count):
+    """Write the per-map reactions required by generated gameplay entities.
+
+    `entity_spawner` deliberately has no map-KVP target field.  Each closet
+    therefore owns a named reaction so it cannot accidentally release every
+    other closet in the map.  The sidecar is written next to the generated map
+    and referenced by a relative worldspawn `data_script` path.
+    """
+    lines = [
+        "// Generated by tools/gen_stress_map.py; do not hand-edit.",
+        'import { defineReaction, spawner, world } from "postretro";',
+        "",
+        "export function setupLevel(_ctx: unknown) {",
+    ]
+    if script_lights:
+        lines.append(
+            '  const lights = world.query({ component: "light", tag: "warren_script_pulse" });'
+        )
+    lines.append("  const reactions = [")
+    if script_lights:
+        lines += [
+            '    defineReaction("levelLoad", {',
+            "      sequence: lights.flatMap((light) =>",
+            "        light.pulse({ min: 0.2, max: 1.0, periodMs: 1400 }),",
+            "      ),",
+            "    }),",
+        ]
+    for idx in range(closet_count):
+        lines += [
+            f'    defineReaction("warren.closet.{idx}.spawn",',
+            f'      spawner({{ tag: "warren_closet_spawner_{idx}" }}).fire(),',
+            "    ),",
+        ]
+    lines += ["  ];", "  return { reactions };", "}", ""]
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+
+
 def main(argv):
     # Presets set a known-good bundle of knobs. Each preset value is applied
     # ONLY where the user did not pass that flag explicitly (we default the
@@ -1334,7 +1617,7 @@ def main(argv):
     #
     # warren:   the full gameplay showcase -- arenas, enemies, weapon pickups,
     #           sliding doors, lifts, and animated lights (KVP + script) on a
-    #           grid sized to stay under the 4096 BSP-leaf cap. Bake it at
+    #           conservative feature-heavy grid. Bake it at
     #           --lightmap-density 0.25: the animated-light weight-map packer
     #           needs enough texels per face, and the warren's large room walls
     #           collapse animated chunks into overlapping atlas rects at the
@@ -1348,11 +1631,11 @@ def main(argv):
         "warren": dict(
             # 6x5x3: nx >= aw+2 and ny >= ah+2 so one NFL-field arena (4x2 cells
             # at the stock pitch, see arena_cell_span) plus its one-cell frame
-            # fits interior; still well under the 4096 BSP-leaf cap.
-            grid=[6, 5, 3], lights="mixed", spot_frac=0.3, light_every=1,
-            door_prob=0.3, shaft_prob=0.6, lights_per_room=2, crates=1,
-            arenas=1, enemies=12, weapons=6, doors=6, lifts=2,
-            animated_frac=0.4,
+            # fits interior with room for the feature-heavy layout.
+            grid=[6, 5, 3], lights="static", spot_frac=1.0, light_every=1,
+            door_prob=0.3, shaft_prob=0.6, lights_per_room=4, crates=1,
+            arenas=1, enemies=12, weapons=6, doors=6, door_activation="use",
+            lifts=2, monster_closets=3, animated_frac=0.0,
         ),
     }
 
@@ -1364,13 +1647,13 @@ def main(argv):
                          "whose bake overflows the lightmap atlas into >=2 array "
                          "layers at bounded memory; bake it at "
                          "--lightmap-density 0.06. 'warren' => the full gameplay "
-                         "showcase (arenas, enemies, weapons, doors, lifts, "
-                         "animated lights) on a leaf-cap-safe grid; bake it at "
+                         "showcase (arenas, enemies, weapons, use doors, closets, lifts, "
+                         "animated lights) on a conservative feature-heavy grid; bake it at "
                          "--lightmap-density 0.25.")
     ap.add_argument("--grid", nargs=3, type=int, default=None,
                     metavar=("NX", "NY", "NZ"),
-                    help="cells along X, Y, and vertical layers (default 9 8 4, "
-                         "which lands just under the 4096 BSP-leaf cap)")
+                    help="cells along X, Y, and vertical layers (default 7 6 3, "
+                         "a conservative size for the added corridor shells)")
     ap.add_argument("-o", "--out", default="content/dev/maps/stress-warren.map")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--door-prob", type=float, default=None,
@@ -1396,8 +1679,8 @@ def main(argv):
                          "pools). 'static' = light (baked; stresses the lightmap "
                          "+ SH bake -- much slower compile). 'mixed' = a per-room "
                          "blend of both (see --static-frac), stressing the bake "
-                         "AND the runtime path in one scene. Any lit room also "
-                         "gets one high-brightness _bake_only fixture. (default "
+                         "AND the runtime path in one scene. Static/mixed rooms "
+                         "also get one dim bake-only point fill. (default "
                          "none)")
     ap.add_argument("--static-frac", type=float, default=0.5,
                     help="in --lights mixed, fraction of lights that are baked "
@@ -1412,10 +1695,10 @@ def main(argv):
     ap.add_argument("--spot-frac", type=float, default=None,
                     help="fraction of lights that are spotlights. Only spots "
                          "cast shadows from world geometry (crates), so raise "
-                         "this to stress shadow-map rendering. (default 0.2)")
+                         "this to stress shadow-map rendering. (default 1.0)")
     ap.add_argument("--lights-per-room", type=int, default=None, metavar="N",
                     help="number of scattered coverage lights per lit room "
-                         "(default 1; on top of the per-room bake-only fixture). "
+                         "(default 4; on top of the per-room dim bake-only point). "
                          "Lights are jittered clear of crate stacks.")
     ap.add_argument("--animated-frac", type=float, default=None,
                     help="fraction of baked (static) coverage lights that "
@@ -1441,11 +1724,21 @@ def main(argv):
                          "the rooms (default 0)")
     ap.add_argument("--doors", type=int, default=None, metavar="N",
                     help="number of maze doorways upgraded to automatic sliding "
-                         "kinematic_mover doors (touch-open, auto-close). "
+                         "kinematic_mover doors (auto-close). "
                          "(default 0)")
+    ap.add_argument("--door-activation", choices=["touch", "use"], default=None,
+                    help="how generated maze-door triggers activate: 'touch' opens "
+                         "on overlap; 'use' requires the action button while the "
+                         "player overlaps the doorway trigger. (default touch; the "
+                         "warren preset uses action-button doors)")
+    ap.add_argument("--monster-closets", type=int, default=None, metavar="N",
+                    help="number of sealed one-storey closet pods placed in regular "
+                         "rooms. Each touch trigger opens its door and fires only its "
+                         "own two-enemy entity_spawner through a generated data-script "
+                         "reaction. (default 0)")
     ap.add_argument("--lifts", type=int, default=None, metavar="N",
                     help="number of shafts whose jump-stairs are replaced with a "
-                         "ping-pong lift platform between the two layers. "
+                         "ping-pong multi-brush elevator car between layers. "
                          "(default 0)")
     ap.add_argument("--no-stairs", action="store_true",
                     help="do NOT thread jump-stair spirals up through shafts. By "
@@ -1453,16 +1746,17 @@ def main(argv):
                          "platforms so upper layers are reachable on foot (a bare "
                          "shaft hole cannot be climbed) and the rising spiral "
                          "marks the ceiling gap. Disable only if the extra step "
-                         "brushes push a large grid over the 4096 BSP-leaf cap.")
+                         "brushes make a large grid expensive to build.")
     args = ap.parse_args(argv)
 
     # Resolve each knob: explicit CLI value wins; else the preset's value (if a
     # preset was named and sets it); else the original committed default.
     preset = PRESETS.get(args.preset, {})
-    _DEFAULTS = dict(grid=[9, 8, 4], door_prob=0.15, shaft_prob=0.5,
-                     lights="none", light_every=1, crates=0, spot_frac=0.2,
-                     lights_per_room=1, animated_frac=0.0, arenas=0, enemies=0,
-                     weapons=0, doors=0, lifts=0)
+    _DEFAULTS = dict(grid=[7, 6, 3], door_prob=0.15, shaft_prob=0.5,
+                     lights="none", light_every=1, crates=0, spot_frac=1.0,
+                     lights_per_room=4, animated_frac=0.0, arenas=0, enemies=0,
+                     weapons=0, doors=0, door_activation="touch", lifts=0,
+                     monster_closets=0)
 
     def resolve(name):
         if getattr(args, name) is not None:
@@ -1484,7 +1778,9 @@ def main(argv):
     args.enemies = resolve("enemies")
     args.weapons = resolve("weapons")
     args.doors = resolve("doors")
+    args.door_activation = resolve("door_activation")
     args.lifts = resolve("lifts")
+    args.monster_closets = resolve("monster_closets")
     stairs = not args.no_stairs
 
     nx, ny, nz = args.grid
@@ -1492,20 +1788,24 @@ def main(argv):
         ap.error("grid dimensions must be >= 1")
 
     # Envelope sanity check against the +/-16384-unit Quake bound.
-    half_x = nx * PITCH_XY // 2
-    half_y = ny * PITCH_XY // 2
+    half_x = (nx * LATTICE_PITCH_XY - CORRIDOR_BAND) // 2
+    half_y = (ny * LATTICE_PITCH_XY - CORRIDOR_BAND) // 2
     if max(half_x, half_y) > 16384:
         print(f"warning: grid spans +/-{max(half_x, half_y)} units, beyond the "
               f"classic +/-16384 envelope (still f32-exact, but unusually large)",
               file=sys.stderr)
 
     (brushes, spawn, rooms, entities, lights, ncrates, nstairs, narenas,
-     ndoors, nlifts, data_script) = generate(
+     ndoors, nlifts, nclosets, n_script_lights) = generate(
         nx, ny, nz, args.seed, args.door_prob, args.shaft_prob,
         args.lights, args.light_every, args.crates, args.spot_frac,
         args.static_frac, args.lights_per_room, stairs,
-        args.arenas, args.enemies, args.weapons, args.doors, args.lifts,
-        args.animated_frac)
+        args.arenas, args.enemies, args.weapons, args.doors, args.door_activation,
+        args.lifts, args.monster_closets, args.animated_frac)
+    data_script = None
+    if n_script_lights or nclosets:
+        data_script = os.path.splitext(os.path.abspath(args.out))[0] + ".generated.ts"
+        write_generated_data_script(data_script, n_script_lights > 0, nclosets)
     write_map(args.out, brushes, spawn, nx, ny, nz, entities, data_script)
     if args.arenas > 0 and narenas < args.arenas:
         print(f"warning: requested {args.arenas} arena(s) but only seated "
@@ -1528,8 +1828,8 @@ def main(argv):
     print(f"lights: {len(lights)} {args.lights} "
           f"({nstat} static, {ndyn} dynamic; {nspot} spot, {len(lights)-nspot} point; "
           f"{npromote} promotable, {nbake_only} bake-only, {nanim} animated)")
-    print(f"gameplay: {nenem} enemies, {nweap} weapons, {ndoors} doors, "
-          f"{nlifts} lifts"
+    print(f"gameplay: {nenem} enemies, {nweap} weapons, {ndoors} {args.door_activation} doors, "
+          f"{nclosets} monster closets, {nlifts} lifts"
           + (f"; data_script {data_script}" if data_script else ""))
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")
     print(f"wrote {args.out}")

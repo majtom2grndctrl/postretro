@@ -1,5 +1,16 @@
 # Shadowmask Array Atlas — Investigation: No Action Needed
 
+> **Superseded scope (2026-08-31):** this investigation answered only the *runtime GPU
+> texture-limit* question, and that verdict still holds — the shipped atlas is already a
+> layer-honoring `texture_2d_array` and does not breach a device limit the lightmap
+> doesn't breach first. It did **not** examine the *bake*, where the real work turned out
+> to be. Two drafts now own that work: `shadowmask-bake-scaling` (the bake OOMs on
+> warren-class maps because the composite materializes every selected light's layer at
+> once — the actual stress-warren blocker) and `shadowmask-no-drop-atlas` (the 4-RGBA-
+> channel cap drops masks when >4 lights overlap a texel — a real quality gap the block
+> expansion closes). Read those for current direction; keep this only as the record of
+> why no runtime array-atlas reshape is needed.
+
 > **Status:** investigation complete. **Verdict: no overflow gap exists — no spec, no code change.**
 > **Question asked:** does the newly-merged `ShadowmaskAtlas` (PRL id 42) overflow device texture
 > limits on large maps the way the SH octahedral atlas does (`plans/drafts/sh-array-atlas/`), and does

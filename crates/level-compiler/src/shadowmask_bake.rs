@@ -27,9 +27,9 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// payload semantics.
 pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 1;
 
-/// Minimum selected-light scan window for one governed chart batch. A batch
-/// widens when needed to expose the usable permit cap's worth of cache-miss
-/// chart work. Full `LightmapLayer`s are still compacted one at a time.
+/// Maximum selected-light count in one governed chart batch. Each light's raw
+/// chart buffers collectively carry one full layer payload, so the batch must
+/// never widen beyond this residency window.
 const SHADOWMASK_RESIDENT_LAYER_WINDOW: usize = 4;
 
 /// Fill checks the cooperative pause gate at this cadence without consuming a
@@ -62,8 +62,8 @@ impl ShadowmaskMembership {
     }
 }
 
-/// Test-only instrumentation counts assembled or cached full layers while they
-/// are serialized and compacted into membership.
+/// Test-only instrumentation counts every full-layer-equivalent payload:
+/// cached or assembled layers and each cold light's aggregate raw chart output.
 #[cfg(test)]
 #[derive(Default)]
 struct ResidentLayerTracker {
@@ -596,13 +596,11 @@ fn advance_shadowmask_total(
 
 /// Run the only light-axis Rayon level used by the shadowmask bake.
 ///
-/// A batch scans at least W selected lights and keeps scanning through cache
-/// hits until its misses expose the smaller of the current governor cap and
-/// Rayon pool width in chart tasks. This lets low-chart bakes occupy every
-/// usable permit even when W is smaller than `-j`. Every chart joins before
-/// the next batch. Cached and newly
-/// assembled full layers are compacted one at a time, so their resident bound
-/// remains independent of both the batch width and selected-light count.
+/// Each batch contains at most W selected lights. A cold light's chart buffers
+/// collectively equal one full layer payload, so widening a batch to the
+/// governor cap would also widen residency. The indexed chart level still uses
+/// every permitted worker when W times the chart count exposes enough work.
+/// Every chart joins and every payload is compacted before the next batch.
 #[allow(clippy::too_many_arguments)]
 fn collect_shadowmask_membership_in_batches(
     selected: &[(usize, u32, &MapLight)],
@@ -641,14 +639,12 @@ fn collect_shadowmask_membership_in_batches(
 
     let mut batch_start = 0;
     while batch_start < selected.len() {
-        let admission_target = control
-            .governor()
-            .permits()
-            .min(rayon::current_num_threads().max(1));
         let mut batch_membership: Vec<Option<Vec<ShadowmaskMembershipTexel>>> = Vec::new();
         let mut missing: Vec<(usize, &MapLight, Option<CacheKey>)> = Vec::new();
 
-        while batch_start + batch_membership.len() < selected.len() {
+        while batch_start + batch_membership.len() < selected.len()
+            && batch_membership.len() < resident_layer_window
+        {
             let batch_light_index = batch_membership.len();
             let compact_light_index = batch_start + batch_light_index;
             let (_, alpha_index, light) = selected[compact_light_index];
@@ -691,15 +687,6 @@ fn collect_shadowmask_membership_in_batches(
             } else {
                 missing.push((batch_light_index, light, None));
             }
-
-            let scanned_light_count = batch_membership.len();
-            let governed_task_count = missing.len().saturating_mul(chart_count);
-            if scanned_light_count >= resident_layer_window
-                && (governed_task_count >= admission_target
-                    || batch_start + scanned_light_count == selected.len())
-            {
-                break;
-            }
         }
         let batch_len = batch_membership.len();
 
@@ -712,6 +699,11 @@ fn collect_shadowmask_membership_in_batches(
                 (0..chart_count).map(move |chart_index| (*batch_light_index, *light, chart_index))
             })
             .collect();
+        // Charge each cold light before any chart buffer starts growing. One
+        // guard covers all of that light's per-chart Vecs and is retained while
+        // they are assembled, cached, and compacted. This makes the test hook
+        // observe the raw payloads that previously escaped its accounting.
+        let raw_output_guards: Vec<_> = missing.iter().map(|_| resident_layers.acquire()).collect();
         let chart_outputs: Vec<Vec<LayerTexel>> = work_items
             .par_iter()
             .map(|&(_, light, chart_index)| {
@@ -729,7 +721,11 @@ fn collect_shadowmask_membership_in_batches(
             .collect();
 
         let mut chart_outputs = chart_outputs.into_iter();
+        let mut raw_output_guards = raw_output_guards.into_iter();
         for (batch_light_index, _light, layer_key) in missing {
+            let _resident_payload = raw_output_guards
+                .next()
+                .expect("one residency guard is required for each cold light payload");
             let texels = (0..chart_count)
                 .flat_map(|_| {
                     chart_outputs
@@ -743,7 +739,6 @@ fn collect_shadowmask_membership_in_batches(
                 layer_count,
                 texels,
             };
-            let _resident_layer = resident_layers.acquire();
             if let (Some(cache), Some(layer_key)) = (cache, layer_key.as_ref()) {
                 cache.put(layer_key, &layer.to_bytes());
             }
@@ -754,6 +749,10 @@ fn collect_shadowmask_membership_in_batches(
         debug_assert!(
             chart_outputs.next().is_none(),
             "every chart output must join exactly one selected light"
+        );
+        debug_assert!(
+            raw_output_guards.next().is_none(),
+            "every cold light payload must release exactly one residency guard"
         );
 
         // Batch concatenation follows the fixed compact selection order rather
@@ -2035,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn high_permit_low_chart_bake_saturates_all_permits_with_window_four() {
+    fn high_permit_low_chart_bake_saturates_all_permits_when_window_exposes_eight_tasks() {
         let geometry = quad_geometry();
         let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
         let primitives = Vec::new();
@@ -2095,7 +2094,7 @@ mod tests {
                         &geometry,
                         AREA_SAMPLES,
                         &control,
-                        4,
+                        8,
                     )
                 })
             });
@@ -2122,9 +2121,62 @@ mod tests {
         );
         assert!(section.is_some());
         assert!(
-            resident_high_water <= 4,
-            "widening the chart batch must not widen the full-layer residency bound"
+            resident_high_water <= 8,
+            "the chart batch must stay within its full-layer residency window"
         );
+        assert_eq!(progress.total(), Some(8));
+        assert_eq!(progress.completed(), 8);
+    }
+
+    // Regression: permit-driven batch widening retained eight raw full-layer payloads at W=1.
+    #[test]
+    fn one_layer_window_bounds_cold_one_chart_payloads_below_eight_permits() {
+        let geometry = quad_geometry();
+        let bvh = bvh::bvh::Bvh { nodes: Vec::new() };
+        let primitives = Vec::new();
+        let charts = vec![one_texel_chart()];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let mut lights: Vec<MapLight> = (0..8).map(|index| light(8.0 - index as f32)).collect();
+        for test_light in &mut lights {
+            test_light.origin = DVec3::new(0.5, 1.0, 0.5);
+        }
+        let selection = EntityShadowLightsSection {
+            light_indices: (0..lights.len() as u32).collect(),
+        };
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(8, false)), &progress);
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .expect("eight-worker pool");
+
+        let (section, resident_high_water) = pool.install(|| {
+            bake_shadowmask_atlas_with_test_window(
+                Some(&selection),
+                &alpha_lights,
+                &shared,
+                &bvh,
+                &primitives,
+                &geometry,
+                AREA_SAMPLES,
+                &control,
+                1,
+            )
+        });
+
+        assert!(section.is_some());
+        assert_eq!(resident_high_water, 1);
         assert_eq!(progress.total(), Some(8));
         assert_eq!(progress.completed(), 8);
     }

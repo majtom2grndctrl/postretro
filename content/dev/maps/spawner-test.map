@@ -210,11 +210,18 @@
 "_tags" "closet_spawner"
 }
 // entity 7
-// Static red billboard-direct-scatter station. The player starts on the
-// light-facing side with a clear path through x 80..120 to the lit emitter.
-// Its matching smoke behind brush 10 remains in the spotlight cone but must be
-// dark by occlusion; stepping sideways around the wall also exposes the cone
-// edge. Keep this separate from the alarm below, which stays script-animated.
+// Static red billboard-lighting station. The player starts on the light-facing
+// side with a clear path through x 80..120 to the paired lit emitters. The
+// smoke_puff collection has baked NORMAL and SPECULAR companions, so it is the
+// shimmer receiver. smoke_puff_isotropic deliberately ships only diffuse and
+// is its nearby non-shimmer control. Strafe across the pair while facing them:
+// the static spotlight and camera motion sweep the shimmer highlight across
+// smoke_puff, while the control keeps its uniform center-evaluated glint.
+// A second diffuse-only smoke probe sits behind brush 10. Its baked direct
+// scatter must be dark by occlusion; stepping sideways around the wall also
+// exposes the cone edge. This is separate from the front shimmer comparison
+// because shimmer static specular has no static-light shadowmask binding. Keep
+// both stations separate from the alarm below, which stays script-animated.
 {
 "classname" "light_spot"
 "origin" "80 128 96"
@@ -240,13 +247,26 @@
 {
 "classname" "billboard_emitter"
 "origin" "176 128 16"
-"sprite" "smoke_puff"
+"sprite" "smoke_puff_isotropic"
 "rate" "2.0"
 "lifetime" "2.0"
 "spread" "0.2"
 "buoyancy" "0.0"
 }
 // entity 10
+// A diffuse-only collection is required for the comparison: it has no NORMAL
+// companion, so the renderer must retain the isotropic per-vertex path rather
+// than merely receiving a false authoring flag.
+{
+"classname" "billboard_emitter"
+"origin" "120 152 32"
+"sprite" "smoke_puff_isotropic"
+"rate" "2.0"
+"lifetime" "2.0"
+"spread" "0.2"
+"buoyancy" "0.0"
+}
+// entity 11
 {
 "classname" "light_spot"
 "origin" "24 -216 104"
@@ -259,7 +279,7 @@
 "_tags" "alarm_light"
 "_shadow_type" "static_light_map"
 }
-// entity 11
+// entity 12
 {
 "classname" "light_spot"
 "origin" "8 248 8"
@@ -267,7 +287,7 @@
 "_falloff_range" "50"
 "angles" "0 0 0"
 }
-// entity 12
+// entity 13
 // Both receiver fixtures stay in the main room, away from the closet doorway
 // and the spawner's local +X fan-out, but inside alarm_light's cone.
 {
@@ -276,7 +296,7 @@
 "angles" "0 45 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }
-// entity 13
+// entity 14
 {
 "classname" "billboard_emitter"
 "origin" "112 -72 32"

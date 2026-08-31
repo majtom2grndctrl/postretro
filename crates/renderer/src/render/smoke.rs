@@ -25,8 +25,11 @@ use postretro_render_cpu::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
 
 use super::loaded_texture::{prm_format_to_wgpu, upload_texture_array_data};
 
-/// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
-pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;
+/// Byte size of `SpriteDrawParams` (two `vec4<f32>` values = 32 B).
+///
+/// The first `vec4` remains byte-for-byte compatible with the former layout;
+/// `params2` starts at byte 16.
+pub const SPRITE_DRAW_PARAMS_SIZE: usize = 32;
 
 /// Level-install policy and draw constants for one sprite collection.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,10 +38,17 @@ pub struct SpriteCollectionRegistration {
     pub baked_sidecar_eligible: bool,
     /// Per-collection static-light specular response.
     pub spec_intensity: f32,
+    /// Per-collection static-light Blinn-Phong exponent.
+    pub spec_exponent: f32,
     /// Animation loop and particle lifetime in seconds.
     pub lifetime: f32,
     /// Additive HDR self-illumination strength.
     pub emissive: f32,
+}
+
+/// Whether a static-light Blinn-Phong exponent is safe to pack for the shader.
+pub fn sprite_specular_exponent_is_valid(spec_exponent: f32) -> bool {
+    spec_exponent.is_finite() && spec_exponent > 0.0
 }
 
 /// Storage-buffer dynamic-offset alignment required by wgpu / WebGPU
@@ -428,15 +438,15 @@ pub struct SpriteSheet {
     /// Owns the baked specular resource alongside its retained view.
     #[allow(dead_code)]
     specular_texture: Option<wgpu::Texture>,
-    /// Baked optional specular array, retained for the billboard material path
-    /// that will consume it. It is intentionally not added to this bind group.
+    /// Baked optional specular array. Shimmer binds it only when the same
+    /// `NORMAL`-slot predicate that enables shimmer is true.
     #[allow(dead_code)]
     pub specular_view: Option<wgpu::TextureView>,
     /// Owns the baked normal resource alongside its retained view.
     #[allow(dead_code)]
     normal_texture: Option<wgpu::Texture>,
-    /// Baked optional normal array, retained for the billboard material path
-    /// that will consume it. It is intentionally not added to this bind group.
+    /// Baked optional normal array. Its presence classifies the collection as
+    /// shimmer and selects the fragment static-specular path.
     #[allow(dead_code)]
     pub normal_view: Option<wgpu::TextureView>,
     /// Slots parsed from the baked sidecar. Decode fallback sheets are
@@ -445,13 +455,26 @@ pub struct SpriteSheet {
     pub slot_mask: PrmSlots,
 }
 
+/// GPU-free shimmer classification. A normal map is the sole opt-in; a
+/// specular mask alone cannot create a moving highlight.
+fn sprite_shimmer_flag(slot_mask: PrmSlots) -> f32 {
+    if slot_mask.contains(PrmSlots::NORMAL) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Pack `SpriteDrawParams` bytes for a
-/// (frame_count, spec_intensity, lifetime, emissive) tuple.
+/// (frame_count, spec_intensity, lifetime, emissive, spec_exponent, slot_mask)
+/// tuple.
 fn build_draw_params(
     frame_count: u32,
     spec_intensity: f32,
     lifetime: f32,
     emissive: f32,
+    spec_exponent: f32,
+    slot_mask: PrmSlots,
 ) -> [u8; SPRITE_DRAW_PARAMS_SIZE] {
     let mut bytes = [0u8; SPRITE_DRAW_PARAMS_SIZE];
     // params.x = bitcast<f32>(frame_count)
@@ -459,7 +482,75 @@ fn build_draw_params(
     bytes[4..8].copy_from_slice(&spec_intensity.to_ne_bytes());
     bytes[8..12].copy_from_slice(&lifetime.to_ne_bytes());
     bytes[12..16].copy_from_slice(&emissive.to_ne_bytes());
+    // params2.x = shimmer classification; params2.y = static-spec exponent.
+    bytes[16..20].copy_from_slice(&sprite_shimmer_flag(slot_mask).to_ne_bytes());
+    bytes[20..24].copy_from_slice(&spec_exponent.to_ne_bytes());
     bytes
+}
+
+/// Neutral optional-slot texels for the shared sprite D2-array placeholders.
+/// The specular mask is fully enabled (R = 1.0); the normal is a flat RG
+/// encoding with an opaque alpha channel.
+const SPRITE_SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [255];
+const SPRITE_NORMAL_PLACEHOLDER_PIXEL: [u8; 4] = [128, 128, 255, 255];
+
+/// Create one renderer-owned D2-array fallback layer for an optional shimmer
+/// input. Every sprite bind group always supplies bindings 3 and 4; collections
+/// without a `NORMAL` slot select these neutral views instead of failing load.
+fn create_sprite_placeholder_array(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    format: wgpu::TextureFormat,
+    pixel: &[u8],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let bytes_per_texel = match format {
+        wgpu::TextureFormat::R8Unorm => 1,
+        wgpu::TextureFormat::Rgba8Unorm => 4,
+        _ => unreachable!("sprite shimmer placeholders use uncompressed unorm formats"),
+    };
+    assert_eq!(pixel.len(), bytes_per_texel);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixel,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_texel as u32),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(label),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        mip_level_count: Some(1),
+        array_layer_count: Some(1),
+        ..Default::default()
+    });
+    (texture, view)
 }
 
 /// GPU resources for the billboard sprite pass.
@@ -502,14 +593,27 @@ pub struct SmokePass {
 
     /// Shared linear sampler for sprite-frame arrays.
     sampler: wgpu::Sampler,
+    /// Shared 1×1/one-layer `R8Unorm` fallback with R = 1.0 for missing
+    /// specular masks. Kept alive alongside its view for all collection bind
+    /// groups that need the optional-slot degradation path.
+    #[allow(dead_code)]
+    specular_placeholder_texture: wgpu::Texture,
+    specular_placeholder_view: wgpu::TextureView,
+    /// Shared 1×1/one-layer flat normal fallback with RG = 0.5. This is only
+    /// selected when a collection is not shimmer, so it cannot accidentally
+    /// enable a normal-mapped static-specular path.
+    #[allow(dead_code)]
+    normal_placeholder_texture: wgpu::Texture,
+    normal_placeholder_view: wgpu::TextureView,
 }
 
 /// Group 1 (sprite-frame array) BGL entries: sprite texture (binding 0, FRAGMENT) +
 /// sampler (binding 1, FRAGMENT) + draw-params uniform (binding 2,
 /// VERTEX | FRAGMENT — `vs_main` reads `draw_params` for frame count / lifetime
-/// and the spec-intensity term). No storage buffers here. GPU-free so the
+/// and the spec-intensity term) + optional slot arrays (bindings 3/4,
+/// FRAGMENT). No storage buffers here. GPU-free so the
 /// billboard vertex storage-buffer budget can sum it without a device.
-pub(super) fn sprite_sheet_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+pub(super) fn sprite_sheet_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -534,6 +638,26 @@ pub(super) fn sprite_sheet_bind_group_layout_entries() -> [wgpu::BindGroupLayout
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
                 min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
             },
             count: None,
         },
@@ -564,6 +688,7 @@ impl SmokePass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         lighting_bgl: &wgpu::BindGroupLayout,
@@ -575,7 +700,8 @@ impl SmokePass {
         });
 
         // Group 1: sprite-frame array (binding 0) + sampler (binding 1)
-        // + draw-params uniform (binding 2). Entries built from the GPU-free
+        // + draw-params uniform (binding 2) + optional specular/normal arrays
+        // (bindings 3/4). Entries built from the GPU-free
         // `sprite_sheet_bind_group_layout_entries` so the billboard vertex
         // storage-buffer budget (`billboard_pipeline_vertex_storage_buffer_count`)
         // reads from the same source of truth this layout is created from.
@@ -721,6 +847,21 @@ impl SmokePass {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
+        let (specular_placeholder_texture, specular_placeholder_view) =
+            create_sprite_placeholder_array(
+                device,
+                queue,
+                "Sprite Specular Placeholder Array",
+                wgpu::TextureFormat::R8Unorm,
+                &SPRITE_SPECULAR_PLACEHOLDER_PIXEL,
+            );
+        let (normal_placeholder_texture, normal_placeholder_view) = create_sprite_placeholder_array(
+            device,
+            queue,
+            "Sprite Normal Placeholder Array",
+            wgpu::TextureFormat::Rgba8Unorm,
+            &SPRITE_NORMAL_PLACEHOLDER_PIXEL,
+        );
 
         Self {
             pipeline,
@@ -732,6 +873,10 @@ impl SmokePass {
             instance_bind_group,
             sheets: HashMap::new(),
             sampler,
+            specular_placeholder_texture,
+            specular_placeholder_view,
+            normal_placeholder_texture,
+            normal_placeholder_view,
         }
     }
 
@@ -751,6 +896,13 @@ impl SmokePass {
         prm_cache_root: &Path,
         registration: SpriteCollectionRegistration,
     ) {
+        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
+            log::warn!(
+                "[Smoke] collection '{collection}' rejected: specular exponent must be finite and greater than zero (got {})",
+                registration.spec_exponent,
+            );
+            return;
+        }
         if self.sheets.contains_key(collection) {
             log::warn!(
                 "[Smoke] duplicate collection '{collection}' rejected; level installation must resolve one draw contract"
@@ -848,12 +1000,35 @@ impl SmokePass {
                 lod_max_clamp: baked_plan.lod_max_clamp,
                 ..Default::default()
             });
+            // `NORMAL` presence is the sole shimmer discriminator. The exact
+            // same predicate controls params2.x and whether optional slot views
+            // are exposed to the fragment shader, so a collection can never be
+            // flagged shimmer while sampling placeholder normal data (or vice
+            // versa). A shimmer collection may omit SPECULAR; that input then
+            // receives the white mask placeholder.
+            let is_shimmer = sprite_shimmer_flag(header.slot_mask) != 0.0;
+            let bound_specular_view = if is_shimmer {
+                specular_view
+                    .as_ref()
+                    .unwrap_or(&self.specular_placeholder_view)
+            } else {
+                &self.specular_placeholder_view
+            };
+            let bound_normal_view = if is_shimmer {
+                normal_view
+                    .as_ref()
+                    .expect("a shimmer slot mask must have uploaded its normal array")
+            } else {
+                &self.normal_placeholder_view
+            };
             let frame_count = collection_frame_count as u32;
             let params_bytes = build_draw_params(
                 frame_count,
                 registration.spec_intensity,
                 registration.lifetime,
                 registration.emissive,
+                registration.spec_exponent,
+                header.slot_mask,
             );
             let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("Sprite Draw Params: {collection}")),
@@ -877,6 +1052,14 @@ impl SmokePass {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(bound_specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(bound_normal_view),
                     },
                 ],
             });
@@ -984,6 +1167,8 @@ impl SmokePass {
             registration.spec_intensity,
             registration.lifetime,
             registration.emissive,
+            registration.spec_exponent,
+            PrmSlots::DIFFUSE,
         );
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Sprite Draw Params: {collection}")),
@@ -1006,6 +1191,14 @@ impl SmokePass {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.specular_placeholder_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.normal_placeholder_view),
                 },
             ],
         });
@@ -1515,8 +1708,9 @@ mod tests {
 
     #[test]
     fn draw_params_layout() {
-        let bytes = build_draw_params(8, 0.3, 3.0, 2.5);
+        let bytes = build_draw_params(8, 0.3, 3.0, 2.5, 12.0, PrmSlots::DIFFUSE | PrmSlots::NORMAL);
         assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
+        // `params` retains the former 16-byte layout exactly.
         let count = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
         assert_eq!(count, 8);
         let spec = f32::from_ne_bytes(bytes[4..8].try_into().unwrap());
@@ -1525,13 +1719,49 @@ mod tests {
         assert!((lifetime - 3.0).abs() < 1e-6);
         let emissive = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
         assert!((emissive - 2.5).abs() < 1e-6);
+        let shimmer = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
+        assert_eq!(shimmer, 1.0);
+        let exponent = f32::from_ne_bytes(bytes[20..24].try_into().unwrap());
+        assert!((exponent - 12.0).abs() < 1e-6);
+        assert_eq!(bytes[24..32], [0; 8]);
     }
 
     #[test]
-    fn zero_emissive_draw_params_keep_the_former_padding_bytes_zero() {
-        let bytes = build_draw_params(8, 0.3, 3.0, 0.0);
+    fn diffuse_only_draw_params_keep_shimmer_clear_and_pack_default_exponent() {
+        let bytes = build_draw_params(8, 0.3, 3.0, 0.0, 4.0, PrmSlots::DIFFUSE);
         assert_eq!(bytes.len(), SPRITE_DRAW_PARAMS_SIZE);
         assert_eq!(bytes[12..16], [0; 4]);
+        assert_eq!(f32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 0.0);
+        assert_eq!(f32::from_ne_bytes(bytes[20..24].try_into().unwrap()), 4.0);
+        assert_eq!(bytes[24..32], [0; 8]);
+    }
+
+    #[test]
+    fn sprite_registration_exponent_contract_accepts_only_finite_positive_values() {
+        assert!(sprite_specular_exponent_is_valid(4.0));
+        assert!(sprite_specular_exponent_is_valid(f32::MIN_POSITIVE));
+        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!sprite_specular_exponent_is_valid(invalid));
+        }
+    }
+
+    #[test]
+    fn normal_slot_is_the_only_shimmer_classification_signal() {
+        assert_eq!(
+            sprite_shimmer_flag(PrmSlots::DIFFUSE | PrmSlots::NORMAL),
+            1.0,
+            "NORMAL must opt a collection into shimmer"
+        );
+        assert_eq!(
+            sprite_shimmer_flag(PrmSlots::DIFFUSE),
+            0.0,
+            "diffuse-only collections stay isotropic"
+        );
+        assert_eq!(
+            sprite_shimmer_flag(PrmSlots::DIFFUSE | PrmSlots::SPECULAR),
+            0.0,
+            "a specular mask without NORMAL cannot create shimmer"
+        );
     }
 
     #[test]
@@ -1547,10 +1777,9 @@ mod tests {
             )
         );
         assert!(fragment.contains("(lit_rgb + emissive_rgb) * sprite_sample.a"));
-        assert!(
-            !fragment.contains("light_term_mask") && !fragment.contains("light_terms"),
-            "self-only emissive must not be gated by LightTermMask"
-        );
+        // Shimmer now legitimately reads `light_term_mask` for its static
+        // specular lobe. The emissive expression remains an unconditional
+        // local assignment and does not consume that mask.
     }
 
     #[test]
@@ -1759,23 +1988,40 @@ mod tests {
     }
 
     #[test]
-    fn sprite_sheet_layout_binds_a_filterable_d2_array_texture() {
+    fn sprite_sheet_layout_binds_filterable_d2_array_material_inputs() {
         let entries = sprite_sheet_bind_group_layout_entries();
-        assert!(matches!(
-            entries[0].ty,
-            wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            }
-        ));
+        assert_eq!(entries.len(), 5);
+        for (binding, entry) in [(0, &entries[0]), (3, &entries[3]), (4, &entries[4])] {
+            assert_eq!(entry.binding, binding);
+            assert!(matches!(
+                entry.ty,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                }
+            ));
+        }
+        assert_eq!(entries[3].visibility, wgpu::ShaderStages::FRAGMENT);
+        assert_eq!(entries[4].visibility, wgpu::ShaderStages::FRAGMENT);
+    }
+
+    #[test]
+    fn sprite_placeholder_pixels_encode_neutral_optional_material_inputs() {
+        // These CPU bytes are uploaded into the one-layer D2-array views used
+        // whenever a sprite collection lacks an optional material slot.
+        assert_eq!(SPRITE_SPECULAR_PLACEHOLDER_PIXEL, [255]);
+        assert_eq!(SPRITE_NORMAL_PLACEHOLDER_PIXEL, [128, 128, 255, 255]);
     }
 
     #[test]
     fn billboard_shader_samples_the_flat_frame_array_layer() {
         let shader = include_str!("../shaders/billboard.wgsl");
         assert!(shader.contains("var sprite_texture: texture_2d_array<f32>;"));
+        assert!(shader.contains("var sprite_specular: texture_2d_array<f32>;"));
+        assert!(shader.contains("var sprite_normal: texture_2d_array<f32>;"));
         assert!(shader.contains("@location(4) @interpolate(flat) frame_idx: u32,"));
+        assert!(shader.contains("@location(5) @interpolate(flat) rotation: f32,"));
         assert!(shader.contains("out.uv = vec2<f32>(cd.z, cd.w);"));
         assert!(shader.contains("out.frame_idx = frame_idx;"));
         assert!(shader.contains("layer: u32,"));

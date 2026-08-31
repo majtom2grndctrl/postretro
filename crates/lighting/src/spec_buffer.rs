@@ -1,6 +1,6 @@
 // Static light buffer: one entry per static light, uploaded once at level load.
-// Consumed by the Blinn-Phong specular loop, per-light SDF diffuse loop (both
-// in `forward.wgsl`), and the SDF visibility K-selection helper (`sdf_shadow.wgsl`).
+// Consumed by forward's Blinn-Phong/SDF loops, billboard's isotropic and shimmer
+// static-specular loops, and the SDF visibility K-selection helper.
 // See: context/lib/rendering_pipeline.md
 
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;

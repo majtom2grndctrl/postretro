@@ -505,7 +505,7 @@ mod tests {
             &unit_radiance_light(&authored),
         );
 
-        let mut recolored = authored;
+        let mut recolored = authored.clone();
         recolored.color = [0.1, 0.2, 0.3];
         recolored.intensity = 0.1;
         let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(

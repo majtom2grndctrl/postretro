@@ -389,6 +389,7 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
     if affinity_lights.is_empty() {
+        control.publish_total(0);
         return (None, DeltaShCacheTally::default());
     }
     control.publish_total(affinity_lights.len());
@@ -1704,6 +1705,92 @@ mod tests {
             !delta.affinity_lights.contains(&2),
             "AlphaLights index 2 must not appear in affinity_lights"
         );
+    }
+
+    #[test]
+    fn direct_sh_delta_all_culled_publishes_zero_progress() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // The far source lands in leaf 1, while every affinity-cell centroid for
+        // this compact geometry lands in leaf 0. With no portal, the production
+        // reach flood rejects every AABB-clamped candidate cell.
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 100.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: CompilerAabb {
+                        min: DVec3::splat(-1000.0),
+                        max: DVec3::splat(1000.0),
+                    },
+                    is_solid: false,
+                    defining_planes: Vec::new(),
+                },
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: CompilerAabb {
+                        min: DVec3::splat(-1000.0),
+                        max: DVec3::splat(1000.0),
+                    },
+                    is_solid: false,
+                    defining_planes: Vec::new(),
+                },
+            ],
+        };
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(
+            DVec3::splat(500.0),
+            1.0,
+            [1.0, 0.7, 0.4],
+        )];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+
+        let (section, tally) = bake_direct_sh_delta_volumes_controlled_with_tally(
+            &inputs,
+            &ShConfig { probe_spacing: 1.0 },
+            &alpha_lights,
+            &selected,
+            None,
+            &control,
+        );
+
+        assert!(
+            section.is_none(),
+            "all-culled selected lights omit direct deltas"
+        );
+        assert_eq!(progress.total(), Some(0));
+        assert_eq!(progress.completed(), 0);
+        assert_eq!(tally, DeltaShCacheTally::default());
     }
 
     #[test]

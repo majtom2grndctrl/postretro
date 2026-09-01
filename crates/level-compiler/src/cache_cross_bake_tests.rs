@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::DVec3;
+use log::Level;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -19,6 +20,7 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
 use postretro_level_format::texture_names::TextureNamesSection;
+use postretro_test_log_capture::LogCapture;
 
 use crate::animated_direct_sh_bake::{
     ANIMATED_DIRECT_DELTA_SH_STAGE_ID, ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
@@ -79,8 +81,7 @@ fn vertex(position: [f32; 3]) -> Vertex {
     )
 }
 
-fn cube_geometry() -> GeometryResult {
-    let extent = 2.0;
+fn cube_geometry_with_extent(extent: f32) -> GeometryResult {
     let corners = [
         [-extent, -extent, -extent],
         [extent, -extent, -extent],
@@ -106,6 +107,10 @@ fn cube_geometry() -> GeometryResult {
             index_count: 3,
         }],
     }
+}
+
+fn cube_geometry() -> GeometryResult {
+    cube_geometry_with_extent(2.0)
 }
 
 fn empty_tree() -> BspTree {
@@ -302,6 +307,105 @@ fn bake_deltas_with_controls(
     }
 }
 
+fn bake_animated_delta_pair(
+    lights: &[MapLight],
+    geometry: &GeometryResult,
+    cache: Option<&StageCache>,
+) -> (
+    DeltaShVolumesSection,
+    crate::delta_sh_cache::DeltaShCacheTally,
+    AnimatedDirectShDeltaVolumesSection,
+    crate::delta_sh_cache::DeltaShCacheTally,
+) {
+    let (bvh, primitives, _) = build_bvh(geometry).expect("build paired delta test BVH");
+    let tree = empty_tree();
+    let exterior = HashSet::new();
+    let static_lights = StaticBakedLights::from_lights(lights);
+    let animated_lights = AnimatedBakedLights::from_lights(lights);
+    let sh_ctx = ShBakeCtx {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: lights.len(),
+    };
+    let indirect_inputs = DeltaBakeInputs {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        portals: &[],
+        animated_lights: &animated_lights,
+    };
+    let animated_inputs = AnimatedDirectShBakeInputs {
+        sh_ctx: &sh_ctx,
+        portals: &[],
+        animated_lights: &animated_lights,
+    };
+    let config = ShConfig { probe_spacing: 1.0 };
+    let (indirect, indirect_tally) =
+        bake_delta_sh_volumes_controlled_with_tally(&indirect_inputs, &config, cache, &control());
+    let (animated_direct, animated_direct_tally) =
+        bake_animated_direct_sh_delta_volumes_controlled_with_tally(
+            &animated_inputs,
+            &config,
+            cache,
+            &control(),
+        );
+    (
+        indirect.expect("animated fixture produces indirect entries"),
+        indirect_tally,
+        animated_direct.expect("animated fixture produces direct entries"),
+        animated_direct_tally,
+    )
+}
+
+fn bake_direct_delta_only(
+    lights: &[MapLight],
+    selected: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> (
+    Option<(
+        DirectShDeltaVolumesSection,
+        crate::direct_sh_bake::DirectDeltaBakeStats,
+    )>,
+    crate::delta_sh_cache::DeltaShCacheTally,
+) {
+    let geometry = cube_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("build direct-delta test BVH");
+    let tree = empty_tree();
+    let exterior = HashSet::new();
+    let static_lights = StaticBakedLights::from_lights(lights);
+    let animated_lights = AnimatedBakedLights::from_lights(lights);
+    let alpha_lights = AlphaLightsNs::from_lights(lights);
+    let sh_ctx = ShBakeCtx {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: lights.len(),
+    };
+    bake_direct_sh_delta_volumes_controlled_with_tally(
+        &DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        },
+        &ShConfig { probe_spacing: 1.0 },
+        &alpha_lights,
+        selected,
+        cache,
+        control,
+    )
+}
+
 fn base_for(section: &DeltaShVolumesSection) -> OctahedralShVolumeSection {
     let mut base = OctahedralShVolumeSection::placeholder();
     base.grid_dimensions = section.affinity_dims.map(|dimension| dimension * 4);
@@ -355,7 +459,7 @@ fn corrupt_cache_entries(dir: &PathBuf) {
 }
 
 #[test]
-fn p1_p2_p10_cell_visibility_structural_miss_light_independent_hit_and_minimum_aperture() {
+fn p1_p2_cell_visibility_portal_edit_misses_while_light_only_edit_hits() {
     let tree = tree_with_leaves(&[DVec3::ZERO, DVec3::new(2.0, 0.0, 0.0)]);
     let portals = vec![portal(0, 1, DVec3::X, 2.0)];
     let (dir, cache) = fresh_cache("cell_visibility_pins");
@@ -373,7 +477,7 @@ fn p1_p2_p10_cell_visibility_structural_miss_light_independent_hit_and_minimum_a
         .expect("light-only CellVisibility hit");
     assert_eq!(baseline, light_only);
     cache.put(
-        &baseline_key_placeholder(&tree, &portals),
+        &cell_visibility_cache_key(&tree, &portals, CELL_VISIBILITY_STAGE_VERSION),
         b"invalid CellVisibility section",
     );
     assert_eq!(
@@ -382,7 +486,8 @@ fn p1_p2_p10_cell_visibility_structural_miss_light_independent_hit_and_minimum_a
         baseline
     );
 
-    // P1/P10: leaf pairs remain [0, 1], while the portal aperture changes.
+    // P1: leaf count and portal endpoints stay fixed while the portal polygon
+    // changes. Render geometry is not an input to either bake call.
     let narrow = vec![portal(0, 1, DVec3::X, 0.25)];
     let baseline_key = cell_visibility_cache_key(&tree, &portals, CELL_VISIBILITY_STAGE_VERSION);
     let narrow_key = cell_visibility_cache_key(&tree, &narrow, CELL_VISIBILITY_STAGE_VERSION);
@@ -399,8 +504,36 @@ fn p1_p2_p10_cell_visibility_structural_miss_light_independent_hit_and_minimum_a
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn baseline_key_placeholder(tree: &BspTree, portals: &[Portal]) -> crate::cache::CacheKey {
-    cell_visibility_cache_key(tree, portals, CELL_VISIBILITY_STAGE_VERSION)
+#[test]
+fn p10_cell_visibility_one_leaf_aperture_edit_creates_a_distinct_cache_entry() {
+    let tree = tree_with_leaves(&[DVec3::ZERO]);
+    // A portal cannot connect two distinct cells in a one-leaf grid. A
+    // self-loop is the smallest structurally accepted Portal value and leaves
+    // the one-cell baked relation unchanged. That makes cache identity, rather
+    // than changed output, the observable proof that aperture is folded.
+    let wide = vec![portal(0, 0, DVec3::ZERO, 1.0)];
+    let narrow = vec![portal(0, 0, DVec3::ZERO, 0.25)];
+    let wide_key = cell_visibility_cache_key(&tree, &wide, CELL_VISIBILITY_STAGE_VERSION);
+    let narrow_key = cell_visibility_cache_key(&tree, &narrow, CELL_VISIBILITY_STAGE_VERSION);
+    assert_ne!(wide_key.as_filename(), narrow_key.as_filename());
+
+    let (dir, cache) = fresh_cache("cell_visibility_one_leaf_aperture");
+    let wide_bytes = cell_visibility_bake_cached(&tree, &wide, Some(&cache), &control())
+        .expect("cache one-leaf wide aperture");
+    assert!(cache.get(&wide_key).is_some());
+    assert_eq!(cache.get(&narrow_key), None, "changed aperture must miss");
+
+    let narrow_bytes = cell_visibility_bake_cached(&tree, &narrow, Some(&cache), &control())
+        .expect("rebake one-leaf narrow aperture");
+    assert!(
+        cache.get(&narrow_key).is_some(),
+        "miss path must write its entry"
+    );
+    assert_eq!(
+        wide_bytes, narrow_bytes,
+        "one cell has no distinct coupled pair regardless of self-loop aperture"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -468,6 +601,13 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
         chunk_light_list_cache_key(&edited_inputs, 8.0, 64).as_filename(),
         "P5: dynamic parameters cannot perturb static-only cache identity"
     );
+    assert_eq!(
+        first,
+        bake_chunk_light_list_cached(&edited_inputs, 8.0, 64, Some(&cache))
+            .expect("P5 cache hit")
+            .to_bytes(),
+        "P5 dynamic parameter edit must return the cached static-only payload"
+    );
 
     let only_dynamic_lights = [MapLight {
         is_dynamic: true,
@@ -478,6 +618,11 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
     let placeholder = bake_chunk_light_list_cached(&empty_inputs, 8.0, 64, Some(&cache))
         .expect("P9 empty static placeholder");
     assert_eq!(placeholder.has_grid, 0);
+    assert_eq!(
+        bake_chunk_light_list_cached(&empty_inputs, 8.0, 64, Some(&cache))
+            .expect("P9 warm empty-static hit"),
+        placeholder
+    );
     let empty_key = chunk_light_list_cache_key(&empty_inputs, 8.0, 64);
     cache.put(&empty_key, b"invalid chunk list");
     assert_eq!(
@@ -489,7 +634,7 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
 }
 
 #[test]
-fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity() {
+fn p3_p6_p7_p8_p12_delta_cache_locality_progress_stats_and_policy_identity() {
     let lights = delta_lights();
     let (dir, cache) = fresh_cache("delta_pipeline_pins");
     let cold = bake_deltas(&lights, None);
@@ -520,7 +665,11 @@ fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity()
     );
     assert_eq!(
         first.direct_stats, cold.direct_stats,
-        "P3 pre-drop stats reconstruct on hits"
+        "P3 cache-miss stats match --no-cache stats"
+    );
+    assert_eq!(
+        warm.direct_stats, cold.direct_stats,
+        "P3 all-hit stats reconstruct from the raw cached section"
     );
     assert_eq!(warm.indirect_tally.misses, 0);
     assert_eq!(warm.direct_tally.misses, 0);
@@ -564,12 +713,9 @@ fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity()
     );
 
     let mut animated_transport_edit = lights.clone();
-    animated_transport_edit[2]
-        .animation
-        .as_mut()
-        .expect("animated light")
-        .phase = 0.5;
+    animated_transport_edit[2].origin.x -= 0.25;
     let animated_partial = bake_deltas(&animated_transport_edit, Some(&cache));
+    let animated_partial_cold = bake_deltas(&animated_transport_edit, None);
     let changed_animated_entries = cold
         .indirect
         .affinity_lights
@@ -590,10 +736,40 @@ fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity()
         animated_partial.animated_direct_tally.misses,
         changed_animated_direct_entries
     );
+    assert_eq!(
+        animated_partial.indirect_tally.hits + animated_partial.indirect_tally.misses,
+        animated_partial.indirect.affinity_lights.len()
+    );
+    assert_eq!(
+        animated_partial.animated_direct_tally.hits + animated_partial.animated_direct_tally.misses,
+        animated_partial.animated_direct.affinity_lights.len()
+    );
+    assert_eq!(
+        animated_partial.indirect.to_bytes(),
+        animated_partial_cold.indirect.to_bytes(),
+        "P7 edited indirect pre-drop bytes match --no-cache"
+    );
+    assert_eq!(
+        animated_partial
+            .animated_direct
+            .try_to_bytes()
+            .expect("partial warm animated-direct codec"),
+        animated_partial_cold
+            .animated_direct
+            .try_to_bytes()
+            .expect("partial cold animated-direct codec"),
+        "P7 edited animated-direct pre-drop bytes match --no-cache"
+    );
+    assert_eq!(
+        finalized_delta_bytes(animated_partial),
+        finalized_delta_bytes(animated_partial_cold),
+        "P7 animated-light partial hit stays byte-identical through the downstream pipeline"
+    );
 
     let mut static_edit = lights.clone();
     static_edit[0].intensity = 2.0;
     let partial = bake_deltas(&static_edit, Some(&cache));
+    let partial_cold = bake_deltas(&static_edit, None);
     let changed_direct_entries = cold
         .direct
         .affinity_lights
@@ -610,8 +786,13 @@ fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity()
     );
     assert_eq!(
         partial.direct.to_bytes(),
-        bake_deltas(&static_edit, None).direct.to_bytes(),
-        "P7 partial warm rebuild remains byte-identical to --no-cache"
+        partial_cold.direct.to_bytes(),
+        "P7 static-light partial warm direct bytes match --no-cache"
+    );
+    assert_eq!(
+        finalized_delta_bytes(partial),
+        finalized_delta_bytes(partial_cold),
+        "P7 static-light partial hit stays byte-identical through the downstream pipeline"
     );
     assert_eq!(
         finalized_delta_bytes(cold),
@@ -624,12 +805,6 @@ fn p3_p6_p7_p8_p11_p12_delta_cache_locality_progress_stats_and_policy_identity()
     let empty = bake_deltas_empty_animated(&static_only, Some(&cache));
     assert_eq!(empty.0, None);
     assert_eq!(empty.1.hits + empty.1.misses, 0);
-    // P11 is covered by the direct drop-policy's retained-zero selection rule;
-    // these are raw pre-drop stats, so the total remains the raw payload total.
-    assert_eq!(
-        first.direct_stats.total_bytes,
-        first.direct.delta_subblocks.len() * 2
-    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -664,32 +839,44 @@ fn bake_deltas_empty_animated(
 
 #[test]
 fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
-    use postretro_level_format::delta_sh_volumes::{
-        DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+    let mut zero_light = light(DVec3::ZERO, false);
+    zero_light.intensity = 0.0;
+    let lights = vec![zero_light];
+    let selected = EntityShadowLightsSection {
+        light_indices: vec![0],
     };
+    let (dir, cache) = fresh_cache("direct_zero_stats");
+    let (first, _) = bake_direct_delta_only(&lights, &selected, Some(&cache), &control());
+    let (warm, warm_tally) = bake_direct_delta_only(&lights, &selected, Some(&cache), &control());
+    let (raw, stats) = warm.expect("zero-radiance selected light still has reached cells");
+    let (_, first_stats) = first.expect("initial zero-radiance direct bake");
 
-    let raw_entry_count = 2;
-    let raw = DirectShDeltaVolumesSection {
-        affinity_factor: 4,
-        affinity_dims: [2, 1, 1],
-        tile_dimension: 6,
-        tile_border: 1,
-        valid_probe_masks: vec![u64::MAX; 2],
-        cell_levels: vec![0; 2],
-        affinity_offsets: vec![0, 1, 2],
-        affinity_lights: vec![0, 0],
-        delta_subblocks: vec![
-            0;
-            raw_entry_count * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE
-        ],
-    };
+    assert_eq!(warm_tally.misses, 0, "zero payloads must be cacheable");
+    assert_eq!(
+        stats, first_stats,
+        "warm stats reconstruct from raw cached CSR"
+    );
+    assert!(
+        raw.affinity_lights.len() > 1,
+        "fixture needs entries to drop"
+    );
+    assert!(
+        raw.delta_subblocks
+            .chunks_exact(4)
+            .all(|rgba| rgba[..3].iter().all(|value| *value & 0x7fff == 0)),
+        "zero authored intensity must produce zero RGB direct deltas"
+    );
+    let raw_entry_count = raw.affinity_lights.len();
     let raw_bytes = raw.delta_subblocks.len() * std::mem::size_of::<u16>();
+    assert_eq!(stats.rows.len(), 1);
+    assert_eq!(stats.rows[0].csr_entry_count, raw_entry_count);
+    assert_eq!(stats.rows[0].byte_total, raw_bytes);
+    assert_eq!(stats.total_bytes, raw_bytes);
+
     let mut sections = PostBakeDeltaSections::new(
         DeltaSectionConfig::default(),
         None,
-        Some(EntityShadowLightsSection {
-            light_indices: vec![0],
-        }),
+        Some(selected),
         Some(raw),
         None,
     );
@@ -697,19 +884,19 @@ fn p11_direct_stats_observe_raw_zero_entries_before_selection_retention_drop() {
         .apply_exact_zero_drop_policy(&ScriptMutableDescriptorSlots::empty(0))
         .expect("direct zero drop");
     let retained = sections.direct.expect("selected direct section retained");
-    assert_eq!(raw_entry_count, 2, "P11 stats input is pre-drop CSR data");
-    assert_eq!(
-        raw_bytes,
-        2 * PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE * 2
-    );
     assert_eq!(retained.affinity_lights, vec![0]);
-    assert_eq!(retained.affinity_offsets, vec![0, 0, 1]);
+    assert!(raw_entry_count > retained.affinity_lights.len());
+
+    let capture = LogCapture::start();
+    crate::pipeline::log_direct_sh_delta_stats_for_test(Some(&stats), false);
+    capture.assert_logged_once(Level::Info, "DirectShDeltaVolumes:");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn p13_p15_seed_axis_and_stage_ids_prevent_cross_bake_serving() {
+fn p13_animated_direct_source_index_shift_misses_seeded_entries() {
     let lights = delta_lights();
-    let (dir, cache) = fresh_cache("delta_seed_and_stage_ids");
+    let (dir, cache) = fresh_cache("animated_direct_source_index");
     bake_deltas(&lights, Some(&cache));
     let mut shifted = lights.clone();
     shifted.insert(0, light(DVec3::new(20.0, 0.0, 0.0), false));
@@ -722,38 +909,53 @@ fn p13_p15_seed_axis_and_stage_ids_prevent_cross_bake_serving() {
     assert_eq!(repeat.indirect_tally.misses, 0);
     assert_eq!(repeat.animated_direct_tally.misses, 0);
     assert_eq!(repeat.direct_tally.misses, 0);
-    let shared_light = light(DVec3::ZERO, true);
-    let indirect_key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
-        stage_id: INDIRECT_DELTA_SH_STAGE_ID,
-        stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
-        geometry_hash: &[0; 32],
-        affinity_dims: [1, 1, 1],
-        cell: 0,
-        probe_spacing: 1.0,
-        valid_probe_mask: u64::MAX,
-        seed_axis: 0,
-        light: &shared_light,
-    });
-    let animated_key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
-        stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-        stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-        geometry_hash: &[0; 32],
-        affinity_dims: [1, 1, 1],
-        cell: 0,
-        probe_spacing: 1.0,
-        valid_probe_mask: u64::MAX,
-        seed_axis: 0,
-        light: &shared_light,
-    });
-    cache.put(&indirect_key, &[1, 2]);
-    cache.put(&animated_key, &[3, 4]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn p15_seed_zero_indirect_and_animated_direct_do_not_cross_serve_one_shared_cache() {
+    let lights = vec![light(DVec3::ZERO, true)];
+    let animated = AnimatedBakedLights::from_lights(&lights);
+    assert_eq!(animated.entries()[0].source_index, 0);
+    let geometry = cube_geometry_with_extent(0.25);
+    let (cold_indirect, _, cold_animated, _) = bake_animated_delta_pair(&lights, &geometry, None);
+
+    assert_eq!(cold_indirect.affinity_dims, [1, 1, 1]);
+    assert_eq!(cold_animated.affinity_dims, [1, 1, 1]);
+    assert_eq!(cold_indirect.affinity_lights, vec![0]);
+    assert_eq!(cold_animated.affinity_lights, vec![0]);
     assert_ne!(
-        indirect_key.as_filename(),
-        animated_key.as_filename(),
-        "P15 identical seed-zero inputs must differ solely by stage id"
+        cold_indirect.delta_subblocks, cold_animated.delta_subblocks,
+        "fixture must distinguish indirect transport from animated direct transport"
     );
-    assert_eq!(cache.get(&indirect_key), Some(vec![1, 2]));
-    assert_eq!(cache.get(&animated_key), Some(vec![3, 4]));
+
+    // Both real bake entries fold the same geometry, one affinity cell,
+    // spacing, validity mask, unitized light postcard, and seed zero. The
+    // second stage must still miss because stage_id is the remaining axis.
+    let (dir, cache) = fresh_cache("seed_zero_cross_bake");
+    let (first_indirect, first_indirect_tally, first_animated, first_animated_tally) =
+        bake_animated_delta_pair(&lights, &geometry, Some(&cache));
+    assert_eq!(first_indirect_tally.hits, 0);
+    assert_eq!(first_indirect_tally.misses, 1);
+    assert_eq!(first_animated_tally.hits, 0);
+    assert_eq!(first_animated_tally.misses, 1);
+    assert_eq!(
+        first_indirect.delta_subblocks,
+        cold_indirect.delta_subblocks
+    );
+    assert_eq!(
+        first_animated.delta_subblocks,
+        cold_animated.delta_subblocks
+    );
+
+    let (warm_indirect, warm_indirect_tally, warm_animated, warm_animated_tally) =
+        bake_animated_delta_pair(&lights, &geometry, Some(&cache));
+    assert_eq!(warm_indirect_tally.misses, 0);
+    assert_eq!(warm_indirect_tally.hits, 1);
+    assert_eq!(warm_animated_tally.misses, 0);
+    assert_eq!(warm_animated_tally.hits, 1);
+    assert_eq!(warm_indirect.delta_subblocks, cold_indirect.delta_subblocks);
+    assert_eq!(warm_animated.delta_subblocks, cold_animated.delta_subblocks);
     let _ = std::fs::remove_dir_all(dir);
 }
 

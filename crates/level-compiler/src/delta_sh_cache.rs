@@ -1,9 +1,5 @@
-//! Shared per-entry cache for sparse delta-SH bakes.
-//!
-//! Each delta section uses the same CSR shape: one independently-baked dense
-//! sub-block for every `(affinity cell, light)` entry. This module owns the
-//! cache boundary around those sub-blocks; callers still assemble and process
-//! their sections after this raw pre-drop payload is returned.
+//! Owns shared per-entry cache for sparse delta-SH bakes.
+//! Governing contracts: `context/lib/build_pipeline.md` §Build Cache.
 
 use rayon::prelude::*;
 
@@ -123,6 +119,48 @@ where
         "delta cache keyed lights and seed axes must stay index-parallel"
     );
 
+    let Some(stage_cache) = cache else {
+        let subblocks = inputs
+            .affinity_lights
+            .par_iter()
+            .zip(inputs.csr_entry_cells.par_iter())
+            .map(|(&light_index, &cell)| {
+                key_lights
+                    .get(light_index as usize)
+                    .expect("delta cache light index must be in the keyed light table");
+                inputs
+                    .light_seed_axes
+                    .get(light_index as usize)
+                    .expect("delta cache light index must have a seed axis");
+                inputs
+                    .valid_probe_masks
+                    .get(cell as usize)
+                    .expect("delta cache cell must have a probe-validity mask");
+
+                let subblock = {
+                    let _permit = control.governor().enter();
+                    bake_subblock(light_index, cell)
+                };
+                assert_eq!(
+                    subblock.len(),
+                    inputs.expected_subblock_f16_len,
+                    "delta sub-block bake must produce the stage's fixed dense payload length"
+                );
+                control.advance(1);
+                subblock
+            })
+            .flatten()
+            .collect();
+
+        return DeltaShCachedSubblocks {
+            subblocks,
+            tally: DeltaShCacheTally {
+                hits: 0,
+                misses: inputs.affinity_lights.len(),
+            },
+        };
+    };
+
     let entries: Vec<(Vec<u16>, bool)> = inputs
         .affinity_lights
         .par_iter()
@@ -151,21 +189,17 @@ where
                 light,
             });
 
-            let loaded = cache.and_then(|stage_cache| {
-                stage_cache
-                    .get(&key)
-                    .and_then(|bytes| decode_subblock(&bytes, inputs.expected_subblock_f16_len))
-            });
+            let loaded = stage_cache
+                .get(&key)
+                .and_then(|bytes| decode_subblock(&bytes, inputs.expected_subblock_f16_len));
             let (subblock, hit) = match loaded {
                 Some(subblock) => {
-                    // A whole warm rebuild can be all hits. Preserve its pause
-                    // responsiveness without consuming a bake-work permit.
+                    // Whole-cache hits checkpoint without a bake permit.
                     control.governor().checkpoint();
                     (subblock, true)
                 }
                 None => {
-                    // Keep the permit around ray work only. Cache I/O happens
-                    // outside it, and a disabled cache bypasses I/O entirely.
+                    // Permit guards ray work, not cache I/O.
                     let subblock = {
                         let _permit = control.governor().enter();
                         bake_subblock(light_index, cell)
@@ -175,9 +209,7 @@ where
                         inputs.expected_subblock_f16_len,
                         "delta sub-block bake must produce the stage's fixed dense payload length"
                     );
-                    if let Some(stage_cache) = cache {
-                        stage_cache.put(&key, &encode_subblock(&subblock));
-                    }
+                    stage_cache.put(&key, &encode_subblock(&subblock));
                     (subblock, false)
                 }
             };

@@ -437,12 +437,12 @@ fn run_after_parsing(
     reporter.declare_progress(StageId::CellVisibility, cell_visibility_progress.clone());
     let cell_visibility_control =
         BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
-    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake(
+    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake_cached(
         &result.tree,
         &generated_portals,
+        stage_cache.as_ref(),
         &cell_visibility_control,
-    )?
-    .to_bytes()?;
+    )?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

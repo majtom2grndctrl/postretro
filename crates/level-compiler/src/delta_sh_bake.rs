@@ -851,40 +851,46 @@ mod tests {
         let unit = unit_radiance_light(&authored);
 
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            INDIRECT_DELTA_SH_STAGE_ID,
-            INDIRECT_DELTA_SH_STAGE_VERSION,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            0,
-            &unit,
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: INDIRECT_DELTA_SH_STAGE_ID,
+                stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 0,
+                light: &unit,
+            },
         );
         let mut recolored = authored;
         recolored.color = [0.1, 0.2, 0.3];
         recolored.intensity = 0.1;
         let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            INDIRECT_DELTA_SH_STAGE_ID,
-            INDIRECT_DELTA_SH_STAGE_VERSION,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            0,
-            &unit_radiance_light(&recolored),
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: INDIRECT_DELTA_SH_STAGE_ID,
+                stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 0,
+                light: &unit_radiance_light(&recolored),
+            },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            INDIRECT_DELTA_SH_STAGE_ID,
-            INDIRECT_DELTA_SH_STAGE_VERSION + 1,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            0,
-            &unit,
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: INDIRECT_DELTA_SH_STAGE_ID,
+                stage_version: INDIRECT_DELTA_SH_STAGE_VERSION + 1,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 0,
+                light: &unit,
+            },
         );
 
         assert_eq!(key.as_filename(), recolored_key.as_filename());

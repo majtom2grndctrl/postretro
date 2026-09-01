@@ -52,41 +52,48 @@ pub(crate) struct DeltaShCacheInputs<'a> {
 /// one explicit fold order. The stage id/version live in [`CacheKey`] itself;
 /// callers must provide distinct ids because the raw f16 payload shapes match
 /// across the three delta sections.
-pub(crate) fn delta_sh_entry_cache_key(
-    stage_id: &str,
-    stage_version: u32,
-    geometry_hash: &[u8; 32],
-    affinity_dims: [u32; 3],
-    cell: u32,
-    probe_spacing: f32,
-    valid_probe_mask: u64,
-    seed_axis: u64,
-    light: &MapLight,
-) -> CacheKey {
+pub(crate) struct DeltaShEntryKeyInputs<'a> {
+    pub(crate) stage_id: &'a str,
+    pub(crate) stage_version: u32,
+    pub(crate) geometry_hash: &'a [u8; 32],
+    pub(crate) affinity_dims: [u32; 3],
+    pub(crate) cell: u32,
+    pub(crate) probe_spacing: f32,
+    pub(crate) valid_probe_mask: u64,
+    pub(crate) seed_axis: u64,
+    pub(crate) light: &'a MapLight,
+}
+
+pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> CacheKey {
     assert!(
-        affinity_dims.iter().all(|&dimension| dimension > 0),
+        inputs.affinity_dims.iter().all(|&dimension| dimension > 0),
         "delta cache requires non-zero affinity dimensions"
     );
 
-    let (cell_x, cell_y, cell_z) = affinity_cell_coord(cell, affinity_dims);
-    let encoded_light = postcard::to_allocvec(light).expect("postcard serialize delta MapLight");
+    let (cell_x, cell_y, cell_z) = affinity_cell_coord(inputs.cell, inputs.affinity_dims);
+    let encoded_light =
+        postcard::to_allocvec(inputs.light).expect("postcard serialize delta MapLight");
     let light_len = u64::try_from(encoded_light.len()).expect("MapLight encoding length fits u64");
 
     let mut hasher = blake3::Hasher::new();
-    hasher.update(geometry_hash);
-    for dimension in affinity_dims {
+    hasher.update(inputs.geometry_hash);
+    for dimension in inputs.affinity_dims {
         hasher.update(&dimension.to_le_bytes());
     }
     for coordinate in [cell_x, cell_y, cell_z] {
         hasher.update(&coordinate.to_le_bytes());
     }
-    hasher.update(&probe_spacing.to_le_bytes());
-    hasher.update(&valid_probe_mask.to_le_bytes());
-    hasher.update(&seed_axis.to_le_bytes());
+    hasher.update(&inputs.probe_spacing.to_le_bytes());
+    hasher.update(&inputs.valid_probe_mask.to_le_bytes());
+    hasher.update(&inputs.seed_axis.to_le_bytes());
     hasher.update(&light_len.to_le_bytes());
     hasher.update(&encoded_light);
 
-    CacheKey::new(stage_id, stage_version, hasher.finalize().as_bytes())
+    CacheKey::new(
+        inputs.stage_id,
+        inputs.stage_version,
+        hasher.finalize().as_bytes(),
+    )
 }
 
 /// Bake or load every CSR entry while preserving the input's exact entry order.
@@ -132,17 +139,17 @@ where
                 .valid_probe_masks
                 .get(cell as usize)
                 .expect("delta cache cell must have a probe-validity mask");
-            let key = delta_sh_entry_cache_key(
-                inputs.stage_id,
-                inputs.stage_version,
-                &inputs.geometry_hash,
-                inputs.affinity_dims,
+            let key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+                stage_id: inputs.stage_id,
+                stage_version: inputs.stage_version,
+                geometry_hash: &inputs.geometry_hash,
+                affinity_dims: inputs.affinity_dims,
                 cell,
-                inputs.probe_spacing,
+                probe_spacing: inputs.probe_spacing,
                 valid_probe_mask,
                 seed_axis,
                 light,
-            );
+            });
 
             let loaded = cache.and_then(|stage_cache| {
                 stage_cache
@@ -199,7 +206,7 @@ fn affinity_cell_coord(cell: u32, affinity_dims: [u32; 3]) -> (u32, u32, u32) {
 }
 
 fn encode_subblock(subblock: &[u16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(subblock.len() * std::mem::size_of::<u16>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(subblock));
     for value in subblock {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -295,31 +302,25 @@ mod tests {
         BakeControl::new(Arc::new(Governor::new(2, false)), &progress)
     }
 
+    fn key_inputs<'a>(stage_version: u32, light: &'a MapLight) -> DeltaShEntryKeyInputs<'a> {
+        DeltaShEntryKeyInputs {
+            stage_id: TEST_STAGE_ID,
+            stage_version,
+            geometry_hash: &[9; 32],
+            affinity_dims: [2, 1, 1],
+            cell: 0,
+            probe_spacing: 1.0,
+            valid_probe_mask: u64::MAX,
+            seed_axis: 0,
+            light,
+        }
+    }
+
     #[test]
     fn cache_key_changes_when_stage_version_changes() {
         let light = light(0.0);
-        let key_a = delta_sh_entry_cache_key(
-            TEST_STAGE_ID,
-            1,
-            &[9; 32],
-            [2, 1, 1],
-            0,
-            1.0,
-            u64::MAX,
-            0,
-            &light,
-        );
-        let key_b = delta_sh_entry_cache_key(
-            TEST_STAGE_ID,
-            2,
-            &[9; 32],
-            [2, 1, 1],
-            0,
-            1.0,
-            u64::MAX,
-            0,
-            &light,
-        );
+        let key_a = delta_sh_entry_cache_key(&key_inputs(1, &light));
+        let key_b = delta_sh_entry_cache_key(&key_inputs(2, &light));
 
         assert_ne!(key_a.as_filename(), key_b.as_filename());
     }
@@ -413,17 +414,10 @@ mod tests {
         );
         assert_eq!(first.tally, DeltaShCacheTally { hits: 0, misses: 1 });
 
-        let key = delta_sh_entry_cache_key(
-            TEST_STAGE_ID,
-            TEST_STAGE_VERSION,
-            &[9; 32],
-            [2, 1, 1],
-            0,
-            1.0,
-            u64::MAX,
-            seed_axes[0],
-            &light_table[0],
-        );
+        let key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+            seed_axis: seed_axes[0],
+            ..key_inputs(TEST_STAGE_VERSION, &light_table[0])
+        });
         cache.put(&key, &encode_subblock(&[7]));
 
         let rebuilt = bake_or_load_delta_subblocks(

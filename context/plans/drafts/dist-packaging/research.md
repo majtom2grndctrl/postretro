@@ -28,9 +28,11 @@ Consequence: nothing under `<mod_root>/scripts/` is read by a release engine. Th
 as is `start_watcher`; both no-op in release (`crates/scripting-core/src/runtime/core.rs` has
 `let _ = script_root;` in the `not(debug_assertions)` arm).
 
-`DataScriptSection.source_path` is the **absolute** path captured on the build machine. It is a
-diagnostic label (VM script name, warning text), so it leaks the builder's directory layout into
-shipped `.prl` files. Cosmetic, not functional.
+`DataScriptSection.source_path` is the **absolute** path captured on the build machine, so it leaks
+the builder's directory layout into shipped `.prl` files. The path *value* is a diagnostic label (VM
+script name, warning text); its *extension* is functional — `run_data_script` computes `is_luau` from
+`Path::new(&section.source_path).extension()` to pick the Luau or QuickJS path, the on-disk extension
+being the only signal available at runtime.
 
 ## Release cannot compile TypeScript
 
@@ -56,8 +58,24 @@ lists 13 `.prl` entries, five of which have no matching `.map`:
 - `occlusion-test--0.02-mtex.prl`
 - `occlusion-test--shadow-resolution-test.prl`
 
-They are the same sources compiled at different `--lightmap-density` values. Output name and
-compiler flags are therefore both build inputs that exist nowhere on disk.
+Four are the same sources at finer `--lightmap-density` than the `0.04` default
+(`lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`). Output name and compiler flags are therefore both
+build inputs that exist nowhere on disk.
+
+`occlusion-test--shadow-resolution-test` is different in kind: `prl-build`'s flag surface has no
+shadow-resolution option (`--soft-shadow-samples` is penumbra sample count, not resolution), and no
+`.map` carries that name, so no invocation of the current compiler produces that artifact. It is a
+catalog entry pointing at a level nobody can build. `git log -S` finds no commit recording how it was
+made.
+
+Bake-memory risk concentrates in the remaining variants, not across the catalog.
+`drafts/lighting-scale--cold-bake-reaching-light-spike/out-of-scope-findings.md` records a confirmed
+SIGKILL at 16 GB in the shadowmask atlas stage, on a **157-light** map at `--lightmap-density 0.25`;
+`1.0` completes, so peak rises as texel size falls. Catalog maps carry far fewer lights
+(`campaign-test` 31, `occlusion-test` 9, `combat-demo` 8, `trap-pools` 0) but the variants bake at
+`0.01`-`0.02`, finer than both the default and the config that died. Peak "likely scales lights x
+atlas area", and atlas area scales with the inverse square of texel size, so the two factors pull in
+opposite directions and the outcome is genuinely unmeasured. Nobody has run these at `--release`.
 
 ## prl-build surface used by dist
 

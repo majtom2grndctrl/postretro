@@ -84,7 +84,7 @@ pub struct ChunkLightListInputs<'a> {
 /// bake's output indices. AlphaLights source indices deliberately do not cross
 /// this seam: inserting or reordering dynamic lights must leave both the
 /// compacted slots and the cache key unchanged.
-fn compacted_static_lights(inputs: &ChunkLightListInputs<'_>) -> Vec<&MapLight> {
+fn compacted_static_lights<'a>(inputs: &ChunkLightListInputs<'a>) -> Vec<&'a MapLight> {
     inputs
         .lights
         .entries()

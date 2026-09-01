@@ -25,7 +25,7 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// hash change: channel assignment/drop policy, raw-visibility quantization to
 /// `Rgba8Unorm`, empty-section behavior, or `ShadowmaskAtlasSection::to_bytes`
 /// payload semantics.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 1;
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 2;
 
 /// Maximum selected-light count in one governed chart batch. Each light's raw
 /// chart buffers collectively carry one full layer payload, so the batch must
@@ -35,6 +35,14 @@ const SHADOWMASK_RESIDENT_LAYER_WINDOW: usize = 4;
 /// Fill checks the cooperative pause gate at this cadence without consuming a
 /// governor permit; chart work remains the only governed parallel level.
 const SHADOWMASK_FILL_CHECKPOINT_TEXELS: usize = 1024;
+
+/// Preserve the established exact coloring on ordinary maps, but cap the
+/// pathological backtracking that can otherwise consume a core indefinitely.
+const SHADOWMASK_COLOR_SEARCH_NODE_BUDGET: usize = 100_000;
+
+/// Serial graph and assignment loops check the cooperative pause gate at this
+/// deterministic operation cadence, including inside dense neighbor scans.
+const SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS: usize = 1024;
 
 /// A shadowmask needs only the atlas position, fixed selected-light index, and
 /// unquantized visibility from a lightmap layer. Keeping the visibility as `f32`
@@ -209,7 +217,7 @@ fn bake_shadowmask_atlas_with_window(
         resident_layer_window,
         resident_layers,
     );
-    Some(build_shadowmask_from_membership_controlled(
+    let section = build_shadowmask_from_membership_controlled(
         shared.atlas_width,
         shared.atlas_height,
         layer_count_from_shared(shared) as usize,
@@ -217,7 +225,11 @@ fn bake_shadowmask_atlas_with_window(
         &selected,
         &membership,
         Some(control),
-    ))
+    );
+    // The first light's fill unit is held until all atlas finalization has
+    // completed, so the stage cannot display 100% while still working.
+    control.advance(1);
+    Some(section)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -368,7 +380,7 @@ fn bake_shadowmask_atlas_cached_with_window(
         resident_layer_window,
         resident_layers,
     );
-    let section = Some(build_shadowmask_from_membership_controlled(
+    let section = build_shadowmask_from_membership_controlled(
         shared.atlas_width,
         shared.atlas_height,
         layer_count as usize,
@@ -376,11 +388,13 @@ fn bake_shadowmask_atlas_cached_with_window(
         &selected_refs,
         &membership,
         Some(control),
-    ));
-    if let Some(ref section) = section {
-        cache.put(&section_key, &section.to_bytes());
+    );
+    cache.put(&section_key, &section.to_bytes());
+    if !selected_refs.is_empty() {
+        // Keep the final fill unit pending through whole-section memo storage.
+        control.advance(1);
     }
-    section
+    Some(section)
 }
 
 #[cfg(test)]
@@ -574,20 +588,30 @@ fn publish_shadowmask_total(
     valid_selected_light_count: usize,
     shared: &SharedAtlas<'_>,
 ) {
-    let total = valid_selected_light_count.saturating_mul(shared.placements.len());
+    let total = shadowmask_progress_total(valid_selected_light_count, shared);
     if total != 0 {
         control.publish_total(total);
     }
 }
 
-/// Cache hits perform no chart work, but still represent complete shadowmask
-/// work to the stage progress handle.
+fn shadowmask_progress_total(valid_selected_light_count: usize, shared: &SharedAtlas<'_>) -> usize {
+    if valid_selected_light_count == 0 {
+        return 0;
+    }
+    valid_selected_light_count
+        .saturating_mul(shared.placements.len())
+        .saturating_add(1)
+        .saturating_add(valid_selected_light_count)
+}
+
+/// A whole-section cache hit performs no chart, assignment, or fill work, but
+/// still represents the complete stage to the progress handle.
 fn advance_shadowmask_total(
     control: &BakeControl,
     valid_selected_light_count: usize,
     shared: &SharedAtlas<'_>,
 ) {
-    let total = valid_selected_light_count.saturating_mul(shared.placements.len());
+    let total = shadowmask_progress_total(valid_selected_light_count, shared);
     if total != 0 {
         control.governor().checkpoint();
         control.advance(total);
@@ -954,6 +978,9 @@ fn build_shadowmask_from_membership_controlled(
     membership: &ShadowmaskMembership,
     control: Option<&BakeControl>,
 ) -> ShadowmaskAtlasSection {
+    // With progress enabled, compact light zero's fill unit remains pending so
+    // the top-level caller can advance it after any section-cache write. This
+    // keeps 100% synonymous with completion of the whole stage.
     build_shadowmask_from_membership_with_assignment_checkpoint(
         width,
         height,
@@ -993,10 +1020,24 @@ fn build_shadowmask_from_membership_with_assignment_checkpoint(
     // No governed work item is active here: every chart batch completed before
     // this serial global assignment barrier.
     assignment_checkpoint();
-    let graph = overlap_graph(membership);
-    let compact_channels = assign_channels_with_drops(&graph, selected);
-    if let Some(control) = control {
-        control.governor().checkpoint();
+    let graph = overlap_graph_controlled(membership, || {
+        if let Some(control) = control {
+            control.governor().checkpoint();
+        }
+    });
+    let assignment = assign_channels_with_drops_controlled(
+        &graph,
+        selected,
+        SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+        || {
+            if let Some(control) = control {
+                control.governor().checkpoint();
+            }
+        },
+    );
+    let compact_channels = assignment.channels;
+    if let Some(control) = control.filter(|_| !selected.is_empty()) {
+        control.advance(1);
     }
     let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count];
     for (compact_index, &(selection_index, _, _)) in selected.iter().enumerate() {
@@ -1022,6 +1063,11 @@ fn build_shadowmask_from_membership_with_assignment_checkpoint(
                 .copied()
                 .unwrap_or(SHADOWMASK_CHANNEL_DROPPED);
             if channel == SHADOWMASK_CHANNEL_DROPPED {
+                if compact_index != 0 {
+                    if let Some(control) = control {
+                        control.advance(1);
+                    }
+                }
                 return;
             }
             for chunk in mask.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
@@ -1041,6 +1087,11 @@ fn build_shadowmask_from_membership_with_assignment_checkpoint(
                     // Same-channel lights have no shared texel, making these
                     // parallel stores disjoint by construction.
                     data[offset].store(visibility, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            if compact_index != 0 {
+                if let Some(control) = control {
+                    control.advance(1);
                 }
             }
         });
@@ -1067,11 +1118,21 @@ fn shadowmask_data_offset(global_texel_index: usize, channel: u8) -> Option<usiz
         .and_then(|base| base.checked_add(channel as usize))
 }
 
+#[cfg(test)]
 fn overlap_graph(membership: &ShadowmaskMembership) -> Vec<Vec<bool>> {
+    overlap_graph_controlled(membership, || {})
+}
+
+fn overlap_graph_controlled(
+    membership: &ShadowmaskMembership,
+    mut checkpoint: impl FnMut(),
+) -> Vec<Vec<bool>> {
     let mut graph = vec![vec![false; membership.by_light.len()]; membership.by_light.len()];
     let mut texel_lights: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut operation_count = 0;
     for (compact_light_index, entries) in membership.by_light.iter().enumerate() {
         for entry in entries {
+            record_assignment_operation(&mut operation_count, &mut checkpoint);
             debug_assert_eq!(entry.compact_light_index as usize, compact_light_index);
             texel_lights
                 .entry(entry.global_texel_index)
@@ -1082,6 +1143,10 @@ fn overlap_graph(membership: &ShadowmaskMembership) -> Vec<Vec<bool>> {
     for lights in texel_lights.values() {
         for (pos, &a) in lights.iter().enumerate() {
             for &b in &lights[pos + 1..] {
+                record_assignment_operation(&mut operation_count, &mut checkpoint);
+                if a == b {
+                    continue;
+                }
                 graph[a][b] = true;
                 graph[b][a] = true;
             }
@@ -1090,32 +1155,157 @@ fn overlap_graph(membership: &ShadowmaskMembership) -> Vec<Vec<bool>> {
     graph
 }
 
-fn assign_channels_with_drops(
+fn record_assignment_operation(operation_count: &mut usize, checkpoint: &mut impl FnMut()) {
+    *operation_count = (*operation_count).saturating_add(1);
+    if *operation_count % SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS == 0 {
+        checkpoint();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChannelAssignment {
+    channels: Vec<u8>,
+    exact_nodes_visited: usize,
+    fallback_lights_considered: usize,
+    fallback_operations: usize,
+    used_fallback: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExactColorResult {
+    Colored,
+    Uncolorable,
+    BudgetExhausted,
+}
+
+struct ExactColorBudget {
+    remaining: usize,
+    visited: usize,
+}
+
+impl ExactColorBudget {
+    fn new(nodes: usize) -> Self {
+        Self {
+            remaining: nodes,
+            visited: 0,
+        }
+    }
+
+    fn visit(&mut self, operation_count: &mut usize, checkpoint: &mut impl FnMut()) -> bool {
+        if self.remaining == 0 {
+            return false;
+        }
+        self.remaining -= 1;
+        self.visited += 1;
+        record_assignment_operation(operation_count, checkpoint);
+        true
+    }
+}
+
+fn assign_channels_with_drops_controlled(
     graph: &[Vec<bool>],
     selected: &[(usize, u32, &MapLight)],
-) -> Vec<u8> {
+    exact_node_budget: usize,
+    mut checkpoint: impl FnMut(),
+) -> ChannelAssignment {
     let mut active = vec![true; graph.len()];
-    loop {
-        if let Some(channels) = color_graph(graph, &active) {
-            let dropped: Vec<usize> = active
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &is_active)| (!is_active).then_some(i))
-                .collect();
-            if !dropped.is_empty() {
-                log::warn!(
-                    "[ShadowmaskAtlas] dropped {} selected light mask(s) after >4-way overlap: {:?}",
-                    dropped.len(),
-                    dropped
-                );
-            }
-            return channels;
-        }
+    let mut budget = ExactColorBudget::new(exact_node_budget);
+    let mut operation_count = 0;
 
-        let Some(drop_index) = lowest_intensity_active(selected, &active) else {
-            return vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
-        };
-        active[drop_index] = false;
+    if exact_node_budget != 0 {
+        loop {
+            checkpoint();
+            let (result, channels) = color_graph_exact_bounded(
+                graph,
+                &active,
+                &mut budget,
+                &mut operation_count,
+                &mut checkpoint,
+            );
+            match result {
+                ExactColorResult::Colored => {
+                    return finish_channel_assignment(
+                        channels,
+                        &active,
+                        budget.visited,
+                        0,
+                        0,
+                        false,
+                    );
+                }
+                ExactColorResult::Uncolorable => {
+                    let Some(drop_index) = lowest_intensity_active(selected, &active) else {
+                        return finish_channel_assignment(
+                            vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()],
+                            &active,
+                            budget.visited,
+                            0,
+                            0,
+                            false,
+                        );
+                    };
+                    active[drop_index] = false;
+                    continue;
+                }
+                ExactColorResult::BudgetExhausted => {
+                    log::warn!(
+                        "[ShadowmaskAtlas] exact channel search exhausted its deterministic {exact_node_budget}-node budget; using conservative fallback"
+                    );
+                    break;
+                }
+            }
+        }
+    } else {
+        log::warn!(
+            "[ShadowmaskAtlas] exact channel search exhausted its deterministic 0-node budget; using conservative fallback"
+        );
+    }
+
+    checkpoint();
+    let fallback_start_operations = operation_count;
+    let (channels, fallback_lights_considered) = color_graph_priority_greedy(
+        graph,
+        selected,
+        &mut active,
+        &mut operation_count,
+        &mut checkpoint,
+    );
+    finish_channel_assignment(
+        channels,
+        &active,
+        budget.visited,
+        fallback_lights_considered,
+        operation_count.saturating_sub(fallback_start_operations),
+        true,
+    )
+}
+
+fn finish_channel_assignment(
+    channels: Vec<u8>,
+    active: &[bool],
+    exact_nodes_visited: usize,
+    fallback_lights_considered: usize,
+    fallback_operations: usize,
+    used_fallback: bool,
+) -> ChannelAssignment {
+    let dropped: Vec<usize> = active
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &is_active)| (!is_active).then_some(i))
+        .collect();
+    if !dropped.is_empty() {
+        log::warn!(
+            "[ShadowmaskAtlas] dropped {} selected light mask(s) to obtain a four-channel assignment: {:?}",
+            dropped.len(),
+            dropped
+        );
+    }
+    ChannelAssignment {
+        channels,
+        exact_nodes_visited,
+        fallback_lights_considered,
+        fallback_operations,
+        used_fallback,
     }
 }
 
@@ -1124,71 +1314,196 @@ fn lowest_intensity_active(selected: &[(usize, u32, &MapLight)], active: &[bool]
         .iter()
         .enumerate()
         .filter(|&(_, is_active)| *is_active)
-        .min_by(|&(a, _), &(b, _)| {
-            light_intensity_score(selected[a].2)
-                .total_cmp(&light_intensity_score(selected[b].2))
-                .then(selected[a].0.cmp(&selected[b].0))
-                .then(selected[a].1.cmp(&selected[b].1))
-        })
+        .min_by(|&(a, _), &(b, _)| light_drop_priority_cmp(selected, a, b))
         .map(|(i, _)| i)
+}
+
+fn light_drop_priority_cmp(
+    selected: &[(usize, u32, &MapLight)],
+    a: usize,
+    b: usize,
+) -> std::cmp::Ordering {
+    light_intensity_score(selected[a].2)
+        .total_cmp(&light_intensity_score(selected[b].2))
+        .then(selected[a].0.cmp(&selected[b].0))
+        .then(selected[a].1.cmp(&selected[b].1))
 }
 
 fn light_intensity_score(light: &MapLight) -> f32 {
     light.intensity * light.color[0].max(light.color[1]).max(light.color[2])
 }
 
-fn color_graph(graph: &[Vec<bool>], active: &[bool]) -> Option<Vec<u8>> {
+fn color_graph_exact_bounded(
+    graph: &[Vec<bool>],
+    active: &[bool],
+    budget: &mut ExactColorBudget,
+    operation_count: &mut usize,
+    checkpoint: &mut impl FnMut(),
+) -> (ExactColorResult, Vec<u8>) {
+    let degrees = active_degrees(graph, active, operation_count, checkpoint);
     let mut order: Vec<usize> = active
         .iter()
         .enumerate()
         .filter_map(|(i, &is_active)| is_active.then_some(i))
         .collect();
-    order.sort_by(|&a, &b| {
-        degree(graph, active, b)
-            .cmp(&degree(graph, active, a))
-            .then(a.cmp(&b))
-    });
+    order.sort_by(|&a, &b| degrees[b].cmp(&degrees[a]).then(a.cmp(&b)));
 
     let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
-    if color_order(graph, active, &order, 0, &mut channels) {
-        Some(channels)
-    } else {
-        None
-    }
+    let result = color_order_exact_bounded_iterative(
+        graph,
+        active,
+        &order,
+        &mut channels,
+        budget,
+        operation_count,
+        checkpoint,
+    );
+    (result, channels)
 }
 
-fn color_order(
+#[derive(Clone, Copy)]
+struct ExactColorFrame {
+    cursor: usize,
+    next_channel: u8,
+    entered: bool,
+}
+
+fn color_order_exact_bounded_iterative(
     graph: &[Vec<bool>],
     active: &[bool],
     order: &[usize],
-    cursor: usize,
     channels: &mut [u8],
-) -> bool {
-    if cursor == order.len() {
-        return true;
-    }
-    let light = order[cursor];
-    for channel in 0..4u8 {
-        let used_by_neighbor = (0..graph.len())
-            .any(|other| active[other] && graph[light][other] && channels[other] == channel);
-        if used_by_neighbor {
+    budget: &mut ExactColorBudget,
+    operation_count: &mut usize,
+    checkpoint: &mut impl FnMut(),
+) -> ExactColorResult {
+    let capacity = order
+        .len()
+        .saturating_add(1)
+        .min(budget.remaining.saturating_add(1));
+    let mut stack = Vec::with_capacity(capacity);
+    stack.push(ExactColorFrame {
+        cursor: 0,
+        next_channel: 0,
+        entered: false,
+    });
+
+    loop {
+        record_assignment_operation(operation_count, checkpoint);
+        let Some(frame) = stack.last_mut() else {
+            return ExactColorResult::Uncolorable;
+        };
+        if !frame.entered {
+            if !budget.visit(operation_count, checkpoint) {
+                return ExactColorResult::BudgetExhausted;
+            }
+            frame.entered = true;
+            if frame.cursor == order.len() {
+                return ExactColorResult::Colored;
+            }
+        }
+
+        let cursor = frame.cursor;
+        let light = order[cursor];
+        let mut selected_channel = None;
+        while frame.next_channel < 4 {
+            let channel = frame.next_channel;
+            frame.next_channel += 1;
+            let mut used_by_neighbor = false;
+            for other in 0..graph.len() {
+                record_assignment_operation(operation_count, checkpoint);
+                if other != light
+                    && active[other]
+                    && graph[light][other]
+                    && channels[other] == channel
+                {
+                    used_by_neighbor = true;
+                    break;
+                }
+            }
+            if !used_by_neighbor {
+                selected_channel = Some(channel);
+                break;
+            }
+        }
+
+        if let Some(channel) = selected_channel {
+            channels[light] = channel;
+            stack.push(ExactColorFrame {
+                cursor: cursor + 1,
+                next_channel: 0,
+                entered: false,
+            });
             continue;
         }
-        channels[light] = channel;
-        if color_order(graph, active, order, cursor + 1, channels) {
-            return true;
-        }
+
         channels[light] = SHADOWMASK_CHANNEL_DROPPED;
+        stack.pop();
+        let Some(parent) = stack.last() else {
+            return ExactColorResult::Uncolorable;
+        };
+        if parent.cursor < order.len() {
+            channels[order[parent.cursor]] = SHADOWMASK_CHANNEL_DROPPED;
+        }
     }
-    false
 }
 
-fn degree(graph: &[Vec<bool>], active: &[bool], light: usize) -> usize {
-    graph[light]
+fn color_graph_priority_greedy(
+    graph: &[Vec<bool>],
+    selected: &[(usize, u32, &MapLight)],
+    active: &mut [bool],
+    operation_count: &mut usize,
+    checkpoint: &mut impl FnMut(),
+) -> (Vec<u8>, usize) {
+    let mut order: Vec<usize> = active
         .iter()
         .enumerate()
-        .filter(|&(i, &adjacent)| active[i] && adjacent)
-        .count()
+        .filter_map(|(index, &is_active)| is_active.then_some(index))
+        .collect();
+    order.sort_by(|&a, &b| light_drop_priority_cmp(selected, b, a));
+
+    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
+    for &light in &order {
+        record_assignment_operation(operation_count, checkpoint);
+        let mut used = [false; 4];
+        for other in 0..graph.len() {
+            record_assignment_operation(operation_count, checkpoint);
+            if other != light && graph[light][other] {
+                let channel = channels[other] as usize;
+                if channel < used.len() {
+                    used[channel] = true;
+                }
+            }
+        }
+        if let Some(channel) = used.iter().position(|&is_used| !is_used) {
+            channels[light] = channel as u8;
+        } else {
+            active[light] = false;
+        }
+    }
+
+    (channels, order.len())
+}
+
+fn active_degrees(
+    graph: &[Vec<bool>],
+    active: &[bool],
+    operation_count: &mut usize,
+    checkpoint: &mut impl FnMut(),
+) -> Vec<usize> {
+    let mut degrees = vec![0; graph.len()];
+    for light in 0..graph.len() {
+        if !active[light] {
+            continue;
+        }
+        for other in 0..graph.len() {
+            record_assignment_operation(operation_count, checkpoint);
+            if other != light && active[other] && graph[light][other] {
+                degrees[light] += 1;
+            }
+        }
+    }
+    degrees
 }
 
 #[cfg(test)]
@@ -1229,6 +1544,31 @@ mod tests {
             is_animated: false,
             tags: Vec::new(),
             shadow_type: ShadowType::StaticLightMap,
+        }
+    }
+
+    fn graph_with_edges(light_count: usize, edges: &[(usize, usize)]) -> Vec<Vec<bool>> {
+        let mut graph = vec![vec![false; light_count]; light_count];
+        for &(a, b) in edges {
+            graph[a][b] = true;
+            graph[b][a] = true;
+        }
+        graph
+    }
+
+    fn assert_valid_channel_assignment(graph: &[Vec<bool>], channels: &[u8]) {
+        assert_eq!(graph.len(), channels.len());
+        for (light, neighbors) in graph.iter().enumerate() {
+            let channel = channels[light];
+            assert!(channel < 4 || channel == SHADOWMASK_CHANNEL_DROPPED);
+            if channel == SHADOWMASK_CHANNEL_DROPPED {
+                continue;
+            }
+            for (other, &adjacent) in neighbors.iter().enumerate().skip(light + 1) {
+                if adjacent && channels[other] != SHADOWMASK_CHANNEL_DROPPED {
+                    assert_ne!(channel, channels[other]);
+                }
+            }
         }
     }
 
@@ -1740,12 +2080,16 @@ mod tests {
     #[test]
     fn paused_assignment_barrier_waits_before_shadowmask_fill() {
         let governor = Arc::new(Governor::new(1, true));
+        let progress = StageProgress::with_total(3);
+        progress
+            .completed_handle()
+            .store(1, std::sync::atomic::Ordering::Relaxed);
         let (waiting_tx, waiting_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
         let worker_governor = Arc::clone(&governor);
+        let worker_progress = progress.clone();
         let worker = thread::spawn(move || {
-            let progress = StageProgress::indeterminate();
-            let control = BakeControl::new(worker_governor, &progress);
+            let control = BakeControl::new(worker_governor, &worker_progress);
             let light = light(1.0);
             let selected = vec![(0, 0, &light)];
             let membership = ShadowmaskMembership {
@@ -1769,6 +2113,7 @@ mod tests {
                     });
                 },
             );
+            control.advance(1);
             finished_tx
                 .send(section)
                 .expect("test coordinator is waiting");
@@ -1781,6 +2126,8 @@ mod tests {
             matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "assignment must remain blocked after its pause checkpoint reports waiting"
         );
+        assert_eq!(progress.completed(), 1);
+        assert!(progress.completed() < progress.total().unwrap());
 
         governor.set_paused(false);
         let section = finished_rx
@@ -1788,6 +2135,7 @@ mod tests {
             .expect("assignment did not resume after unpausing");
         worker.join().expect("assignment worker must not panic");
         assert_eq!(section.data, vec![255, 255, 255, 255]);
+        assert_eq!(progress.completed(), progress.total().unwrap());
     }
 
     #[test]
@@ -1837,6 +2185,264 @@ mod tests {
                 .count(),
             4
         );
+    }
+
+    #[test]
+    fn bounded_exact_search_preserves_legacy_backtracking_assignment() {
+        let lights: Vec<MapLight> = (0..10).map(|_| light(1.0)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, light)| (index, index as u32, light))
+            .collect();
+        // A five-pair crown graph in alternating pair order makes the legacy
+        // static-order greedy branch request a fifth color, then succeeds by
+        // backtracking to the graph's two-color solution.
+        let mut edges = Vec::new();
+        for pair_a in 0..5 {
+            for pair_b in 0..5 {
+                if pair_a != pair_b {
+                    edges.push((pair_a * 2, pair_b * 2 + 1));
+                }
+            }
+        }
+        let graph = graph_with_edges(lights.len(), &edges);
+
+        let assignment = assign_channels_with_drops_controlled(
+            &graph,
+            &selected,
+            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+            || {},
+        );
+
+        assert!(!assignment.used_fallback);
+        assert!(assignment.exact_nodes_visited > lights.len());
+        assert!(
+            assignment
+                .channels
+                .iter()
+                .all(|&channel| channel != SHADOWMASK_CHANNEL_DROPPED)
+        );
+        assert_valid_channel_assignment(&graph, &assignment.channels);
+    }
+
+    #[test]
+    fn exhausted_search_uses_deterministic_bounded_fallback() {
+        let lights: Vec<MapLight> = [0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
+            .into_iter()
+            .map(light)
+            .collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, light)| (index, index as u32, light))
+            .collect();
+        // Vertex 0 is an unrelated low-priority mask. Vertices 1..=5 form K5,
+        // so the one-pass fallback keeps the four highest-priority clique
+        // members, drops vertex 1, and later retains unrelated vertex 0.
+        let mut edges = Vec::new();
+        for a in 1..6 {
+            for b in a + 1..6 {
+                edges.push((a, b));
+            }
+        }
+        let graph = graph_with_edges(lights.len(), &edges);
+        let mut checkpoint_count = 0;
+        let first = assign_channels_with_drops_controlled(&graph, &selected, 0, || {
+            checkpoint_count += 1;
+        });
+        let second = assign_channels_with_drops_controlled(&graph, &selected, 0, || {});
+
+        assert!(first.used_fallback);
+        assert_eq!(first.exact_nodes_visited, 0);
+        assert_eq!(first.fallback_lights_considered, graph.len());
+        assert_eq!(first.fallback_operations, graph.len() * (graph.len() + 1));
+        assert!(checkpoint_count > 0, "fallback must remain cooperative");
+        assert_eq!(first.channels, second.channels);
+        assert_ne!(first.channels[0], SHADOWMASK_CHANNEL_DROPPED);
+        assert_eq!(first.channels[1], SHADOWMASK_CHANNEL_DROPPED);
+        assert_valid_channel_assignment(&graph, &first.channels);
+    }
+
+    #[test]
+    fn fallback_retention_ties_reverse_legacy_drop_order() {
+        let lights: Vec<MapLight> = (0..5).map(|_| light(1.0)).collect();
+        let selection_indexes = [4usize, 3, 2, 1, 0];
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(compact_index, light)| {
+                (
+                    selection_indexes[compact_index],
+                    compact_index as u32,
+                    light,
+                )
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for a in 0..5 {
+            for b in a + 1..5 {
+                edges.push((a, b));
+            }
+        }
+        let graph = graph_with_edges(lights.len(), &edges);
+
+        let assignment = assign_channels_with_drops_controlled(&graph, &selected, 0, || {});
+
+        assert_eq!(assignment.channels[4], SHADOWMASK_CHANNEL_DROPPED);
+        assert_eq!(
+            assignment
+                .channels
+                .iter()
+                .filter(|&&channel| channel == SHADOWMASK_CHANNEL_DROPPED)
+                .count(),
+            1
+        );
+        assert_valid_channel_assignment(&graph, &assignment.channels);
+    }
+
+    #[test]
+    fn exact_search_never_visits_more_than_injected_budget() {
+        let lights: Vec<MapLight> = (0..5).map(|index| light(index as f32 + 1.0)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, light)| (index, index as u32, light))
+            .collect();
+        let mut edges = Vec::new();
+        for a in 0..5 {
+            for b in a + 1..5 {
+                edges.push((a, b));
+            }
+        }
+        let graph = graph_with_edges(lights.len(), &edges);
+
+        let assignment = assign_channels_with_drops_controlled(&graph, &selected, 1, || {});
+
+        assert!(assignment.used_fallback);
+        assert_eq!(assignment.exact_nodes_visited, 1);
+        assert_eq!(assignment.fallback_lights_considered, graph.len());
+        assert_eq!(
+            assignment.fallback_operations,
+            graph.len() * (graph.len() + 1)
+        );
+        assert_valid_channel_assignment(&graph, &assignment.channels);
+    }
+
+    #[test]
+    fn iterative_exact_search_handles_large_colorable_order_without_call_stack_depth() {
+        const LIGHT_COUNT: usize = 4096;
+        let graph = vec![vec![false; LIGHT_COUNT]; LIGHT_COUNT];
+        let active = vec![true; LIGHT_COUNT];
+        let mut budget = ExactColorBudget::new(LIGHT_COUNT + 1);
+        let mut operation_count = 0;
+        let mut checkpoint = || {};
+
+        let (result, channels) = color_graph_exact_bounded(
+            &graph,
+            &active,
+            &mut budget,
+            &mut operation_count,
+            &mut checkpoint,
+        );
+
+        assert_eq!(result, ExactColorResult::Colored);
+        assert_eq!(budget.visited, LIGHT_COUNT + 1);
+        assert!(channels.iter().all(|&channel| channel == 0));
+    }
+
+    #[test]
+    fn dense_graph_construction_checkpoints_inside_edge_pairs() {
+        const LIGHT_COUNT: usize = 48;
+        let membership = ShadowmaskMembership {
+            by_light: (0..LIGHT_COUNT)
+                .map(|compact_light_index| {
+                    vec![ShadowmaskMembershipTexel {
+                        global_texel_index: 0,
+                        compact_light_index: compact_light_index as u32,
+                        raw_visibility: 1.0,
+                    }]
+                })
+                .collect(),
+        };
+        let mut checkpoints = 0;
+
+        let graph = overlap_graph_controlled(&membership, || checkpoints += 1);
+
+        assert!(graph[0][LIGHT_COUNT - 1]);
+        assert!(
+            checkpoints >= 1,
+            "dense per-texel edge construction must reach its inner-work checkpoint"
+        );
+    }
+
+    #[test]
+    fn dense_exact_and_fallback_neighbor_scans_checkpoint_mid_work() {
+        const LIGHT_COUNT: usize = 48;
+        let mut edges = Vec::new();
+        for a in 0..LIGHT_COUNT {
+            for b in a + 1..LIGHT_COUNT {
+                edges.push((a, b));
+            }
+        }
+        let graph = graph_with_edges(LIGHT_COUNT, &edges);
+        let active = vec![true; LIGHT_COUNT];
+        let mut budget = ExactColorBudget::new(1);
+        let mut exact_operations = 0;
+        let mut exact_checkpoints = 0;
+        let mut exact_checkpoint = || exact_checkpoints += 1;
+
+        let (result, _) = color_graph_exact_bounded(
+            &graph,
+            &active,
+            &mut budget,
+            &mut exact_operations,
+            &mut exact_checkpoint,
+        );
+        drop(exact_checkpoint);
+
+        assert_eq!(result, ExactColorResult::BudgetExhausted);
+        assert!(
+            exact_checkpoints >= 2,
+            "dense exact degree and neighbor scans must checkpoint within inner work"
+        );
+
+        let lights: Vec<MapLight> = (0..LIGHT_COUNT)
+            .map(|index| light(index as f32 + 1.0))
+            .collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, light)| (index, index as u32, light))
+            .collect();
+        let mut fallback_active = vec![true; LIGHT_COUNT];
+        let mut fallback_operations = 0;
+        let mut fallback_checkpoints = 0;
+        let mut fallback_checkpoint = || fallback_checkpoints += 1;
+
+        let (channels, considered) = color_graph_priority_greedy(
+            &graph,
+            &selected,
+            &mut fallback_active,
+            &mut fallback_operations,
+            &mut fallback_checkpoint,
+        );
+        drop(fallback_checkpoint);
+
+        assert_eq!(considered, LIGHT_COUNT);
+        assert_eq!(fallback_operations, LIGHT_COUNT * (LIGHT_COUNT + 1));
+        assert!(
+            fallback_checkpoints >= 2,
+            "dense fallback neighbor scans must checkpoint within inner work"
+        );
+        assert_eq!(
+            channels
+                .iter()
+                .filter(|&&channel| channel != SHADOWMASK_CHANNEL_DROPPED)
+                .count(),
+            4
+        );
+        assert_valid_channel_assignment(&graph, &channels);
     }
 
     #[test]
@@ -2124,8 +2730,9 @@ mod tests {
             resident_high_water <= 8,
             "the chart batch must stay within its full-layer residency window"
         );
-        assert_eq!(progress.total(), Some(8));
-        assert_eq!(progress.completed(), 8);
+        let expected_total = shadowmask_progress_total(lights.len(), &shared);
+        assert_eq!(progress.total(), Some(expected_total));
+        assert_eq!(progress.completed(), expected_total);
     }
 
     // Regression: permit-driven batch widening retained eight raw full-layer payloads at W=1.
@@ -2177,8 +2784,9 @@ mod tests {
 
         assert!(section.is_some());
         assert_eq!(resident_high_water, 1);
-        assert_eq!(progress.total(), Some(8));
-        assert_eq!(progress.completed(), 8);
+        let expected_total = shadowmask_progress_total(lights.len(), &shared);
+        assert_eq!(progress.total(), Some(expected_total));
+        assert_eq!(progress.completed(), expected_total);
     }
 
     #[test]
@@ -2223,7 +2831,7 @@ mod tests {
             atlas_height: 5,
         };
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
-        let total = selection.light_indices.len() * shared.placements.len();
+        let total = shadowmask_progress_total(selection.light_indices.len(), &shared);
         let progress = StageProgress::indeterminate();
         let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
         let pool = ThreadPoolBuilder::new()
@@ -2321,6 +2929,29 @@ mod tests {
         assert!(section.data.iter().all(|&value| value == 255));
         assert_eq!(progress.total(), None);
         assert_eq!(progress.completed(), 0);
+
+        let cache_dir = fresh_cache_dir("all_filtered_progress");
+        let cache = StageCache::new(&cache_dir).expect("cache dir");
+        let cached_progress = StageProgress::indeterminate();
+        let cached_control = BakeControl::new(Arc::new(Governor::new(1, false)), &cached_progress);
+        let cached_section = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &no_alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &cached_control,
+        )
+        .expect("cached all-filtered selection still emits an empty section");
+
+        assert_eq!(cached_section, section);
+        assert_eq!(cached_progress.total(), None);
+        assert_eq!(cached_progress.completed(), 0);
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     #[test]
@@ -2604,7 +3235,7 @@ mod tests {
             );
         }
 
-        let total = lights.len() * shared.placements.len();
+        let total = shadowmask_progress_total(lights.len(), &shared);
         assert_ne!(total, 0, "fixture must expose chart work");
         let cold_progress = StageProgress::indeterminate();
         let cold_control = BakeControl::new(Arc::new(Governor::new(1, false)), &cold_progress);
@@ -2678,7 +3309,7 @@ mod tests {
             .to_bytes(),
         );
 
-        let total = selection.light_indices.len() * shared.placements.len();
+        let total = shadowmask_progress_total(selection.light_indices.len(), &shared);
         let progress = StageProgress::indeterminate();
         let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
         let (section, resident_high_water) = bake_shadowmask_atlas_cached_with_test_window(

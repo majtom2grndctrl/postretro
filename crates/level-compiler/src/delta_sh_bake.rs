@@ -51,7 +51,7 @@ use crate::affinity_grid::{
 };
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::StageCache;
-use crate::delta_sh_cache::{DeltaShCacheInputs, bake_or_load_delta_subblocks};
+use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
@@ -119,11 +119,23 @@ pub fn bake_delta_sh_volumes_controlled(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<DeltaShVolumesSection> {
+    bake_delta_sh_volumes_controlled_with_tally(inputs, config, cache, control).0
+}
+
+/// Test-facing cache accounting for the indirect delta bake. The public bake
+/// API intentionally remains section-only; pipeline diagnostics do not need
+/// cache-locality data, while the cross-bake regression suite does.
+pub(crate) fn bake_delta_sh_volumes_controlled_with_tally(
+    inputs: &DeltaBakeInputs<'_>,
+    config: &crate::sh_bake::ShConfig,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> (Option<DeltaShVolumesSection>, DeltaShCacheTally) {
     if inputs.animated_lights.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
     if inputs.geometry.geometry.vertices.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
     let probe_spacing = config.probe_spacing;
     let animated_light_count = inputs.animated_lights.len();
@@ -244,7 +256,7 @@ pub fn bake_delta_sh_volumes_controlled(
         "the dense bake must still satisfy the section's descriptor-driven payload identity"
     );
 
-    Some(section)
+    (Some(section), cached_subblocks.tally)
 }
 
 /// Log emitted-cell vs full-AABB probe counts per animated light (AC #2). The

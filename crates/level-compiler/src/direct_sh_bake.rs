@@ -54,7 +54,7 @@ use crate::affinity_grid::{
 };
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
-use crate::delta_sh_cache::{DeltaShCacheInputs, bake_or_load_delta_subblocks};
+use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
@@ -326,20 +326,45 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
+    bake_direct_sh_delta_volumes_controlled_with_tally(
+        inputs,
+        config,
+        alpha_lights,
+        entity_shadow_lights,
+        cache,
+        control,
+    )
+    .0
+}
+
+/// Test-facing cache accounting for selected entity-shadow delta entries.
+/// The pipeline only consumes the reconstructed section and pre-drop stats;
+/// tests additionally pin the per-CSR-entry cache locality contract.
+pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> (
+    Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
+    DeltaShCacheTally,
+) {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
     {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let selected = selected_direct_lights(inputs, alpha_lights, entity_shadow_lights);
     if selected.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
     let selected_lights: Vec<&MapLight> = selected.iter().map(|entry| entry.light).collect();
 
@@ -364,7 +389,7 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
     if affinity_lights.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
     control.publish_total(affinity_lights.len());
 
@@ -417,7 +442,7 @@ pub fn bake_direct_sh_delta_volumes_controlled(
         section.delta_subblocks.len() * std::mem::size_of::<u16>()
     );
 
-    Some((section, stats))
+    (Some((section, stats)), cached_subblocks.tally)
 }
 
 #[derive(Clone, Copy)]

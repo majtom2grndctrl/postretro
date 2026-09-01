@@ -847,7 +847,12 @@ fn run_after_parsing(
             portals: &generated_portals,
             animated_lights: &animated_baked_lights,
         };
-        delta_sh_bake::bake_delta_sh_volumes_controlled(&inputs, &sh_config, &delta_sh_control)
+        delta_sh_bake::bake_delta_sh_volumes_controlled(
+            &inputs,
+            &sh_config,
+            stage_cache.as_ref(),
+            &delta_sh_control,
+        )
     };
     finish_stage(
         &mut timings,

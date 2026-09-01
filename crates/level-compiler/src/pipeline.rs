@@ -1033,6 +1033,7 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
+                    stage_cache.as_ref(),
                     &direct_sh_delta_control,
                 )
             });

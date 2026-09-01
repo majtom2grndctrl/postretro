@@ -665,10 +665,11 @@ fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>) -> f32 {
     if uniforms.spec_shadowmask_force_one != 0u {
         return 1.0;
     }
-    if round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED {
+    let spec_channel = round(sl.cone_cos.z);
+    if spec_channel >= SHADOWMASK_CHANNEL_DROPPED {
         return 1.0;
     }
-    return shadowmask_channel_value(mask, u32(round(sl.cone_cos.z)));
+    return shadowmask_channel_value(mask, u32(spec_channel));
 }
 
 fn shadowmask_direct(
@@ -738,7 +739,7 @@ fn shadowmask_sample_spot_shadow_wide(
         return 1.0;
     }
 
-    let texel = 1.0 / vec2<f32>(textureDimensions(spot_shadow_depth));
+    let texel = 1.0 / vec2<f32>(shadow_dims);
     let step = texel * SHADOWMASK_SPOT_KERNEL_TEXELS;
     var lit = 0.0;
     var taps = 0.0;
@@ -795,16 +796,22 @@ fn shadowmask_shadow_visibility(
     return 1.0;
 }
 
+// Both the union's baked-visibility skip and the difference renormalization must
+// call this, so the skip threshold and the dead zone cannot drift apart.
+fn shadowmask_dead_zone(pool_kind: u32) -> f32 {
+    return select(
+        SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE,
+        SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE,
+        pool_kind == SHADOWMASK_POOL_CUBE,
+    );
+}
+
 fn shadowmask_visibility_difference(
     pool_kind: u32,
     baked_vis: f32,
     shadow_map_vis: f32,
 ) -> f32 {
-    let dead_zone = select(
-        SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE,
-        SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE,
-        pool_kind == SHADOWMASK_POOL_CUBE,
-    );
+    let dead_zone = shadowmask_dead_zone(pool_kind);
     let difference = max(baked_vis - shadow_map_vis, 0.0);
     return max(difference - dead_zone, 0.0) / (1.0 - dead_zone);
 }
@@ -823,6 +830,9 @@ fn shadowmask_union_subtraction(
     if uniforms.total_light_count <= uniforms.light_count {
         return out;
     }
+    // Hoisted because every promoted light shares this fragment's lightmap
+    // UV/layer.
+    let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
     let promoted_count = uniforms.total_light_count - uniforms.light_count;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
@@ -867,12 +877,6 @@ fn shadowmask_union_subtraction(
            floor(channel_value) != channel_value {
             continue;
         }
-        if (pool_kind_value == SHADOWMASK_POOL_SPOT_VALUE &&
-            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT))) ||
-           (pool_kind_value == SHADOWMASK_POOL_CUBE_VALUE &&
-            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT))) {
-            continue;
-        }
 
         let spec_idx = u32(spec_idx_value);
         let pool_kind = u32(pool_kind_value);
@@ -884,8 +888,14 @@ fn shadowmask_union_subtraction(
             continue;
         }
 
-        let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
         let baked_vis = shadowmask_channel_value(mask, channel);
+        // A baked-dark channel can never survive the dead zone, so the PCF
+        // kernel would be sampled only to be multiplied out. The uniform mode
+        // test comes first so the wavefront-coherent half short-circuits.
+        if uniforms.sdf_shadow_mode != SHADOWMASK_RAW_POOL_VISIBILITY_MODE &&
+           baked_vis <= shadowmask_dead_zone(pool_kind) {
+            continue;
+        }
         let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
         // The raw-pool diagnostic follows the union's promoted-light coverage;
         // when several lights cover a receiver, the darkest map visibility wins.
@@ -1074,7 +1084,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
+    if use_baked_direct_static || uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE {
         let shadowmask = shadowmask_union_subtraction(
             in.world_position,
             in.lightmap_uv,
@@ -1153,7 +1163,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 if sdf_force_lit {
                     visibility = 1.0;
                 }
-            } else if use_specular {
+            } else {
                 visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask);
             }
             let contribution = blinn_phong(

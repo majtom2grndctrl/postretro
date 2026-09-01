@@ -1326,10 +1326,11 @@ fn run_after_parsing(
             portals: &generated_portals,
             exterior_leaves: &exterior_leaves,
         };
-        chunk_light_list_bake::bake_chunk_light_list(
+        chunk_light_list_bake::bake_chunk_light_list_cached(
             &inputs,
             chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
             chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
+            stage_cache.as_ref(),
         )
         .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
     };

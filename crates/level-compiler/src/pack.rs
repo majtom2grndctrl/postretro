@@ -713,8 +713,8 @@ pub fn pack_and_write_portals_with_billboard_scatter(
             "AnimatedBillboardDirectScatterDeltaVolumes must duplicate AnimatedDirectShDeltaVolumes descriptor and CSR layout"
         );
     }
-    let scatter_pair_fits_pack_cap = animated_billboard_direct_scatter_delta_volumes
-        .is_none_or(scatter_section_fits_pack_cap);
+    let scatter_pair_fits_pack_cap =
+        animated_billboard_direct_scatter_delta_volumes.is_none_or(scatter_section_fits_pack_cap);
     if !scatter_pair_fits_pack_cap {
         log::warn!(
             "[Compiler] Billboard direct scatter sections 47/48 withheld during packing: section 48 exceeds the {} byte encoded pack cap",

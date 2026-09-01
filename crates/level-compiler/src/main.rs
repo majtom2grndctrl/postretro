@@ -18,6 +18,7 @@ pub mod chunk_light_list_bake;
 pub mod delta_drop_policy;
 pub mod delta_sections;
 pub mod delta_sh_bake;
+pub mod delta_sh_cache;
 pub mod direct_sh_bake;
 pub mod entity_shadow_select;
 #[cfg(test)]

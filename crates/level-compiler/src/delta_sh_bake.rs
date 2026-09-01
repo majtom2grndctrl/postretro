@@ -35,6 +35,7 @@
 
 use std::collections::HashSet;
 
+use crate::bake_control::BakeControl;
 use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
 use postretro_level_format::delta_sh_volumes::{
@@ -44,14 +45,13 @@ use postretro_level_format::delta_sh_volumes::{
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
-use rayon::prelude::*;
-
-use crate::bake_control::BakeControl;
 
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityInputs, build_csr, csr_entry_cells, decompose_affinity,
 };
 use crate::bvh_build::BvhPrimitive;
+use crate::cache::StageCache;
+use crate::delta_sh_cache::{DeltaShCacheInputs, bake_or_load_delta_subblocks};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
@@ -78,6 +78,14 @@ const AABB_PADDING_METERS: f64 = 0.5;
 /// "infinite" influence sphere.
 const DIRECTIONAL_FALLBACK_RANGE_METERS: f64 = 100.0;
 
+/// Cache stage id for raw indirect-delta `(affinity cell, light)` sub-blocks.
+/// It must remain distinct from the animated-direct and entity-shadow delta
+/// stages because their payloads share the same dense f16 shape.
+pub(crate) const INDIRECT_DELTA_SH_STAGE_ID: &str = "indirect_delta_sh_subblock";
+
+/// Bump when the indirect-delta sub-block computation or its key inputs change.
+pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 1;
+
 /// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope and the
 /// portal graph the affinity decomposition floods over.
@@ -102,12 +110,13 @@ pub fn bake_delta_sh_volumes(
     inputs: &DeltaBakeInputs<'_>,
     config: &crate::sh_bake::ShConfig,
 ) -> Option<DeltaShVolumesSection> {
-    bake_delta_sh_volumes_controlled(inputs, config, &BakeControl::unrestricted())
+    bake_delta_sh_volumes_controlled(inputs, config, None, &BakeControl::unrestricted())
 }
 
 pub fn bake_delta_sh_volumes_controlled(
     inputs: &DeltaBakeInputs<'_>,
     config: &crate::sh_bake::ShConfig,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<DeltaShVolumesSection> {
     if inputs.animated_lights.is_empty() {
@@ -170,29 +179,46 @@ pub fn bake_delta_sh_volumes_controlled(
     );
 
     // --- Sub-blocks: one dense 64-probe block per CSR entry, index-parallel to
-    // `affinity_lights`. The cell each entry belongs to is recovered from the
-    // CSR offsets. Entries are independent, so bake them in parallel and flatten.
+    // `affinity_lights`. The shared cache holds this raw pre-drop payload, so
+    // every downstream delta pass remains identical for hit and miss paths.
     let entries = inputs.animated_lights.entries();
     let csr_cells = csr_entry_cells(&affinity_offsets);
-
-    let delta_subblocks: Vec<u16> = affinity_lights
-        .par_iter()
-        .zip(csr_cells.par_iter())
-        .flat_map(|(&light_idx, &cell)| {
-            let _permit = control.governor().enter();
-            let light = entries[light_idx as usize].light;
-            let subblock = bake_subblock(
+    let valid_probe_masks = valid_probe_masks(inputs, affinity_dims, base_origin, probe_spacing);
+    let keyed_lights: Vec<MapLight> = entries
+        .iter()
+        .map(|entry| unit_radiance_light(entry.light))
+        .collect();
+    // Indirect soft-visibility is seeded from stable cell/probe coordinates,
+    // already folded in the entry key. Unlike the two direct-delta bakes it has
+    // no light-global seed axis to add.
+    let light_seed_axes = vec![0; keyed_lights.len()];
+    let cached_subblocks = bake_or_load_delta_subblocks(
+        &DeltaShCacheInputs {
+            stage_id: INDIRECT_DELTA_SH_STAGE_ID,
+            stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
+            geometry_hash: crate::sh_group::geometry_content_hash(inputs.geometry),
+            affinity_dims,
+            affinity_lights: &affinity_lights,
+            csr_entry_cells: &csr_cells,
+            valid_probe_masks: &valid_probe_masks,
+            probe_spacing,
+            light_seed_axes: &light_seed_axes,
+            expected_subblock_f16_len: PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE,
+        },
+        &keyed_lights,
+        cache,
+        control,
+        |light_index, cell| {
+            bake_subblock(
                 inputs,
-                light,
+                &keyed_lights[light_index as usize],
                 cell,
                 affinity_dims,
                 base_origin,
                 probe_spacing,
-            );
-            control.advance(1);
-            subblock
-        })
-        .collect();
+            )
+        },
+    );
 
     let animation_descriptor_indices: Vec<u32> = (0..animated_light_count as u32).collect();
     let section = DeltaShVolumesSection {
@@ -201,11 +227,16 @@ pub fn bake_delta_sh_volumes_controlled(
         tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
         tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
         animation_descriptor_indices,
+        // The indirect bake writes a dense L0 block for every probe (including
+        // invalid zeros), preserving the pre-existing wire contract. These
+        // all-valid masks are intentionally unrelated to the cache's private
+        // per-cell validity fold above; downstream compaction owns the section
+        // masks as before.
         valid_probe_masks: vec![u64::MAX; affinity_cell_count],
         cell_levels: vec![0u8; affinity_cell_count],
         affinity_offsets,
         affinity_lights,
-        delta_subblocks,
+        delta_subblocks: cached_subblocks.subblocks,
     };
     debug_assert_eq!(
         section.expected_delta_subblock_f16_count(),
@@ -247,13 +278,13 @@ pub fn log_stats(section: &DeltaShVolumesSection) {
 /// uses the affinity-cell centroid rather than per-probe portal tests.
 fn bake_subblock(
     inputs: &DeltaBakeInputs<'_>,
-    light: &MapLight,
+    unit_light: &MapLight,
     cell: u32,
     affinity_dims: [u32; 3],
     base_origin: DVec3,
     base_spacing: f32,
 ) -> Vec<u16> {
-    let (light_min, light_max) = light_aabb(light, world_aabb_for_directional(inputs));
+    let (light_min, light_max) = light_aabb(unit_light, world_aabb_for_directional(inputs));
 
     let ctx = RaytracingCtx {
         bvh: inputs.bvh,
@@ -261,39 +292,14 @@ fn bake_subblock(
         geometry: inputs.geometry,
     };
 
-    // Affinity-cell coords (x-fastest) from the linear cell index.
-    let nx = affinity_dims[0];
-    let ny = affinity_dims[1];
-    let cell_x = cell % nx;
-    let cell_y = (cell / nx) % ny;
-    let cell_z = cell / (nx * ny);
-
-    let spacing = base_spacing as f64;
     let mut out = vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE];
-    // Delta tiles encode transport, not authored radiance. The compose
-    // descriptor is the single source of color/intensity so color curves can
-    // recolor every channel without squaring the authored light.
-    let mut unit_light = light.clone();
-    unit_light.color = [1.0, 1.0, 1.0];
-    unit_light.intensity = 1.0;
-
     for local in 0..PROBES_PER_CELL {
         // In-cell local coords, x-fastest: local = lx + ly*4 + lz*16. Matches the
         // compose shader's `local_invocation_index` for @workgroup_size(4,4,4).
-        let lx = (local % AFFINITY_FACTOR as usize) as u32;
-        let ly = ((local / AFFINITY_FACTOR as usize) % AFFINITY_FACTOR as usize) as u32;
-        let lz = (local / (AFFINITY_FACTOR as usize * AFFINITY_FACTOR as usize)) as u32;
-
-        // Base-probe global coords, then world position (coincident with the base
-        // SH probe at the same global coords).
-        let gx = cell_x * AFFINITY_FACTOR + lx;
-        let gy = cell_y * AFFINITY_FACTOR + ly;
-        let gz = cell_z * AFFINITY_FACTOR + lz;
-        let pos_d = DVec3::new(
-            base_origin.x + gx as f64 * spacing,
-            base_origin.y + gy as f64 * spacing,
-            base_origin.z + gz as f64 * spacing,
-        );
+        // Base-probe global coords, then world position (coincident with the
+        // base SH probe at the same global coords). This shared helper is also
+        // what derives the cache key's per-cell validity mask.
+        let pos_d = delta_probe_position(cell, local, affinity_dims, base_origin, base_spacing);
 
         // Per-probe AABB clip + solid/exterior validity gate. Out-of-region probes
         // inside an included cell stay zero (their slot is already zero-filled).
@@ -305,7 +311,7 @@ fn bake_subblock(
         }
 
         let pos = Vec3::new(pos_d.x as f32, pos_d.y as f32, pos_d.z as f32);
-        let lights_slice: [&MapLight; 1] = [&unit_light];
+        let lights_slice: [&MapLight; 1] = [unit_light];
         // Indirect-only: the same bounce math as the base bake. The animated
         // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
         // so baking it here too would double-count. Delta irradiance is indirect-only.
@@ -335,6 +341,65 @@ fn bake_subblock(
     }
 
     out
+}
+
+/// Normalize a delta's single light to unit radiance. The runtime descriptor
+/// supplies authored color and intensity during composition, so neither may
+/// affect this transport payload or its cache key.
+fn unit_radiance_light(light: &MapLight) -> MapLight {
+    let mut unit_light = light.clone();
+    unit_light.color = [1.0, 1.0, 1.0];
+    unit_light.intensity = 1.0;
+    unit_light
+}
+
+/// Per-cell validity for cache keys. This mirrors the precise `pos_d` and
+/// `probe_is_valid_pub` gate in `bake_subblock`; BSP/exterior changes are not
+/// represented by the render-geometry content hash alone.
+fn valid_probe_masks(
+    inputs: &DeltaBakeInputs<'_>,
+    affinity_dims: [u32; 3],
+    base_origin: DVec3,
+    base_spacing: f32,
+) -> Vec<u64> {
+    let affinity_cell_count = affinity_dims[0] * affinity_dims[1] * affinity_dims[2];
+    (0..affinity_cell_count)
+        .map(|cell| {
+            let mut mask = 0u64;
+            for local in 0..PROBES_PER_CELL {
+                let pos_d =
+                    delta_probe_position(cell, local, affinity_dims, base_origin, base_spacing);
+                if probe_is_valid_pub(inputs.tree, inputs.exterior_leaves, pos_d) {
+                    mask |= 1u64 << local;
+                }
+            }
+            mask
+        })
+        .collect()
+}
+
+fn delta_probe_position(
+    cell: u32,
+    local: usize,
+    affinity_dims: [u32; 3],
+    base_origin: DVec3,
+    base_spacing: f32,
+) -> DVec3 {
+    let nx = affinity_dims[0];
+    let ny = affinity_dims[1];
+    let cell_x = cell % nx;
+    let cell_y = (cell / nx) % ny;
+    let cell_z = cell / (nx * ny);
+    let lx = (local % AFFINITY_FACTOR as usize) as u32;
+    let ly = ((local / AFFINITY_FACTOR as usize) % AFFINITY_FACTOR as usize) as u32;
+    let lz = (local / (AFFINITY_FACTOR as usize * AFFINITY_FACTOR as usize)) as u32;
+    let spacing = base_spacing as f64;
+
+    DVec3::new(
+        base_origin.x + (cell_x * AFFINITY_FACTOR + lx) as f64 * spacing,
+        base_origin.y + (cell_y * AFFINITY_FACTOR + ly) as f64 * spacing,
+        base_origin.z + (cell_z * AFFINITY_FACTOR + lz) as f64 * spacing,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -707,7 +772,7 @@ mod tests {
             std::sync::Arc::new(crate::governor::Governor::new(2, false)),
             &progress,
         );
-        let first_section = bake_delta_sh_volumes_controlled(&inputs, &config, &control)
+        let first_section = bake_delta_sh_volumes_controlled(&inputs, &config, None, &control)
             .expect("expected first deterministic delta section");
         assert_eq!(progress.total(), Some(first_section.affinity_lights.len()));
         assert_eq!(progress.completed(), first_section.affinity_lights.len());
@@ -717,6 +782,101 @@ mod tests {
             .to_bytes();
 
         assert_eq!(first, second, "delta bake must be byte-identical");
+
+        let cache_dir = std::env::temp_dir().join(format!(
+            "postretro_indirect_delta_cache_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after unix epoch")
+                .as_nanos(),
+        ));
+        let cache = StageCache::new(&cache_dir).expect("create indirect delta cache");
+        let cached_progress = crate::reporter::StageProgress::indeterminate();
+        let cached_control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &cached_progress,
+        );
+        let cached =
+            bake_delta_sh_volumes_controlled(&inputs, &config, Some(&cache), &cached_control)
+                .expect("expected cached delta section")
+                .to_bytes();
+        assert_eq!(
+            cached_progress.total(),
+            Some(first_section.affinity_lights.len())
+        );
+        assert_eq!(
+            cached_progress.completed(),
+            first_section.affinity_lights.len()
+        );
+        let warm_progress = crate::reporter::StageProgress::indeterminate();
+        let warm_control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &warm_progress,
+        );
+        let warm = bake_delta_sh_volumes_controlled(&inputs, &config, Some(&cache), &warm_control)
+            .expect("expected warm delta section")
+            .to_bytes();
+        assert_eq!(
+            warm_progress.total(),
+            Some(first_section.affinity_lights.len())
+        );
+        assert_eq!(
+            warm_progress.completed(),
+            first_section.affinity_lights.len()
+        );
+
+        assert_eq!(first, cached, "cached miss must preserve pre-drop bytes");
+        assert_eq!(first, warm, "cached hit must preserve pre-drop bytes");
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn indirect_delta_cache_key_uses_unit_radiance_light_and_stage_version() {
+        let mut authored = animated_point_light(DVec3::ZERO, 4.0);
+        authored.color = [0.25, 0.5, 0.75];
+        authored.intensity = 7.0;
+        let unit = unit_radiance_light(&authored);
+
+        let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
+            INDIRECT_DELTA_SH_STAGE_ID,
+            INDIRECT_DELTA_SH_STAGE_VERSION,
+            &[11; 32],
+            [2, 3, 4],
+            5,
+            1.0,
+            u64::MAX,
+            0,
+            &unit,
+        );
+        let mut recolored = authored;
+        recolored.color = [0.1, 0.2, 0.3];
+        recolored.intensity = 0.1;
+        let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
+            INDIRECT_DELTA_SH_STAGE_ID,
+            INDIRECT_DELTA_SH_STAGE_VERSION,
+            &[11; 32],
+            [2, 3, 4],
+            5,
+            1.0,
+            u64::MAX,
+            0,
+            &unit_radiance_light(&recolored),
+        );
+        let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
+            INDIRECT_DELTA_SH_STAGE_ID,
+            INDIRECT_DELTA_SH_STAGE_VERSION + 1,
+            &[11; 32],
+            [2, 3, 4],
+            5,
+            1.0,
+            u64::MAX,
+            0,
+            &unit,
+        );
+
+        assert_eq!(key.as_filename(), recolored_key.as_filename());
+        assert_ne!(key.as_filename(), bumped_version_key.as_filename());
     }
 
     // --- Out-of-region drop (AC #2) ----------------------------------------

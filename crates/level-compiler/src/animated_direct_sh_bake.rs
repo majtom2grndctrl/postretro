@@ -6,7 +6,7 @@ use crate::affinity_grid::{
 };
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
-use crate::delta_sh_cache::{DeltaShCacheInputs, bake_or_load_delta_subblocks};
+use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::MapLight;
 use crate::portals::Portal;
@@ -66,13 +66,28 @@ pub fn bake_animated_direct_sh_delta_volumes_controlled(
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<AnimatedDirectShDeltaVolumesSection> {
+    bake_animated_direct_sh_delta_volumes_controlled_with_tally(inputs, config, cache, control).0
+}
+
+/// Test-facing cache accounting for animated direct delta entries. This keeps
+/// the production stage API section-only while exposing the CSR locality
+/// contract to cross-bake tests.
+pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
+    inputs: &AnimatedDirectShBakeInputs<'_, '_>,
+    config: &ShConfig,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> (
+    Option<AnimatedDirectShDeltaVolumesSection>,
+    DeltaShCacheTally,
+) {
     if inputs.animated_lights.is_empty() || inputs.sh_ctx.geometry.geometry.vertices.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let animated_light_count = inputs.animated_lights.len();
@@ -169,18 +184,21 @@ pub fn bake_animated_direct_sh_delta_volumes_controlled(
         affinity_lights.len() * PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE
     );
 
-    Some(AnimatedDirectShDeltaVolumesSection {
-        affinity_factor: FORMAT_AFFINITY_FACTOR,
-        affinity_dims,
-        tile_dimension: TILE_DIMENSION,
-        tile_border: TILE_BORDER,
-        animation_descriptor_indices: (0..animated_light_count as u32).collect(),
-        valid_probe_masks: vec![u64::MAX; decomposition.affinity_cell_count()],
-        cell_levels: vec![0u8; decomposition.affinity_cell_count()],
-        affinity_offsets,
-        affinity_lights,
-        delta_subblocks: cached_subblocks.subblocks,
-    })
+    (
+        Some(AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: FORMAT_AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: TILE_DIMENSION,
+            tile_border: TILE_BORDER,
+            animation_descriptor_indices: (0..animated_light_count as u32).collect(),
+            valid_probe_masks: vec![u64::MAX; decomposition.affinity_cell_count()],
+            cell_levels: vec![0u8; decomposition.affinity_cell_count()],
+            affinity_offsets,
+            affinity_lights,
+            delta_subblocks: cached_subblocks.subblocks,
+        }),
+        cached_subblocks.tally,
+    )
 }
 
 /// Normalize a delta's single light to unit radiance before folding it into a

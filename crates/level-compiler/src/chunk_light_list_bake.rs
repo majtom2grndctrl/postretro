@@ -151,6 +151,22 @@ pub(crate) fn chunk_light_list_cache_key(
     cell_size_meters: f32,
     per_chunk_cap: u32,
 ) -> CacheKey {
+    chunk_light_list_cache_key_with_version(
+        inputs,
+        cell_size_meters,
+        per_chunk_cap,
+        CHUNK_LIGHT_LIST_STAGE_VERSION,
+    )
+}
+
+/// Version-parameterized key builder used by the cache-epoch regression test.
+/// The production wrapper always supplies the current stage version.
+pub(crate) fn chunk_light_list_cache_key_with_version(
+    inputs: &ChunkLightListInputs<'_>,
+    cell_size_meters: f32,
+    per_chunk_cap: u32,
+    stage_version: u32,
+) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(&crate::sh_group::geometry_content_hash(inputs.geometry));
@@ -175,7 +191,7 @@ pub(crate) fn chunk_light_list_cache_key(
 
     CacheKey::new(
         CHUNK_LIGHT_LIST_STAGE_ID,
-        CHUNK_LIGHT_LIST_STAGE_VERSION,
+        stage_version,
         hasher.finalize().as_bytes(),
     )
 }

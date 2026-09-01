@@ -59,6 +59,8 @@ pub mod visibility;
 
 #[cfg(test)]
 mod binary_tests;
+#[cfg(test)]
+mod cache_cross_bake_tests;
 
 use std::collections::HashSet;
 use std::fmt::Display;

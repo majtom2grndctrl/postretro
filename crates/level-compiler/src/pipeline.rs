@@ -967,6 +967,7 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
+            stage_cache.as_ref(),
             &animated_direct_sh_control,
         )
     };

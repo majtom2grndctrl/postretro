@@ -1848,6 +1848,14 @@ fn log_direct_sh_delta_stats(stats: Option<&direct_sh_bake::DirectDeltaBakeStats
 }
 
 #[cfg(test)]
+pub(crate) fn log_direct_sh_delta_stats_for_test(
+    stats: Option<&direct_sh_bake::DirectDeltaBakeStats>,
+    verbose: bool,
+) {
+    log_direct_sh_delta_stats(stats, verbose);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

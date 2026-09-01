@@ -1,5 +1,5 @@
 // Static CellVisibility bake over the compiler portal graph.
-// See: context/plans/in-progress/cell-visibility-relation/index.md
+// See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::{
     cmp::Ordering,
@@ -90,11 +90,13 @@ pub fn cell_visibility_bake_cached(
             }
             Err(error) => {
                 log::warn!("[cache] corrupt cell_visibility entry, re-baking: {error}");
+                log::info!("[cache] cell_visibility miss");
             }
         }
+    } else {
+        log::info!("[cache] cell_visibility miss");
     }
 
-    log::info!("[cache] cell_visibility miss");
     let bytes = cell_visibility_bake(tree, portals, control)?.to_bytes()?;
     cache.put(&key, &bytes);
     Ok(bytes)
@@ -851,7 +853,7 @@ mod tests {
         );
 
         let reordered_portals = vec![
-            square_portal(1, 2, DVec3::new(3.0, 0.0, 0.0), 1.0),
+            square_portal(1, 2, DVec3::new(3.0, 0.0, 0.0), 2.0),
             square_portal(0, 1, DVec3::X, 2.0),
         ];
         assert_ne!(
@@ -929,6 +931,7 @@ mod tests {
         cache.put(&key, b"not a CellVisibility section");
 
         let progress = StageProgress::indeterminate();
+        let capture = LogCapture::start();
         let rebaked =
             cell_visibility_bake_cached(&tree, &portals, Some(&cache), &test_control(&progress, 1))
                 .expect("malformed cached section must re-bake");
@@ -936,6 +939,8 @@ mod tests {
         assert_eq!(rebaked, reference);
         assert_eq!(progress.total(), Some(tree.leaves.len() * 2));
         assert_eq!(progress.completed(), tree.leaves.len() * 2);
+        capture.assert_logged_once(Level::Warn, "[cache] corrupt cell_visibility entry");
+        capture.assert_logged_once(Level::Info, "[cache] cell_visibility miss");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

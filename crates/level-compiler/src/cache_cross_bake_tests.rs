@@ -40,7 +40,7 @@ use crate::delta_sh_bake::{
     DeltaBakeInputs, INDIRECT_DELTA_SH_STAGE_ID, INDIRECT_DELTA_SH_STAGE_VERSION,
     bake_delta_sh_volumes_controlled_with_tally,
 };
-use crate::delta_sh_cache::delta_sh_entry_cache_key;
+use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
 use crate::direct_sh_bake::{
     DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DirectBakeInputs,
     bake_direct_sh_delta_volumes_controlled_with_tally,
@@ -723,28 +723,28 @@ fn p13_p15_seed_axis_and_stage_ids_prevent_cross_bake_serving() {
     assert_eq!(repeat.animated_direct_tally.misses, 0);
     assert_eq!(repeat.direct_tally.misses, 0);
     let shared_light = light(DVec3::ZERO, true);
-    let indirect_key = delta_sh_entry_cache_key(
-        INDIRECT_DELTA_SH_STAGE_ID,
-        INDIRECT_DELTA_SH_STAGE_VERSION,
-        &[0; 32],
-        [1, 1, 1],
-        0,
-        1.0,
-        u64::MAX,
-        0,
-        &shared_light,
-    );
-    let animated_key = delta_sh_entry_cache_key(
-        ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-        ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-        &[0; 32],
-        [1, 1, 1],
-        0,
-        1.0,
-        u64::MAX,
-        0,
-        &shared_light,
-    );
+    let indirect_key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+        stage_id: INDIRECT_DELTA_SH_STAGE_ID,
+        stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
+        geometry_hash: &[0; 32],
+        affinity_dims: [1, 1, 1],
+        cell: 0,
+        probe_spacing: 1.0,
+        valid_probe_mask: u64::MAX,
+        seed_axis: 0,
+        light: &shared_light,
+    });
+    let animated_key = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+        stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+        stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
+        geometry_hash: &[0; 32],
+        affinity_dims: [1, 1, 1],
+        cell: 0,
+        probe_spacing: 1.0,
+        valid_probe_mask: u64::MAX,
+        seed_axis: 0,
+        light: &shared_light,
+    });
     cache.put(&indirect_key, &[1, 2]);
     cache.put(&animated_key, &[3, 4]);
     assert_ne!(
@@ -800,28 +800,28 @@ fn five_stage_version_bumps_miss_then_hit() {
         (DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION),
     ];
     for (stage_id, version) in delta_keys {
-        let current = delta_sh_entry_cache_key(
+        let current = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
             stage_id,
-            version,
-            &[9; 32],
-            [1, 1, 1],
-            0,
-            1.0,
-            u64::MAX,
-            0,
-            &key_light,
-        );
-        let bumped = delta_sh_entry_cache_key(
+            stage_version: version,
+            geometry_hash: &[9; 32],
+            affinity_dims: [1, 1, 1],
+            cell: 0,
+            probe_spacing: 1.0,
+            valid_probe_mask: u64::MAX,
+            seed_axis: 0,
+            light: &key_light,
+        });
+        let bumped = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
             stage_id,
-            version + 1,
-            &[9; 32],
-            [1, 1, 1],
-            0,
-            1.0,
-            u64::MAX,
-            0,
-            &key_light,
-        );
+            stage_version: version + 1,
+            geometry_hash: &[9; 32],
+            affinity_dims: [1, 1, 1],
+            cell: 0,
+            probe_spacing: 1.0,
+            valid_probe_mask: u64::MAX,
+            seed_axis: 0,
+            light: &key_light,
+        });
         cache.put(&current, b"current");
         assert_eq!(
             cache.get(&bumped),

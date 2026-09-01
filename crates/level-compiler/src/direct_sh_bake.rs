@@ -1770,26 +1770,30 @@ mod tests {
     fn direct_sh_delta_cache_key_changes_when_stage_version_changes() {
         let light = static_point_light(DVec3::new(1.0, 2.0, 3.0), 8.0, [0.25, 0.5, 0.75]);
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            DIRECT_SH_DELTA_STAGE_ID,
-            DIRECT_SH_DELTA_STAGE_VERSION,
-            &[17; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            9,
-            &light,
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: DIRECT_SH_DELTA_STAGE_ID,
+                stage_version: DIRECT_SH_DELTA_STAGE_VERSION,
+                geometry_hash: &[17; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 9,
+                light: &light,
+            },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            DIRECT_SH_DELTA_STAGE_ID,
-            DIRECT_SH_DELTA_STAGE_VERSION + 1,
-            &[17; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            9,
-            &light,
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: DIRECT_SH_DELTA_STAGE_ID,
+                stage_version: DIRECT_SH_DELTA_STAGE_VERSION + 1,
+                geometry_hash: &[17; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 9,
+                light: &light,
+            },
         );
 
         assert_ne!(DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_STAGE_ID);

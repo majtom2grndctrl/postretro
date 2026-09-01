@@ -512,52 +512,60 @@ mod tests {
         authored.color = [0.25, 0.5, 0.75];
         authored.intensity = 7.0;
         let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            42,
-            &unit_radiance_light(&authored),
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 42,
+                light: &unit_radiance_light(&authored),
+            },
         );
 
         let mut recolored = authored.clone();
         recolored.color = [0.1, 0.2, 0.3];
         recolored.intensity = 0.1;
         let recolored_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            42,
-            &unit_radiance_light(&recolored),
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 42,
+                light: &unit_radiance_light(&recolored),
+            },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION + 1,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            42,
-            &unit_radiance_light(&authored),
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION + 1,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 42,
+                light: &unit_radiance_light(&authored),
+            },
         );
         let different_source_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
-            ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
-            ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
-            &[11; 32],
-            [2, 3, 4],
-            5,
-            1.0,
-            u64::MAX,
-            43,
-            &unit_radiance_light(&authored),
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+                stage_version: ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION,
+                geometry_hash: &[11; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 43,
+                light: &unit_radiance_light(&authored),
+            },
         );
 
         assert_ne!(

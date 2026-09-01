@@ -1262,6 +1262,7 @@ fn run_after_parsing(
     // governor, but not the completed LightmapBake progress stage: that stage
     // has already finished and its published total covers different work.
     let shadowmask_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
     let shadowmask_atlas_section = if delta_sections.entity_shadow_lights.is_some() {
         let shared = lightmap_layer::SharedAtlas {

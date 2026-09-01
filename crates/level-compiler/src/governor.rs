@@ -3,6 +3,11 @@
 
 use std::sync::{Condvar, Mutex, MutexGuard};
 
+#[cfg(test)]
+use std::fmt;
+#[cfg(test)]
+use std::sync::Arc;
+
 #[derive(Debug)]
 struct GateState {
     paused: bool,
@@ -17,10 +22,22 @@ struct GateState {
 /// returned permit for the duration of that item. A permitted item must never
 /// wait for another permitted item: doing so could deadlock when the permit
 /// count is one.
-#[derive(Debug)]
+#[cfg_attr(not(test), derive(Debug))]
 pub struct Governor {
     state: Mutex<GateState>,
     changed: Condvar,
+    #[cfg(test)]
+    enter_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+#[cfg(test)]
+impl fmt::Debug for Governor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Governor")
+            .field("state", &*self.lock())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Governor {
@@ -34,6 +51,8 @@ impl Governor {
                 active: 0,
             }),
             changed: Condvar::new(),
+            #[cfg(test)]
+            enter_hook: Mutex::new(None),
         }
     }
 
@@ -54,6 +73,26 @@ impl Governor {
         }
     }
 
+    /// Park while paused and report once the paused condition is observed.
+    ///
+    /// Tests use this rendezvous to prove a specific cooperative checkpoint
+    /// blocks. The observer runs while the gate lock is held, immediately
+    /// before the condition-variable wait releases it.
+    #[cfg(test)]
+    pub(crate) fn checkpoint_with_wait_observer(&self, observer: impl FnOnce()) {
+        let mut observer = Some(observer);
+        let mut state = self.lock();
+        while state.paused {
+            if let Some(observer) = observer.take() {
+                observer();
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
     /// Park while paused or at the concurrency limit, then acquire one permit.
     pub fn enter(&self) -> Permit<'_> {
         let mut state = self.lock();
@@ -64,7 +103,29 @@ impl Governor {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         state.active += 1;
-        Permit { governor: self }
+        drop(state);
+        let permit = Permit { governor: self };
+        #[cfg(test)]
+        let hook = {
+            self.enter_hook
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook();
+        }
+        permit
+    }
+
+    /// Install an admission rendezvous for deterministic concurrency tests.
+    #[cfg(test)]
+    pub(crate) fn set_enter_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .enter_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
     }
 
     /// Change the target concurrency. Existing work is not preempted.

@@ -253,55 +253,17 @@ pub fn bake_light_layer_controlled(
         .placements
         .par_iter()
         .enumerate()
-        .map(|(face_idx, placement)| {
-            // Parallel bake work must enter once at its outermost boundary so
-            // pause and the shared concurrency cap apply to every chart.
-            let _permit = control.governor().enter();
-            let chart = &atlas.charts[face_idx];
-            if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-                // Degenerate charts still consume one progress unit while the
-                // permit is held; their ordered slot is an empty buffer.
-                control.advance(1);
-                return Vec::new();
-            }
-            let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
-            let (interior_w, interior_h) = chart_interior_dims(chart);
-            let mut texels = Vec::with_capacity((interior_w * interior_h) as usize);
-
-            for ty in 0..interior_h {
-                for tx in 0..interior_w {
-                    let atlas_x = placement.x as i32 + padding + tx;
-                    let atlas_y = placement.y as i32 + padding + ty;
-                    // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
-                    // not folded into `idx`.
-                    let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
-
-                    let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
-                    let surface_normal = chart.normal;
-                    let seed = texel_seed(atlas_x as u32, atlas_y as u32);
-
-                    let (irr, weighted_dir, raw_visibility) =
-                        light_texel_contribution_and_visibility(
-                            light,
-                            world_p,
-                            surface_normal,
-                            seed,
-                            area_sample_count,
-                            |from, to| segment_clear(bvh, primitives, geometry, from, to),
-                        );
-
-                    texels.push(LayerTexel {
-                        idx: idx as u32,
-                        layer: placement.layer,
-                        irradiance: irr.to_array(),
-                        weighted_dir: weighted_dir.to_array(),
-                        fallback_normal: surface_normal.to_array(),
-                        raw_visibility: raw_visibility.unwrap_or(-1.0),
-                    });
-                }
-            }
-            control.advance(1);
-            texels
+        .map(|(face_idx, _)| {
+            bake_light_layer_chart_controlled(
+                light,
+                atlas,
+                face_idx,
+                bvh,
+                primitives,
+                geometry,
+                area_sample_count,
+                control,
+            )
         })
         .collect();
     let texels = per_chart_texels.into_iter().flatten().collect();
@@ -312,6 +274,73 @@ pub fn bake_light_layer_controlled(
         layer_count,
         texels,
     }
+}
+
+/// Bake one `(light, chart)` contribution in placement order.
+///
+/// This is the outermost governed unit for every light-layer bake path. Keeping
+/// admission here lets callers choose a single Rayon level without nesting a
+/// governor entry around the established per-chart work.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_light_layer_chart_controlled(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> Vec<LayerTexel> {
+    // Parallel bake work must enter once at its outermost boundary so pause
+    // and the shared concurrency cap apply to every chart.
+    let _permit = control.governor().enter();
+    let placement = &atlas.placements[face_idx];
+    let chart = &atlas.charts[face_idx];
+    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+        // Degenerate charts still consume one progress unit while the permit is
+        // held; their ordered slot is an empty buffer.
+        control.advance(1);
+        return Vec::new();
+    }
+
+    let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+    let (interior_w, interior_h) = chart_interior_dims(chart);
+    let mut texels = Vec::with_capacity((interior_w * interior_h) as usize);
+
+    for ty in 0..interior_h {
+        for tx in 0..interior_w {
+            let atlas_x = placement.x as i32 + padding + tx;
+            let atlas_y = placement.y as i32 + padding + ty;
+            // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
+            // not folded into `idx`.
+            let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
+
+            let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
+            let surface_normal = chart.normal;
+            let seed = texel_seed(atlas_x as u32, atlas_y as u32);
+
+            let (irr, weighted_dir, raw_visibility) = light_texel_contribution_and_visibility(
+                light,
+                world_p,
+                surface_normal,
+                seed,
+                area_sample_count,
+                |from, to| segment_clear(bvh, primitives, geometry, from, to),
+            );
+
+            texels.push(LayerTexel {
+                idx,
+                layer: placement.layer,
+                irradiance: irr.to_array(),
+                weighted_dir: weighted_dir.to_array(),
+                fallback_normal: surface_normal.to_array(),
+                raw_visibility: raw_visibility.unwrap_or(-1.0),
+            });
+        }
+    }
+    control.advance(1);
+    texels
 }
 
 /// Composite per-light layers into the pre-BC6H atlas, reproducing

@@ -17,9 +17,11 @@ description: >
 
 **Work as an orchestrator.** After you have a baseline understanding of the initial request, conserve your context by dispatching right-sized agents for right-sized tasks.
 
+- A dispatched agent's brief names both the context it must read and the checks it must pass before reporting.
+
 ## Habits
 
-Eleven habits from a real review where three independent reviewers plus a later self-review each found defects the author believed absent. Reviewers catch what reached the draft. These habits keep it from getting there.
+Sixteen habits from real reviews where three independent reviewers plus a later self-review each found defects the author believed absent. Reviewers catch what reached the draft. These habits keep it from getting there.
 
 ### While writing
 
@@ -33,6 +35,10 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 **5. Verify falsity before flagging a line as wrong.** Suspicion is not a finding. Confirm it's actually false — the real defect is sometimes adjacent, with a different fix, and the suspected line was right.
 
+**5b. A predicate tested only where it refuses passes while over-tight.** Pin both sides: the case it must reject and the case it must permit. A payload-root guard in one spec was wrong three times in three directions — too narrow, too broad, then permitting the path that deletes the run's own build outputs — and every pinned row tested a refusal until one tested a permit. An over-tightened guard passed every assigned test for three rounds, because nothing asked it to say yes.
+
+**5c. State a fact once.** A fact written in two places is a defect waiting for a fix to land in one of them — the single largest source of new defects across five review rounds on one spec, ahead of every kind of wrong reasoning. `/orchestrate` hands a task agent its own paragraph plus the AC list and the invariants, so a task can *reference* an AC instead of restating it and the agent still receives both. Restate only where both sides of an interface genuinely need it, or where a summary section exists to restate. And never write a count in prose: "the three call sites" is wrong the moment a fourth appears, while the enumeration after it stays right.
+
 ### While revising
 
 **6. Delete the pivot.** Every correction wants to narrate its own history — "an early draft," "was thought to," "no longer matters." The implementer never saw the old version; a correction phrased as a correction is noise addressed to the reviewer. State the current design. History belongs in derivation notes, not the spec body.
@@ -45,11 +51,15 @@ Eleven habits from a real review where three independent reviewers plus a later 
 
 **10. Newest acceptance criteria have the fewest tests.** Criteria added after the task list was written are delivered by nothing — no task was revised to cover them. Check coverage for the ACs added last, first.
 
+**10b. A clause added to an existing criterion is delivered by nothing.** Habit 10 catches a whole criterion added late. The finer case is worse: a clause bolted onto a criterion that already has a task and already has rows. Coverage looks done, the task paragraph was written against the old wording, and no row reaches the new arm. Every time you extend an AC, name the row that executes the extension — or write it.
+
 **11. Ammend our commit rather than persist iterative commits.** We need to persist iterative steps to git and origin, but iterative commits make the git history noisy. Commit the first change, then amend commits as we iterate.
 
 ### Before handoff
 
-**12. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
+**12. Read the diff, not the result.** Reading the revised spec confirms it says what you meant; reading the change shows what you removed. An edit that drops a trailing line severs a sentence mid-paragraph, and the result reads fine everywhere you think to look. Amend-only histories destroy the per-round diff, so snapshot before each round and diff against the snapshot. Verification tooling does not replace this — a post-verify that checks the new text is present and the old text absent passes a truncation cleanly.
+
+**13. Self-review does not catch what you reasoned your way into.** It finds typos and contradictions you remember making. It does not find defects you argued yourself into believing — the argument still seems sound. Independent lenses that cannot see each other are the only thing that catches those. A clean self-review is necessary, not sufficient.
 
 ## Pre-handoff checklist
 
@@ -61,7 +71,10 @@ Eleven habits from a real review where three independent reviewers plus a later 
 - [ ] Invariants and sequencing re-read against the current structure, not the structure they were written against
 - [ ] All references — summary bullets, scope lists, task titles, prose — match the current diagnosis
 - [ ] No unconverted review-artifact phrasing ("pin whether," "TBD," "decide later") outside Open Questions
-- [ ] Acceptance criteria added last have tasks that deliver them
+- [ ] Acceptance criteria added last have tasks that deliver them, and clauses added to existing criteria have rows that reach them
+- [ ] Every predicate has a pinned case on both sides — one it refuses, one it permits
+- [ ] The diff read, not just the result
+- [ ] No fact stated in two places that could reference one; no bare counts in prose
 
 ## Closing note
 

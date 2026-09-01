@@ -160,7 +160,9 @@ pub(crate) fn cell_visibility_cache_key(
                     hasher.update(&coordinate.to_le_bytes());
                 }
             }
-            None => hasher.update(&[0]),
+            None => {
+                hasher.update(&[0]);
+            }
         }
         hasher.update(&metrics.minimum_width.to_le_bytes());
     }

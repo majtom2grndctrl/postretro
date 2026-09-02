@@ -88,7 +88,9 @@ promoted-depth-cache, weight ramp, budget constants) unchanged where possible.
    position is fixed, so a brightness/color-only light's static-world shadow depth is
    cacheable exactly like a static promoted light (only entity occluders re-render). A
    direction-animated light's frustum moves each frame, invalidating the cache, so it
-   re-renders world depth per frame (dynamic-tier cost). The compiler can tag
+   re-renders world depth per frame (dynamic-tier cost) — into its cache layer, never
+   the pool slot: under `promoted-shadow-entity-only-depth` a promoted pool slot holds
+   entity depth only and the cache is the sampled world-depth source. The compiler can tag
    `has_direction_curve` per animated light so the runtime picks the path without probing
    the curve.
 

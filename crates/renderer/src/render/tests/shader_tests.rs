@@ -904,6 +904,8 @@ fn sh_grid_info_consumer_shaders_match_cpu_layout() {
         include_str!("../../shaders/light_eval.wgsl"),
         "\n",
         include_str!("../../shaders/shadow_sample.wgsl"),
+        "\n",
+        include_str!("../../shaders/shadow_sample_static_cache.wgsl"),
     );
 
     for (label, source) in [

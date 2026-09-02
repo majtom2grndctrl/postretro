@@ -389,8 +389,8 @@ hard-coded linear expression is absent from `forward.wgsl`.
 the compute-once thesis, the attenuation union, entity-only slots, the
 sampled cache, the zero union offset, the §7.1 clear-and-draw steps, and the
 §9 group-2 row — each followed by a **Decided, not yet built** clause
-describing the shipped path. Delete those clauses (five in §4 and §7.1, one
-in the §9 row) so the paragraphs read as current. No other change.
+describing the shipped path. Delete those clauses (two in §4, two in §7.1,
+one in the §9 row) so the paragraphs read as current. No other change.
 
 ## Sequencing
 

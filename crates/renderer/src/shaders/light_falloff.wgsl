@@ -1,4 +1,5 @@
 // Shared authored-light distance falloff (binding-agnostic).
+// See: context/lib/rendering_pipeline.md §4
 //
 // Linear keeps its established smooth fade to zero. Inverse-distance models
 // match the compiler bake: pure reciprocal attenuation through the effective

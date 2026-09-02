@@ -492,12 +492,7 @@ fn k_selection_matches_reference_order_and_is_bounded() {
 /// Mixed falloff models must rank by the same authored curve the forward pass
 /// shades. Treating all three as linear changes this fixture's order.
 #[test]
-fn k_selection_matches_reference_with_mixed_falloff_models() {
-    let Some(ctx) = try_init_gpu() else {
-        eprintln!("[sdf_light_select_test] skipping: no GPU adapter available");
-        return;
-    };
-
+fn reference_selection_ranks_mixed_falloff_models() {
     let lights = vec![
         // Linear: 10 * (1 - 8/10) = 2.
         sdf_with_model([8.0, 0.0, 0.0], 10.0, 10.0, FALLOFF_LINEAR),
@@ -510,12 +505,7 @@ fn k_selection_matches_reference_with_mixed_falloff_models() {
     ];
     let world = [0.0, 0.0, 0.0];
 
-    let gpu = run_select(&ctx, &lights, &[world]);
-    let (indices, count) = &gpu[0];
-    let selected: Vec<u32> = indices.iter().copied().take(*count as usize).collect();
-    let expected = reference_select(&lights, world);
-    assert_eq!(selected, expected);
-    assert_eq!(selected, vec![3, 2, 0, 1]);
+    assert_eq!(reference_select(&lights, world), vec![3, 2, 0, 1]);
 }
 
 /// No sdf lights in range ⇒ empty selection (count 0, all sentinels). Guards

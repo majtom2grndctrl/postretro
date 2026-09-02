@@ -113,7 +113,7 @@ struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
     cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none); non-spot carries 1/-1 (full bright)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none), w = falloff model (0 Linear, 1 InverseDistance, 2 InverseSquared); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -691,7 +691,7 @@ fn shadowmask_direct(
     let L = to_light / max(dist, 0.0001);
     let n_dot_l_mesh = max(dot(mesh_n, L), 0.0);
     let n_dot_l_bump = max(dot(bump_n, L), 0.0);
-    let atten = max(1.0 - dist / max(range, 0.001), 0.0);
+    let atten = light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)));
     let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
     let direct_mesh = sl.color_and_pad.xyz * (atten * cone * n_dot_l_mesh);
     if dot(direct_mesh, direct_mesh) <= SHADOWMASK_EPS * SHADOWMASK_EPS {
@@ -1003,7 +1003,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if n_dot_l <= 0.0 {
                 continue;
             }
-            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
             static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * cone * visibility);
@@ -1078,7 +1078,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if NdotL <= 0.0 {
                 continue;
             }
-            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             // Exactly one technique applies: SDF lights retain the per-light
             // visibility slice shared with their diffuse term; other static

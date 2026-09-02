@@ -539,6 +539,22 @@ fn forward_shader_shadowmask_attenuation_uses_entity_only_pool() {
 }
 
 #[test]
+fn forward_shader_static_reconstruction_uses_packed_falloff_models() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let packed_falloff = "light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)))";
+
+    assert_eq!(
+        src.matches(packed_falloff).count(),
+        3,
+        "shadowmask direct plus both fs_main static-light loops must reconstruct falloff from SpecLight.cone_cos.w"
+    );
+    assert!(
+        !src.contains("max(1.0 - dist / max(range, 0.001), 0.0)"),
+        "forward static-light reconstruction must not retain a hard-coded linear falloff"
+    );
+}
+
+#[test]
 fn forward_shader_shadowmask_visualization_mode_is_wired() {
     let src = include_str!("../../shaders/forward.wgsl");
     assert!(

@@ -153,6 +153,9 @@ cargo run --release -p postretro                               # optimized build
 RUST_LOG=info cargo run -p xtask -- run                         # dev launch with logging
 ```
 
+To build a standalone, shareable release folder, see the
+[distribution guide](docs/distribution.md).
+
 ## Compiling Levels
 
 Levels are authored in TrenchBroom and compiled into Postretro's binary `.prl` format by `prl-build` (the binary in the `postretro-level-compiler` crate). A typical invocation:

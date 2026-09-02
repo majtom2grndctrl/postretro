@@ -29,7 +29,7 @@ depth cache directly. Derivations: `research.md`.
 - Cache plan runs before the metadata pack.
 - `strip_point_shadow_cube` handles every marker pair, not the first.
 - Falloff model shipped in `SpecLight.cone_cos.w`; `shadowmask_direct` and
-  the static SDF spec-light loop reconstruct with `light_eval_falloff`.
+  the two static spec-light loops reconstruct with `light_eval_falloff`.
 - Diagnostics: mode 5 renders the new subtraction; mode 6 renders entity-only
   pool visibility. Copy counters do not exist; the cache render-skip counter
   stays.
@@ -162,7 +162,7 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 - [ ] Skinned-mesh light-params upload is 32 bytes with `dynamic_light_count`
       at offset 16; byte-layout test updated; the WGSL mirror matches.
 - [ ] `SpecLight.cone_cos.w` carries the falloff code (0 Linear,
-      1 InverseDistance, 2 InverseSquared) — packer test; both forward
+      1 InverseDistance, 2 InverseSquared) — packer test; all three forward
       reconstruction sites call `light_eval_falloff` with it — shader-source
       pin. Every shipped dev map renders unchanged (all lights author
       `"delay" "0"`).
@@ -229,17 +229,20 @@ two-pair source. In `crates/renderer/src/render/shadowmask.rs`,
 `pack_forward_shadowmask_metadata` gains `cache_layers: &[i32]`
 (records-parallel; spot layer, or cube layer base divided by `CUBE_FACES`;
 −1 when absent) and writes it as `meta1.w` in place of the `0.0`; update the
-four existing tests that call it. In `renderer_light_slots.rs` `update_dynamic_light_slots`,
-immediately after `update_promoted_static_weights_and_records` and before the
-light upload and metadata pack: call `PromotedDepthCache::plan_frame` on
-`full.promoted_depth_cache` (assert it is `Some` whenever records exist),
+four existing tests that call it. In `renderer_light_slots.rs` `update_promoted_static_weights_and_records`,
+after the record loop and before the weight-scratch upload and the
+`total_light_count` recompute that close the function: call
+`PromotedDepthCache::plan_frame` on `full.promoted_depth_cache` (assert it is
+`Some` whenever records exist),
 store the plan and its counters where `renderer_render_frame.rs` stores them
 today (that block reduces to the `render_world == false` reset; the
 `render_world && cache.is_none()` reset arm moves with the plan call; the
 early return when `shadow_candidate_lights` is empty leaves the plan at its
 install defaults), build
 `cache_layers` via `spot_for_slot` / `cube_for_slot`, and for a record with no
-plan entry — unreachable because `MAX_PROMOTED_SPOT` / `MAX_PROMOTED_CUBE` are
+plan entry — handled here so the zeroed weight reaches the upload, the
+recompute counts only the remaining records, and the influence and metadata
+pack in `update_dynamic_light_slots` sees the final list; unreachable because `MAX_PROMOTED_SPOT` / `MAX_PROMOTED_CUBE` are
 both the ranker's `promoted_cap` and the cache layer counts; `log::warn!`
 once, never assert, so AC 12 can drive the branch with a fabricated plan —
 remove it from `promoted_static_records` and
@@ -321,16 +324,18 @@ call it from both packers. In `crates/lighting/src/spec_buffer.rs` `pack_spec_li
 write `falloff_model_code(light.falloff_model) as f32` at byte 60 in place of
 `0.0`; update the packer's layout doc and add a test for byte 60. In
 `forward.wgsl`, update the `SpecLight.cone_cos` comment, and in
-`shadowmask_direct` and the static SDF spec-light loop replace the linear
-attenuation — `max(1.0 - dist / max(range, 0.001), 0.0)` in
-`shadowmask_direct`, `select(1.0, max(1.0 - dist / max(range, 0.001), 0.0),
-range > 0.0)` in the loop — with
+`shadowmask_direct`, the static SDF spec-light loop, and the static-specular
+chunk loop in the other `fs_main` replace the linear attenuation —
+`max(1.0 - dist / max(range, 0.001), 0.0)` in `shadowmask_direct`,
+`select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0)` in each
+loop — with
 `light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)))`, keeping each
 site's existing `range <= 0.0` handling. Model 0 in `light_eval_falloff`
 (`light_eval.wgsl`) is the same linear expression, so shipped content — every
 light in `content/dev/maps` authors `"delay" "0"`, and the translator defaults
 absent `delay` to Linear — renders unchanged. Add a shader-source pin that
-both sites call `light_eval_falloff(` with `cone_cos.w`.
+all three sites call `light_eval_falloff(` with `cone_cos.w` and that the
+hard-coded linear expression is absent from `forward.wgsl`.
 
 ### Task 4: Pipeline documentation
 
@@ -406,7 +411,7 @@ receiver.
 | Slot reassigned to another light | `assign_layer` claims a fresh layer, `warm = false` | Cache refilled before sampling; `meta1.w` carries the new layer |
 | Promoted slot, entity gate fails | No mesh plan and no movers | `Clear(1.0)` still runs; entity term unshadowed by the pool, world subtraction exactly zero, cache still applies to entity receivers |
 | Demote sticky window | Record with `w > 0`, occluder gone | Pool slot cleared each frame; subtraction zero; entity receivers keep world occlusion from the cache while `w` fades |
-| Record with no cache layer | Unreachable by cap; defensive branch | Record dropped for the frame, weight 0.0, compose keeps baked SH — never brighter than baked |
+| Record with no cache layer | Unreachable by cap; defensive branch inside `update_promoted_static_weights_and_records` before the weight upload | Record dropped for the frame, weight 0.0 uploaded, `total_light_count` excludes it, metadata tail packed without it; compose keeps baked SH — never brighter than baked. Its slot stays occupied and renders on the dynamic path that frame, unsampled |
 | No entity-shadow selection | `promoted_depth_cache == None` | Pool views bound at b9/b10; no records; no sample |
 | Level install | Cache re-created, then mesh and kinematic bind groups rebuilt | Bind groups reference the new cache views |
 | `render_world == false` | No slot update, no pack | Plan reset; nothing sampled |
@@ -427,7 +432,7 @@ receiver.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| A promoted pool slot never holds static world depth | Task 2 | Any future world draw or copy into a promoted slot | AC 2, 8, 9 |
+| A promoted pool slot with a live record never holds static world depth | Task 2 | Any future world draw or copy into a promoted slot; the unreachable defensive drop leaves its slot occupied on the dynamic path for that frame, unsampled | AC 2, 8, 9 |
 | Entity receivers see world+entity occlusion per tap identical to a merged map | Task 1 | Any change to sampler filter mode (Nearest) or to cache/pool resolution parity | AC 4, 5 |
 | World subtraction is exactly zero where no dynamic occluder shadows the fragment | Task 2 | Any nonzero receiver offset that moves a world fragment into an entity silhouette; any content in the slot other than entity depth | AC 1, 3 |
 | Every packed promoted record carries a valid cache layer | Task 1 (plan before pack) | Any writer of `promoted_static_records` after `plan_frame`; any change to `promoted_cap` vs cache layer counts; the Task 1 dev toggle while it exists | AC 12 |

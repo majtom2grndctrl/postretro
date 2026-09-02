@@ -121,30 +121,40 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 
 - [ ] On `combat-demo.prl` with an enemy under a promoted light, mode 5 is
       black on every world surface outside the enemy's silhouette — raked
-      floors, walls under a downward light, baked penumbrae, chart seams — at
-      every camera angle; inside the silhouette, at full promotion weight, it
-      reads the light's direct term scaled by baked visibility.
+      floors, walls under a downward light, baked penumbrae, chart seams — from
+      four vantage points (light-side, opposite, grazing along the floor, and
+      overhead); inside the silhouette, at full promotion weight, it reads the
+      light's direct term scaled by baked visibility. Dev maps compile with
+      `prl-build`; modes 5 and 6 need `--features dev-tools`.
 - [ ] Mode 6 reads white on all world surfaces outside entity silhouettes
-      under promoted lights on `combat-demo.prl` and `closet-reveal.prl`. The
-      mode-6 dev label reads entity-only pool visibility.
-- [ ] On `closet-reveal.prl`, the wall beside the closed door shows no texel
-      striping at close range under the static spotlight; the door's own
-      appearance is unchanged from before this plan.
+      under promoted lights on `combat-demo.prl` and `kinematic-platform.prl`
+      (`closet-reveal` has no promotable light: its bright spot is a script
+      target and the selector requires no animation). The mode-6 dev label
+      reads entity-only pool visibility.
+- [ ] On `combat-demo.prl`, the raked floor and the wall under each promoted
+      spot show no texel striping at close range with the enemy in the
+      light's influence; a mover on `kinematic-platform.prl` under a promoted
+      spot looks as before this plan.
 - [ ] An enemy standing in a static shadow (wall or pillar occluding a
       promoted light) at full promotion weight is as dark as before this plan,
       and an enemy crossing a static shadow edge shows the same crisp edge;
       manual A/B against a pre-change build on `combat-demo.prl`.
 - [ ] After Task 1 alone, with the pool still holding merged depth, rendered
-      output on `combat-demo.prl` and `stress-warren-lit.prl` is
-      indistinguishable from before (dev A/B by toggling the cache compare).
+      output on `combat-demo.prl` and `campaign-test.prl` (movers and skinned
+      meshes under promoted lights) is indistinguishable from before (dev A/B
+      by toggling the cache compare).
       Task 2 deletes the toggle.
 - [ ] An enemy's shadow on floor and wall stays attached at the contact
-      (no detachment, no gap) under a promoted spot and a promoted point light.
-- [ ] A mover docked against a wall casts and receives under a promoted light
-      as before; its contact seam shows no leak.
+      (no detachment, no gap) under a promoted spot (`combat-demo.prl`) and a
+      promoted point light (`campaign-test.prl`, which needs
+      `CUBE_ARRAY_TEXTURES`).
+- [ ] A mover at rest against world geometry on `kinematic-platform.prl`
+      casts and receives under a promoted light as before; its contact seam
+      shows no leak.
 - [ ] No `copy_texture_to_texture` is issued for any promoted slot: the copy
       functions do not exist and a source-pin test asserts the cache module
-      declares no `COPY_SRC` usage.
+      source contains no `COPY_SRC` token (comments included, so Task 2
+      rewords them). Both halves are review gates.
 - [ ] A warm promoted slot issues no world draw into the pool and no cull
       dispatch; the existing cache tests
       (`warm_promoted_spot_skips_world_render_and_cull_dispatch`,
@@ -166,9 +176,9 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 - [ ] `SpecLight.cone_cos.w` carries the falloff code (0 Linear,
       1 InverseDistance, 2 InverseSquared) — packer test; all three forward
       reconstruction sites call `light_eval_falloff` with it — shader-source
-      pin. Every shipped dev map renders unchanged (every light authors
-      `delay 0` or omits it, and the translator defaults absent `delay` to
-      Linear).
+      pin. Every shipped dev map renders unchanged — a review gate argued
+      from `grep`: every light authors `delay 0` or omits it, and the
+      translator defaults absent `delay` to Linear.
 - [ ] Shader pins: the dead-zone/kernel test is replaced by one pinning the
       attenuation expression, the zero union bias constant, and the absence of
       `shadowmask_sample_spot_shadow_wide`;
@@ -196,7 +206,8 @@ a `D2Array` sampled view over all `MAX_PROMOTED_SPOT` spot layers and, iff
 `cube_sampled_view() -> Option<&TextureView>`. Both construction sites pass cube-array support — `renderer_full_init.rs`
 (the `!entity_shadow_indices.is_empty()` arm, passing the local
 `cube_array_supported`; move the cache construction above both
-`rebuild_light_bind_group` calls, which today precede it) and
+`rebuild_light_bind_group` calls, which today precede it, keeping the
+`FullRenderer` field initializer pointed at the local) and
 `renderer_resources.rs` (the empty→non-empty re-creation, passing
 `full.cube_shadow_pool.is_some()`; it precedes the bind-group rebuilds in the
 same function — keep that order; the non-empty→non-empty path is
@@ -222,10 +233,15 @@ after `shadow_sample.wgsl` in `SKINNED_MESH_SHADER_SOURCE` (`mesh_pass.rs`
 receiver_normal, bias_scale, light_proj)` and
 `sample_point_shadow_with_static(slot, cache_index: i32, light_pos, world_pos,
 receiver_normal, bias_scale, far_range)`: same projection, offset, and 3×3
-loop as the shared helpers, each tap
+loop as the shared helpers — copied, not factored out of `shadow_sample.wgsl`,
+whose `receiver_offset` count
+`receiver_bias_factor_scales_the_entire_shared_normal_offset` pins — each tap
 `min(textureSampleCompare(spot_shadow_depth, …), textureSampleCompare(promoted_spot_depth_cache, …, cache_layer, …))`
 when `cache_layer >= 0`, pool-only otherwise; the cube body sits between its
-own `// CUBE_SHADOW_BODY_BEGIN` / `_END` markers. Change
+own `// CUBE_SHADOW_BODY_BEGIN` / `_END` markers, and no comment in the file
+spells either marker token outside that one pair
+(`forward_wgsl_no_cube_variant_strips_binding_and_validates` asserts neither
+survives the strip). Change
 `strip_point_shadow_cube` (`pipeline_layout.rs`) to replace every
 BEGIN…END pair, keeping its mismatch panic, and extend its test with a
 two-pair source. In `crates/renderer/src/render/shadowmask.rs`,
@@ -256,7 +272,8 @@ once, never assert, so AC 12 can drive the branch with a fabricated plan
 it to one warning per level; the light's weight state is untouched, so the
 ranker re-seeds it and the branch repeats each frame). Removal, zeroing, and
 −1 packing live in a GPU-free helper taking the records, the weights, the
-plan, and the compare flag and returning `cache_layers: Vec<i32>`, following
+plan, and the compare flag and returning `cache_layers: Vec<i32>` with the
+plan's `promoted_count` set from the surviving records, following
 the `plan_frame_with_layers` seam in `promoted_depth_cache.rs`; the method
 calls it and uploads —
 remove it from `promoted_static_records` and
@@ -268,9 +285,12 @@ extend `MeshPass::write_light_params` and both callers in
 `renderer_render_frame.rs` to pass `full.light_count`; update the byte-layout
 test. In `accumulate_dynamic_direct` of both shaders, for
 `i >= dynamic_light_count` (kinematic already has the field): `p = i −
-dynamic_light_count`, `meta_index = light_count + p *
-SHADOWMASK_META_VEC4S_PER_RECORD` where `light_count` is the total the params
-carry, guard `meta_index + 1u < arrayLength(&light_influence)` (on failure
+dynamic_light_count`, `meta_index = mesh_light_params.light_count + p *
+SHADOWMASK_META_VEC4S_PER_RECORD` (kinematic: `kinematic_light_params.light_count`)
+— that field is `full.total_light_count`, the same base
+`shadowmask_union_subtraction` decodes from `uniforms.total_light_count`; the
+loop bound `select(0u, mesh_light_params.light_count, use_dynamic)` stays
+verbatim for `count_split_shader_consumers_use_expected_loop_bounds` — guard `meta_index + 1u < arrayLength(&light_influence)` (on failure
 `cache = -1`), read `cache = i32(light_influence[meta_index + 1u].w)` —
 `meta1.w` carries the spot layer or the cube index and the helpers take it
 unchanged; both entity shaders declare `SHADOWMASK_META_VEC4S_PER_RECORD` and
@@ -313,7 +333,8 @@ the entity draws inside it gated exactly as today
 then per-occluder cone cull) — the clear is never gated, mirroring
 `cube_face_needs_clear`. Promoted cube branch: same per face; delete the
 `copy_cube_face_to_pool` call. Delete both copy functions from
-`promoted_depth_cache.rs`. In `crates/renderer/src/shaders/forward.wgsl`:
+`promoted_depth_cache.rs`, the two texture fields they were the only readers
+of (the views own the textures), and every comment mention of `COPY_SRC`. In `crates/renderer/src/shaders/forward.wgsl`:
 delete `shadowmask_sample_spot_shadow_wide`, `SHADOWMASK_SPOT_KERNEL_RADIUS`,
 `SHADOWMASK_SPOT_KERNEL_TEXELS`, `SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE`,
 `SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE`, `shadowmask_dead_zone`, and
@@ -321,7 +342,8 @@ delete `shadowmask_sample_spot_shadow_wide`, `SHADOWMASK_SPOT_KERNEL_RADIUS`,
 `const SHADOWMASK_UNION_RECEIVER_BIAS_SCALE: f32 = 0.0;` with a comment that
 world receivers never appear in a promoted map; `shadowmask_shadow_visibility`
 calls the shared `sample_spot_shadow` and `sample_point_shadow` with that
-constant; in `shadowmask_union_subtraction` the skip keeps its mode-6 exemption and
+constant, keeping its two slot-range guards verbatim (pinned by
+`forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail`); in `shadowmask_union_subtraction` the skip keeps its mode-6 exemption and
 becomes `uniforms.sdf_shadow_mode != SHADOWMASK_RAW_POOL_VISIBILITY_MODE &&
 baked_vis <= 0.0`, and the accumulation becomes
 `direct.value * (baked_vis * (1.0 - shadow_map_vis)) * weight` through a
@@ -346,7 +368,7 @@ write `falloff_model_code(light.falloff_model) as f32` at byte 60 in place of
 `0.0`; update the packer's layout doc and add a test for byte 60. In
 `forward.wgsl`, update the `SpecLight.cone_cos` comment, and in
 `shadowmask_direct`, the static SDF spec-light loop, and the static-specular
-chunk loop in the other `fs_main` replace the linear attenuation —
+chunk loop (both loops in `fs_main`) replace the linear attenuation —
 `max(1.0 - dist / max(range, 0.001), 0.0)` in `shadowmask_direct`,
 `select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0)` in each
 loop — with

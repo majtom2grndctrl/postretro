@@ -50,6 +50,8 @@ Dispatch prompt contains exactly:
 
 **Read order is load-bearing.** Instruct the reviewer to answer Q1, Q4 and Q6 from the spec's Goal, Scope and Tasks **before** reading its `Direction` section. Then read `Direction` and report the diff. Agreement is corroboration. An alternative the reviewer reached independently that is *absent* from "Alternatives rejected" is itself a finding — that section is the one a drafter can satisfy by rebutting a rival it never held, and it is the one with no external referent to check against.
 
+On a brief (the line under the title says so): answer from Problem and Acceptance before reading Decisions and Path. Decisions is the direction; Path's "strongest rival" is the alternatives section.
+
 The reviewer answers six questions and must reach a verdict on each; "some concerns" is not an answer.
 
 1. **What problem is this actually solving, and what observation produced it?** One sentence for the problem — cause or symptom of something upstream? Then the evidence: a review finding, a bug, a modder request, or an anticipation. Anticipated problems are legitimate, but naming one as anticipated is how the strongest form of *Not a spec* — no one has hit this yet — becomes reachable.

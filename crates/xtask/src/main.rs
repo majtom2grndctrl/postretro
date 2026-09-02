@@ -17,6 +17,7 @@ use postretro_model::mount::{
 };
 
 mod crate_graph;
+mod dist;
 
 fn main() {
     let code = match try_main() {

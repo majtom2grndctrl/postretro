@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-/// Emit the preliminary launcher used by the vertical slice.
+/// Emit the host-native launcher for a completed distribution payload.
 pub(crate) fn emit_launcher(
     payload_root: &Path,
     package_name: &str,
@@ -14,8 +14,12 @@ pub(crate) fn emit_launcher(
     #[cfg(windows)]
     {
         let path = payload_root.join(format!("{package_name}.bat"));
-        let contents =
-            format!("@echo off\r\ncd /d \"%~dp0\"\r\npostretro.exe --mod \"{mod_root}\"\r\n");
+        // `%` expands environment variables in a batch file even inside quotes.
+        // Doubling it keeps the manifest value intact when cmd executes the launcher.
+        let batch_mod_root = mod_root.replace('%', "%%");
+        let contents = format!(
+            "@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d \"%~dp0\"\r\npostretro.exe --mod \"{batch_mod_root}\"\r\n"
+        );
         fs::write(&path, contents)
             .map_err(|error| format!("stage 5: write launcher {}: {error}", path.display()))?;
     }

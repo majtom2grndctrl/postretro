@@ -1,5 +1,13 @@
 # Promoted-Shadow Entity Scoping
 
+> **Superseded — historical reference only.** Do not implement this plan.
+> Its copy-elision premise is void: promotion requires an intersecting
+> occluder, so the copy gate is true on every promoted frame. The striping it
+> chased is removed by `promoted-shadow-entity-only-depth`, which keeps no
+> static world depth in a promoted slot. `research.md` here still holds the
+> striping and bandwidth measurements that plan cites.
+
+
 ## Goal
 
 Promoted static lights make world receivers pay for static occlusion the lightmap

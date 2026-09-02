@@ -740,9 +740,6 @@ pub(super) struct FullRenderer {
     /// no light can ever promote, so the ~44 MiB spot/cube depth cache arrays
     /// are never allocated. `Some` only when the selection is non-empty.
     pub(super) promoted_depth_cache: Option<PromotedDepthCache>,
-    /// Task-1 A/B gate. `false` packs -1 cache layers while the live pool still
-    /// contains merged depth, so entity receiver output remains identical.
-    pub(super) promoted_cache_compare_static_depth: bool,
     /// Missing cache-plan entries are defensive degradation, warned once per
     /// installed level rather than once per rendered frame.
     pub(super) promoted_depth_cache_missing_layer_warned: bool,

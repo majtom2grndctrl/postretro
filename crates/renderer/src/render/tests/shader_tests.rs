@@ -507,51 +507,35 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
     );
 }
 
-// Regression: one bad point-shadow tap survived the spot-calibrated dead zone.
 #[test]
-fn forward_shader_shadowmask_dead_zone_matches_each_pool_kernel() {
+fn forward_shader_shadowmask_attenuation_uses_entity_only_pool() {
     let src = include_str!("../../shaders/forward.wgsl");
-    let shadow_src = include_str!("../../shaders/shadow_sample.wgsl");
-    let point_shadow = &shadow_src[shadow_src
-        .find("fn sample_point_shadow(")
-        .expect("shared shadow sampler must declare sample_point_shadow")..];
 
     assert!(
-        src.contains("const SHADOWMASK_SPOT_KERNEL_RADIUS: i32 = 2;")
+        src.contains("const SHADOWMASK_UNION_RECEIVER_BIAS_SCALE: f32 = 0.0;")
+            && src.contains("sample_spot_shadow(")
+            && src.contains("sample_point_shadow(")
+            && src.matches("SHADOWMASK_UNION_RECEIVER_BIAS_SCALE").count() == 3,
+        "the union must use the shared 3x3 samplers with no world-receiver offset"
+    );
+    assert!(
+        src.contains("fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {")
+            && src.contains("return baked_vis * (1.0 - entity_vis);")
             && src.contains(
-                "for (var dy: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dy <= SHADOWMASK_SPOT_KERNEL_RADIUS;"
-            )
-            && src.contains(
-                "for (var dx: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dx <= SHADOWMASK_SPOT_KERNEL_RADIUS;"
-            )
-            && src.contains(
-                "const SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 25.0;"
+                "direct.value * shadowmask_attenuation(baked_vis, shadow_map_vis) * weight"
             ),
-        "the promoted spot union must ignore one tap of its 5x5 comparison kernel"
+        "the union must attenuate baked direct by entity-only pool occlusion"
     );
     assert!(
-        point_shadow.contains("for (var dy = -1; dy <= 1;")
-            && point_shadow.contains("for (var dx = -1; dx <= 1;")
-            && point_shadow.contains("return lit / 9.0;")
-            && src.contains("const SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 9.0;"),
-        "the promoted point union must ignore one tap of its 3x3 comparison kernel"
+        !src.contains("shadowmask_sample_spot_shadow_wide")
+            && !src.contains("SHADOWMASK_SPOT_KERNEL_RADIUS")
+            && !src.contains("SHADOWMASK_SPOT_KERNEL_TEXELS")
+            && !src.contains("SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE")
+            && !src.contains("SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE")
+            && !src.contains("shadowmask_dead_zone")
+            && !src.contains("shadowmask_visibility_difference"),
+        "the retired wide-kernel and visibility-difference path must not remain"
     );
-    assert!(
-        src.contains("fn shadowmask_visibility_difference(\n    pool_kind: u32,")
-            && src.contains("pool_kind == SHADOWMASK_POOL_CUBE,")
-            && src.contains("max(difference - dead_zone, 0.0) / (1.0 - dead_zone)")
-            && src
-                .contains("shadowmask_visibility_difference(pool_kind, baked_vis, shadow_map_vis)"),
-        "the continuous union difference must select and apply the validated pool-kind calibration"
-    );
-
-    let renormalized_difference =
-        |difference: f32, dead_zone: f32| ((difference - dead_zone).max(0.0)) / (1.0 - dead_zone);
-    for dead_zone in [1.0 / 25.0, 1.0 / 9.0] {
-        assert_eq!(renormalized_difference(dead_zone, dead_zone), 0.0);
-        assert!(renormalized_difference(dead_zone + 1.0e-3, dead_zone) > 0.0);
-        assert!((renormalized_difference(1.0, dead_zone) - 1.0).abs() < f32::EPSILON);
-    }
 }
 
 #[test]

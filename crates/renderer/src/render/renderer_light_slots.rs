@@ -850,7 +850,6 @@ impl Renderer {
                 &mut full.promoted_static_records,
                 &mut full.promoted_static_weights,
                 &mut plan,
-                full.promoted_cache_compare_static_depth,
             );
             if full.promoted_static_records.len() != record_count_before_cache_layers
                 && !full.promoted_depth_cache_missing_layer_warned
@@ -905,14 +904,10 @@ impl Renderer {
 /// recoverable defensive degradation: remove the record and zero its selection
 /// weight so every downstream count and tail starts from the same surviving set.
 ///
-/// `compare_static_depth = false` is Task 1's temporary A/B path. It validates
-/// planning but writes the cache sentinel, leaving the still-merged live pool as
-/// the only sampled source until Task 2 makes the cache required at runtime.
 fn apply_promoted_cache_layers(
     records: &mut Vec<PromotedStaticLightRecord>,
     weights: &mut [f32],
     plan: &mut PromotedDepthCacheFramePlan,
-    compare_static_depth: bool,
 ) -> Vec<i32> {
     let mut cache_layers = Vec::with_capacity(records.len());
     records.retain(|record| {
@@ -930,7 +925,7 @@ fn apply_promoted_cache_layers(
             }
             return false;
         };
-        cache_layers.push(if compare_static_depth { layer } else { -1 });
+        cache_layers.push(layer);
         true
     });
     plan.counters.promoted_count = records.len() as u32;
@@ -1308,7 +1303,7 @@ mod tests {
         let mut weights = [0.75];
         let mut plan = PromotedDepthCacheFramePlan::default();
 
-        let cache_layers = apply_promoted_cache_layers(&mut records, &mut weights, &mut plan, true);
+        let cache_layers = apply_promoted_cache_layers(&mut records, &mut weights, &mut plan);
 
         assert!(
             records.is_empty(),

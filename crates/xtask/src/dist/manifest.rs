@@ -1,7 +1,9 @@
-//! The committed distribution manifest schema.
+//! xtask-owned distribution manifest schema and boundary validation.
 //!
 //! Paths intentionally remain slash-separated strings. The resolver compares a
 //! recipe output directly with literals scanned from the emitted entry script.
+//!
+//! See: context/lib/build_pipeline.md §Distribution packaging
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -153,7 +155,7 @@ fn is_normal_component(component: &str) -> bool {
     !component.is_empty()
         && component != "."
         && component != ".."
-        && !component.contains(['/', '\\'])
+        && !component.contains(['/', '\\', ':'])
 }
 
 fn validate_args(args: &[String], label: &str) -> Result<Option<f32>, String> {
@@ -178,10 +180,15 @@ fn validate_args(args: &[String], label: &str) -> Result<Option<f32>, String> {
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("{label}: `--lightmap-density` requires an f32 value token"))?;
-        density =
-            Some(value.parse::<f32>().map_err(|_| {
-                format!("{label}: `--lightmap-density` value `{value}` is not an f32")
-            })?);
+        let parsed = value
+            .parse::<f32>()
+            .map_err(|_| format!("{label}: `--lightmap-density` value `{value}` is not an f32"))?;
+        if !parsed.is_finite() || parsed <= 0.0 {
+            return Err(format!(
+                "{label}: `--lightmap-density` value `{value}` must be finite and greater than zero"
+            ));
+        }
+        density = Some(parsed);
     }
     Ok(density)
 }
@@ -236,7 +243,7 @@ args = ["--lightmap-density", "0.02"]
 
     #[test]
     fn rejects_every_invalid_package_name_and_mod_root_shape() {
-        for name in [".", "..", "nested/name", "nested\\\\name", ""] {
+        for name in [".", "..", "C:", "nested/name", "nested\\\\name", ""] {
             let input = format!("[package]\nname = \"{name}\"\nmod_root = \"content/dev\"\n");
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("package"), "{error}");
@@ -253,6 +260,38 @@ args = ["--lightmap-density", "0.02"]
             let input = format!("[package]\nname = \"dev\"\nmod_root = \"{mod_root}\"\n");
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("mod_root"), "{error}");
+        }
+    }
+
+    // Regression: Windows path prefixes could replace the workspace root at join time.
+    #[test]
+    fn rejects_windows_prefix_and_colon_bearing_manifest_paths() {
+        for mod_root in ["C:/dev", "content/dev:stream"] {
+            let input = format!("[package]\nname = \"dev\"\nmod_root = \"{mod_root}\"\n");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("mod_root"), "{error}");
+        }
+
+        for (field, value) in [
+            ("output", "maps/C:/a.prl"),
+            ("output", "maps/a.prl:stream"),
+            ("source", "C:/content/dev/maps/a.map"),
+            ("source", "content/dev/maps/a.map:stream"),
+        ] {
+            let source = if field == "source" {
+                format!("source = \"{value}\"\n")
+            } else {
+                String::new()
+            };
+            let output = if field == "output" {
+                value
+            } else {
+                "maps/a.prl"
+            };
+            let input = format!("{DEV_MANIFEST}\n[[recipes]]\noutput = \"{output}\"\n{source}");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("recipe `"), "{error}");
+            assert!(error.contains(field), "{error}");
         }
     }
 
@@ -292,6 +331,35 @@ args = ["--lightmap-density", "0.02"]
                 format!("{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = {args}\n");
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("recipe `maps/a.prl`"), "{error}");
+        }
+    }
+
+    // Regression: non-positive and non-finite densities reached prl-build before failing.
+    #[test]
+    fn rejects_density_outside_finite_strictly_positive_range() {
+        for value in ["0", "-0", "-0.01", "NaN", "inf", "-inf"] {
+            let input = format!(
+                "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = [\"--lightmap-density\", \"{value}\"]\n"
+            );
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("recipe `maps/a.prl`"), "{error}");
+            assert!(error.contains("finite and greater than zero"), "{error}");
+        }
+    }
+
+    #[test]
+    fn accepts_finite_strictly_positive_density_boundaries() {
+        for value in ["1e-45", "3.4028235e38"] {
+            let input = format!(
+                "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = [\"--lightmap-density\", \"{value}\"]\n"
+            );
+            let density = Manifest::parse(&input)
+                .expect("finite positive boundary parses")
+                .recipes[0]
+                .lightmap_density
+                .expect("density retained");
+            assert!(density.is_finite());
+            assert!(density > 0.0);
         }
     }
 

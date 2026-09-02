@@ -18,13 +18,14 @@ mod payload;
 mod resolve;
 
 use manifest::Manifest;
-use payload::{copy_filtered_tree, copy_prm_tree, sweep_payload};
+use payload::{
+    MARKER_NAME, copy_filtered_tree, copy_prm_tree, count_payload, remove_if_exists,
+    replace_payload_root, sweep_payload, write_marker,
+};
 use resolve::{
     EntryExt, Resolved, bake_order, entry_script_choice, guard_payload_root, is_at_or_under,
     outstanding_outputs, resolve_map_set, scan_map_literals,
 };
-
-const MARKER_NAME: &str = ".dist-incomplete";
 
 struct DistArgs {
     manifest_path: PathBuf,
@@ -386,70 +387,12 @@ fn stage_five_assemble_payload(
 ) -> Result<(), String> {
     println!("Stage 5: assemble payload tree");
     guard_payload_root(payload_root, workspace).map_err(|error| format!("stage 5: {error}"))?;
-    fs::create_dir_all(output_root).map_err(|error| {
-        format!(
-            "stage 5: create output root {}: {error}",
-            output_root.display()
-        )
-    })?;
-    clear_stale_stage_five_siblings(output_root, &manifest.package.name)?;
-
     let ordered = bake_order(&state.resolved);
     let all_outstanding = outstanding_outputs(&ordered, 0);
-    if payload_root.exists() {
-        let aside = output_root.join(format!(
-            ".{}.deleting-{}",
-            manifest.package.name,
-            std::process::id()
-        ));
-        fs::rename(payload_root, &aside).map_err(|error| {
-            format!(
-                "stage 5: rename payload root {} aside to {}: {error}",
-                payload_root.display(),
-                aside.display()
-            )
-        })?;
-        if let Err(remove_error) = fs::remove_dir_all(&aside) {
-            let marker_result = write_marker(
-                &aside,
-                output_root,
-                &manifest.package.name,
-                "stage 5",
-                &all_outstanding,
-            );
-            let restore_result = fs::rename(&aside, payload_root);
-            return match (marker_result, restore_result) {
-                (Ok(()), Ok(())) => Err(format!(
-                    "stage 5: remove old payload aside {} failed: {remove_error}; restored partial payload at {}",
-                    aside.display(),
-                    payload_root.display()
-                )),
-                (marker_error, restore_error) => Err(format!(
-                    "stage 5: remove old payload {} aside {} failed: {remove_error}; marker result: {}; restore result: {}",
-                    payload_root.display(),
-                    aside.display(),
-                    marker_error
-                        .err()
-                        .map_or_else(|| "ok".to_string(), |error| error.to_string()),
-                    restore_error
-                        .err()
-                        .map_or_else(|| "ok".to_string(), |error| error.to_string())
-                )),
-            };
-        }
-    }
-
-    fs::create_dir_all(payload_root).map_err(|error| {
-        format!(
-            "stage 5: create payload root {}: {error}",
-            payload_root.display()
-        )
-    })?;
-    write_marker(
-        payload_root,
+    replace_payload_root(
         output_root,
+        payload_root,
         &manifest.package.name,
-        "stage 5",
         &all_outstanding,
     )?;
 
@@ -492,69 +435,6 @@ fn stage_five_assemble_payload(
         )
     })?;
     Ok(())
-}
-
-fn clear_stale_stage_five_siblings(output_root: &Path, package_name: &str) -> Result<(), String> {
-    let deleting_prefix = format!(".{package_name}.deleting-");
-    let marker_prefix = format!(".{package_name}.marker-");
-    for entry in fs::read_dir(output_root).map_err(|error| {
-        format!(
-            "stage 5: scan output root {}: {error}",
-            output_root.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| format!("stage 5: read output root entry: {error}"))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(&deleting_prefix)
-            || (name.starts_with(&marker_prefix) && name.ends_with(".tmp"))
-        {
-            remove_path(&entry.path()).map_err(|error| {
-                format!(
-                    "stage 5: remove stale sibling {}: {error}",
-                    entry.path().display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn write_marker(
-    destination_root: &Path,
-    output_root: &Path,
-    package_name: &str,
-    stage: &str,
-    outstanding: &[String],
-) -> Result<(), String> {
-    let mut contents = String::from(stage);
-    contents.push('\n');
-    for output in outstanding {
-        contents.push_str(output);
-        contents.push('\n');
-    }
-
-    let temporary = output_root.join(format!(".{package_name}.marker-{}.tmp", std::process::id()));
-    fs::write(&temporary, contents).map_err(|error| {
-        format!(
-            "{stage}: write marker temporary {}: {error}",
-            temporary.display()
-        )
-    })?;
-    fs::rename(&temporary, destination_root.join(MARKER_NAME)).map_err(|error| {
-        format!(
-            "{stage}: install marker into {}: {error}",
-            destination_root.join(MARKER_NAME).display()
-        )
-    })
-}
-
-fn remove_if_exists(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("stage 5: remove {}: {error}", path.display())),
-    }
 }
 
 fn stage_six_bake_levels(
@@ -636,38 +516,4 @@ fn stage_seven_copy_materials(workspace: &Path, payload_root: &Path) -> Result<(
     let copied = copy_prm_tree(&source, &destination)?;
     println!("  copied {copied} material mip files");
     Ok(())
-}
-
-fn count_payload(root: &Path) -> Result<(u64, u64), String> {
-    let mut files = 0;
-    let mut bytes = 0;
-    count_payload_tree(root, &mut files, &mut bytes)?;
-    Ok((files, bytes))
-}
-
-fn count_payload_tree(directory: &Path, files: &mut u64, bytes: &mut u64) -> Result<(), String> {
-    for entry in fs::read_dir(directory)
-        .map_err(|error| format!("count payload directory {}: {error}", directory.display()))?
-    {
-        let entry = entry.map_err(|error| format!("read payload directory entry: {error}"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            count_payload_tree(&path, files, bytes)?;
-        } else {
-            let metadata = fs::metadata(&path)
-                .map_err(|error| format!("read payload file {}: {error}", path.display()))?;
-            *files += 1;
-            *bytes += metadata.len();
-        }
-    }
-    Ok(())
-}
-
-fn remove_path(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
 }

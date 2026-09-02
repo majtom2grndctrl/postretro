@@ -113,10 +113,8 @@ impl PromotedDepthCacheFramePlan {
 }
 
 pub(super) struct PromotedDepthCache {
-    spot_texture: wgpu::Texture,
     spot_views: Vec<wgpu::TextureView>,
     spot_sampled_view: wgpu::TextureView,
-    cube_texture: wgpu::Texture,
     cube_face_views: Vec<wgpu::TextureView>,
     cube_sampled_view: Option<wgpu::TextureView>,
     spot_layers: Vec<LayerState>,
@@ -136,11 +134,7 @@ impl PromotedDepthCache {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            // Task 1 additionally samples this world-only cache on entity receivers.
-            // COPY_SRC remains until Task 2 stops using the merged-depth pool baseline.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let spot_views = (0..MAX_PROMOTED_SPOT)
@@ -174,10 +168,7 @@ impl PromotedDepthCache {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            // See the spot cache above: this stays copyable only through Task 1.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let cube_face_views = (0..cube_layer_count)
@@ -202,10 +193,8 @@ impl PromotedDepthCache {
         });
 
         Self {
-            spot_texture,
             spot_views,
             spot_sampled_view,
-            cube_texture,
             cube_face_views,
             cube_sampled_view,
             spot_layers: vec![LayerState::default(); MAX_PROMOTED_SPOT],
@@ -252,78 +241,6 @@ impl PromotedDepthCache {
 
     pub fn cube_sampled_view(&self) -> Option<&wgpu::TextureView> {
         self.cube_sampled_view.as_ref()
-    }
-
-    pub fn copy_spot_to_pool(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        plan: PromotedSpotCachePlan,
-        pool_texture: &wgpu::Texture,
-    ) {
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.spot_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: plan.cache_layer,
-                },
-                aspect: wgpu::TextureAspect::DepthOnly,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: pool_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: plan.slot,
-                },
-                aspect: wgpu::TextureAspect::DepthOnly,
-            },
-            wgpu::Extent3d {
-                width: SHADOW_MAP_RESOLUTION,
-                height: SHADOW_MAP_RESOLUTION,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-
-    pub fn copy_cube_face_to_pool(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        plan: PromotedCubeCachePlan,
-        face: usize,
-        pool_texture: &wgpu::Texture,
-        pool_layer: u32,
-    ) {
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.cube_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: plan.cache_layer(face),
-                },
-                aspect: wgpu::TextureAspect::DepthOnly,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: pool_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: pool_layer,
-                },
-                aspect: wgpu::TextureAspect::DepthOnly,
-            },
-            wgpu::Extent3d {
-                width: CUBE_FACE_RESOLUTION,
-                height: CUBE_FACE_RESOLUTION,
-                depth_or_array_layers: 1,
-            },
-        );
     }
 }
 
@@ -445,6 +362,15 @@ mod tests {
     fn cache_budget_matches_promoted_budget_not_pool_size() {
         assert_eq!(MAX_PROMOTED_SPOT, 8);
         assert_eq!(MAX_PROMOTED_CUBE * CUBE_FACES, 12);
+    }
+
+    #[test]
+    fn cache_source_does_not_request_copy_source_usage() {
+        let src = include_str!("promoted_depth_cache.rs");
+        assert!(
+            !src.contains(concat!("COPY", "_SRC")),
+            "the promoted world-depth cache is sampled directly, never copied into a pool slot"
+        );
     }
 
     #[test]

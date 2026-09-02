@@ -358,10 +358,6 @@ pub(crate) fn build_full_renderer(
     // new sampleable cache bindings can reference it immediately.
     let promoted_depth_cache = (!entity_shadow_indices.is_empty())
         .then(|| PromotedDepthCache::new(device, cube_array_supported));
-    let promoted_cache_compare_static_depth = std::env::var("POSTRETRO_PROMOTED_CACHE_COMPARE")
-        .ok()
-        .as_deref()
-        != Some("0");
     {
         use crate::lighting::spot_shadow::{
             SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
@@ -654,7 +650,6 @@ pub(crate) fn build_full_renderer(
         promoted_static_weight_scratch: Vec::new(),
         promoted_static_last_update_time: None,
         promoted_depth_cache,
-        promoted_cache_compare_static_depth,
         promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),
         promoted_depth_cache_promoted_count: 0,

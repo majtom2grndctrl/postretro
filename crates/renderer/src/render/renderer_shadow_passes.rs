@@ -251,7 +251,7 @@ impl Renderer {
                 // first promoted slot; it closes at the end of the cube loop.
                 // This span is an UPPER BOUND: interleaved dynamic spot slots
                 // and the whole cube dynamic-shadow loop fall inside it. A tight
-                // bracket over only the promoted cache-render + copy + entity
+                // bracket over only the promoted cache-render + entity
                 // regions would need per-region accumulation — promoted and
                 // dynamic slots interleave in the sorted slot order, and one
                 // timestamp pair (`[2i, 2i+1]`) cannot sum disjoint spans (a
@@ -307,11 +307,21 @@ impl Renderer {
                         .mark_spot_world_rendered(plan);
                 }
 
-                full.promoted_depth_cache
-                    .as_ref()
-                    .expect("promoted spot plan implies cache allocated")
-                    .copy_spot_to_pool(encoder, plan, &full.spot_shadow_pool.array_texture);
-
+                let view = &full.spot_shadow_pool.views[slot as usize];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Promoted Spot Entity Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
                 if full.spot_shadow_pool.slot_entity_eligible[slot as usize]
                     && (mesh_frame_plan.is_some() || !full.mover_occluder_aabbs.is_empty())
                 {
@@ -320,23 +330,6 @@ impl Renderer {
                     {
                         let cone_planes =
                             postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
-                        let view = &full.spot_shadow_pool.views[slot as usize];
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("Promoted Spot Entity Shadow Depth Pass"),
-                            color_attachments: &[],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            ..Default::default()
-                        });
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
@@ -565,39 +558,26 @@ impl Renderer {
                         }
                     }
 
-                    full.promoted_depth_cache
-                        .as_ref()
-                        .expect("promoted cube plan implies cache allocated")
-                        .copy_cube_face_to_pool(
-                            encoder,
-                            plan,
-                            face,
-                            &pool.array_texture,
-                            layer as u32,
-                        );
-
+                    let view = &pool.face_views[layer];
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Promoted Cube Entity Shadow Depth Pass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        ..Default::default()
+                    });
                     if pool.slot_entity_eligible[slot]
                         && (mesh_frame_plan.is_some() || !full.mover_occluder_aabbs.is_empty())
                     {
                         let face_planes =
                             postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
-                        let view = &pool.face_views[layer];
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("Promoted Cube Entity Shadow Depth Pass"),
-                            color_attachments: &[],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            ..Default::default()
-                        });
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,

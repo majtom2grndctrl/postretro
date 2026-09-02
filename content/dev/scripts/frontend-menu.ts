@@ -14,12 +14,6 @@ export const mapCatalog = defineMapCatalog([
     tags: ["campaign", "recommended"],
   },
   {
-    id: "campaign-test-mtex-002",
-    path: "maps/campaign-test--0.02-mtex.prl",
-    name: "Campaign Test (mtex 0.02)",
-    tags: ["campaign", "lighting", "variant"],
-  },
-  {
     id: "combat-demo",
     path: "maps/combat-demo.prl",
     name: "Combat Demo",
@@ -36,30 +30,6 @@ export const mapCatalog = defineMapCatalog([
     path: "maps/occlusion-test.prl",
     name: "Occlusion Test",
     tags: ["visibility", "lighting", "recommended"],
-  },
-  {
-    id: "occlusion-test-mtex-001",
-    path: "maps/occlusion-test--0.01-mtex.prl",
-    name: "Occlusion Test (mtex 0.01)",
-    tags: ["visibility", "lighting", "variant"],
-  },
-  {
-    id: "occlusion-test-mtex-0015",
-    path: "maps/occlusion-test--0.015-mtex.prl",
-    name: "Occlusion Test (mtex 0.015)",
-    tags: ["visibility", "lighting", "variant"],
-  },
-  {
-    id: "occlusion-test-mtex-002",
-    path: "maps/occlusion-test--0.02-mtex.prl",
-    name: "Occlusion Test (mtex 0.02)",
-    tags: ["visibility", "lighting", "variant"],
-  },
-  {
-    id: "occlusion-test-shadow-resolution",
-    path: "maps/occlusion-test--shadow-resolution-test.prl",
-    name: "Occlusion Test (shadow resolution)",
-    tags: ["visibility", "lighting", "shadow", "variant"],
   },
   {
     id: "test-animated-weight-maps-cap",
@@ -149,7 +119,6 @@ export const frontendMenu = defineUiTree({
         ]),
         VStack({ gap: 14, align: "stretch" }, [
           section("Animated Weight Maps", mapsTagged("animated-weight-map")),
-          section("Bake Variants", mapsTagged("variant")),
         ]),
       ],
     ),

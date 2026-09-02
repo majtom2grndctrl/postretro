@@ -110,7 +110,9 @@ four ALU but keeps the copy, the 25-tap kernel, and a threshold-based
 invariant. Full reasoning in `research.md`.
 
 **Placement.** Renderer-owned throughout (all wgpu). The falloff code mapping
-moves into `postretro-lighting` because two packers there already need it.
+is a shared `pub fn` in `postretro-lighting`, where both packers live. The
+mode-6 label lives in `postretro-render-cpu` (`frame_uniforms.rs`), the one
+non-renderer edit.
 
 **Foreclosures.** None material. Every surface this plan changes is
 per-frame GPU state or a runtime buffer layout: two BGL entries, one metadata
@@ -121,10 +123,11 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 - [ ] On `combat-demo.prl` with an enemy under a promoted light, mode 5 is
       black on every world surface outside the enemy's silhouette — raked
       floors, walls under a downward light, baked penumbrae, chart seams — at
-      every camera angle; inside the silhouette it reads the light's direct
-      term scaled by baked visibility.
+      every camera angle; inside the silhouette, at full promotion weight, it
+      reads the light's direct term scaled by baked visibility.
 - [ ] Mode 6 reads white on all world surfaces outside entity silhouettes
-      under promoted lights on `combat-demo.prl` and `closet-reveal.prl`.
+      under promoted lights on `combat-demo.prl` and `closet-reveal.prl`. The
+      mode-6 dev label reads entity-only pool visibility.
 - [ ] On `closet-reveal.prl`, the wall beside the closed door shows no texel
       striping at close range under the static spotlight; the door's own
       appearance is unchanged from before this plan.
@@ -135,6 +138,7 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 - [ ] After Task 1 alone, with the pool still holding merged depth, rendered
       output on `combat-demo.prl` and `stress-warren-lit.prl` is
       indistinguishable from before (dev A/B by toggling the cache compare).
+      Task 2 deletes the toggle.
 - [ ] An enemy's shadow on floor and wall stays attached at the contact
       (no detachment, no gap) under a promoted spot and a promoted point light.
 - [ ] A mover docked against a wall casts and receives under a promoted light
@@ -164,10 +168,13 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
       `"delay" "0"`).
 - [ ] Shader pins: the dead-zone/kernel test is replaced by one pinning the
       attenuation expression, the zero union bias constant, and the absence of
-      `shadowmask_sample_spot_shadow_wide`; the promoted-count/metadata-tail
-      test and the multilayer-fallback test pass unchanged; the count-split
-      loop-bound test passes unchanged.
-- [ ] Fog shader source is byte-identical.
+      `shadowmask_sample_spot_shadow_wide`;
+      `forward_shader_shadowmask_visualization_mode_is_wired`, the
+      promoted-count/metadata-tail test, the multilayer-fallback test and the
+      count-split loop-bound test pass unchanged; the four
+      `pack_forward_shadowmask_metadata` tests are updated for `meta1.w`.
+- [ ] Fog shader source is byte-identical (`git diff` shows no change to
+      `fog_volume.wgsl`).
 - [ ] `rendering_pipeline.md` §4 and §7.1 describe the entity-only slot, the
       attenuation form, the sampled cache, and the `Clear(1.0)` baseline; the
       one-source-per-receiver sentence counts the pool slot and the cache as
@@ -183,11 +190,14 @@ textures with `RENDER_ATTACHMENT | TEXTURE_BINDING` (drop `COPY_SRC`), and adds
 a `D2Array` sampled view over all `MAX_PROMOTED_SPOT` spot layers and, iff
 `cube_array_supported`, a `CubeArray` sampled view over the
 `MAX_PROMOTED_CUBE × CUBE_FACES` cube layers; expose `spot_sampled_view()` and
-`cube_sampled_view() -> Option<&TextureView>`. Both constructors pass
-`full.cube_shadow_pool.is_some()` — `renderer_full_init.rs` (the
-`entity_shadow_indices.is_empty()` arm) and `renderer_resources.rs` (level
-install re-creation, which precedes the bind-group rebuilds in the same
-function — keep that order). Add group-2 entries in
+`cube_sampled_view() -> Option<&TextureView>`. Both construction sites pass cube-array support — `renderer_full_init.rs`
+(the `!entity_shadow_indices.is_empty()` arm, passing the local
+`cube_array_supported`; move the cache construction above both
+`rebuild_light_bind_group` calls, which today precede it) and
+`renderer_resources.rs` (the empty→non-empty re-creation, passing
+`full.cube_shadow_pool.is_some()`; it precedes the bind-group rebuilds in the
+same function — keep that order; the non-empty→non-empty path is
+`reset_level` and keeps the texture). Add group-2 entries in
 `mesh_light_bind_group_layout_entries` (`mesh_pass.rs`) and
 `light_bind_group_layout_entries` (`kinematic_brush.rs`): binding 9
 `Depth`/`D2Array`/FRAGMENT unconditionally, binding 10 `Depth`/`CubeArray`
@@ -197,7 +207,7 @@ and `promoted_cube_cache: Option<&TextureView>`, extending the Some-iff-layout
 assert; update all four callers (`renderer_full_init.rs` and
 `renderer_resources.rs`, mesh and kinematic). When `promoted_depth_cache` is
 `None` — no entity-shadow selection, hence no promoted records — bind the
-spot pool's array view and the cube pool's array view in its place; they are
+spot pool's array view and the cube pool's `sampling_view` in its place; they are
 never sampled because no record carries a cache layer. Declare in
 `skinned_mesh.wgsl` and `kinematic_brush.wgsl`:
 `@group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array;`
@@ -218,16 +228,21 @@ BEGIN…END pair, keeping its mismatch panic, and extend its test with a
 two-pair source. In `crates/renderer/src/render/shadowmask.rs`,
 `pack_forward_shadowmask_metadata` gains `cache_layers: &[i32]`
 (records-parallel; spot layer, or cube layer base divided by `CUBE_FACES`;
-−1 when absent) and writes it as `meta1.w` in place of the `0.0`; update both
-existing tests. In `renderer_light_slots.rs` `update_dynamic_light_slots`,
+−1 when absent) and writes it as `meta1.w` in place of the `0.0`; update the
+four existing tests that call it. In `renderer_light_slots.rs` `update_dynamic_light_slots`,
 immediately after `update_promoted_static_weights_and_records` and before the
 light upload and metadata pack: call `PromotedDepthCache::plan_frame` on
 `full.promoted_depth_cache` (assert it is `Some` whenever records exist),
 store the plan and its counters where `renderer_render_frame.rs` stores them
-today (that block reduces to the `render_world == false` reset), build
+today (that block reduces to the `render_world == false` reset; the
+`render_world && cache.is_none()` reset arm moves with the plan call; the
+early return when `shadow_candidate_lights` is empty leaves the plan at its
+install defaults), build
 `cache_layers` via `spot_for_slot` / `cube_for_slot`, and for a record with no
-plan entry — `debug_assert!` unreachable, since the ranker's `promoted_cap`
-equals the cache layer count — remove it from `promoted_static_records` and
+plan entry — unreachable because `MAX_PROMOTED_SPOT` / `MAX_PROMOTED_CUBE` are
+both the ranker's `promoted_cap` and the cache layer counts; `log::warn!`
+once, never assert, so AC 12 can drive the branch with a fabricated plan —
+remove it from `promoted_static_records` and
 write 0.0 to `promoted_static_weights[selection_index]` before the weight
 buffer upload and the `total_light_count` recompute. Add
 `dynamic_light_count: u32` (plus three pad words) to `MeshLightParams` in
@@ -236,15 +251,32 @@ extend `MeshPass::write_light_params` and both callers in
 `renderer_render_frame.rs` to pass `full.light_count`; update the byte-layout
 test. In `accumulate_dynamic_direct` of both shaders, for
 `i >= dynamic_light_count` (kinematic already has the field): `p = i −
-dynamic_light_count`, `meta_index = light_count + p * 2u` where `light_count`
-is the total the params carry, guard `meta_index + 1u <
-arrayLength(&light_influence)`, read `cache = i32(light_influence[meta_index +
-1u].w)`, and route the spot and cube shadow calls through the `_with_static`
-helpers with it; dynamic-tier lights keep the shared helpers. Update
-`mesh_group2_sampled_texture_count_recorded_for_both_cube_variants` (2/4).
+dynamic_light_count`, `meta_index = light_count + p *
+SHADOWMASK_META_VEC4S_PER_RECORD` where `light_count` is the total the params
+carry, guard `meta_index + 1u < arrayLength(&light_influence)` (on failure
+`cache = -1`), read `cache = i32(light_influence[meta_index + 1u].w)` —
+`meta1.w` carries the spot layer or the cube index and the helpers take it
+unchanged; both entity shaders declare `SHADOWMASK_META_VEC4S_PER_RECORD` and
+the stride is that constant, not a literal — and route the spot and cube
+shadow calls through the `_with_static`
+helpers with it; dynamic-tier lights keep the shared helpers. Update the pins Task 1 breaks:
+`mesh_group2_sampled_texture_count_recorded_for_both_cube_variants` (2/4),
+`mesh_group2_shadow_bindings_match_both_cube_variants` and
+`mesh_group2_bgl_matches_shader_bindings` (binding ranges grow to 9 / 10),
+`skinned_mesh_pipeline_fragment_texture_budget_includes_shared_emissive_binding`
+and `kinematic_pipeline_fragment_texture_budget_includes_emissive` (group-2
+count 2 → 4 with cube support),
+`receiver_bias_factor_scales_the_entire_shared_normal_offset` in
+`lighting/spot_shadow.rs` (the `SKINNED_SCALE * bias_factor` occurrence count
+doubles), `mesh_light_params_is_sixteen_bytes` and
+`write_light_params_places_ambient_floor_at_bytes_twelve_to_sixteen` (32
+bytes). Add a kinematic no-cube naga validation test beside the existing
+skinned one.
 Dev A/B: a `POSTRETRO_PROMOTED_CACHE_COMPARE=0` env toggle read once at init
-that packs −1 for every record; with it on and off, output is identical while
-the pool still holds merged depth.
+into a `bool` on the renderer alongside the cache, consulted by the
+`cache_layers` build to pack −1 for every record; with it on and off, output
+is identical while the pool still holds merged depth. Task 2 deletes the
+toggle — after it, packing −1 drops world occlusion from entity receivers.
 
 ### Task 2: Entity-only promoted slots and the attenuation union
 
@@ -265,8 +297,9 @@ delete `shadowmask_sample_spot_shadow_wide`, `SHADOWMASK_SPOT_KERNEL_RADIUS`,
 `const SHADOWMASK_UNION_RECEIVER_BIAS_SCALE: f32 = 0.0;` with a comment that
 world receivers never appear in a promoted map; `shadowmask_shadow_visibility`
 calls the shared `sample_spot_shadow` and `sample_point_shadow` with that
-constant; in `shadowmask_union_subtraction` the skip becomes
-`baked_vis <= 0.0`, and the accumulation becomes
+constant; in `shadowmask_union_subtraction` the skip keeps its mode-6 exemption and
+becomes `uniforms.sdf_shadow_mode != SHADOWMASK_RAW_POOL_VISIBILITY_MODE &&
+baked_vis <= 0.0`, and the accumulation becomes
 `direct.value * (baked_vis * (1.0 - shadow_map_vis)) * weight` through a
 `shadowmask_attenuation(baked_vis, entity_vis)` helper. Leave the promoted
 count loop, metadata decode, `SHADOWMASK_META_VEC4S_PER_RECORD`, mode 5/6
@@ -274,19 +307,24 @@ plumbing, and the three `sample_shadowmask_atlas(` sites untouched. Replace
 `forward_shader_shadowmask_dead_zone_matches_each_pool_kernel` in
 `shader_tests.rs` with a pin on the attenuation expression, the zero constant,
 and the absence of the deleted identifiers; add a `promoted_depth_cache.rs`
-source pin that the module declares no `COPY_SRC`. Update the dev-tools label
-for mode 6 to say entity-only pool visibility.
+source pin that the module declares no `COPY_SRC`. Update the mode-6 label
+(`SdfShadowMode::ShadowmaskRawPoolVisibility` in
+`crates/render-cpu/src/frame_uniforms.rs`) to say entity-only pool
+visibility. Delete the `POSTRETRO_PROMOTED_CACHE_COMPARE` toggle and its
+field.
 
 ### Task 3: Falloff model in the static direct reconstruction
 
-In `crates/lighting/src/lib.rs`, extract the `FalloffModel → u32` match the
-`GpuLight` packer uses into `pub fn falloff_model_code(FalloffModel) -> u32`
-and use it there. In `crates/lighting/src/spec_buffer.rs` `pack_spec_lights`,
+In `crates/lighting/src/lib.rs`, make the private `falloff_model_u32` the
+`GpuLight` packer uses `pub` as `falloff_model_code(FalloffModel) -> u32` and
+call it from both packers. In `crates/lighting/src/spec_buffer.rs` `pack_spec_lights`,
 write `falloff_model_code(light.falloff_model) as f32` at byte 60 in place of
 `0.0`; update the packer's layout doc and add a test for byte 60. In
 `forward.wgsl`, update the `SpecLight.cone_cos` comment, and in
 `shadowmask_direct` and the static SDF spec-light loop replace the linear
-`max(1.0 - dist / range, 0.0)` with
+attenuation — `max(1.0 - dist / max(range, 0.001), 0.0)` in
+`shadowmask_direct`, `select(1.0, max(1.0 - dist / max(range, 0.001), 0.0),
+range > 0.0)` in the loop — with
 `light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)))`, keeping each
 site's existing `range <= 0.0` handling. Model 0 in `light_eval_falloff`
 (`light_eval.wgsl`) is the same linear expression, so shipped content — every
@@ -350,9 +388,9 @@ fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {
 }
 // … in shadowmask_union_subtraction:
 if baked_vis <= 0.0 { continue; }
-let entity_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
-out.raw_pool_visibility = min(out.raw_pool_visibility, entity_vis);
-out.subtraction = out.subtraction + direct.value * shadowmask_attenuation(baked_vis, entity_vis) * weight;
+let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
+out.raw_pool_visibility = min(out.raw_pool_visibility, shadow_map_vis);
+out.subtraction = out.subtraction + direct.value * shadowmask_attenuation(baked_vis, shadow_map_vis) * weight;
 ```
 
 Nearest comparison sampling makes each tap 0 or 1, so the per-tap `min` is
@@ -374,7 +412,16 @@ receiver.
 | `render_world == false` | No slot update, no pack | Plan reset; nothing sampled |
 | Two promoted lights on one entity fragment | Loop over both records | Each record combines its own slot with its own cache layer |
 | Cube slot, six faces | All faces of an occupied slot render in one frame (`face_matrices` set per slot) | Cache marked warm at face 6; sampled complete |
-| Adapter without cube arrays | Both cube bodies stripped | Spot path unaffected; promoted point lights read as unshadowed on entities and world, as today |
+| Adapter without cube arrays | Both cube bodies stripped | Spot path unaffected; promoted point candidates are never assigned (`update_cube_light_slots` returns empty), so no cube record, no cube plan, no `meta1.w`; entity receivers use baked SH only, as today |
+| Init-time bind-group build | `PromotedDepthCache::new` precedes both `rebuild_light_bind_group` calls in `renderer_full_init.rs` | First frame's mesh and kinematic group-2 bind groups reference cache views (or pool views when `None`) |
+| Level with no shadow candidates | `update_dynamic_light_slots` early return every frame | Plan and counters are the install defaults; no promoted branch runs; `LayerState` untouched |
+| `render_world == false` then `true` | Frame A: no slot update, plan reset to default, no passes. Frame B: `plan_frame` against the untouched `LayerState` | Warm layers stay warm across the gap; no refill; `meta1.w` re-derived in frame B |
+| Layer index reused within one `plan_frame` | `retain_active_layers` frees layer k (light A gone) → `assign_layer` gives k to light B with `warm = false` | B's plan is cold; k is refilled this frame before sampling; A's stale depth is never sampled |
+| Cap-boundary eviction and return | Frame N: R evicted → layer freed. Frame N+1: R re-promoted → new layer, cold | One world render per flip; `w` continues from its decayed value (existing ranker behavior) |
+| Records non-empty → empty | Influence/metadata upload skipped (`records.is_empty()`); buffer retains last frame's tail | `total_light_count == light_count`, so forward and entity loops never read the stale tail |
+| Same-selection level reload | `reset_level` clears `LayerState`; texture kept; bind groups rebuilt | Every layer cold on the first frame; full refill; no stale sampling |
+| No-geometry level (`draw_world == false`) | Cache-fill pass runs with `Clear(1.0)` and no draw; `mark_*_world_rendered` still called | Layer warm with far-plane depth; entity receivers compare against 1.0 |
+| Dev toggle lifetime | `POSTRETRO_PROMOTED_CACHE_COMPARE=0` read at init | Exists only between Task 1 and Task 2; no release path packs −1 |
 
 ## Invariants
 
@@ -383,7 +430,7 @@ receiver.
 | A promoted pool slot never holds static world depth | Task 2 | Any future world draw or copy into a promoted slot | AC 2, 8, 9 |
 | Entity receivers see world+entity occlusion per tap identical to a merged map | Task 1 | Any change to sampler filter mode (Nearest) or to cache/pool resolution parity | AC 4, 5 |
 | World subtraction is exactly zero where no dynamic occluder shadows the fragment | Task 2 | Any nonzero receiver offset that moves a world fragment into an entity silhouette; any content in the slot other than entity depth | AC 1, 3 |
-| Every packed promoted record carries a valid cache layer | Task 1 (plan before pack) | Any writer of `promoted_static_records` after `plan_frame`; any change to `promoted_cap` vs cache layer counts | AC 12 |
+| Every packed promoted record carries a valid cache layer | Task 1 (plan before pack) | Any writer of `promoted_static_records` after `plan_frame`; any change to `promoted_cap` vs cache layer counts; the Task 1 dev toggle while it exists | AC 12 |
 | The cache holds world depth only | Existing (movers never enter the cache); preserved by Task 2 leaving the fill pass unchanged | Any entity draw targeting a cache view | AC 4 |
 | Static direct reconstruction uses the authored falloff model | Task 3 | Billboard static loop (out of scope) | AC 14 |
 

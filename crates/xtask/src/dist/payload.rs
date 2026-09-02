@@ -1,4 +1,4 @@
-//! Payload copy filters and the final distribution completion sweep.
+//! Payload tree assembly, completion tracking, and verification.
 //!
 //! See: context/lib/build_pipeline.md §Distribution packaging
 
@@ -9,6 +9,156 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use super::resolve::{EntryExt, Resolved, is_prm_filename};
+
+pub(super) const MARKER_NAME: &str = ".dist-incomplete";
+
+/// Replace any prior payload with an empty root carrying the completion marker.
+pub(super) fn replace_payload_root(
+    output_root: &Path,
+    payload_root: &Path,
+    package_name: &str,
+    outstanding: &[String],
+) -> Result<(), String> {
+    fs::create_dir_all(output_root).map_err(|error| {
+        format!(
+            "stage 5: create output root {}: {error}",
+            output_root.display()
+        )
+    })?;
+    clear_stale_stage_five_siblings(output_root, package_name)?;
+
+    if payload_root.exists() {
+        let aside = output_root.join(format!(".{package_name}.deleting-{}", std::process::id()));
+        replace_existing_payload_with(
+            payload_root,
+            &aside,
+            |path| fs::remove_dir_all(path),
+            |path| write_marker(path, output_root, package_name, "stage 5", outstanding),
+        )?;
+    }
+
+    fs::create_dir_all(payload_root).map_err(|error| {
+        format!(
+            "stage 5: create payload root {}: {error}",
+            payload_root.display()
+        )
+    })?;
+    write_marker(
+        payload_root,
+        output_root,
+        package_name,
+        "stage 5",
+        outstanding,
+    )
+}
+
+fn replace_existing_payload_with<RemoveTree, MarkPartial>(
+    payload_root: &Path,
+    aside: &Path,
+    remove_tree: RemoveTree,
+    mark_partial: MarkPartial,
+) -> Result<(), String>
+where
+    RemoveTree: FnOnce(&Path) -> io::Result<()>,
+    MarkPartial: FnOnce(&Path) -> Result<(), String>,
+{
+    fs::rename(payload_root, aside).map_err(|error| {
+        format!(
+            "stage 5: rename payload root {} aside to {}: {error}",
+            payload_root.display(),
+            aside.display()
+        )
+    })?;
+
+    let Err(remove_error) = remove_tree(aside) else {
+        return Ok(());
+    };
+    if let Err(marker_error) = mark_partial(aside) {
+        return Err(format!(
+            "stage 5: remove old payload {} aside {} failed: {remove_error}; mark partial payload at {} failed: {marker_error}; partial payload was not restored",
+            payload_root.display(),
+            aside.display(),
+            aside.display()
+        ));
+    }
+
+    fs::rename(aside, payload_root).map_err(|restore_error| {
+        format!(
+            "stage 5: remove old payload {} aside {} failed: {remove_error}; restore failed: {restore_error}; marked partial payload remains at {}",
+            payload_root.display(),
+            aside.display(),
+            aside.display()
+        )
+    })?;
+    Err(format!(
+        "stage 5: remove old payload aside {} failed: {remove_error}; restored marked partial payload at {}",
+        aside.display(),
+        payload_root.display()
+    ))
+}
+
+fn clear_stale_stage_five_siblings(output_root: &Path, package_name: &str) -> Result<(), String> {
+    let deleting_prefix = format!(".{package_name}.deleting-");
+    let marker_prefix = format!(".{package_name}.marker-");
+    for entry in fs::read_dir(output_root).map_err(|error| {
+        format!(
+            "stage 5: scan output root {}: {error}",
+            output_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| format!("stage 5: read output root entry: {error}"))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&deleting_prefix)
+            || (name.starts_with(&marker_prefix) && name.ends_with(".tmp"))
+        {
+            remove_path(&entry.path()).map_err(|error| {
+                format!(
+                    "stage 5: remove stale sibling {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn write_marker(
+    destination_root: &Path,
+    output_root: &Path,
+    package_name: &str,
+    stage: &str,
+    outstanding: &[String],
+) -> Result<(), String> {
+    let mut contents = String::from(stage);
+    contents.push('\n');
+    for output in outstanding {
+        contents.push_str(output);
+        contents.push('\n');
+    }
+
+    let temporary = output_root.join(format!(".{package_name}.marker-{}.tmp", std::process::id()));
+    fs::write(&temporary, contents).map_err(|error| {
+        format!(
+            "{stage}: write marker temporary {}: {error}",
+            temporary.display()
+        )
+    })?;
+    fs::rename(&temporary, destination_root.join(MARKER_NAME)).map_err(|error| {
+        format!(
+            "{stage}: install marker into {}: {error}",
+            destination_root.join(MARKER_NAME).display()
+        )
+    })
+}
+
+pub(super) fn remove_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("stage 5: remove {}: {error}", path.display())),
+    }
+}
 
 /// Return whether a working-tree path must not enter the payload tree.
 pub(super) fn should_exclude(path: &Path, mod_root: &Path, emitted: EntryExt) -> bool {
@@ -158,6 +308,32 @@ pub(super) fn sweep_payload(
     Ok(())
 }
 
+/// Count regular files and their total byte size under a payload root.
+pub(super) fn count_payload(root: &Path) -> Result<(u64, u64), String> {
+    let mut files = 0;
+    let mut bytes = 0;
+    count_payload_tree(root, &mut files, &mut bytes)?;
+    Ok((files, bytes))
+}
+
+fn count_payload_tree(directory: &Path, files: &mut u64, bytes: &mut u64) -> Result<(), String> {
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("count payload directory {}: {error}", directory.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read payload directory entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            count_payload_tree(&path, files, bytes)?;
+        } else {
+            let metadata = fs::metadata(&path)
+                .map_err(|error| format!("read payload file {}: {error}", path.display()))?;
+            *files += 1;
+            *bytes += metadata.len();
+        }
+    }
+    Ok(())
+}
+
 fn sweep_tree(
     payload_root: &Path,
     directory: &Path,
@@ -262,12 +438,24 @@ fn has_component_pair(path: &Path, first: &str, second: &str) -> bool {
         .any(|pair| pair[0] == first && pair[1] == second)
 }
 
+fn remove_path(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io;
     use std::path::{Path, PathBuf};
 
-    use super::{EntryExt, copy_prm_tree, should_exclude};
+    use super::{
+        EntryExt, MARKER_NAME, copy_prm_tree, replace_existing_payload_with, should_exclude,
+    };
 
     fn mod_root() -> PathBuf {
         PathBuf::from("content/dev")
@@ -350,7 +538,59 @@ mod tests {
                 .count(),
             0
         );
-        fs::remove_dir_all(root).expect("temporary tree removed");
+        remove_temp_dir(&root);
+    }
+
+    #[test]
+    fn marker_failure_leaves_partial_payload_aside() {
+        let root = unique_temp_dir();
+        let payload_root = root.join("postretro-dev");
+        let aside = root.join(".postretro-dev.deleting-test");
+        fs::create_dir_all(&payload_root).expect("payload root created");
+        fs::write(payload_root.join("retained.txt"), "retained")
+            .expect("retained payload file written");
+        fs::write(payload_root.join("removed.txt"), "removed")
+            .expect("removed payload file written");
+
+        let result = replace_existing_payload_with(
+            &payload_root,
+            &aside,
+            |partial| {
+                fs::remove_file(partial.join("removed.txt"))?;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated partial removal",
+                ))
+            },
+            |_| Err("simulated marker failure".to_string()),
+        );
+
+        let error = result.expect_err("marker failure rejects replacement");
+        assert!(
+            !payload_root.exists(),
+            "partial payload must not be restored"
+        );
+        assert_eq!(
+            fs::read_to_string(aside.join("retained.txt")).expect("retained payload readable"),
+            "retained"
+        );
+        assert!(!aside.join("removed.txt").exists());
+        assert!(!aside.join(MARKER_NAME).exists());
+        assert!(error.contains(&aside.display().to_string()));
+        assert!(error.contains("simulated marker failure"));
+        remove_temp_dir(&root);
+    }
+
+    fn remove_temp_dir(root: &Path) {
+        for attempt in 0..3 {
+            match fs::remove_dir_all(root) {
+                Ok(()) => return,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty && attempt < 2 => {}
+                Err(error) => panic!("temporary tree {} removed: {error}", root.display()),
+            }
+        }
+        unreachable!("last cleanup attempt returns or panics");
     }
 
     fn unique_temp_dir() -> PathBuf {

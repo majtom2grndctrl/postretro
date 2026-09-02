@@ -29,7 +29,7 @@ pub(crate) fn emit_launcher(
         let path = payload_root.join(format!("{package_name}.sh"));
         let contents = format!(
             "#!/bin/sh\nset -eu\ncd \"$(dirname \"$0\")\"\nexec ./postretro --mod '{}'\n",
-            mod_root.replace('\'', "'\\\"'\\\"'")
+            posix_single_quoted(mod_root)
         );
         fs::write(&path, contents)
             .map_err(|error| format!("stage 5: write launcher {}: {error}", path.display()))?;
@@ -53,4 +53,24 @@ pub(crate) fn emit_launcher(
     }
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn posix_single_quoted(value: &str) -> String {
+    // A single quote ends the surrounding shell string. Reopen it after emitting the
+    // quote itself from a double-quoted fragment: 'content/foo'"'"'bar'.
+    value.replace('\'', "'\"'\"'")
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::posix_single_quoted;
+
+    #[test]
+    fn quotes_apostrophes_for_posix_shell() {
+        assert_eq!(
+            posix_single_quoted("content/runner's-mod"),
+            "content/runner'\"'\"'s-mod"
+        );
+    }
 }

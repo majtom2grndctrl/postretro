@@ -93,6 +93,8 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
+    "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
@@ -1309,6 +1311,19 @@ mod tests {
                 "blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation"
             ),
             "promoted mover specular must retain the runtime attenuation, cone, shadow, and promotion color factors",
+        );
+    }
+
+    #[test]
+    fn kinematic_animated_descriptors_are_limited_to_dynamic_prefix() {
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/kinematic_brush.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop.contains("if i < kinematic_light_params.dynamic_light_count {")
+                && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
+            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
     }
 }

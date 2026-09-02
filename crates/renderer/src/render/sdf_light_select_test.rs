@@ -20,6 +20,9 @@ use wgpu::util::DeviceExt;
 const K: usize = 4;
 /// Sentinel for an unused slot; must match `SDF_SELECT_NONE` in the helper.
 const NONE: u32 = 0xffff_ffff;
+const FALLOFF_LINEAR: u32 = 0;
+const FALLOFF_INVERSE_DISTANCE: u32 = 1;
+const FALLOFF_INVERSE_SQUARED: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // CPU reference comparator (the pinned total order)
@@ -33,6 +36,7 @@ struct TestLight {
     /// color × intensity (the helper uses the peak channel as the intensity).
     color: [f32; 3],
     is_sdf: bool,
+    falloff_model: u32,
 }
 
 /// Influence metric mirroring `sdf_select_influence` in the helper: the
@@ -43,13 +47,17 @@ fn influence(light: &TestLight, world: [f32; 3]) -> f32 {
     let dy = light.position[1] - world[1];
     let dz = light.position[2] - world[2];
     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-    if light.range > 0.0 && dist > light.range {
-        return 0.0;
-    }
-    let atten = if light.range > 0.0 {
-        (1.0 - dist / light.range.max(0.001)).max(0.0)
-    } else {
+    let atten = if light.range <= 0.0 {
         1.0
+    } else {
+        match light.falloff_model {
+            FALLOFF_LINEAR => (1.0 - dist / light.range.max(0.001)).max(0.0),
+            FALLOFF_INVERSE_DISTANCE if dist <= light.range.max(0.0001) => 1.0 / dist.max(0.0001),
+            FALLOFF_INVERSE_SQUARED if dist <= light.range.max(0.0001) => {
+                1.0 / (dist * dist).max(0.0001)
+            }
+            _ => 0.0,
+        }
     };
     let peak = light.color[0].max(light.color[1]).max(light.color[2]);
     atten * peak
@@ -116,6 +124,8 @@ fn shader_source() -> String {
 struct SpecLight {
     position_and_range: vec4<f32>,
     color_and_pad:      vec4<f32>,
+    cone_dir_and_type:  vec4<f32>,
+    cone_cos:           vec4<f32>,
 };
 struct ChunkGridInfo {
     grid_origin: vec3<f32>,
@@ -148,15 +158,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
     format!(
-        "{prelude}\n{helper}\n{entry}",
+        "{prelude}\n{helper}\n{falloff}\n{entry}",
         helper = include_str!("../shaders/sdf_light_select.wgsl"),
+        falloff = include_str!("../shaders/light_falloff.wgsl"),
     )
 }
 
-/// Pack a SpecLight to its 32-byte WGSL layout (two vec4<f32>). The sdf flag
-/// rides `color_and_pad.w` (1.0 ⇒ sdf), mirroring `spec_buffer.rs`.
-fn pack_light(l: &TestLight) -> [u8; 32] {
-    let mut b = [0u8; 32];
+/// Pack a SpecLight to its 64-byte WGSL layout (four vec4<f32>). The sdf flag
+/// rides `color_and_pad.w`; the falloff model rides `cone_cos.w`, mirroring
+/// `spec_buffer.rs`.
+fn pack_light(l: &TestLight) -> [u8; 64] {
+    let mut b = [0u8; 64];
     b[0..4].copy_from_slice(&l.position[0].to_ne_bytes());
     b[4..8].copy_from_slice(&l.position[1].to_ne_bytes());
     b[8..12].copy_from_slice(&l.position[2].to_ne_bytes());
@@ -166,6 +178,7 @@ fn pack_light(l: &TestLight) -> [u8; 32] {
     b[24..28].copy_from_slice(&l.color[2].to_ne_bytes());
     let flag: f32 = if l.is_sdf { 1.0 } else { 0.0 };
     b[28..32].copy_from_slice(&flag.to_ne_bytes());
+    b[60..64].copy_from_slice(&(l.falloff_model as f32).to_ne_bytes());
     b
 }
 
@@ -186,9 +199,9 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
             source: wgpu::ShaderSource::Wgsl(shader_source().into()),
         });
 
-    let mut spec_bytes: Vec<u8> = Vec::with_capacity(lights.len().max(1) * 32);
+    let mut spec_bytes: Vec<u8> = Vec::with_capacity(lights.len().max(1) * 64);
     if lights.is_empty() {
-        spec_bytes.extend_from_slice(&[0u8; 32]); // storage buffers can't be empty
+        spec_bytes.extend_from_slice(&[0u8; 64]); // storage buffers can't be empty
     } else {
         for l in lights {
             spec_bytes.extend_from_slice(&pack_light(l));
@@ -382,19 +395,50 @@ fn run_select(ctx: &GpuCtx, lights: &[TestLight], worlds: &[[f32; 3]]) -> Vec<(V
 // Tests
 // ---------------------------------------------------------------------------
 
-fn sdf(position: [f32; 3], range: f32, peak: f32) -> TestLight {
+fn sdf_with_model(position: [f32; 3], range: f32, peak: f32, falloff_model: u32) -> TestLight {
     TestLight {
         position,
         range,
         color: [peak, peak * 0.5, peak * 0.25],
         is_sdf: true,
+        falloff_model,
     }
+}
+
+fn sdf(position: [f32; 3], range: f32, peak: f32) -> TestLight {
+    sdf_with_model(position, range, peak, FALLOFF_LINEAR)
 }
 
 fn baked(position: [f32; 3], range: f32, peak: f32) -> TestLight {
     TestLight {
         is_sdf: false,
         ..sdf(position, range, peak)
+    }
+}
+
+#[test]
+fn reference_influence_distinguishes_models_and_preserves_zero_range() {
+    let world = [0.0, 0.0, 0.0];
+    let linear = sdf_with_model([5.0, 0.0, 0.0], 10.0, 1.0, FALLOFF_LINEAR);
+    let inverse = sdf_with_model([5.0, 0.0, 0.0], 10.0, 1.0, FALLOFF_INVERSE_DISTANCE);
+    let inverse_squared = sdf_with_model([5.0, 0.0, 0.0], 10.0, 1.0, FALLOFF_INVERSE_SQUARED);
+    assert_eq!(influence(&linear, world), 0.5);
+    assert_eq!(influence(&inverse, world), 0.2);
+    assert_eq!(influence(&inverse_squared, world), 0.04);
+
+    let at_range_inverse = sdf_with_model([10.0, 0.0, 0.0], 10.0, 1.0, FALLOFF_INVERSE_DISTANCE);
+    let beyond_range_inverse =
+        sdf_with_model([10.001, 0.0, 0.0], 10.0, 1.0, FALLOFF_INVERSE_DISTANCE);
+    assert_eq!(influence(&at_range_inverse, world), 0.1);
+    assert_eq!(influence(&beyond_range_inverse, world), 0.0);
+
+    for model in [
+        FALLOFF_LINEAR,
+        FALLOFF_INVERSE_DISTANCE,
+        FALLOFF_INVERSE_SQUARED,
+    ] {
+        let unattenuated = sdf_with_model([5.0, 0.0, 0.0], 0.0, 3.0, model);
+        assert_eq!(influence(&unattenuated, world), 3.0);
     }
 }
 
@@ -443,6 +487,35 @@ fn k_selection_matches_reference_order_and_is_bounded() {
         assert_eq!(*count as usize, expected.len(), "count mismatch at {w:?}");
         assert_eq!(selected, expected, "selection order mismatch at {w:?}");
     }
+}
+
+/// Mixed falloff models must rank by the same authored curve the forward pass
+/// shades. Treating all three as linear changes this fixture's order.
+#[test]
+fn k_selection_matches_reference_with_mixed_falloff_models() {
+    let Some(ctx) = try_init_gpu() else {
+        eprintln!("[sdf_light_select_test] skipping: no GPU adapter available");
+        return;
+    };
+
+    let lights = vec![
+        // Linear: 10 * (1 - 8/10) = 2.
+        sdf_with_model([8.0, 0.0, 0.0], 10.0, 10.0, FALLOFF_LINEAR),
+        // Inverse distance: 8 / 5 = 1.6 (linear would be 4, changing order).
+        sdf_with_model([5.0, 0.0, 0.0], 10.0, 8.0, FALLOFF_INVERSE_DISTANCE),
+        // Inverse squared: 10 / 2^2 = 2.5.
+        sdf_with_model([2.0, 0.0, 0.0], 10.0, 10.0, FALLOFF_INVERSE_SQUARED),
+        // Zero range is unattenuated for every model: 3.0.
+        sdf_with_model([50.0, 0.0, 0.0], 0.0, 3.0, FALLOFF_INVERSE_SQUARED),
+    ];
+    let world = [0.0, 0.0, 0.0];
+
+    let gpu = run_select(&ctx, &lights, &[world]);
+    let (indices, count) = &gpu[0];
+    let selected: Vec<u32> = indices.iter().copied().take(*count as usize).collect();
+    let expected = reference_select(&lights, world);
+    assert_eq!(selected, expected);
+    assert_eq!(selected, vec![3, 2, 0, 1]);
 }
 
 /// No sdf lights in range ⇒ empty selection (count 0, all sentinels). Guards

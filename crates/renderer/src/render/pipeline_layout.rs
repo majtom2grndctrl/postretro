@@ -26,8 +26,10 @@ use super::*;
 // name — all already declared in `forward.wgsl` for the static-light loop — and
 // declares no buffers of its own. Never reimplement the selection here.
 //
-// `light_eval.wgsl` owns the dynamic-tier per-light evaluation helpers
-// (`light_eval_falloff`, `light_eval_cone_attenuation`,
+// `light_falloff.wgsl` owns model-aware distance attenuation. It is composed
+// independently because SDF K-selection needs only that helper.
+// `light_eval.wgsl` owns the remaining dynamic-tier per-light helpers
+// (`light_eval_cone_attenuation`,
 // `light_eval_animated_direction`, `light_eval_scripted_intensity_scalar`) the
 // runtime light loop calls — extracted so the skinned-mesh pass can mirror the
 // same loop against its own group-2 bindings. It declares no buffers. Append
@@ -58,6 +60,8 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/sdf_light_select.wgsl"),
+    "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
     "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",

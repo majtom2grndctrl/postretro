@@ -131,6 +131,8 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
+    "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
@@ -2003,6 +2005,31 @@ mod tests {
     };
     use glam::Vec3;
 
+    fn extract_wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("fn {name} should have a body"));
+        let mut depth = 0i32;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..body_start + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("fn {name} should close its body");
+    }
+
     #[test]
     fn skinned_mesh_wgsl_parses() {
         let module = naga::front::wgsl::parse_str(SKINNED_MESH_SHADER_SOURCE)
@@ -2129,13 +2156,12 @@ mod tests {
         );
     }
 
-    // Guard the group-2 params uniform layout contract: `MeshLightParams`
-    // { light_count: u32, time: f32, light_term_mask: u32, ambient_floor: f32 }
-    // — 16 B std140, mirrored by the WGSL `MeshLightParams` struct at group 2
-    // binding 4. The mesh dynamic-light loop reads `time` for scripted-curve phase,
-    // `light_term_mask` for the forward-matching per-term gates, and `ambient_floor`
-    // for the constant additive fill, so a silent layout edit on either side must
-    // fail here.
+    // Guard the group-2 params uniform layout contract: `MeshLightParams` is eight
+    // u32/f32 lanes (32 B std140), mirrored by the WGSL struct at group 2 binding 4.
+    // Its first row holds the total count, time, term mask, and ambient floor;
+    // `dynamic_light_count` begins the explicit padded second row at byte 16. That
+    // count separates dynamic-prefix records from appended promoted static records,
+    // so a silent layout edit on either side must fail here.
     #[test]
     fn mesh_light_params_is_thirty_two_bytes() {
         assert_eq!(
@@ -2380,6 +2406,19 @@ mod tests {
                 && forward_src
                     .contains("let use_dynamic = (light_terms & LIGHT_TERM_DYNAMIC_DIRECT) != 0u;"),
             "forward.wgsl must keep LightTermMask bit 5 as its dynamic-direct gate",
+        );
+    }
+
+    #[test]
+    fn skinned_mesh_animated_descriptors_are_limited_to_dynamic_prefix() {
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/skinned_mesh.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop.contains("if i < mesh_light_params.dynamic_light_count {")
+                && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
+            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
     }
 

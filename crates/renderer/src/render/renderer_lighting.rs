@@ -15,6 +15,26 @@ fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Opti
     (count <= capacity).then_some(count)
 }
 
+/// Validate the bridge upload that fills the compact dynamic descriptor prefix.
+/// Promoted static records are appended to the light buffer but have no descriptor
+/// slots, so an upload must end at `dynamic_light_count` rather than their total
+/// forward-light count.
+fn dynamic_descriptor_prefix_len(
+    descriptor_bytes_len: usize,
+    dynamic_light_count: u32,
+    dynamic_light_capacity: usize,
+) -> Option<usize> {
+    let expected = dynamic_light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+    (descriptor_bytes_len == expected
+        && bridge_record_count(
+            descriptor_bytes_len,
+            sh_volume::ANIMATION_DESCRIPTOR_SIZE,
+            dynamic_light_capacity,
+        )
+        .is_some())
+    .then_some(expected)
+}
+
 /// Pack the SH grid metadata the SDF shadow pass needs for its open-space
 /// skip uniform. Mirrors what the forward pass reads from `ShGridInfo` (group
 /// 3) — replicating it here lets the shadow pass keep group 3 off its
@@ -444,15 +464,12 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected = full.light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
-        if descriptor_bytes.len() != expected
-            || bridge_record_count(
-                descriptor_bytes.len(),
-                sh_volume::ANIMATION_DESCRIPTOR_SIZE,
-                full.dynamic_light_capacity,
-            )
-            .is_none()
-        {
+        let Some(prefix_len) = dynamic_descriptor_prefix_len(
+            descriptor_bytes.len(),
+            full.light_count,
+            full.dynamic_light_capacity,
+        ) else {
+            let expected = full.light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
@@ -462,14 +479,14 @@ impl Renderer {
                 expected,
             );
             return;
-        }
-        if descriptor_bytes.is_empty() {
+        };
+        if prefix_len == 0 {
             return;
         }
         queue.write_buffer(
             &full.sh_volume_resources.scripted_light_descriptors,
             0,
-            descriptor_bytes,
+            &descriptor_bytes[..prefix_len],
         );
     }
 
@@ -737,6 +754,33 @@ mod bridge_contract_tests {
         assert_eq!(
             bridge_record_count(5 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4),
             None
+        );
+    }
+
+    // Regression: a dynamic-light despawn contracts the descriptor upload from
+    // K+1 records to K, while promoted static records may occupy the stale K tail.
+    #[test]
+    fn dynamic_descriptor_prefix_contraction_excludes_stale_promoted_tail() {
+        let stride = sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+        let mut gpu_bytes = vec![0u8; 3 * stride];
+        gpu_bytes[stride..2 * stride].fill(0xAB); // Previous dynamic descriptor K.
+
+        let dynamic_count_after_despawn = 1u32;
+        let uploaded_prefix = dynamic_descriptor_prefix_len(stride, dynamic_count_after_despawn, 3)
+            .expect("one live dynamic descriptor should fill exactly its prefix");
+        gpu_bytes[..uploaded_prefix].fill(0xCD);
+
+        assert_eq!(uploaded_prefix, stride);
+        assert!(
+            gpu_bytes[stride..2 * stride]
+                .iter()
+                .all(|&byte| byte == 0xAB),
+            "the uploader intentionally leaves the old dynamic tail intact",
+        );
+        assert_eq!(
+            dynamic_descriptor_prefix_len(2 * stride, dynamic_count_after_despawn, 3),
+            None,
+            "a promoted record after the contracted prefix must never gain a descriptor slot",
         );
     }
 }

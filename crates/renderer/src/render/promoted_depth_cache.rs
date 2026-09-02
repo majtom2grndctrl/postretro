@@ -1,3 +1,5 @@
+// Renderer-owned promoted-shadow depth-cache planning and reuse state.
+// See: context/lib/rendering_pipeline.md §4
 use super::renderer_types::{
     MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind, PromotedStaticLightRecord,
 };

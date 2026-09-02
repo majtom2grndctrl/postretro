@@ -235,29 +235,33 @@ fn accumulate_dynamic_direct(
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
-        let scripted_desc = scripted_light_descriptors[i];
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
-        if scripted_desc.is_active != 0u {
-            let cycle_t = animation_curve_t(
-                scripted_desc.period,
-                scripted_desc.phase,
-                kinematic_light_params.time,
-            );
-            if scripted_desc.color_count > 0u {
-                let unit_sample = max(
-                    sample_color_catmull_rom(scripted_desc.color_offset, scripted_desc.color_count, cycle_t, scripted_desc.base_color),
-                    vec3<f32>(0.0),
+        // Only dynamic-tier lights own descriptor slots. Promoted static records
+        // append after that prefix and must not read stale descriptor tail bytes.
+        if i < kinematic_light_params.dynamic_light_count {
+            let scripted_desc = scripted_light_descriptors[i];
+            if scripted_desc.is_active != 0u {
+                let cycle_t = animation_curve_t(
+                    scripted_desc.period,
+                    scripted_desc.phase,
+                    kinematic_light_params.time,
                 );
-                let intensity = light_eval_scripted_intensity_scalar(light.color_and_falloff_model.xyz, scripted_desc.base_color);
-                let brightness = max(sample_curve_catmull_rom(scripted_desc.brightness_offset, scripted_desc.brightness_count, cycle_t), 0.0);
-                effective_color = unit_sample * intensity * brightness;
-            } else if scripted_desc.brightness_count > 0u {
-                let brightness = max(sample_curve_catmull_rom(scripted_desc.brightness_offset, scripted_desc.brightness_count, cycle_t), 0.0);
-                effective_color = light.color_and_falloff_model.xyz * brightness;
-            }
-            if light_type == 1u && scripted_desc.direction_count > 0u {
-                effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
+                if scripted_desc.color_count > 0u {
+                    let unit_sample = max(
+                        sample_color_catmull_rom(scripted_desc.color_offset, scripted_desc.color_count, cycle_t, scripted_desc.base_color),
+                        vec3<f32>(0.0),
+                    );
+                    let intensity = light_eval_scripted_intensity_scalar(light.color_and_falloff_model.xyz, scripted_desc.base_color);
+                    let brightness = max(sample_curve_catmull_rom(scripted_desc.brightness_offset, scripted_desc.brightness_count, cycle_t), 0.0);
+                    effective_color = unit_sample * intensity * brightness;
+                } else if scripted_desc.brightness_count > 0u {
+                    let brightness = max(sample_curve_catmull_rom(scripted_desc.brightness_offset, scripted_desc.brightness_count, cycle_t), 0.0);
+                    effective_color = light.color_and_falloff_model.xyz * brightness;
+                }
+                if light_type == 1u && scripted_desc.direction_count > 0u {
+                    effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
+                }
             }
         }
 

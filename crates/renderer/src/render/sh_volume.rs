@@ -1354,6 +1354,8 @@ mod tests {
             // must include it (mirrors the runtime `SHADER_SOURCE`).
             include_str!("../shaders/sdf_light_select.wgsl"),
             "\n",
+            include_str!("../shaders/light_falloff.wgsl"),
+            "\n",
             // M10 Task 1: forward calls the shared dynamic-light eval helpers
             // (`light_eval_*`), so the composed source mirrors the runtime
             // `SHADER_SOURCE` and stays parseable.

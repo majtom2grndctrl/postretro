@@ -1,5 +1,5 @@
 // Static CellVisibility bake over the compiler portal graph.
-// See: context/plans/in-progress/cell-visibility-relation/index.md
+// See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::{
     cmp::Ordering,
@@ -15,11 +15,21 @@ use postretro_level_format::cell_visibility::{
 };
 use rayon::{ThreadPoolBuilder, prelude::*};
 
-use crate::{bake_control::BakeControl, partition::BspTree, portals::Portal};
+use crate::{
+    bake_control::BakeControl,
+    cache::{CacheKey, StageCache},
+    partition::BspTree,
+    portals::Portal,
+};
 
 mod metrics;
 
 use metrics::{fixed_point_value, portal_metrics};
+
+/// Cache stage for the whole CellVisibility section.
+pub const CELL_VISIBILITY_STAGE_ID: &str = "cell_visibility";
+/// Bump when CellVisibility coupling, ranking, or wire payload semantics change.
+pub const CELL_VISIBILITY_STAGE_VERSION: u32 = 1;
 
 /// Bake the conservative reachability gate and its bounded graded horizon.
 pub fn cell_visibility_bake(
@@ -27,18 +37,8 @@ pub fn cell_visibility_bake(
     portals: &[Portal],
     control: &BakeControl,
 ) -> anyhow::Result<CellVisibilitySection> {
-    let cell_count = tree.leaves.len();
-    anyhow::ensure!(
-        cell_count != 0,
-        "CellVisibility requires at least one BSP leaf"
-    );
-    let cell_count_u32 = u32::try_from(cell_count)
-        .map_err(|_| anyhow::anyhow!("CellVisibility cannot encode more than u32::MAX cells"))?;
-    control.publish_total(
-        cell_count
-            .checked_mul(2)
-            .ok_or_else(|| anyhow::anyhow!("CellVisibility progress unit count overflow"))?,
-    );
+    let (cell_count, cell_count_u32, progress_units) = cell_visibility_counts(tree)?;
+    control.publish_total(progress_units);
 
     let portal_edges = portal_edges(tree, portals);
     let component_ids = component_ids(cell_count, &portal_edges, control);
@@ -56,6 +56,145 @@ pub fn cell_visibility_bake(
         component_ids,
         coupled_pairs,
     })
+}
+
+/// Bake or load the CellVisibility payload. The wrapper returns encoded bytes so
+/// the pipeline keeps the existing fallible `to_bytes()` contract on both paths.
+/// With no cache it delegates directly to the original bake and performs no
+/// cache I/O.
+pub fn cell_visibility_bake_cached(
+    tree: &BspTree,
+    portals: &[Portal],
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> anyhow::Result<Vec<u8>> {
+    let Some(cache) = cache else {
+        return Ok(cell_visibility_bake(tree, portals, control)?.to_bytes()?);
+    };
+
+    // Validate exactly as the uncached bake does before a cache hit can bypass
+    // its setup. This also supplies the expected wire cell count for decoding.
+    let (_, cell_count_u32, progress_units) = cell_visibility_counts(tree)?;
+    let key = cell_visibility_cache_key(tree, portals, CELL_VISIBILITY_STAGE_VERSION);
+
+    if let Some(data) = cache.get(&key) {
+        match CellVisibilitySection::from_bytes(&data, cell_count_u32) {
+            Ok(section) => {
+                log::info!("[cache] cell_visibility hit");
+                // The worker is skipped on a hit, so reproduce its complete
+                // `cell_count * 2` accounting on the orchestrator thread.
+                control.publish_total(progress_units);
+                control.governor().checkpoint();
+                control.advance(progress_units);
+                return Ok(section.to_bytes()?);
+            }
+            Err(error) => {
+                log::warn!("[cache] corrupt cell_visibility entry, re-baking: {error}");
+                log::info!("[cache] cell_visibility miss");
+            }
+        }
+    } else {
+        log::info!("[cache] cell_visibility miss");
+    }
+
+    let bytes = cell_visibility_bake(tree, portals, control)?.to_bytes()?;
+    cache.put(&key, &bytes);
+    Ok(bytes)
+}
+
+/// Derive the CellVisibility whole-section key from every structural value the
+/// bake reads. Lights intentionally do not participate: they never influence
+/// portal components or coupled-pair grading.
+pub(crate) fn cell_visibility_cache_key(
+    tree: &BspTree,
+    portals: &[Portal],
+    stage_version: u32,
+) -> CacheKey {
+    let mut hasher = blake3::Hasher::new();
+
+    // The bake assigns CellIds from leaf position and reads each leaf's bounds
+    // for hub distances and solidity for portal admission.
+    hasher.update(
+        &u64::try_from(tree.leaves.len())
+            .expect("leaf count fits u64")
+            .to_le_bytes(),
+    );
+    for leaf in &tree.leaves {
+        for coordinate in [
+            leaf.bounds.min.x,
+            leaf.bounds.min.y,
+            leaf.bounds.min.z,
+            leaf.bounds.max.x,
+            leaf.bounds.max.y,
+            leaf.bounds.max.z,
+        ] {
+            hasher.update(&coordinate.to_le_bytes());
+        }
+        hasher.update(&[u8::from(leaf.is_solid)]);
+    }
+
+    // Input order is significant: equal-aperture maximum-spanning-tree ties
+    // resolve by this portal's original input index. The bake reduces each
+    // polygon to its metrics, so fold those exact values rather than a render
+    // geometry hash or unrelated portal representation.
+    hasher.update(
+        &u64::try_from(portals.len())
+            .expect("portal count fits u64")
+            .to_le_bytes(),
+    );
+    for portal in portals {
+        hasher.update(
+            &u64::try_from(portal.front_leaf)
+                .expect("portal front leaf index fits u64")
+                .to_le_bytes(),
+        );
+        hasher.update(
+            &u64::try_from(portal.back_leaf)
+                .expect("portal back leaf index fits u64")
+                .to_le_bytes(),
+        );
+
+        let metrics = portal_metrics(&portal.polygon);
+        match metrics.centroid {
+            Some(centroid) => {
+                hasher.update(&[1]);
+                for coordinate in [centroid.x, centroid.y, centroid.z] {
+                    hasher.update(&coordinate.to_le_bytes());
+                }
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+        hasher.update(&metrics.minimum_width.to_le_bytes());
+    }
+
+    hasher.update(&CELL_VISIBILITY_DISTANCE_CAP.to_le_bytes());
+    hasher.update(
+        &u64::try_from(CELL_VISIBILITY_FANOUT_K)
+            .expect("CellVisibility fanout fits u64")
+            .to_le_bytes(),
+    );
+
+    CacheKey::new(
+        CELL_VISIBILITY_STAGE_ID,
+        stage_version,
+        hasher.finalize().as_bytes(),
+    )
+}
+
+fn cell_visibility_counts(tree: &BspTree) -> anyhow::Result<(usize, u32, usize)> {
+    let cell_count = tree.leaves.len();
+    anyhow::ensure!(
+        cell_count != 0,
+        "CellVisibility requires at least one BSP leaf"
+    );
+    let cell_count_u32 = u32::try_from(cell_count)
+        .map_err(|_| anyhow::anyhow!("CellVisibility cannot encode more than u32::MAX cells"))?;
+    let progress_units = cell_count
+        .checked_mul(2)
+        .ok_or_else(|| anyhow::anyhow!("CellVisibility progress unit count overflow"))?;
+    Ok((cell_count, cell_count_u32, progress_units))
 }
 
 #[derive(Clone, Copy)]
@@ -566,6 +705,7 @@ impl UnionFind {
 mod tests {
     use std::{
         collections::VecDeque,
+        path::PathBuf,
         sync::Arc,
         thread,
         time::{Duration, Instant},
@@ -577,6 +717,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        cache::StageCache,
         governor::Governor,
         partition::{Aabb, BspLeaf, BspTree},
         reporter::StageProgress,
@@ -620,6 +761,15 @@ mod tests {
         BakeControl::new(Arc::new(Governor::new(permits, false)), progress)
     }
 
+    fn fresh_cache_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_cell_visibility_cache_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
     fn pair(section: &CellVisibilitySection, first: u32, second: u32) -> Option<CoupledPairRecord> {
         let (cell_a, cell_b) = (first.min(second), first.max(second));
         section
@@ -627,6 +777,172 @@ mod tests {
             .iter()
             .copied()
             .find(|pair| pair.cell_a == cell_a && pair.cell_b == cell_b)
+    }
+
+    #[test]
+    fn cache_key_folds_structural_inputs_and_stage_version() {
+        let bsp = tree(
+            &[
+                DVec3::ZERO,
+                DVec3::new(2.0, 0.0, 0.0),
+                DVec3::new(4.0, 0.0, 0.0),
+            ],
+            &[false, false, false],
+        );
+        let portals = vec![
+            square_portal(0, 1, DVec3::X, 2.0),
+            square_portal(1, 2, DVec3::new(3.0, 0.0, 0.0), 1.0),
+        ];
+        let baseline = cell_visibility_cache_key(&bsp, &portals, CELL_VISIBILITY_STAGE_VERSION);
+
+        let changed_version =
+            cell_visibility_cache_key(&bsp, &portals, CELL_VISIBILITY_STAGE_VERSION + 1);
+        assert_ne!(baseline.as_filename(), changed_version.as_filename());
+
+        let mut changed_bounds = tree(
+            &[
+                DVec3::ZERO,
+                DVec3::new(2.0, 0.0, 0.0),
+                DVec3::new(4.0, 0.0, 0.0),
+            ],
+            &[false, false, false],
+        );
+        changed_bounds.leaves[1].bounds.max.x += 0.25;
+        assert_ne!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&changed_bounds, &portals, CELL_VISIBILITY_STAGE_VERSION)
+                .as_filename(),
+            "leaf bounds drive portal-hub distances and must invalidate the cache"
+        );
+
+        let changed_solidity = tree(
+            &[
+                DVec3::ZERO,
+                DVec3::new(2.0, 0.0, 0.0),
+                DVec3::new(4.0, 0.0, 0.0),
+            ],
+            &[false, true, false],
+        );
+        assert_ne!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&changed_solidity, &portals, CELL_VISIBILITY_STAGE_VERSION)
+                .as_filename(),
+            "leaf solidity gates portal admission and must invalidate the cache"
+        );
+
+        let changed_adjacency = vec![
+            square_portal(0, 1, DVec3::X, 2.0),
+            square_portal(0, 2, DVec3::new(3.0, 0.0, 0.0), 1.0),
+        ];
+        assert_ne!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&bsp, &changed_adjacency, CELL_VISIBILITY_STAGE_VERSION)
+                .as_filename(),
+            "portal leaf adjacency must invalidate the cache"
+        );
+
+        let changed_portal_metrics = vec![
+            square_portal(0, 1, DVec3::X, 2.0),
+            square_portal(1, 2, DVec3::new(3.25, 0.0, 0.0), 0.5),
+        ];
+        assert_ne!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&bsp, &changed_portal_metrics, CELL_VISIBILITY_STAGE_VERSION)
+                .as_filename(),
+            "portal centroid and aperture must invalidate the cache"
+        );
+
+        let reordered_portals = vec![
+            square_portal(1, 2, DVec3::new(3.0, 0.0, 0.0), 2.0),
+            square_portal(0, 1, DVec3::X, 2.0),
+        ];
+        assert_ne!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&bsp, &reordered_portals, CELL_VISIBILITY_STAGE_VERSION)
+                .as_filename(),
+            "portal order breaks maximum-spanning-tree ties and must invalidate the cache"
+        );
+
+        // The builder accepts only tree and portal inputs; lights cannot enter
+        // this key, so a light-only edit reuses this unchanged structural key.
+        assert_eq!(
+            baseline.as_filename(),
+            cell_visibility_cache_key(&bsp, &portals, CELL_VISIBILITY_STAGE_VERSION).as_filename()
+        );
+    }
+
+    #[test]
+    fn cached_bake_is_byte_identical_and_replays_progress() {
+        let tree = tree(&[DVec3::ZERO, DVec3::new(2.0, 0.0, 0.0)], &[false, false]);
+        let portals = vec![square_portal(0, 1, DVec3::X, 2.0)];
+        let dir = fresh_cache_dir("round_trip");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let cold_progress = StageProgress::indeterminate();
+        let cold =
+            cell_visibility_bake_cached(&tree, &portals, None, &test_control(&cold_progress, 1))
+                .expect("uncached CellVisibility bake");
+
+        let first_progress = StageProgress::indeterminate();
+        let first = cell_visibility_bake_cached(
+            &tree,
+            &portals,
+            Some(&cache),
+            &test_control(&first_progress, 1),
+        )
+        .expect("cache-miss CellVisibility bake");
+
+        let warm_progress = StageProgress::indeterminate();
+        let warm = cell_visibility_bake_cached(
+            &tree,
+            &portals,
+            Some(&cache),
+            &test_control(&warm_progress, 1),
+        )
+        .expect("cache-hit CellVisibility bake");
+
+        assert_eq!(cold, first, "cache miss must retain uncached bytes");
+        assert_eq!(first, warm, "cache hit must retain baked bytes exactly");
+        assert_eq!(first_progress.total(), Some(tree.leaves.len() * 2));
+        assert_eq!(first_progress.completed(), tree.leaves.len() * 2);
+        assert_eq!(warm_progress.total(), Some(tree.leaves.len() * 2));
+        assert_eq!(warm_progress.completed(), tree.leaves.len() * 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_cached_section_is_a_soft_miss_and_rebakes() {
+        let tree = tree(&[DVec3::ZERO, DVec3::new(2.0, 0.0, 0.0)], &[false, false]);
+        let portals = vec![square_portal(0, 1, DVec3::X, 2.0)];
+        let dir = fresh_cache_dir("corrupt");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+
+        let reference = cell_visibility_bake_cached(
+            &tree,
+            &portals,
+            Some(&cache),
+            &BakeControl::unrestricted(),
+        )
+        .expect("initial CellVisibility bake");
+        let key = cell_visibility_cache_key(&tree, &portals, CELL_VISIBILITY_STAGE_VERSION);
+        // This remains a valid StageCache entry, but fails the CellVisibility
+        // codec's expected-cell-count validation and must fall through to bake.
+        cache.put(&key, b"not a CellVisibility section");
+
+        let progress = StageProgress::indeterminate();
+        let capture = LogCapture::start();
+        let rebaked =
+            cell_visibility_bake_cached(&tree, &portals, Some(&cache), &test_control(&progress, 1))
+                .expect("malformed cached section must re-bake");
+
+        assert_eq!(rebaked, reference);
+        assert_eq!(progress.total(), Some(tree.leaves.len() * 2));
+        assert_eq!(progress.completed(), tree.leaves.len() * 2);
+        capture.assert_logged_once(Level::Warn, "[cache] corrupt cell_visibility entry");
+        capture.assert_logged_once(Level::Info, "[cache] cell_visibility miss");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

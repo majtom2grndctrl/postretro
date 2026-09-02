@@ -54,6 +54,7 @@ use crate::affinity_grid::{
 };
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
+use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
@@ -72,6 +73,16 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// Versions independently from the indirect SH stages and from the
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
 pub const DIRECT_SH_STAGE_VERSION: u32 = 2;
+
+/// Cache stage id for raw entity-shadow direct-delta `(affinity cell, light)`
+/// sub-blocks. It stays distinct from the base direct-SH section and the other
+/// two delta stages because all three delta payloads share the same f16 shape.
+pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
+
+/// Bump when the raw direct-delta sub-block computation or its cache-key inputs
+/// change. This epoch is independent from both the base direct-SH cache and the
+/// on-disk direct-delta section format.
+pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 1;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -302,6 +313,7 @@ pub fn bake_direct_sh_delta_volumes(
         config,
         alpha_lights,
         entity_shadow_lights,
+        None,
         &BakeControl::unrestricted(),
     )
 }
@@ -311,22 +323,48 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)> {
+    bake_direct_sh_delta_volumes_controlled_with_tally(
+        inputs,
+        config,
+        alpha_lights,
+        entity_shadow_lights,
+        cache,
+        control,
+    )
+    .0
+}
+
+/// Test-facing cache accounting for selected entity-shadow delta entries.
+/// The pipeline only consumes the reconstructed section and pre-drop stats;
+/// tests additionally pin the per-CSR-entry cache locality contract.
+pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> (
+    Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
+    DeltaShCacheTally,
+) {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
     {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
 
     let selected = selected_direct_lights(inputs, alpha_lights, entity_shadow_lights);
     if selected.is_empty() {
-        return None;
+        return (None, DeltaShCacheTally::default());
     }
     let selected_lights: Vec<&MapLight> = selected.iter().map(|entry| entry.light).collect();
 
@@ -351,53 +389,109 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
     if affinity_lights.is_empty() {
-        return None;
+        control.publish_total(0);
+        return (None, DeltaShCacheTally::default());
     }
     control.publish_total(affinity_lights.len());
 
     let csr_cells = csr_entry_cells(&affinity_offsets);
-    let delta_subblocks: Vec<u16> = affinity_lights
-        .par_iter()
-        .zip(csr_cells.par_iter())
-        .flat_map(|(&selection_index, &cell)| {
-            let _permit = control.governor().enter();
+    let valid_probe_masks = direct_delta_valid_probe_masks(&layout, affinity_dims);
+    let keyed_lights: Vec<MapLight> = selected.iter().map(|entry| entry.light.clone()).collect();
+    let light_seed_axes: Vec<u64> = selected.iter().map(|entry| entry.static_index).collect();
+    let cached_subblocks = bake_or_load_delta_subblocks(
+        &DeltaShCacheInputs {
+            stage_id: DIRECT_SH_DELTA_STAGE_ID,
+            stage_version: DIRECT_SH_DELTA_STAGE_VERSION,
+            geometry_hash: geometry_content_hash(inputs.sh_ctx.geometry),
+            affinity_dims,
+            affinity_lights: &affinity_lights,
+            csr_entry_cells: &csr_cells,
+            valid_probe_masks: &valid_probe_masks,
+            probe_spacing: config.probe_spacing,
+            light_seed_axes: &light_seed_axes,
+            expected_subblock_f16_len: FORMAT_PROBES_PER_CELL
+                * delta_probe_f16_stride(TILE_DIMENSION),
+        },
+        &keyed_lights,
+        cache,
+        control,
+        |selection_index, cell| {
             let selection_slot = usize::try_from(selection_index)
                 .expect("direct SH delta selection indices fit usize");
             let entry = selected
                 .get(selection_slot)
                 .copied()
                 .expect("direct SH delta CSR entry must index the selected-light slice");
-            let subblock =
-                bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell);
-            control.advance(1);
-            subblock
-        })
-        .collect();
+            bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell)
+        },
+    );
+
+    let section = DirectShDeltaVolumesSection {
+        affinity_factor: FORMAT_AFFINITY_FACTOR,
+        affinity_dims,
+        tile_dimension: TILE_DIMENSION,
+        tile_border: TILE_BORDER,
+        valid_probe_masks: vec![u64::MAX; affinity_cell_count],
+        cell_levels: vec![0u8; affinity_cell_count],
+        affinity_offsets,
+        affinity_lights,
+        delta_subblocks: cached_subblocks.subblocks,
+    };
+    let stats = direct_delta_bake_stats(&section, &selected);
+    debug_assert_eq!(
+        stats.total_bytes,
+        section.delta_subblocks.len() * std::mem::size_of::<u16>()
+    );
+
+    (Some((section, stats)), cached_subblocks.tally)
+}
+
+#[derive(Clone, Copy)]
+struct SelectedDirectLight<'a> {
+    light: &'a MapLight,
+    static_index: u64,
+}
+
+/// Rebuild direct-delta diagnostics from the raw pre-drop section. The section
+/// stores selection slots, so the corresponding global static-light index must
+/// come from the freshly resolved selection list rather than from the payload.
+fn direct_delta_bake_stats(
+    section: &DirectShDeltaVolumesSection,
+    selected: &[SelectedDirectLight<'_>],
+) -> DirectDeltaBakeStats {
+    assert!(
+        !section.affinity_lights.is_empty(),
+        "direct SH delta stats require at least one CSR entry"
+    );
+    assert_eq!(
+        section.delta_subblocks.len() % section.affinity_lights.len(),
+        0,
+        "direct SH delta raw sub-block payloads must stay entry-parallel"
+    );
 
     // `build_csr` numbers each entry by its position in `selected`, so these are
     // selection slots rather than AlphaLights/source-light ids. The bake reads
     // the same producer contract above when resolving each selected light.
     let mut csr_entry_counts = vec![0usize; selected.len()];
-    for &selection_index in &affinity_lights {
-        let slot =
+    for &selection_index in &section.affinity_lights {
+        let selection_slot =
             usize::try_from(selection_index).expect("direct SH delta selection indices fit usize");
-        let Some(count) = csr_entry_counts.get_mut(slot) else {
+        let Some(count) = csr_entry_counts.get_mut(selection_slot) else {
             unreachable!("direct SH delta CSR entry must index the selected-light slice");
         };
         *count += 1;
     }
 
-    let per_entry_payload_bytes = FORMAT_PROBES_PER_CELL
-        * delta_probe_f16_stride(TILE_DIMENSION)
-        * std::mem::size_of::<u16>();
+    let per_entry_payload_bytes =
+        section.delta_subblocks.len() / section.affinity_lights.len() * std::mem::size_of::<u16>();
     let mut rows: Vec<_> = selected
         .iter()
         .enumerate()
-        .filter_map(|(selection_slot, light)| {
+        .filter_map(|(selection_slot, selected_light)| {
             let csr_entry_count = csr_entry_counts[selection_slot];
             (csr_entry_count != 0).then_some(DirectDeltaBakeStatsRow {
                 selection_slot,
-                static_index: light.static_index,
+                static_index: selected_light.static_index,
                 csr_entry_count,
                 byte_total: csr_entry_count * per_entry_payload_bytes,
             })
@@ -411,29 +505,49 @@ pub fn bake_direct_sh_delta_volumes_controlled(
     });
     let total_bytes = rows.iter().map(|row| row.byte_total).sum();
 
-    let section = DirectShDeltaVolumesSection {
-        affinity_factor: FORMAT_AFFINITY_FACTOR,
-        affinity_dims,
-        tile_dimension: TILE_DIMENSION,
-        tile_border: TILE_BORDER,
-        valid_probe_masks: vec![u64::MAX; affinity_cell_count],
-        cell_levels: vec![0u8; affinity_cell_count],
-        affinity_offsets,
-        affinity_lights,
-        delta_subblocks,
-    };
-    debug_assert_eq!(
-        total_bytes,
-        section.delta_subblocks.len() * std::mem::size_of::<u16>()
-    );
-
-    Some((section, DirectDeltaBakeStats { rows, total_bytes }))
+    DirectDeltaBakeStats { rows, total_bytes }
 }
 
-#[derive(Clone, Copy)]
-struct SelectedDirectLight<'a> {
-    light: &'a MapLight,
-    static_index: u64,
+/// Per-cell probe validity for direct-delta cache keys. The raw section still
+/// encodes dense L0 blocks and leaves compaction to the downstream pipeline,
+/// but cache entries must miss when the shared SH grid's validity changes.
+fn direct_delta_valid_probe_masks(layout: &ProbeGridLayout, affinity_dims: [u32; 3]) -> Vec<u64> {
+    let affinity_cell_count = affinity_dims[0] * affinity_dims[1] * affinity_dims[2];
+    let grid_width = layout.dims[0] as usize;
+    let grid_height = layout.dims[1] as usize;
+
+    (0..affinity_cell_count)
+        .map(|cell| {
+            let cell_x = cell % affinity_dims[0];
+            let cell_y = (cell / affinity_dims[0]) % affinity_dims[1];
+            let cell_z = cell / (affinity_dims[0] * affinity_dims[1]);
+            let mut mask = 0u64;
+
+            for local_z in 0..AFFINITY_FACTOR {
+                for local_y in 0..AFFINITY_FACTOR {
+                    for local_x in 0..AFFINITY_FACTOR {
+                        let px = cell_x * AFFINITY_FACTOR + local_x;
+                        let py = cell_y * AFFINITY_FACTOR + local_y;
+                        let pz = cell_z * AFFINITY_FACTOR + local_z;
+                        if px >= layout.dims[0] || py >= layout.dims[1] || pz >= layout.dims[2] {
+                            continue;
+                        }
+
+                        let probe_index = pz as usize * grid_width * grid_height
+                            + py as usize * grid_width
+                            + px as usize;
+                        if layout.validity[probe_index] != 0 {
+                            let local_index = local_x
+                                + local_y * AFFINITY_FACTOR
+                                + local_z * AFFINITY_FACTOR * AFFINITY_FACTOR;
+                            mask |= 1u64 << local_index;
+                        }
+                    }
+                }
+            }
+            mask
+        })
+        .collect()
 }
 
 fn selected_direct_lights<'a>(
@@ -1565,6 +1679,7 @@ mod tests {
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
+            None,
             &control,
         )
         .expect("selected lights should produce direct deltas");
@@ -1590,6 +1705,92 @@ mod tests {
             !delta.affinity_lights.contains(&2),
             "AlphaLights index 2 must not appear in affinity_lights"
         );
+    }
+
+    #[test]
+    fn direct_sh_delta_all_culled_publishes_zero_progress() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // The far source lands in leaf 1, while every affinity-cell centroid for
+        // this compact geometry lands in leaf 0. With no portal, the production
+        // reach flood rejects every AABB-clamped candidate cell.
+        let tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: 100.0,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: CompilerAabb {
+                        min: DVec3::splat(-1000.0),
+                        max: DVec3::splat(1000.0),
+                    },
+                    is_solid: false,
+                    defining_planes: Vec::new(),
+                },
+                BspLeaf {
+                    face_indices: Vec::new(),
+                    bounds: CompilerAabb {
+                        min: DVec3::splat(-1000.0),
+                        max: DVec3::splat(1000.0),
+                    },
+                    is_solid: false,
+                    defining_planes: Vec::new(),
+                },
+            ],
+        };
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(
+            DVec3::splat(500.0),
+            1.0,
+            [1.0, 0.7, 0.4],
+        )];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+
+        let (section, tally) = bake_direct_sh_delta_volumes_controlled_with_tally(
+            &inputs,
+            &ShConfig { probe_spacing: 1.0 },
+            &alpha_lights,
+            &selected,
+            None,
+            &control,
+        );
+
+        assert!(
+            section.is_none(),
+            "all-culled selected lights omit direct deltas"
+        );
+        assert_eq!(progress.total(), Some(0));
+        assert_eq!(progress.completed(), 0);
+        assert_eq!(tally, DeltaShCacheTally::default());
     }
 
     #[test]
@@ -1650,6 +1851,40 @@ mod tests {
             stats.total_bytes,
             "per-selection-slot histogram rows must sum to the total"
         );
+    }
+
+    #[test]
+    fn direct_sh_delta_cache_key_changes_when_stage_version_changes() {
+        let light = static_point_light(DVec3::new(1.0, 2.0, 3.0), 8.0, [0.25, 0.5, 0.75]);
+        let key = crate::delta_sh_cache::delta_sh_entry_cache_key(
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: DIRECT_SH_DELTA_STAGE_ID,
+                stage_version: DIRECT_SH_DELTA_STAGE_VERSION,
+                geometry_hash: &[17; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 9,
+                light: &light,
+            },
+        );
+        let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
+            &crate::delta_sh_cache::DeltaShEntryKeyInputs {
+                stage_id: DIRECT_SH_DELTA_STAGE_ID,
+                stage_version: DIRECT_SH_DELTA_STAGE_VERSION + 1,
+                geometry_hash: &[17; 32],
+                affinity_dims: [2, 3, 4],
+                cell: 5,
+                probe_spacing: 1.0,
+                valid_probe_mask: u64::MAX,
+                seed_axis: 9,
+                light: &light,
+            },
+        );
+
+        assert_ne!(DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_STAGE_ID);
+        assert_ne!(key.as_filename(), bumped_version_key.as_filename());
     }
 
     #[test]

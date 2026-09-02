@@ -12,10 +12,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
+use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{LightType, MapLight, ShadowType};
-use crate::partition::{BspTree, find_leaf_for_point};
+use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
 
 /// Default chunk edge length in meters. Small enough that per-chunk buckets
@@ -23,6 +24,15 @@ use crate::portals::Portal;
 pub const DEFAULT_CELL_SIZE_METERS: f32 = 8.0;
 
 pub const DEFAULT_PER_CHUNK_LIGHT_CAP: u32 = DEFAULT_PER_CHUNK_CAP;
+
+/// Shared stage-cache identity for the whole ChunkLightList section memo.
+///
+/// Bump when the bake algorithm, compacted-light slot contract, cache-key
+/// inputs, or section payload interpretation changes. This is independent of
+/// the section's on-disk version: a cache epoch invalidates disposable local
+/// entries, while the section version governs persisted PRL compatibility.
+pub const CHUNK_LIGHT_LIST_STAGE_ID: &str = "chunk_light_list";
+pub const CHUNK_LIGHT_LIST_STAGE_VERSION: u32 = 1;
 
 /// Cap total `offset table + index list` memory at 16 MB.
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -43,7 +53,7 @@ const SAMPLE_END_TOLERANCE_METERS: f32 = 0.02;
 /// Per-fragment SDF-shadow budget. Runtime traces at most K `sdf`-tagged lights
 /// per `chunk_grid` cell; extras are dropped (treated lit). The half-res shadow
 /// target has four RGBA channels — slot i maps to channel i. Compiler warns when
-/// a cell exceeds K. See `context/plans/done/sdf-per-light-shadows/`.
+/// a cell exceeds K. See `context/lib/rendering_pipeline.md` §4.
 ///
 /// Must equal `SDF_SELECT_K` in `sdf_light_select.wgsl` — that constant drives
 /// runtime selection and the half-res texture layout. Raising K also requires
@@ -70,6 +80,248 @@ pub struct ChunkLightListInputs<'a> {
     pub exterior_leaves: &'a HashSet<usize>,
 }
 
+/// Static lights in exactly the compacted `spec_lights` order used by this
+/// bake's output indices. AlphaLights source indices deliberately do not cross
+/// this seam: inserting or reordering dynamic lights must leave both the
+/// compacted slots and the cache key unchanged.
+fn compacted_static_lights<'a>(inputs: &ChunkLightListInputs<'a>) -> Vec<&'a MapLight> {
+    inputs
+        .lights
+        .entries()
+        .iter()
+        .filter(|entry| !entry.light.is_dynamic)
+        .map(|entry| entry.light)
+        .collect()
+}
+
+/// Fold the parts of the BSP input the chunk-light bake actually consumes.
+///
+/// Point location depends only on each split plane and its front/back child
+/// references; the bake additionally reads leaf solidity and the exterior set.
+/// Face lists, bounds, defining planes, and node parents are intentionally not
+/// folded because they cannot affect this bake once the geometry hash is fixed.
+fn update_bsp_fingerprint(
+    hasher: &mut blake3::Hasher,
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
+) {
+    fn update_child(hasher: &mut blake3::Hasher, child: &BspChild) {
+        match child {
+            BspChild::Node(index) => {
+                hasher.update(&[0]);
+                hasher.update(&(*index as u64).to_le_bytes());
+            }
+            BspChild::Leaf(index) => {
+                hasher.update(&[1]);
+                hasher.update(&(*index as u64).to_le_bytes());
+            }
+        }
+    }
+
+    hasher.update(&(tree.nodes.len() as u64).to_le_bytes());
+    for node in &tree.nodes {
+        for component in [
+            node.plane_normal.x,
+            node.plane_normal.y,
+            node.plane_normal.z,
+            node.plane_distance,
+        ] {
+            hasher.update(&component.to_le_bytes());
+        }
+        update_child(hasher, &node.front);
+        update_child(hasher, &node.back);
+    }
+
+    hasher.update(&(tree.leaves.len() as u64).to_le_bytes());
+    for (index, leaf) in tree.leaves.iter().enumerate() {
+        hasher.update(&[u8::from(leaf.is_solid)]);
+        hasher.update(&[u8::from(exterior_leaves.contains(&index))]);
+    }
+}
+
+/// Build the whole-section cache key for [`bake_chunk_light_list`].
+///
+/// The fold order is explicit and only includes data that can affect emitted
+/// section bytes: geometry for ray tracing/grid bounds, the point-location BSP
+/// partition and leaf state, portal leaf-pair adjacency, compacted static
+/// lights, and the two bake controls. Dynamic lights and AlphaLights source
+/// indices are excluded because the bake never reads them for its output.
+pub(crate) fn chunk_light_list_cache_key(
+    inputs: &ChunkLightListInputs<'_>,
+    cell_size_meters: f32,
+    per_chunk_cap: u32,
+) -> CacheKey {
+    chunk_light_list_cache_key_with_version(
+        inputs,
+        cell_size_meters,
+        per_chunk_cap,
+        CHUNK_LIGHT_LIST_STAGE_VERSION,
+    )
+}
+
+/// Version-parameterized key builder used by the cache-epoch regression test.
+/// The production wrapper always supplies the current stage version.
+pub(crate) fn chunk_light_list_cache_key_with_version(
+    inputs: &ChunkLightListInputs<'_>,
+    cell_size_meters: f32,
+    per_chunk_cap: u32,
+    stage_version: u32,
+) -> CacheKey {
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(&crate::sh_group::geometry_content_hash(inputs.geometry));
+    update_bsp_fingerprint(&mut hasher, inputs.tree, inputs.exterior_leaves);
+
+    // Portal polygon vertices never affect the flood: only the directed leaf
+    // pairs become adjacency entries, in generated portal order.
+    hasher.update(&(inputs.portals.len() as u64).to_le_bytes());
+    for portal in inputs.portals {
+        hasher.update(&(portal.front_leaf as u64).to_le_bytes());
+        hasher.update(&(portal.back_leaf as u64).to_le_bytes());
+    }
+
+    let static_lights = compacted_static_lights(inputs);
+    let encoded =
+        postcard::to_allocvec(&static_lights).expect("postcard serialize chunk static lights");
+    hasher.update(&(encoded.len() as u64).to_le_bytes());
+    hasher.update(&encoded);
+
+    hasher.update(&cell_size_meters.to_le_bytes());
+    hasher.update(&per_chunk_cap.to_le_bytes());
+
+    CacheKey::new(
+        CHUNK_LIGHT_LIST_STAGE_ID,
+        stage_version,
+        hasher.finalize().as_bytes(),
+    )
+}
+
+/// Bake the ChunkLightList section or load a validated whole-section memo.
+/// `None` bypasses the cache entirely: it neither reads nor writes a cache
+/// entry, preserving the exact `--no-cache` path and all bake errors.
+pub fn bake_chunk_light_list_cached(
+    inputs: &ChunkLightListInputs<'_>,
+    cell_size_meters: f32,
+    per_chunk_cap: u32,
+    cache: Option<&StageCache>,
+) -> Result<ChunkLightListSection, ChunkLightListError> {
+    let Some(cache) = cache else {
+        return bake_chunk_light_list(inputs, cell_size_meters, per_chunk_cap);
+    };
+
+    let key = chunk_light_list_cache_key(inputs, cell_size_meters, per_chunk_cap);
+    if let Some(bytes) = cache.get(&key) {
+        match ChunkLightListSection::from_bytes(&bytes) {
+            Ok(section) => match validate_cached_chunk_light_list(
+                &section,
+                inputs,
+                cell_size_meters,
+                per_chunk_cap,
+            ) {
+                Ok(()) => {
+                    log::info!("[cache] chunk_light_list hit");
+                    return Ok(section);
+                }
+                Err(reason) => {
+                    log::warn!("[cache] corrupt chunk_light_list entry, re-baking: {reason}");
+                }
+            },
+            Err(error) => {
+                log::warn!("[cache] corrupt chunk_light_list entry, re-baking: {error}");
+            }
+        }
+    }
+    log::info!("[cache] chunk_light_list miss");
+
+    // Keep the baker's error surface intact: a genuine PayloadTooLarge miss
+    // remains a compiler error and is never written as a soft cache result.
+    let section = bake_chunk_light_list(inputs, cell_size_meters, per_chunk_cap)?;
+    cache.put(&key, &section.to_bytes());
+    Ok(section)
+}
+
+/// Check decoded cache bytes against the bake context that produced their key.
+/// The section codec validates byte bounds only. This check rejects shapes that
+/// decode but cannot be emitted for the current geometry, light set, or bake
+/// controls, so cache corruption remains a soft miss rather than stale output.
+fn validate_cached_chunk_light_list(
+    section: &ChunkLightListSection,
+    inputs: &ChunkLightListInputs<'_>,
+    cell_size_meters: f32,
+    per_chunk_cap: u32,
+) -> Result<(), &'static str> {
+    let static_light_count = inputs
+        .lights
+        .entries()
+        .iter()
+        .filter(|entry| !entry.light.is_dynamic)
+        .count();
+
+    if inputs.geometry.geometry.vertices.is_empty() || static_light_count == 0 {
+        if section != &ChunkLightListSection::placeholder() {
+            return Err("expected the canonical placeholder");
+        }
+        return Ok(());
+    }
+
+    let (expected_origin, expected_cell_size, expected_dimensions) =
+        chunk_grid_layout(inputs.geometry, cell_size_meters);
+    let expected_cap = per_chunk_cap.max(1);
+    if section.has_grid != 1 {
+        return Err("expected a populated grid");
+    }
+    if section.grid_origin != expected_origin.to_array()
+        || section.cell_size != expected_cell_size
+        || section.grid_dimensions != expected_dimensions
+        || section.per_chunk_cap != expected_cap
+    {
+        return Err("grid shape does not match current bake inputs");
+    }
+
+    let expected_chunk_count = expected_dimensions
+        .iter()
+        .try_fold(1usize, |count, &dimension| {
+            count.checked_mul(dimension as usize)
+        })
+        .ok_or("expected chunk count overflows usize")?;
+    if section.offsets.len() != expected_chunk_count {
+        return Err("offset table length does not match expected grid");
+    }
+
+    let mut next_offset = 0usize;
+    let mut seen_in_chunk = vec![usize::MAX; static_light_count];
+    for (chunk_index, entry) in section.offsets.iter().enumerate() {
+        if entry.offset as usize != next_offset {
+            return Err("offset table is not canonically packed");
+        }
+        if entry.count > expected_cap {
+            return Err("chunk count exceeds the current cap");
+        }
+        let end = next_offset
+            .checked_add(entry.count as usize)
+            .ok_or("chunk index range overflows usize")?;
+        let indices = section
+            .light_indices
+            .get(next_offset..end)
+            .ok_or("chunk index range exceeds the flat list")?;
+        for &light_index in indices {
+            let light_index = light_index as usize;
+            if light_index >= static_light_count {
+                return Err("chunk references a missing compacted static-light slot");
+            }
+            if seen_in_chunk[light_index] == chunk_index {
+                return Err("chunk repeats a compacted static-light slot");
+            }
+            seen_in_chunk[light_index] = chunk_index;
+        }
+        next_offset = end;
+    }
+    if next_offset != section.light_indices.len() {
+        return Err("offset table does not consume the flat index list");
+    }
+    Ok(())
+}
+
 /// Returns a placeholder section (`has_grid == 0`) when there is nothing to bake.
 /// Runtime falls back to full-buffer iteration on placeholder.
 pub fn bake_chunk_light_list(
@@ -87,19 +339,14 @@ pub fn bake_chunk_light_list(
     // `pack_spec_lights` skips dynamic lights with no placeholder; the slot is a
     // running index over non-dynamic lights only. `enumerate()` runs AFTER the
     // `!is_dynamic` filter so the emitted index is a contiguous compacted slot.
-    let static_slots: Vec<(u32, &MapLight)> = inputs
-        .lights
-        .entries()
-        .iter()
-        .filter(|e| !e.light.is_dynamic)
+    let static_slots: Vec<(u32, &MapLight)> = compacted_static_lights(inputs)
+        .into_iter()
         .enumerate()
-        .map(|(slot, e)| (slot as u32, e.light))
+        .map(|(slot, light)| (slot as u32, light))
         .collect();
     if static_slots.is_empty() {
         return Ok(ChunkLightListSection::placeholder());
     }
-
-    let cell = cell_size_meters.max(1.0e-3);
 
     // Pad the grid bounds outward by HALF a cell on every side. Without padding,
     // `grid_origin` sits FLUSH with the lowest rendered surface (the geometry-AABB
@@ -108,9 +355,9 @@ pub fn bake_chunk_light_list(
     // flush-boundary floor lands in cell 0 and is lit; but the half-res SDF shadow
     // pass selects at a depth-RECONSTRUCTED half-res position whose sub-meter error
     // can tip that same floor to cell index -1 ("outside grid → no lights"),
-    // writing no shadow and leaving the floor reading fully lit. (forward.wgsl's
-    // "Task 4 visual check" note documents this exact full-vs-half-res selection
-    // disagreement at a chunk_grid cell boundary.)
+    // writing no shadow and leaving the floor reading fully lit. The forward
+    // shader documents this full-vs-half-res disagreement at a chunk-grid cell
+    // boundary.
     //
     // The padding must NOT be an integer multiple of `cell`: shifting the origin
     // by a whole cell only MOVES the flush boundary from the grid edge to the
@@ -131,15 +378,7 @@ pub fn bake_chunk_light_list(
     // warning, the emitted `ChunkLightListSection`), so the shift flows through
     // consistently.
     let (geo_min, geo_max) = world_aabb(inputs.geometry);
-    let pad = Vec3::splat(cell * 0.5);
-    let world_min = geo_min - pad;
-    let world_max = geo_max + pad;
-    let extent = (world_max - world_min).max(Vec3::splat(cell));
-    let dims = [
-        ((extent.x / cell).ceil() as u32).max(1),
-        ((extent.y / cell).ceil() as u32).max(1),
-        ((extent.z / cell).ceil() as u32).max(1),
-    ];
+    let (world_min, cell, dims) = chunk_grid_layout(inputs.geometry, cell_size_meters);
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
     let nz = dims[2] as usize;
@@ -448,6 +687,21 @@ fn world_aabb(geo: &GeometryResult) -> (Vec3, Vec3) {
     (min, max)
 }
 
+fn chunk_grid_layout(geo: &GeometryResult, cell_size_meters: f32) -> (Vec3, f32, [u32; 3]) {
+    let cell = cell_size_meters.max(1.0e-3);
+    let (geo_min, geo_max) = world_aabb(geo);
+    let pad = Vec3::splat(cell * 0.5);
+    let world_min = geo_min - pad;
+    let world_max = geo_max + pad;
+    let extent = (world_max - world_min).max(Vec3::splat(cell));
+    let dims = [
+        ((extent.x / cell).ceil() as u32).max(1),
+        ((extent.y / cell).ceil() as u32).max(1),
+        ((extent.z / cell).ceil() as u32).max(1),
+    ];
+    (world_min, cell, dims)
+}
+
 fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
     match light.light_type {
         LightType::Directional => true,
@@ -652,8 +906,22 @@ mod tests {
     use crate::geometry::FaceIndexRange;
     use crate::map_data::{FalloffModel, LightType, MapLight};
     use glam::DVec3;
+    use log::Level;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use postretro_test_log_capture::LogCapture;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fresh_cache_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postretro_chunk_light_list_cache_{label}_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
 
     fn point_light(origin: DVec3, range: f32) -> MapLight {
         MapLight {
@@ -948,6 +1216,303 @@ mod tests {
     }
 
     #[test]
+    fn cache_key_uses_compacted_static_lights_and_structural_inputs() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let static_light = point_light(DVec3::new(0.0, 1.0, 0.0), 4.0);
+        let static_only = vec![static_light.clone()];
+        // This insertion shifts the static light's AlphaLights position but not
+        // its compacted spec-light slot, so the whole-section key must still hit.
+        let dynamic_then_static = vec![
+            dynamic_point_light(DVec3::new(99.0, 1.0, 0.0), 1.0),
+            static_light.clone(),
+        ];
+        let static_ns = AlphaLightsNs::from_lights(&static_only);
+        let dynamic_ns = AlphaLightsNs::from_lights(&dynamic_then_static);
+        let tree = two_leaf_tree_no_portals();
+        let exterior = HashSet::new();
+        let static_inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &static_ns,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let dynamic_inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &dynamic_ns,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let baseline = chunk_light_list_cache_key(&static_inputs, 8.0, 64).as_filename();
+        assert_eq!(
+            baseline,
+            chunk_light_list_cache_key(&dynamic_inputs, 8.0, 64).as_filename(),
+            "dynamic lights and AlphaLights source positions must not invalidate the compacted bake"
+        );
+
+        let mut changed_static_light = static_light.clone();
+        changed_static_light.intensity = 2.0;
+        let changed_static_lights = vec![changed_static_light];
+        let changed_static_ns = AlphaLightsNs::from_lights(&changed_static_lights);
+        let changed_static_inputs = ChunkLightListInputs {
+            lights: &changed_static_ns,
+            ..static_inputs
+        };
+        assert_ne!(
+            baseline,
+            chunk_light_list_cache_key(&changed_static_inputs, 8.0, 64).as_filename(),
+            "a static-light edit must invalidate the section"
+        );
+
+        let solid_tree = two_leaf_tree_solid_back();
+        let solid_tree_inputs = ChunkLightListInputs {
+            tree: &solid_tree,
+            ..static_inputs
+        };
+        assert_ne!(
+            baseline,
+            chunk_light_list_cache_key(&solid_tree_inputs, 8.0, 64).as_filename(),
+            "leaf solidity changes the portal-filter bypass and must invalidate"
+        );
+
+        let (portal_tree, portals) = two_leaf_tree_with_portal();
+        let portal_inputs = ChunkLightListInputs {
+            tree: &portal_tree,
+            portals: &portals,
+            ..static_inputs
+        };
+        assert_ne!(
+            baseline,
+            chunk_light_list_cache_key(&portal_inputs, 8.0, 64).as_filename(),
+            "portal leaf-pair adjacency must invalidate the reachability bake"
+        );
+    }
+
+    #[test]
+    fn cached_chunk_light_list_matches_uncached_and_rebakes_corruption() {
+        let dir = fresh_cache_dir("round_trip");
+        let cache = StageCache::new(&dir).expect("create cache directory");
+
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let uncached = bake_chunk_light_list_cached(&inputs, 8.0, 64, None)
+            .expect("uncached bake must succeed")
+            .to_bytes();
+        let first = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("cached miss must succeed")
+            .to_bytes();
+        let second = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("cached hit must succeed")
+            .to_bytes();
+        assert_eq!(uncached, first, "cached miss must match uncached bytes");
+        assert_eq!(
+            first, second,
+            "cached hit must reproduce exact section bytes"
+        );
+
+        let key = chunk_light_list_cache_key(&inputs, 8.0, 64);
+        cache.put(&key, b"corrupt chunk-light-list cache payload");
+        let capture = LogCapture::start();
+        let rebaked = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("corrupt cache entry must be a soft miss")
+            .to_bytes();
+        assert_eq!(
+            rebaked, uncached,
+            "corrupt cache entry must re-bake exact bytes"
+        );
+        capture.assert_logged_once(Level::Warn, "[cache] corrupt chunk_light_list entry");
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list miss");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list hit");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Regression: a placeholder is codec-valid but stale for populated input,
+    // and previously bypassed the bake as a false cache hit.
+    #[test]
+    fn populated_context_rejects_cached_placeholder_and_rebakes() {
+        let dir = fresh_cache_dir("semantic_placeholder_corruption");
+        let cache = StageCache::new(&dir).expect("create cache directory");
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let reference = bake_chunk_light_list_cached(&inputs, 8.0, 64, None)
+            .expect("uncached bake must succeed");
+        let key = chunk_light_list_cache_key(&inputs, 8.0, 64);
+        cache.put(&key, &ChunkLightListSection::placeholder().to_bytes());
+
+        let capture = LogCapture::start();
+        let rebaked = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("semantically stale cache entry must be a soft miss");
+        assert_eq!(rebaked, reference);
+        capture.assert_logged_once(Level::Warn, "[cache] corrupt chunk_light_list entry");
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list miss");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list hit");
+
+        capture.clear();
+        let warm = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("rebaked section must replace corrupt cache entry");
+        assert_eq!(warm, reference);
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list hit");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list miss");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_static_lights_placeholder_hits_warm_cache() {
+        let dir = fresh_cache_dir("zero_static_placeholder");
+        let cache = StageCache::new(&dir).expect("create cache directory");
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![dynamic_point_light(DVec3::ZERO, 10.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let first = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("zero-static cache miss must return a placeholder");
+        assert_eq!(first, ChunkLightListSection::placeholder());
+
+        let capture = LogCapture::start();
+        let warm = bake_chunk_light_list_cached(&inputs, 8.0, 64, Some(&cache))
+            .expect("zero-static warm hit must return a placeholder");
+        assert_eq!(warm, ChunkLightListSection::placeholder());
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list hit");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list miss");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dynamic_light_insertion_ahead_of_static_light_hits_cache() {
+        let dir = fresh_cache_dir("dynamic_insert");
+        let cache = StageCache::new(&dir).expect("create cache directory");
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let static_light = point_light(DVec3::new(0.0, 1.0, 0.0), 4.0);
+        let dynamic_light = dynamic_point_light(DVec3::new(20.0, 1.0, 0.0), 2.0);
+        let first_lights = vec![static_light.clone(), dynamic_light.clone()];
+        let edited_lights = vec![
+            dynamic_point_light(DVec3::new(-20.0, 1.0, 0.0), 3.0),
+            static_light,
+            dynamic_light,
+        ];
+        let first_ns = AlphaLightsNs::from_lights(&first_lights);
+        let edited_ns = AlphaLightsNs::from_lights(&edited_lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let first_inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &first_ns,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let edited_inputs = ChunkLightListInputs {
+            lights: &edited_ns,
+            ..first_inputs
+        };
+
+        let first = bake_chunk_light_list_cached(&first_inputs, 8.0, 64, Some(&cache))
+            .expect("initial cache miss must bake");
+        let capture = LogCapture::start();
+        let warm = bake_chunk_light_list_cached(&edited_inputs, 8.0, 64, Some(&cache))
+            .expect("dynamic-light insertion must hit");
+        assert_eq!(warm, first);
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list hit");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list miss");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dynamic_light_parameter_edit_hits_cache() {
+        let dir = fresh_cache_dir("dynamic_param_edit");
+        let cache = StageCache::new(&dir).expect("create cache directory");
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let static_light = point_light(DVec3::new(0.0, 1.0, 0.0), 4.0);
+        let dynamic_light = dynamic_point_light(DVec3::new(20.0, 1.0, 0.0), 2.0);
+        let first_lights = vec![static_light.clone(), dynamic_light.clone()];
+        let mut edited_dynamic = dynamic_light;
+        edited_dynamic.intensity = 9.0;
+        let edited_lights = vec![static_light, edited_dynamic];
+        let first_ns = AlphaLightsNs::from_lights(&first_lights);
+        let edited_ns = AlphaLightsNs::from_lights(&edited_lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let first_inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &first_ns,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let edited_inputs = ChunkLightListInputs {
+            lights: &edited_ns,
+            ..first_inputs
+        };
+
+        let first = bake_chunk_light_list_cached(&first_inputs, 8.0, 64, Some(&cache))
+            .expect("initial cache miss must bake");
+        let capture = LogCapture::start();
+        let warm = bake_chunk_light_list_cached(&edited_inputs, 8.0, 64, Some(&cache))
+            .expect("dynamic-light parameter edit must hit");
+        assert_eq!(warm, first);
+        capture.assert_logged_once(Level::Info, "[cache] chunk_light_list hit");
+        capture.assert_not_logged(Level::Info, "[cache] chunk_light_list miss");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn in_range_light_lands_in_containing_chunks() {
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
@@ -1076,6 +1641,8 @@ mod tests {
     #[test]
     fn section_payload_cap_fails_bake() {
         // 16 × 16 m at 0.01 m/cell = 1600×1600×1 = 2.56M chunks × 8 bytes = ~20 MB > cap.
+        let dir = fresh_cache_dir("payload_too_large");
+        let cache = StageCache::new(&dir).expect("create cache directory");
         let geo = single_quad_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
@@ -1092,12 +1659,19 @@ mod tests {
             portals: &[],
             exterior_leaves: &HashSet::new(),
         };
-        let err = bake_chunk_light_list(&inputs, 0.01, 64).unwrap_err();
+        let key = chunk_light_list_cache_key(&inputs, 0.01, 64);
+        let err = bake_chunk_light_list_cached(&inputs, 0.01, 64, Some(&cache)).unwrap_err();
         match err {
             ChunkLightListError::PayloadTooLarge { actual, max } => {
                 assert!(actual > max);
             }
         }
+        assert!(
+            cache.get(&key).is_none(),
+            "a genuine miss-path bake error must not be cached"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn empty_tree() -> BspTree {

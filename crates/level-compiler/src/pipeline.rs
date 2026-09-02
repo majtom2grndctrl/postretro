@@ -437,12 +437,12 @@ fn run_after_parsing(
     reporter.declare_progress(StageId::CellVisibility, cell_visibility_progress.clone());
     let cell_visibility_control =
         BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
-    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake(
+    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake_cached(
         &result.tree,
         &generated_portals,
+        stage_cache.as_ref(),
         &cell_visibility_control,
-    )?
-    .to_bytes()?;
+    )?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -847,7 +847,12 @@ fn run_after_parsing(
             portals: &generated_portals,
             animated_lights: &animated_baked_lights,
         };
-        delta_sh_bake::bake_delta_sh_volumes_controlled(&inputs, &sh_config, &delta_sh_control)
+        delta_sh_bake::bake_delta_sh_volumes_controlled(
+            &inputs,
+            &sh_config,
+            stage_cache.as_ref(),
+            &delta_sh_control,
+        )
     };
     finish_stage(
         &mut timings,
@@ -962,6 +967,7 @@ fn run_after_parsing(
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
             &sh_config,
+            stage_cache.as_ref(),
             &animated_direct_sh_control,
         )
     };
@@ -1027,6 +1033,7 @@ fn run_after_parsing(
                     &sh_config,
                     &alpha_lights_ns,
                     section,
+                    stage_cache.as_ref(),
                     &direct_sh_delta_control,
                 )
             });
@@ -1319,10 +1326,11 @@ fn run_after_parsing(
             portals: &generated_portals,
             exterior_leaves: &exterior_leaves,
         };
-        chunk_light_list_bake::bake_chunk_light_list(
+        chunk_light_list_bake::bake_chunk_light_list_cached(
             &inputs,
             chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
             chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
+            stage_cache.as_ref(),
         )
         .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
     };
@@ -1837,6 +1845,14 @@ fn log_direct_sh_delta_stats(stats: Option<&direct_sh_bake::DirectDeltaBakeStats
     } else if verbose {
         log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
     }
+}
+
+#[cfg(test)]
+pub(crate) fn log_direct_sh_delta_stats_for_test(
+    stats: Option<&direct_sh_bake::DirectDeltaBakeStats>,
+    verbose: bool,
+) {
+    log_direct_sh_delta_stats(stats, verbose);
 }
 
 #[cfg(test)]

@@ -18,12 +18,12 @@ description: >
 
 ## What to research
 
-A research question is well-formed when you can name the brief sentence its answer would change. If you cannot name the sentence, do not dispatch. That is what keeps research per-brief rather than a checklist.
+A research question is well-formed when you can name the brief sentence its answer would change. If you cannot name the sentence, do not dispatch.
 
-The sentences that are missing differ every time, but they are missing in a small number of ways:
+Which sentences are missing differs every brief; how they are missing does not:
 
 - **Cause.** The user's diagnosis is a hypothesis. Confirm the Problem's cause sentence against source before writing Decisions around it. This is the research most likely to produce a different brief than the one requested, and the cheapest place to find that out.
-- **Premise.** Each candidate Decision rests on a claim about the code — "the substrate discards the floor normal." One claim, one agent, answered with the symbol. Habit 2 says why; this says the shape.
+- **Premise.** Each candidate Decision rests on a claim about the code — "the substrate discards the floor normal." One claim, one agent, answered with the symbol (habit 2 says why).
 - **Commitment.** What the repo already decided that touches this. `plans/done/` and `context/lib/`, grepped by *concept* — ownership, authority, mechanism-vs-policy — not by subsystem. Cross-epic commitments are the ones a subsystem-local read does not see.
 - **Precedent.** A sibling feature with the same shape — `dash` and `crouch` for slide. This is where Path gets its seams and where "follows X exactly" becomes a cheap Decision.
 - **Doors.** What the chosen shape opens or closes later — adjacent drafts, the roadmap. `/validate-plan` will ask; it is cheaper to know first.
@@ -46,7 +46,7 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 
 **5. Every AC names an edge or it names steady state.** Start, stop, reverse, zero iterations, two on one tick, the timer across a reset. Steady state is where behavior is easiest to describe and least likely to break. Orderings are AC rows, never prose.
 
-**6. An AC that would pass on a build that does not cure the Problem is decoration.** Run each row against the Problem paragraph: could this pass while the observed defect is still there? If yes, the row is measuring something adjacent. Either it is the wrong metric, or it is a regression guard and should say so.
+**6. An AC that would pass on a build that does not cure the Problem is decoration.** Run each row against the Problem paragraph: could this pass with the observed defect still there? If yes, the row is measuring something adjacent — the wrong metric, or a regression guard that should say so.
 
 **7. If the executor could disagree with it and still be right, it is Path.** The test from `/draft-brief`, applied per sentence. Decisions that turn out to be preferences bloat the binding section and make the executor's plan of record read as a list of violations.
 
@@ -56,13 +56,13 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 
 **9. Re-read Decisions after any Problem edit.** A reframed cause can orphan a decision that was answering the old one. The diff never touches the orphan.
 
-**10. Mark every open question.** **Blocks build** or **delegated**. An unmarked question is a decision left in the executor's lap with no reporting obligation attached, which is how it becomes silent.
+**10. Mark every open question.** Each is **blocks build** or **delegated**. An unmarked question is a decision left in the executor's lap with no reporting obligation, which is how it goes silent.
 
-**11. Amend, don't stack.** One commit per brief per session. Push the amended commit so the work persists; keep the history clean.
+**11. Amend, don't stack.** One commit per brief per session. Push the amended commit so the work persists; keep the history clean. This is a drafting habit — the build commits once per task, and `/build-brief` says so.
 
 ### Before handoff
 
-**12. Self-review finds typos, not wrong shapes.** `/validate-plan` is the only external lens this process runs before code. Run it, read the verdict as a fresh reader would, and do not rebut it from inside the session that drafted the brief.
+**12. Self-review finds typos, not wrong shapes.** `/validate-plan` is the only external lens this process runs before code by default. Run it, read the verdict as a fresh reader would, and do not rebut it from inside the session that drafted the brief.
 
 ## Pre-handoff checklist
 

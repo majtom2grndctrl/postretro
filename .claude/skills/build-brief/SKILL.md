@@ -14,7 +14,7 @@ argument-hint: "[brief-name]"
 
 One session builds the whole brief. It reads the brief, `research.md`, and the source tree; it writes its own task split; it keeps its state in `plan.md` so a fresh session can pick up where this one stopped. Nothing is dispatched a paragraph at a time.
 
-Two stops, and only two: after `plan.md` is written, and on a false Decision premise. Everything else is a note in `plan.md` and keep going.
+Two stops, and only two: after `plan.md` is written, and on a false Decision premise. Everything else is a note in `plan.md`; keep going.
 
 ## Where to enter
 
@@ -44,9 +44,9 @@ Commit the move. Read, in order: `context/lib/index.md` and the docs it routes t
 Re-read every symbol the brief cites, in Decisions and in Path. Two outcomes, and the difference matters:
 
 - **A Path claim is stale** — the seam moved, the precedent was refactored, the sketch does not fit. Note it in `plan.md` under *Corrections* and plan around it. Path is non-binding; being wrong there is expected.
-- **A Decision premise is false** — the claim the decision rests on does not hold. Set `status: blocked` in `plan.md`, name the premise and what you found, commit, and stop. The brief was built on that premise; whether the decision survives is the owner's call. Do not route around it.
+- **A Decision premise is false** — the claim the decision rests on does not hold. Set `status: blocked` in `plan.md`, name the premise and what you found, commit, and stop. Whether the decision survives is the owner's call. Do not route around it.
 
-Decisions and Acceptance are owner-owned. The executor edits neither. It proposes, verbatim, and stops.
+Decisions and Acceptance are owner-owned. The executor edits neither; where one needs changing, it proposes the wording verbatim and stops.
 
 ### 3. Write the plan of record
 
@@ -87,7 +87,7 @@ Commit `plan.md`. **End the turn.** Report the plan (Corrections, any `needs res
 
 ### 4. Approval
 
-The owner skims and says go, or edits the brief and says go. On go, set `status: approved` in `plan.md` and commit. If the owner accepted a restatement, they edit the brief's Acceptance; update the table's row to `achievable as stated` and cite the new wording. This is the only pre-code check-in.
+The owner skims and says go, or edits the brief and says go. On go, set `status: approved` in `plan.md` and commit. If the owner accepted a restatement, they edit the brief's Acceptance; update the table's row to `achievable as stated` and cite the new wording.
 
 ### 5. Build
 
@@ -112,7 +112,7 @@ Then `/review-panel`, then `/fix-review-findings`. Findings that would change a 
 
 ### 7. Land
 
-Fill the **landing report** at the bottom of `plan.md`: the AC-to-proof table with a result column — every AC, the test or owner step that proved it, pass or fail. An AC with no proof is a named gap; never silence.
+Fill the **landing report** at the bottom of `plan.md`: the AC-to-proof table with a result column — every AC, the test or owner step that proved it, pass or fail. An AC with no proof is a named gap, never a silent one.
 
 Then a **trial notes** block, five lines, so the process can be measured against `/orchestrate`:
 

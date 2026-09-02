@@ -16,13 +16,13 @@ One reviewer, one section. Never task decomposition, never identifiers outside t
 
 ## Premise
 
-The executor writes an AC-to-proof table before code and proposes restatements to the owner. That is the ordinary accountability path. This skill exists for the brief where a wrong AC costs more than a review: the criteria gate a persistent format, a cache epoch, or something that cannot be re-cut after landing.
+The executor's AC-to-proof table, written before code with restatements proposed to the owner, is the ordinary accountability path. This skill is for the brief where a wrong AC costs more than a review: the criteria gate a persistent format, a cache epoch, or something that cannot be re-cut after landing.
 
 ## Process
 
 ### 1. Locate and read
 
-Argument is a plan folder name; look in `drafts/` first, then `ready/`. Read the brief yourself before delegating. The line under the title must mark it as a brief; on a `/draft-plan` spec, stop and point at `/review-implementability` instead.
+Argument is a plan folder name; look in `drafts/` first, then `ready/` for an a-la-carte read on a brief already promoted. Read the brief yourself before delegating. The line under the title must mark it as a brief; on a `/draft-plan` spec, stop and point at `/review-implementability` instead.
 
 ### 2. Spawn one reviewer (read-only, fresh context)
 
@@ -49,6 +49,5 @@ Row count, findings by severity, what was applied and what was surfaced, and the
 ## Working rules
 
 - Acceptance rows only. A Path claim that turns out false is the executor's to correct in `plan.md`; raising it here dilutes the lens.
-- Inline the brief; paths drift.
 - The reviewer never edits; this session does, and only completions.
-- No padding, no praise, no emojis. Voice match `/draft-brief`.
+- No padding, no praise, no emojis. Match the voice of `/draft-brief`.

@@ -12,9 +12,9 @@ argument-hint: "[feature-name]"
 
 # Draft Brief
 
-Explore scope, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`, with the line under the title marking it as a brief so downstream skills can tell it from a `/draft-plan` spec.
+Explore scope, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`. The line under the title marks it as a brief so downstream skills can tell it from a `/draft-plan` spec.
 
-A brief is written for a reader with the repo, not a reader with a paragraph. It records judgment and leaves verification to implementation time. Target 60–120 lines. Anything that would make it longer is derivation (→ `research.md`) or task decomposition (→ the executor's plan of record, written at build time).
+A brief is written for a reader with the repo, not a reader with a paragraph. It records judgment and leaves verification to build time. Target 60–120 lines. Anything that would make it longer is derivation (→ `research.md`) or task decomposition (→ the executor's plan of record, written at build time).
 
 ## Current plans
 
@@ -53,7 +53,7 @@ Brief · Epic <N> (omit if none) · reads: `context/lib/<doc>.md` §x · read at
 One paragraph. What was observed and by whom — player, modder, developer,
 a review finding, or an anticipated need; say which. The cause in one
 sentence, not a symptom of it. Then what is true when this is done, written
-as behavior. This is what the executor orients by.
+as behavior.
 
 ## Decisions
 - One bullet per decision: what, and why. Cite the commitment it touches
@@ -91,7 +91,7 @@ Non-binding. Research distilled to what would change the executor's plan.
 - <question> — **delegated**: the executor decides and reports it in the plan of record
 ```
 
-**Decisions vs Path.** If the executor deviates from it, is that a defect or a note in the plan of record? Defect → Decisions. Note → Path. "Descriptor surface follows `dash`/`crouch` exactly" is a Decision; where the entry branch sits inside `normal_intent` is Path.
+**Decisions vs Path.** For each sentence: if the executor deviates from it, is that a defect or a note in the plan of record? Defect → Decisions. Note → Path. "Descriptor surface follows `dash`/`crouch` exactly" is a Decision; where the entry branch sits inside `normal_intent` is Path.
 
 **Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past ~120 lines, look for derivation that belongs in `research.md` or task decomposition that belongs to the executor.
 
@@ -146,10 +146,10 @@ At promotion:
 
 ## What happens after
 
-`/build-brief` runs the brief as one long-horizon session. Before any code it writes `plan.md` beside the brief — task split, corrected identifiers, delegated answers, and an **AC-to-proof table** mapping every Acceptance row to the test that will prove it — then stops for the owner's skim. That is the only check-in before the diff.
+`/build-brief` runs the brief as one long-horizon session. Before any code it writes the plan of record, `plan.md`, beside the brief — task split, corrected identifiers, delegated answers, and an **AC-to-proof table** mapping every Acceptance row to the test that will prove it — then stops for the owner's skim. That is the only planned check-in before the diff; a false Decision premise is the one unplanned one.
 
-**Decisions and Acceptance are owner-owned.** The executor proposes a restatement verbatim and stops; it never edits either section. A false Decision premise is a stop, not a workaround. This is what keeps the executor from loosening the criteria it is about to be measured against.
+**Decisions and Acceptance are owner-owned.** The executor never edits either section: it proposes a restatement verbatim and stops. A false Decision premise is a stop, not a workaround. This is what keeps the executor from loosening the criteria it is about to be measured against.
 
-At landing the table gains a results column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
+At landing the table gains a result column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
 
 **Opt-in pre-build check.** When the stakes warrant it — wire formats, cache keys, a one-way door — run `/review-brief-acceptance` before promotion for an independent read on whether each AC is achievable and proves the Problem. Not a default step.

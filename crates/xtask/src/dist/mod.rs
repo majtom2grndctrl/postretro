@@ -14,12 +14,14 @@ use crate::{bake_model_textures_for_gltf, run_checked, workspace_root};
 
 mod launcher;
 pub(crate) mod manifest;
+mod payload;
 mod resolve;
 
 use manifest::Manifest;
+use payload::{copy_filtered_tree, copy_prm_tree, sweep_payload};
 use resolve::{
     EntryExt, Resolved, bake_order, entry_script_choice, guard_payload_root, is_at_or_under,
-    is_prm_filename, outstanding_outputs, resolve_map_set, scan_map_literals,
+    outstanding_outputs, resolve_map_set, scan_map_literals,
 };
 
 const MARKER_NAME: &str = ".dist-incomplete";
@@ -100,6 +102,18 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
         &state,
     )?;
     stage_seven_copy_materials(&workspace, &payload_root)?;
+    sweep_payload(
+        &payload_root,
+        Path::new(&manifest.package.mod_root),
+        state.entry_ext,
+        &state.resolved,
+    )?;
+    fs::remove_file(payload_root.join(MARKER_NAME)).map_err(|error| {
+        format!(
+            "payload sweep: remove completion marker {}: {error}",
+            payload_root.join(MARKER_NAME).display()
+        )
+    })?;
 
     let (files, bytes) = count_payload(&payload_root)?;
     println!(
@@ -450,13 +464,18 @@ fn stage_five_assemble_payload(
         &manifest.package.name,
         &manifest.package.mod_root,
     )?;
-    copy_tree(
+    let workspace_mod_root = workspace.join(&manifest.package.mod_root);
+    copy_filtered_tree(
         &workspace.join("content").join("base"),
         &payload_root.join("content").join("base"),
+        &workspace_mod_root,
+        state.entry_ext,
     )?;
-    copy_tree(
-        &workspace.join(&manifest.package.mod_root),
+    copy_filtered_tree(
+        &workspace_mod_root,
         &payload_root.join(&manifest.package.mod_root),
+        &workspace_mod_root,
+        state.entry_ext,
     )?;
 
     let payload_mod_root = payload_root.join(&manifest.package.mod_root);
@@ -528,34 +547,6 @@ fn write_marker(
             destination_root.join(MARKER_NAME).display()
         )
     })
-}
-
-fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    let entries = fs::read_dir(source)
-        .map_err(|error| format!("stage 5: read source tree {}: {error}", source.display()))?;
-    fs::create_dir_all(destination).map_err(|error| {
-        format!(
-            "stage 5: create destination tree {}: {error}",
-            destination.display()
-        )
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("stage 5: read source tree entry: {error}"))?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        if source_path.is_dir() {
-            copy_tree(&source_path, &destination_path)?;
-        } else {
-            fs::copy(&source_path, &destination_path).map_err(|error| {
-                format!(
-                    "stage 5: copy {} to {}: {error}",
-                    source_path.display(),
-                    destination_path.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), String> {
@@ -642,40 +633,7 @@ fn stage_seven_copy_materials(workspace: &Path, payload_root: &Path) -> Result<(
     println!("Stage 7: copy baked materials");
     let source = workspace.join("baked").join("materials");
     let destination = payload_root.join("baked").join("materials");
-    fs::create_dir_all(&destination).map_err(|error| {
-        format!(
-            "stage 7: create materials directory {}: {error}",
-            destination.display()
-        )
-    })?;
-
-    let entries = match fs::read_dir(&source) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            println!("  copied 0 material mip files");
-            return Ok(());
-        }
-        Err(error) => {
-            return Err(format!(
-                "stage 7: read materials {}: {error}",
-                source.display()
-            ));
-        }
-    };
-    let mut copied = 0;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("stage 7: read material entry: {error}"))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if entry.path().is_file() && is_prm_filename(name) {
-            fs::copy(entry.path(), destination.join(name)).map_err(|error| {
-                format!("stage 7: copy material {}: {error}", entry.path().display())
-            })?;
-            copied += 1;
-        }
-    }
+    let copied = copy_prm_tree(&source, &destination)?;
     println!("  copied {copied} material mip files");
     Ok(())
 }

@@ -190,9 +190,8 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
       `pack_forward_shadowmask_metadata` tests are updated for `meta1.w`.
 - [ ] Fog shader source is byte-identical (`git diff` shows no change to
       `fog_volume.wgsl`).
-- [ ] `rendering_pipeline.md` §4, §7.1 and the §9 group-2 row describe the entity-only slot, the
-      attenuation form, the sampled cache, and the `Clear(1.0)` baseline; §4
-      opens the promoted paragraph with the compute-once thesis; the
+- [ ] `rendering_pipeline.md` carries no "Decided, not yet built" clause for
+      this plan; §4, §7.1 and the §9 group-2 row read as current; the
       one-source-per-receiver sentence counts the pool slot and the cache as
       one source.
 
@@ -386,26 +385,12 @@ hard-coded linear expression is absent from `forward.wgsl`.
 
 ### Task 4: Pipeline documentation
 
-In `context/lib/rendering_pipeline.md`: §4 "Promoted static lights" — open
-the paragraph with the thesis: every occlusion fact is computed once, by the
-source that knows it best, and never re-derived — the bake owns
-static-onto-static and static-onto-probe occlusion; the runtime owns only the
-facts that involve a dynamic body (entity onto world, entity onto entity, and
-world onto entity at near-tier resolution), and a promoted slot exists to
-supply those three; then replace
-the union sentence with the attenuation form and state that promoted slots
-hold entity depth only while the cached world depth is sampled by entity
-receivers; §4 "Pool-shadow receiver bias" — the world class applies to the
-forward dynamic loop, the union path offsets by zero; §4 lighting
-architecture map, the one-source-per-receiver sentence — add the clause that
-two depth maps compared under one technique (the pool slot and the cache,
-Nearest compare per tap) are one source; §7.1 step 6 — warm
-promoted slots skip cull dispatch because the cache needs no re-render; steps
-7 and 8 — promoted slots clear to the far plane and draw entity occluders
-only, the cache fills once per assignment and is sampled, not copied; delete
-the "copy is the occupied-face initialization baseline" sentence. §9
-bind-group table, group-2 row — add b9/b10 and `dynamic_light_count` in the
-params. One clause each; no new section.
+`context/lib/rendering_pipeline.md` already states this plan's contract —
+the compute-once thesis, the attenuation union, entity-only slots, the
+sampled cache, the zero union offset, the §7.1 clear-and-draw steps, and the
+§9 group-2 row — each followed by a **Decided, not yet built** clause
+describing the shipped path. Delete those clauses (five in §4 and §7.1, one
+in the §9 row) so the paragraphs read as current. No other change.
 
 ## Sequencing
 

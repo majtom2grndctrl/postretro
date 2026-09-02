@@ -113,9 +113,16 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
 /// placeholder.
 ///
 /// Falls back to `<map parent>/baked/materials/` when no `Cargo.toml` ancestor
-/// is found — covers shipping or standalone layouts that omit the workspace
-/// manifest. The runtime's analogous fallback uses `content_root`, so the two
-/// fallbacks need not coincide outside the dev layout (shipping is out of scope).
+/// is found — covers standalone layouts that omit the workspace manifest. The
+/// runtime's analogous fallback uses `content_root`, so the two fallbacks need
+/// not coincide outside the dev layout.
+///
+/// A distribution payload never reaches either fallback: the bake runs against
+/// workspace sources (so this resolver takes the `Cargo.toml` branch and writes
+/// `<workspace>/baked/materials`), and the payload copies that tree to
+/// `<payload>/baked/materials`, which is what the runtime's grandparent
+/// derivation resolves for a mod rooted at `<payload>/content/<mod>`. The two
+/// paths agree because of that layout, not because either function enforces it.
 fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {

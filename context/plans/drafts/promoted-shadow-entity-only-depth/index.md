@@ -96,6 +96,10 @@ estimate becomes darkening; at rake angles the estimate self-compares across a
   the union path passes zero because the world is never in the promoted map.
 - `context/plans/drafts/shadowmask-no-drop-atlas/` claims `meta1.z`; this plan
   claims `meta1.w`. Whichever lands second rebases the packer and decode.
+- `context/plans/drafts/animated-light-shadow-promotion/` re-renders world
+  depth per frame for direction-animated promoted lights. After this plan the
+  target of that render is the light's cache layer, never the pool slot; the
+  draft carries the cross-reference.
 
 **Alternatives rejected.** Static visibility for entity receivers from the
 per-light direct-SH delta tiles: the subtraction is a compute compose
@@ -165,7 +169,9 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
       loop-bound test passes unchanged.
 - [ ] Fog shader source is byte-identical.
 - [ ] `rendering_pipeline.md` §4 and §7.1 describe the entity-only slot, the
-      attenuation form, the sampled cache, and the `Clear(1.0)` baseline.
+      attenuation form, the sampled cache, and the `Clear(1.0)` baseline; the
+      one-source-per-receiver sentence counts the pool slot and the cache as
+      one source.
 
 ## Tasks
 
@@ -294,7 +300,10 @@ In `context/lib/rendering_pipeline.md`: §4 "Promoted static lights" — replace
 the union sentence with the attenuation form and state that promoted slots
 hold entity depth only while the cached world depth is sampled by entity
 receivers; §4 "Pool-shadow receiver bias" — the world class applies to the
-forward dynamic loop, the union path offsets by zero; §7.1 step 6 — warm
+forward dynamic loop, the union path offsets by zero; §4 lighting
+architecture map, the one-source-per-receiver sentence — add the clause that
+two depth maps compared under one technique (the pool slot and the cache,
+Nearest compare per tap) are one source; §7.1 step 6 — warm
 promoted slots skip cull dispatch because the cache needs no re-render; steps
 7 and 8 — promoted slots clear to the far plane and draw entity occluders
 only, the cache fills once per assignment and is sampled, not copied; delete

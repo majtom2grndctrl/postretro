@@ -487,8 +487,8 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         "metadata values must be integer-valued floats before u32 casts"
     );
     assert!(
-        helper.contains("slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT)")
-            && helper.contains("slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT)"),
+        src.contains("if slot >= SHADOWMASK_SPOT_SLOT_COUNT {")
+            && src.contains("if slot >= SHADOWMASK_CUBE_SLOT_COUNT {"),
         "shadow pool slots must be range-guarded before indexing or sampling"
     );
     assert!(
@@ -580,7 +580,7 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
         src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE")
             && src.contains("return vec4<f32>(g, g, g, base_color.a);")
             && src.contains(
-                "if use_baked_direct_static || use_specular || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
+                "if use_baked_direct_static || uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
             ),
         "raw pool visibility must be a grayscale early-return diagnostic independent of term isolation"
     );
@@ -624,8 +624,7 @@ fn forward_shader_shadowmask_fallback_clamps_multilayer_indices() {
         "world specular must use the layer-safe all-visible fallback sample",
     );
     assert!(
-        src.contains("round(sl.cone_cos.z) >= SHADOWMASK_CHANNEL_DROPPED")
-            && src.contains("return 1.0;"),
+        src.contains("spec_channel >= SHADOWMASK_CHANNEL_DROPPED") && src.contains("return 1.0;"),
         "absent/dropped atlas channels must retain the fully-lit sentinel path",
     );
 }

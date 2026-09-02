@@ -41,8 +41,9 @@ depth cache directly. Derivations: `research.md`.
 - **Deleting the cache texture.** It is the only world-only static depth the
   entity paths can sample; re-rendering world depth per frame is the shadow
   raster cost `context/plans/done/perf-forward-light-cull/` records as the
-  frame's bottleneck. 44 MiB VRAM stays. Owner decision recorded in Open
-  questions.
+  frame's bottleneck. 44 MiB VRAM stays; the cache is the runtime's only
+  source for world-onto-entity occlusion at near-tier resolution, and the
+  owner's cost axis is per-frame bandwidth and ALU, not VRAM.
 - Capsule or proxy occluders — a later shadow-quality tier.
 - Dynamic (non-promoted) light slots and their world+entity depth;
   `WORLD_RECEIVER_BIAS_SCALE` on the forward dynamic loop;
@@ -57,8 +58,8 @@ depth cache directly. Derivations: `research.md`.
 - `TIMING_PAIR_PROMOTED_DEPTH_CACHE` — its span now brackets cache fills and
   entity draws; left as is.
 - The per-fragment occluder-cone gate of `promoted-shadow-entity-scoping`
-  (draft): superseded by this plan for correctness; optional tap-count
-  follow-on.
+  (archived): superseded by this plan for correctness; a tap-count follow-on
+  only if playtesting warrants.
 
 ## Direction
 
@@ -497,13 +498,21 @@ receiver.
 | The cache holds world depth only | Existing (movers never enter the cache); preserved by Task 2 leaving the fill pass unchanged | Any entity draw targeting a cache view | AC 4 |
 | Static direct reconstruction uses the authored falloff model | Task 3 | Billboard static loop (out of scope) | AC 14 |
 
-## Open questions
+## Decisions
 
-- **Owner decision:** keep the 44 MiB cache (this plan) or accept
-  probe-resolution static occlusion on entity receivers and delete it. The
-  plan commits to keeping it; `research.md` states the trade.
-- Whether entity shadows on world should be softer than the shared 3×3. If so,
-  raise `SPOT_SHADOW_PCF_RADIUS` for every consumer rather than reintroducing a
-  union-only kernel.
-- Whether `promoted-shadow-entity-scoping` should be archived at promotion or
-  reshaped into a tap-count follow-on over this plan.
+- **The cache stays.** It is the light's-eye static world depth the entity
+  paths sample for world-onto-entity occlusion at the near tier; the bake
+  cannot supply that fact for bodies it never saw, and the probes are the far
+  tier. Deleting it would collapse promotion's near tier into the tier it
+  exists to replace. VRAM is not the cost axis.
+- **Entity shadows on world use the shared 3×3.** Softness belongs to the
+  shadow, not the receiver: one silhouette softens identically on the floor
+  and on the mover beside it. Kernel radius is a quality knob for the later
+  player-facing shadow-quality slider, applied to every consumer at once
+  through `SPOT_SHADOW_PCF_RADIUS`; no union-only kernel returns.
+- **`promoted-shadow-entity-scoping` is archived** under `done/` with a
+  superseded banner. Its copy-elision half is void (promotion requires an
+  occluder in the influence) and its per-fragment cone gate is a tap-count
+  optimization unmeasurable on the owner's hardware, with
+  `perf-forward-light-cull` as a shelved prior of the same shape. It can be
+  re-drafted against this plan's 9-tap baseline if playtesting ever warrants.

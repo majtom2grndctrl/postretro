@@ -146,25 +146,10 @@ At promotion:
 
 ## What happens after
 
-The executor is one long-horizon session, not a fan-out. Before any code it writes `plan.md` beside the brief:
+`/build-brief` runs the brief as one long-horizon session. Before any code it writes `plan.md` beside the brief — task split, corrected identifiers, delegated answers, and an **AC-to-proof table** mapping every Acceptance row to the test that will prove it — then stops for the owner's skim. That is the only check-in before the diff.
 
-- The task split and order, with the first slice named — and why, if it differs from the Path.
-- Each cited identifier confirmed or corrected; any brief claim found false and what it is doing instead.
-- Each **delegated** question's answer.
-- An **AC-to-proof table**: every Acceptance row, the test or manual-visual step that will prove it, and a status. Manual-visual rows are proven by the owner in-engine, and the table says so.
+**Decisions and Acceptance are owner-owned.** The executor proposes a restatement verbatim and stops; it never edits either section. A false Decision premise is a stop, not a workaround. This is what keeps the executor from loosening the criteria it is about to be measured against.
 
-| AC | Proof | Status |
-|---|---|---|
-| 3 | `slide_entry_banks_speed` | achievable as stated |
-| 7 | grep gate, not a runnable test | not a test |
-| 9 | proposed rewording, verbatim | needs restatement |
-
-**ACs are owner-owned.** The executor proposes a restatement and stops; it never edits the Acceptance section. The owner accepts or pushes back before code exists. This is what keeps the executor from loosening the criteria it is about to be measured against.
-
-The owner skims `plan.md`. That is the only check-in before the diff.
-
-Build → focused tests per task → preflight once → `/review-panel` → `/fix-review-findings`.
-
-**Landing report** is the AC-to-proof table with results: every AC, the test that proved it, pass or fail. An AC with no proof is a named gap in the report, never silence. At landing the brief moves to `done/` with `plan.md` beside it as the record of what was built.
+At landing the table gains a results column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
 
 **Opt-in pre-build check.** When the stakes warrant it — wire formats, cache keys, a one-way door — run `/review-brief-acceptance` before promotion for an independent read on whether each AC is achievable and proves the Problem. Not a default step.

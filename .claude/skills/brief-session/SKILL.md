@@ -16,6 +16,22 @@ description: >
 
 **Work as an orchestrator.** After a baseline read of the request, dispatch right-sized agents for research. Keep your own context for the Decisions section — that is the judgment only this session can make.
 
+## What to research
+
+A research question is well-formed when you can name the brief sentence its answer would change. If you cannot name the sentence, do not dispatch. That is what keeps research per-brief rather than a checklist.
+
+The sentences that are missing differ every time, but they are missing in a small number of ways:
+
+- **Cause.** The user's diagnosis is a hypothesis. Confirm the Problem's cause sentence against source before writing Decisions around it. This is the research most likely to produce a different brief than the one requested, and the cheapest place to find that out.
+- **Premise.** Each candidate Decision rests on a claim about the code — "the substrate discards the floor normal." One claim, one agent, answered with the symbol. Habit 2 says why; this says the shape.
+- **Commitment.** What the repo already decided that touches this. `plans/done/` and `context/lib/`, grepped by *concept* — ownership, authority, mechanism-vs-policy — not by subsystem. Cross-epic commitments are the ones a subsystem-local read does not see.
+- **Precedent.** A sibling feature with the same shape — `dash` and `crouch` for slide. This is where Path gets its seams and where "follows X exactly" becomes a cheap Decision.
+- **Doors.** What the chosen shape opens or closes later — adjacent drafts, the roadmap. `/validate-plan` will ask; it is cheaper to know first.
+
+Do not dispatch task decomposition, line-level verification, or a map of the whole tree. Each is the executor's job, and pre-doing it is how a brief turns back into a spec.
+
+Dispatch shape: read-only, one question per agent, returns claim + symbol + confidence. Stop when Decisions can be written with every premise grounded *and* the cause sentence has been confirmed, not just reported.
+
 ## Habits
 
 ### While writing

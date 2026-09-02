@@ -1,10 +1,7 @@
 // Promoted static-depth cache shadow samplers for entity receivers.
+// The cache holds static world depth; the live pool holds entity depth.
+// Combine both comparisons per PCF tap so either occluder shadows the receiver.
 // See: context/lib/rendering_pipeline.md §4
-//
-// This snippet deliberately duplicates the shared pool samplers' projection,
-// receiver offset, and 3×3 PCF calculations. The live promoted pool continues
-// to hold merged world-plus-entity depth during Task 1; the cache comparison is
-// therefore output-identical while it proves the per-tap combined sampling path.
 
 fn sample_spot_shadow_with_static(
     slot_index: u32,

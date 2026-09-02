@@ -417,8 +417,8 @@ pub struct LevelGeometry<'a> {
 pub(crate) const MAX_PROMOTED_SPOT: usize = 8;
 pub(crate) const MAX_PROMOTED_CUBE: usize = 2;
 
-/// Which dynamic shadow pool a promoted static light's world depth is cached
-/// into and rendered from.
+/// Which spot/cube static-depth cache and entity-only live pool a promoted
+/// static light uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PromotedShadowPoolKind {
     Spot,
@@ -947,8 +947,9 @@ pub(super) struct FullRenderer {
 
     /// CPU-side count of skinned and rigid ENTITY occluder submissions into
     /// promoted static-light shadow slots/faces last frame. This is a subset of
-    /// the spot and cube totals above, used to pin that warm promoted slots draw
-    /// entities only after the cached world depth copy.
+    /// the spot and cube totals above. Verifies that warm promoted slots submit
+    /// entities to their cleared live pool while static world depth stays cached
+    /// separately.
     pub(super) promoted_entity_occluders_submitted: u32,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.

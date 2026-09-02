@@ -233,11 +233,9 @@ impl SpotShadowPool {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            // Copy destination only: promoted-slot depth is copied IN from the
-            // promoted depth cache. The pool is never a copy source.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
+            // Pool layers are cleared render attachments for entity-only draws;
+            // static world depth remains separately sampled from the promoted cache.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 

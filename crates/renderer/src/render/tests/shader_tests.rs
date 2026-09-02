@@ -555,6 +555,56 @@ fn forward_shader_static_reconstruction_uses_packed_falloff_models() {
 }
 
 #[test]
+fn shared_falloff_matches_baked_model_shapes_and_cutoffs() {
+    let src = include_str!("../../shaders/light_falloff.wgsl");
+
+    assert!(
+        src.contains("case 0u:")
+            && src.contains("return max(1.0 - distance / r, 0.0);")
+            && src.contains("case 1u:")
+            && src.contains("return 1.0 / max(distance, 0.0001);")
+            && src.contains("case 2u:")
+            && src.contains("let d2 = max(distance * distance, 0.0001);")
+            && src.contains("return 1.0 / d2;")
+            && src.matches("if distance > r").count() == 2,
+        "linear must fade while inverse models remain pure reciprocal curves until their hard range cutoff"
+    );
+    assert!(
+        !src.contains("* max(1.0 - distance / r, 0.0)"),
+        "inverse-distance models must not retain the divergent linear fade window"
+    );
+
+    let falloff = |distance: f32, range: f32, model: u32| match model {
+        0 => (1.0 - distance / range.max(0.001)).max(0.0),
+        1 if distance <= range.max(0.0001) => 1.0 / distance.max(0.0001),
+        2 if distance <= range.max(0.0001) => 1.0 / (distance * distance).max(0.0001),
+        _ => 0.0,
+    };
+    assert_eq!(falloff(5.0, 10.0, 0), 0.5);
+    assert_eq!(falloff(5.0, 10.0, 1), 0.2);
+    assert_eq!(falloff(5.0, 10.0, 2), 0.04);
+    assert_eq!(falloff(10.0, 10.0, 0), 0.0);
+    assert_eq!(falloff(10.0, 10.0, 1), 0.1);
+    assert_eq!(falloff(10.0, 10.0, 2), 0.01);
+    assert_eq!(falloff(10.001, 10.0, 1), 0.0);
+    assert_eq!(falloff(10.001, 10.0, 2), 0.0);
+}
+
+#[test]
+fn sdf_selection_ranks_with_packed_falloff_model_and_preserves_zero_range() {
+    let src = include_str!("../../shaders/sdf_light_select.wgsl");
+
+    assert!(
+        src.contains("light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)))"),
+        "SDF slice selection must rank with the same packed falloff model forward shading uses"
+    );
+    assert!(
+        src.contains("range > 0.0") && !src.contains("max(1.0 - dist / max(range, 0.001), 0.0)"),
+        "range zero must remain unattenuated and the selector must not retain linear-only ranking"
+    );
+}
+
+#[test]
 fn forward_shader_shadowmask_visualization_mode_is_wired() {
     let src = include_str!("../../shaders/forward.wgsl");
     assert!(
@@ -900,6 +950,8 @@ fn sh_grid_info_consumer_shaders_match_cpu_layout() {
         include_str!("../../shaders/sh_sample.wgsl"),
         "\n",
         include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/light_falloff.wgsl"),
         "\n",
         include_str!("../../shaders/light_eval.wgsl"),
         "\n",

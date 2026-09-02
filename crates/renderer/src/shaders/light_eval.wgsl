@@ -14,28 +14,8 @@
 // consumer MUST append curve_eval too (forward already does).
 //
 // Names are prefixed `light_eval_` to avoid colliding with billboard.wgsl's
-// own same-shaped `falloff` / `cone_attenuation` copies if this snippet is
-// later appended to the billboard pipeline.
-
-fn light_eval_falloff(distance: f32, range: f32, model: u32) -> f32 {
-    let r = max(range, 0.001);
-    switch model {
-        case 0u: {
-            return max(1.0 - distance / r, 0.0);
-        }
-        case 1u: {
-            // Linear window drives inverse-distance smoothly to 0 at range.
-            return (1.0 / max(distance, 0.001)) * max(1.0 - distance / r, 0.0);
-        }
-        case 2u: {
-            let d2 = max(distance * distance, 0.001);
-            return (1.0 / d2) * max(1.0 - distance / r, 0.0);
-        }
-        default: {
-            return 0.0;
-        }
-    }
-}
+// own same-shaped helpers if this snippet is later appended there. Distance
+// falloff lives in the independently composable `light_falloff.wgsl` helper.
 
 fn light_eval_cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle: f32) -> f32 {
     let cos_angle = dot(-L, aim);

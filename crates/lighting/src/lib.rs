@@ -164,8 +164,8 @@ fn light_type_u32(ty: LightType) -> u32 {
     }
 }
 
-/// Encode the `FalloffModel` discriminant the same way for the shader.
-fn falloff_model_u32(fm: FalloffModel) -> u32 {
+/// Encode the `FalloffModel` discriminant for shader-facing light records.
+pub fn falloff_model_code(fm: FalloffModel) -> u32 {
     match fm {
         FalloffModel::Linear => 0,
         FalloffModel::InverseDistance => 1,
@@ -200,7 +200,7 @@ pub fn pack_light_with_slot(light: &MapLight, slot_index: u32) -> [u8; GPU_LIGHT
     let cr = light.color[0] * light.intensity;
     let cg = light.color[1] * light.intensity;
     let cb = light.color[2] * light.intensity;
-    let falloff_bits = falloff_model_u32(light.falloff_model);
+    let falloff_bits = falloff_model_code(light.falloff_model);
     write_f32(&mut bytes, 16, cr);
     write_f32(&mut bytes, 20, cg);
     write_f32(&mut bytes, 24, cb);

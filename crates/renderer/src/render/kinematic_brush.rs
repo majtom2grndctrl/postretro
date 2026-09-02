@@ -93,9 +93,13 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
+    "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample_static_cache.wgsl"),
 );
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
@@ -186,6 +190,28 @@ fn light_bind_group_layout_entries(cube_array_supported: bool) -> Vec<wgpu::Bind
     if cube_array_supported {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::CubeArray,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 9,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    });
+    if cube_array_supported {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 10,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Depth,
@@ -598,11 +624,18 @@ impl KinematicBrushPass {
         spot_shadow_compare: &wgpu::Sampler,
         light_space_matrices: &wgpu::Buffer,
         point_shadow_cube: Option<&wgpu::TextureView>,
+        promoted_spot_cache: &wgpu::TextureView,
+        promoted_cube_cache: Option<&wgpu::TextureView>,
     ) {
         assert_eq!(
             point_shadow_cube.is_some(),
             self.cube_array_supported,
             "kinematic brush group-2 cube view must be Some iff the BGL carries binding 8",
+        );
+        assert_eq!(
+            promoted_cube_cache.is_some(),
+            self.cube_array_supported,
+            "kinematic brush group-2 promoted cube cache must be Some iff the BGL carries binding 10",
         );
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -641,6 +674,16 @@ impl KinematicBrushPass {
         if let Some(cube_view) = point_shadow_cube {
             entries.push(wgpu::BindGroupEntry {
                 binding: 8,
+                resource: wgpu::BindingResource::TextureView(cube_view),
+            });
+        }
+        entries.push(wgpu::BindGroupEntry {
+            binding: 9,
+            resource: wgpu::BindingResource::TextureView(promoted_spot_cache),
+        });
+        if let Some(cube_view) = promoted_cube_cache {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 10,
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
@@ -1047,13 +1090,13 @@ mod tests {
         };
 
         let (cube_groups, cube_total) = total(true);
-        assert_eq!(cube_groups, [0, 4, 2, 0, 3]);
-        assert_eq!(cube_total, 9);
+        assert_eq!(cube_groups, [0, 4, 4, 0, 3]);
+        assert_eq!(cube_total, 11);
         assert!(cube_total <= 16);
 
         let (no_cube_groups, no_cube_total) = total(false);
-        assert_eq!(no_cube_groups, [0, 4, 1, 0, 3]);
-        assert_eq!(no_cube_total, 8);
+        assert_eq!(no_cube_groups, [0, 4, 2, 0, 3]);
+        assert_eq!(no_cube_total, 9);
         assert!(no_cube_total <= 16);
     }
 
@@ -1188,6 +1231,57 @@ mod tests {
     }
 
     #[test]
+    fn kinematic_shader_source_validates_without_cube_arrays() {
+        let source = shader_source(false);
+        for declaration in [
+            "@group(2) @binding(8) var point_shadow_cube",
+            "@group(2) @binding(10) var promoted_cube_depth_cache",
+        ] {
+            assert!(
+                !source.contains(declaration),
+                "no-cube kinematic source must strip cube binding: {declaration}",
+            );
+        }
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("no-cube kinematic brush shader should parse as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("no-cube kinematic brush shader should pass Naga validation");
+    }
+
+    #[test]
+    fn kinematic_light_bgl_matches_both_cube_variants() {
+        let no_cube_bindings: Vec<u32> = light_bind_group_layout_entries(false)
+            .iter()
+            .map(|entry| entry.binding)
+            .collect();
+        assert_eq!(no_cube_bindings, vec![0, 1, 2, 3, 4, 5, 6, 7, 9]);
+
+        let cube = light_bind_group_layout_entries(true);
+        let cube_bindings: Vec<u32> = cube.iter().map(|entry| entry.binding).collect();
+        assert_eq!(cube_bindings, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert!(matches!(
+            cube[9].ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            }
+        ));
+        assert!(matches!(
+            cube[10].ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::CubeArray,
+                multisampled: false,
+            }
+        ));
+    }
+
+    #[test]
     fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() {
         assert!(
             SHADER_SOURCE.contains("fn blinn_phong(")
@@ -1217,6 +1311,19 @@ mod tests {
                 "blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation"
             ),
             "promoted mover specular must retain the runtime attenuation, cone, shadow, and promotion color factors",
+        );
+    }
+
+    #[test]
+    fn kinematic_animated_descriptors_are_limited_to_dynamic_prefix() {
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/kinematic_brush.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop.contains("if i < kinematic_light_params.dynamic_light_count {")
+                && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
+            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
     }
 }

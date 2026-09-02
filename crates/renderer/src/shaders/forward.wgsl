@@ -113,7 +113,7 @@ struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
     cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none); non-spot carries 1/-1 (full bright)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none), w = falloff model (0 Linear, 1 InverseDistance, 2 InverseSquared); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -617,13 +617,10 @@ const SHADOWMASK_SPOT_SLOT_COUNT: u32 = 96u;
 const SHADOWMASK_CUBE_SLOT_COUNT: u32 = 6u;
 const SHADOWMASK_EPS: f32 = 1.0e-4;
 const SHADOWMASK_NDOTL_EPS: f32 = 1.0e-2;
-const SHADOWMASK_SPOT_KERNEL_RADIUS: i32 = 2;
-const SHADOWMASK_SPOT_KERNEL_TEXELS: f32 = 2.0;
 const SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;
-// Ignore one comparison tap of residual noise in each pool's union sampler.
-// Renormalization preserves full subtraction after the pool-specific dead zone.
-const SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 25.0;
-const SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 9.0;
+// World receivers never appear in a promoted map, so offsetting them could
+// move a sample into an entity silhouette.
+const SHADOWMASK_UNION_RECEIVER_BIAS_SCALE: f32 = 0.0;
 
 struct ShadowmaskDirect {
     value: vec3<f32>,
@@ -694,7 +691,7 @@ fn shadowmask_direct(
     let L = to_light / max(dist, 0.0001);
     let n_dot_l_mesh = max(dot(mesh_n, L), 0.0);
     let n_dot_l_bump = max(dot(bump_n, L), 0.0);
-    let atten = max(1.0 - dist / max(range, 0.001), 0.0);
+    let atten = light_eval_falloff(dist, range, u32(round(sl.cone_cos.w)));
     let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
     let direct_mesh = sl.color_and_pad.xyz * (atten * cone * n_dot_l_mesh);
     if dot(direct_mesh, direct_mesh) <= SHADOWMASK_EPS * SHADOWMASK_EPS {
@@ -704,59 +701,6 @@ fn shadowmask_direct(
     out.value = direct_mesh * bump_scale;
     out.valid = 1u;
     return out;
-}
-
-fn shadowmask_sample_spot_shadow_wide(
-    slot_index: u32,
-    light_pos: vec3<f32>,
-    world_pos: vec3<f32>,
-    mesh_n: vec3<f32>,
-    bias_scale: f32,
-    light_proj: mat4x4<f32>,
-) -> f32 {
-    // Recover tan(fov_y / 2) from the bound matrix's y-row scale. The light
-    // view is rigid, so the row length retains the projection scale.
-    let projection_y_scale = length(vec3<f32>(
-        light_proj[0].y,
-        light_proj[1].y,
-        light_proj[2].y,
-    ));
-    let tan_half_fov_y = 1.0 / max(projection_y_scale, 1.0e-4);
-    let distance_to_light = length(world_pos - light_pos);
-    let shadow_dims = textureDimensions(spot_shadow_depth);
-    let texel_world_footprint =
-        2.0 * distance_to_light * tan_half_fov_y / max(f32(shadow_dims.y), 1.0);
-    let receiver_offset = mesh_n * (texel_world_footprint * bias_scale);
-    let light_clip = light_proj * vec4<f32>(world_pos + receiver_offset, 1.0);
-    if light_clip.w <= 0.0 {
-        return 1.0;
-    }
-    let light_ndc = light_clip.xyz / light_clip.w;
-    let uv = vec2<f32>(light_ndc.x * 0.5 + 0.5, light_ndc.y * -0.5 + 0.5);
-    if uv.x < 0.0 || uv.x > 1.0 ||
-       uv.y < 0.0 || uv.y > 1.0 ||
-       light_ndc.z < 0.0 || light_ndc.z > 1.0 {
-        return 1.0;
-    }
-
-    let texel = 1.0 / vec2<f32>(shadow_dims);
-    let step = texel * SHADOWMASK_SPOT_KERNEL_TEXELS;
-    var lit = 0.0;
-    var taps = 0.0;
-    for (var dy: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dy <= SHADOWMASK_SPOT_KERNEL_RADIUS; dy = dy + 1) {
-        for (var dx: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dx <= SHADOWMASK_SPOT_KERNEL_RADIUS; dx = dx + 1) {
-            let offset = vec2<f32>(f32(dx), f32(dy)) * step;
-            lit = lit + textureSampleCompare(
-                spot_shadow_depth,
-                spot_shadow_compare,
-                uv + offset,
-                i32(slot_index),
-                light_ndc.z
-            );
-            taps = taps + 1.0;
-        }
-    }
-    return lit / max(taps, 1.0);
 }
 
 fn shadowmask_shadow_visibility(
@@ -771,12 +715,12 @@ fn shadowmask_shadow_visibility(
             return 1.0;
         }
         let light_proj = light_space_matrices.m[slot];
-        return shadowmask_sample_spot_shadow_wide(
+        return sample_spot_shadow(
             slot,
             sl.position_and_range.xyz,
             world_pos,
             mesh_n,
-            WORLD_RECEIVER_BIAS_SCALE,
+            SHADOWMASK_UNION_RECEIVER_BIAS_SCALE,
             light_proj,
         );
     }
@@ -789,31 +733,15 @@ fn shadowmask_shadow_visibility(
             sl.position_and_range.xyz,
             world_pos,
             mesh_n,
-            WORLD_RECEIVER_BIAS_SCALE,
+            SHADOWMASK_UNION_RECEIVER_BIAS_SCALE,
             sl.position_and_range.w,
         );
     }
     return 1.0;
 }
 
-// Both the union's baked-visibility skip and the difference renormalization must
-// call this, so the skip threshold and the dead zone cannot drift apart.
-fn shadowmask_dead_zone(pool_kind: u32) -> f32 {
-    return select(
-        SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE,
-        SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE,
-        pool_kind == SHADOWMASK_POOL_CUBE,
-    );
-}
-
-fn shadowmask_visibility_difference(
-    pool_kind: u32,
-    baked_vis: f32,
-    shadow_map_vis: f32,
-) -> f32 {
-    let dead_zone = shadowmask_dead_zone(pool_kind);
-    let difference = max(baked_vis - shadow_map_vis, 0.0);
-    return max(difference - dead_zone, 0.0) / (1.0 - dead_zone);
+fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {
+    return baked_vis * (1.0 - entity_vis);
 }
 
 fn shadowmask_union_subtraction(
@@ -889,19 +817,17 @@ fn shadowmask_union_subtraction(
         }
 
         let baked_vis = shadowmask_channel_value(mask, channel);
-        // A baked-dark channel can never survive the dead zone, so the PCF
-        // kernel would be sampled only to be multiplied out. The uniform mode
-        // test comes first so the wavefront-coherent half short-circuits.
+        // A baked-dark channel cannot contribute to production attenuation.
+        // Mode 6 still samples it to diagnose entity-only pool visibility.
         if uniforms.sdf_shadow_mode != SHADOWMASK_RAW_POOL_VISIBILITY_MODE &&
-           baked_vis <= shadowmask_dead_zone(pool_kind) {
+           baked_vis <= 0.0 {
             continue;
         }
         let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos, mesh_n);
         // The raw-pool diagnostic follows the union's promoted-light coverage;
         // when several lights cover a receiver, the darkest map visibility wins.
         out.raw_pool_visibility = min(out.raw_pool_visibility, shadow_map_vis);
-        let union_difference = shadowmask_visibility_difference(pool_kind, baked_vis, shadow_map_vis);
-        out.subtraction = out.subtraction + direct.value * union_difference * weight;
+        out.subtraction = out.subtraction + direct.value * shadowmask_attenuation(baked_vis, shadow_map_vis) * weight;
     }
     return out;
 }
@@ -1077,7 +1003,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if n_dot_l <= 0.0 {
                 continue;
             }
-            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
             static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * cone * visibility);
@@ -1152,7 +1078,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if NdotL <= 0.0 {
                 continue;
             }
-            let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+            let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
             let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             // Exactly one technique applies: SDF lights retain the per-light
             // visibility slice shared with their diffuse term; other static

@@ -50,6 +50,7 @@ impl Renderer {
                 pool.clear_occupancy();
             }
             full.promoted_static_records.clear();
+            full.promoted_static_cache_layers.clear();
             for w in &mut full.promoted_static_weights {
                 *w = 0.0;
             }
@@ -286,6 +287,7 @@ impl Renderer {
             }
             shadowmask::pack_forward_shadowmask_metadata(
                 &full.promoted_static_records,
+                &full.promoted_static_cache_layers,
                 &full.entity_shadow_spec_light_indices,
                 &full.shadowmask_channels,
                 full.shadowmask_present,
@@ -841,6 +843,41 @@ impl Renderer {
             full.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
         }
 
+        let record_count_before_cache_layers = full.promoted_static_records.len();
+        if let Some(cache) = &mut full.promoted_depth_cache {
+            let mut plan = cache.plan_frame(&full.promoted_static_records);
+            full.promoted_static_cache_layers = apply_promoted_cache_layers(
+                &mut full.promoted_static_records,
+                &mut full.promoted_static_weights,
+                &mut plan,
+            );
+            if full.promoted_static_records.len() != record_count_before_cache_layers
+                && !full.promoted_depth_cache_missing_layer_warned
+            {
+                log::warn!(
+                    "[Renderer] promoted shadow record had no depth-cache plan layer; dropping it for this frame"
+                );
+                full.promoted_depth_cache_missing_layer_warned = true;
+            }
+            full.promoted_depth_cache_promoted_count = plan.counters.promoted_count;
+            full.promoted_depth_cache_world_render_skips = plan.counters.cached_world_render_skips;
+            // The shadow passes accumulate these after planning their world/cache work.
+            full.promoted_depth_cache_cull_dispatch_skips = 0;
+            full.promoted_entity_occluders_submitted = 0;
+            full.promoted_depth_cache_frame_plan = plan;
+        } else {
+            assert!(
+                full.promoted_static_records.is_empty(),
+                "promoted records require a promoted depth cache"
+            );
+            full.promoted_static_cache_layers.clear();
+            full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+            full.promoted_depth_cache_promoted_count = 0;
+            full.promoted_depth_cache_world_render_skips = 0;
+            full.promoted_depth_cache_cull_dispatch_skips = 0;
+            full.promoted_entity_occluders_submitted = 0;
+        }
+
         full.promoted_static_weight_scratch.clear();
         full.promoted_static_weight_scratch
             .reserve(full.promoted_static_weights.len().max(1).saturating_mul(4));
@@ -860,6 +897,39 @@ impl Renderer {
         );
         full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
     }
+}
+
+/// Associate each promoted record with its static-depth cache layer before the
+/// renderer uploads weights and appends shadowmask metadata. A missing layer is
+/// recoverable defensive degradation: remove the record and zero its selection
+/// weight so every downstream count and tail starts from the same surviving set.
+///
+fn apply_promoted_cache_layers(
+    records: &mut Vec<PromotedStaticLightRecord>,
+    weights: &mut [f32],
+    plan: &mut PromotedDepthCacheFramePlan,
+) -> Vec<i32> {
+    let mut cache_layers = Vec::with_capacity(records.len());
+    records.retain(|record| {
+        let layer = match record.pool_kind {
+            PromotedShadowPoolKind::Spot => plan
+                .spot_for_slot(record.slot)
+                .map(|spot| spot.cache_layer as i32),
+            PromotedShadowPoolKind::Cube => plan.cube_for_slot(record.slot).map(|cube| {
+                (cube.cache_layer_base / crate::lighting::cube_shadow::CUBE_FACES as u32) as i32
+            }),
+        };
+        let Some(layer) = layer else {
+            if let Some(weight) = weights.get_mut(record.selection_index as usize) {
+                *weight = 0.0;
+            }
+            return false;
+        };
+        cache_layers.push(layer);
+        true
+    });
+    plan.counters.promoted_count = records.len() as u32;
+    cache_layers
 }
 
 /// Adapts a `MapLight` + camera to the shared shadow-slot score. The score
@@ -1219,6 +1289,36 @@ mod tests {
     fn promoted_static_caps_match_task4_budget() {
         assert_eq!(MAX_PROMOTED_SPOT, 8);
         assert_eq!(MAX_PROMOTED_CUBE, 2);
+    }
+
+    #[test]
+    fn missing_cache_plan_layer_drops_record_and_zeros_weight_before_metadata_pack() {
+        let mut records = vec![PromotedStaticLightRecord {
+            global_light_index: 42,
+            selection_index: 0,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 3,
+            weight: 0.75,
+        }];
+        let mut weights = [0.75];
+        let mut plan = PromotedDepthCacheFramePlan::default();
+
+        let cache_layers = apply_promoted_cache_layers(&mut records, &mut weights, &mut plan);
+
+        assert!(
+            records.is_empty(),
+            "a record without a cache layer must not upload"
+        );
+        assert_eq!(
+            weights,
+            [0.0],
+            "dropped records must zero their selection weight"
+        );
+        assert!(
+            cache_layers.is_empty(),
+            "dropped records must not pack a metadata tail"
+        );
+        assert_eq!(plan.counters.promoted_count, 0);
     }
 
     #[test]

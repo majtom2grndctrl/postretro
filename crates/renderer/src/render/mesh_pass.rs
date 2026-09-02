@@ -131,9 +131,13 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
+    "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample_static_cache.wgsl"),
 );
 
 /// Compose the skinned-mesh shader source for the adapter's cube-array support.
@@ -166,9 +170,8 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 /// renderer uploads to forward `Uniforms.ambient_floor` that frame; the mesh
 /// fragment shader adds it once as an additive fill so shadowed mesh faces lift
 /// with the diagnostics slider exactly as world surfaces do (see forward.wgsl's
-/// ambient-floor term). std140-padded to 16 bytes (the WGSL `MeshLightParams`
-/// struct mirrors this layout: `light_count: u32`, `time: f32`,
-/// `light_term_mask: u32`, `ambient_floor: f32`).
+/// ambient-floor term). Its second std140 row carries the dynamic-prefix count
+/// used to identify promoted static records in the shader.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
@@ -176,14 +179,16 @@ struct MeshLightParams {
     time: f32,
     light_term_mask: u32,
     ambient_floor: f32,
+    dynamic_light_count: u32,
+    _pad: [u32; 3],
 }
 
-/// Byte size of the group-2 params uniform (`MeshLightParams`, 16 B).
+/// Byte size of the group-2 params uniform (`MeshLightParams`, 32 B).
 const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u64;
 
-/// Serialize `MeshLightParams` to its 16-byte std140 upload, field order matching
-/// the struct (and the WGSL mirror): `light_count` (0..4), `time` (4..8),
-/// `light_term_mask` (8..12), `ambient_floor` (12..16). Split out from
+/// Serialize `MeshLightParams` to its 32-byte std140 upload. `dynamic_light_count`
+/// sits at bytes 16..20; the remaining second row stays explicit zero padding.
+/// Split out from
 /// `write_light_params` so the byte layout can be asserted GPU-free in tests.
 fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
     [
@@ -191,6 +196,10 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
         params.time.to_ne_bytes(),
         params.light_term_mask.to_ne_bytes(),
         params.ambient_floor.to_ne_bytes(),
+        params.dynamic_light_count.to_ne_bytes(),
+        params._pad[0].to_ne_bytes(),
+        params._pad[1].to_ne_bytes(),
+        params._pad[2].to_ne_bytes(),
     ]
     .concat()
 }
@@ -310,6 +319,28 @@ fn mesh_light_bind_group_layout_entries(
     if cube_array_supported {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::CubeArray,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 9,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    });
+    if cube_array_supported {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 10,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Depth,
@@ -1383,12 +1414,19 @@ impl MeshPass {
         spot_shadow_compare: &wgpu::Sampler,
         light_space_matrices: &wgpu::Buffer,
         point_shadow_cube: Option<&wgpu::TextureView>,
+        promoted_spot_cache: &wgpu::TextureView,
+        promoted_cube_cache: Option<&wgpu::TextureView>,
     ) {
         assert_eq!(
             point_shadow_cube.is_some(),
             self.cube_array_supported,
             "mesh group-2 cube view must be Some iff the BGL carries the b8 cube \
              entry (cube_array_supported) — the Some-iff-layout invariant",
+        );
+        assert_eq!(
+            promoted_cube_cache.is_some(),
+            self.cube_array_supported,
+            "mesh group-2 promoted cube cache must be Some iff the BGL carries the b10 cube entry",
         );
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -1434,6 +1472,16 @@ impl MeshPass {
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
+        entries.push(wgpu::BindGroupEntry {
+            binding: 9,
+            resource: wgpu::BindingResource::TextureView(promoted_spot_cache),
+        });
+        if let Some(cube_view) = promoted_cube_cache {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::TextureView(cube_view),
+            });
+        }
         self.light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Mesh Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
@@ -1456,15 +1504,18 @@ impl MeshPass {
         &self,
         queue: &wgpu::Queue,
         light_count: u32,
+        dynamic_light_count: u32,
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
     ) {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
+            dynamic_light_count,
             time,
             light_term_mask,
             ambient_floor,
+            _pad: [0; 3],
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
@@ -1954,6 +2005,31 @@ mod tests {
     };
     use glam::Vec3;
 
+    fn extract_wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("fn {name} should have a body"));
+        let mut depth = 0i32;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..body_start + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("fn {name} should close its body");
+    }
+
     #[test]
     fn skinned_mesh_wgsl_parses() {
         let module = naga::front::wgsl::parse_str(SKINNED_MESH_SHADER_SOURCE)
@@ -2080,18 +2156,17 @@ mod tests {
         );
     }
 
-    // Guard the group-2 params uniform layout contract: `MeshLightParams`
-    // { light_count: u32, time: f32, light_term_mask: u32, ambient_floor: f32 }
-    // — 16 B std140, mirrored by the WGSL `MeshLightParams` struct at group 2
-    // binding 4. The mesh dynamic-light loop reads `time` for scripted-curve phase,
-    // `light_term_mask` for the forward-matching per-term gates, and `ambient_floor`
-    // for the constant additive fill, so a silent layout edit on either side must
-    // fail here.
+    // Guard the group-2 params uniform layout contract: `MeshLightParams` is eight
+    // u32/f32 lanes (32 B std140), mirrored by the WGSL struct at group 2 binding 4.
+    // Its first row holds the total count, time, term mask, and ambient floor;
+    // `dynamic_light_count` begins the explicit padded second row at byte 16. That
+    // count separates dynamic-prefix records from appended promoted static records,
+    // so a silent layout edit on either side must fail here.
     #[test]
-    fn mesh_light_params_is_sixteen_bytes() {
+    fn mesh_light_params_is_thirty_two_bytes() {
         assert_eq!(
-            MESH_LIGHT_PARAMS_SIZE, 16,
-            "MeshLightParams must be 16 B to match the std140 WGSL uniform",
+            MESH_LIGHT_PARAMS_SIZE, 32,
+            "MeshLightParams must be 32 B to match the std140 WGSL uniform",
         );
     }
 
@@ -2108,8 +2183,10 @@ mod tests {
             time: 1.5,
             light_term_mask: 0x7F,
             ambient_floor,
+            dynamic_light_count: 2,
+            _pad: [0; 3],
         });
-        assert_eq!(bytes.len(), 16, "serialized MeshLightParams must be 16 B");
+        assert_eq!(bytes.len(), 32, "serialized MeshLightParams must be 32 B");
         assert_eq!(
             &bytes[12..16],
             &ambient_floor.to_le_bytes(),
@@ -2123,17 +2200,73 @@ mod tests {
             &0x7Fu32.to_le_bytes(),
             "light_term_mask at 8..12",
         );
+        assert_eq!(
+            &bytes[16..20],
+            &2u32.to_le_bytes(),
+            "dynamic_light_count at 16..20",
+        );
+        assert_eq!(&bytes[20..], &[0; 12], "second-row padding stays zero");
+    }
+
+    #[test]
+    fn mesh_light_params_wgsl_layout_matches_rust_upload() {
+        let module = naga::front::wgsl::parse_str(SKINNED_MESH_SHADER_SOURCE)
+            .expect("composed skinned mesh shader should parse as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("composed skinned mesh shader should pass Naga validation");
+
+        let (span, members) = module
+            .types
+            .iter()
+            .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
+                (Some(name), naga::TypeInner::Struct { span, members, .. })
+                    if name == "MeshLightParams" =>
+                {
+                    Some((*span, members))
+                }
+                _ => None,
+            })
+            .expect("skinned mesh shader should declare MeshLightParams");
+
+        assert_eq!(span as usize, MESH_LIGHT_PARAMS_SIZE as usize);
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.name.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("light_count"),
+                Some("time"),
+                Some("light_term_mask"),
+                Some("ambient_floor"),
+                Some("dynamic_light_count"),
+                Some("_pad0"),
+                Some("_pad1"),
+                Some("_pad2"),
+            ],
+        );
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.offset)
+                .collect::<Vec<_>>(),
+            vec![0, 4, 8, 12, 16, 20, 24, 28],
+        );
     }
 
     // Headless guard for the mesh group-2 BGL: the entries the pipeline composes
-    // from must match the shader's declared group-2 binding map (b0–b8) and stay
+    // from must match the shader's declared group-2 binding map and stay
     // within the per-stage fragment storage-buffer budget. Modeled on
     // `billboard_pipeline_vertex_storage_request_matches_bgl_definitions` — both
     // re-derive the count from the SAME GPU-free BGL builder the layout is built
     // from, so a drift fails CI before a real GPU rejects the pipeline.
     #[test]
     fn mesh_group2_bgl_matches_shader_bindings() {
-        // Cube-supported variant carries the full b0..=b8 map; the dynamic-direct
+        // Cube-supported variant carries the full b0..=b8 plus cache b9/b10 map; the dynamic-direct
         // half (b0–b4) is identical in both variants, so assert it here against the
         // cube variant and cover the cube-vs-no-cube b5–b8 split in the dedicated
         // `mesh_group2_shadow_bindings_match_both_cube_variants` test.
@@ -2144,8 +2277,8 @@ mod tests {
         let bindings: Vec<u32> = entries.iter().map(|e| e.binding).collect();
         assert_eq!(
             bindings,
-            vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
-            "cube-supported mesh group-2 BGL must declare bindings b0..=b8 in order",
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "cube-supported mesh group-2 BGL must declare bindings b0..=b10 in order",
         );
         for b in 0..4u32 {
             assert!(
@@ -2276,6 +2409,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn skinned_mesh_animated_descriptors_are_limited_to_dynamic_prefix() {
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/skinned_mesh.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop.contains("if i < mesh_light_params.dynamic_light_count {")
+                && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
+            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
+        );
+    }
+
     // The skinned-mesh shader must DECLARE the pinned group-2 binding map so the
     // appended `curve_eval.wgsl` (`anim_samples` at b3) and `light_eval.wgsl`
     // (`AnimationDescriptor` for b2) symbols resolve and the BGL agrees with the
@@ -2294,6 +2440,8 @@ mod tests {
             "@group(2) @binding(6) var spot_shadow_compare: sampler_comparison",
             "@group(2) @binding(7) var<uniform> light_space_matrices",
             "@group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array",
+            "@group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array",
+            "@group(2) @binding(10) var promoted_cube_depth_cache: texture_depth_cube_array",
         ] {
             assert!(
                 src.contains(decl),
@@ -2333,20 +2481,26 @@ mod tests {
     // NOT declare b8; the cube variant must.
     #[test]
     fn skinned_mesh_shader_source_validates_both_cube_variants() {
-        const CUBE_DECL: &str = "@group(2) @binding(8) var point_shadow_cube";
+        const CUBE_DECLS: [&str; 2] = [
+            "@group(2) @binding(8) var point_shadow_cube",
+            "@group(2) @binding(10) var promoted_cube_depth_cache",
+        ];
 
         let no_cube = skinned_mesh_shader_source(false);
-        assert!(
-            !no_cube.contains(CUBE_DECL),
-            "no-cube skinned-mesh source must NOT declare the b8 cube binding — the strip \
-             must remove it so the shader matches the no-cube group-2 BGL (which omits b8)",
-        );
+        for decl in CUBE_DECLS {
+            assert!(
+                !no_cube.contains(decl),
+                "no-cube skinned-mesh source must NOT declare cube binding: {decl}",
+            );
+        }
 
         let cube = skinned_mesh_shader_source(true);
-        assert!(
-            cube.contains(CUBE_DECL),
-            "cube-supported skinned-mesh source must declare the b8 cube binding",
-        );
+        for decl in CUBE_DECLS {
+            assert!(
+                cube.contains(decl),
+                "cube-supported skinned-mesh source must declare cube binding: {decl}",
+            );
+        }
 
         for cube_supported in [true, false] {
             let src = skinned_mesh_shader_source(cube_supported);
@@ -2364,29 +2518,29 @@ mod tests {
         }
     }
 
-    // Headless guard for the mesh group-2 shadow-receipt bindings (b5–b8) across
-    // BOTH cube-support variants. b5–b7 are unconditional (spot depth 2D-array,
-    // comparison sampler, light-space-matrices uniform); b8 (cube-array depth) is
+    // Headless guard for the mesh group-2 shadow-receipt bindings across BOTH
+    // cube-support variants. b5–b7 and the cache spot b9 are unconditional;
+    // b8 and cache cube b10 are
     // present IFF `cube_array_supported` — the `Some`-iff-layout invariant the
     // BGL builder and `rebuild_light_bind_group` both honor. All FRAGMENT-only.
     #[test]
     fn mesh_group2_shadow_bindings_match_both_cube_variants() {
-        // No cube support: b5–b7 present, b8 absent (9 entries total: b0–b7).
+        // No cube support: b5–b7 and b9 present; cube bindings b8/b10 absent.
         let no_cube = mesh_light_bind_group_layout_entries(false);
         let no_cube_bindings: Vec<u32> = no_cube.iter().map(|e| e.binding).collect();
         assert_eq!(
             no_cube_bindings,
-            vec![0, 1, 2, 3, 4, 5, 6, 7],
-            "no-cube mesh group-2 BGL must declare b0..=b7 (b8 omitted)",
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 9],
+            "no-cube mesh group-2 BGL must omit only cube bindings b8 and b10",
         );
 
-        // Cube support: b8 appended (cube-array depth).
+        // Cube support: b8 and b10 carry the pool/cache cube arrays.
         let cube = mesh_light_bind_group_layout_entries(true);
         let cube_bindings: Vec<u32> = cube.iter().map(|e| e.binding).collect();
         assert_eq!(
             cube_bindings,
-            vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
-            "cube-supported mesh group-2 BGL must declare b0..=b8",
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "cube-supported mesh group-2 BGL must declare b0..=b10",
         );
 
         // b5: spot shadow depth, Depth 2D-array.
@@ -2432,6 +2586,28 @@ mod tests {
             ),
             "mesh group-2 b8 must be a Depth cube-array texture",
         );
+        assert!(
+            matches!(
+                cube[9].ty,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                }
+            ),
+            "mesh group-2 b9 must be a Depth 2D-array cache texture",
+        );
+        assert!(
+            matches!(
+                cube[10].ty,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::CubeArray,
+                    multisampled: false,
+                }
+            ),
+            "mesh group-2 b10 must be a Depth cube-array cache texture",
+        );
 
         // All shadow entries (both variants) are FRAGMENT-only — the mesh shadow
         // sampling runs in the fragment stage; an over-broad visibility would spend
@@ -2468,37 +2644,35 @@ mod tests {
     // mesh group-2 numbers so a future binding addition that pushes a sampled
     // texture into group 2 is caught headlessly before a real GPU rejects it.
     //
-    // No cube support: ONE sampled texture — b5 spot depth 2D-array. (b6 is a
-    // sampler, b7 a uniform; b8 cube array is omitted on the no-cube layout.)
-    // Cube support: TWO — b5 spot depth array + b8 point-shadow cube array.
+    // No cube support: TWO sampled textures — pool/cache spot depth arrays.
+    // Cube support: FOUR — both spot arrays plus both cube arrays.
     // Modeled on the billboard storage-count guard
     // (`billboard_pipeline_vertex_storage_request_matches_bgl_definitions`) and the
     // forward sampled-texture guard: re-derive from the SAME GPU-free BGL builder.
     #[test]
     fn mesh_group2_sampled_texture_count_recorded_for_both_cube_variants() {
-        // No-cube: only b5 (spot depth array) is a fragment-sampled texture.
+        // No-cube: b5 pool spot depth + b9 cache spot depth.
         let no_cube = mesh_light_bind_group_layout_entries(false);
         assert_eq!(
             fragment_sampled_textures(&no_cube),
-            1,
-            "no-cube mesh group-2 must carry exactly ONE sampled texture (b5 spot depth array)",
+            2,
+            "no-cube mesh group-2 must carry two sampled spot depth textures",
         );
 
-        // Cube: b5 (spot depth array) + b8 (point-shadow cube array) = two.
+        // Cube: b5/b9 spot arrays plus b8/b10 cube arrays = four.
         let cube = mesh_light_bind_group_layout_entries(true);
         assert_eq!(
             fragment_sampled_textures(&cube),
-            2,
-            "cube-supported mesh group-2 must carry exactly TWO sampled textures \
-             (b5 spot depth array + b8 cube array)",
+            4,
+            "cube-supported mesh group-2 must carry four pool/cache depth textures",
         );
 
         // The cube variant adds exactly ONE sampled texture over the no-cube
         // variant — the point-shadow cube array (b8) and nothing else.
         assert_eq!(
             fragment_sampled_textures(&cube) - fragment_sampled_textures(&no_cube),
-            1,
-            "enabling cube support must add exactly one sampled texture (the b8 cube array)",
+            2,
+            "enabling cube support must add the pool/cache cube arrays",
         );
 
         // Both counts sit well under the Metal/WebGPU sampled-texture spec floor of
@@ -2528,13 +2702,13 @@ mod tests {
         };
 
         let (cube_groups, cube_total) = total(true);
-        assert_eq!(cube_groups, [0, 4, 2, 0, 3]);
-        assert_eq!(cube_total, 9);
+        assert_eq!(cube_groups, [0, 4, 4, 0, 3]);
+        assert_eq!(cube_total, 11);
         assert!(cube_total <= 16);
 
         let (no_cube_groups, no_cube_total) = total(false);
-        assert_eq!(no_cube_groups, [0, 4, 1, 0, 3]);
-        assert_eq!(no_cube_total, 8);
+        assert_eq!(no_cube_groups, [0, 4, 2, 0, 3]);
+        assert_eq!(no_cube_total, 9);
         assert!(no_cube_total <= 16);
     }
 

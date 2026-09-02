@@ -112,14 +112,20 @@ struct AnimationDescriptor {
 // frame. `ambient_floor` is the SAME constant ambient
 // fill the renderer uploads to forward `Uniforms.ambient_floor` that frame; added
 // once in `fs_main` so shadowed mesh faces lift with the diagnostics slider.
-// Mirrors `MeshLightParams` in render/mesh_pass.rs. std140-padded to 16 B.
+// Mirrors `MeshLightParams` in render/mesh_pass.rs. The dynamic prefix ends at
+// `dynamic_light_count`; promoted records follow it and address metadata tails.
 struct MeshLightParams {
     light_count: u32,
     time: f32,
     light_term_mask: u32,
     ambient_floor: f32,
+    dynamic_light_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 @group(2) @binding(4) var<uniform> mesh_light_params: MeshLightParams;
+const SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;
 
 // --- Group 2 (cont.): shadow receipt (M10 mesh shadow receipt Task 2) ---------
 // b5–b8 alias the SAME pool-owned GPU resources the forward pass binds in its
@@ -149,6 +155,8 @@ struct LightSpaceMatrices {
 // omits b8. Mirrors forward.wgsl's group-5 b5 cube binding — tag placed inline
 // on the declaration line, NOT in this prose, so the strip drops the right line.
 @group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
+@group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array;
+@group(2) @binding(10) var promoted_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 // --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
@@ -425,6 +433,15 @@ fn accumulate_dynamic_direct(
     var total = vec3<f32>(0.0);
     let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        var cache_layer = -1i;
+        if i >= mesh_light_params.dynamic_light_count {
+            let promoted_index = i - mesh_light_params.dynamic_light_count;
+            let meta_index = mesh_light_params.light_count
+                + promoted_index * SHADOWMASK_META_VEC4S_PER_RECORD;
+            if meta_index + 1u < arrayLength(&light_influence) {
+                cache_layer = i32(light_influence[meta_index + 1u].w);
+            }
+        }
         // Influence-volume early-out: pure optimization — no pixel change.
         let influence = light_influence[i];
         let inf_radius = influence.w;
@@ -439,57 +456,58 @@ fn accumulate_dynamic_direct(
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
-        // Scripted per-light animation. `is_active == 0` keeps the static
-        // GpuLight color/aim; active descriptors override from Catmull-Rom
-        // curves on the shared anim_samples buffer. `mesh_light_params.time` is
-        // the same frame time forward uses, so the curves stay phase-coherent.
-        let scripted_desc = scripted_light_descriptors[i];
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
-        if scripted_desc.is_active != 0u {
-            let cycle_t = animation_curve_t(
-                scripted_desc.period,
-                scripted_desc.phase,
-                mesh_light_params.time,
-            );
-            // Catmull-Rom overshoot can dip below zero; clamp so an animated
-            // light never emits negative, sign-flipped light.
-            if scripted_desc.color_count > 0u {
-                let unit_sample = max(
-                    sample_color_catmull_rom(
-                        scripted_desc.color_offset,
-                        scripted_desc.color_count,
-                        cycle_t,
+        // The descriptor buffer is uploaded only for the compact dynamic prefix.
+        // Promoted static records append after it, so they must retain their packed
+        // GpuLight values even when a despawn leaves stale bytes in the old tail.
+        if i < mesh_light_params.dynamic_light_count {
+            let scripted_desc = scripted_light_descriptors[i];
+            if scripted_desc.is_active != 0u {
+                let cycle_t = animation_curve_t(
+                    scripted_desc.period,
+                    scripted_desc.phase,
+                    mesh_light_params.time,
+                );
+                // Catmull-Rom overshoot can dip below zero; clamp so an animated
+                // light never emits negative, sign-flipped light.
+                if scripted_desc.color_count > 0u {
+                    let unit_sample = max(
+                        sample_color_catmull_rom(
+                            scripted_desc.color_offset,
+                            scripted_desc.color_count,
+                            cycle_t,
+                            scripted_desc.base_color,
+                        ),
+                        vec3<f32>(0.0),
+                    );
+                    let intensity = light_eval_scripted_intensity_scalar(
+                        light.color_and_falloff_model.xyz,
                         scripted_desc.base_color,
-                    ),
-                    vec3<f32>(0.0),
-                );
-                let intensity = light_eval_scripted_intensity_scalar(
-                    light.color_and_falloff_model.xyz,
-                    scripted_desc.base_color,
-                );
-                let brightness = max(
-                    sample_curve_catmull_rom(
-                        scripted_desc.brightness_offset,
-                        scripted_desc.brightness_count,
-                        cycle_t,
-                    ),
-                    0.0,
-                );
-                effective_color = unit_sample * intensity * brightness;
-            } else if scripted_desc.brightness_count > 0u {
-                let brightness = max(
-                    sample_curve_catmull_rom(
-                        scripted_desc.brightness_offset,
-                        scripted_desc.brightness_count,
-                        cycle_t,
-                    ),
-                    0.0,
-                );
-                effective_color = light.color_and_falloff_model.xyz * brightness;
-            }
-            if light_type == 1u && scripted_desc.direction_count > 0u {
-                effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
+                    );
+                    let brightness = max(
+                        sample_curve_catmull_rom(
+                            scripted_desc.brightness_offset,
+                            scripted_desc.brightness_count,
+                            cycle_t,
+                        ),
+                        0.0,
+                    );
+                    effective_color = unit_sample * intensity * brightness;
+                } else if scripted_desc.brightness_count > 0u {
+                    let brightness = max(
+                        sample_curve_catmull_rom(
+                            scripted_desc.brightness_offset,
+                            scripted_desc.brightness_count,
+                            cycle_t,
+                        ),
+                        0.0,
+                    );
+                    effective_color = light.color_and_falloff_model.xyz * brightness;
+                }
+                if light_type == 1u && scripted_desc.direction_count > 0u {
+                    effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
+                }
             }
         }
 
@@ -513,14 +531,27 @@ fn accumulate_dynamic_direct(
                 // dynamic point term is shadowed exactly once (no lightmap touched).
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
-                    let shadow = sample_point_shadow(
-                        cube_slot,
-                        light.position_and_type.xyz,
-                        world_pos,
-                        n,
-                        SKINNED_SCALE * bias_factor,
-                        light.direction_and_range.w
-                    );
+                    var shadow: f32;
+                    if i >= mesh_light_params.dynamic_light_count {
+                        shadow = sample_point_shadow_with_static(
+                            cube_slot,
+                            cache_layer,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            n,
+                            SKINNED_SCALE * bias_factor,
+                            light.direction_and_range.w,
+                        );
+                    } else {
+                        shadow = sample_point_shadow(
+                            cube_slot,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            n,
+                            SKINNED_SCALE * bias_factor,
+                            light.direction_and_range.w,
+                        );
+                    }
                     attenuation = attenuation * shadow;
                 }
             }
@@ -544,14 +575,27 @@ fn accumulate_dynamic_direct(
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
-                    let shadow = sample_spot_shadow(
-                        slot_index,
-                        light.position_and_type.xyz,
-                        world_pos,
-                        n,
-                        SKINNED_SCALE * bias_factor,
-                        light_proj,
-                    );
+                    var shadow: f32;
+                    if i >= mesh_light_params.dynamic_light_count {
+                        shadow = sample_spot_shadow_with_static(
+                            slot_index,
+                            cache_layer,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            n,
+                            SKINNED_SCALE * bias_factor,
+                            light_proj,
+                        );
+                    } else {
+                        shadow = sample_spot_shadow(
+                            slot_index,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            n,
+                            SKINNED_SCALE * bias_factor,
+                            light_proj,
+                        );
+                    }
                     attenuation = attenuation * shadow;
                 }
             }

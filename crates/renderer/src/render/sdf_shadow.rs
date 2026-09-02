@@ -38,6 +38,8 @@ const SDF_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/sdf_shadow.wgsl"),
     "\n",
     include_str!("../shaders/sdf_light_select.wgsl"),
+    "\n",
+    include_str!("../shaders/light_falloff.wgsl"),
 );
 
 /// Half-resolution divisor relative to the swap-chain. `2` matches the

@@ -228,6 +228,7 @@ impl Renderer {
         full.promoted_static_states =
             vec![PromotedStaticLightState::default(); geometry.entity_shadow_lights.len()];
         full.promoted_static_records.clear();
+        full.promoted_static_cache_layers.clear();
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
         full.promoted_static_weight_scratch.clear();
         full.promoted_static_last_update_time = None;
@@ -241,9 +242,13 @@ impl Renderer {
         } else if let Some(cache) = &mut full.promoted_depth_cache {
             cache.reset_level();
         } else {
-            full.promoted_depth_cache = Some(PromotedDepthCache::new(device));
+            full.promoted_depth_cache = Some(PromotedDepthCache::new(
+                device,
+                full.cube_shadow_pool.is_some(),
+            ));
         }
         full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+        full.promoted_depth_cache_missing_layer_warned = false;
         full.promoted_depth_cache_promoted_count = 0;
         full.promoted_depth_cache_world_render_skips = 0;
         full.promoted_depth_cache_cull_dispatch_skips = 0;
@@ -375,6 +380,16 @@ impl Renderer {
         // shadow bindings rebind alongside the reallocated b0–b4. The cube view is
         // `Some` iff `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
         let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+        let promoted_spot_cache = full
+            .promoted_depth_cache
+            .as_ref()
+            .map(PromotedDepthCache::spot_sampled_view)
+            .unwrap_or(&full.spot_shadow_pool.array_view);
+        let promoted_cube_cache = full
+            .promoted_depth_cache
+            .as_ref()
+            .and_then(PromotedDepthCache::cube_sampled_view)
+            .or(cube_sampling_view);
         full.mesh_pass.rebuild_light_bind_group(
             device,
             &full.lights_buffer,
@@ -385,6 +400,8 @@ impl Renderer {
             &full.spot_shadow_pool.compare_sampler,
             &full.spot_shadow_pool.matrices_buffer,
             cube_sampling_view,
+            promoted_spot_cache,
+            promoted_cube_cache,
         );
         full.kinematic_brush.rebuild_light_bind_group(
             device,
@@ -396,6 +413,8 @@ impl Renderer {
             &full.spot_shadow_pool.compare_sampler,
             &full.spot_shadow_pool.matrices_buffer,
             cube_sampling_view,
+            promoted_spot_cache,
+            promoted_cube_cache,
         );
 
         full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);

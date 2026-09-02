@@ -3,6 +3,7 @@
 // static-specular loops, and the SDF visibility K-selection helper.
 // See: context/lib/rendering_pipeline.md
 
+use crate::falloff_model_code;
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::{LightType, MapLight, ShadowType};
 
@@ -19,7 +20,7 @@ use postretro_level_loader::{LightType, MapLight, ShadowType};
 ///   48..52  cos(inner_angle)   (f32) — cone full-bright cutoff, 1.0 for non-spot
 ///   52..56  cos(outer_angle)   (f32) — cone zero cutoff, -1.0 for non-spot
 ///   56..60  shadowmask_channel (f32) — 0.0..3.0 selects RGBA; 4.0 means none
-///   60..64  pad                (f32)
+///   60..64  falloff_model      (f32) — 0 Linear, 1 InverseDistance, 2 InverseSquared
 ///
 /// Cone direction/angles are packed here (rather than recomputed in-shader) so
 /// the static specular loops can apply cone falloff to spot lights — without
@@ -112,7 +113,7 @@ pub fn pack_spec_lights(lights: &[MapLight], shadowmask_channels: &[u8]) -> Vec<
             Some(channel) => channel as f32,
         };
         bytes.extend_from_slice(&shadowmask_channel.to_le_bytes());
-        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.extend_from_slice(&(falloff_model_code(l.falloff_model) as f32).to_le_bytes());
     }
     bytes
 }
@@ -225,6 +226,13 @@ mod tests {
         let shadowmask_channel = read_f32(&bytes, 56);
         assert!((shadowmask_channel - 2.0).abs() < f32::EPSILON);
         assert!((shadowmask_channel - SPEC_LIGHT_SHADOWMASK_NONE).abs() >= f32::EPSILON);
+    }
+
+    #[test]
+    fn packs_falloff_model_code_into_cone_cos_w() {
+        let bytes = pack_spec_lights(&[sample()], &[]);
+
+        assert_eq!(read_f32(&bytes, 60), 2.0); // InverseSquared
     }
 
     #[test]

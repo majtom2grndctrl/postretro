@@ -1,7 +1,7 @@
 # Promoted-Shadow Entity-Only Depth — Research
 
 Derivations and discarded branches behind `index.md`. Decisions live there.
-Supersedes `context/plans/drafts/promoted-shadow-entity-scoping/research.md`,
+Supersedes `context/plans/done/promoted-shadow-entity-scoping/research.md`,
 whose striping and bandwidth measurements this file cites.
 
 ---

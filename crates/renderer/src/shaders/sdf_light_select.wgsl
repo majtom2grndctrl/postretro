@@ -18,7 +18,7 @@
 //         position_and_range: vec4<f32>, // xyz = position, w = falloff_range
 //         color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag
 //         cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type
-//         cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none; unused here)
+//         cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (unused here), w = falloff model
 //     };
 //     struct ChunkGridInfo {
 //         grid_origin: vec3<f32>,
@@ -58,20 +58,20 @@ fn sdf_select_is_sdf(sl: SpecLight) -> bool {
     return sl.color_and_pad.w > 0.5;
 }
 
-// Per-light influence at a world position. Reuses the engine's existing
-// per-fragment light weighting from the forward static loop: the falloff-range
-// attenuation `max(1 - dist/range, 0)` (`range == 0` ⇒ unattenuated) times the
-// light's peak emitted intensity (the brightest channel of color × intensity).
-// This is the ordering key, NOT a new metric — it is the same attenuation and
-// intensity the shading loop already applies.
+// Per-light influence at a world position. Reuses the forward static loop's
+// model-aware falloff (`range == 0` remains unattenuated) times the light's
+// peak emitted intensity (the brightest channel of color × intensity). This is
+// the ordering key, NOT a new metric — it is the same attenuation and intensity
+// the shading loop applies.
 fn sdf_select_influence(sl: SpecLight, world: vec3<f32>) -> f32 {
     let to_light = sl.position_and_range.xyz - world;
     let dist = length(to_light);
     let range = sl.position_and_range.w;
-    if (range > 0.0 && dist > range) {
-        return 0.0;
-    }
-    let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
+    let atten = select(
+        1.0,
+        light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))),
+        range > 0.0,
+    );
     let peak = max(sl.color_and_pad.x, max(sl.color_and_pad.y, sl.color_and_pad.z));
     return atten * peak;
 }

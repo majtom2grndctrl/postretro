@@ -47,7 +47,7 @@ pub enum SdfShadowMode {
     // Visualizes the static-light shadowmask world-receipt union subtraction
     // magnitude. Normal mode still applies the production subtraction.
     ShadowmaskUnion = 5,
-    // Visualizes raw pool visibility for promoted static lights on world
+    // Visualizes entity-only pool visibility for promoted static lights on world
     // receivers. The forward shader chooses the minimum across covering lights.
     ShadowmaskRawPoolVisibility = 6,
 }
@@ -78,7 +78,7 @@ impl SdfShadowMode {
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
             SdfShadowMode::ShadowmaskUnion => "Visualize: shadowmask union",
-            SdfShadowMode::ShadowmaskRawPoolVisibility => "Visualize: shadowmask pool visibility",
+            SdfShadowMode::ShadowmaskRawPoolVisibility => "Visualize: entity-only pool visibility",
         }
     }
 }

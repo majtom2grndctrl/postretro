@@ -352,6 +352,12 @@ pub(crate) fn build_full_renderer(
         &depth_view,
         cube_sampling_view,
     );
+    // Only allocate the promoted-slot cache when the map has a non-empty
+    // entity-shadow selection; an empty/absent selection can never promote a
+    // light. Construction precedes mesh/kinematic bind-group wiring so their
+    // new sampleable cache bindings can reference it immediately.
+    let promoted_depth_cache = (!entity_shadow_indices.is_empty())
+        .then(|| PromotedDepthCache::new(device, cube_array_supported));
     {
         use crate::lighting::spot_shadow::{
             SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
@@ -455,6 +461,14 @@ pub(crate) fn build_full_renderer(
     // the `Some`-iff-layout invariant). These pool resources are stable for the
     // renderer's lifetime (the pools are never recreated), so they only ever
     // rebind here alongside the b0–b4 reallocation rebind on level load.
+    let promoted_spot_cache = promoted_depth_cache
+        .as_ref()
+        .map(PromotedDepthCache::spot_sampled_view)
+        .unwrap_or(&spot_shadow_pool.array_view);
+    let promoted_cube_cache = promoted_depth_cache
+        .as_ref()
+        .and_then(PromotedDepthCache::cube_sampled_view)
+        .or_else(|| cube_shadow_pool.as_ref().map(|pool| &pool.sampling_view));
     mesh_pass.rebuild_light_bind_group(
         device,
         &lights_buffer,
@@ -465,6 +479,8 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_pool.compare_sampler,
         &spot_shadow_pool.matrices_buffer,
         cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
+        promoted_spot_cache,
+        promoted_cube_cache,
     );
     let mut kinematic_brush = kinematic_brush::KinematicBrushPass::new(
         device,
@@ -484,6 +500,8 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_pool.compare_sampler,
         &spot_shadow_pool.matrices_buffer,
         cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
+        promoted_spot_cache,
+        promoted_cube_cache,
     );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,
@@ -549,15 +567,6 @@ pub(crate) fn build_full_renderer(
         &uniform_bind_group_layout,
         sh_volume_resources.grid_dimensions,
     );
-    // Only allocate the promoted-slot depth cache when the map has a non-empty
-    // entity-shadow selection; an empty/absent selection can never promote a
-    // light, so the cache arrays would be pure wasted VRAM.
-    let promoted_depth_cache = if entity_shadow_indices.is_empty() {
-        None
-    } else {
-        Some(PromotedDepthCache::new(device))
-    };
-
     Ok(FullRenderer {
         pipeline,
         depth_prepass_pipeline,
@@ -635,11 +644,13 @@ pub(crate) fn build_full_renderer(
             entity_shadow_indices.len()
         ],
         promoted_static_records: Vec::new(),
+        promoted_static_cache_layers: Vec::new(),
         promoted_static_weights: vec![0.0; entity_shadow_indices.len()],
         promoted_static_weight_buffer,
         promoted_static_weight_scratch: Vec::new(),
         promoted_static_last_update_time: None,
         promoted_depth_cache,
+        promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),
         promoted_depth_cache_promoted_count: 0,
         promoted_depth_cache_world_render_skips: 0,

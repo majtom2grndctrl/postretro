@@ -94,6 +94,7 @@ fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -
 
 pub(crate) fn pack_forward_shadowmask_metadata(
     records: &[PromotedStaticLightRecord],
+    cache_layers: &[i32],
     selection_spec_light_indices: &[u32],
     channels: &[u8],
     shadowmask_present: bool,
@@ -102,7 +103,7 @@ pub(crate) fn pack_forward_shadowmask_metadata(
     out.clear();
     out.reserve(records.len() * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD);
 
-    for record in records {
+    for (record_index, record) in records.iter().enumerate() {
         let selection_index = record.selection_index as usize;
         let spec_index = selection_spec_light_indices
             .get(selection_index)
@@ -129,7 +130,10 @@ pub(crate) fn pack_forward_shadowmask_metadata(
         push_f32(out, pool_kind as f32);
         push_f32(out, record.slot as f32);
         push_f32(out, metadata_channel_value(channel));
-        push_f32(out, 0.0);
+        push_f32(
+            out,
+            cache_layers.get(record_index).copied().unwrap_or(-1) as f32,
+        );
     }
 }
 
@@ -281,6 +285,7 @@ mod tests {
 
         pack_forward_shadowmask_metadata(
             &records,
+            &[6],
             &[2],
             &[SHADOWMASK_CHANNEL_DROPPED],
             true,
@@ -298,6 +303,7 @@ mod tests {
             read_f32(&bytes, 24),
             FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
         );
+        assert_eq!(read_f32(&bytes, 28), 6.0);
     }
 
     #[test]
@@ -311,7 +317,7 @@ mod tests {
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(&records, &[0], &[0], false, &mut bytes);
+        pack_forward_shadowmask_metadata(&records, &[1], &[0], &[0], false, &mut bytes);
 
         assert_eq!(read_f32(&bytes, 16), 1.0);
         assert_eq!(read_f32(&bytes, 20), 1.0);
@@ -319,6 +325,7 @@ mod tests {
             read_f32(&bytes, 24),
             FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
         );
+        assert_eq!(read_f32(&bytes, 28), 1.0);
     }
 
     #[test]
@@ -332,7 +339,7 @@ mod tests {
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(&records, &[], &[0], true, &mut bytes);
+        pack_forward_shadowmask_metadata(&records, &[-1], &[], &[0], true, &mut bytes);
 
         assert_eq!(read_f32(&bytes, 8), FORWARD_SHADOWMASK_INVALID_INDEX_VALUE);
         assert_ne!(
@@ -345,7 +352,7 @@ mod tests {
     #[test]
     fn no_promoted_records_produces_no_metadata() {
         let mut bytes = vec![1, 2, 3];
-        pack_forward_shadowmask_metadata(&[], &[], &[], true, &mut bytes);
+        pack_forward_shadowmask_metadata(&[], &[], &[], &[], true, &mut bytes);
         assert!(bytes.is_empty());
     }
 }

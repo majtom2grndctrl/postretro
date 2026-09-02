@@ -261,9 +261,11 @@ args = ["--lightmap-density", "0.02"]
         let input = format!(
             "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\n\n[[recipes]]\noutput = \"maps/a.prl\"\n"
         );
-        assert!(Manifest::parse(&input)
-            .unwrap_err()
-            .contains("recipe `maps/a.prl`"));
+        assert!(
+            Manifest::parse(&input)
+                .unwrap_err()
+                .contains("recipe `maps/a.prl`")
+        );
     }
 
     #[test]

@@ -537,11 +537,13 @@ args = ["--lightmap-density", "0.02"]
     #[test]
     fn guard_permits_nested_output_root() {
         let workspace = TempWorkspace::new();
-        assert!(guard_payload_root(
-            &workspace.path("dist/nightly/postretro-dev"),
-            &workspace.root
-        )
-        .is_ok());
+        assert!(
+            guard_payload_root(
+                &workspace.path("dist/nightly/postretro-dev"),
+                &workspace.root
+            )
+            .is_ok()
+        );
     }
 
     #[test]

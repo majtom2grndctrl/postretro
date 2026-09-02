@@ -62,7 +62,8 @@ depth cache directly. Derivations: `research.md`.
 
 ## Direction
 
-**Problem.** The world-receiver union subtracts the difference between two
+**Problem.** Every occlusion fact should be computed once, by the source
+that knows it best. The world-receiver union subtracts the difference between two
 estimates of the same static occlusion — the bake and a runtime compare
 against a pool map that contains the world — so every error in the runtime
 estimate becomes darkening; at rake angles the estimate self-compares across a
@@ -189,7 +190,8 @@ lane, a 16→32 B uniform, one `SpecLight` lane. No PRL section changes.
 - [ ] Fog shader source is byte-identical (`git diff` shows no change to
       `fog_volume.wgsl`).
 - [ ] `rendering_pipeline.md` §4, §7.1 and the §9 group-2 row describe the entity-only slot, the
-      attenuation form, the sampled cache, and the `Clear(1.0)` baseline; the
+      attenuation form, the sampled cache, and the `Clear(1.0)` baseline; §4
+      opens the promoted paragraph with the compute-once thesis; the
       one-source-per-receiver sentence counts the pool slot and the cache as
       one source.
 
@@ -383,7 +385,13 @@ hard-coded linear expression is absent from `forward.wgsl`.
 
 ### Task 4: Pipeline documentation
 
-In `context/lib/rendering_pipeline.md`: §4 "Promoted static lights" — replace
+In `context/lib/rendering_pipeline.md`: §4 "Promoted static lights" — open
+the paragraph with the thesis: every occlusion fact is computed once, by the
+source that knows it best, and never re-derived — the bake owns
+static-onto-static and static-onto-probe occlusion; the runtime owns only the
+facts that involve a dynamic body (entity onto world, entity onto entity, and
+world onto entity at near-tier resolution), and a promoted slot exists to
+supply those three; then replace
 the union sentence with the attenuation form and state that promoted slots
 hold entity depth only while the cached world depth is sampled by entity
 receivers; §4 "Pool-shadow receiver bias" — the world class applies to the

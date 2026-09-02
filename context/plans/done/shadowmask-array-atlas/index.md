@@ -1,5 +1,10 @@
 # Shadowmask Array Atlas — Investigation: No Action Needed
 
+> **Closed — historical reference only.** No runtime reshape is needed and none is
+> planned. The bake-side work this investigation did not examine shipped in
+> `context/plans/done/shadowmask-bake-scaling/`; the channel-cap quality gap lives in
+> `context/plans/drafts/shadowmask-no-drop-atlas/`. Nothing here is a plan to implement.
+
 > **Superseded scope (2026-08-31):** this investigation answered only the *runtime GPU
 > texture-limit* question, and that verdict still holds — the shipped atlas is already a
 > layer-honoring `texture_2d_array` and does not breach a device limit the lightmap

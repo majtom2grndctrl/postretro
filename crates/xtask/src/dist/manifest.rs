@@ -235,15 +235,35 @@ args = ["--lightmap-density", "0.02"]
     }
 
     #[test]
+    fn rejects_every_invalid_package_name_and_mod_root_shape() {
+        for name in [".", "..", "nested/name", "nested\\\\name", ""] {
+            let input = format!("[package]\nname = \"{name}\"\nmod_root = \"content/dev\"\n");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("package"), "{error}");
+        }
+        for mod_root in [
+            "content",
+            "content/dev/maps",
+            "/content/dev",
+            "content//dev",
+            "content/../dev",
+            "content\\\\dev",
+            "dist/packaged",
+        ] {
+            let input = format!("[package]\nname = \"dev\"\nmod_root = \"{mod_root}\"\n");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("mod_root"), "{error}");
+        }
+    }
+
+    #[test]
     fn rejects_duplicate_recipe_output() {
         let input = format!(
             "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\n\n[[recipes]]\noutput = \"maps/a.prl\"\n"
         );
-        assert!(
-            Manifest::parse(&input)
-                .unwrap_err()
-                .contains("recipe `maps/a.prl`")
-        );
+        assert!(Manifest::parse(&input)
+            .unwrap_err()
+            .contains("recipe `maps/a.prl`"));
     }
 
     #[test]
@@ -252,7 +272,9 @@ args = ["--lightmap-density", "0.02"]
             let input = format!(
                 "{DEV_MANIFEST}\n[[recipes]]\noutput = \"maps/a.prl\"\nargs = [\"{arg}\"]\n"
             );
-            assert!(Manifest::parse(&input).is_err(), "{arg}");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("recipe `maps/a.prl`"), "{error}");
+            assert!(error.contains(arg), "{error}");
         }
     }
 
@@ -269,5 +291,31 @@ args = ["--lightmap-density", "0.02"]
             let error = Manifest::parse(&input).unwrap_err();
             assert!(error.contains("recipe `maps/a.prl`"), "{error}");
         }
+    }
+
+    #[test]
+    fn rejects_invalid_recipe_paths_and_non_map_outputs() {
+        for (field, value) in [
+            ("output", "maps/../a.prl"),
+            ("output", "maps\\\\a.prl"),
+            ("source", "/content/dev/maps/a.map"),
+            ("source", "content//dev/maps/a.map"),
+        ] {
+            let source = if field == "source" {
+                format!("source = \"{value}\"\n")
+            } else {
+                String::new()
+            };
+            let output = if field == "output" {
+                value
+            } else {
+                "maps/a.prl"
+            };
+            let input = format!("{DEV_MANIFEST}\n[[recipes]]\noutput = \"{output}\"\n{source}");
+            let error = Manifest::parse(&input).unwrap_err();
+            assert!(error.contains("recipe"), "{error}");
+        }
+        let input = format!("{DEV_MANIFEST}\n[[recipes]]\noutput = \"levels/a.prl\"\n");
+        assert!(Manifest::parse(&input).unwrap_err().contains("maps/"));
     }
 }

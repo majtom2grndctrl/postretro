@@ -348,3 +348,340 @@ fn rejoin_tail(mut canonical: PathBuf, mut tail: Vec<std::ffi::OsString>) -> Pat
     }
     canonical
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SUFFIX: AtomicU64 = AtomicU64::new(0);
+
+    struct TempWorkspace {
+        root: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new() -> Self {
+            let suffix = TEMP_SUFFIX.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "postretro-dist-resolve-{}-{suffix}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("create temporary workspace");
+            Self { root }
+        }
+
+        fn path(&self, path: &str) -> PathBuf {
+            self.root.join(path)
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn manifest(recipes: &str) -> Manifest {
+        Manifest::parse(&format!(
+            "[package]\nname = \"dev\"\nmod_root = \"content/dev\"\n{recipes}"
+        ))
+        .expect("manifest parses")
+    }
+
+    fn resolved(output: &str, density: f32) -> Resolved {
+        Resolved {
+            output: output.to_string(),
+            source: PathBuf::from("unused.map"),
+            args: Vec::new(),
+            lightmap_density: density,
+        }
+    }
+
+    fn assert_refusal(result: Result<(), GuardRefusal>, expected: GuardRefusal) {
+        assert_eq!(result.unwrap_err(), expected);
+    }
+
+    #[test]
+    fn scanner_is_textual_and_deduplicates_prl_literals() {
+        let script = br#"
+            const first = "maps/first.prl";
+            // maps/commented.prl remains visible to the Luau scan
+            const ignored = "maps/not-a-level.txt";
+            const again = "maps/first.prl";
+            const second = "maps/second.prl.extra";
+        "#;
+
+        assert_eq!(
+            scan_map_literals(script),
+            BTreeSet::from([
+                "maps/commented.prl".to_string(),
+                "maps/first.prl".to_string(),
+                "maps/second.prl".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn resolver_uses_recipe_and_stem_default_sources() {
+        let workspace = TempWorkspace::new();
+        let recipe_source = workspace.path("sources/renamed.map");
+        let default_source = workspace.path("content/dev/maps/default.map");
+        fs::create_dir_all(recipe_source.parent().unwrap()).unwrap();
+        fs::create_dir_all(default_source.parent().unwrap()).unwrap();
+        fs::write(&recipe_source, "recipe").unwrap();
+        fs::write(&default_source, "default").unwrap();
+        let manifest = manifest(
+            r#"
+[[recipes]]
+output = "maps/recipe.prl"
+source = "sources/renamed.map"
+args = ["--lightmap-density", "0.02"]
+"#,
+        );
+        let scanned = BTreeSet::from([
+            "maps/default.prl".to_string(),
+            "maps/recipe.prl".to_string(),
+        ]);
+
+        let resolved = resolve_map_set(&scanned, &manifest, &workspace.root).unwrap();
+        assert_eq!(resolved[0].output, "maps/default.prl");
+        assert_eq!(resolved[0].source, default_source);
+        assert!(resolved[0].args.is_empty());
+        assert_eq!(resolved[1].output, "maps/recipe.prl");
+        assert_eq!(resolved[1].source, recipe_source);
+        assert_eq!(resolved[1].args, ["--lightmap-density", "0.02"]);
+    }
+
+    #[test]
+    fn resolver_aggregates_multiple_missing_defaults() {
+        let workspace = TempWorkspace::new();
+        let manifest = manifest("");
+        let scanned = BTreeSet::from(["maps/one.prl".to_string(), "maps/two.prl".to_string()]);
+
+        let error = resolve_map_set(&scanned, &manifest, &workspace.root).unwrap_err();
+        assert!(
+            error.contains("default source for `maps/one.prl`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("default source for `maps/two.prl`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolver_rejects_orphan_recipe_empty_set_and_missing_recipe_source() {
+        let workspace = TempWorkspace::new();
+        let orphan = manifest("\n[[recipes]]\noutput = \"maps/orphan.prl\"\n");
+        let error = resolve_map_set(&BTreeSet::new(), &orphan, &workspace.root).unwrap_err();
+        assert!(error.contains("no maps/*.prl literals"), "{error}");
+        assert!(
+            error.contains("recipe `maps/orphan.prl` is orphaned"),
+            "{error}"
+        );
+
+        let missing = manifest(
+            "\n[[recipes]]\noutput = \"maps/custom.prl\"\nsource = \"missing/source.map\"\n",
+        );
+        let error = resolve_map_set(
+            &BTreeSet::from(["maps/custom.prl".to_string()]),
+            &missing,
+            &workspace.root,
+        )
+        .unwrap_err();
+        assert!(error.contains("recipe `maps/custom.prl`"), "{error}");
+        assert!(error.contains("missing/source.map"), "{error}");
+    }
+
+    #[test]
+    fn guard_permits_first_and_completed_default_payloads() {
+        let workspace = TempWorkspace::new();
+        let payload = workspace.path("dist/postretro-dev");
+        assert!(guard_payload_root(&payload, &workspace.root).is_ok());
+
+        fs::create_dir_all(&payload).unwrap();
+        fs::write(
+            payload.join(if cfg!(windows) {
+                "postretro.exe"
+            } else {
+                "postretro"
+            }),
+            "engine",
+        )
+        .unwrap();
+        assert!(guard_payload_root(&payload, &workspace.root).is_ok());
+    }
+
+    #[test]
+    fn guard_refuses_all_outside_dist_cases_on_containment() {
+        let workspace = TempWorkspace::new();
+        let outside_temp =
+            std::env::temp_dir().join(format!("postretro-outside-{}", std::process::id()));
+        for payload in [
+            workspace.path("context/plans"),
+            workspace.path("target/ship/postretro-dev"),
+            outside_temp.join("postretro-dev"),
+            workspace.path("dist-old/ship"),
+            workspace.path("baked/materials"),
+            workspace.path("dist"),
+        ] {
+            assert_refusal(
+                guard_payload_root(&payload, &workspace.root),
+                GuardRefusal::NotUnderDist(payload),
+            );
+        }
+    }
+
+    #[test]
+    fn guard_permits_nested_output_root() {
+        let workspace = TempWorkspace::new();
+        assert!(guard_payload_root(
+            &workspace.path("dist/nightly/postretro-dev"),
+            &workspace.root
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn guard_checks_provenance_without_rejecting_collectable_or_known_states() {
+        let workspace = TempWorkspace::new();
+        let unknown = workspace.path("dist/notes");
+        fs::create_dir_all(&unknown).unwrap();
+        fs::write(unknown.join("stray"), "stray").unwrap();
+        assert_refusal(
+            guard_payload_root(&unknown, &workspace.root),
+            GuardRefusal::NoProvenance(unknown.clone()),
+        );
+        fs::remove_file(unknown.join("stray")).unwrap();
+        assert!(guard_payload_root(&unknown, &workspace.root).is_ok());
+
+        for (name, marker, binary) in [
+            ("complete", false, true),
+            ("incomplete", true, false),
+            ("both", true, true),
+        ] {
+            let payload = workspace.path(&format!("dist/{name}"));
+            fs::create_dir_all(&payload).unwrap();
+            if marker {
+                fs::write(payload.join(".dist-incomplete"), "stage 5\n").unwrap();
+            }
+            if binary {
+                fs::write(
+                    payload.join(if cfg!(windows) {
+                        "postretro.exe"
+                    } else {
+                        "postretro"
+                    }),
+                    "engine",
+                )
+                .unwrap();
+            }
+            assert!(
+                guard_payload_root(&payload, &workspace.root).is_ok(),
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_canonicalizes_symlinked_payloads_and_workspaces() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempWorkspace::new();
+        fs::create_dir_all(workspace.path("dist")).unwrap();
+        fs::create_dir_all(workspace.path("content/dev")).unwrap();
+        symlink(workspace.path("content/dev"), workspace.path("dist/link")).unwrap();
+        let escaped = workspace.path("dist/link/maps");
+        assert_refusal(
+            guard_payload_root(&escaped, &workspace.root),
+            GuardRefusal::NotUnderDist(escaped),
+        );
+
+        let real = workspace.path("real-checkout");
+        fs::create_dir_all(real.join("dist")).unwrap();
+        let checkout = workspace.path("checkout-link");
+        symlink(&real, &checkout).unwrap();
+        assert!(guard_payload_root(&checkout.join("dist/postretro-dev"), &checkout).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_refuses_files_and_symlinks_before_provenance() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempWorkspace::new();
+        fs::create_dir_all(workspace.path("dist/real")).unwrap();
+        let file = workspace.path("dist/notes.txt");
+        fs::write(&file, "not a directory").unwrap();
+        assert_refusal(
+            guard_payload_root(&file, &workspace.root),
+            GuardRefusal::NotADirectory(file.clone()),
+        );
+
+        let link = workspace.path("dist/link");
+        symlink(workspace.path("dist/real"), &link).unwrap();
+        assert_refusal(
+            guard_payload_root(&link, &workspace.root),
+            GuardRefusal::NotADirectory(link),
+        );
+    }
+
+    #[test]
+    fn entry_script_choice_rejects_both_and_neither_inputs() {
+        assert_eq!(
+            entry_script_choice(true, true),
+            Err(EntryScriptChoiceError::BothPresent)
+        );
+        assert_eq!(
+            entry_script_choice(false, false),
+            Err(EntryScriptChoiceError::NeitherPresent)
+        );
+    }
+
+    #[test]
+    fn prm_filename_filter_accepts_only_complete_lowercase_hashes() {
+        let hash = "a".repeat(64);
+        assert!(is_prm_filename(&format!("{hash}.prm")));
+        assert!(!is_prm_filename(&format!("{}.prm", "A".repeat(64))));
+        assert!(!is_prm_filename("abc.prm"));
+        assert!(!is_prm_filename(&format!("{hash}.prm.tmp.48291")));
+        assert!(!is_prm_filename(".gitignore"));
+        assert!(!is_prm_filename("directory"));
+    }
+
+    #[test]
+    fn bake_order_is_deterministic_with_lexical_density_ties() {
+        let input = vec![
+            resolved("maps/z.prl", 0.04),
+            resolved("maps/a.prl", 0.04),
+            resolved("maps/low.prl", 0.02),
+        ];
+        let first = bake_order(&input);
+        let second = bake_order(&input);
+        assert_eq!(first, second);
+        assert_eq!(
+            first
+                .iter()
+                .map(|item| item.output.as_str())
+                .collect::<Vec<_>>(),
+            ["maps/low.prl", "maps/a.prl", "maps/z.prl"]
+        );
+    }
+
+    #[test]
+    fn outstanding_outputs_preserves_bake_order_and_handles_completion() {
+        let ordered = bake_order(&[
+            resolved("maps/z.prl", 0.04),
+            resolved("maps/a.prl", 0.02),
+            resolved("maps/b.prl", 0.04),
+        ]);
+        assert_eq!(
+            outstanding_outputs(&ordered, 1),
+            ["maps/b.prl".to_string(), "maps/z.prl".to_string()]
+        );
+        assert!(outstanding_outputs(&ordered, ordered.len()).is_empty());
+    }
+}

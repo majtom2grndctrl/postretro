@@ -351,29 +351,7 @@ impl Renderer {
         let (world_mesh_frame_plan, viewmodel_mesh_frame_plan) =
             mesh_frame_plans_for_passes(mesh_frame_plans.as_ref());
 
-        if render_world {
-            let full = self.full_mut();
-            if let Some(cache) = &mut full.promoted_depth_cache {
-                let plan = cache.plan_frame(&full.promoted_static_records);
-                full.promoted_depth_cache_promoted_count = plan.counters.promoted_count;
-                full.promoted_depth_cache_world_render_skips =
-                    plan.counters.cached_world_render_skips;
-                // Per-frame reset; the real cull-dispatch-skip count is accumulated
-                // in the spot/cube shadow passes (`+= skipped_*_cull_dispatches`).
-                full.promoted_depth_cache_cull_dispatch_skips = 0;
-                full.promoted_entity_occluders_submitted = 0;
-                full.promoted_depth_cache_frame_plan = plan;
-            } else {
-                // No selection → no cache → no promoted slots this frame. The
-                // default plan makes every `*_for_slot` lookup miss, so the
-                // promoted branches in the shadow passes never run.
-                full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
-                full.promoted_depth_cache_promoted_count = 0;
-                full.promoted_depth_cache_world_render_skips = 0;
-                full.promoted_depth_cache_cull_dispatch_skips = 0;
-                full.promoted_entity_occluders_submitted = 0;
-            }
-        } else {
+        if !render_world {
             let full = self.full_mut();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
@@ -575,6 +553,7 @@ impl Renderer {
                     full.mesh_pass.write_light_params(
                         queue,
                         full.total_light_count,
+                        full.light_count,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,
@@ -811,6 +790,7 @@ impl Renderer {
                     full.mesh_pass.write_light_params(
                         queue,
                         full.total_light_count,
+                        full.light_count,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,

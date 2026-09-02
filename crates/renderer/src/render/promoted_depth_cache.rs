@@ -115,14 +115,16 @@ impl PromotedDepthCacheFramePlan {
 pub(super) struct PromotedDepthCache {
     spot_texture: wgpu::Texture,
     spot_views: Vec<wgpu::TextureView>,
+    spot_sampled_view: wgpu::TextureView,
     cube_texture: wgpu::Texture,
     cube_face_views: Vec<wgpu::TextureView>,
+    cube_sampled_view: Option<wgpu::TextureView>,
     spot_layers: Vec<LayerState>,
     cube_layers: Vec<LayerState>,
 }
 
 impl PromotedDepthCache {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, cube_array_supported: bool) -> Self {
         let spot_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Promoted Spot World Depth Cache"),
             size: wgpu::Extent3d {
@@ -134,9 +136,11 @@ impl PromotedDepthCache {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            // Copy source only: the cache is rendered into, then copied into
-            // the live pool slot. It is never a copy destination.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            // Task 1 additionally samples this world-only cache on entity receivers.
+            // COPY_SRC remains until Task 2 stops using the merged-depth pool baseline.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let spot_views = (0..MAX_PROMOTED_SPOT)
@@ -150,6 +154,13 @@ impl PromotedDepthCache {
                 })
             })
             .collect();
+        let spot_sampled_view = spot_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Promoted Spot Cache Sampled Array View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            base_array_layer: 0,
+            array_layer_count: Some(MAX_PROMOTED_SPOT as u32),
+            ..Default::default()
+        });
 
         let cube_layer_count = (MAX_PROMOTED_CUBE * CUBE_FACES) as u32;
         let cube_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -163,8 +174,10 @@ impl PromotedDepthCache {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            // Copy source only (see the spot cache above).
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            // See the spot cache above: this stays copyable only through Task 1.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let cube_face_views = (0..cube_layer_count)
@@ -178,12 +191,23 @@ impl PromotedDepthCache {
                 })
             })
             .collect();
+        let cube_sampled_view = cube_array_supported.then(|| {
+            cube_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Promoted Cube Cache Sampled Cube Array View"),
+                dimension: Some(wgpu::TextureViewDimension::CubeArray),
+                base_array_layer: 0,
+                array_layer_count: Some(cube_layer_count),
+                ..Default::default()
+            })
+        });
 
         Self {
             spot_texture,
             spot_views,
+            spot_sampled_view,
             cube_texture,
             cube_face_views,
+            cube_sampled_view,
             spot_layers: vec![LayerState::default(); MAX_PROMOTED_SPOT],
             cube_layers: vec![LayerState::default(); MAX_PROMOTED_CUBE],
         }
@@ -218,8 +242,16 @@ impl PromotedDepthCache {
         &self.spot_views[plan.cache_layer as usize]
     }
 
+    pub fn spot_sampled_view(&self) -> &wgpu::TextureView {
+        &self.spot_sampled_view
+    }
+
     pub fn cube_face_view(&self, plan: PromotedCubeCachePlan, face: usize) -> &wgpu::TextureView {
         &self.cube_face_views[plan.cache_layer(face) as usize]
+    }
+
+    pub fn cube_sampled_view(&self) -> Option<&wgpu::TextureView> {
+        self.cube_sampled_view.as_ref()
     }
 
     pub fn copy_spot_to_pool(

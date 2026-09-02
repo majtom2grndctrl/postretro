@@ -88,7 +88,7 @@ pub(crate) fn strip_point_shadow_cube(source: &str) -> String {
     let without_binding: String = {
         let kept: Vec<&str> = source
             .lines()
-            .filter(|line| !line.contains("// CUBE_SHADOW_BINDING"))
+            .filter(|line| !(line.contains("var ") && line.contains("// CUBE_SHADOW_BINDING")))
             .collect();
         assert!(
             kept.len() < source.lines().count(),
@@ -101,26 +101,30 @@ pub(crate) fn strip_point_shadow_cube(source: &str) -> String {
     // 2. Replace the cube-sampling function body with a no-shadow constant.
     const BEGIN: &str = "// CUBE_SHADOW_BODY_BEGIN";
     const END: &str = "// CUBE_SHADOW_BODY_END";
-    match (without_binding.find(BEGIN), without_binding.find(END)) {
-        (Some(begin), Some(end)) => {
-            // `end` indexes the start of the END marker; include the marker line
-            // itself in the replaced span so it does not linger.
-            let end_line_end = without_binding[end..]
-                .find('\n')
-                .map(|n| end + n)
-                .unwrap_or(without_binding.len());
-            let mut out = String::with_capacity(without_binding.len());
-            out.push_str(&without_binding[..begin]);
-            out.push_str("return 1.0;");
-            out.push_str(&without_binding[end_line_end..]);
-            out
+    let mut stripped = without_binding;
+    loop {
+        match (stripped.find(BEGIN), stripped.find(END)) {
+            (Some(begin), Some(end)) => {
+                assert!(
+                    begin < end,
+                    "strip_point_shadow_cube: CUBE_SHADOW_BODY_END precedes its BEGIN marker"
+                );
+                // `end` indexes the start of the END marker; include the marker
+                // line itself in the replaced span so no pair survives. Repeat for
+                // each appended helper that carries its own cube-only body.
+                let end_line_end = stripped[end..]
+                    .find('\n')
+                    .map(|n| end + n)
+                    .unwrap_or(stripped.len());
+                stripped.replace_range(begin..end_line_end, "return 1.0;");
+            }
+            // Fog has no body markers; declaration stripping alone is enough.
+            (None, None) => return stripped,
+            _ => panic!(
+                "strip_point_shadow_cube: exactly one of the CUBE_SHADOW_BODY markers \
+                 is present — shader and transform have drifted"
+            ),
         }
-        // Fog: no body markers, declaration strip alone suffices.
-        (None, None) => without_binding,
-        _ => panic!(
-            "strip_point_shadow_cube: exactly one of the CUBE_SHADOW_BODY markers \
-             is present — shader and transform have drifted"
-        ),
     }
 }
 

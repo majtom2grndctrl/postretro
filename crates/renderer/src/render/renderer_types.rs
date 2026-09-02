@@ -729,6 +729,9 @@ pub(super) struct FullRenderer {
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
     pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
+    /// Cache-layer metadata parallel to `promoted_static_records`; packed into
+    /// the forward shadowmask metadata tail's `meta1.w` lane.
+    pub(super) promoted_static_cache_layers: Vec<i32>,
     pub(super) promoted_static_weights: Vec<f32>,
     pub(super) promoted_static_weight_buffer: wgpu::Buffer,
     pub(super) promoted_static_weight_scratch: Vec<u8>,
@@ -737,6 +740,12 @@ pub(super) struct FullRenderer {
     /// no light can ever promote, so the ~44 MiB spot/cube depth cache arrays
     /// are never allocated. `Some` only when the selection is non-empty.
     pub(super) promoted_depth_cache: Option<PromotedDepthCache>,
+    /// Task-1 A/B gate. `false` packs -1 cache layers while the live pool still
+    /// contains merged depth, so entity receiver output remains identical.
+    pub(super) promoted_cache_compare_static_depth: bool,
+    /// Missing cache-plan entries are defensive degradation, warned once per
+    /// installed level rather than once per rendered frame.
+    pub(super) promoted_depth_cache_missing_layer_warned: bool,
     pub(super) promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan,
     pub(super) promoted_depth_cache_promoted_count: u32,
     pub(super) promoted_depth_cache_world_render_skips: u32,

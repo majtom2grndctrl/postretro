@@ -224,6 +224,28 @@ fn forward_wgsl_no_cube_variant_strips_binding_and_validates() {
     )
     .validate(&module)
     .expect("no-cube forward variant must pass naga validation");
+
+    let two_pair_source = "@group(0) @binding(0) var cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING\n\
+fn first() -> f32 {\n\
+// CUBE_SHADOW_BODY_BEGIN\n\
+return textureDimensions(cube).x;\n\
+// CUBE_SHADOW_BODY_END\n\
+}\n\
+fn second() -> f32 {\n\
+// CUBE_SHADOW_BODY_BEGIN\n\
+return textureDimensions(cube).y;\n\
+// CUBE_SHADOW_BODY_END\n\
+}";
+    let two_pair_stripped = strip_point_shadow_cube(two_pair_source);
+    assert_eq!(
+        two_pair_stripped.matches("return 1.0;").count(),
+        2,
+        "every cube-only helper body must be neutralized, not just the first",
+    );
+    assert!(
+        !two_pair_stripped.contains("CUBE_SHADOW_BODY") && !two_pair_stripped.contains("cube"),
+        "all cube markers and the tagged binding must be removed from every pair",
+    );
 }
 
 /// The depth pre-pass shader must parse as valid WGSL and declare

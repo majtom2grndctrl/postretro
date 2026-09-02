@@ -67,6 +67,9 @@ struct LightSpaceMatrices {
 };
 @group(2) @binding(7) var<uniform> light_space_matrices: LightSpaceMatrices;
 @group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
+@group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array;
+@group(2) @binding(10) var promoted_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
+const SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;
 
 struct Instance {
     model: mat4x4<f32>,
@@ -210,6 +213,15 @@ fn accumulate_dynamic_direct(
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        var cache_layer = -1i;
+        if i >= kinematic_light_params.dynamic_light_count {
+            let promoted_index = i - kinematic_light_params.dynamic_light_count;
+            let meta_index = kinematic_light_params.light_count
+                + promoted_index * SHADOWMASK_META_VEC4S_PER_RECORD;
+            if meta_index + 1u < arrayLength(&light_influence) {
+                cache_layer = i32(light_influence[meta_index + 1u].w);
+            }
+        }
         let influence = light_influence[i];
         let inf_radius = influence.w;
         if inf_radius <= 1.0e30 {
@@ -259,14 +271,28 @@ fn accumulate_dynamic_direct(
                 attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
-                    attenuation = attenuation * sample_point_shadow(
-                        cube_slot,
-                        light.position_and_type.xyz,
-                        world_pos,
-                        mesh_n,
-                        MOVER_RECEIVER_BIAS_SCALE,
-                        light.direction_and_range.w,
-                    );
+                    var shadow: f32;
+                    if i >= kinematic_light_params.dynamic_light_count {
+                        shadow = sample_point_shadow_with_static(
+                            cube_slot,
+                            cache_layer,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE,
+                            light.direction_and_range.w,
+                        );
+                    } else {
+                        shadow = sample_point_shadow(
+                            cube_slot,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE,
+                            light.direction_and_range.w,
+                        );
+                    }
+                    attenuation = attenuation * shadow;
                 }
             }
             case 1u: {
@@ -278,14 +304,28 @@ fn accumulate_dynamic_direct(
                 attenuation = dist_falloff * cone;
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
-                    attenuation = attenuation * sample_spot_shadow(
-                        slot_index,
-                        light.position_and_type.xyz,
-                        world_pos,
-                        mesh_n,
-                        MOVER_RECEIVER_BIAS_SCALE,
-                        light_space_matrices.m[slot_index],
-                    );
+                    var shadow: f32;
+                    if i >= kinematic_light_params.dynamic_light_count {
+                        shadow = sample_spot_shadow_with_static(
+                            slot_index,
+                            cache_layer,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE,
+                            light_space_matrices.m[slot_index],
+                        );
+                    } else {
+                        shadow = sample_spot_shadow(
+                            slot_index,
+                            light.position_and_type.xyz,
+                            world_pos,
+                            mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE,
+                            light_space_matrices.m[slot_index],
+                        );
+                    }
+                    attenuation = attenuation * shadow;
                 }
             }
             default: {

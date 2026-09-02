@@ -14,6 +14,8 @@ description: >
 - **Read the `/draft-brief` skill** — the five sections, the Decisions-vs-Path test, the two kinds of open question, and what the executor does with the brief afterward.
 - **Know the consumer.** One long-horizon executor with the whole brief, `research.md`, and the repo. It re-verifies source before building and writes its own task split. Write for that reader: nothing restated, nothing pre-chewed.
 
+**Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and let the executor build it in strides; small increments earn their cost only where the path is genuinely uncertain. A brief spends its length on that split: Decisions settle what is known, and Path's first slice names the one assumption still worth falsifying before the rest. A brief that slices everything has not decided anything. When the work lays a foundation, its first consumer is in the same brief — the consumer proves the foundation and keeps it from landing as a stub nothing exercises.
+
 **Work as an orchestrator.** After a baseline read of the request, dispatch right-sized agents for research. Keep your own context for the Decisions section — that is the judgment only this session can make.
 
 ## What to research

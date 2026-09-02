@@ -30,27 +30,30 @@ description: >
 
 **5. Every AC names an edge or it names steady state.** Start, stop, reverse, zero iterations, two on one tick, the timer across a reset. Steady state is where behavior is easiest to describe and least likely to break. Orderings are AC rows, never prose.
 
-**6. If the executor could disagree with it and still be right, it is Path.** The test from `/draft-brief`, applied per sentence. Decisions that turn out to be preferences bloat the binding section and make the executor's plan of record read as a list of violations.
+**6. An AC that would pass on a build that does not cure the Problem is decoration.** Run each row against the Problem paragraph: could this pass while the observed defect is still there? If yes, the row is measuring something adjacent. Either it is the wrong metric, or it is a regression guard and should say so.
+
+**7. If the executor could disagree with it and still be right, it is Path.** The test from `/draft-brief`, applied per sentence. Decisions that turn out to be preferences bloat the binding section and make the executor's plan of record read as a list of violations.
 
 ### While revising
 
-**7. A resolved question becomes one bullet and leaves.** No history: not "was open," not "we settled on." The executor never saw the question.
+**8. A resolved question becomes one bullet and leaves.** No history: not "was open," not "we settled on." The executor never saw the question.
 
-**8. Re-read Decisions after any Problem edit.** A reframed cause can orphan a decision that was answering the old one. The diff never touches the orphan.
+**9. Re-read Decisions after any Problem edit.** A reframed cause can orphan a decision that was answering the old one. The diff never touches the orphan.
 
-**9. Mark every open question.** **Blocks build** or **delegated**. An unmarked question is a decision left in the executor's lap with no reporting obligation attached, which is how it becomes silent.
+**10. Mark every open question.** **Blocks build** or **delegated**. An unmarked question is a decision left in the executor's lap with no reporting obligation attached, which is how it becomes silent.
 
-**10. Amend, don't stack.** One commit per brief per session. Push the amended commit so the work persists; keep the history clean.
+**11. Amend, don't stack.** One commit per brief per session. Push the amended commit so the work persists; keep the history clean.
 
 ### Before handoff
 
-**11. Self-review finds typos, not wrong shapes.** `/validate-plan` is the only external lens this process runs before code. Run it, read the verdict as a fresh reader would, and do not rebut it from inside the session that drafted the brief.
+**12. Self-review finds typos, not wrong shapes.** `/validate-plan` is the only external lens this process runs before code. Run it, read the verdict as a fresh reader would, and do not rebut it from inside the session that drafted the brief.
 
 ## Pre-handoff checklist
 
 - [ ] Problem paragraph names who observed it, the cause, and the outcome — one paragraph
 - [ ] Every Decision premise about the code was read this session and is cited by symbol
 - [ ] Every Decision has an AC that would fail if it were violated
+- [ ] No AC could pass with the Problem still present
 - [ ] Every non-goal a reader would assume was owed carries its warrant
 - [ ] No line numbers; no restated surface; no task paragraphs
 - [ ] Path is marked non-binding and names a first slice

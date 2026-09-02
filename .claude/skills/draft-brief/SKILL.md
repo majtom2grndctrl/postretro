@@ -12,7 +12,7 @@ argument-hint: "[feature-name]"
 
 # Draft Brief
 
-Explore scope, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`, with the first line marking it as a brief so downstream skills can tell it from a `/draft-plan` spec.
+Explore scope, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`, with the line under the title marking it as a brief so downstream skills can tell it from a `/draft-plan` spec.
 
 A brief is written for a reader with the repo, not a reader with a paragraph. It records judgment and leaves verification to implementation time. Target 60–120 lines. Anything that would make it longer is derivation (→ `research.md`) or task decomposition (→ the executor's plan of record, written at build time).
 
@@ -23,7 +23,7 @@ A brief is written for a reader with the repo, not a reader with a paragraph. It
 ## Three rules
 
 1. **Nothing is restated for an agent that cannot see the rest.** The executor gets the whole brief, `research.md`, and the source tree. There is no task-paragraph contract.
-2. **Decisions in, verification out.** Identifiers are cited by symbol, and the header records the commit they were read at. The executor re-verifies before building; a stale fact is reported in its plan of record, not fixed in a review round. Ground the premises of *Decisions* against source — a decision built on a false premise is the expensive kind. Sketch the *Path* from a read of the code, but do not chase line numbers.
+2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
 3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`.
 
 ## Process
@@ -47,7 +47,7 @@ Findings that inform but don't decide go to a sibling `research.md`. Lifecycle d
 ```markdown
 # <feature-name>
 
-Brief · Epic <N> · reads: `context/lib/<doc>.md` §x · read at <short-sha>
+Brief · Epic <N> (omit if none) · reads: `context/lib/<doc>.md` §x · read at <short-sha>
 
 ## Problem
 One paragraph. What was observed and by whom — player, modder, developer,
@@ -102,6 +102,7 @@ Non-binding. Research distilled to what would change the executor's plan.
 ### 4. Cross-check
 
 - Every Acceptance row: which Decision or Problem sentence makes it necessary? None → it is aspirational; drop it or add the decision.
+- Every Acceptance row: could it pass on a build that leaves the Problem's defect in place? Yes → it is measuring something adjacent; reword it, or label it a regression guard.
 - Every Decision: which Acceptance row would fail if it were violated? None → it is either a Path hint wearing a decision's clothes, or an AC is missing.
 - Every Decision premise about the code: read this session, cited by symbol.
 - Every "not doing": would a reader assume this brief owed it? If so, it carries a warrant.
@@ -145,6 +146,25 @@ At promotion:
 
 ## What happens after
 
-The executor is one long-horizon session, not a fan-out. Before any code it writes `plan.md` beside the brief: the task split and order, the first slice (and why, if it differs from the Path), each cited identifier confirmed or corrected, any brief claim found false and what it is doing instead, each **delegated** question's answer, and which ACs each task delivers. The owner skims `plan.md`; that is the only check-in before the diff.
+The executor is one long-horizon session, not a fan-out. Before any code it writes `plan.md` beside the brief:
 
-Build → focused tests per task → preflight once → `/review-panel` → `/fix-review-findings`. At landing the brief moves to `done/` with `plan.md` beside it as the record of what was built.
+- The task split and order, with the first slice named — and why, if it differs from the Path.
+- Each cited identifier confirmed or corrected; any brief claim found false and what it is doing instead.
+- Each **delegated** question's answer.
+- An **AC-to-proof table**: every Acceptance row, the test or manual-visual step that will prove it, and a status. Manual-visual rows are proven by the owner in-engine, and the table says so.
+
+| AC | Proof | Status |
+|---|---|---|
+| 3 | `slide_entry_banks_speed` | achievable as stated |
+| 7 | grep gate, not a runnable test | not a test |
+| 9 | proposed rewording, verbatim | needs restatement |
+
+**ACs are owner-owned.** The executor proposes a restatement and stops; it never edits the Acceptance section. The owner accepts or pushes back before code exists. This is what keeps the executor from loosening the criteria it is about to be measured against.
+
+The owner skims `plan.md`. That is the only check-in before the diff.
+
+Build → focused tests per task → preflight once → `/review-panel` → `/fix-review-findings`.
+
+**Landing report** is the AC-to-proof table with results: every AC, the test that proved it, pass or fail. An AC with no proof is a named gap in the report, never silence. At landing the brief moves to `done/` with `plan.md` beside it as the record of what was built.
+
+**Opt-in pre-build check.** When the stakes warrant it — wire formats, cache keys, a one-way door — run `/review-brief-acceptance` before promotion for an independent read on whether each AC is achievable and proves the Problem. Not a default step.

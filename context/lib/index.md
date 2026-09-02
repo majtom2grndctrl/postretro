@@ -24,6 +24,8 @@
 - **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
 - **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
+- **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
+- **Where `.prm` sidecars live / materials-root derivation / mod root shape** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad** → `input.md`
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`

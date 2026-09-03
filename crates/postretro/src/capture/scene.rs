@@ -1,5 +1,5 @@
 // Tool-facing static frame-capture scene vocabulary and validation.
-// See: context/plans/in-progress/E20--frame-capture
+// See: context/lib/rendering_pipeline.md §7.8
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -10,8 +10,13 @@ const MIN_FOV_DEG: f32 = 60.0;
 const MAX_FOV_DEG: f32 = 130.0;
 const MAX_ABS_PITCH_DEG: f32 = 89.0;
 const MAX_CAPTURE_DIMENSION: u32 = 8192;
+// Capture overrides are linear HDR radiance. Six stops above unit white
+// cover diagnostic lighting while leaving roughly 1023x headroom below the
+// Rgba16Float atlas/scene ceiling (65504) for transport and accumulation.
+// This is a capture-authoring budget, not a new scripting intensity limit.
+const MAX_FORCED_RADIANCE: f32 = 64.0;
 
-/// A deterministic, world-only frame capture request.
+/// A deterministic capture of world geometry and authored receivers at rest.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) struct CaptureScene {
@@ -19,6 +24,15 @@ pub(crate) struct CaptureScene {
     pub(crate) camera: CameraPose,
     pub(crate) resolution: [u32; 2],
     pub(crate) output: String,
+    pub(crate) force_active: Option<Vec<ForcedAnimLight>>,
+}
+
+/// An authored, single-instant active state for tagged baked animated lights.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ForcedAnimLight {
+    pub(crate) tag: String,
+    pub(crate) radiance: [f32; 3],
 }
 
 /// Static camera pose expressed in degrees for author-facing JSON.
@@ -44,6 +58,14 @@ pub(crate) enum SceneError {
     EmptyMap,
     #[error("invalid capture scene: output must not be empty")]
     EmptyOutput,
+    #[error("invalid capture scene: force_active tag must not be empty")]
+    EmptyForcedAnimLightTag,
+    #[error("invalid capture scene: force_active radiance must be finite")]
+    NonFiniteForcedAnimLightRadiance,
+    #[error(
+        "invalid capture scene: force_active radiance channels must be in 0..={MAX_FORCED_RADIANCE}, got {value}"
+    )]
+    ForcedAnimLightRadianceOutOfRange { value: f32 },
     #[error(
         "invalid capture scene: fov_deg must be between {MIN_FOV_DEG} and {MAX_FOV_DEG}, got {value}"
     )]
@@ -75,6 +97,21 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.output.trim().is_empty() {
         return Err(SceneError::EmptyOutput);
+    }
+    if let Some(forced_lights) = &scene.force_active {
+        for light in forced_lights {
+            if light.tag.trim().is_empty() {
+                return Err(SceneError::EmptyForcedAnimLightTag);
+            }
+            if !light.radiance.into_iter().all(f32::is_finite) {
+                return Err(SceneError::NonFiniteForcedAnimLightRadiance);
+            }
+            for value in light.radiance {
+                if !(0.0..=MAX_FORCED_RADIANCE).contains(&value) {
+                    return Err(SceneError::ForcedAnimLightRadianceOutOfRange { value });
+                }
+            }
+        }
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -154,6 +191,89 @@ mod tests {
         );
         let err = parse_scene(&json).expect_err("unknown field must fail");
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_scene_accepts_force_active_lights() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"alarm_light\", \"radiance\": [4.0, 0.0, 0.0] }]",
+        );
+
+        let scene = parse_scene(&json).expect("force_active scene must parse");
+        assert_eq!(
+            scene.force_active,
+            Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [4.0, 0.0, 0.0],
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_scene_rejects_unknown_force_active_light_fields() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"alarm_light\", \"radiance\": [4.0, 0.0, 0.0], \"unexpected\": true }]",
+        );
+        let err = parse_scene(&json).expect_err("unknown nested field must fail");
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_scene_rejects_empty_force_active_tag() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"  \", \"radiance\": [4.0, 0.0, 0.0] }]",
+        );
+        assert!(matches!(
+            parse_scene(&json),
+            Err(SceneError::EmptyForcedAnimLightTag)
+        ));
+    }
+
+    #[test]
+    fn force_active_radiance_respects_nonnegative_hdr_capture_budget() {
+        for value in [-0.001, 64.01, f32::MAX] {
+            let mut scene = parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap();
+            scene.force_active = Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [0.0, value, 0.0],
+            }]);
+            assert!(matches!(
+                validate_scene(&scene),
+                Err(SceneError::ForcedAnimLightRadianceOutOfRange { .. })
+            ));
+        }
+        let mut scene = parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap();
+        scene.force_active = Some(vec![ForcedAnimLight {
+            tag: "alarm_light".into(),
+            radiance: [0.0, 4.0, MAX_FORCED_RADIANCE],
+        }]);
+        assert!(validate_scene(&scene).is_ok());
+    }
+
+    #[test]
+    fn validate_scene_rejects_non_finite_force_active_radiance() {
+        let scene = CaptureScene {
+            map: "content/dev/maps/test.prl".into(),
+            camera: CameraPose {
+                position: [1.0, 2.0, 3.0],
+                yaw_deg: 45.0,
+                pitch_deg: -10.0,
+                fov_deg: DEFAULT_FOV_DEG,
+            },
+            resolution: [1280, 720],
+            output: "capture.png".into(),
+            force_active: Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [f32::NAN, 0.0, 0.0],
+            }]),
+        };
+        assert!(matches!(
+            validate_scene(&scene),
+            Err(SceneError::NonFiniteForcedAnimLightRadiance)
+        ));
     }
 
     #[test]

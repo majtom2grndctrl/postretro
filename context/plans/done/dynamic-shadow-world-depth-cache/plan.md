@@ -44,3 +44,35 @@ read at: f8cd3f34
 | 2 | Build the thinnest risky slice: a renderer-owned dynamic spot world-depth cache (pure identity+matrix planner, three 1024² layers, full per-slot `cache_layer` sweep), then wire its cold cache fill, warm cull/world skip, entity-only pool pass, and two-map sample into forward world, skinned, and kinematic receivers. This tests the new world-receiver two-map path end-to-end. | done · 2a2580b0, 41bff90c · `cargo test -p postretro-renderer --lib` |
 | 3 | Extend the planner and GPU resources to four atomic cube slots (24 512² faces); apply the same cache/pool split, six-face warm transition, deterministic overflow fallback, and cube world/entity two-map sampling. | done · 2a2580b0, 41bff90c · `cargo test -p postretro-renderer --lib` |
 | 4 | Complete lifecycle and observability integration: reset/free/recreate behavior, cache-layer uploads and bind-group rebuilds, dedicated dynamic-cache timing/counters, shader/BGL namespace guards, promoted-tail regression guard, and the durable rendering-pipeline documentation update. | done · 2a2580b0, 41bff90c · `cargo fmt --check`; `cargo clippy --target-dir target/preflight-clippy -- -D warnings`; `cargo test` |
+
+## Landing report
+
+| AC | Proof | Result |
+|---|---|---|
+| Spot cold frame fills and samples its layer | `empty_geometry_cache_fill_clears_and_warms_layer`; forward shader validation | pass |
+| Spot warm frame skips world draw and cull | `warm_dynamic_spot_skips_world_render_and_cull` | pass |
+| Cube fills six faces then skips all six | `warm_dynamic_cube_skips_all_six_faces` | pass |
+| Re-tenanting invalidates reused layer | `occupant_or_projection_change_invalidates_dynamic_layer` | pass |
+| Identity retains layer across slot move | `slot_reassignment_retains_cache_layer` | pass |
+| Vacated slot channel is swept after a move | `moved_light_does_not_leave_cache_layer_on_old_slot` | pass |
+| Changed projection remains cold | `occupant_or_projection_change_invalidates_dynamic_layer` | pass |
+| Spot overflow is deterministic and pool-only | `overflow_falls_back_without_displacing_stable_winners` | pass |
+| Cube overflow claims atomic six-face units | `cube_budget_overflow_never_claims_partial_faces` | pass |
+| Budget matches campaign wave peaks | `dynamic_cache_budget_matches_campaign_wave_peak` | pass |
+| Departed/unoccupied channel is -1 | `moved_light_does_not_leave_cache_layer_on_old_slot` | pass |
+| Dynamic namespace is isolated | `dynamic_namespace_uses_its_own_bind_group`; shader validation | pass |
+| Level reload starts cold | `dynamic_cache_reset_makes_recycled_source_cold` | pass |
+| Empty geometry produces initialized lit depth | `empty_geometry_cache_fill_clears_and_warms_layer` | pass |
+| Entity receivers retain static world occlusion | entity shader two-map wiring and shader validation | pass |
+| World receivers retain moving entity occlusion | forward two-map wiring and shader validation | pass |
+| Dynamic lights never enter promoted tail | existing dynamic candidate selection gate, preserved; focused renderer suite | pass |
+| World-on-world, world-on-entity, entity-on-world parity | owner, in-engine A/B at full cache resolution | awaiting owner visual validation |
+| Warm dynamic slots reduce world-depth time | `POSTRETRO_GPU_TIMING=1`: dynamic cache upper-bound spans plus exact skip counters | awaiting owner timing capture |
+
+## Trial notes
+
+- sessions used: 1
+- tasks that needed rework after their first commit: 1
+- review-panel findings: 5 (4 acted on)
+- Decision premises found false: 0
+- Path claims corrected: 1

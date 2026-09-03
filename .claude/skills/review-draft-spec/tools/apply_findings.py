@@ -30,7 +30,7 @@ BLOCK = re.compile(
     re.DOTALL,
 )
 BLOCK_FENCED = re.compile(
-    r"FIND:?\s*\n+```[a-z]*\n(?P<find>.*?)\n```\s*\n+"
+    r"(?:\*\*)?FIND(?:\*\*)?:?\s*\n+```[a-z]*\n(?P<find>.*?)\n```\s*\n+"
     r"(?:\*\*)?REPLACE(?:\*\*)?:?\s*\n+```[a-z]*\n(?P<repl>.*?)\n```",
     re.DOTALL,
 )
@@ -44,7 +44,10 @@ def parse(path):
     chunks = re.split(r"^## (.+)$", text, flags=re.MULTILINE)
     for i in range(1, len(chunks), 2):
         fid, body = chunks[i].strip(), chunks[i + 1]
-        fid = re.split(r"\s+[\u2014\-:]\s+", fid, maxsplit=1)[0].strip()
+        # Strip a descriptive title: " \u2014 Title" / " - Title" / "ID: Title".
+        # Em-dash and colon need no leading space (the common "ID: Title" form
+        # has none); a bare hyphen needs spaces both sides so ids keep theirs.
+        fid = re.split(r"\s*[\u2014:]\s+|\s+-\s+", fid, maxsplit=1)[0].strip()
         if fid.upper().startswith(("SELF-AUDIT", "PIN TABLE", "SUMMARY")):
             continue
         m = BLOCK.search(body) or BLOCK_FENCED.search(body)
@@ -134,15 +137,16 @@ def main():
     for f in findings:
         if not f["find"]:
             continue
-        fw, rep = f["find"].split(), " ".join(f["replace"].split())
+        rep_words = set(f["replace"].split())
         dropped, run = [], []
-        for w in fw:
-            run.append(w)
-            if " ".join(run) not in rep:
-                if len(run) > 4:
-                    dropped.append(" ".join(run[:-1]))
-                run = [run[-1]] if run[-1] in rep else []
-        if len(run) > 4:
+        for w in f["find"].split():
+            if w in rep_words:
+                if len(run) >= 4:
+                    dropped.append(" ".join(run))
+                run = []
+            else:
+                run.append(w)
+        if len(run) >= 4:
             dropped.append(" ".join(run))
         for d in dropped:
             print(f"  DROPS  {f['id']}: {d[:90]!r}")
@@ -177,7 +181,8 @@ def main():
         text = specs[f["file"]]
         if f["replace"] not in text:
             failures.append(f"{f['id']}: REPLACE text absent after apply")
-        if f["find"] and f["find"] in text and f["find"] not in f["replace"]:
+        if (f["find"] and f["find"] in text
+                and not any(f["find"] in g["replace"] for g in findings)):
             failures.append(f"{f['id']}: FIND text still present after apply")
     if failures:
         print("\nPOST-VERIFY FAILED, nothing written:")

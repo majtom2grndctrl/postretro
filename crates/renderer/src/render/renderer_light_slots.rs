@@ -51,9 +51,7 @@ impl Renderer {
             }
             full.promoted_static_records.clear();
             full.promoted_static_cache_layers.clear();
-            for w in &mut full.promoted_static_weights {
-                *w = 0.0;
-            }
+            full.promoted_static_weights.fill(0.0);
             full.total_light_count = full.light_count;
             queue.write_buffer(
                 &full.uniform_buffer,

@@ -52,9 +52,13 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 
 **7. If the executor could disagree with it and still be right, it is Path.** The test from `/draft-brief`, applied per sentence. Decisions that turn out to be preferences bloat the binding section and make the executor's plan of record read as a list of violations.
 
+**7b. A scripting example is the surface, not the SDK.** When the owner designs a modder-facing API, the example under `### Scripting surface` is the decision, and it is binding down to argument order and defaults. It stops at the boundary: no engine types, no Rust, no sketch of the implementation. If a line of the example could only be checked by reading the engine, it belongs in Path.
+
 ### While revising
 
 **8. A resolved question becomes one bullet and leaves.** No history: not "was open," not "we settled on." The executor never saw the question.
+
+**8b. A review finding lands as a row or as an owner edit, never as reviewer prose.** A `/review-brief` finding becomes an Acceptance row or a `research.md` pin row, or it becomes a Decisions edit the owner makes in their own words. Nothing a reviewer wrote lands in Decisions — not a clause, not a parenthetical answering the finding. That parenthetical is how a brief turns back into a spec.
 
 **9. Re-read Decisions after any Problem edit.** A reframed cause can orphan a decision that was answering the old one. The diff never touches the orphan.
 
@@ -75,6 +79,7 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 - [ ] Every non-goal a reader would assume was owed carries its warrant
 - [ ] No line numbers; no restated surface; no task paragraphs
 - [ ] Path is marked non-binding and names a first slice
+- [ ] A Scripting surface example, if present, runs under an Acceptance row and shows no engine internals
 - [ ] Every open question is marked **blocks build** or **delegated**
 - [ ] Header carries the commit the source was read at
 - [ ] Under ~120 lines, or the excess is named as derivation and moved

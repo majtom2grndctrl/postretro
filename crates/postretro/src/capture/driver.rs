@@ -13,10 +13,19 @@ use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
-use postretro_visibility::CameraCullVisibility;
+use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_visibility::{CameraCullVisibility, VisibleCells};
 
 use crate::camera;
 use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry};
+use crate::runtime_movers::{
+    ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
+};
+use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
+use crate::scripting::map_entity::MapEntity;
+use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::mesh_anim::MeshClipTables;
+use crate::scripting_systems::mesh_render::MeshRenderCollector;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
@@ -107,6 +116,28 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     let light_reachable_cell_mask = light_reachable_cell_mask(&world, &fog_reachable);
     let reachable_cell_aabbs = reachable_cell_aabbs(&world, &fog_reachable);
 
+    // Capture has no script context or levelLoad event. Stand up only the
+    // VM-free map-authored receiver state the windowed render frame collects.
+    let registry = spawn_capture_receiver_registry(&world)?;
+    for model in capture_mesh_models(&registry) {
+        renderer.load_skinned_model(&model, &content_root, &prm_cache_root);
+    }
+    let mut mover_collector = KinematicMoverRenderCollector::new();
+    let mut mesh_collector = MeshRenderCollector::new();
+    collect_capture_receiver_draws(
+        &registry,
+        &world,
+        &visible_cells,
+        eye,
+        &mut mover_collector,
+        &mut mesh_collector,
+    );
+    renderer.set_kinematic_mover_draws(
+        mover_collector.instances(),
+        mover_collector.shadow_instances(),
+    );
+    renderer.set_mesh_draws(mesh_collector.instances());
+
     let rgba = renderer.capture_frame_indirect(
         CameraCullVisibility {
             cells: &visible_cells,
@@ -133,6 +164,71 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     write_capture_png(output_path, &rgba, width, height)?;
 
     Ok(())
+}
+
+/// Materialize just the VM-free receivers capture can render at a loaded
+/// instant. This deliberately does not call `install_world_cpu`: that path
+/// also runs data scripts and fires `levelLoad`.
+fn spawn_capture_receiver_registry(
+    world: &postretro_level_loader::LevelWorld,
+) -> Result<EntityRegistry> {
+    let mut registry = EntityRegistry::new();
+    spawn_loaded_kinematic_movers(&mut registry, world, ENGINE_AUTO_CLOSE_MS)
+        .context("failed to spawn capture kinematic movers")?;
+
+    // `MapEntity` is the scripting-facing adapter over PRL records. Built-in
+    // dispatch is VM-free, so this gives capture the exact map-authored
+    // `prop_mesh` spawn contract without admitting the data-script sweep.
+    let map_entities: Vec<MapEntity> = world.map_entities.iter().cloned().map(Into::into).collect();
+    let mut dispatch = ClassnameDispatch::new();
+    register_builtins(&mut dispatch);
+    apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
+
+    Ok(registry)
+}
+
+/// Return the non-empty `MeshComponent.model` handles placed by the capture's
+/// built-in map dispatch. The renderer cache key is this verbatim string, so
+/// load it before the mesh collector submits an instance using the same handle.
+fn capture_mesh_models(registry: &EntityRegistry) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for (_id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
+        let ComponentValue::Mesh(mesh) = value else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            models.push(mesh.model.clone());
+        }
+    }
+    models
+}
+
+/// Mirror the windowed render-frame collector calls for capture's spawned
+/// receivers. A single-instant capture has no tick history or animation clock:
+/// alpha is therefore 1.0 and animation time is 0.0.
+fn collect_capture_receiver_draws(
+    registry: &EntityRegistry,
+    world: &postretro_level_loader::LevelWorld,
+    visible_cells: &VisibleCells,
+    eye: Vec3,
+    mover_collector: &mut KinematicMoverRenderCollector,
+    mesh_collector: &mut MeshRenderCollector,
+) {
+    mover_collector.collect(registry, world, visible_cells, 1.0);
+
+    let clip_tables = MeshClipTables::new();
+    let hit_zones = HitZoneStore::new();
+    mesh_collector.collect_with_hit_zones(
+        registry,
+        world,
+        visible_cells,
+        1.0,
+        0.0,
+        &clip_tables,
+        eye,
+        &hit_zones,
+    );
 }
 
 /// Seed capture-only authored active states after the level install has restored
@@ -741,6 +837,58 @@ mod tests {
     }
 
     #[test]
+    fn capture_receiver_draws_come_from_vm_free_spawned_registry_collectors() {
+        let world = capture_receiver_test_world();
+        let registry = spawn_capture_receiver_registry(&world)
+            .expect("valid capture receiver fixture must spawn without scripts");
+
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::KinematicMover)
+                .count(),
+            1,
+            "the loaded mover must enter the capture registry"
+        );
+        let mesh_models: Vec<_> = registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter_map(|(_id, value)| match value {
+                ComponentValue::Mesh(mesh) => Some(mesh.model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            mesh_models,
+            ["models/capture-prop.gltf"],
+            "the prop_mesh record must be converted and routed through built-in dispatch"
+        );
+
+        let mut mover_collector = KinematicMoverRenderCollector::new();
+        let mut mesh_collector = MeshRenderCollector::new();
+        collect_capture_receiver_draws(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            Vec3::ZERO,
+            &mut mover_collector,
+            &mut mesh_collector,
+        );
+
+        assert_eq!(mover_collector.instances().len(), 1);
+        assert_eq!(mover_collector.shadow_instances().len(), 1);
+        assert_eq!(mesh_collector.instances().len(), 1);
+        assert_eq!(
+            mover_collector.instances()[0].transform.w_axis.truncate(),
+            Vec3::new(1.0, 2.0, 3.0),
+            "the spawned mover is collected at its authored rest transform"
+        );
+        assert_eq!(
+            mesh_collector.instances()[0].transform.w_axis.truncate(),
+            Vec3::new(4.0, 5.0, 6.0),
+            "the dispatched prop_mesh is collected at its authored rest transform"
+        );
+    }
+
+    #[test]
     fn output_must_not_alias_map_or_scene_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let map = directory.path().join("level.prl");
@@ -848,6 +996,112 @@ mod tests {
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
+    }
+
+    fn capture_receiver_test_world() -> postretro_level_loader::LevelWorld {
+        use postretro_level_format::geometry::Vertex;
+        use postretro_level_format::map_entity::MapEntityRecord;
+        use postretro_level_loader::{
+            CellData, CellLocatorChild, KinematicGeometry, LoadedKinematicMover,
+            LoadedKinematicWaypoint,
+        };
+
+        let mut world = postretro_level_loader::LevelWorld::new_visibility_only(
+            vec![CellData {
+                bounds_min: Vec3::splat(-1_000.0),
+                bounds_max: Vec3::splat(1_000.0),
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
+            }],
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("single-cell capture receiver fixture must be valid");
+        world.kinematic_geometry = KinematicGeometry {
+            movers: vec![LoadedKinematicMover {
+                mover_id: 17,
+                name: "capture-lift".to_string(),
+                tags: Vec::new(),
+                origin: Vec3::new(1.0, 2.0, 3.0),
+                path: "a".to_string(),
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                move_mode: 1,
+                start_on_spawn: false,
+                vertices: vec![
+                    Vertex::new(
+                        [0.0, 0.0, 0.0],
+                        [0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [1.0, 0.0, 0.0],
+                        [1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [0.0, 1.0, 0.0],
+                        [0.0, 1.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                ],
+                indices: vec![0, 1, 2],
+                face_meta: Vec::new(),
+                spin_axis: Vec3::ZERO,
+                spin_speed_deg_s: 0.0,
+                spin_accel_deg_s2: 0.0,
+                carry_yaw: false,
+                block_policy: "displace".to_string(),
+                crush_damage: 0.0,
+                crush_interval_ms: 0.0,
+                auto_close_ms: None,
+                open_event: None,
+                close_event: None,
+                blocked_event: None,
+                crush_event: None,
+                sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
+            }],
+            waypoints: vec![
+                LoadedKinematicWaypoint {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: Vec3::new(1.0, 2.0, 3.0),
+                },
+                LoadedKinematicWaypoint {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: Vec3::new(2.0, 2.0, 3.0),
+                },
+            ],
+        };
+        world.map_entities = vec![MapEntityRecord {
+            classname: "prop_mesh".to_string(),
+            origin: [4.0, 5.0, 6.0],
+            key_values: vec![("model".to_string(), "models/capture-prop.gltf".to_string())],
+            ..Default::default()
+        }];
+        world
     }
 
     fn assert_mat4_approx_eq(actual: Mat4, expected: Mat4, epsilon: f32) {

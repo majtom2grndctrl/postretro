@@ -1447,7 +1447,7 @@ pub(crate) fn light_texel_contribution_and_visibility(
     (irr, weighted_dir, Some(v))
 }
 
-fn falloff(light: &MapLight, distance: f32) -> f32 {
+pub(crate) fn falloff(light: &MapLight, distance: f32) -> f32 {
     let range = light.falloff_range.max(1.0e-4);
     match light.falloff_model {
         FalloffModel::Linear => (1.0 - distance / range).clamp(0.0, 1.0),

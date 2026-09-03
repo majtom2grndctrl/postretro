@@ -84,7 +84,7 @@ stranger's machine needs.
 **Alternatives rejected.**
 
 *Derive the level set from `content/<mod>/maps/*.map`.* Falsified by the content: `content/dev/maps/`
-holds 32 `.map` files against a catalog of eight levels. Stress fixtures, feature demos and capture
+holds 32 `.map` files against a catalog of five levels. Stress fixtures, feature demos and capture
 rigs sit in that directory under the same extension, in the same place, as the sources behind the
 levels the mod offers, and a listing tells them apart by nothing. Which levels a mod ships is a
 catalog decision, and the filesystem holds no record of it.
@@ -296,14 +296,10 @@ Trim `mapCatalog` in `content/dev/scripts/frontend-menu.ts`. Delete the entries
 of the current compiler produces (see research.md), and `campaign-test-mtex-002`,
 `occlusion-test-mtex-001`, `occlusion-test-mtex-0015` and `occlusion-test-mtex-002`, which bake
 `campaign-test.map` and `occlusion-test.map` at a finer `--lightmap-density` than the default while
-both sources ship at that default already. Those are every entry tagged `variant`, so delete the
-`section("Bake Variants", mapsTagged("variant"))` call from `frontendMenu`'s second `VStack` as
-well — it would otherwise render a header with no buttons under it — leaving that column with the
-Animated Weight Maps section alone. Leave `mapsTaggedWithout` and the `Visibility` section that
-calls it: the entries it excludes are the ones being deleted, so that section's membership is
-unchanged. What remains is `campaign-test`, `combat-demo`, `trap-pools`, `occlusion-test` and the
-four `test-animated-weight-maps-*` entries — eight levels, every one of them resolved by stage 3's
-stem default.
+both sources ship at that default already. The current curated set is `campaign-test`,
+`kinematic-platform`, `movement-feel`, `stress-warren-hallway-inspection`, and `combat-demo` — five
+levels, every one resolved by stage 3's stem default. The frontend groups the recommended entries
+and development-test entries without empty sections.
 
 Add `toml`, `serde` and `blake3` to `crates/xtask/Cargo.toml` as workspace dependencies —
 the workspace entry for `serde` already enables `derive`.
@@ -398,8 +394,8 @@ run. Write the lookup here rather than reusing `scripts_build_in_dir` or
 `scripts_build_beside`: both are private to their own crates. If `build_scripts_sidecar` is reused it
 must be passed `--release`; its `observe` call site passes
 `&[]`, which builds debug, and stage 2 would then read a binary this stage did not build. Stage 6
-depends on it too, because three of the eight distinct `.map` sources behind the catalog carry a
-worldspawn `data_script` and send `prl-build` through `find_scripts_build` — though see research.md
+depends on it too, because catalog source maps may carry a worldspawn `data_script` and send
+`prl-build` through `find_scripts_build` — though see research.md
 for the residual that a release build does not close.
 
 **(2) Emit the mod entry script to scratch** at `<target-dir>/dist-work/<key>/`, where `<key>` is the first 16 lowercase hex characters
@@ -816,7 +812,7 @@ under Foreclosures.
 Rows the implementation must satisfy. `unit` rows name the helper Task 5 tests, except the
 `payload.rs` helpers Task 3 tests; `manual` rows are
 Task 6's, against a real payload, and the two tagged `manual (Windows)` are its Windows gate. `N` is
-the resolved level count, 8 for the dev mod.
+the resolved level count, 5 for the dev mod.
 
 This table travels with the briefing for Tasks 3, 5 and 6, alongside the Goal, the acceptance
 criteria and the Invariants. Each of those tasks is defined by the row ids it must execute, and a

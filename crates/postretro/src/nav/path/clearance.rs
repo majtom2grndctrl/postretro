@@ -160,15 +160,11 @@ pub(super) fn ensure_endpoint_clearance(
                     repaired[0].mandatory = true;
                     continue;
                 }
-                match route_out_of_disk(obstacle, start, clearance_radius) {
-                    Some(routed) => {
-                        repaired[segment_index].point = routed;
-                        repaired[segment_index].mandatory = true;
-                        segment_index -= 1;
-                        continue;
-                    }
-                    None => return None,
-                }
+                let routed = route_out_of_disk(obstacle, start, clearance_radius)?;
+                repaired[segment_index].point = routed;
+                repaired[segment_index].mandatory = true;
+                segment_index -= 1;
+                continue;
             }
             if segment_index + 1 == last_index
                 && distance_xz(end, raw) + CLEARANCE_EPS < clearance_radius

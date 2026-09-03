@@ -1,6 +1,6 @@
 # dynamic-shadow-world-depth-cache — plan of record
 
-status: proposed
+status: approved
 read at: f8cd3f34
 
 ## Corrections

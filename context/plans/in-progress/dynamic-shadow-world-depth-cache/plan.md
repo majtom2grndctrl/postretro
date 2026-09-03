@@ -40,7 +40,7 @@ read at: f8cd3f34
 
 | # | Task | Status |
 |---|---|---|
-| 1 | Split the 1,213-line `renderer_shadow_passes.rs` at its existing spot/cube responsibility boundary, behavior-preserving and in its own commit, before extending either path. | |
+| 1 | Split the 1,213-line `renderer_shadow_passes.rs` at its existing spot/cube responsibility boundary, behavior-preserving and in its own commit, before extending either path. | done · c238cfbd · `cargo test -p postretro-renderer --lib entity_occluder_tally_counts_movers_in_dynamic_and_promoted_paths` |
 | 2 | Build the thinnest risky slice: a renderer-owned dynamic spot world-depth cache (pure identity+matrix planner, three 1024² layers, full per-slot `cache_layer` sweep), then wire its cold cache fill, warm cull/world skip, entity-only pool pass, and two-map sample into forward world, skinned, and kinematic receivers. This tests the new world-receiver two-map path end-to-end. | |
 | 3 | Extend the planner and GPU resources to four atomic cube slots (24 512² faces); apply the same cache/pool split, six-face warm transition, deterministic overflow fallback, and cube world/entity two-map sampling. | |
 | 4 | Complete lifecycle and observability integration: reset/free/recreate behavior, cache-layer uploads and bind-group rebuilds, dedicated dynamic-cache timing/counters, shader/BGL namespace guards, promoted-tail regression guard, and the durable rendering-pipeline documentation update. | |

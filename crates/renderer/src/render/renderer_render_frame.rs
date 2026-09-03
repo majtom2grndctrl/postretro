@@ -157,7 +157,14 @@ impl Renderer {
         let visible: &VisibleCells = cam_vis.cells;
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
-        self.record_pre_scene_compute(encoder, cam_vis, view_proj, render_world);
+        let frame_light_term_mask = self.frame_light_term_mask();
+        self.record_pre_scene_compute(
+            encoder,
+            cam_vis,
+            view_proj,
+            render_world,
+            frame_light_term_mask,
+        );
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose

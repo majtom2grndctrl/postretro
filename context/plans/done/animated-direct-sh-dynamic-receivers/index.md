@@ -34,9 +34,9 @@ last direct-light gap for moving receivers under authored script animation.
 - Fixture: align `content/dev/maps/spawner-test.map` with the feature's premise —
   the tagged `alarm_light` becomes a baked animated `light_spot` in whose cone the
   closet-door mover sits, plus a `prop_mesh` (skinned-mesh receiver) and a
-  `billboard_emitter` (billboard receiver) placed in the same cone so all three
-  dynamic-receiver classes are exercised by one manual-GPU check (AC2); the automated
-  capture golden is deferred to a follow-up spec.
+  `billboard_emitter` (billboard receiver) placed in the same cone. The later
+  `capture-animated-direct-receiver-goldens` plan covers the mover and prop_mesh
+  stills; the emitter's particle-produced billboard remains a manual-GPU check.
 
 **Shipped beyond this spec's stated producer-side scope (undocumented at the time,
 recorded here per dev guide §1.2):** the implementation also delivered two pieces of
@@ -214,34 +214,35 @@ byte-feeding loader test, `[golden]` GPU-adapter-gated threshold image, `[review
 grep/read gate, `[manual GPU]` env-var run. Not every AC is a unit test — the tag tells
 the executor which gate applies.
 
-- [ ] **AC1** `[manual GPU]` A kinematic mover fully inside a script-animated
-      `light_spot`'s cone receives the light's animated direct illumination; when the alarm
-      curve drives the light red, the mover reddens together with the adjacent static wall
-      (no dark mover beside a lit wall). Verified by the Task 5 manual-GPU check (run the
-      engine, fire the plate, confirm the door reddens with the wall) — the automated
-      capture golden is deferred to the follow-up capture-extension spec (see Task 5),
-      because the static `--capture` harness renders no dynamic receivers and cannot reach
-      the fired state.
-- [ ] **AC2** `[manual GPU]` + `[review]` The `prop_mesh` (skinned mesh) and
-      `billboard_emitter` (billboard) added to the Task 5 fixture cone receive the same
-      animated direct term as the door mover (shared composed atlas) — the manual-GPU check
-      confirms both redden with the wall when the plate fires. "No per-receiver wiring
-      beyond the compose pass" is a review gate (consumers unchanged, still sample binding
-      15). Automated capture golden deferred to the follow-up spec.
+- [ ] **AC1** `[golden]` A kinematic mover fully inside a script-animated
+      `light_spot`'s cone receives the light's animated direct illumination; the authored-red
+      `spawner-test` capture scene in `capture-animated-direct-receiver-goldens` AC2 confirms
+      the closet door reddens with the adjacent cone-lit wall (no dark mover beside a lit wall).
+- [ ] **AC2** `[golden]` (prop_mesh) + `[manual GPU]` (billboard) + `[review]` The
+      `prop_mesh` (skinned mesh) and `billboard_emitter` (billboard) added to the Task 5
+      fixture cone receive the same animated direct term as the door mover (shared composed
+      atlas). The authored-red `spawner-test` capture scene in
+      `capture-animated-direct-receiver-goldens` AC2 confirms the prop_mesh reddens with the
+      wall; the billboard remains a manual-GPU check because its sprite requires a particle
+      simulation tick. "No per-receiver wiring beyond the compose pass" is a review gate
+      (consumers unchanged, still sample binding 15).
 - [ ] **AC3** `[unit]` The animated light's direct is counted exactly once on each
       receiver: absent from the `DirectShVolume` base atlas, absent from the dynamic-direct
       light buffer, absent from promotion selection — a compiler namespace-partition test
       that a script-animated baked light produces an `AnimatedDirectShDeltaVolumes` entry
       and no `EntityShadowLights`/base-direct contribution. (Certifies pre-existing
       namespace exclusion; kept as a guard.)
-- [ ] **AC4** `[unit]` (per-state scale math via the CPU scale seam) + `[manual GPU]` (no
-      brightness pop, despawn/reload drops cleanly): initial-active lights the mover from
-      frame 0; initial-inactive (`startActive: false`) dark; a trigger-installed curve
-      lights it on fire; a looping curve animates each cycle; a one-shot settles/holds the
-      final keyframe with no pop; clearing (`setLightAnimation(null)`) holds authored
+- [ ] **AC4** `[unit]` (per-state scale math via the CPU scale seam) + `[golden]`
+      (baked start-active rest baseline) + `[manual GPU]` (no brightness pop, despawn/reload
+      drops cleanly): the no-authored-state `spawner-test` capture scene in
+      `capture-animated-direct-receiver-goldens` AC3 records the fixture's baked rest
+      descriptor and distinguishes it from the authored-red AC2 frame. Initial-active lights
+      the mover from frame 0; initial-inactive (`startActive: false`) dark; a trigger-installed
+      curve lights it on fire; a looping curve animates each cycle; a one-shot settles/holds
+      the final keyframe with no pop; clearing (`setLightAnimation(null)`) holds authored
       radiance; despawn/reload drops the contribution cleanly. The unit test covers the
-      per-state scale math; the no-pop / clean-drop visuals are the manual-GPU check
-      (automated capture golden deferred to the follow-up spec).
+      per-state scale math; multi-frame no-pop / clean-drop visuals remain the manual-GPU
+      check.
 - [ ] **AC5** `[unit]` (direction-safe/no-NaN bake) + `[manual GPU]` (brightness/RGB
       animate): brightness and RGB color animate the mover-direct term; direction animation
       does not rotate it (documented v1 limitation, not a test) and does not crash or
@@ -266,11 +267,11 @@ the executor which gate applies.
 - [ ] **AC9** `[manual GPU]` + `[review]` `POSTRETRO_GPU_TIMING=1` attributes the animated
       additive cost to the `direct_sh_compose` bracket (TIMESTAMP_QUERY GPU); a dev-tools
       control isolates the animated-direct contribution for inspection.
-- [ ] **AC10** `[unit]` (prl-build recompile) + `[manual GPU]` (door reddens) + `[review]`
+- [ ] **AC10** `[unit]` (prl-build recompile) + `[golden]` (door reddens) + `[review]`
       (E18 unaffected): `content/dev/maps/spawner-test.map` recompiles with the alarm light
-      as a baked animated `light_spot`; the closet door visibly reddens inside the cone when
-      the plate fires (manual-GPU check — automated capture golden deferred to the follow-up
-      spec), and the E18 spawner behavior (enemies spawn on the floor and walk out) is
+      as a baked animated `light_spot`; the authored-red capture scene in
+      `capture-animated-direct-receiver-goldens` AC2 confirms the closet door reddens inside
+      the cone, and the E18 spawner behavior (enemies spawn on the floor and walk out) is
       unaffected.
 - [ ] **AC11** `[review]` `context/lib/rendering_pipeline.md` §4 (new paragraph + the
       receiver matrix), `context/lib/build_pipeline.md` PRL section table (id 45), and
@@ -461,8 +462,7 @@ baked animated `light_spot` (keep `_tags "alarm_light"`, set `_cone`/`_cone2`/`a
 so the closet-door mover sits inside the cone, set `light`/`_falloff_range`). The
 `turnRed` `setLightAnimation` reaction in `content/dev/scripts/spawner-test.ts` is
 unchanged (queries `component: "light"`, matches the spot). Add two more dynamic
-receivers inside the same cone so AC2's manual-GPU check exercises all three receiver
-classes: a `prop_mesh` (skinned-mesh
+receivers inside the same cone so AC2 exercises all three receiver classes: a `prop_mesh` (skinned-mesh
 receiver — set `model` to an existing dev asset, e.g.
 `models/decraniated_low_poly_retro_pixel/scene.gltf`, and `origin`/`angles` so it stands
 in the cone beside the door) and a `billboard_emitter` (billboard receiver — `sprite`
@@ -470,19 +470,15 @@ in the cone beside the door) and a `billboard_emitter` (billboard receiver — `
 sit inside the cone is ordinary Task-5 detail; keep both new receivers clear of the
 `entity_spawner` origin and the doorway walk-out path so the E18 spawner behavior (AC10)
 stays unaffected. Recompile the `.prl` (command in the map
-header). Verification is a **manual-GPU check**, not an automated capture golden: run the
-engine on `spawner-test.prl`, fire the closet plate, and confirm the door fragment, the
-`prop_mesh`, and the `billboard_emitter`'s sprite inside the cone all redden with the wall
-(satisfies the manual-GPU halves of AC1, AC2, and AC10). The same manual-GPU run also
-confirms: (AC4) no brightness pop on one-shot settle, the settled light holds its final
-keyframe, and despawn/reload drops the contribution cleanly; (AC5) brightness and RGB
-color visibly pulse the receivers; (AC6) a 45-only map (no static `DirectShVolume`) still
-allocates the composed atlas and lights the movers. The automated frame-capture
-golden is **deferred to a follow-up spec** (`context/plans/drafts/capture-animated-direct-receiver-goldens`):
-the current static `--capture` harness renders no dynamic receivers (movers / skinned /
-billboard) and has no way to advance to the fired animation state, so it cannot assert
-this today. Do not add a capture-scene golden in this task — that work is scoped to the
-follow-up. At promotion, update
+header). The later authored-red `spawner-test` capture scene in
+`capture-animated-direct-receiver-goldens` AC2 checks the door and prop_mesh with the
+cone-lit wall, while its no-authored-state scene in AC3 records the baked rest baseline.
+The billboard stays a **manual-GPU check**: run the engine on `spawner-test.prl`, fire the
+closet plate, and confirm its particle-produced sprite reddens with the wall. That same
+manual-GPU run also confirms: (AC4) no brightness pop on one-shot settle, the settled
+light holds its final keyframe, and despawn/reload drops the contribution cleanly; (AC5)
+brightness and RGB color visibly pulse the receivers; (AC6) a 45-only map (no static
+`DirectShVolume`) still allocates the composed atlas and lights the movers. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
 receivers" paragraph + the receiver matrix; also correct §4's sampler list, which
 currently names only skinned meshes and billboards, to include the kinematic mover as

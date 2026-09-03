@@ -5,7 +5,7 @@
 
 use super::*;
 
-const LIGHT_INFLUENCE_SIZE: usize = 16;
+pub(super) const LIGHT_INFLUENCE_SIZE: usize = 16;
 
 fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Option<usize> {
     if bytes_len % stride != 0 {

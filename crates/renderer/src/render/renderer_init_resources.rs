@@ -76,26 +76,13 @@ pub(crate) fn request_renderer_device(
     //                           CUBE_ARRAY_TEXTURES is supported)
     // 16 is the WebGPU spec floor and wgpu's `Limits::default()` value; it is
     // also the hard ceiling on Metal (macOS) and is universally supported on
-    // all desktop adapters. We use it as a fixed design budget rather than
-    // deriving the exact binding count here — the unit test
-    // `forward_pipeline_sampled_texture_request_matches_bgl_definitions`
-    // verifies that the derived count stays within this budget independently.
-    const REQUIRED_SAMPLED_TEXTURES: u32 = 16;
-    // Pull the count helpers onto the runtime path (they are otherwise
-    // test-only), so overflowing the budget trips here in debug builds.
-    // debug-only because CI has no GPU: a release panic at pipeline creation
-    // would be uncatchable, and the headless test covers the same invariant.
-    // `#[cfg(debug_assertions)]` on the statement: the count helper is itself
-    // debug-only, so referencing it must vanish from release builds too (a bare
-    // `debug_assert!` still *compiles* its arguments in release).
-    #[cfg(debug_assertions)]
-    debug_assert!(
-        forward_pipeline_sampled_texture_count(cube_array_supported) <= REQUIRED_SAMPLED_TEXTURES,
-        "forward pipeline sampled-texture count ({}) exceeds the requested \
-             budget ({}); switch to bindless (TEXTURE_BINDING_ARRAY) rather than \
-             raising the limit (16 is Metal's hard ceiling)",
-        forward_pipeline_sampled_texture_count(cube_array_supported),
-        REQUIRED_SAMPLED_TEXTURES
+    // all desktop adapters. Derive the request from the complete forward
+    // layout and enforce that fixed budget in both release and debug builds.
+    // Dynamic world-depth caches copy into the pools and add no bindings.
+    let required_sampled_textures = forward_pipeline_sampled_texture_count(cube_array_supported);
+    assert!(
+        required_sampled_textures <= FORWARD_SAMPLED_TEXTURE_BUDGET,
+        "forward sampled-texture inventory exceeds the fixed 16-texture floor",
     );
     // Billboard SH, direct scatter, dynamic diffuse, and isotropic static
     // specular run in `vs_main`; shimmer static specular runs in `fs_main`.
@@ -180,7 +167,7 @@ pub(crate) fn request_renderer_device(
     let adapter_limits = adapter.limits();
     let required_limits = wgpu::Limits {
         max_bind_groups: 8,
-        max_sampled_textures_per_shader_stage: REQUIRED_SAMPLED_TEXTURES,
+        max_sampled_textures_per_shader_stage: required_sampled_textures,
         max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
         max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
         max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
@@ -199,12 +186,12 @@ pub(crate) fn request_renderer_device(
                  a desktop GPU with BC texture support"
         );
     }
-    if adapter_limits.max_sampled_textures_per_shader_stage < REQUIRED_SAMPLED_TEXTURES {
+    if adapter_limits.max_sampled_textures_per_shader_stage < required_sampled_textures {
         anyhow::bail!(
             "GPU adapter supports only {} sampled textures per shader stage; \
                  the forward pass requires {}",
             adapter_limits.max_sampled_textures_per_shader_stage,
-            REQUIRED_SAMPLED_TEXTURES
+            required_sampled_textures
         );
     }
     if adapter_limits.max_storage_textures_per_shader_stage < REQUIRED_STORAGE_TEXTURES {

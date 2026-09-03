@@ -29,46 +29,35 @@ impl Renderer {
             .expect("renderer full-init must complete before full-ready paths run");
         let stride = full.shadow_vs_stride;
         let draw_world = full.has_geometry && full.index_count > 0;
-        let cache_plan = full.promoted_depth_cache_frame_plan.clone();
-        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
+        let cache_plan = &full.promoted_depth_cache_frame_plan;
+        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan;
         full.dynamic_depth_cache_diagnostics.frame = Default::default();
         full.dynamic_depth_cache_diagnostics.frame.cached_spots =
-            dynamic_cache_plan.spot.len() as u32;
+            dynamic_cache_plan.spot().len() as u32;
         // One pair spans the whole pool loop because cached and uncached slots
         // interleave. The label reports an upper bound, including entity passes
         // and promoted work; counters identify the world/cull work actually saved.
-        if !dynamic_cache_plan.spot.is_empty() {
+        if !dynamic_cache_plan.spot().is_empty() {
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
             }
         }
-        let slot_assignment = full.spot_shadow_pool.slot_assignment.clone();
-        let mut used_slots: Vec<u32> = slot_assignment
-            .iter()
-            .copied()
-            .filter(|&s| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
-            .collect();
-        used_slots.sort_unstable();
-        used_slots.dedup();
+        let occupied_slots = full
+            .spot_shadow_pool
+            .slot_cone_matrices
+            .map(|matrix| matrix.is_some());
 
         // Reset the per-frame entity-occluder counter; the per-slot cull
         // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
         // counter — pure CPU, no GPU readback.
         full.spot_entity_occluders_submitted = 0;
 
-        // Per-slot GPU cone cull: one compute pass loops the occupied slots,
-        // dispatching BVH traversal into each slot's indirect sub-region
-        // gated by that slot's cone frustum planes. Runs after the camera
-        // BVH cull and before the per-slot depth render passes below, so the
-        // sub-regions are populated when each slot draws indirect.
+        // Per-slot GPU cone cull dispatches only slots that need static-world
+        // depth: uncached slots and cold cache fills. Warm dynamic-cache slots
+        // skip this traversal: cached world depth is copied into the pool before
+        // current entity occluders draw.
         if draw_world {
             if let Some(shadow_cull) = &full.shadow_cull {
-                let occupied_slots: Vec<bool> = full
-                    .spot_shadow_pool
-                    .slot_cone_matrices
-                    .iter()
-                    .map(Option::is_some)
-                    .collect();
                 full.promoted_depth_cache_cull_dispatch_skips +=
                     cache_plan.skipped_spot_cull_dispatches(&occupied_slots);
                 full.dynamic_depth_cache_diagnostics
@@ -92,7 +81,11 @@ impl Renderer {
             }
         }
 
-        for slot in used_slots {
+        for (slot, occupied) in occupied_slots.into_iter().enumerate() {
+            if !occupied {
+                continue;
+            }
+            let slot = slot as u32;
             let promoted_plan = cache_plan.spot_for_slot(slot);
             if let Some(plan) = promoted_plan {
                 // Open the coarse promoted-depth-cache GPU-timing pair lazily on the
@@ -253,11 +246,17 @@ impl Renderer {
                     full.dynamic_depth_cache_diagnostics.frame.world_pass_skips += 1;
                 }
 
-                // The pool is intentionally an entity-only depth layer for a
-                // cached dynamic light. Forward sampling takes the minimum of
-                // this depth and the stable world cache, so movers/skinned
-                // casters stay responsive while static world rasterization is
-                // skipped on warm frames.
+                dynamic_depth_cache::copy_cached_world_depth(
+                    encoder,
+                    full.dynamic_depth_cache
+                        .spot_texture
+                        .as_ref()
+                        .expect("dynamic spot cache allocated"),
+                    plan.cache_layer as u32,
+                    &full.spot_shadow_pool.array_texture,
+                    slot,
+                    crate::lighting::spot_shadow::SHADOW_MAP_RESOLUTION,
+                );
                 let view = &full.spot_shadow_pool.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Dynamic Spot Entity Shadow Depth Pass"),
@@ -265,7 +264,7 @@ impl Renderer {
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view,
                         depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         }),
                         stencil_ops: None,
@@ -390,18 +389,18 @@ impl Renderer {
                 }
             }
         }
-        if !dynamic_cache_plan.spot.is_empty() {
+        if !dynamic_cache_plan.spot().is_empty() {
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
             }
         }
     }
 
-    /// Cube point-light shadow depth loop: clear every occupied face to the far
-    /// plane, render cone-culled WORLD geometry into it (indirect, per-face
-    /// frustum — the cube counterpart of the spot depth pass), then entity
-    /// occluders when the slot's light is entity-eligible. Caller gates
-    /// on `render_world`.
+    /// Cube point-light shadow depth loop: clear every occupied live-pool face
+    /// to the far plane. Uncached slots draw static world plus eligible entity
+    /// occluders. A cold dynamic-cache slot draws static world into its cache,
+    /// then copies it to the live pool before entity occluders draw. Warm slots
+    /// perform only the copy and entity draw. Caller gates on `render_world`.
     pub(super) fn record_cube_shadow_depth(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -411,11 +410,11 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let cache_plan = full.promoted_depth_cache_frame_plan.clone();
-        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
+        let cache_plan = &full.promoted_depth_cache_frame_plan;
+        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan;
         full.dynamic_depth_cache_diagnostics.frame.cached_cubes =
-            dynamic_cache_plan.cube.len() as u32;
-        if !dynamic_cache_plan.cube.is_empty() {
+            dynamic_cache_plan.cube().len() as u32;
+        if !dynamic_cache_plan.cube().is_empty() {
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
             }
@@ -424,15 +423,17 @@ impl Renderer {
             let stride = full.shadow_vs_stride;
             let draw_world = full.has_geometry && full.index_count > 0;
 
-            // Per-face GPU frustum cull: one compute pass loops the occupied
-            // (slot, face) layers, dispatching BVH traversal into each layer's
-            // indirect sub-region gated by that face's 90° frustum planes.
-            // Mirrors the spot path's per-slot cone cull; `pool.face_matrices`
-            // is the same source of truth the VS uniforms were uploaded from.
+            // Per-face GPU frustum cull dispatches layers that need static-world
+            // depth: uncached layers and cold cache fills. Warm dynamic-cache
+            // layers skip it because cached world depth is copied into the live pool
+            // before current entity occluders draw. `pool.face_matrices` remains the source of truth
+            // for both cull and VS uniforms.
             if draw_world {
                 if let Some(cube_cull) = &full.cube_shadow_cull {
-                    let occupied_layers: Vec<bool> =
-                        pool.face_matrices.iter().map(Option::is_some).collect();
+                    let occupied_layers: [bool;
+                        crate::lighting::cube_shadow::CUBE_COUNT
+                            * crate::lighting::cube_shadow::CUBE_FACES] =
+                        std::array::from_fn(|layer| pool.face_matrices[layer].is_some());
                     full.promoted_depth_cache_cull_dispatch_skips +=
                         cache_plan.skipped_cube_cull_dispatches(&occupied_layers);
                     full.dynamic_depth_cache_diagnostics
@@ -458,9 +459,10 @@ impl Renderer {
 
             for layer in 0..pool.face_matrices.len() {
                 let face_matrix_opt = pool.face_matrices[layer];
-                // Only occupied faces are touched; an occupied face ALWAYS gets
-                // its Clear(1.0) far-plane baseline this frame, mesh plan or not
-                // (the occluder draws below are the only gated steps). See
+                // Only occupied faces are touched; every occupied live-pool face
+                // gets its Clear(1.0) far-plane baseline this frame, mesh plan or
+                // not. A warm dynamic-cache face does not draw static world here;
+                // it redraws only live entity occluders. See
                 // `cube_shadow::cube_face_needs_clear` for why the clear must not
                 // be gated on the plan.
                 if !crate::lighting::cube_shadow::cube_face_needs_clear(face_matrix_opt.is_some()) {
@@ -632,6 +634,17 @@ impl Renderer {
                         full.dynamic_depth_cache_diagnostics.frame.world_pass_skips += 1;
                     }
 
+                    dynamic_depth_cache::copy_cached_world_depth(
+                        encoder,
+                        full.dynamic_depth_cache
+                            .cube_texture
+                            .as_ref()
+                            .expect("dynamic cube cache allocated"),
+                        dynamic_depth_cache::DynamicDepthCache::cube_face_layer(plan, face) as u32,
+                        &pool.array_texture,
+                        layer as u32,
+                        crate::lighting::cube_shadow::CUBE_FACE_RESOLUTION,
+                    );
                     let view = &pool.face_views[layer];
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Dynamic Cube Entity Shadow Depth Pass"),
@@ -639,7 +652,7 @@ impl Renderer {
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view,
                             depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(1.0),
+                                load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
                             }),
                             stencil_ops: None,
@@ -764,7 +777,7 @@ impl Renderer {
                 }
             }
         }
-        if !dynamic_cache_plan.cube.is_empty() {
+        if !dynamic_cache_plan.cube().is_empty() {
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
             }

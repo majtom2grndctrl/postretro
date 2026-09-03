@@ -23,20 +23,21 @@ pub(crate) fn build_renderer_pipelines(
     sh_volume_bind_group_layout: &wgpu::BindGroupLayout,
     lightmap_bind_group_layout: &wgpu::BindGroupLayout,
     spot_shadow_bgl: &wgpu::BindGroupLayout,
-    dynamic_depth_cache_bgl: &wgpu::BindGroupLayout,
     cube_array_supported: bool,
 ) -> RendererPipelines {
+    // Share the array length with the inventory used to request device limits:
+    // adding another group requires updating the budget calculation as well.
+    let forward_groups: [_; FORWARD_BIND_GROUP_COUNT] = [
+        Some(uniform_bind_group_layout),
+        Some(texture_bind_group_layout),
+        Some(lighting_bind_group_layout),
+        Some(sh_volume_bind_group_layout),
+        Some(lightmap_bind_group_layout),
+        Some(spot_shadow_bgl),
+    ];
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Textured Pipeline Layout"),
-        bind_group_layouts: &[
-            Some(uniform_bind_group_layout),
-            Some(texture_bind_group_layout),
-            Some(lighting_bind_group_layout),
-            Some(sh_volume_bind_group_layout),
-            Some(lightmap_bind_group_layout),
-            Some(spot_shadow_bgl),
-            Some(dynamic_depth_cache_bgl),
-        ],
+        bind_group_layouts: &forward_groups,
         immediate_size: 0,
     });
 

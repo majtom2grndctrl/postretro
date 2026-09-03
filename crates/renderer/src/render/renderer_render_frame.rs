@@ -353,6 +353,7 @@ impl Renderer {
 
         if !render_world {
             let full = self.full_mut();
+            full.spot_entity_occluders_submitted = 0;
             full.dynamic_depth_cache_diagnostics.frame = Default::default();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
@@ -367,11 +368,11 @@ impl Renderer {
         }
 
         // --- Cube point-light shadow depth loop -------------------------------
-        // For each occupied cube slot, CLEAR all 6 faces to the far plane (1.0),
-        // render cone-culled WORLD geometry into them (so static occluders —
-        // crates, pillars — shadow under dynamic point lights, same as pooled
-        // dynamic spots), then render entity occluders when the slot's light is
-        // `entity_occluder_eligible`. Per face: a depth render pass into the
+        // For each occupied cube slot, CLEAR all 6 live-pool faces to the far
+        // plane (1.0). Uncached slots render cone-culled WORLD geometry plus
+        // eligible entity occluders. Cached slots render static world only into
+        // a cold cache layer, then clear and redraw live entity occluders in the
+        // pool. Per face: a depth render pass into the
         // `slot*6 + face` D2Array view, projecting by that face's light-space
         // matrix (group 0, dynamic offset into the cube VS uniform buffer). The
         // world draw pulls from that face's `cube_shadow_cull` indirect
@@ -389,9 +390,9 @@ impl Renderer {
         // (CompareFunction::Less: reference >= 0 is never < 0), zeroing its
         // world illumination. Off-screen lights own no slot (sentinel), so they
         // stayed lit — the view-dependent symptom. The clear stays
-        // unconditional; the world and entity draws are the only gated steps,
-        // mirroring the spot path's "every occupied slot gets a Clear(1.0)
-        // baseline" invariant.
+        // unconditional; the world and entity draws are the only gated steps.
+        // Cached slots retain the same live-pool clear baseline while their
+        // warm cache skips static-world work.
         self.full_mut().cube_entity_occluders_submitted = 0;
         if render_world {
             self.record_cube_shadow_depth(encoder, world_mesh_frame_plan);
@@ -454,7 +455,6 @@ impl Renderer {
                 render_pass.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
                 render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
                 render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
-                render_pass.set_bind_group(6, &self.full().dynamic_depth_cache.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
                 render_pass.set_index_buffer(
                     self.full().index_buffer.slice(..),

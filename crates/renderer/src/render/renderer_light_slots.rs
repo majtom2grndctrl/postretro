@@ -2,12 +2,33 @@
 // shadow-debug trace.
 // See: context/lib/rendering_pipeline.md §4
 
+use super::renderer_lighting::LIGHT_INFLUENCE_SIZE;
 use super::renderer_types::{
     FullRenderer, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind,
     PromotedStaticLightRecord,
 };
 use super::*;
 use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
+
+// Read the renderer's CPU mirror of the exact dynamic GPU record. The live
+// bridge can move attached lights and animate their radius; level-load
+// MapLights are therefore not a valid source for shadow projections.
+fn read_light_float(record: &[u8], offset: usize) -> f32 {
+    f32::from_ne_bytes(
+        record[offset..offset + 4]
+            .try_into()
+            .expect("validated light record"),
+    )
+}
+
+fn refresh_shadow_candidate_from_upload(light: &mut MapLight, record: &[u8]) {
+    debug_assert_eq!(record.len(), GPU_LIGHT_SIZE);
+    light.origin = [0, 4, 8].map(|offset| read_light_float(record, offset) as f64);
+    light.cone_direction = [32, 36, 40].map(|offset| read_light_float(record, offset));
+    light.falloff_range = read_light_float(record, 44);
+    light.cone_angle_inner = read_light_float(record, 48);
+    light.cone_angle_outer = read_light_float(record, 52);
+}
 
 impl Renderer {
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
@@ -38,8 +59,9 @@ impl Renderer {
     ) {
         // No runtime shadow candidates this frame. Clear both pools' occupancy:
         // a stale `Some` cone/face matrix carried over from a previous level
-        // would keep its depth passes — full world rasterizations — running
-        // every frame against slots no light samples.
+        // would keep its depth passes running against slots no light samples.
+        // Cached dynamic slots normally clear and redraw live entity occluders;
+        // static world depth renders only when their cache key is cold.
         if self.full().shadow_candidate_lights.is_empty() {
             let Self { queue, full, .. } = self;
             let full = full
@@ -60,18 +82,6 @@ impl Renderer {
             );
             full.dynamic_depth_cache.state.reset_level();
             full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
-            queue.write_buffer(
-                &full.dynamic_depth_cache.spot_layers_buffer,
-                0,
-                bytemuck::cast_slice(&[-1i32; crate::lighting::spot_shadow::SHADOW_POOL_SIZE]),
-            );
-            queue.write_buffer(
-                &full.dynamic_depth_cache.cube_layers_buffer,
-                0,
-                bytemuck::cast_slice(&dynamic_depth_cache::cube_layer_channel(
-                    &DynamicDepthCachePlan::default(),
-                )),
-            );
             return;
         }
 
@@ -91,12 +101,42 @@ impl Renderer {
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
         {
-            let full = self.full();
+            let full = self.full_mut();
             // Fixed within the frame — build the source→level reverse lookup once
             // so each candidate's brightness read is O(1) instead of scanning
             // `level_light_source_indices`.
             let level_light_index_lookup =
                 build_level_light_index_lookup(&full.level_light_source_indices);
+            // The bridge has already uploaded this frame's dynamic prefix.
+            // Refresh shadow projections and reachability from those exact
+            // records before ranking; promoted static candidates stay authored.
+            for (i, light) in full.shadow_candidate_lights.iter_mut().enumerate() {
+                if full.shadow_candidate_selection_indices[i].is_some() {
+                    continue;
+                }
+                let source = full.shadow_candidate_source_indices[i];
+                let Some(level_index) = level_light_index_lookup.get(source).copied().flatten()
+                else {
+                    continue;
+                };
+                let offset = level_index * GPU_LIGHT_SIZE;
+                if let Some(record) = full.last_lights_upload.get(offset..offset + GPU_LIGHT_SIZE) {
+                    refresh_shadow_candidate_from_upload(light, record);
+                }
+                let influence_offset = level_index * LIGHT_INFLUENCE_SIZE;
+                if let (Some(influence), Some(record)) = (
+                    full.shadow_candidate_influences.get_mut(i),
+                    full.last_influence_upload
+                        .get(influence_offset..influence_offset + LIGHT_INFLUENCE_SIZE),
+                ) {
+                    influence.center = Vec3::new(
+                        read_light_float(record, 0),
+                        read_light_float(record, 4),
+                        read_light_float(record, 8),
+                    );
+                    influence.radius = read_light_float(record, 12);
+                }
+            }
             for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
                 let reaches_view = shadow_candidate_reaches_visible_cell(
                     light,
@@ -376,74 +416,62 @@ impl Renderer {
         full.spot_shadow_pool.slot_assignment = slot_assignment;
 
         // Dynamic-tier cache planning follows the existing rank result, but its
-        // key is the source identity plus the frozen projection — never the
+        // key is the source identity plus the current uploaded projection, never the
         // pool slot. Build the per-slot channel from scratch every frame so a
         // retained layer cannot leak through a slot that was vacated or
         // re-tenanted this frame.
-        let spot_inputs: Vec<_> = full
-            .spot_shadow_pool
-            .slot_assignment
-            .iter()
-            .enumerate()
-            .filter_map(|(candidate_index, &slot)| {
-                (slot != crate::lighting::spot_shadow::NO_SHADOW_SLOT
-                    && full.shadow_candidate_selection_indices[candidate_index].is_none())
-                .then(|| {
-                    let matrix = full.spot_shadow_pool.slot_cone_matrices[slot as usize]?;
-                    Some((
+        use crate::lighting::cube_shadow::{CUBE_COUNT, CUBE_FACES, CubeShadowPool};
+        use crate::lighting::spot_shadow::{NO_SHADOW_SLOT, SHADOW_POOL_SIZE};
+        let mut spot_inputs = [(0, 0, Mat4::IDENTITY); SHADOW_POOL_SIZE];
+        let mut spot_count = 0;
+        for (candidate_index, &slot) in full.spot_shadow_pool.slot_assignment.iter().enumerate() {
+            if slot == NO_SHADOW_SLOT
+                || full.shadow_candidate_selection_indices[candidate_index].is_some()
+            {
+                continue;
+            }
+            if let Some(matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
+                spot_inputs[spot_count] = (
+                    slot,
+                    full.shadow_candidate_source_indices[candidate_index],
+                    matrix,
+                );
+                spot_count += 1;
+            }
+        }
+        let mut cube_inputs = [(0, 0, [Mat4::IDENTITY; CUBE_FACES]); CUBE_COUNT];
+        let mut cube_count = 0;
+        if let Some(pool) = &full.cube_shadow_pool {
+            for (candidate_index, &slot) in pool.slot_assignment.iter().enumerate() {
+                if slot == NO_SHADOW_SLOT
+                    || full.shadow_candidate_selection_indices[candidate_index].is_some()
+                {
+                    continue;
+                }
+                let mut matrices = [Mat4::IDENTITY; CUBE_FACES];
+                let mut complete = true;
+                for (face, matrix) in matrices.iter_mut().enumerate() {
+                    if let Some(live) = pool.face_matrices[CubeShadowPool::face_layer(slot, face)] {
+                        *matrix = live;
+                    } else {
+                        complete = false;
+                        break;
+                    }
+                }
+                if complete {
+                    cube_inputs[cube_count] = (
                         slot,
                         full.shadow_candidate_source_indices[candidate_index],
-                        matrix,
-                    ))
-                })?
-            })
-            .collect();
-        let cube_inputs: Vec<_> = full
-            .cube_shadow_pool
-            .as_ref()
-            .map(|pool| {
-                pool.slot_assignment
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(candidate_index, &slot)| {
-                        (slot != crate::lighting::spot_shadow::NO_SHADOW_SLOT
-                            && full.shadow_candidate_selection_indices[candidate_index].is_none())
-                        .then(|| {
-                            let mut matrices =
-                                [Mat4::IDENTITY; crate::lighting::cube_shadow::CUBE_FACES];
-                            for (face, matrix) in matrices.iter_mut().enumerate() {
-                                let layer =
-                                    crate::lighting::cube_shadow::CubeShadowPool::face_layer(
-                                        slot, face,
-                                    );
-                                *matrix = pool.face_matrices[layer]?;
-                            }
-                            Some((
-                                slot,
-                                full.shadow_candidate_source_indices[candidate_index],
-                                matrices,
-                            ))
-                        })?
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                        matrices,
+                    );
+                    cube_count += 1;
+                }
+            }
+        }
         let plan = full
             .dynamic_depth_cache
             .state
-            .plan_frame(&spot_inputs, &cube_inputs);
-        let spot_layers = dynamic_depth_cache::spot_layer_channel(&plan);
-        let cube_layers = dynamic_depth_cache::cube_layer_channel(&plan);
-        queue.write_buffer(
-            &full.dynamic_depth_cache.spot_layers_buffer,
-            0,
-            bytemuck::cast_slice(&spot_layers),
-        );
-        queue.write_buffer(
-            &full.dynamic_depth_cache.cube_layers_buffer,
-            0,
-            bytemuck::cast_slice(&cube_layers),
-        );
+            .plan_frame(&spot_inputs[..spot_count], &cube_inputs[..cube_count]);
         full.dynamic_depth_cache_frame_plan = plan;
     }
 
@@ -478,8 +506,7 @@ impl Renderer {
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
     ///   (assigned POINT cube shadow slot or `NONE:<reason>` — closes the prior
     ///   blind spot where point lights only ever showed `NONE:not_spot`). NOTE
-    ///   these read the STATIC load-time `shadow_candidate_lights` — a scripted
-    ///   sweep light's animated position/cone is NOT reflected here.
+    ///   these read candidates refreshed from the current dynamic GPU upload.
     /// - `casters`: `forward` vs `non_forward` collected mesh draw inputs.
     ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
     ///   broader promoted-static shadow-relevance set; `forward` is a mesh-pass
@@ -1350,6 +1377,139 @@ fn build_count_split_light_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dynamic_shadow_light(light_type: postretro_level_loader::LightType) -> MapLight {
+        MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type,
+            intensity: 1.0,
+            color: [1.0; 3],
+            falloff_model: postretro_level_loader::FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            cell_index: 0,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
+        }
+    }
+
+    // Regression: moved/carried lights and animated ranges uploaded live GPU
+    // records while shadow matrices/cache keys kept the level-load projection.
+    #[test]
+    fn live_light_move_and_radius_change_recold_cache_with_uploaded_projection() {
+        use dynamic_depth_cache::DynamicDepthCache;
+        use postretro_level_loader::LightType;
+        for light_type in [LightType::Spot, LightType::Point] {
+            let mut candidate = dynamic_shadow_light(light_type);
+            let mut live = candidate.clone();
+            let mut cache = DynamicDepthCache::default();
+            let plan_light = |cache: &mut DynamicDepthCache, light: &MapLight| {
+                if light_type == LightType::Spot {
+                    cache.plan_frame(
+                        &[(2, 7, postretro_lighting::light_space_matrix(light))],
+                        &[],
+                    )
+                } else {
+                    cache.plan_frame(
+                        &[],
+                        &[(
+                            2,
+                            7,
+                            crate::lighting::cube_shadow::cube_face_matrices(light),
+                        )],
+                    )
+                }
+            };
+            for change in 0..3 {
+                let cold = plan_light(&mut cache, &candidate);
+                for &plan in cold.spot() {
+                    cache.mark_spot_world_rendered(plan);
+                }
+                for &plan in cold.cube() {
+                    cache.mark_cube_world_rendered(plan);
+                }
+                let warm = plan_light(&mut cache, &candidate);
+                assert!(warm.spot().iter().all(|p| !p.needs_world_render));
+                assert!(warm.cube().iter().all(|p| !p.needs_world_render));
+                match change {
+                    0 => live.origin = [2.0, 3.0, 4.0],
+                    1 => live.falloff_range = 35.0,
+                    _ => live.origin = [-3.0, 1.0, 6.0],
+                }
+                refresh_shadow_candidate_from_upload(
+                    &mut candidate,
+                    &postretro_lighting::pack_light(&live),
+                );
+                assert!(
+                    postretro_lighting::light_space_matrix(&candidate)
+                        .abs_diff_eq(postretro_lighting::light_space_matrix(&live), 1.0e-6)
+                );
+                for (actual, expected) in
+                    crate::lighting::cube_shadow::cube_face_matrices(&candidate)
+                        .into_iter()
+                        .zip(crate::lighting::cube_shadow::cube_face_matrices(&live))
+                {
+                    assert!(actual.abs_diff_eq(expected, 1.0e-6));
+                }
+                let changed = plan_light(&mut cache, &candidate);
+                assert!(
+                    changed.spot().iter().any(|p| p.needs_world_render)
+                        || changed.cube().iter().any(|p| p.needs_world_render)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_cache_allocation_is_independent_by_light_type_and_adapter() {
+        use dynamic_depth_cache::DynamicCacheAllocation;
+        use postretro_level_loader::LightType;
+        let spot = dynamic_shadow_light(LightType::Spot);
+        let point = dynamic_shadow_light(LightType::Point);
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(std::slice::from_ref(&spot), true),
+            DynamicCacheAllocation {
+                spot: true,
+                cube: false
+            }
+        );
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(std::slice::from_ref(&point), true),
+            DynamicCacheAllocation {
+                spot: false,
+                cube: true
+            }
+        );
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(&[spot.clone(), point.clone()], true),
+            DynamicCacheAllocation {
+                spot: true,
+                cube: true
+            }
+        );
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(&[spot, point], false),
+            DynamicCacheAllocation {
+                spot: true,
+                cube: false
+            }
+        );
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(&[], true),
+            DynamicCacheAllocation::default()
+        );
+        let mut baked = dynamic_shadow_light(LightType::Spot);
+        baked.is_dynamic = false;
+        assert_eq!(
+            DynamicCacheAllocation::for_lights(&[baked], true),
+            DynamicCacheAllocation::default()
+        );
+    }
 
     #[test]
     fn promoted_static_record_schema_carries_task4_contract_fields() {

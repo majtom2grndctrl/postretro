@@ -358,15 +358,12 @@ pub(crate) fn build_full_renderer(
     // new sampleable cache bindings can reference it immediately.
     let promoted_depth_cache = (!entity_shadow_indices.is_empty())
         .then(|| PromotedDepthCache::new(device, cube_array_supported));
-    let dynamic_depth_cache_bgl =
-        DynamicDepthCacheGpu::bind_group_layout(device, cube_array_supported);
     let dynamic_depth_cache = DynamicDepthCacheGpu::new(
         device,
-        &dynamic_depth_cache_bgl,
-        cube_array_supported,
-        shadow_candidate_selection_indices
-            .iter()
-            .any(Option::is_none),
+        dynamic_depth_cache::DynamicCacheAllocation::for_lights(
+            &shadow_candidate_lights,
+            cube_array_supported,
+        ),
     );
     {
         use crate::lighting::spot_shadow::{
@@ -405,7 +402,6 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources.bind_group_layout,
         &lightmap_bind_group_layout,
         &spot_shadow_bgl,
-        &dynamic_depth_cache_bgl,
         cube_array_supported,
     );
 
@@ -453,8 +449,6 @@ pub(crate) fn build_full_renderer(
         // Mesh group 4 uses the SUPERSET layout (shared SH entries + the
         // mesh-only dynamic-direct params uniform at binding 16).
         &sh_volume_resources.mesh_bind_group_layout,
-        &dynamic_depth_cache_bgl,
-        &dynamic_depth_cache.bind_group,
         // Cube-array support pins the `Some`-iff-layout invariant: the mesh
         // group-2 BGL carries the b8 cube entry iff this is true, and the
         // no-cube shader strip is applied to the mesh source when it is false.
@@ -501,8 +495,6 @@ pub(crate) fn build_full_renderer(
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
         &sh_volume_resources.mesh_bind_group_layout,
-        &dynamic_depth_cache_bgl,
-        &dynamic_depth_cache.bind_group,
         cube_array_supported,
     );
     kinematic_brush.rebuild_light_bind_group(

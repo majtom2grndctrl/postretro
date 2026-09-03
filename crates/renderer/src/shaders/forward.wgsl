@@ -294,20 +294,6 @@ struct LightSpaceMatrices {
 // `render::strip_point_shadow_cube`.
 @group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
-// Group 6 is deliberately separate from the shared pool group above. It owns
-// only dynamic world-cache sampling and can therefore evolve without adding
-// more bindings to every existing group-5 consumer.
-@group(6) @binding(0) var dynamic_spot_depth_cache: texture_depth_2d_array;
-@group(6) @binding(1) var dynamic_shadow_compare: sampler_comparison;
-struct DynamicSpotCacheLayers {
-    // Uniform-array elements are 16-byte aligned; pack four slot channels in
-    // each vec4 so this remains a compact 384-byte upload.
-    layers: array<vec4<i32>, 24>,
-};
-@group(6) @binding(2) var<uniform> dynamic_spot_cache_layers: DynamicSpotCacheLayers;
-struct DynamicCubeCacheSlots { slots: array<vec4<i32>, 2>, };
-@group(6) @binding(3) var<uniform> dynamic_cube_cache_slots: DynamicCubeCacheSlots;
-@group(6) @binding(4) var dynamic_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -1207,19 +1193,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 // exactly once (same construction as the spot path).
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
-                    let cache_slot = dynamic_cube_cache_slots.slots[cube_slot / 4u][cube_slot % 4u];
-                    var shadow: f32;
-                    if cache_slot >= 0 {
-                        shadow = sample_point_shadow_with_dynamic_world(
-                            cube_slot, cache_slot, light.position_and_type.xyz, in.world_position,
-                            mesh_n, WORLD_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
-                        );
-                    } else {
-                        shadow = sample_point_shadow(
-                            cube_slot, light.position_and_type.xyz, in.world_position,
-                            mesh_n, WORLD_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
-                        );
-                    }
+                    let shadow = sample_point_shadow(
+                        cube_slot, light.position_and_type.xyz, in.world_position,
+                        mesh_n, WORLD_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
+                    );
                     attenuation = attenuation * shadow;
                 }
             }
@@ -1239,19 +1216,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
-                    let cache_layer = dynamic_spot_cache_layers.layers[slot_index / 4u][slot_index % 4u];
-                    var shadow: f32;
-                    if cache_layer >= 0 {
-                        shadow = sample_spot_shadow_with_dynamic_world(
-                            slot_index, cache_layer, light.position_and_type.xyz,
-                            in.world_position, mesh_n, WORLD_RECEIVER_BIAS_SCALE, light_proj,
-                        );
-                    } else {
-                        shadow = sample_spot_shadow(
-                            slot_index, light.position_and_type.xyz, in.world_position,
-                            mesh_n, WORLD_RECEIVER_BIAS_SCALE, light_proj,
-                        );
-                    }
+                    let shadow = sample_spot_shadow(
+                        slot_index, light.position_and_type.xyz, in.world_position,
+                        mesh_n, WORLD_RECEIVER_BIAS_SCALE, light_proj,
+                    );
                     attenuation = attenuation * shadow;
                 }
             }

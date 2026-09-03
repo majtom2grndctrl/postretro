@@ -1,5 +1,5 @@
 // Tool-facing static frame-capture scene vocabulary and validation.
-// See: context/plans/in-progress/E20--frame-capture
+// See: context/lib/rendering_pipeline.md §7.8
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -10,8 +10,13 @@ const MIN_FOV_DEG: f32 = 60.0;
 const MAX_FOV_DEG: f32 = 130.0;
 const MAX_ABS_PITCH_DEG: f32 = 89.0;
 const MAX_CAPTURE_DIMENSION: u32 = 8192;
+// Capture overrides are linear HDR radiance. Six stops above unit white
+// cover diagnostic lighting while leaving roughly 1023x headroom below the
+// Rgba16Float atlas/scene ceiling (65504) for transport and accumulation.
+// This is a capture-authoring budget, not a new scripting intensity limit.
+const MAX_FORCED_RADIANCE: f32 = 64.0;
 
-/// A deterministic, world-only frame capture request.
+/// A deterministic capture of world geometry and authored receivers at rest.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) struct CaptureScene {
@@ -58,6 +63,10 @@ pub(crate) enum SceneError {
     #[error("invalid capture scene: force_active radiance must be finite")]
     NonFiniteForcedAnimLightRadiance,
     #[error(
+        "invalid capture scene: force_active radiance channels must be in 0..={MAX_FORCED_RADIANCE}, got {value}"
+    )]
+    ForcedAnimLightRadianceOutOfRange { value: f32 },
+    #[error(
         "invalid capture scene: fov_deg must be between {MIN_FOV_DEG} and {MAX_FOV_DEG}, got {value}"
     )]
     FovOutOfRange { value: f32 },
@@ -96,6 +105,11 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
             }
             if !light.radiance.into_iter().all(f32::is_finite) {
                 return Err(SceneError::NonFiniteForcedAnimLightRadiance);
+            }
+            for value in light.radiance {
+                if !(0.0..=MAX_FORCED_RADIANCE).contains(&value) {
+                    return Err(SceneError::ForcedAnimLightRadianceOutOfRange { value });
+                }
             }
         }
     }
@@ -216,6 +230,27 @@ mod tests {
             parse_scene(&json),
             Err(SceneError::EmptyForcedAnimLightTag)
         ));
+    }
+
+    #[test]
+    fn force_active_radiance_respects_nonnegative_hdr_capture_budget() {
+        for value in [-0.001, 64.01, f32::MAX] {
+            let mut scene = parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap();
+            scene.force_active = Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [0.0, value, 0.0],
+            }]);
+            assert!(matches!(
+                validate_scene(&scene),
+                Err(SceneError::ForcedAnimLightRadianceOutOfRange { .. })
+            ));
+        }
+        let mut scene = parse_scene(SCENE_WITH_DEFAULT_FOV).unwrap();
+        scene.force_active = Some(vec![ForcedAnimLight {
+            tag: "alarm_light".into(),
+            radiance: [0.0, 4.0, MAX_FORCED_RADIANCE],
+        }]);
+        assert!(validate_scene(&scene).is_ok());
     }
 
     #[test]

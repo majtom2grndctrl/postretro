@@ -7,10 +7,16 @@ use std::process::Command;
 
 use image::{GenericImageView as _, RgbaImage};
 
+mod capture_receiver_controls;
+
 const CAPTURE_WIDTH: u32 = 64;
 const CAPTURE_HEIGHT: u32 = 48;
 const RECEIVER_CAPTURE_WIDTH: u32 = 640;
 const RECEIVER_CAPTURE_HEIGHT: u32 = 480;
+const RECEIVER_EYE: [f32; 3] = [6.1, 2.2, -2.5];
+const RECEIVER_YAW_DEG: f32 = 77.0;
+const RECEIVER_PITCH_DEG: f32 = -12.0;
+const RECEIVER_FOV_DEG: f32 = 90.0;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -328,26 +334,58 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
         String::from_utf8_lossy(&compile.stderr),
     );
 
+    let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())
+        .expect("load spawner capture fixture");
+    let alarm = loaded
+        .lights
+        .iter()
+        .find(|light| light.tags.iter().any(|tag| tag == "alarm_light"))
+        .expect("fixture contains alarm light");
+    let slot = alarm
+        .animated_slot
+        .expect("alarm reserves an animated descriptor") as usize;
+    let descriptor = &loaded
+        .sh_volume
+        .as_ref()
+        .expect("fixture contains SH volume")
+        .animation_descriptors[slot];
+    assert_eq!(
+        descriptor.start_active, 1,
+        "fixture must exercise baked start-active rest"
+    );
+
     let temp = tempfile::tempdir().expect("create isolated capture directory");
     let rest_scene = temp.path().join("rest.json");
     let rest_output = temp.path().join("rest.png");
-    write_spawner_capture_scene(&rest_scene, &map, &rest_output, false);
+    write_spawner_capture_scene(&rest_scene, &map, &rest_output, None);
 
     // This first process has no authored state. Its descriptor is precisely
     // the baked start_active rest state installed with the level geometry.
     if !run_capture_or_skip_without_adapter(&workspace, &rest_scene) {
         return;
     }
+    let rest_bytes = fs::read(&rest_output).expect("read first rest capture bytes");
 
     let red_scene = temp.path().join("red.json");
     let red_output = temp.path().join("red.png");
-    write_spawner_capture_scene(&red_scene, &map, &red_output, true);
+    write_spawner_capture_scene(&red_scene, &map, &red_output, Some([4.0, 0.0, 0.0]));
 
     // Do not reuse the rest process: capture-process isolation prevents the
     // authored red descriptor seed from leaking into the rest baseline.
     if !run_capture_or_skip_without_adapter(&workspace, &red_scene) {
         return;
     }
+
+    // Run the exact same scene in another process after the authored-red scene.
+    // This pins byte determinism and the fresh process's baked-rest baseline.
+    if !run_capture_or_skip_without_adapter(&workspace, &rest_scene) {
+        return;
+    }
+    assert_eq!(
+        fs::read(&rest_output).expect("read repeated rest capture bytes"),
+        rest_bytes,
+        "identical rest captures on one adapter must produce identical PNG bytes",
+    );
 
     let rest = load_capture_rgba(&rest_output);
     let red = load_capture_rgba(&red_output);
@@ -357,19 +395,66 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
         "rest capture must use the requested dimensions",
     );
     assert_eq!(red.dimensions(), rest.dimensions());
-    assert_region_has_baked_rest_radiance("cone-lit wall", &rest, (432, 152, 160, 136));
+    let dark_scene = temp.path().join("dark.json");
+    let dark_output = temp.path().join("dark.png");
+    write_spawner_capture_scene(&dark_scene, &map, &dark_output, Some([0.0; 3]));
+    if !run_capture_or_skip_without_adapter(&workspace, &dark_scene) {
+        return;
+    }
+    let dark = load_capture_rgba(&dark_output);
+    assert_region_has_baked_rest_radiance("cone-lit wall", &rest, &dark, (432, 152, 160, 136));
     assert_ne!(
         red, rest,
         "the forced-red scene must remain distinct from the unmodified baked rest frame",
     );
 
-    // These windows are projected from the fixture's authored rest-pose
-    // receiver locations using the fixed camera below. The door/mover is in
-    // the centre, prop_mesh lower-left, and the adjacent cone-lit east wall
-    // right. Check red chroma versus the same-adapter rest frame, rather than
-    // any absolute RGB values, so the test remains adapter-gated and stable.
-    assert_region_reddens("closet mover", &rest, &red, (288, 160, 112, 112));
-    assert_region_reddens("prop_mesh", &rest, &red, (192, 272, 144, 160));
+    let no_direct_map = capture_receiver_controls::without_animated_direct(&map, slot as u32);
+    let no_direct_scene = temp.path().join("rest-without-alarm-direct.json");
+    let no_direct_output = temp.path().join("rest-without-alarm-direct.png");
+    write_spawner_capture_scene(&no_direct_scene, &no_direct_map, &no_direct_output, None);
+    if !run_capture_or_skip_without_adapter(&workspace, &no_direct_scene) {
+        return;
+    }
+    let no_direct = load_capture_rgba(&no_direct_output);
+
+    // Bake once. Each control changes only one receiver record, preserving
+    // every lighting payload and the other receiver. Triangle masks bound the
+    // receiver footprint; removal controls distinguish its visible surfaces
+    // from world geometry that occludes those projected triangles.
+    for receiver in [
+        capture_receiver_controls::Receiver::Mover,
+        capture_receiver_controls::Receiver::Prop,
+    ] {
+        let mask = capture_receiver_controls::receiver_mask(&map, &workspace, receiver);
+        let absent_map = capture_receiver_controls::without_receiver(&map, receiver);
+        let absent_scene = temp
+            .path()
+            .join(format!("absent-{}.json", receiver.label()));
+        let absent_output = temp.path().join(format!("absent-{}.png", receiver.label()));
+        write_spawner_capture_scene(
+            &absent_scene,
+            &absent_map,
+            &absent_output,
+            Some([4.0, 0.0, 0.0]),
+        );
+        if !run_capture_or_skip_without_adapter(&workspace, &absent_scene) {
+            return;
+        }
+        let proven_receiver_pixels = assert_receiver_reddens(
+            receiver.label(),
+            &rest,
+            &red,
+            &load_capture_rgba(&absent_output),
+            &mask,
+        );
+        assert_receiver_has_baked_rest_radiance(
+            receiver.label(),
+            &rest,
+            &dark,
+            &no_direct,
+            &proven_receiver_pixels,
+        );
+    }
     assert_region_reddens("cone-lit wall", &rest, &red, (432, 152, 160, 136));
 }
 
@@ -377,7 +462,7 @@ fn write_spawner_capture_scene(
     scene_path: &std::path::Path,
     map: &std::path::Path,
     output: &std::path::Path,
-    force_alarm_red: bool,
+    alarm_radiance: Option<[f32; 3]>,
 ) {
     let mut scene = serde_json::json!({
         "map": map.display().to_string(),
@@ -385,17 +470,17 @@ fn write_spawner_capture_scene(
             // Quake (roughly 104, -240, 87) translated to engine axes. This
             // frames the closet-door mover, prop_mesh, and the static wall in
             // alarm_light's authored cone at their no-tick rest poses.
-            "position": [6.1, 2.2, -2.5],
-            "yaw_deg": 77.0,
-            "pitch_deg": -12.0,
-            "fov_deg": 90.0
+            "position": RECEIVER_EYE,
+            "yaw_deg": RECEIVER_YAW_DEG,
+            "pitch_deg": RECEIVER_PITCH_DEG,
+            "fov_deg": RECEIVER_FOV_DEG
         },
         "resolution": [RECEIVER_CAPTURE_WIDTH, RECEIVER_CAPTURE_HEIGHT],
         "output": output.display().to_string()
     });
-    if force_alarm_red {
+    if let Some(radiance) = alarm_radiance {
         scene["force_active"] = serde_json::json!([
-            { "tag": "alarm_light", "radiance": [4.0, 0.0, 0.0] }
+            { "tag": "alarm_light", "radiance": radiance }
         ]);
     }
     fs::write(
@@ -444,28 +529,276 @@ fn load_capture_rgba(path: &std::path::Path) -> RgbaImage {
 
 fn assert_region_has_baked_rest_radiance(
     label: &str,
-    image: &RgbaImage,
+    rest: &RgbaImage,
+    dark: &RgbaImage,
     (left, top, width, height): (u32, u32, u32, u32),
 ) {
-    // The capture clear color is only 0.05 linear. Its sRGB representation is
-    // below this threshold, so a small cluster of brighter pixels in the
-    // fixture's cone-lit wall proves the no-authored-state frame retained a
-    // real baked rest contribution instead of forcing the descriptor dark.
-    const LIT_CHANNEL_THRESHOLD: u8 = 80;
+    // Only alarm radiance differs. Other baked lighting and ambient floor
+    // cannot satisfy this comparison if the rest descriptor is dropped.
     const MIN_LIT_PIXELS: usize = 64;
 
     let lit_pixels = (top..top + height)
-        .flat_map(|y| (left..left + width).map(move |x| image.get_pixel(x, y).0))
-        .filter(|pixel| {
-            pixel[0] > LIT_CHANNEL_THRESHOLD
-                || pixel[1] > LIT_CHANNEL_THRESHOLD
-                || pixel[2] > LIT_CHANNEL_THRESHOLD
+        .flat_map(|y| (left..left + width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let rest = rest.get_pixel(x, y).0;
+            let dark = dark.get_pixel(x, y).0;
+            (0..3)
+                .map(|c| i32::from(rest[c]) - i32::from(dark[c]))
+                .sum::<i32>()
+                > 12
         })
         .count();
     assert!(
         lit_pixels >= MIN_LIT_PIXELS,
         "{label} must retain visible baked rest radiance without force_active; \
-         found {lit_pixels} pixels above the clear-color threshold",
+         found {lit_pixels} pixels brighter than the zero-radiance alarm control",
+    );
+}
+
+fn assert_receiver_reddens(
+    label: &str,
+    rest: &RgbaImage,
+    red: &RgbaImage,
+    absent: &RgbaImage,
+    mask: &[(u32, u32)],
+) -> Vec<(u32, u32)> {
+    // The projected triangle union is only a search region: it has no depth
+    // test and includes surfaces hidden behind world geometry or outside the
+    // alarm cone. Its area cannot be a denominator for visible, lit coverage.
+    // Keep an absolute floor of independently proven receiver pixels; both
+    // removal and light-state comparisons must pass at every counted pixel.
+    const MIN_REDDENED_RECEIVER_PIXELS: usize = 64;
+
+    let reddened_receiver_pixels: Vec<_> = mask
+        .iter()
+        .filter(|&&(x, y)| {
+            let rest = rest.get_pixel(x, y).0;
+            let red = red.get_pixel(x, y).0;
+            let absent = absent.get_pixel(x, y).0;
+            let receiver_difference: i32 = (0..3)
+                .map(|c| (i32::from(red[c]) - i32::from(absent[c])).abs())
+                .sum();
+            let chroma_gain =
+                (i32::from(red[0]) - i32::from(red[1])) - (i32::from(rest[0]) - i32::from(rest[1]));
+            // A missing color draw that still casts a shadow can only darken
+            // the background relative to removal. Require added red light on
+            // the receiver footprint, not merely a shadow color difference.
+            receiver_difference > 12
+                && i32::from(red[0]) - i32::from(absent[0]) > 4
+                && chroma_gain > 8
+        })
+        .copied()
+        .collect();
+    assert!(
+        reddened_receiver_pixels.len() >= MIN_REDDENED_RECEIVER_PIXELS,
+        "{label} must be present and redden on its projected triangles: \
+         {} proven receiver pixels in a {}-pixel search region, \
+         need {MIN_REDDENED_RECEIVER_PIXELS}",
+        reddened_receiver_pixels.len(),
+        mask.len(),
+    );
+    reddened_receiver_pixels
+}
+
+fn assert_receiver_has_baked_rest_radiance(
+    label: &str,
+    rest: &RgbaImage,
+    dark: &RgbaImage,
+    no_direct: &RgbaImage,
+    proven_receiver_pixels: &[(u32, u32)],
+) {
+    // The red/removal comparison proves these pixels belong to the receiver.
+    // Requiring both deltas excludes unrelated world light and alarm indirect
+    // SH: only the rest descriptor's direct-SH contribution can satisfy both.
+    const MIN_LIT_RECEIVER_PIXELS: usize = 64;
+    let lit_pixels = proven_receiver_pixels
+        .iter()
+        .filter(|&&(x, y)| {
+            let rest = rest.get_pixel(x, y).0;
+            [dark, no_direct].iter().all(|control| {
+                let control = control.get_pixel(x, y).0;
+                (0..3)
+                    .map(|channel| i32::from(rest[channel]) - i32::from(control[channel]))
+                    .sum::<i32>()
+                    > 12
+            })
+        })
+        .count();
+    assert!(
+        lit_pixels >= MIN_LIT_RECEIVER_PIXELS,
+        "{label} must retain baked rest direct-SH radiance without force_active: \
+         {lit_pixels} proven receiver pixels exceed both zero-alarm and zero-direct controls, \
+         need {MIN_LIT_RECEIVER_PIXELS}",
+    );
+}
+
+// Regression: the prop's projected silhouette includes occluded and unlit
+// surfaces, so demanding red pixels across 10% of that union rejected its draw.
+#[test]
+fn receiver_predicate_accepts_visible_lit_patch_with_occluded_projected_triangles() {
+    let rest = RgbaImage::from_pixel(64, 64, image::Rgba([40, 40, 40, 255]));
+    let mut red = RgbaImage::from_pixel(64, 64, image::Rgba([80, 30, 30, 255]));
+    let absent = red.clone();
+    let mask: Vec<_> = (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).collect();
+
+    // Most projected pixels show an occluding wall that reddens too. Only this
+    // visible patch is brighter than the same-lit wall in the removal control.
+    for y in 24..32 {
+        for x in 24..32 {
+            red.put_pixel(x, y, image::Rgba([100, 30, 30, 255]));
+        }
+    }
+    assert_receiver_reddens("partly occluded receiver", &rest, &red, &absent, &mask);
+    red.put_pixel(24, 24, *absent.get_pixel(24, 24));
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_reddens(
+                "insufficient receiver coverage",
+                &rest,
+                &red,
+                &absent,
+                &mask,
+            );
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_reddens("occluding wall only", &rest, &absent, &absent, &mask);
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn receiver_predicate_rejects_shadow_only_and_unchanged_receiver_color() {
+    let rest = RgbaImage::from_pixel(16, 16, image::Rgba([40, 40, 40, 255]));
+    let red = RgbaImage::from_pixel(16, 16, image::Rgba([80, 30, 30, 255]));
+    let absent = RgbaImage::from_pixel(16, 16, image::Rgba([100, 60, 60, 255]));
+    let mask: Vec<_> = (0..16).flat_map(|y| (0..16).map(move |x| (x, y))).collect();
+
+    // A surviving shadow draw can change the background and its red chroma,
+    // but cannot supply the added red channel required for receiver presence.
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_reddens("shadow only", &rest, &red, &absent, &mask);
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_reddens("unchanged receiver", &red, &red, &rest, &mask);
+        })
+        .is_err()
+    );
+}
+
+// Regression: broad crops accepted red walls when the receiver draw vanished.
+#[test]
+fn receiver_predicate_rejects_background_only_and_requires_substantial_coverage() {
+    let rest = RgbaImage::from_pixel(16, 16, image::Rgba([40, 40, 40, 255]));
+    let red = RgbaImage::from_pixel(16, 16, image::Rgba([80, 30, 30, 255]));
+    let mask: Vec<_> = (0..16).flat_map(|y| (0..16).map(move |x| (x, y))).collect();
+    assert!(
+        std::panic::catch_unwind(|| assert_receiver_reddens("missing", &rest, &red, &red, &mask))
+            .is_err()
+    );
+    let mut only_one_receiver_pixel = red.clone();
+    only_one_receiver_pixel.put_pixel(0, 0, image::Rgba([10, 10, 10, 255]));
+    assert!(
+        std::panic::catch_unwind(|| assert_receiver_reddens(
+            "one pixel",
+            &rest,
+            &red,
+            &only_one_receiver_pixel,
+            &mask
+        ))
+        .is_err()
+    );
+    assert_receiver_reddens("visible receiver", &rest, &red, &rest, &mask);
+}
+
+#[test]
+fn receiver_rest_predicate_rejects_forward_or_indirect_light_without_rest_direct_sh() {
+    // Regression: a bright static wall passed AC3 even when the receivers'
+    // separate direct-SH paths lost the baked start-active descriptor.
+    let mut rest = RgbaImage::from_pixel(16, 16, image::Rgba([200, 200, 200, 255]));
+    let dark = RgbaImage::from_pixel(16, 16, image::Rgba([40, 40, 40, 255]));
+    let absent = RgbaImage::from_pixel(16, 16, image::Rgba([80, 40, 40, 255]));
+    let mut red = absent.clone();
+    for y in 0..8 {
+        for x in 0..8 {
+            rest.put_pixel(x, y, image::Rgba([60, 60, 60, 255]));
+            red.put_pixel(x, y, image::Rgba([120, 40, 40, 255]));
+        }
+    }
+    let mask: Vec<_> = (0..16).flat_map(|y| (0..16).map(move |x| (x, y))).collect();
+    let proven = assert_receiver_reddens("receiver patch", &rest, &red, &absent, &mask);
+    assert_eq!(proven.len(), 64);
+
+    // World/forward and indirect light remain bright, and red mode works,
+    // but the direct-only control is identical at rest: this must fail.
+    let mut no_direct = rest.clone();
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_has_baked_rest_radiance(
+                "rest direct missing",
+                &rest,
+                &dark,
+                &no_direct,
+                &proven,
+            );
+        })
+        .is_err()
+    );
+    for &(x, y) in &proven {
+        no_direct.put_pixel(x, y, *dark.get_pixel(x, y));
+    }
+    assert_receiver_has_baked_rest_radiance(
+        "rest direct present",
+        &rest,
+        &dark,
+        &no_direct,
+        &proven,
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_has_baked_rest_radiance(
+                "rest descriptor missing",
+                &rest,
+                &rest,
+                &no_direct,
+                &proven,
+            );
+        })
+        .is_err()
+    );
+    no_direct.put_pixel(0, 0, *rest.get_pixel(0, 0));
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_receiver_has_baked_rest_radiance(
+                "insufficient rest coverage",
+                &rest,
+                &dark,
+                &no_direct,
+                &proven,
+            );
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn rest_predicate_rejects_brightness_unrelated_to_alarm_descriptor() {
+    let unrelated_light = RgbaImage::from_pixel(16, 16, image::Rgba([200, 200, 200, 255]));
+    assert!(
+        std::panic::catch_unwind(|| assert_region_has_baked_rest_radiance(
+            "unrelated light",
+            &unrelated_light,
+            &unrelated_light,
+            (0, 0, 16, 16)
+        ))
+        .is_err()
     );
 }
 

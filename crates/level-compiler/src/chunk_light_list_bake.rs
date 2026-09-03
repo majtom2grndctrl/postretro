@@ -267,7 +267,7 @@ fn validate_cached_chunk_light_list(
 
     let (expected_origin, expected_cell_size, expected_dimensions) =
         chunk_grid_layout(inputs.geometry, cell_size_meters);
-    let expected_cap = per_chunk_cap.max(1);
+    let expected_cap = per_chunk_cap;
     if section.has_grid != 1 {
         return Err("expected a populated grid");
     }
@@ -385,7 +385,7 @@ pub fn bake_chunk_light_list(
     let nz = dims[2] as usize;
     let chunk_count = nx * ny * nz;
 
-    let cap = per_chunk_cap.max(1) as usize;
+    let cap = per_chunk_cap as usize;
 
     let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
     for p in inputs.portals {
@@ -520,9 +520,10 @@ pub fn bake_chunk_light_list(
                     );
                     // Contained lights are a hard first tier: preserve them in
                     // compacted-slot order. Rank the rest by the maximum
-                    // contribution they can make anywhere in the chunk, so
-                    // neighboring chunks keep the same strong lights rather
-                    // than whichever slots happen to be lowest.
+                    // contribution they can make anywhere in the chunk. This
+                    // improves strong-light continuity across neighboring
+                    // chunks, though their different candidate sets and
+                    // closest-approach points cannot guarantee identical sets.
                     bucket.sort_by(|left, right| {
                         let left_contained = contained_slots.binary_search(left).is_ok();
                         let right_contained = contained_slots.binary_search(right).is_ok();
@@ -618,7 +619,7 @@ pub fn bake_chunk_light_list(
         cell_size: cell,
         grid_dimensions: dims,
         has_grid: 1,
-        per_chunk_cap: per_chunk_cap.max(1),
+        per_chunk_cap,
         offsets,
         light_indices: indices,
     })
@@ -1834,17 +1835,43 @@ mod tests {
                 light
             })
             .collect();
-        let mut boundary_light = point_light(DVec3::new(4.0, 10.0, 0.0), 24.0);
+        // Just left of the shared x=4 chunk face and above both chunks. It is
+        // therefore a non-contained candidate on each side, while its large
+        // range and intensity make it rank above the cap in both.
+        let mut boundary_light = point_light(DVec3::new(3.5, 10.0, 0.0), 24.0);
         boundary_light.intensity = 100.0;
         lights.push(boundary_light);
-        let boundary_slot = 4;
+        let boundary_slot = 4_u32;
+        let cap = 2;
 
-        let section = bake_single_quad_chunk_lights(&lights, 8.0, 2);
-        let (left_kept, _, _) = chunk_slots_and_bounds_at(&section, Vec3::new(0.0, 0.0, 0.0));
-        let (right_kept, _, _) = chunk_slots_and_bounds_at(&section, Vec3::new(8.0, 0.0, 0.0));
+        let section = bake_single_quad_chunk_lights(&lights, 8.0, cap);
+        let (left_kept, left_min, left_max) =
+            chunk_slots_and_bounds_at(&section, Vec3::new(0.0, 0.0, 0.0));
+        let (right_kept, right_min, right_max) =
+            chunk_slots_and_bounds_at(&section, Vec3::new(8.0, 0.0, 0.0));
 
-        assert!(left_kept.contains(&boundary_slot));
-        assert!(right_kept.contains(&boundary_slot));
+        for (chunk_min, chunk_max) in [(left_min, left_max), (right_min, right_max)] {
+            assert!(
+                lights
+                    .iter()
+                    .all(|light| overlaps_chunk(light, chunk_min, chunk_max)),
+                "each checked chunk must be over-cap from these candidates"
+            );
+            assert!(
+                !is_contained_by_chunk(&lights[boundary_slot as usize], chunk_min, chunk_max),
+                "the boundary light must exercise influence ranking, not the contained tier"
+            );
+        }
+
+        let left_expected = reference_top_cap_slots(&lights, left_min, left_max, cap as usize);
+        let right_expected = reference_top_cap_slots(&lights, right_min, right_max, cap as usize);
+        assert!(left_expected.contains(&boundary_slot));
+        assert!(right_expected.contains(&boundary_slot));
+        assert_ne!(left_expected, vec![0, 1]);
+        assert_ne!(right_expected, vec![0, 1]);
+
+        assert_eq!(left_kept, left_expected);
+        assert_eq!(right_kept, right_expected);
     }
 
     #[test]
@@ -1904,6 +1931,20 @@ mod tests {
 
         assert_eq!(DEFAULT_PER_CHUNK_LIGHT_CAP, 256);
         assert_eq!(section.per_chunk_cap, DEFAULT_PER_CHUNK_LIGHT_CAP);
+    }
+
+    #[test]
+    fn explicit_zero_cap_records_zero_and_emits_empty_chunk_lists() {
+        let lights = vec![
+            point_light(DVec3::new(0.0, 2.0, 0.0), 3.0),
+            point_light(DVec3::new(6.0, 2.0, 0.0), 30.0),
+        ];
+
+        let section = bake_single_quad_chunk_lights(&lights, 8.0, 0);
+
+        assert_eq!(section.per_chunk_cap, 0);
+        assert!(section.offsets.iter().all(|entry| entry.count == 0));
+        assert!(section.light_indices.is_empty());
     }
 
     #[test]

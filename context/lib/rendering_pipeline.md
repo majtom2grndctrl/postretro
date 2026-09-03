@@ -303,6 +303,21 @@ then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
 includes scene bloom and excludes transient screen effects. Renderer owns the
 readback (per the boundary rule).
 
+Capture is VM-free and single-instant: no script VM, no trigger firing, no game
+tick — one authored frame. Byte-stable across runs on one adapter; adapter
+rounding rules out cross-adapter goldens, so regressions compare same-adapter
+frames, not committed reference PNGs.
+
+_Planned — dynamic-receiver and authored-animation goldens, not yet built:_
+dynamic receivers (kinematic movers, skinned prop meshes) draw in capture at
+their authored rest pose through the same renderer draw seams the windowed frame
+uses — no capture-only draw path. Billboards are excluded: their sprites are
+emitter-produced and need a particle sim tick to exist, which a single load-only
+instant does not run. An animated light's fired appearance is authored directly
+onto its compose descriptor — forced active with an authored radiance — never by
+running the animation, because a single frozen instant cannot reproduce a finite
+curve's elapsed-since-fire state.
+
 ---
 
 ## 8. Shader Module Composition

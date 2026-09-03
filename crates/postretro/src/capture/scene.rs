@@ -19,6 +19,15 @@ pub(crate) struct CaptureScene {
     pub(crate) camera: CameraPose,
     pub(crate) resolution: [u32; 2],
     pub(crate) output: String,
+    pub(crate) force_active: Option<Vec<ForcedAnimLight>>,
+}
+
+/// An authored, single-instant active state for tagged baked animated lights.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ForcedAnimLight {
+    pub(crate) tag: String,
+    pub(crate) radiance: [f32; 3],
 }
 
 /// Static camera pose expressed in degrees for author-facing JSON.
@@ -44,6 +53,10 @@ pub(crate) enum SceneError {
     EmptyMap,
     #[error("invalid capture scene: output must not be empty")]
     EmptyOutput,
+    #[error("invalid capture scene: force_active tag must not be empty")]
+    EmptyForcedAnimLightTag,
+    #[error("invalid capture scene: force_active radiance must be finite")]
+    NonFiniteForcedAnimLightRadiance,
     #[error(
         "invalid capture scene: fov_deg must be between {MIN_FOV_DEG} and {MAX_FOV_DEG}, got {value}"
     )]
@@ -75,6 +88,16 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.output.trim().is_empty() {
         return Err(SceneError::EmptyOutput);
+    }
+    if let Some(forced_lights) = &scene.force_active {
+        for light in forced_lights {
+            if light.tag.trim().is_empty() {
+                return Err(SceneError::EmptyForcedAnimLightTag);
+            }
+            if !light.radiance.into_iter().all(f32::is_finite) {
+                return Err(SceneError::NonFiniteForcedAnimLightRadiance);
+            }
+        }
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -154,6 +177,68 @@ mod tests {
         );
         let err = parse_scene(&json).expect_err("unknown field must fail");
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_scene_accepts_force_active_lights() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"alarm_light\", \"radiance\": [4.0, 0.0, 0.0] }]",
+        );
+
+        let scene = parse_scene(&json).expect("force_active scene must parse");
+        assert_eq!(
+            scene.force_active,
+            Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [4.0, 0.0, 0.0],
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_scene_rejects_unknown_force_active_light_fields() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"alarm_light\", \"radiance\": [4.0, 0.0, 0.0], \"unexpected\": true }]",
+        );
+        let err = parse_scene(&json).expect_err("unknown nested field must fail");
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_scene_rejects_empty_force_active_tag() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_active\": [{ \"tag\": \"  \", \"radiance\": [4.0, 0.0, 0.0] }]",
+        );
+        assert!(matches!(
+            parse_scene(&json),
+            Err(SceneError::EmptyForcedAnimLightTag)
+        ));
+    }
+
+    #[test]
+    fn validate_scene_rejects_non_finite_force_active_radiance() {
+        let scene = CaptureScene {
+            map: "content/dev/maps/test.prl".into(),
+            camera: CameraPose {
+                position: [1.0, 2.0, 3.0],
+                yaw_deg: 45.0,
+                pitch_deg: -10.0,
+                fov_deg: DEFAULT_FOV_DEG,
+            },
+            resolution: [1280, 720],
+            output: "capture.png".into(),
+            force_active: Some(vec![ForcedAnimLight {
+                tag: "alarm_light".into(),
+                radiance: [f32::NAN, 0.0, 0.0],
+            }]),
+        };
+        assert!(matches!(
+            validate_scene(&scene),
+            Err(SceneError::NonFiniteForcedAnimLightRadiance)
+        ));
     }
 
     #[test]

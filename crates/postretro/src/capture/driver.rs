@@ -1,7 +1,7 @@
 // Synchronous, world-only offscreen frame-capture driver.
 // See: context/lib/rendering_pipeline.md §7.8
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
+use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_visibility::CameraCullVisibility;
 
 use crate::camera;
@@ -19,7 +20,7 @@ use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
-use super::scene::{CameraPose, parse_scene};
+use super::scene::{CameraPose, ForcedAnimLight, parse_scene};
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
 /// consumer, so avoid allocating a one-frame trace.
@@ -83,6 +84,11 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
+    install_forced_active_animation_descriptors(
+        &mut renderer,
+        &world.lights,
+        scene.force_active.as_deref(),
+    )?;
 
     let eye = Vec3::from_array(scene.camera.position);
     let view_proj = capture_view_projection(&scene.camera, width, height);
@@ -127,6 +133,105 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     write_capture_png(output_path, &rgba, width, height)?;
 
     Ok(())
+}
+
+/// Seed capture-only authored active states after the level install has restored
+/// the baked descriptor mirror. `capture_frame_indirect` flushes these writes
+/// in its first `update_per_frame_uniforms` call.
+fn install_forced_active_animation_descriptors(
+    renderer: &mut Renderer,
+    lights: &[postretro_level_loader::MapLight],
+    forced_lights: Option<&[ForcedAnimLight]>,
+) -> Result<()> {
+    for (slot, radiance) in resolve_forced_active_animation_slots(lights, forced_lights)? {
+        renderer
+            .write_animated_compose_descriptor(slot, &forced_active_animation_descriptor(radiance));
+    }
+    Ok(())
+}
+
+/// Resolve authored tags against the complete map-light list. Capture's
+/// static-only forward-light filter has a compacted index space, while
+/// `animated_slot` names the independently indexed SH compose descriptor.
+fn resolve_forced_active_animation_slots(
+    lights: &[postretro_level_loader::MapLight],
+    forced_lights: Option<&[ForcedAnimLight]>,
+) -> Result<Vec<(u32, [f32; 3])>> {
+    let Some(forced_lights) = forced_lights else {
+        return Ok(Vec::new());
+    };
+
+    // Keying writes by slot both deduplicates multi-light tag matches and gives
+    // the renderer a stable write order independent of `world.lights` order.
+    let mut slot_radiance = BTreeMap::new();
+    for forced in forced_lights {
+        let mut tag_found = false;
+        let mut animated_slot_found = false;
+        for light in lights {
+            if !light.tags.iter().any(|tag| tag == &forced.tag) {
+                continue;
+            }
+            tag_found = true;
+            let Some(slot) = light.animated_slot else {
+                continue;
+            };
+            animated_slot_found = true;
+            match slot_radiance.entry(slot) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(forced.radiance);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if *entry.get() == forced.radiance => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    bail!(
+                        "force_active tag `{}` resolves to an animated descriptor with conflicting radiance",
+                        forced.tag
+                    );
+                }
+            }
+        }
+        if !tag_found {
+            bail!(
+                "force_active tag `{}` does not match a map light",
+                forced.tag
+            );
+        }
+        if !animated_slot_found {
+            bail!(
+                "force_active tag `{}` does not match an animated map light",
+                forced.tag
+            );
+        }
+    }
+
+    Ok(slot_radiance.into_iter().collect())
+}
+
+/// Build the active/no-curve compose descriptor through the shared descriptor
+/// packer. With `animation: None` and `active_without_animation: true`, the
+/// radiance lands in `base_color` and `color_count` remains zero.
+fn forced_active_animation_descriptor(
+    radiance: [f32; 3],
+) -> [u8; postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE] {
+    let component = LightComponent {
+        origin: [0.0; 3],
+        light_type: LightKind::Point,
+        intensity: 1.0,
+        color: radiance,
+        falloff_model: FalloffKind::Linear,
+        falloff_range: 0.0,
+        cone_angle_inner: None,
+        cone_angle_outer: None,
+        cone_direction: None,
+        is_dynamic: false,
+        animated_slot: None,
+        follow_transform: false,
+        carrier: None,
+        animation: None,
+    };
+    crate::scripting_systems::light_bridge::pack_animation_descriptor(
+        &component, 0, 0, radiance, true, None,
+    )
 }
 
 /// Preserve capture's static-only light input while translating global PRL
@@ -546,6 +651,92 @@ mod tests {
             selection,
             vec![1, u32::MAX, 0, u32::MAX],
             "selection order must stay channel-aligned while indices move into compact static space",
+        );
+    }
+
+    #[test]
+    fn absent_force_active_leaves_baked_descriptors_unmodified() {
+        let writes = resolve_forced_active_animation_slots(&[test_light(false, 1.0)], None)
+            .expect("absent force_active must not fail");
+        assert!(
+            writes.is_empty(),
+            "without authored state, capture must leave install_level_geometry's baked descriptors intact"
+        );
+    }
+
+    #[test]
+    fn force_active_resolves_every_matching_animated_slot_once_in_stable_order() {
+        let mut first = test_light(true, 1.0);
+        first.tags = vec!["alarm_light".into()];
+        first.animated_slot = Some(7);
+        let mut second = test_light(false, 2.0);
+        second.tags = vec!["alarm_light".into()];
+        second.animated_slot = Some(3);
+        let mut duplicate_slot = test_light(false, 3.0);
+        duplicate_slot.tags = vec!["alarm_light".into()];
+        duplicate_slot.animated_slot = Some(7);
+        let forced = [ForcedAnimLight {
+            tag: "alarm_light".into(),
+            radiance: [4.0, 0.0, 0.0],
+        }];
+
+        let forward = resolve_forced_active_animation_slots(
+            &[first.clone(), second.clone(), duplicate_slot.clone()],
+            Some(&forced),
+        )
+        .expect("tag must resolve");
+        let reversed =
+            resolve_forced_active_animation_slots(&[duplicate_slot, second, first], Some(&forced))
+                .expect("tag must resolve after map-light reordering");
+
+        let expected = vec![(3, [4.0, 0.0, 0.0]), (7, [4.0, 0.0, 0.0])];
+        assert_eq!(forward, expected);
+        assert_eq!(reversed, expected);
+    }
+
+    #[test]
+    fn force_active_rejects_unknown_map_light_tag() {
+        let forced = [ForcedAnimLight {
+            tag: "unknown_light".into(),
+            radiance: [4.0, 0.0, 0.0],
+        }];
+        let err = resolve_forced_active_animation_slots(&[test_light(false, 1.0)], Some(&forced))
+            .expect_err("unknown tag must not silently skip");
+        assert!(err.to_string().contains("unknown_light"));
+    }
+
+    #[test]
+    fn forced_active_descriptor_uses_shared_active_without_animation_layout() {
+        let descriptor = forced_active_animation_descriptor([4.0, 0.5, 0.25]);
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[0..4].try_into().unwrap()),
+            1.0
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[12..16].try_into().unwrap()),
+            0,
+            "the authored instant has no brightness curve samples"
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[16..20].try_into().unwrap()),
+            4.0
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[20..24].try_into().unwrap()),
+            0.5
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[24..28].try_into().unwrap()),
+            0.25
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[32..36].try_into().unwrap()),
+            0,
+            "the authored instant has no color curve samples"
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[36..40].try_into().unwrap()),
+            1
         );
     }
 

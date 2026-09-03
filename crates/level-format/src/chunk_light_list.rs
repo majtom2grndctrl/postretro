@@ -12,7 +12,7 @@ use crate::FormatError;
 pub const CHUNK_LIGHT_LIST_VERSION: u32 = 1;
 
 /// Maximum light indices per chunk (default cap; matches the baker's clamp).
-pub const DEFAULT_PER_CHUNK_CAP: u32 = 64;
+pub const DEFAULT_PER_CHUNK_CAP: u32 = 256;
 
 /// One entry in the offset table: `(offset, count)` as u32 indices into the
 /// flat `light_indices` array, one per chunk in linearized

@@ -91,9 +91,10 @@ photographs, and recompiles `spawner-test` with the alarm light as a baked anima
 ## Acceptance criteria
 
 - [ ] **AC1** `[unit]` `CaptureScene` accepts the new `force_active` field — light tags each
-      with an authored radiance — and rejects malformed input (unknown fields via
-      `deny_unknown_fields`, an empty tag, a non-finite radiance) through the existing
-      `validate_scene` path, mirroring the `scene.rs` parser tests.
+      with an authored radiance — and rejects malformed input (unknown fields on both
+      `CaptureScene` and `ForcedAnimLight` via `deny_unknown_fields`, an empty tag, a
+      non-finite radiance) through the existing `validate_scene` path, mirroring the
+      `scene.rs` parser tests.
 - [ ] **AC2** `[golden]` A capture scene with `force_active` naming `alarm_light` at an
       authored red radiance on `spawner-test.prl` renders the closet-door mover and the
       `prop_mesh` reddened with the wall inside the cone — the automated replacement for the
@@ -101,9 +102,10 @@ photographs, and recompiles `spawner-test` with the alarm light as a baked anima
       `animated-direct-sh-dynamic-receivers`.
 - [ ] **AC3** `[golden]` A capture scene with no authored animation state renders the
       receivers under the light's **baked rest descriptor** — the state
-      `install_level_geometry` seeds before any authored write — byte-comparable to the
-      windowed pre-fire baseline. The fixture's rest activity is stated explicitly: a
-      `start_active` baked descriptor contributes its rest radiance (the receivers are lit by
+      `install_level_geometry` seeds before any authored write — captured deterministically on
+      one adapter and distinct from the AC2 red frame. The fixture's rest activity is stated
+      explicitly: a `start_active` baked descriptor contributes its rest radiance (the
+      receivers are lit by
       the animated term at rest, not unlit), a `start_active: false` descriptor contributes
       zero (start-dark). "No authored state" and "all descriptors force-inactive" name the
       **same** frame only when the baked rest descriptor is itself inactive; the golden
@@ -126,8 +128,9 @@ photographs, and recompiles `spawner-test` with the alarm light as a baked anima
       (despawn/reload drop, brightness-pop transition, animation over time) — stay
       `[manual GPU]`, so the conversion is per-half, not a whole-AC flip.
 - [ ] **AC7** `[manual GPU]` + `[review]` The harness stays adapter-gated and deterministic
-      (self-skips without an adapter; identical bytes across runs on one adapter), including
-      that a prior scene's authored red seed cannot leak into a later un-seeded (rest) scene's frame.
+      (self-skips without an adapter; identical bytes across runs on one adapter). Each scene
+      captures in its own `--capture` process, so process isolation precludes a prior scene's
+      authored red seed leaking into a later rest scene.
 - [ ] **AC8** `[review]` `context/lib/rendering_pipeline.md` §7.8 (frame capture) records the
       dependency: the capture harness reaches an animated light's fired appearance by seeding
       an authored animation state (a forced-active compose descriptor), with no script VM or
@@ -139,17 +142,22 @@ photographs, and recompiles `spawner-test` with the alarm light as a baked anima
 
 Extend `crates/postretro/src/capture/scene.rs`: add an optional
 `force_active: Option<Vec<ForcedAnimLight>>` to `CaptureScene`, where each `ForcedAnimLight`
-carries a light `tag: String` and an authored `radiance: [f32; 3]`. Extend `validate_scene`
-consistently with the existing finite/range checks — reject an empty tag and a non-finite
-radiance, keep `deny_unknown_fields`. In `driver.rs`, after `install_level_geometry` rebuilds
+carries a light `tag: String` and an authored `radiance: [f32; 3]` and derives
+`deny_unknown_fields` + `snake_case` like the other scene structs, so an unknown subfield is
+rejected, not just an unknown top-level field. Extend `validate_scene` consistently with the
+existing finite/range checks — reject an empty tag and a non-finite radiance. In `driver.rs`, after `install_level_geometry` rebuilds
 `sh_volume_resources` (which reinstalls the baked descriptors from the SH sections and
-overwrites any earlier seed) and before `capture_frame_indirect`, resolve each named tag to
-its light's animated compose descriptor slot and seed it active with the authored radiance via
-`Renderer::write_animated_compose_descriptor`, authoring the radiance directly into the
-descriptor's `base_color` with `color_count` 0 — the `active_without_animation` path in
-`light_bridge::pack_animation_descriptor` — so no `anim_samples` curve region is seeded and no
-runtime `light_bridge` byte-equivalence is claimed (for a finite `play_count`-bounded
-descriptor that equivalence is unreproducible from a single instant). The write is flushed to
+overwrites any earlier seed) and before `capture_frame_indirect`, resolve each named tag
+against the **unfiltered** `world.lights` (`MapLight.tags` → `MapLight.animated_slot`, the SH
+animation-descriptor index — not the `static_lights` clone
+`capture_static_lights_and_shadow_selection` produces) and seed that slot active with the
+authored radiance via `Renderer::write_animated_compose_descriptor`. Build the descriptor
+bytes through the shared `active_without_animation` packer
+(`light_bridge::pack_animation_descriptor`, exposed `pub(crate)` and reused, not
+re-implemented): the radiance goes into `base_color` with `color_count` 0, so no `anim_samples`
+curve region is seeded and no runtime `light_bridge` byte-equivalence is claimed (for a finite
+`play_count`-bounded descriptor that equivalence is unreproducible from a single instant). The
+write is flushed to
 GPU on the following `update_per_frame_uniforms`, so it must precede that flush. An unknown tag
 is a validation error, not a silent no-op; multiple matched slots are each seeded once,
 order-independent. Parser + validation unit tests mirror the existing `scene.rs` suite. Pins
@@ -160,24 +168,32 @@ P1, P3, P5, P6.
 Stand up a VM-free entity registry in `driver.rs`: construct a bare `EntityRegistry`, spawn
 the map-authored receivers from the loaded `LevelWorld` — the kinematic mover via
 `spawn_loaded_kinematic_movers`, the `prop_mesh` via the built-in classname handlers
-(`apply_classname_dispatch` over `world.map_entities`, with a `ClassnameDispatch` from
+(`apply_classname_dispatch` over `world.map_entities` converted through the
+`MapEntity::from(MapEntityRecord)` adapter, with a `ClassnameDispatch` from
 `register_builtins`) — and do **not** call `install_world_cpu` wholesale (it also runs the
-data script and fires `levelLoad`). Upload the `prop_mesh` model via
-`renderer.load_skinned_model`. Run the `KinematicMoverRenderCollector` and
-`MeshRenderCollector` over the registry at rest (`alpha = 1.0`, `anim_time = 0.0`, an empty
-hit-zone store) and submit their instances through `set_kinematic_mover_draws` and
-`set_mesh_draws` before `capture_frame_indirect`. The mover geometry is already threaded into
+data script and fires `levelLoad`). Upload each spawned `prop_mesh`'s model (its
+`MeshComponent.model` handle) via `renderer.load_skinned_model` with the driver's
+`content_root` + `prm_cache_root`, before `capture_frame_indirect` — the mesh plan gates on the
+model being loaded, so an uncached model silently drops the draw. Run the
+`KinematicMoverRenderCollector` (`collect(registry, world, visible, alpha = 1.0)`) and
+`MeshRenderCollector` (`collect_with_hit_zones` with `alpha = 1.0`, `anim_time = 0.0`, a fresh
+`MeshClipTables`, the capture eye as `camera_pos`, an empty `HitZoneStore`) over the registry
+at rest and submit their instances through `set_kinematic_mover_draws` and `set_mesh_draws`
+before `capture_frame_indirect`. The mover geometry is already threaded into
 capture by `level_world_to_geometry`; the mover and `prop_mesh` draw at authored rest pose
 with no tick. Confirm both consumers sample the composed direct atlas (binding 15) in the
 captured frame exactly as in the windowed engine. Pin P8.
 
 ### Task 3: Convert deferred manual-GPU checks to goldens
 
-Add capture scenes + GPU-golden regressions asserting the reddened mover and `prop_mesh`
-against an authored red `force_active` frame (AC2) and the pre-fire baseline against no
-authored state (AC3) — the baseline golden asserts whichever rest state the fixture bakes
-(pins P2, P4) — re-installing level geometry per scene so a prior red seed cannot leak into a
-later un-seeded (rest) scene (pin P7). Once these land, re-tag the covered deferred `[manual GPU]`
+Compile `spawner-test.map` → `.prl` at test time (as `specular_shadowmask_capture` does via
+`prl-build`), then add adapter-gated capture regressions (self-skip without an adapter,
+same-adapter comparison — the harness commits no golden PNGs, since adapter rounding makes
+rendered bytes unsuitable for cross-adapter CI): the reddened mover and `prop_mesh` under an
+authored red `force_active` scene (AC2), and the rest frame under no authored state (AC3,
+asserting whichever rest state the fixture bakes — pins P2, P4). Each scene captures in its own
+`--capture` process, so process isolation already precludes a red seed leaking into a later
+rest scene (pin P7). Once these land, re-tag the covered deferred `[manual GPU]`
 halves in `animated-direct-sh-dynamic-receivers` to `[golden]` per AC6, each referencing the
 covering scene, and leave the out-of-scope halves manual. Note the harness dependency in
 `context/lib/rendering_pipeline.md` §7.8 (frame capture) (AC8).
@@ -192,7 +208,7 @@ covering scene, and leave the out-of-scope halves manual. Note the harness depen
 | P4 | Fixture `alarm_light` baked `start_active` | The no-authored-state golden is lit at the baked rest color per the fixture, stated explicitly | unit |
 | P5 | `force_active` names a tag matched by two or more lights | Every matched descriptor is seeded once; final bytes are order-independent | unit |
 | P6 | `force_active` names an unknown tag | Hard error when the driver resolves tags to slots against the loaded world (post-`install_level_geometry`), not a silent no-op | unit |
-| P7 | Golden harness reuses one `Renderer` across scenes | Level geometry is re-installed per scene so a prior red seed cannot leak into a later un-seeded (rest) scene | unit |
+| P7 | Each capture scene runs in its own `--capture` process | Process isolation precludes a prior scene's red seed leaking into a later rest scene; a future in-process multi-scene API must re-install geometry per scene | unit |
 | P8 | Mover + `prop_mesh` draws in capture | Populated from the per-frame collectors over a spawned registry — not `level_world_to_geometry` — at rest pose, no tick, no VM | unit |
 
 ## Notes

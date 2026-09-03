@@ -310,6 +310,7 @@ fn material_index(texture_index: u32, material_count: usize) -> usize {
 }
 
 impl KinematicBrushPass {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -617,6 +618,10 @@ impl KinematicBrushPass {
         mover_draw_index: usize,
     ) -> Option<ActiveMoverDraw> {
         self.active_draw_lookup.get(&mover_draw_index).copied()
+    }
+
+    pub(super) fn set_dynamic_depth_cache_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        self.dynamic_depth_cache_bind_group = bind_group.clone();
     }
 
     #[allow(clippy::too_many_arguments)]

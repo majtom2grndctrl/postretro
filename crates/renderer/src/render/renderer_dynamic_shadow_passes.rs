@@ -31,6 +31,17 @@ impl Renderer {
         let draw_world = full.has_geometry && full.index_count > 0;
         let cache_plan = full.promoted_depth_cache_frame_plan.clone();
         let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
+        full.dynamic_depth_cache_diagnostics.frame = Default::default();
+        full.dynamic_depth_cache_diagnostics.frame.cached_spots =
+            dynamic_cache_plan.spot.len() as u32;
+        // One pair spans the whole pool loop because cached and uncached slots
+        // interleave. The label reports an upper bound, including entity passes
+        // and promoted work; counters identify the world/cull work actually saved.
+        if !dynamic_cache_plan.spot.is_empty() {
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
+            }
+        }
         let slot_assignment = full.spot_shadow_pool.slot_assignment.clone();
         let mut used_slots: Vec<u32> = slot_assignment
             .iter()
@@ -60,6 +71,15 @@ impl Renderer {
                     .collect();
                 full.promoted_depth_cache_cull_dispatch_skips +=
                     cache_plan.skipped_spot_cull_dispatches(&occupied_slots);
+                full.dynamic_depth_cache_diagnostics
+                    .frame
+                    .cull_dispatch_skips += occupied_slots
+                    .iter()
+                    .enumerate()
+                    .filter(|&(slot, occupied)| {
+                        *occupied && !dynamic_cache_plan.should_dispatch_spot_cull(slot)
+                    })
+                    .count() as u32;
                 shadow_cull.dispatch_occupied_slots_filtered(
                     queue,
                     encoder,
@@ -229,6 +249,8 @@ impl Renderer {
                     full.dynamic_depth_cache
                         .state
                         .mark_spot_world_rendered(plan);
+                } else {
+                    full.dynamic_depth_cache_diagnostics.frame.world_pass_skips += 1;
                 }
 
                 // The pool is intentionally an entity-only depth layer for a
@@ -368,6 +390,11 @@ impl Renderer {
                 }
             }
         }
+        if !dynamic_cache_plan.spot.is_empty() {
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_SPOT_DEPTH);
+            }
+        }
     }
 
     /// Cube point-light shadow depth loop: clear every occupied face to the far
@@ -386,6 +413,13 @@ impl Renderer {
             .expect("renderer full-init must complete before full-ready paths run");
         let cache_plan = full.promoted_depth_cache_frame_plan.clone();
         let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
+        full.dynamic_depth_cache_diagnostics.frame.cached_cubes =
+            dynamic_cache_plan.cube.len() as u32;
+        if !dynamic_cache_plan.cube.is_empty() {
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_start(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
+            }
+        }
         if let Some(pool) = &full.cube_shadow_pool {
             let stride = full.shadow_vs_stride;
             let draw_world = full.has_geometry && full.index_count > 0;
@@ -401,6 +435,15 @@ impl Renderer {
                         pool.face_matrices.iter().map(Option::is_some).collect();
                     full.promoted_depth_cache_cull_dispatch_skips +=
                         cache_plan.skipped_cube_cull_dispatches(&occupied_layers);
+                    full.dynamic_depth_cache_diagnostics
+                        .frame
+                        .cull_dispatch_skips += occupied_layers
+                        .iter()
+                        .enumerate()
+                        .filter(|&(layer, occupied)| {
+                            *occupied && !dynamic_cache_plan.should_dispatch_cube_cull(layer)
+                        })
+                        .count() as u32;
                     cube_cull.dispatch_occupied_slots_filtered(
                         queue,
                         encoder,
@@ -585,6 +628,8 @@ impl Renderer {
                                 .state
                                 .mark_cube_world_rendered(plan);
                         }
+                    } else {
+                        full.dynamic_depth_cache_diagnostics.frame.world_pass_skips += 1;
                     }
 
                     let view = &pool.face_views[layer];
@@ -719,6 +764,13 @@ impl Renderer {
                 }
             }
         }
+        if !dynamic_cache_plan.cube.is_empty() {
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
+            }
+        }
+        full.dynamic_depth_cache_diagnostics
+            .finish_frame(full.frame_timing.is_some());
         // Close the coarse promoted-depth-cache timing pair opened in either shadow
         // loop. The span is an upper bound over promoted work (see the spot
         // open site) — interleaved dynamic-shadow work is attributed here too.

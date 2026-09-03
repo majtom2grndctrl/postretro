@@ -1377,6 +1377,10 @@ impl MeshPass {
         }
     }
 
+    pub(super) fn set_dynamic_depth_cache_bind_group(&mut self, bind_group: &wgpu::BindGroup) {
+        self.dynamic_depth_cache_bind_group = bind_group.clone();
+    }
+
     /// (Re)build the group-2 runtime-direct light bind group over the renderer's
     /// runtime light buffers. Called once after geometry installs and again on any
     /// reallocation of these buffers (level load), mirroring how the renderer

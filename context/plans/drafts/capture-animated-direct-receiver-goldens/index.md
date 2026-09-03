@@ -73,6 +73,17 @@ freeze and photograph). This spec is the deferred follow-up that plan's Task 5 n
 - [ ] **AC5** `[manual GPU]` + `[review]` The harness stays adapter-gated and
       deterministic (self-skips without an adapter; identical bytes across runs on one
       adapter).
+- [ ] **AC6** `[review]` For each `animated-direct-sh-dynamic-receivers` AC whose deferred
+      `[manual GPU]` visual half is now reproduced by a capture golden here, that half is
+      re-tagged `[golden]` in the dependency spec with a reference to the covering scene
+      (AC2 or AC3). A half asserting behavior outside this spec's single-authored-instant
+      scope — despawn/reload drop, brightness-pop transition, animation over time — stays
+      `[manual GPU]`, so the conversion is per-half, not a whole-AC flip. Verified by reading
+      the updated dependency spec.
+- [ ] **AC7** `[review]` `context/lib/rendering_pipeline.md` §7.8 (frame capture) records
+      the dependency: the capture harness reaches an animated light's fired appearance by
+      freezing an authored animation state, with no script VM or event loop. Verified by
+      grep/read.
 
 ## Tasks
 
@@ -97,9 +108,12 @@ build in `driver.rs`. Confirm the three consumers sample the composed direct atl
 ### Task 3: Convert deferred manual-GPU checks to goldens
 
 Add capture scenes + GPU-golden regressions asserting the reddened dynamic receivers
-(AC2) and the pre-fire baseline (AC3). Update `animated-direct-sh-dynamic-receivers`
-AC1/AC2/AC4/AC5/AC10 from `[manual GPU]` back to `[golden]` once these land, and note the
-harness dependency in `context/lib/rendering_pipeline.md` §7.8 (frame capture).
+(AC2) and the pre-fire baseline (AC3). Once these land, re-tag the deferred `[manual GPU]`
+visual halves in `animated-direct-sh-dynamic-receivers` that a golden here now covers —
+the "receiver reddens with the wall" halves and the start-dark baseline — to `[golden]`,
+each referencing the covering scene, and leave the out-of-scope halves as `[manual GPU]`
+per AC6. Note the harness dependency in `context/lib/rendering_pipeline.md` §7.8 (frame
+capture) (AC7).
 
 ## Notes
 

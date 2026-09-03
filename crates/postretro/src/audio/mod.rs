@@ -345,11 +345,8 @@ impl<B: kira::backend::Backend> Audio<B> {
                 // Acceptable while music is the only streaming sound. If
                 // streaming sounds ever play on SFX/UI buses at gameplay
                 // frequency, move decoding off the game thread.
-                match entry.open_streaming() {
-                    Some(data) => Playable::Streaming(data),
-                    // `open_streaming` already warned; nothing acquired yet.
-                    None => return None,
-                }
+                // `open_streaming` already warned on failure; nothing acquired yet.
+                Playable::Streaming(entry.open_streaming()?)
             }
             None => {
                 log::warn!("[Audio] unknown sound '{}' — request dropped", req.sound);

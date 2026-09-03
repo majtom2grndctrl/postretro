@@ -262,9 +262,7 @@ impl ComputeCullPipeline {
     }
 
     fn write_bitmask_from_cells(&mut self, cells: &[u32]) {
-        for w in &mut self.visible_bitmask_scratch {
-            *w = 0;
-        }
+        self.visible_bitmask_scratch.fill(0);
         for &cell in cells {
             if cell >= MAX_VISIBLE_CELLS {
                 log::warn!(
@@ -281,9 +279,7 @@ impl ComputeCullPipeline {
     }
 
     fn write_bitmask_draw_all(&mut self) {
-        for w in &mut self.visible_bitmask_scratch {
-            *w = 0xFFFFFFFFu32;
-        }
+        self.visible_bitmask_scratch.fill(0xFFFF_FFFFu32);
     }
 
     pub fn dispatch(

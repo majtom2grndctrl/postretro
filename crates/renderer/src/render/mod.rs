@@ -42,6 +42,7 @@ mod material_plan;
 mod pipeline_layout;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
+mod renderer_dynamic_shadow_passes;
 mod renderer_frame;
 mod renderer_full_init;
 mod renderer_geometry;

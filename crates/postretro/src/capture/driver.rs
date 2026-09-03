@@ -1,4 +1,4 @@
-// Synchronous, world-only offscreen frame-capture driver.
+// Synchronous offscreen capture of world geometry and authored receivers.
 // See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::{BTreeMap, HashSet};
@@ -119,8 +119,10 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     // Capture has no script context or levelLoad event. Stand up only the
     // VM-free map-authored receiver state the windowed render frame collects.
     let registry = spawn_capture_receiver_registry(&world)?;
-    for model in capture_mesh_models(&registry) {
-        renderer.load_skinned_model(&model, &content_root, &prm_cache_root);
+    for model in capture_mesh_models(&registry)? {
+        renderer
+            .load_skinned_model(&model, &content_root, &prm_cache_root)
+            .ok_or_else(|| anyhow!("failed to load capture receiver model `{model}`"))?;
     }
     let mut mover_collector = KinematicMoverRenderCollector::new();
     let mut mesh_collector = MeshRenderCollector::new();
@@ -136,6 +138,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         mover_collector.instances(),
         mover_collector.shadow_instances(),
     );
+    renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
     renderer.set_mesh_draws(mesh_collector.instances());
 
     let rgba = renderer.capture_frame_indirect(
@@ -187,21 +190,25 @@ fn spawn_capture_receiver_registry(
     Ok(registry)
 }
 
-/// Return the non-empty `MeshComponent.model` handles placed by the capture's
-/// built-in map dispatch. The renderer cache key is this verbatim string, so
+/// Validate model handles placed by capture's built-in map dispatch. An empty
+/// prop handle must fail capture instead of silently removing its draw.
+/// The renderer cache key is this verbatim string, so
 /// load it before the mesh collector submits an instance using the same handle.
-fn capture_mesh_models(registry: &EntityRegistry) -> Vec<String> {
+fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut models = Vec::new();
-    for (_id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
+    for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
         let ComponentValue::Mesh(mesh) = value else {
             continue;
         };
-        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+        if mesh.model.is_empty() {
+            bail!("capture prop_mesh receiver {id:?} has an absent or empty `model` key");
+        }
+        if seen.insert(mesh.model.clone()) {
             models.push(mesh.model.clone());
         }
     }
-    models
+    Ok(models)
 }
 
 /// Mirror the windowed render-frame collector calls for capture's spawned
@@ -239,9 +246,27 @@ fn install_forced_active_animation_descriptors(
     lights: &[postretro_level_loader::MapLight],
     forced_lights: Option<&[ForcedAnimLight]>,
 ) -> Result<()> {
-    for (slot, radiance) in resolve_forced_active_animation_slots(lights, forced_lights)? {
+    let writes = resolve_forced_active_animation_slots(lights, forced_lights)?;
+    validate_forced_animation_slot_bounds(&writes, renderer.animated_compose_descriptor_count())?;
+    for (slot, radiance) in writes {
         renderer
             .write_animated_compose_descriptor(slot, &forced_active_animation_descriptor(radiance));
+    }
+    Ok(())
+}
+
+/// Validate the complete batch before any write. The installed renderer count
+/// is authoritative: an unusable SH section can leave only a dummy buffer.
+fn validate_forced_animation_slot_bounds(
+    writes: &[(u32, [f32; 3])],
+    descriptor_count: u32,
+) -> Result<()> {
+    for &(slot, _) in writes {
+        if slot >= descriptor_count {
+            bail!(
+                "force_active animated slot {slot} is outside the installed descriptor count {descriptor_count}"
+            );
+        }
     }
     Ok(())
 }
@@ -802,6 +827,18 @@ mod tests {
     }
 
     #[test]
+    fn force_active_rejects_slots_outside_real_installed_descriptors() {
+        let writes = [(3, [4.0, 0.0, 0.0])];
+        for count in [0, 3] {
+            let error = validate_forced_animation_slot_bounds(&writes, count)
+                .expect_err("invalid slots must fail before renderer's no-op write");
+            assert!(error.to_string().contains("animated slot 3"));
+        }
+        assert!(validate_forced_animation_slot_bounds(&writes, 4).is_ok());
+        assert!(validate_forced_animation_slot_bounds(&[], 0).is_ok());
+    }
+
+    #[test]
     fn forced_active_descriptor_uses_shared_active_without_animation_layout() {
         let descriptor = forced_active_animation_descriptor([4.0, 0.5, 0.25]);
         assert_eq!(
@@ -837,6 +874,47 @@ mod tests {
     }
 
     #[test]
+    fn capture_mesh_models_rejects_absent_or_empty_authored_prop_model() {
+        // Regression: built-in dispatch kept invalid props, then capture silently
+        // skipped their empty model handles and reported a successful image.
+        for model in [None, Some("")] {
+            let mut world = capture_receiver_test_world();
+            world.map_entities[0].key_values = model
+                .map(|model| vec![("model".to_string(), model.to_string())])
+                .unwrap_or_default();
+            let registry = spawn_capture_receiver_registry(&world)
+                .expect("built-in dispatch retains the invalid prop for capture validation");
+            assert_eq!(registry.iter_with_kind(ComponentKind::Mesh).count(), 1);
+            let error = capture_mesh_models(&registry).expect_err("empty models must fail capture");
+            assert!(error.to_string().contains("prop_mesh"));
+            assert!(error.to_string().contains("absent or empty `model`"));
+        }
+    }
+
+    #[test]
+    fn capture_mesh_models_accepts_no_props_and_other_builtin_entities() {
+        use postretro_level_format::map_entity::MapEntityRecord;
+
+        let mut world = capture_receiver_test_world();
+        world.map_entities.clear();
+        let registry = spawn_capture_receiver_registry(&world).expect("no-prop map must spawn");
+        assert!(capture_mesh_models(&registry).unwrap().is_empty());
+
+        world.map_entities = vec![MapEntityRecord {
+            classname: "billboard_emitter".into(),
+            ..Default::default()
+        }];
+        let registry = spawn_capture_receiver_registry(&world).expect("emitter map must spawn");
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::BillboardEmitter)
+                .count(),
+            1
+        );
+        assert!(capture_mesh_models(&registry).unwrap().is_empty());
+    }
+
+    #[test]
     fn capture_receiver_draws_come_from_vm_free_spawned_registry_collectors() {
         let world = capture_receiver_test_world();
         let registry = spawn_capture_receiver_registry(&world)
@@ -861,6 +939,10 @@ mod tests {
             ["models/capture-prop.gltf"],
             "the prop_mesh record must be converted and routed through built-in dispatch"
         );
+        assert_eq!(
+            capture_mesh_models(&registry).unwrap(),
+            ["models/capture-prop.gltf"]
+        );
 
         let mut mover_collector = KinematicMoverRenderCollector::new();
         let mut mesh_collector = MeshRenderCollector::new();
@@ -875,6 +957,24 @@ mod tests {
 
         assert_eq!(mover_collector.instances().len(), 1);
         assert_eq!(mover_collector.shadow_instances().len(), 1);
+        assert_eq!(mover_collector.occluder_aabbs().len(), 1);
+        let occluder = mover_collector.occluder_aabbs()[0];
+        assert_eq!(
+            occluder.mover_id,
+            mover_collector.shadow_instances()[0].mover_id
+        );
+        assert!(
+            occluder
+                .world_aabb
+                .min
+                .abs_diff_eq(Vec3::new(1.0, 2.0, 3.0), 1.0e-6)
+        );
+        assert!(
+            occluder
+                .world_aabb
+                .max
+                .abs_diff_eq(Vec3::new(2.0, 3.0, 3.0), 1.0e-6)
+        );
         assert_eq!(mesh_collector.instances().len(), 1);
         assert_eq!(
             mover_collector.instances()[0].transform.w_axis.truncate(),

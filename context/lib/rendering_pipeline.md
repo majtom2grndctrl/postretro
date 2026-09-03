@@ -317,6 +317,13 @@ by seeding an authored forced-active compose descriptor with a chosen radiance;
 it never runs the script VM or an event loop, because a single frozen instant
 cannot reproduce a finite curve's elapsed-since-fire state.
 
+Capture `force_active` radiance channels must be finite and in `0..=64`. This
+capture-only HDR budget leaves headroom in the half-float atlases; it does not
+change scripting intensity limits. Capture fails if an authored prop mesh has
+no model handle, its model cannot load, or a forced light resolves outside the
+installed compose descriptor count, including when SH installation degrades to
+dummy resources.
+
 ---
 
 ## 8. Shader Module Composition

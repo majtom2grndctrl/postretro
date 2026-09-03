@@ -353,6 +353,7 @@ impl Renderer {
 
         if !render_world {
             let full = self.full_mut();
+            full.dynamic_depth_cache_diagnostics.frame = Default::default();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;

@@ -68,7 +68,9 @@ impl Renderer {
             queue.write_buffer(
                 &full.dynamic_depth_cache.cube_layers_buffer,
                 0,
-                bytemuck::cast_slice(&[-1i32; crate::lighting::cube_shadow::CUBE_COUNT]),
+                bytemuck::cast_slice(&dynamic_depth_cache::cube_layer_channel(
+                    &DynamicDepthCachePlan::default(),
+                )),
             );
             return;
         }
@@ -431,10 +433,7 @@ impl Renderer {
             .state
             .plan_frame(&spot_inputs, &cube_inputs);
         let spot_layers = dynamic_depth_cache::spot_layer_channel(&plan);
-        let mut cube_layers = vec![-1i32; crate::lighting::cube_shadow::CUBE_COUNT];
-        for entry in &plan.cube {
-            cube_layers[entry.slot as usize] = entry.cache_slot;
-        }
+        let cube_layers = dynamic_depth_cache::cube_layer_channel(&plan);
         queue.write_buffer(
             &full.dynamic_depth_cache.spot_layers_buffer,
             0,

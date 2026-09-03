@@ -1,13 +1,15 @@
-// Dynamic-tier world-depth cache planning. GPU resources and recording stay in
-// the renderer passes; this module keeps the cross-frame cache state pure.
+// Dynamic-tier world-depth cache state and GPU resources.
+// See: context/lib/rendering_pipeline.md §4.
 use glam::Mat4;
+use wgpu::util::DeviceExt;
 
-use crate::lighting::cube_shadow::CUBE_FACE_RESOLUTION;
-use crate::lighting::cube_shadow::CUBE_FACES;
+use crate::lighting::cube_shadow::{CUBE_COUNT, CUBE_FACE_RESOLUTION, CUBE_FACES};
 use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE};
 
 pub(super) const DYNAMIC_SPOT_CACHE_LAYERS: usize = 3;
 pub(super) const DYNAMIC_CUBE_CACHE_SLOTS: usize = 4;
+// WGSL packs the slot channel into vec4 lanes, including two padding lanes.
+pub(super) const CUBE_LAYER_CHANNEL_LEN: usize = CUBE_COUNT.div_ceil(4) * 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CacheKey {
@@ -102,6 +104,54 @@ pub(super) fn spot_layer_channel(plan: &DynamicDepthCachePlan) -> [i32; SHADOW_P
     layers
 }
 
+pub(super) fn cube_layer_channel(plan: &DynamicDepthCachePlan) -> [i32; CUBE_LAYER_CHANNEL_LEN] {
+    let mut layers = [-1; CUBE_LAYER_CHANNEL_LEN];
+    for entry in &plan.cube {
+        layers[entry.slot as usize] = entry.cache_slot;
+    }
+    layers
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct DynamicCacheCounters {
+    pub cached_spots: u32,
+    pub cached_cubes: u32,
+    pub world_pass_skips: u32,
+    pub cull_dispatch_skips: u32,
+}
+
+#[derive(Default)]
+pub(super) struct DynamicCacheDiagnostics {
+    pub frame: DynamicCacheCounters,
+    accumulated: DynamicCacheCounters,
+    frames: u32,
+}
+
+impl DynamicCacheDiagnostics {
+    pub fn finish_frame(&mut self, enabled: bool) {
+        if !enabled {
+            return;
+        }
+        self.accumulated.cached_spots += self.frame.cached_spots;
+        self.accumulated.cached_cubes += self.frame.cached_cubes;
+        self.accumulated.world_pass_skips += self.frame.world_pass_skips;
+        self.accumulated.cull_dispatch_skips += self.frame.cull_dispatch_skips;
+        self.frames += 1;
+        if self.frames == 120 {
+            log::info!(
+                "[Renderer] Dynamic depth cache (avg over {} rendered frames): cached spots {:.2}, cached cubes {:.2}, world-pass skips {:.2}, cull-dispatch skips {:.2}",
+                self.frames,
+                self.accumulated.cached_spots as f32 / self.frames as f32,
+                self.accumulated.cached_cubes as f32 / self.frames as f32,
+                self.accumulated.world_pass_skips as f32 / self.frames as f32,
+                self.accumulated.cull_dispatch_skips as f32 / self.frames as f32,
+            );
+            self.accumulated = DynamicCacheCounters::default();
+            self.frames = 0;
+        }
+    }
+}
+
 pub(super) struct DynamicDepthCache {
     spot: Vec<LayerState>,
     cube: Vec<LayerState>,
@@ -112,6 +162,9 @@ pub(super) struct DynamicDepthCache {
 /// this cache through their own dedicated layout.
 pub(super) struct DynamicDepthCacheGpu {
     pub state: DynamicDepthCache,
+    enabled: bool,
+    cube_array_supported: bool,
+    bind_group_layout: wgpu::BindGroupLayout,
     spot_views: Vec<wgpu::TextureView>,
     #[allow(dead_code)] // retained by the bind group; wgpu ownership is indirect.
     pub spot_sampled_view: wgpu::TextureView,
@@ -162,7 +215,7 @@ impl DynamicDepthCacheGpu {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: std::num::NonZeroU64::new(
-                        (crate::lighting::cube_shadow::CUBE_COUNT * 4) as u64,
+                        (CUBE_LAYER_CHANNEL_LEN * 4) as u64,
                     ),
                 },
                 count: None,
@@ -190,13 +243,22 @@ impl DynamicDepthCacheGpu {
         device: &wgpu::Device,
         bind_group_layout: &wgpu::BindGroupLayout,
         cube_array_supported: bool,
+        enabled: bool,
     ) -> Self {
+        // Empty levels keep only sampleable placeholders for the fixed pipeline
+        // layout; level install releases the full-resolution cache allocations.
+        let spot_resolution = if enabled { SHADOW_MAP_RESOLUTION } else { 1 };
+        let spot_layers = if enabled {
+            DYNAMIC_SPOT_CACHE_LAYERS
+        } else {
+            1
+        };
         let spot_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dynamic Spot World Depth Cache"),
             size: wgpu::Extent3d {
-                width: SHADOW_MAP_RESOLUTION,
-                height: SHADOW_MAP_RESOLUTION,
-                depth_or_array_layers: DYNAMIC_SPOT_CACHE_LAYERS as u32,
+                width: spot_resolution,
+                height: spot_resolution,
+                depth_or_array_layers: spot_layers as u32,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -205,7 +267,7 @@ impl DynamicDepthCacheGpu {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let spot_views = (0..DYNAMIC_SPOT_CACHE_LAYERS)
+        let spot_views = (0..spot_layers)
             .map(|layer| {
                 spot_texture.create_view(&wgpu::TextureViewDescriptor {
                     label: Some(&format!("Dynamic Spot World Depth Cache View {layer}")),
@@ -220,37 +282,44 @@ impl DynamicDepthCacheGpu {
             label: Some("Dynamic Spot World Depth Cache Array"),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             base_array_layer: 0,
-            array_layer_count: Some(DYNAMIC_SPOT_CACHE_LAYERS as u32),
+            array_layer_count: Some(spot_layers as u32),
             ..Default::default()
         });
-        let cube_layers = (DYNAMIC_CUBE_CACHE_SLOTS * CUBE_FACES) as u32;
-        let cube_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Dynamic Cube World Depth Cache"),
-            size: wgpu::Extent3d {
-                width: CUBE_FACE_RESOLUTION,
-                height: CUBE_FACE_RESOLUTION,
-                depth_or_array_layers: cube_layers,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: SHADOW_DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+        let cube_resolution = if enabled { CUBE_FACE_RESOLUTION } else { 1 };
+        let cube_layers = (if enabled { DYNAMIC_CUBE_CACHE_SLOTS } else { 1 } * CUBE_FACES) as u32;
+        let cube_texture = cube_array_supported.then(|| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Dynamic Cube World Depth Cache"),
+                size: wgpu::Extent3d {
+                    width: cube_resolution,
+                    height: cube_resolution,
+                    depth_or_array_layers: cube_layers,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SHADOW_DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
         });
-        let cube_views = (0..cube_layers)
+        let cube_views = (0..if cube_array_supported { cube_layers } else { 0 })
             .map(|layer| {
-                cube_texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some(&format!("Dynamic Cube World Depth Cache Face {layer}")),
-                    dimension: Some(wgpu::TextureViewDimension::D2Array),
-                    base_array_layer: layer,
-                    array_layer_count: Some(1),
-                    ..Default::default()
-                })
+                cube_texture
+                    .as_ref()
+                    .expect("cube view requires supported cube texture")
+                    .create_view(&wgpu::TextureViewDescriptor {
+                        label: Some(&format!("Dynamic Cube World Depth Cache Face {layer}")),
+                        dimension: Some(wgpu::TextureViewDimension::D2Array),
+                        base_array_layer: layer,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
             })
             .collect();
-        let cube_sampled_view = cube_array_supported.then(|| {
-            cube_texture.create_view(&wgpu::TextureViewDescriptor {
+        let cube_sampled_view = cube_texture.as_ref().map(|texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("Dynamic Cube World Depth Cache Array"),
                 dimension: Some(wgpu::TextureViewDimension::CubeArray),
                 base_array_layer: 0,
@@ -258,17 +327,15 @@ impl DynamicDepthCacheGpu {
                 ..Default::default()
             })
         });
-        let spot_layers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let spot_layers_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Dynamic Spot Cache Layers"),
-            size: (SHADOW_POOL_SIZE * 4) as u64,
+            contents: bytemuck::cast_slice(&spot_layer_channel(&DynamicDepthCachePlan::default())),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
-        let cube_layers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let cube_layers_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Dynamic Cube Cache Layers"),
-            size: (crate::lighting::cube_shadow::CUBE_COUNT * 4) as u64,
+            contents: bytemuck::cast_slice(&cube_layer_channel(&DynamicDepthCachePlan::default())),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
         let compare_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Dynamic World Depth Cache Comparison Sampler"),
@@ -309,6 +376,9 @@ impl DynamicDepthCacheGpu {
         });
         Self {
             state: DynamicDepthCache::default(),
+            enabled,
+            cube_array_supported,
+            bind_group_layout: bind_group_layout.clone(),
             spot_views,
             spot_sampled_view,
             cube_views,
@@ -317,6 +387,37 @@ impl DynamicDepthCacheGpu {
             cube_layers_buffer,
             bind_group,
         }
+    }
+
+    /// Returns whether consumers must replace their retained bind group.
+    pub fn reset_level(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enabled: bool,
+    ) -> bool {
+        if self.enabled != enabled {
+            *self = Self::new(
+                device,
+                &self.bind_group_layout,
+                self.cube_array_supported,
+                enabled,
+            );
+            return true;
+        }
+        self.state.reset_level();
+        let empty = DynamicDepthCachePlan::default();
+        queue.write_buffer(
+            &self.spot_layers_buffer,
+            0,
+            bytemuck::cast_slice(&spot_layer_channel(&empty)),
+        );
+        queue.write_buffer(
+            &self.cube_layers_buffer,
+            0,
+            bytemuck::cast_slice(&cube_layer_channel(&empty)),
+        );
+        false
     }
 
     pub fn spot_view(&self, plan: DynamicSpotPlan) -> &wgpu::TextureView {
@@ -546,6 +647,35 @@ mod tests {
         for face in 0..CUBE_FACES {
             assert!(!warm.should_dispatch_cube_cull(2 * CUBE_FACES + face));
         }
+    }
+
+    #[test]
+    fn cube_budget_overflow_never_claims_partial_faces() {
+        let mut cache = DynamicDepthCache::default();
+        let candidates: Vec<_> = (0..DYNAMIC_CUBE_CACHE_SLOTS + 1)
+            .map(|slot| (slot as u32, slot, [matrix(1.0); CUBE_FACES]))
+            .collect();
+        let plan = cache.plan_frame(&[], &candidates);
+        assert_eq!(plan.cube.len(), DYNAMIC_CUBE_CACHE_SLOTS);
+        for entry in plan.cube {
+            for face in 0..CUBE_FACES {
+                assert_eq!(
+                    DynamicDepthCache::cube_face_layer(entry, face),
+                    entry.cache_slot * CUBE_FACES as i32 + face as i32,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_geometry_cache_fill_clears_and_warms_layer() {
+        // The depth recorder clears before its world draw gate, so a no-geometry
+        // cold fill still becomes a valid far-depth cache layer for the next frame.
+        let mut cache = DynamicDepthCache::default();
+        let cold = cache.plan_frame(&[(0, 1, matrix(1.0))], &[]).spot[0];
+        assert!(cold.needs_world_render);
+        cache.mark_spot_world_rendered(cold);
+        assert!(!cache.plan_frame(&[(0, 1, matrix(1.0))], &[]).spot[0].needs_world_render);
     }
 
     #[test]

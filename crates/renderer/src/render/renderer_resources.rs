@@ -253,8 +253,20 @@ impl Renderer {
         full.promoted_depth_cache_world_render_skips = 0;
         full.promoted_depth_cache_cull_dispatch_skips = 0;
         full.promoted_depth_cache_timing_open = false;
-        full.dynamic_depth_cache.state.reset_level();
+        if full.dynamic_depth_cache.reset_level(
+            device,
+            queue,
+            shadow_candidate_selection_indices
+                .iter()
+                .any(Option::is_none),
+        ) {
+            full.mesh_pass
+                .set_dynamic_depth_cache_bind_group(&full.dynamic_depth_cache.bind_group);
+            full.kinematic_brush
+                .set_dynamic_depth_cache_bind_group(&full.dynamic_depth_cache.bind_group);
+        }
         full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
+        full.dynamic_depth_cache_diagnostics = Default::default();
         full.promoted_entity_occluders_submitted = 0;
         full.promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Promoted Static Light Weights"),

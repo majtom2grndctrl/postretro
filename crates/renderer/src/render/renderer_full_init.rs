@@ -360,8 +360,14 @@ pub(crate) fn build_full_renderer(
         .then(|| PromotedDepthCache::new(device, cube_array_supported));
     let dynamic_depth_cache_bgl =
         DynamicDepthCacheGpu::bind_group_layout(device, cube_array_supported);
-    let dynamic_depth_cache =
-        DynamicDepthCacheGpu::new(device, &dynamic_depth_cache_bgl, cube_array_supported);
+    let dynamic_depth_cache = DynamicDepthCacheGpu::new(
+        device,
+        &dynamic_depth_cache_bgl,
+        cube_array_supported,
+        shadow_candidate_selection_indices
+            .iter()
+            .any(Option::is_none),
+    );
     {
         use crate::lighting::spot_shadow::{
             SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
@@ -667,6 +673,7 @@ pub(crate) fn build_full_renderer(
         promoted_depth_cache_timing_open: false,
         dynamic_depth_cache,
         dynamic_depth_cache_frame_plan: DynamicDepthCachePlan::default(),
+        dynamic_depth_cache_diagnostics: Default::default(),
         #[cfg(feature = "dev-tools")]
         direct_sh_debug_override: DirectShDebugOverride::default(),
         #[cfg(feature = "dev-tools")]

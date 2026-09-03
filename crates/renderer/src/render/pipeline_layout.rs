@@ -158,7 +158,9 @@ pub(crate) const TIMING_PAIR_SMOKE: usize = 8;
 pub(crate) const TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE: usize = 9;
 pub(crate) const TIMING_PAIR_BLOOM: usize = 10;
 pub(crate) const TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE: usize = 11;
-pub(crate) const TIMING_PAIR_COUNT: usize = 12;
+pub(crate) const TIMING_PAIR_DYNAMIC_SPOT_DEPTH: usize = 12;
+pub(crate) const TIMING_PAIR_DYNAMIC_CUBE_DEPTH: usize = 13;
+pub(crate) const TIMING_PAIR_COUNT: usize = 14;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.

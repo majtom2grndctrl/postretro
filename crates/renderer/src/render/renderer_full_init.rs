@@ -358,6 +358,13 @@ pub(crate) fn build_full_renderer(
     // new sampleable cache bindings can reference it immediately.
     let promoted_depth_cache = (!entity_shadow_indices.is_empty())
         .then(|| PromotedDepthCache::new(device, cube_array_supported));
+    let dynamic_depth_cache = DynamicDepthCacheGpu::new(
+        device,
+        dynamic_depth_cache::DynamicCacheAllocation::for_lights(
+            &shadow_candidate_lights,
+            cube_array_supported,
+        ),
+    );
     {
         use crate::lighting::spot_shadow::{
             SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
@@ -656,6 +663,9 @@ pub(crate) fn build_full_renderer(
         promoted_depth_cache_world_render_skips: 0,
         promoted_depth_cache_cull_dispatch_skips: 0,
         promoted_depth_cache_timing_open: false,
+        dynamic_depth_cache,
+        dynamic_depth_cache_frame_plan: DynamicDepthCachePlan::default(),
+        dynamic_depth_cache_diagnostics: Default::default(),
         #[cfg(feature = "dev-tools")]
         direct_sh_debug_override: DirectShDebugOverride::default(),
         #[cfg(feature = "dev-tools")]

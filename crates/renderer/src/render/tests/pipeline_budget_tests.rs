@@ -110,6 +110,17 @@ fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
 #[cfg(debug_assertions)]
 #[test]
 fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
+    // This is also the complete group inventory used by the device request;
+    // its array length is shared with actual forward pipeline construction.
+    assert_eq!(FORWARD_BIND_GROUP_COUNT, 6);
+    for cube in [false, true] {
+        let actual: u32 = forward_bind_group_layout_entries(cube)
+            .iter()
+            .map(|entries| fragment_sampled_textures(entries))
+            .sum();
+        assert_eq!(actual, forward_pipeline_sampled_texture_count(cube));
+        assert!(actual <= FORWARD_SAMPLED_TEXTURE_BUDGET);
+    }
     // The forward pipeline layout (see `create_pipeline_layout`) composes
     // exactly these six BGLs in this group order. Counting fragment-visible
     // texture entries across them is how wgpu charges
@@ -204,6 +215,20 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         "forward pipeline sampled-texture count ({derived_supported}) exceeds the Metal/WebGPU spec floor of 16; \
              use bindless (TEXTURE_BINDING_ARRAY) rather than raising this limit"
     );
+}
+
+#[test]
+fn disabled_world_render_resets_spot_entity_diagnostics() {
+    let frame = include_str!("../renderer_render_frame.rs");
+    let disabled = frame
+        .split_once("if !render_world {")
+        .unwrap()
+        .1
+        .split_once("\n        }")
+        .unwrap()
+        .0;
+    assert!(disabled.contains("full.spot_entity_occluders_submitted = 0;"));
+    assert!(disabled.contains("full.promoted_entity_occluders_submitted = 0;"));
 }
 
 // Regression: billboard SH, direct scatter, dynamic diffuse, and isotropic

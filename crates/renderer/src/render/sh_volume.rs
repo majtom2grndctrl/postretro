@@ -1365,6 +1365,7 @@ mod tests {
             // samplers (`sample_spot_shadow`/`sample_point_shadow`), so the
             // composed source mirrors the runtime `SHADER_SOURCE`.
             include_str!("../shaders/shadow_sample.wgsl"),
+            "\n",
         );
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),

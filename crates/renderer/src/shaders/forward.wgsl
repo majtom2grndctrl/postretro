@@ -294,6 +294,7 @@ struct LightSpaceMatrices {
 // `render::strip_point_shadow_cube`.
 @group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) base_uv: vec2<f32>,
@@ -1193,12 +1194,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
                     let shadow = sample_point_shadow(
-                        cube_slot,
-                        light.position_and_type.xyz,
-                        in.world_position,
-                        mesh_n,
-                        WORLD_RECEIVER_BIAS_SCALE,
-                        light.direction_and_range.w
+                        cube_slot, light.position_and_type.xyz, in.world_position,
+                        mesh_n, WORLD_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
                     );
                     attenuation = attenuation * shadow;
                 }
@@ -1220,12 +1217,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
                     let shadow = sample_spot_shadow(
-                        slot_index,
-                        light.position_and_type.xyz,
-                        in.world_position,
-                        mesh_n,
-                        WORLD_RECEIVER_BIAS_SCALE,
-                        light_proj,
+                        slot_index, light.position_and_type.xyz, in.world_position,
+                        mesh_n, WORLD_RECEIVER_BIAS_SCALE, light_proj,
                     );
                     attenuation = attenuation * shadow;
                 }

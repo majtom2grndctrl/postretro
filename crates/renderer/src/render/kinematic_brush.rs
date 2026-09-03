@@ -100,6 +100,7 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
+    "\n",
 );
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
@@ -307,6 +308,7 @@ fn material_index(texture_index: u32, material_count: usize) -> usize {
 }
 
 impl KinematicBrushPass {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,

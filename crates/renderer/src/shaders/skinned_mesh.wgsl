@@ -158,6 +158,7 @@ struct LightSpaceMatrices {
 @group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array;
 @group(2) @binding(10) var promoted_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
+
 // --- Group 3: skinned instance data ------------------------------------------
 // `bone_palette` is the SHARED palette storage buffer; every instance's run of
 // `BonePaletteEntry` (one mat4 per joint) is appended into it. Each instance's
@@ -544,12 +545,8 @@ fn accumulate_dynamic_direct(
                         );
                     } else {
                         shadow = sample_point_shadow(
-                            cube_slot,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            n,
-                            SKINNED_SCALE * bias_factor,
-                            light.direction_and_range.w,
+                            cube_slot, light.position_and_type.xyz, world_pos, n,
+                            SKINNED_SCALE * bias_factor, light.direction_and_range.w,
                         );
                     }
                     attenuation = attenuation * shadow;
@@ -588,12 +585,8 @@ fn accumulate_dynamic_direct(
                         );
                     } else {
                         shadow = sample_spot_shadow(
-                            slot_index,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            n,
-                            SKINNED_SCALE * bias_factor,
-                            light_proj,
+                            slot_index, light.position_and_type.xyz, world_pos, n,
+                            SKINNED_SCALE * bias_factor, light_proj,
                         );
                     }
                     attenuation = attenuation * shadow;

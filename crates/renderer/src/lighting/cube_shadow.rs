@@ -94,14 +94,10 @@ const CUBE_FACE_UPS: [Vec3; CUBE_FACES] = [
 /// mapping. The far plane clamps `falloff_range` to a small minimum so a
 /// zero-range or degenerate light still yields a finite frustum.
 ///
-/// Far-plane freshness contract: this projects with the CANDIDATE list's
-/// `falloff_range` (frozen at level load), while `sample_point_shadow`
-/// reconstructs its compare reference from the LIVE GPU record's
-/// `direction_and_range.w`. The two must be the same value — a runtime
-/// mutation of a cube-slot light's range would desync the stored depth from
-/// the reconstruction and mis-shadow at every depth. No current path mutates
-/// range (the light bridge animates intensity/color); whoever adds range
-/// animation must refresh the shadow candidates alongside the GPU repack.
+/// Far-plane freshness contract: dynamic candidates are refreshed from the
+/// current GPU upload before this function runs. The projection and the
+/// shader's depth reconstruction therefore use the same origin and range,
+/// including attached-light movement and CPU-evaluated radius animation.
 pub fn cube_face_matrices(light: &MapLight) -> [Mat4; CUBE_FACES] {
     let eye = Vec3::new(
         light.origin[0] as f32,
@@ -182,7 +178,9 @@ impl CubeShadowPool {
             format: SHADOW_DEPTH_FORMAT,
             // Pool faces are cleared render attachments for entity-only draws;
             // static world depth remains separately sampled from the promoted cache.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 

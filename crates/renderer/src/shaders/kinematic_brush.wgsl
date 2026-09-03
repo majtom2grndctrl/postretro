@@ -288,12 +288,8 @@ fn accumulate_dynamic_direct(
                         );
                     } else {
                         shadow = sample_point_shadow(
-                            cube_slot,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            mesh_n,
-                            MOVER_RECEIVER_BIAS_SCALE,
-                            light.direction_and_range.w,
+                            cube_slot, light.position_and_type.xyz, world_pos, mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
                         );
                     }
                     attenuation = attenuation * shadow;
@@ -321,12 +317,8 @@ fn accumulate_dynamic_direct(
                         );
                     } else {
                         shadow = sample_spot_shadow(
-                            slot_index,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            mesh_n,
-                            MOVER_RECEIVER_BIAS_SCALE,
-                            light_space_matrices.m[slot_index],
+                            slot_index, light.position_and_type.xyz, world_pos, mesh_n,
+                            MOVER_RECEIVER_BIAS_SCALE, light_space_matrices.m[slot_index],
                         );
                     }
                     attenuation = attenuation * shadow;

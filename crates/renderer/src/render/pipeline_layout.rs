@@ -66,6 +66,7 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
+    "\n",
 );
 
 /// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or
@@ -156,7 +157,9 @@ pub(crate) const TIMING_PAIR_SMOKE: usize = 8;
 pub(crate) const TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE: usize = 9;
 pub(crate) const TIMING_PAIR_BLOOM: usize = 10;
 pub(crate) const TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE: usize = 11;
-pub(crate) const TIMING_PAIR_COUNT: usize = 12;
+pub(crate) const TIMING_PAIR_DYNAMIC_SPOT_DEPTH: usize = 12;
+pub(crate) const TIMING_PAIR_DYNAMIC_CUBE_DEPTH: usize = 13;
+pub(crate) const TIMING_PAIR_COUNT: usize = 14;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -348,7 +351,6 @@ pub(crate) fn lighting_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntr
 /// shader reads it. Example: billboard samples the SH direct atlas in the
 /// VERTEX stage, but its BGL entry carries `VERTEX | FRAGMENT` visibility, so
 /// it still counts against the fragment texture budget here.
-#[cfg(debug_assertions)]
 pub(crate) fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
         .iter()
@@ -480,18 +482,25 @@ pub(crate) fn billboard_pipeline_vertex_sampled_texture_count() -> u32 {
 /// sources of truth from drifting (the bug this guards against). Asserted in
 /// `Renderer::new` and the
 /// `forward_pipeline_sampled_texture_request_matches_bgl_definitions` test.
-#[cfg(debug_assertions)]
+pub(crate) const FORWARD_BIND_GROUP_COUNT: usize = 6;
+pub(crate) const FORWARD_SAMPLED_TEXTURE_BUDGET: u32 = 16;
+
+pub(crate) fn forward_bind_group_layout_entries(
+    cube_array_supported: bool,
+) -> [Vec<wgpu::BindGroupLayoutEntry>; FORWARD_BIND_GROUP_COUNT] {
+    [
+        uniform_bind_group_layout_entries().to_vec(),
+        material_bind_group_layout_entries().to_vec(),
+        lighting_bind_group_layout_entries().to_vec(),
+        sh_volume::sh_bind_group_layout_entries().to_vec(),
+        crate::lighting::lightmap::bind_group_layout_entries().to_vec(),
+        SpotShadowPool::bind_group_layout_entries(cube_array_supported).to_vec(),
+    ]
+}
+
 pub(crate) fn forward_pipeline_sampled_texture_count(cube_array_supported: bool) -> u32 {
-    // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
-    // adding a texture entry to either BGL is caught here automatically. Group 5's
-    // count is feature-conditional: the cube-array point-shadow texture (binding 5)
-    // is present only when `cube_array_supported` (16 total with it, 15 without).
-    fragment_sampled_textures(&uniform_bind_group_layout_entries())
-        + fragment_sampled_textures(&material_bind_group_layout_entries())
-        + fragment_sampled_textures(&lighting_bind_group_layout_entries())
-        + fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries())
-        + fragment_sampled_textures(&crate::lighting::lightmap::bind_group_layout_entries())
-        + fragment_sampled_textures(&SpotShadowPool::bind_group_layout_entries(
-            cube_array_supported,
-        ))
+    forward_bind_group_layout_entries(cube_array_supported)
+        .iter()
+        .map(|entries| fragment_sampled_textures(entries))
+        .sum()
 }

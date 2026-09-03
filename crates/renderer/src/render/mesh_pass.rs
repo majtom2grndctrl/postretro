@@ -138,6 +138,7 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
+    "\n",
 );
 
 /// Compose the skinned-mesh shader source for the adapter's cube-array support.

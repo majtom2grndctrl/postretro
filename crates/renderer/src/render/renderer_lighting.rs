@@ -356,6 +356,17 @@ pub(crate) fn shadow_candidate_is_promoted_static(
 }
 
 impl Renderer {
+    /// Number of real compose descriptors installed for the current level.
+    /// Excludes the dummy buffer and becomes zero when SH installation degrades.
+    pub fn animated_compose_descriptor_count(&self) -> u32 {
+        self.full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run")
+            .sh_volume_resources
+            .animation
+            .animated_light_count()
+    }
+
     /// Flushed to GPU on the next `update_per_frame_uniforms` call.
     #[allow(dead_code)]
     pub fn set_animated_light_active(&mut self, slot: usize, active: bool) {

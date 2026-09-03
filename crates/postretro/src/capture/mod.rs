@@ -1,5 +1,5 @@
-// Static scene-spec capture: parse the tool-facing JSON and drive one
-// renderer-owned offscreen world frame. See: context/plans/in-progress/E20--frame-capture
+// Static scene-spec capture: parse tool-facing JSON and drive one
+// renderer-owned offscreen scene/capture frame. See: context/lib/rendering_pipeline.md §7.8
 
 mod driver;
 mod scene;

@@ -1185,7 +1185,7 @@ fn pack_compose_animation_descriptor(
     )
 }
 
-fn pack_animation_descriptor(
+pub(crate) fn pack_animation_descriptor(
     component: &LightComponent,
     brightness_offset: u32,
     color_offset: u32,

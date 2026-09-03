@@ -308,15 +308,21 @@ tick — one authored frame. Byte-stable across runs on one adapter; adapter
 rounding rules out cross-adapter goldens, so regressions compare same-adapter
 frames, not committed reference PNGs.
 
-_Planned — dynamic-receiver and authored-animation goldens, not yet built:_
-dynamic receivers (kinematic movers, skinned prop meshes) draw in capture at
+Dynamic receivers (kinematic movers and skinned prop meshes) draw in capture at
 their authored rest pose through the same renderer draw seams the windowed frame
 uses — no capture-only draw path. Billboards are excluded: their sprites are
 emitter-produced and need a particle sim tick to exist, which a single load-only
-instant does not run. An animated light's fired appearance is authored directly
-onto its compose descriptor — forced active with an authored radiance — never by
-running the animation, because a single frozen instant cannot reproduce a finite
-curve's elapsed-since-fire state.
+instant does not run. The harness reaches an animated light's fired appearance
+by seeding an authored forced-active compose descriptor with a chosen radiance;
+it never runs the script VM or an event loop, because a single frozen instant
+cannot reproduce a finite curve's elapsed-since-fire state.
+
+Capture `force_active` radiance channels must be finite and in `0..=64`. This
+capture-only HDR budget leaves headroom in the half-float atlases; it does not
+change scripting intensity limits. Capture fails if an authored prop mesh has
+no model handle, its model cannot load, or a forced light resolves outside the
+installed compose descriptor count, including when SH installation degrades to
+dummy resources.
 
 ---
 

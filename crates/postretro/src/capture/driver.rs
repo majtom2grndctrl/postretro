@@ -1,7 +1,7 @@
-// Synchronous, world-only offscreen frame-capture driver.
+// Synchronous offscreen capture of world geometry and authored receivers.
 // See: context/lib/rendering_pipeline.md §7.8
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -12,14 +12,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Mat4, Vec3};
 use image::ImageEncoder as _;
-use postretro_visibility::CameraCullVisibility;
+use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_visibility::{CameraCullVisibility, VisibleCells};
 
 use crate::camera;
 use crate::render::{ClearColor, LevelGeometry, Renderer, level_world_to_geometry};
+use crate::runtime_movers::{
+    ENGINE_AUTO_CLOSE_MS, KinematicMoverRenderCollector, spawn_loaded_kinematic_movers,
+};
+use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
+use crate::scripting::map_entity::MapEntity;
+use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::mesh_anim::MeshClipTables;
+use crate::scripting_systems::mesh_render::MeshRenderCollector;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
-use super::scene::{CameraPose, parse_scene};
+use super::scene::{CameraPose, ForcedAnimLight, parse_scene};
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
 /// consumer, so avoid allocating a one-frame trace.
@@ -83,6 +93,11 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
+    install_forced_active_animation_descriptors(
+        &mut renderer,
+        &world.lights,
+        scene.force_active.as_deref(),
+    )?;
 
     let eye = Vec3::from_array(scene.camera.position);
     let view_proj = capture_view_projection(&scene.camera, width, height);
@@ -100,6 +115,31 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     let stats = visibility.stats;
     let light_reachable_cell_mask = light_reachable_cell_mask(&world, &fog_reachable);
     let reachable_cell_aabbs = reachable_cell_aabbs(&world, &fog_reachable);
+
+    // Capture has no script context or levelLoad event. Stand up only the
+    // VM-free map-authored receiver state the windowed render frame collects.
+    let registry = spawn_capture_receiver_registry(&world)?;
+    for model in capture_mesh_models(&registry)? {
+        renderer
+            .load_skinned_model(&model, &content_root, &prm_cache_root)
+            .ok_or_else(|| anyhow!("failed to load capture receiver model `{model}`"))?;
+    }
+    let mut mover_collector = KinematicMoverRenderCollector::new();
+    let mut mesh_collector = MeshRenderCollector::new();
+    collect_capture_receiver_draws(
+        &registry,
+        &world,
+        &visible_cells,
+        eye,
+        &mut mover_collector,
+        &mut mesh_collector,
+    );
+    renderer.set_kinematic_mover_draws(
+        mover_collector.instances(),
+        mover_collector.shadow_instances(),
+    );
+    renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
+    renderer.set_mesh_draws(mesh_collector.instances());
 
     let rgba = renderer.capture_frame_indirect(
         CameraCullVisibility {
@@ -127,6 +167,192 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
     write_capture_png(output_path, &rgba, width, height)?;
 
     Ok(())
+}
+
+/// Materialize just the VM-free receivers capture can render at a loaded
+/// instant. This deliberately does not call `install_world_cpu`: that path
+/// also runs data scripts and fires `levelLoad`.
+fn spawn_capture_receiver_registry(
+    world: &postretro_level_loader::LevelWorld,
+) -> Result<EntityRegistry> {
+    let mut registry = EntityRegistry::new();
+    spawn_loaded_kinematic_movers(&mut registry, world, ENGINE_AUTO_CLOSE_MS)
+        .context("failed to spawn capture kinematic movers")?;
+
+    // `MapEntity` is the scripting-facing adapter over PRL records. Built-in
+    // dispatch is VM-free, so this gives capture the exact map-authored
+    // `prop_mesh` spawn contract without admitting the data-script sweep.
+    let map_entities: Vec<MapEntity> = world.map_entities.iter().cloned().map(Into::into).collect();
+    let mut dispatch = ClassnameDispatch::new();
+    register_builtins(&mut dispatch);
+    apply_classname_dispatch(&map_entities, &dispatch, &mut registry);
+
+    Ok(registry)
+}
+
+/// Validate model handles placed by capture's built-in map dispatch. An empty
+/// prop handle must fail capture instead of silently removing its draw.
+/// The renderer cache key is this verbatim string, so
+/// load it before the mesh collector submits an instance using the same handle.
+fn capture_mesh_models(registry: &EntityRegistry) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for (id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
+        let ComponentValue::Mesh(mesh) = value else {
+            continue;
+        };
+        if mesh.model.is_empty() {
+            bail!("capture prop_mesh receiver {id:?} has an absent or empty `model` key");
+        }
+        if seen.insert(mesh.model.clone()) {
+            models.push(mesh.model.clone());
+        }
+    }
+    Ok(models)
+}
+
+/// Mirror the windowed render-frame collector calls for capture's spawned
+/// receivers. A single-instant capture has no tick history or animation clock:
+/// alpha is therefore 1.0 and animation time is 0.0.
+fn collect_capture_receiver_draws(
+    registry: &EntityRegistry,
+    world: &postretro_level_loader::LevelWorld,
+    visible_cells: &VisibleCells,
+    eye: Vec3,
+    mover_collector: &mut KinematicMoverRenderCollector,
+    mesh_collector: &mut MeshRenderCollector,
+) {
+    mover_collector.collect(registry, world, visible_cells, 1.0);
+
+    let clip_tables = MeshClipTables::new();
+    let hit_zones = HitZoneStore::new();
+    mesh_collector.collect_with_hit_zones(
+        registry,
+        world,
+        visible_cells,
+        1.0,
+        0.0,
+        &clip_tables,
+        eye,
+        &hit_zones,
+    );
+}
+
+/// Seed capture-only authored active states after the level install has restored
+/// the baked descriptor mirror. `capture_frame_indirect` flushes these writes
+/// in its first `update_per_frame_uniforms` call.
+fn install_forced_active_animation_descriptors(
+    renderer: &mut Renderer,
+    lights: &[postretro_level_loader::MapLight],
+    forced_lights: Option<&[ForcedAnimLight]>,
+) -> Result<()> {
+    let writes = resolve_forced_active_animation_slots(lights, forced_lights)?;
+    validate_forced_animation_slot_bounds(&writes, renderer.animated_compose_descriptor_count())?;
+    for (slot, radiance) in writes {
+        renderer
+            .write_animated_compose_descriptor(slot, &forced_active_animation_descriptor(radiance));
+    }
+    Ok(())
+}
+
+/// Validate the complete batch before any write. The installed renderer count
+/// is authoritative: an unusable SH section can leave only a dummy buffer.
+fn validate_forced_animation_slot_bounds(
+    writes: &[(u32, [f32; 3])],
+    descriptor_count: u32,
+) -> Result<()> {
+    for &(slot, _) in writes {
+        if slot >= descriptor_count {
+            bail!(
+                "force_active animated slot {slot} is outside the installed descriptor count {descriptor_count}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Resolve authored tags against the complete map-light list. Capture's
+/// static-only forward-light filter has a compacted index space, while
+/// `animated_slot` names the independently indexed SH compose descriptor.
+fn resolve_forced_active_animation_slots(
+    lights: &[postretro_level_loader::MapLight],
+    forced_lights: Option<&[ForcedAnimLight]>,
+) -> Result<Vec<(u32, [f32; 3])>> {
+    let Some(forced_lights) = forced_lights else {
+        return Ok(Vec::new());
+    };
+
+    // Keying writes by slot both deduplicates multi-light tag matches and gives
+    // the renderer a stable write order independent of `world.lights` order.
+    let mut slot_radiance = BTreeMap::new();
+    for forced in forced_lights {
+        let mut tag_found = false;
+        let mut animated_slot_found = false;
+        for light in lights {
+            if !light.tags.iter().any(|tag| tag == &forced.tag) {
+                continue;
+            }
+            tag_found = true;
+            let Some(slot) = light.animated_slot else {
+                continue;
+            };
+            animated_slot_found = true;
+            match slot_radiance.entry(slot) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(forced.radiance);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if *entry.get() == forced.radiance => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    bail!(
+                        "force_active tag `{}` resolves to an animated descriptor with conflicting radiance",
+                        forced.tag
+                    );
+                }
+            }
+        }
+        if !tag_found {
+            bail!(
+                "force_active tag `{}` does not match a map light",
+                forced.tag
+            );
+        }
+        if !animated_slot_found {
+            bail!(
+                "force_active tag `{}` does not match an animated map light",
+                forced.tag
+            );
+        }
+    }
+
+    Ok(slot_radiance.into_iter().collect())
+}
+
+/// Build the active/no-curve compose descriptor through the shared descriptor
+/// packer. With `animation: None` and `active_without_animation: true`, the
+/// radiance lands in `base_color` and `color_count` remains zero.
+fn forced_active_animation_descriptor(
+    radiance: [f32; 3],
+) -> [u8; postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE] {
+    let component = LightComponent {
+        origin: [0.0; 3],
+        light_type: LightKind::Point,
+        intensity: 1.0,
+        color: radiance,
+        falloff_model: FalloffKind::Linear,
+        falloff_range: 0.0,
+        cone_angle_inner: None,
+        cone_angle_outer: None,
+        cone_direction: None,
+        is_dynamic: false,
+        animated_slot: None,
+        follow_transform: false,
+        carrier: None,
+        animation: None,
+    };
+    crate::scripting_systems::light_bridge::pack_animation_descriptor(
+        &component, 0, 0, radiance, true, None,
+    )
 }
 
 /// Preserve capture's static-only light input while translating global PRL
@@ -550,6 +776,219 @@ mod tests {
     }
 
     #[test]
+    fn absent_force_active_leaves_baked_descriptors_unmodified() {
+        let writes = resolve_forced_active_animation_slots(&[test_light(false, 1.0)], None)
+            .expect("absent force_active must not fail");
+        assert!(
+            writes.is_empty(),
+            "without authored state, capture must leave install_level_geometry's baked descriptors intact"
+        );
+    }
+
+    #[test]
+    fn force_active_resolves_every_matching_animated_slot_once_in_stable_order() {
+        let mut first = test_light(true, 1.0);
+        first.tags = vec!["alarm_light".into()];
+        first.animated_slot = Some(7);
+        let mut second = test_light(false, 2.0);
+        second.tags = vec!["alarm_light".into()];
+        second.animated_slot = Some(3);
+        let mut duplicate_slot = test_light(false, 3.0);
+        duplicate_slot.tags = vec!["alarm_light".into()];
+        duplicate_slot.animated_slot = Some(7);
+        let forced = [ForcedAnimLight {
+            tag: "alarm_light".into(),
+            radiance: [4.0, 0.0, 0.0],
+        }];
+
+        let forward = resolve_forced_active_animation_slots(
+            &[first.clone(), second.clone(), duplicate_slot.clone()],
+            Some(&forced),
+        )
+        .expect("tag must resolve");
+        let reversed =
+            resolve_forced_active_animation_slots(&[duplicate_slot, second, first], Some(&forced))
+                .expect("tag must resolve after map-light reordering");
+
+        let expected = vec![(3, [4.0, 0.0, 0.0]), (7, [4.0, 0.0, 0.0])];
+        assert_eq!(forward, expected);
+        assert_eq!(reversed, expected);
+    }
+
+    #[test]
+    fn force_active_rejects_unknown_map_light_tag() {
+        let forced = [ForcedAnimLight {
+            tag: "unknown_light".into(),
+            radiance: [4.0, 0.0, 0.0],
+        }];
+        let err = resolve_forced_active_animation_slots(&[test_light(false, 1.0)], Some(&forced))
+            .expect_err("unknown tag must not silently skip");
+        assert!(err.to_string().contains("unknown_light"));
+    }
+
+    #[test]
+    fn force_active_rejects_slots_outside_real_installed_descriptors() {
+        let writes = [(3, [4.0, 0.0, 0.0])];
+        for count in [0, 3] {
+            let error = validate_forced_animation_slot_bounds(&writes, count)
+                .expect_err("invalid slots must fail before renderer's no-op write");
+            assert!(error.to_string().contains("animated slot 3"));
+        }
+        assert!(validate_forced_animation_slot_bounds(&writes, 4).is_ok());
+        assert!(validate_forced_animation_slot_bounds(&[], 0).is_ok());
+    }
+
+    #[test]
+    fn forced_active_descriptor_uses_shared_active_without_animation_layout() {
+        let descriptor = forced_active_animation_descriptor([4.0, 0.5, 0.25]);
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[0..4].try_into().unwrap()),
+            1.0
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[12..16].try_into().unwrap()),
+            0,
+            "the authored instant has no brightness curve samples"
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[16..20].try_into().unwrap()),
+            4.0
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[20..24].try_into().unwrap()),
+            0.5
+        );
+        assert_eq!(
+            f32::from_ne_bytes(descriptor[24..28].try_into().unwrap()),
+            0.25
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[32..36].try_into().unwrap()),
+            0,
+            "the authored instant has no color curve samples"
+        );
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[36..40].try_into().unwrap()),
+            1
+        );
+    }
+
+    #[test]
+    fn capture_mesh_models_rejects_absent_or_empty_authored_prop_model() {
+        // Regression: built-in dispatch kept invalid props, then capture silently
+        // skipped their empty model handles and reported a successful image.
+        for model in [None, Some("")] {
+            let mut world = capture_receiver_test_world();
+            world.map_entities[0].key_values = model
+                .map(|model| vec![("model".to_string(), model.to_string())])
+                .unwrap_or_default();
+            let registry = spawn_capture_receiver_registry(&world)
+                .expect("built-in dispatch retains the invalid prop for capture validation");
+            assert_eq!(registry.iter_with_kind(ComponentKind::Mesh).count(), 1);
+            let error = capture_mesh_models(&registry).expect_err("empty models must fail capture");
+            assert!(error.to_string().contains("prop_mesh"));
+            assert!(error.to_string().contains("absent or empty `model`"));
+        }
+    }
+
+    #[test]
+    fn capture_mesh_models_accepts_no_props_and_other_builtin_entities() {
+        use postretro_level_format::map_entity::MapEntityRecord;
+
+        let mut world = capture_receiver_test_world();
+        world.map_entities.clear();
+        let registry = spawn_capture_receiver_registry(&world).expect("no-prop map must spawn");
+        assert!(capture_mesh_models(&registry).unwrap().is_empty());
+
+        world.map_entities = vec![MapEntityRecord {
+            classname: "billboard_emitter".into(),
+            ..Default::default()
+        }];
+        let registry = spawn_capture_receiver_registry(&world).expect("emitter map must spawn");
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::BillboardEmitter)
+                .count(),
+            1
+        );
+        assert!(capture_mesh_models(&registry).unwrap().is_empty());
+    }
+
+    #[test]
+    fn capture_receiver_draws_come_from_vm_free_spawned_registry_collectors() {
+        let world = capture_receiver_test_world();
+        let registry = spawn_capture_receiver_registry(&world)
+            .expect("valid capture receiver fixture must spawn without scripts");
+
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::KinematicMover)
+                .count(),
+            1,
+            "the loaded mover must enter the capture registry"
+        );
+        let mesh_models: Vec<_> = registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter_map(|(_id, value)| match value {
+                ComponentValue::Mesh(mesh) => Some(mesh.model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            mesh_models,
+            ["models/capture-prop.gltf"],
+            "the prop_mesh record must be converted and routed through built-in dispatch"
+        );
+        assert_eq!(
+            capture_mesh_models(&registry).unwrap(),
+            ["models/capture-prop.gltf"]
+        );
+
+        let mut mover_collector = KinematicMoverRenderCollector::new();
+        let mut mesh_collector = MeshRenderCollector::new();
+        collect_capture_receiver_draws(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            Vec3::ZERO,
+            &mut mover_collector,
+            &mut mesh_collector,
+        );
+
+        assert_eq!(mover_collector.instances().len(), 1);
+        assert_eq!(mover_collector.shadow_instances().len(), 1);
+        assert_eq!(mover_collector.occluder_aabbs().len(), 1);
+        let occluder = mover_collector.occluder_aabbs()[0];
+        assert_eq!(
+            occluder.mover_id,
+            mover_collector.shadow_instances()[0].mover_id
+        );
+        assert!(
+            occluder
+                .world_aabb
+                .min
+                .abs_diff_eq(Vec3::new(1.0, 2.0, 3.0), 1.0e-6)
+        );
+        assert!(
+            occluder
+                .world_aabb
+                .max
+                .abs_diff_eq(Vec3::new(2.0, 3.0, 3.0), 1.0e-6)
+        );
+        assert_eq!(mesh_collector.instances().len(), 1);
+        assert_eq!(
+            mover_collector.instances()[0].transform.w_axis.truncate(),
+            Vec3::new(1.0, 2.0, 3.0),
+            "the spawned mover is collected at its authored rest transform"
+        );
+        assert_eq!(
+            mesh_collector.instances()[0].transform.w_axis.truncate(),
+            Vec3::new(4.0, 5.0, 6.0),
+            "the dispatched prop_mesh is collected at its authored rest transform"
+        );
+    }
+
+    #[test]
     fn output_must_not_alias_map_or_scene_path() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let map = directory.path().join("level.prl");
@@ -657,6 +1096,112 @@ mod tests {
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
+    }
+
+    fn capture_receiver_test_world() -> postretro_level_loader::LevelWorld {
+        use postretro_level_format::geometry::Vertex;
+        use postretro_level_format::map_entity::MapEntityRecord;
+        use postretro_level_loader::{
+            CellData, CellLocatorChild, KinematicGeometry, LoadedKinematicMover,
+            LoadedKinematicWaypoint,
+        };
+
+        let mut world = postretro_level_loader::LevelWorld::new_visibility_only(
+            vec![CellData {
+                bounds_min: Vec3::splat(-1_000.0),
+                bounds_max: Vec3::splat(1_000.0),
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
+            }],
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("single-cell capture receiver fixture must be valid");
+        world.kinematic_geometry = KinematicGeometry {
+            movers: vec![LoadedKinematicMover {
+                mover_id: 17,
+                name: "capture-lift".to_string(),
+                tags: Vec::new(),
+                origin: Vec3::new(1.0, 2.0, 3.0),
+                path: "a".to_string(),
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                move_mode: 1,
+                start_on_spawn: false,
+                vertices: vec![
+                    Vertex::new(
+                        [0.0, 0.0, 0.0],
+                        [0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [1.0, 0.0, 0.0],
+                        [1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                    Vertex::new(
+                        [0.0, 1.0, 0.0],
+                        [0.0, 1.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ),
+                ],
+                indices: vec![0, 1, 2],
+                face_meta: Vec::new(),
+                spin_axis: Vec3::ZERO,
+                spin_speed_deg_s: 0.0,
+                spin_accel_deg_s2: 0.0,
+                carry_yaw: false,
+                block_policy: "displace".to_string(),
+                crush_damage: 0.0,
+                crush_interval_ms: 0.0,
+                auto_close_ms: None,
+                open_event: None,
+                close_event: None,
+                blocked_event: None,
+                crush_event: None,
+                sealed_portal_ids: Vec::new(),
+                carried_lights: Vec::new(),
+            }],
+            waypoints: vec![
+                LoadedKinematicWaypoint {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: Vec3::new(1.0, 2.0, 3.0),
+                },
+                LoadedKinematicWaypoint {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: Vec3::new(2.0, 2.0, 3.0),
+                },
+            ],
+        };
+        world.map_entities = vec![MapEntityRecord {
+            classname: "prop_mesh".to_string(),
+            origin: [4.0, 5.0, 6.0],
+            key_values: vec![("model".to_string(), "models/capture-prop.gltf".to_string())],
+            ..Default::default()
+        }];
+        world
     }
 
     fn assert_mat4_approx_eq(actual: Mat4, expected: Mat4, epsilon: f32) {

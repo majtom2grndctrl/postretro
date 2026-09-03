@@ -63,7 +63,7 @@ The reviewer answers six questions and must reach a verdict on each; "some conce
 
 **Verdict, one of:**
 
-- *Direction sound* — proceed to `/review-draft-spec`.
+- *Direction sound* — proceed to `/review-draft-spec`. On a brief: owner sign-off, or `/review-brief` first when the stakes warrant it.
 - *Reshape* — the named alternative is better, or the placement is wrong.
 - *Not a spec* — the work is smaller than a plan. Say what it is instead.
 - *Under-scoped* — the real problem is bigger than what is scoped. Say what is missing.

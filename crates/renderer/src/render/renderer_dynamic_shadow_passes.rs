@@ -30,6 +30,7 @@ impl Renderer {
         let stride = full.shadow_vs_stride;
         let draw_world = full.has_geometry && full.index_count > 0;
         let cache_plan = full.promoted_depth_cache_frame_plan.clone();
+        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
         let slot_assignment = full.spot_shadow_pool.slot_assignment.clone();
         let mut used_slots: Vec<u32> = slot_assignment
             .iter()
@@ -63,7 +64,10 @@ impl Renderer {
                     queue,
                     encoder,
                     &full.spot_shadow_pool.slot_cone_matrices,
-                    |slot| cache_plan.should_dispatch_spot_cull(slot),
+                    |slot| {
+                        cache_plan.should_dispatch_spot_cull(slot)
+                            && dynamic_cache_plan.should_dispatch_spot_cull(slot)
+                    },
                 );
             }
         }
@@ -187,6 +191,105 @@ impl Renderer {
                 continue;
             }
 
+            if let Some(plan) = dynamic_cache_plan.spot_for_slot(slot) {
+                if plan.needs_world_render {
+                    {
+                        let cache_view = full.dynamic_depth_cache.spot_view(plan);
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Dynamic Spot World Depth Cache Pass"),
+                            color_attachments: &[],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: cache_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            ..Default::default()
+                        });
+                        if draw_world {
+                            pass.set_pipeline(&full.shadow_depth_pipeline);
+                            pass.set_bind_group(0, &full.shadow_vs_bind_group, &[slot * stride]);
+                            pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                            pass.set_index_buffer(
+                                full.index_buffer.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            if let Some(shadow_cull) = &full.shadow_cull {
+                                shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+                            } else {
+                                pass.draw_indexed(0..full.index_count, 0, 0..1);
+                            }
+                        }
+                    }
+                    full.dynamic_depth_cache
+                        .state
+                        .mark_spot_world_rendered(plan);
+                }
+
+                // The pool is intentionally an entity-only depth layer for a
+                // cached dynamic light. Forward sampling takes the minimum of
+                // this depth and the stable world cache, so movers/skinned
+                // casters stay responsive while static world rasterization is
+                // skipped on warm frames.
+                let view = &full.spot_shadow_pool.views[slot as usize];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Dynamic Spot Entity Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                    if let Some(cone_matrix) =
+                        full.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                    {
+                        let cone_planes =
+                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                        if let Some(mesh_plan) = &mesh_frame_plan {
+                            let submitted = full.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                mesh_plan,
+                                MeshDepthInstanceFilter::DynamicCasters,
+                                &full.shadow_vs_bind_group,
+                                slot * stride,
+                                &cone_planes,
+                            );
+                            tally_entity_occluder_submissions(
+                                &mut full.spot_entity_occluders_submitted,
+                                None,
+                                submitted,
+                            );
+                        }
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                            &mut pass,
+                            &full.kinematic_brush,
+                            &full.mover_occluder_aabbs,
+                            &full.shadow_vs_bind_group,
+                            slot * stride,
+                            &cone_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.spot_entity_occluders_submitted,
+                            None,
+                            submitted,
+                        );
+                    }
+                }
+                continue;
+            }
+
             let view = &full.spot_shadow_pool.views[slot as usize];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Spot Shadow Depth Pass"),
@@ -282,6 +385,7 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let cache_plan = full.promoted_depth_cache_frame_plan.clone();
+        let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan.clone();
         if let Some(pool) = &full.cube_shadow_pool {
             let stride = full.shadow_vs_stride;
             let draw_world = full.has_geometry && full.index_count > 0;
@@ -301,7 +405,10 @@ impl Renderer {
                         queue,
                         encoder,
                         &pool.face_matrices,
-                        |layer| cache_plan.should_dispatch_cube_cull(layer),
+                        |layer| {
+                            cache_plan.should_dispatch_cube_cull(layer)
+                                && dynamic_cache_plan.should_dispatch_cube_cull(layer)
+                        },
                     );
                 }
             }
@@ -428,6 +535,102 @@ impl Renderer {
                         tally_entity_occluder_submissions(
                             &mut full.cube_entity_occluders_submitted,
                             Some(&mut full.promoted_entity_occluders_submitted),
+                            submitted,
+                        );
+                    }
+                    continue;
+                }
+
+                if let Some(plan) = dynamic_cache_plan.cube_for_slot(slot as u32) {
+                    if plan.needs_world_render {
+                        {
+                            let cache_view = full.dynamic_depth_cache.cube_view(plan, face);
+                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Dynamic Cube World Depth Cache Pass"),
+                                color_attachments: &[],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: cache_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(1.0),
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                ..Default::default()
+                            });
+                            if draw_world {
+                                pass.set_pipeline(&full.shadow_depth_pipeline);
+                                pass.set_bind_group(
+                                    0,
+                                    &full.cube_shadow_vs_bind_group,
+                                    &[layer as u32 * stride],
+                                );
+                                pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                                pass.set_index_buffer(
+                                    full.index_buffer.slice(..),
+                                    wgpu::IndexFormat::Uint32,
+                                );
+                                if let Some(cube_cull) = &full.cube_shadow_cull {
+                                    cube_cull.draw_slot_indirect(&mut pass, layer as u32, None);
+                                } else {
+                                    pass.draw_indexed(0..full.index_count, 0, 0..1);
+                                }
+                            }
+                        }
+                        if face + 1 == crate::lighting::cube_shadow::CUBE_FACES {
+                            full.dynamic_depth_cache
+                                .state
+                                .mark_cube_world_rendered(plan);
+                        }
+                    }
+
+                    let view = &pool.face_views[layer];
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Dynamic Cube Entity Shadow Depth Pass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        ..Default::default()
+                    });
+                    if pool.slot_entity_eligible[slot] {
+                        let face_planes =
+                            postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
+                        if let Some(mesh_plan) = &mesh_frame_plan {
+                            let submitted = full.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                mesh_plan,
+                                MeshDepthInstanceFilter::DynamicCasters,
+                                &full.cube_shadow_vs_bind_group,
+                                layer as u32 * stride,
+                                &face_planes,
+                            );
+                            tally_entity_occluder_submissions(
+                                &mut full.cube_entity_occluders_submitted,
+                                None,
+                                submitted,
+                            );
+                        }
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                            &mut pass,
+                            &full.kinematic_brush,
+                            &full.mover_occluder_aabbs,
+                            &full.cube_shadow_vs_bind_group,
+                            layer as u32 * stride,
+                            &face_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.cube_entity_occluders_submitted,
+                            None,
                             submitted,
                         );
                     }

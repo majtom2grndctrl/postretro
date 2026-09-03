@@ -66,6 +66,8 @@ pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample_dynamic_cache.wgsl"),
 );
 
 /// Derive the no-`CUBE_ARRAY_TEXTURES` variant of a group-5 shader (forward or

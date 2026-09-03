@@ -253,6 +253,8 @@ impl Renderer {
         full.promoted_depth_cache_world_render_skips = 0;
         full.promoted_depth_cache_cull_dispatch_skips = 0;
         full.promoted_depth_cache_timing_open = false;
+        full.dynamic_depth_cache.state.reset_level();
+        full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
         full.promoted_entity_occluders_submitted = 0;
         full.promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Promoted Static Light Weights"),

@@ -12,6 +12,7 @@ mod debug_lines;
 mod debug_ui;
 mod direct_sh_compose;
 mod direct_sh_resources;
+mod dynamic_depth_cache;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
@@ -101,6 +102,7 @@ use direct_sh_compose::{
     DirectShComposeDebugOverrides, DirectShComposeFrameInputs, DirectShComposeResources,
     DirectShComposeTimestampWrites, DirectShDebugOverride,
 };
+use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};

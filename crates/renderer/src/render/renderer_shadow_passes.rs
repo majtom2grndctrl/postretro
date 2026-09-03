@@ -1,6 +1,7 @@
 // Per-frame renderer pass recording factored out of frame orchestration.
 // See: context/lib/rendering_pipeline.md §7.1, §7.6
 
+#[cfg(test)]
 use super::renderer_dynamic_shadow_passes::tally_entity_occluder_submissions;
 use super::*;
 

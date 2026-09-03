@@ -71,6 +71,7 @@ pub(crate) struct KinematicBrushPass {
     instance_bind_group: wgpu::BindGroup,
     light_bind_group_layout: wgpu::BindGroupLayout,
     light_bind_group: Option<wgpu::BindGroup>,
+    dynamic_depth_cache_bind_group: wgpu::BindGroup,
     light_params_buffer: wgpu::Buffer,
     cube_array_supported: bool,
     movers: Vec<UploadedMoverDraw>,
@@ -100,6 +101,8 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample_dynamic_cache.wgsl"),
 );
 
 fn shader_source(cube_array_supported: bool) -> std::borrow::Cow<'static, str> {
@@ -313,6 +316,8 @@ impl KinematicBrushPass {
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
         sh_volume_bgl: &wgpu::BindGroupLayout,
+        dynamic_depth_cache_bgl: &wgpu::BindGroupLayout,
+        dynamic_depth_cache_bind_group: &wgpu::BindGroup,
         cube_array_supported: bool,
     ) -> Self {
         let source = shader_source(cube_array_supported);
@@ -349,6 +354,7 @@ impl KinematicBrushPass {
                 Some(&light_bind_group_layout),
                 Some(&instance_bind_group_layout),
                 Some(sh_volume_bgl),
+                Some(dynamic_depth_cache_bgl),
             ],
             immediate_size: 0,
         });
@@ -458,6 +464,7 @@ impl KinematicBrushPass {
             instance_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
+            dynamic_depth_cache_bind_group: dynamic_depth_cache_bind_group.clone(),
             light_params_buffer,
             cube_array_supported,
             movers: Vec::new(),
@@ -798,6 +805,7 @@ impl KinematicBrushPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(2, light_bind_group, &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
+        pass.set_bind_group(5, &self.dynamic_depth_cache_bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 

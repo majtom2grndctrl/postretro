@@ -23,6 +23,7 @@ pub(crate) fn build_renderer_pipelines(
     sh_volume_bind_group_layout: &wgpu::BindGroupLayout,
     lightmap_bind_group_layout: &wgpu::BindGroupLayout,
     spot_shadow_bgl: &wgpu::BindGroupLayout,
+    dynamic_depth_cache_bgl: &wgpu::BindGroupLayout,
     cube_array_supported: bool,
 ) -> RendererPipelines {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -34,6 +35,7 @@ pub(crate) fn build_renderer_pipelines(
             Some(sh_volume_bind_group_layout),
             Some(lightmap_bind_group_layout),
             Some(spot_shadow_bgl),
+            Some(dynamic_depth_cache_bgl),
         ],
         immediate_size: 0,
     });

@@ -69,6 +69,15 @@ struct LightSpaceMatrices {
 @group(2) @binding(8) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 @group(2) @binding(9) var promoted_spot_depth_cache: texture_depth_2d_array;
 @group(2) @binding(10) var promoted_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
+@group(5) @binding(0) var dynamic_spot_depth_cache: texture_depth_2d_array;
+@group(5) @binding(1) var dynamic_shadow_compare: sampler_comparison;
+struct DynamicSpotCacheLayers {
+    layers: array<vec4<i32>, 24>,
+};
+@group(5) @binding(2) var<uniform> dynamic_spot_cache_layers: DynamicSpotCacheLayers;
+struct DynamicCubeCacheSlots { slots: array<vec4<i32>, 2>, };
+@group(5) @binding(3) var<uniform> dynamic_cube_cache_slots: DynamicCubeCacheSlots;
+@group(5) @binding(4) var dynamic_cube_depth_cache: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 const SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;
 
 struct Instance {
@@ -287,14 +296,19 @@ fn accumulate_dynamic_direct(
                             light.direction_and_range.w,
                         );
                     } else {
-                        shadow = sample_point_shadow(
-                            cube_slot,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            mesh_n,
-                            MOVER_RECEIVER_BIAS_SCALE,
-                            light.direction_and_range.w,
-                        );
+                        let dynamic_cache_slot = dynamic_cube_cache_slots.slots[cube_slot / 4u][cube_slot % 4u];
+                        if dynamic_cache_slot >= 0 {
+                            shadow = sample_point_shadow_with_dynamic_world(
+                                cube_slot, dynamic_cache_slot, light.position_and_type.xyz,
+                                world_pos, mesh_n, MOVER_RECEIVER_BIAS_SCALE,
+                                light.direction_and_range.w,
+                            );
+                        } else {
+                            shadow = sample_point_shadow(
+                                cube_slot, light.position_and_type.xyz, world_pos, mesh_n,
+                                MOVER_RECEIVER_BIAS_SCALE, light.direction_and_range.w,
+                            );
+                        }
                     }
                     attenuation = attenuation * shadow;
                 }
@@ -320,14 +334,19 @@ fn accumulate_dynamic_direct(
                             light_space_matrices.m[slot_index],
                         );
                     } else {
-                        shadow = sample_spot_shadow(
-                            slot_index,
-                            light.position_and_type.xyz,
-                            world_pos,
-                            mesh_n,
-                            MOVER_RECEIVER_BIAS_SCALE,
-                            light_space_matrices.m[slot_index],
-                        );
+                        let dynamic_cache_layer = dynamic_spot_cache_layers.layers[slot_index / 4u][slot_index % 4u];
+                        if dynamic_cache_layer >= 0 {
+                            shadow = sample_spot_shadow_with_dynamic_world(
+                                slot_index, dynamic_cache_layer,
+                                light.position_and_type.xyz, world_pos, mesh_n,
+                                MOVER_RECEIVER_BIAS_SCALE, light_space_matrices.m[slot_index],
+                            );
+                        } else {
+                            shadow = sample_spot_shadow(
+                                slot_index, light.position_and_type.xyz, world_pos, mesh_n,
+                                MOVER_RECEIVER_BIAS_SCALE, light_space_matrices.m[slot_index],
+                            );
+                        }
                     }
                     attenuation = attenuation * shadow;
                 }

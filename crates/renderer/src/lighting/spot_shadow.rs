@@ -503,8 +503,8 @@ mod tests {
         );
         assert_eq!(
             MESH_SRC.matches("SKINNED_SCALE * bias_factor").count(),
-            4,
-            "skinned pool/cache spot and point calls must apply the authorable factor to the shared offset scale"
+            6,
+            "skinned pool, promoted-cache, and dynamic-cache spot/point calls must apply the authorable factor to the shared offset scale"
         );
         assert!(
             MESH_SRC.contains("out.shadow_bias_scale = bitcast<f32>(instance.base_and_pad.y);")

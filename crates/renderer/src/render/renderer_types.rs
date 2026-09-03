@@ -748,6 +748,8 @@ pub(super) struct FullRenderer {
     pub(super) promoted_depth_cache_world_render_skips: u32,
     pub(super) promoted_depth_cache_cull_dispatch_skips: u32,
     pub(super) promoted_depth_cache_timing_open: bool,
+    pub(super) dynamic_depth_cache: DynamicDepthCacheGpu,
+    pub(super) dynamic_depth_cache_frame_plan: DynamicDepthCachePlan,
     #[cfg(feature = "dev-tools")]
     pub(super) direct_sh_debug_override: DirectShDebugOverride,
     #[cfg(feature = "dev-tools")]

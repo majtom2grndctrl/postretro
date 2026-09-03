@@ -138,6 +138,8 @@ const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/shadow_sample.wgsl"),
     "\n",
     include_str!("../shaders/shadow_sample_static_cache.wgsl"),
+    "\n",
+    include_str!("../shaders/shadow_sample_dynamic_cache.wgsl"),
 );
 
 /// Compose the skinned-mesh shader source for the adapter's cube-array support.
@@ -931,6 +933,7 @@ pub struct MeshPass {
     /// mesh draw sets it at group 2; b0–b3 alias renderer-owned buffers, b4 is
     /// [`MeshPass::light_params_buffer`].
     light_bind_group: Option<wgpu::BindGroup>,
+    dynamic_depth_cache_bind_group: wgpu::BindGroup,
 
     /// Group 2 binding 4 params uniform (`MeshLightParams`): light count, the
     /// frame's forward `time`, and the captured forward `light_term_mask`.
@@ -1084,6 +1087,8 @@ impl MeshPass {
         material_bgl: &wgpu::BindGroupLayout,
         light_space_bgl: &wgpu::BindGroupLayout,
         sh_volume_bgl: &wgpu::BindGroupLayout,
+        dynamic_depth_cache_bgl: &wgpu::BindGroupLayout,
+        dynamic_depth_cache_bind_group: &wgpu::BindGroup,
         cube_array_supported: bool,
     ) -> Self {
         // Compose the group-2 shader source for the adapter's cube-array support:
@@ -1167,6 +1172,7 @@ impl MeshPass {
                 Some(&light_bind_group_layout),
                 Some(&instance_bind_group_layout),
                 Some(sh_volume_bgl),
+                Some(dynamic_depth_cache_bgl),
             ],
             immediate_size: 0,
         });
@@ -1358,6 +1364,7 @@ impl MeshPass {
             viewmodel_uniform_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
+            dynamic_depth_cache_bind_group: dynamic_depth_cache_bind_group.clone(),
             light_params_buffer,
             cube_array_supported,
             models: HashMap::new(),
@@ -1896,6 +1903,7 @@ impl MeshPass {
         // this frame — set once. The shader selects each instance's run via
         // `@builtin(instance_index)` against the densely-packed SSBO.
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
+        pass.set_bind_group(5, &self.dynamic_depth_cache_bind_group, &[]);
 
         for group in &plan.groups {
             let Some(model) = self.models.get(&group.model) else {

@@ -58,6 +58,18 @@ impl Renderer {
                 TOTAL_LIGHT_COUNT_OFFSET,
                 &full.total_light_count.to_ne_bytes(),
             );
+            full.dynamic_depth_cache.state.reset_level();
+            full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
+            queue.write_buffer(
+                &full.dynamic_depth_cache.spot_layers_buffer,
+                0,
+                bytemuck::cast_slice(&[-1i32; crate::lighting::spot_shadow::SHADOW_POOL_SIZE]),
+            );
+            queue.write_buffer(
+                &full.dynamic_depth_cache.cube_layers_buffer,
+                0,
+                bytemuck::cast_slice(&[-1i32; crate::lighting::cube_shadow::CUBE_COUNT]),
+            );
             return;
         }
 
@@ -360,6 +372,80 @@ impl Renderer {
         queue.write_buffer(&full.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         full.spot_shadow_pool.slot_assignment = slot_assignment;
+
+        // Dynamic-tier cache planning follows the existing rank result, but its
+        // key is the source identity plus the frozen projection — never the
+        // pool slot. Build the per-slot channel from scratch every frame so a
+        // retained layer cannot leak through a slot that was vacated or
+        // re-tenanted this frame.
+        let spot_inputs: Vec<_> = full
+            .spot_shadow_pool
+            .slot_assignment
+            .iter()
+            .enumerate()
+            .filter_map(|(candidate_index, &slot)| {
+                (slot != crate::lighting::spot_shadow::NO_SHADOW_SLOT
+                    && full.shadow_candidate_selection_indices[candidate_index].is_none())
+                .then(|| {
+                    let matrix = full.spot_shadow_pool.slot_cone_matrices[slot as usize]?;
+                    Some((
+                        slot,
+                        full.shadow_candidate_source_indices[candidate_index],
+                        matrix,
+                    ))
+                })?
+            })
+            .collect();
+        let cube_inputs: Vec<_> = full
+            .cube_shadow_pool
+            .as_ref()
+            .map(|pool| {
+                pool.slot_assignment
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(candidate_index, &slot)| {
+                        (slot != crate::lighting::spot_shadow::NO_SHADOW_SLOT
+                            && full.shadow_candidate_selection_indices[candidate_index].is_none())
+                        .then(|| {
+                            let mut matrices =
+                                [Mat4::IDENTITY; crate::lighting::cube_shadow::CUBE_FACES];
+                            for (face, matrix) in matrices.iter_mut().enumerate() {
+                                let layer =
+                                    crate::lighting::cube_shadow::CubeShadowPool::face_layer(
+                                        slot, face,
+                                    );
+                                *matrix = pool.face_matrices[layer]?;
+                            }
+                            Some((
+                                slot,
+                                full.shadow_candidate_source_indices[candidate_index],
+                                matrices,
+                            ))
+                        })?
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let plan = full
+            .dynamic_depth_cache
+            .state
+            .plan_frame(&spot_inputs, &cube_inputs);
+        let spot_layers = dynamic_depth_cache::spot_layer_channel(&plan);
+        let mut cube_layers = vec![-1i32; crate::lighting::cube_shadow::CUBE_COUNT];
+        for entry in &plan.cube {
+            cube_layers[entry.slot as usize] = entry.cache_slot;
+        }
+        queue.write_buffer(
+            &full.dynamic_depth_cache.spot_layers_buffer,
+            0,
+            bytemuck::cast_slice(&spot_layers),
+        );
+        queue.write_buffer(
+            &full.dynamic_depth_cache.cube_layers_buffer,
+            0,
+            bytemuck::cast_slice(&cube_layers),
+        );
+        full.dynamic_depth_cache_frame_plan = plan;
     }
 
     /// Env-gated shadow-pipeline diagnostics (`POSTRETRO_SHADOW_DEBUG=1`).

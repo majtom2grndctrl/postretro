@@ -958,6 +958,8 @@ fn sh_grid_info_consumer_shaders_match_cpu_layout() {
         include_str!("../../shaders/shadow_sample.wgsl"),
         "\n",
         include_str!("../../shaders/shadow_sample_static_cache.wgsl"),
+        "\n",
+        include_str!("../../shaders/shadow_sample_dynamic_cache.wgsl"),
     );
 
     for (label, source) in [

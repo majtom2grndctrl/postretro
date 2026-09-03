@@ -24,7 +24,7 @@ A brief is written for a reader with the repo, not a reader with a paragraph. It
 
 1. **Nothing is restated for an agent that cannot see the rest.** The executor gets the whole brief, `research.md`, and the source tree. There is no task-paragraph contract.
 2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
-3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`.
+3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. Where the stakes warrant a detail read, `/review-brief` is the opt-in — it writes only Acceptance rows and `research.md`, and everything else is a finding for the owner.
 
 ## Process
 
@@ -66,6 +66,11 @@ as behavior.
   policy, host vs client, load-time vs runtime, descriptor vs code, floor vs
   authored; whichever axes are in play.
 
+### Scripting surface
+Only when the brief adds or changes a modder-facing API. One example, in
+the language a modder writes; normative for names, argument order, defaults,
+return shape and calling pattern; silent on what sits behind them.
+
 ## Acceptance
 Observable, edge-named, verifiable by someone who did not write the brief.
 Orderings are rows here, not prose: two events on one tick, B before A, a
@@ -93,6 +98,8 @@ Non-binding. Research distilled to what would change the executor's plan.
 
 **Decisions vs Path.** For each sentence: if the executor deviates from it, is that a defect or a note in the plan of record? Defect → Decisions. Note → Path. "Descriptor surface follows `dash`/`crouch` exactly" is a Decision; where the entry branch sits inside `normal_intent` is Path.
 
+**Scripting surface.** A modder-facing API — an SDK function, a descriptor field, a script event — is designed by the owner, and its shape is a Decision: once a mod depends on it, it is a one-way door. The brief carries it as a code example under `### Scripting surface` inside Decisions, written the way a modder would write it. The example is normative for the surface — names, argument order, defaults, return shape, the calling pattern — and says nothing about the engine behind it; SDK internals and Rust do not appear. It is also a fixture: one Acceptance row runs it, as a test or a `content/dev` script, so the example cannot drift from what ships. A TypeScript example implies its Luau mirror, and the Boundary inventory says whether both ship. Path may sketch an alternative shape for the owner to weigh; Path never carries the one that ships.
+
 **Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past ~120 lines, look for derivation that belongs in `research.md` or task decomposition that belongs to the executor.
 
 **Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
@@ -106,6 +113,7 @@ Non-binding. Research distilled to what would change the executor's plan.
 - Every Decision: which Acceptance row would fail if it were violated? None → it is either a Path hint wearing a decision's clothes, or an AC is missing.
 - Every Decision premise about the code: read this session, cited by symbol.
 - Every "not doing": would a reader assume this brief owed it? If so, it carries a warrant.
+- The Scripting surface example, if present: an Acceptance row runs it, and every name in it either resolves against the SDK or is one this brief adds.
 - Open questions: each is marked **blocks build** or **delegated**. No unmarked entries.
 
 ### 5. Commit
@@ -152,4 +160,4 @@ At promotion:
 
 At landing the table gains a result column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
 
-**Opt-in pre-build check.** When the stakes warrant it — wire formats, cache keys, a one-way door — run `/review-brief-acceptance` before promotion for an independent read on whether each AC is achievable and proves the Problem. Not a default step.
+**Opt-in pre-build check.** When the stakes warrant it — a renderer state machine, a wire format, a cache key, a one-way door — run `/review-brief` before promotion. It fact-checks Decision premises, pins orderings as rows, asks whether each AC is achievable and proves the Problem, and asks what could be deleted; it edits only Acceptance and `research.md`, and every finding on Decisions is the owner's. Not a default step, and never a second round — a brief that needs one has a Decisions problem, which is `/validate-plan`'s.

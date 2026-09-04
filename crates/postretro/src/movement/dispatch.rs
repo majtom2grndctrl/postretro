@@ -5,7 +5,7 @@ use glam::Vec3;
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
-use crate::movement::intents::{crouching_intent, dash_intent, normal_intent};
+use crate::movement::intents::{crouching_intent, dash_intent, normal_intent, sliding_intent};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -60,6 +60,7 @@ fn outgoing_boost(state: &MovementState) -> Vec3 {
     match state {
         MovementState::Normal => Vec3::ZERO,
         MovementState::Dash { boost, .. } => *boost,
+        MovementState::Sliding { boost, .. } => *boost,
         // `Crouching` carries no boost layer — it is a resize, not a velocity
         // impulse. `keepBoost`/drop operate on a zero boost (a no-op), matching
         // `Normal`.
@@ -144,6 +145,23 @@ pub(super) fn dispatch_state_intent(
             collision,
             position,
             events,
+            eye_current,
+        ),
+        MovementState::Sliding {
+            elapsed_ms,
+            boost,
+            eye_current,
+        } => sliding_intent(
+            component,
+            input,
+            jump_edges,
+            gravity,
+            dt,
+            collision,
+            position,
+            events,
+            elapsed_ms,
+            boost,
             eye_current,
         ),
     };

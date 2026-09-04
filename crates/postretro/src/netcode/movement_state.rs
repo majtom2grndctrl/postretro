@@ -21,6 +21,12 @@ pub(crate) fn movement_state_to_wire(
     component: &PlayerMovementComponent,
     aim_pitch: f32,
 ) -> WirePlayerMovementState {
+    let mut movement_state = movement_state_enum_to_wire(component.movement_state);
+    if let WireMovementState::Sliding { floor_normal, .. } = &mut movement_state {
+        *floor_normal = component
+            .last_floor_normal
+            .map(|normal| [normal.x, normal.y, normal.z]);
+    }
     WirePlayerMovementState {
         velocity: [
             component.velocity.x,
@@ -32,7 +38,7 @@ pub(crate) fn movement_state_to_wire(
         air_dashes_remaining: component.air_dashes_remaining,
         dash_cooldown_ms: component.dash_cooldown_ms,
         air_ticks: component.air_ticks,
-        movement_state: movement_state_enum_to_wire(component.movement_state),
+        movement_state,
         coyote_timer_ms: component.coyote_timer_ms,
         jump_buffer_timer_ms: component.jump_buffer_timer_ms,
         jump_spent: component.jump_spent,
@@ -66,6 +72,10 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     component.air_dashes_remaining = wire.air_dashes_remaining;
     component.dash_cooldown_ms = wire.dash_cooldown_ms;
     component.air_ticks = wire.air_ticks;
+    if let WireMovementState::Sliding { floor_normal, .. } = wire.movement_state {
+        component.last_floor_normal =
+            floor_normal.map(|normal| Vec3::new(normal[0], normal[1], normal[2]));
+    }
     component.movement_state = wire_to_movement_state_enum(wire.movement_state);
     component.coyote_timer_ms = wire.coyote_timer_ms;
     component.jump_buffer_timer_ms = wire.jump_buffer_timer_ms;
@@ -90,6 +100,18 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
             boost: [boost.x, boost.y, boost.z],
         },
         MovementState::Crouching { eye_current } => WireMovementState::Crouching { eye_current },
+        MovementState::Sliding {
+            elapsed_ms,
+            boost,
+            eye_current,
+        } => WireMovementState::Sliding {
+            elapsed_ms,
+            boost: [boost.x, boost.y, boost.z],
+            eye_current,
+            // The component-aware outer conversion supplies this field. Keep this
+            // enum-only mirror total for the engine variant drift guard.
+            floor_normal: None,
+        },
     }
 }
 
@@ -103,6 +125,16 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             boost: Vec3::new(boost[0], boost[1], boost[2]),
         },
         WireMovementState::Crouching { eye_current } => MovementState::Crouching { eye_current },
+        WireMovementState::Sliding {
+            elapsed_ms,
+            boost,
+            eye_current,
+            floor_normal: _,
+        } => MovementState::Sliding {
+            elapsed_ms,
+            boost: Vec3::new(boost[0], boost[1], boost[2]),
+            eye_current,
+        },
     }
 }
 
@@ -133,8 +165,8 @@ mod tests {
     use super::*;
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
-        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
-        ViewFeelParams,
+        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams,
+        SpeedParams, ViewFeelParams,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -192,6 +224,14 @@ mod tests {
                 eye_height: 0.25,
                 transition_rate: 8.0,
             }),
+            slide: Some(SlideParams {
+                min_speed: 8.0,
+                slide_drag: 2.0,
+                slope_assist: 1.0,
+                steer_rate: 180.0,
+                entry_boost: 1.0,
+                min_duration_ms: 100.0,
+            }),
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -232,7 +272,12 @@ mod tests {
         component.air_dashes_remaining = 1;
         component.dash_cooldown_ms = 400.0;
         component.air_ticks = 6;
-        component.movement_state = MovementState::Crouching { eye_current: 0.33 };
+        component.movement_state = MovementState::Sliding {
+            elapsed_ms: 42.0,
+            boost: Vec3::new(8.0, 0.0, -3.0),
+            eye_current: 0.33,
+        };
+        component.last_floor_normal = Some(Vec3::new(-0.25, 0.968_245_86, 0.0));
         component.coyote_timer_ms = 50.0;
         component.jump_buffer_timer_ms = 20.0;
         component.jump_spent = true;
@@ -254,6 +299,7 @@ mod tests {
         assert!((rebuilt.dash_cooldown_ms - component.dash_cooldown_ms).abs() < EPSILON);
         assert_eq!(rebuilt.air_ticks, component.air_ticks);
         assert_eq!(rebuilt.movement_state, component.movement_state);
+        assert_eq!(rebuilt.last_floor_normal, component.last_floor_normal);
         assert!((rebuilt.coyote_timer_ms - component.coyote_timer_ms).abs() < EPSILON);
         assert!((rebuilt.jump_buffer_timer_ms - component.jump_buffer_timer_ms).abs() < EPSILON);
         assert_eq!(rebuilt.jump_spent, component.jump_spent);
@@ -271,6 +317,7 @@ mod tests {
         let fall = component.fall.clone();
         let dash = component.dash.clone();
         let crouch = component.crouch.clone();
+        let slide = component.slide.clone();
         let view_feel = component.view_feel.clone();
         let cos_walkable = component.cos_walkable;
         let standing_half_height = component.standing_half_height;
@@ -313,6 +360,7 @@ mod tests {
         assert_eq!(component.fall, fall);
         assert_eq!(component.dash, dash);
         assert_eq!(component.crouch, crouch);
+        assert_eq!(component.slide, slide);
         assert_eq!(component.view_feel, view_feel);
         assert!((component.cos_walkable - cos_walkable).abs() < EPSILON);
         assert!((component.standing_half_height - standing_half_height).abs() < EPSILON);
@@ -343,7 +391,7 @@ mod tests {
         assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
-    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching) through the
+    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding) through the
     /// wire enum. Constructed from the source enum via an exhaustive list so a new
     /// variant must be added here to compile-cover it.
     #[test]
@@ -355,6 +403,11 @@ mod tests {
                 boost: Vec3::new(1.0, -2.0, 3.0),
             },
             MovementState::Crouching { eye_current: 0.9 },
+            MovementState::Sliding {
+                elapsed_ms: 18.0,
+                boost: Vec3::new(4.0, 0.0, -2.0),
+                eye_current: 0.75,
+            },
         ];
         for state in variants {
             let wire = movement_state_enum_to_wire(state);

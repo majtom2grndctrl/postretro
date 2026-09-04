@@ -613,7 +613,7 @@ declare module "postretro" {
     engagementRadius?: number;
   };
 
-  /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
+  /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
   export type PlayerMovementDescriptor = {
     /** Required collision capsule and camera attachment geometry, in metres. */
     capsule: CapsuleParams;
@@ -629,6 +629,8 @@ declare module "postretro" {
     forgiveness?: ForgivenessParams;
     /** Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required. */
     crouch?: CrouchParams;
+    /** Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required. */
+    slide?: SlideParams;
     /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway). A render-only camera effect. When omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
@@ -719,6 +721,22 @@ declare module "postretro" {
     eyeHeight: number;
     /** Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0. */
     transitionRate: number;
+  };
+
+  /** Slide tuning. Optional on `PlayerMovementDescriptor` — when omitted, slide is disabled. Slide requires crouch. When present, all fields are required and validated. */
+  export type SlideParams = {
+    /** Horizontal entry-speed gate in metres/sec. Must be finite and > 0. */
+    minSpeed: number;
+    /** Linear decay rate of the slide boost in metres/sec². Must be finite and ≥ 0; 0 permits a frictionless slide. */
+    slideDrag: number;
+    /** Unitless downhill-assist scale. Must be finite and ≥ 0. */
+    slopeAssist: number;
+    /** Maximum in-slide steering rate in degrees/sec. Must be finite and ≥ 0. */
+    steerRate: number;
+    /** Horizontal entry-speed kick in metres/sec. Must be finite and ≥ 0. */
+    entryBoost: number;
+    /** Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0. */
+    minDurationMs: number;
   };
 
   /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object disables that motion. */

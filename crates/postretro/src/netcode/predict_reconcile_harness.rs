@@ -21,9 +21,12 @@ use postretro_net::wire::{
     ServerSwitchAccepted, ServerSwitchRefused,
 };
 
+use super::movement_state::movement_state_to_wire;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
-    ROTATING_PLATFORM_RIDER_START, forward_command, idle_command, input_at, use_command,
+    ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
+    faceted_floor_height, faceted_slope_world, forward_command, idle_command, input_at,
+    use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -41,7 +44,7 @@ use postretro_entities::{
     components::wieldable_state::WieldableState,
 };
 use postretro_foundation::{
-    FireMode, GroundRef, PlayerMovementComponent, ResolutionMode, WeaponDescriptor,
+    FireMode, GroundRef, MovementState, PlayerMovementComponent, ResolutionMode, WeaponDescriptor,
 };
 use std::collections::VecDeque;
 
@@ -565,6 +568,241 @@ fn dash_correction_classifies_as_dash_and_smooths() {
         "a dash correction seeds a smoothed presentation offset (not a snap)"
     );
     assert!(h.bystanders_alive());
+}
+
+fn install_armed_reconcile_pawn(
+    h: &mut LoopbackHarness,
+    transform: Transform,
+    movement: PlayerMovementComponent,
+) -> postretro_entities::EntityId {
+    let pawn = h.client_registry.spawn(transform);
+    h.client_registry.set_component(pawn, movement).unwrap();
+    h.prediction.arm(h.host_pawn_network_id, pawn);
+    h.client_pawn = Some(pawn);
+    pawn
+}
+
+fn sliding_component(floor_normal: Vec3) -> PlayerMovementComponent {
+    let mut movement = player_component();
+    let crouch = movement.crouch.as_ref().expect("slide fixture has crouch");
+    movement.capsule.half_height = crouch.half_height;
+    movement.capsule.eye_height = crouch.eye_height;
+    movement.velocity = Vec3::new(0.0, 0.0, -10.0);
+    movement.ground = GroundRef::World;
+    movement.last_floor_normal = Some(floor_normal);
+    movement.movement_state = MovementState::Sliding {
+        elapsed_ms: 300.0,
+        boost: Vec3::new(0.0, 0.0, -10.0),
+        eye_current: crouch.eye_height,
+    };
+    movement
+}
+
+#[test]
+fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
+    let slope = 0.3;
+    let mut h = LoopbackHarness::new(light_link());
+    h.world = faceted_slope_world(slope);
+    let downhill_normal = downhill_facet_normal(slope);
+    let predicted_start = Transform {
+        position: Vec3::new(0.0, faceted_floor_height(slope, -2.0) + 0.81, -2.0),
+        ..Transform::default()
+    };
+    let pawn =
+        install_armed_reconcile_pawn(&mut h, predicted_start, sliding_component(downhill_normal));
+    let mut slide = forward_command(false);
+    slide.movement.crouch_intent = true;
+    let _ = h.prediction.next_client_tick();
+    let slide_tick = h.prediction.next_client_tick();
+    let input = super::wire_convert::sim_command_to_input(&slide, slide_tick, 0.0);
+    let predicted_prev = (
+        *h.client_registry.get_component::<Transform>(pawn).unwrap(),
+        h.client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone(),
+    );
+    let (predicted_transform, predicted_movement) = h
+        .prediction
+        .predict_tick(input, predicted_prev, &h.world, GRAVITY, DT)
+        .expect("armed slide predicts");
+    h.client_registry
+        .set_component(pawn, predicted_transform)
+        .unwrap();
+    h.client_registry
+        .set_component(pawn, predicted_movement)
+        .unwrap();
+    let newest_normal = h
+        .client_registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .last_floor_normal
+        .expect("predicted slide remains on downhill facet");
+    assert!(
+        newest_normal.dot(Vec3::Y) < 0.999,
+        "newest prediction must carry the downhill facet normal"
+    );
+
+    let authoritative_transform = Transform {
+        position: Vec3::new(0.0, 0.81, -0.5),
+        ..Transform::default()
+    };
+    let authoritative_movement = sliding_component(Vec3::Y);
+    let wire = movement_state_to_wire(&authoritative_movement, 0.0);
+    let (expected_transform, expected_movement, _) = super::prediction::replay(
+        authoritative_transform,
+        authoritative_movement,
+        slide.movement.clone(),
+        &h.world,
+        GRAVITY,
+        DT,
+    );
+    let class = reconcile_local_pawn(
+        &mut h.client_registry,
+        &mut h.prediction,
+        pawn,
+        authoritative_transform,
+        Some(&wire),
+        Some(slide_tick - 1),
+        &h.world,
+        GRAVITY,
+        DT,
+    );
+
+    assert!(
+        class.is_some(),
+        "sliding baseline must pass the reconcile gate"
+    );
+    let actual_transform = h.client_registry.get_component::<Transform>(pawn).unwrap();
+    let actual_movement = h
+        .client_registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap();
+    assert!(
+        (actual_transform.position - expected_transform.position).length() < 1.0e-4,
+        "replay must use the restored flat-facet normal on its first tick"
+    );
+    assert!(
+        (actual_movement.velocity - expected_movement.velocity).length() < 1.0e-4,
+        "restored floor normal must reproduce authoritative slide velocity"
+    );
+}
+
+#[test]
+fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
+    let slope = 0.3;
+    let mut h = LoopbackHarness::new(light_link());
+    h.world = faceted_slope_world(slope);
+    let authoritative_transform = Transform {
+        position: Vec3::new(0.0, 1.21, -0.75),
+        ..Transform::default()
+    };
+    let mut authoritative_movement = player_component();
+    authoritative_movement.velocity = Vec3::new(0.0, 0.0, -20.0);
+    authoritative_movement.ground = GroundRef::World;
+    authoritative_movement.last_floor_normal = Some(Vec3::Y);
+    authoritative_movement.movement_state = MovementState::Normal;
+    let pawn = install_armed_reconcile_pawn(
+        &mut h,
+        authoritative_transform,
+        authoritative_movement.clone(),
+    );
+    let mut slide = forward_command(false);
+    slide.movement.crouch_intent = true;
+    let _ = h.prediction.next_client_tick();
+    let mut inputs = Vec::new();
+    for _ in 0..3 {
+        let tick = h.prediction.next_client_tick();
+        let input = super::wire_convert::sim_command_to_input(&slide, tick, 0.0);
+        let prev = (
+            *h.client_registry.get_component::<Transform>(pawn).unwrap(),
+            h.client_registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone(),
+        );
+        let (next_transform, next_movement) = h
+            .prediction
+            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .expect("armed slide-entry tick predicts");
+        h.client_registry
+            .set_component(pawn, next_transform)
+            .unwrap();
+        h.client_registry
+            .set_component(pawn, next_movement)
+            .unwrap();
+        inputs.push(tick);
+    }
+    let predicted_movement = h
+        .client_registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap();
+    assert!(
+        matches!(
+            predicted_movement.movement_state,
+            MovementState::Sliding { .. }
+        ),
+        "the first retained command must enter slide inside the replay window"
+    );
+    assert!(
+        predicted_movement
+            .last_floor_normal
+            .is_some_and(|normal| normal.dot(Vec3::Y) < 0.999),
+        "forward prediction must reach the downhill facet"
+    );
+
+    let mut expected_transform = authoritative_transform;
+    let mut expected_movement = authoritative_movement.clone();
+    for _ in &inputs {
+        let replayed = super::prediction::replay(
+            expected_transform,
+            expected_movement,
+            slide.movement.clone(),
+            &h.world,
+            GRAVITY,
+            DT,
+        );
+        expected_transform = replayed.0;
+        expected_movement = replayed.1;
+    }
+    let wire = movement_state_to_wire(&authoritative_movement, 0.0);
+    assert!(matches!(
+        wire.movement_state,
+        postretro_net::wire::WireMovementState::Normal
+    ));
+    let class = reconcile_local_pawn(
+        &mut h.client_registry,
+        &mut h.prediction,
+        pawn,
+        authoritative_transform,
+        Some(&wire),
+        Some(inputs[0] - 1),
+        &h.world,
+        GRAVITY,
+        DT,
+    );
+
+    assert!(
+        class.is_some(),
+        "normal baseline must pass the reconcile gate"
+    );
+    let actual_transform = h.client_registry.get_component::<Transform>(pawn).unwrap();
+    let actual_movement = h
+        .client_registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap();
+    assert!(
+        (actual_transform.position - expected_transform.position).length() < 1.0e-4,
+        "slide entry replay must reproduce the faceted-floor trajectory"
+    );
+    assert!(matches!(
+        actual_movement.movement_state,
+        MovementState::Sliding { .. }
+    ));
+    assert_eq!(
+        actual_movement.last_floor_normal, expected_movement.last_floor_normal,
+        "entry replay must recompute the facet normal through the movement substrate"
+    );
 }
 
 // --- Teleport correction: a correction at/above the teleport floor snaps hard —

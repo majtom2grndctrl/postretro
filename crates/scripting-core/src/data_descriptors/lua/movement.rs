@@ -172,6 +172,26 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
+    // `slide` is optional: absence disables slide. When present, every field
+    // is required and validated, mirroring the JS path and `dash`/`crouch`.
+    let slide = if table.contains_key("slide").map_err(lua_err)? {
+        let raw: LuaValue = table.get("slide").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(t) => Some(slide_params_from_lua(&t)?),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`movement.slide` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
     // `viewFeel` is optional: absence disables view feel. Mirrors the JS path —
     // two-level present-then-all-required across `bob`/`tilt`/`sway`.
     let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
@@ -202,6 +222,7 @@ pub fn movement_descriptor_from_lua(
         dash,
         forgiveness,
         crouch,
+        slide,
         view_feel,
     })
 }
@@ -456,6 +477,43 @@ pub fn crouch_params_from_lua(table: &Table, radius: f32) -> Result<CrouchParams
         half_height,
         eye_height,
         transition_rate,
+    })
+}
+
+/// Mirror of [`slide_params_from_js`] for Luau tables. All six fields are
+/// required when `movement.slide` is present.
+pub fn slide_params_from_lua(table: &Table) -> Result<SlideParams, DescriptorError> {
+    let min_speed = validate_positive_finite(
+        get_required_f32_lua(table, "minSpeed")?,
+        "movement.slide.minSpeed",
+    )?;
+    let slide_drag = validate_non_negative_finite(
+        get_required_f32_lua(table, "slideDrag")?,
+        "movement.slide.slideDrag",
+    )?;
+    let slope_assist = validate_non_negative_finite(
+        get_required_f32_lua(table, "slopeAssist")?,
+        "movement.slide.slopeAssist",
+    )?;
+    let steer_rate = validate_non_negative_finite(
+        get_required_f32_lua(table, "steerRate")?,
+        "movement.slide.steerRate",
+    )?;
+    let entry_boost = validate_non_negative_finite(
+        get_required_f32_lua(table, "entryBoost")?,
+        "movement.slide.entryBoost",
+    )?;
+    let min_duration_ms = validate_non_negative_finite(
+        get_required_f32_lua(table, "minDurationMs")?,
+        "movement.slide.minDurationMs",
+    )?;
+    Ok(SlideParams {
+        min_speed,
+        slide_drag,
+        slope_assist,
+        steer_rate,
+        entry_boost,
+        min_duration_ms,
     })
 }
 

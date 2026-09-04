@@ -96,6 +96,30 @@ fn lua_movement_slide_full_shape_parses() {
 }
 
 #[test]
+fn js_movement_slide_accepts_zero_optional_effect_rates() {
+    let src = js_movement_with_slide(
+        r#"{ minSpeed: 8.0, slideDrag: 0.0, slopeAssist: 0.0, steerRate: 0.0, entryBoost: 2.0, minDurationMs: 120.0 }"#,
+    );
+    let d = eval_js(&src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let slide = d.movement.unwrap().slide.expect("slide present");
+    assert_eq!(slide.slide_drag, 0.0);
+    assert_eq!(slide.slope_assist, 0.0);
+    assert_eq!(slide.steer_rate, 0.0);
+}
+
+#[test]
+fn lua_movement_slide_accepts_zero_optional_effect_rates() {
+    let src = lua_movement_with_slide(
+        r#"{ minSpeed = 8.0, slideDrag = 0.0, slopeAssist = 0.0, steerRate = 0.0, entryBoost = 2.0, minDurationMs = 120.0 }"#,
+    );
+    let d = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap());
+    let slide = d.movement.unwrap().slide.expect("slide present");
+    assert_eq!(slide.slide_drag, 0.0);
+    assert_eq!(slide.slope_assist, 0.0);
+    assert_eq!(slide.steer_rate, 0.0);
+}
+
+#[test]
 fn js_movement_slide_rejects_invalid_field_ranges() {
     for slide in [
         r#"{ minSpeed: 0.0, slideDrag: 12.0, slopeAssist: 1.5, steerRate: 180.0, entryBoost: 2.0, minDurationMs: 120.0 }"#,

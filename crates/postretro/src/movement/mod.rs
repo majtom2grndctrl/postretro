@@ -5294,6 +5294,29 @@ mod tests {
         };
     }
 
+    fn grounded_slide_state(
+        comp: &mut PlayerMovementComponent,
+        position: &mut Vec3,
+        velocity: Vec3,
+        elapsed_ms: f32,
+        eye_current: f32,
+    ) {
+        let crouch = comp.crouch.as_ref().expect("slide fixture needs crouch");
+        let half_height = crouch.half_height;
+        let eye_height = crouch.eye_height;
+        let delta = resize_capsule(comp, half_height, eye_height, ResizeAnchor::Feet);
+        position.y += delta;
+        comp.capsule.eye_height = eye_current;
+        comp.set_grounded(true);
+        comp.last_floor_normal = Some(Vec3::Y);
+        comp.velocity = velocity;
+        comp.movement_state = MovementState::Sliding {
+            elapsed_ms,
+            boost: Vec3::new(velocity.x, 0.0, velocity.z),
+            eye_current,
+        };
+    }
+
     #[test]
     fn slide_entry_requires_speed_and_banks_horizontal_velocity_with_crouched_feet() {
         let desc = slide_descriptor();
@@ -5367,6 +5390,395 @@ mod tests {
     }
 
     #[test]
+    fn slide_jump_under_blocked_headroom_launches_without_standing() {
+        let desc = slide_descriptor();
+        let open = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &open, &mut pos, 8, &idle_input());
+        grounded_slide_state(&mut comp, &mut pos, Vec3::new(12.0, 0.0, 0.0), 0.0, 0.35);
+        let banked_speed = horiz_speed(&comp);
+        let blocked = floor_and_ceiling_world(capsule_top(&comp, pos) + 0.2);
+        let jump = MovementInput {
+            jump_pressed: true,
+            crouch_intent: true,
+            ..crouch_hold_input()
+        };
+
+        let events = run_ticks(&mut comp, &blocked, &mut pos, 1, &jump);
+
+        assert!(
+            events.jumped,
+            "blocked headroom must not swallow a slide jump"
+        );
+        assert!(
+            is_crouching(&comp),
+            "blocked headroom keeps the jumping slide in the crouched state"
+        );
+        assert!(
+            approx_eq(
+                comp.capsule.half_height,
+                desc.crouch
+                    .as_ref()
+                    .expect("test descriptor has crouch")
+                    .half_height,
+                POS_EPS,
+            ),
+            "blocked slide jump must not materialize the standing capsule"
+        );
+        assert!(
+            horiz_speed(&comp) >= banked_speed - VEL_EPS,
+            "blocked slide jump must preserve banked horizontal speed"
+        );
+        assert!(approx_eq(comp.velocity.y, desc.air.jump_velocity, VEL_EPS));
+    }
+
+    #[test]
+    fn slide_zero_steer_stays_committed_and_nonzero_steer_is_rate_limited() {
+        let mut desc = slide_descriptor();
+        desc.slide = Some(SlideParams {
+            slide_drag: 0.0,
+            slope_assist: 0.0,
+            steer_rate: 90.0,
+            min_duration_ms: 1_000.0,
+            ..desc.slide.clone().expect("test descriptor has slide")
+        });
+        let world = floor_and_ceiling_world(50.0);
+        let steer = MovementInput {
+            wish_dir: Vec2::new(0.0, -1.0),
+            crouch_intent: true,
+            ..idle_input()
+        };
+
+        let (mut committed, mut committed_pos) = settle_player(&desc);
+        run_ticks(&mut committed, &world, &mut committed_pos, 8, &idle_input());
+        grounded_slide_state(
+            &mut committed,
+            &mut committed_pos,
+            Vec3::new(10.0, 0.0, 0.0),
+            0.0,
+            0.35,
+        );
+        run_ticks(
+            &mut committed,
+            &world,
+            &mut committed_pos,
+            1,
+            &crouch_hold_input(),
+        );
+        let MovementState::Sliding {
+            boost: committed_boost,
+            ..
+        } = committed.movement_state
+        else {
+            panic!("zero-steer slide must remain committed");
+        };
+        assert!(
+            approx_eq(committed_boost.x, 10.0, VEL_EPS)
+                && approx_eq(committed_boost.z, 0.0, VEL_EPS),
+            "zero steering input must preserve the committed direction, got {committed_boost:?}"
+        );
+
+        let (mut rate_limited, mut rate_limited_pos) = settle_player(&desc);
+        run_ticks(
+            &mut rate_limited,
+            &world,
+            &mut rate_limited_pos,
+            8,
+            &idle_input(),
+        );
+        grounded_slide_state(
+            &mut rate_limited,
+            &mut rate_limited_pos,
+            Vec3::new(10.0, 0.0, 0.0),
+            0.0,
+            0.35,
+        );
+        run_ticks(&mut rate_limited, &world, &mut rate_limited_pos, 1, &steer);
+        let MovementState::Sliding {
+            boost: steered_boost,
+            ..
+        } = rate_limited.movement_state
+        else {
+            panic!("rate-limited slide must remain committed");
+        };
+        let signed_rotation_radians = (-steered_boost.z).atan2(steered_boost.x);
+        let max_radians = 90.0_f32.to_radians() * DT;
+        let angle_epsilon = 1.0e-6;
+        assert!(
+            signed_rotation_radians < 0.0
+                && signed_rotation_radians.abs() <= max_radians + angle_epsilon,
+            "steering must rotate in the negative engine-yaw direction toward input by at most rate*dt: rotated={signed_rotation_radians}, max={max_radians}, boost={steered_boost:?}"
+        );
+    }
+
+    // Regression: descriptor removal during Sliding entered Normal while the
+    // live capsule and eye were still crouched, with no later stand-up path.
+    #[test]
+    fn invalidated_slide_release_with_clear_headroom_restores_standing_geometry() {
+        let desc = slide_descriptor();
+        let open = floor_and_ceiling_world(50.0);
+
+        for removed_requirement in ["slide", "crouch"] {
+            let (mut comp, mut pos) = settle_player(&desc);
+            run_ticks(&mut comp, &open, &mut pos, 8, &idle_input());
+            grounded_slide_state(&mut comp, &mut pos, Vec3::new(10.0, 0.0, 0.0), 0.0, 0.35);
+            let crouched_bottom = capsule_bottom(&comp, pos);
+            match removed_requirement {
+                "slide" => comp.slide = None,
+                "crouch" => comp.crouch = None,
+                _ => unreachable!(),
+            }
+
+            run_ticks(&mut comp, &open, &mut pos, 1, &idle_input());
+
+            assert!(
+                matches!(comp.movement_state, MovementState::Normal),
+                "removing {removed_requirement} with clear headroom must exit Sliding to Normal"
+            );
+            assert!(
+                approx_eq(comp.capsule.half_height, desc.capsule.half_height, POS_EPS)
+                    && approx_eq(comp.capsule.eye_height, desc.capsule.eye_height, POS_EPS),
+                "removing {removed_requirement} must restore standing capsule and eye targets"
+            );
+            assert!(
+                approx_eq(capsule_bottom(&comp, pos), crouched_bottom, 0.02),
+                "removing {removed_requirement} must keep feet planted while standing"
+            );
+        }
+    }
+
+    // Regression: an invalidated slide under a ceiling must not materialize a
+    // standing capsule, and must retain a state that retries once space clears.
+    #[test]
+    fn invalidated_slide_release_stays_crouched_until_headroom_clears() {
+        let desc = slide_descriptor();
+        let open = floor_and_ceiling_world(50.0);
+
+        for removed_requirement in ["slide", "crouch"] {
+            let (mut comp, mut pos) = settle_player(&desc);
+            run_ticks(&mut comp, &open, &mut pos, 8, &idle_input());
+            grounded_slide_state(&mut comp, &mut pos, Vec3::new(10.0, 0.0, 0.0), 0.0, 0.35);
+            let crouched_bottom = capsule_bottom(&comp, pos);
+            let crouched_half_height = comp.capsule.half_height;
+            let blocked = floor_and_ceiling_world(capsule_top(&comp, pos) + 0.2);
+            match removed_requirement {
+                "slide" => comp.slide = None,
+                "crouch" => comp.crouch = None,
+                _ => unreachable!(),
+            }
+
+            run_ticks(&mut comp, &blocked, &mut pos, 1, &idle_input());
+
+            assert!(
+                is_crouching(&comp),
+                "removing {removed_requirement} under blocked headroom must hand off to Crouching"
+            );
+            assert!(
+                approx_eq(comp.capsule.half_height, crouched_half_height, POS_EPS),
+                "removing {removed_requirement} must retain the crouched capsule while blocked"
+            );
+
+            run_ticks(&mut comp, &open, &mut pos, 1, &idle_input());
+
+            assert!(
+                matches!(comp.movement_state, MovementState::Normal),
+                "removing {removed_requirement} must stand on the first clear retry tick"
+            );
+            assert!(
+                approx_eq(comp.capsule.half_height, desc.capsule.half_height, POS_EPS)
+                    && approx_eq(comp.capsule.eye_height, desc.capsule.eye_height, POS_EPS),
+                "removing {removed_requirement} must restore standing geometry once clear"
+            );
+            assert!(
+                approx_eq(capsule_bottom(&comp, pos), crouched_bottom, 0.02),
+                "removing {removed_requirement} must keep feet planted across deferred stand-up"
+            );
+        }
+    }
+
+    #[test]
+    fn slide_linear_drag_reaching_crouch_speed_exits_after_minimum_duration() {
+        let mut desc = slide_descriptor();
+        desc.slide = Some(SlideParams {
+            slide_drag: 6.0,
+            slope_assist: 0.0,
+            min_duration_ms: 100.0,
+            ..desc.slide.clone().expect("test descriptor has slide")
+        });
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        grounded_slide_state(
+            &mut comp,
+            &mut pos,
+            Vec3::new(desc.ground.speed.crouch + 0.05, 0.0, 0.0),
+            100.0,
+            0.35,
+        );
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+
+        assert!(
+            is_crouching(&comp),
+            "linear drag reaching the crouch-speed threshold after minDurationMs must take the natural exit"
+        );
+        assert!(
+            horiz_speed(&comp) <= desc.ground.speed.crouch + VEL_EPS,
+            "natural exit should occur at the crouch-speed threshold, got {}",
+            horiz_speed(&comp)
+        );
+    }
+
+    #[test]
+    fn frictionless_held_slide_persists_until_maximum_then_becomes_crouching() {
+        let mut desc = slide_descriptor();
+        desc.slide = Some(SlideParams {
+            slide_drag: 0.0,
+            slope_assist: 0.0,
+            min_duration_ms: SLIDE_MAX_MS + 1_000.0,
+            ..desc.slide.clone().expect("test descriptor has slide")
+        });
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        grounded_slide_state(
+            &mut comp,
+            &mut pos,
+            Vec3::new(10.0, 0.0, 0.0),
+            SLIDE_MAX_MS - 1.5 * DT * 1000.0,
+            0.35,
+        );
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let MovementState::Sliding { elapsed_ms, .. } = comp.movement_state else {
+            panic!("frictionless held slide must persist before SLIDE_MAX_MS");
+        };
+        assert!(
+            elapsed_ms < SLIDE_MAX_MS,
+            "precondition: first tick must remain below the hard maximum"
+        );
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(
+            is_crouching(&comp),
+            "held crouch must remain Sliding until SLIDE_MAX_MS, then exit to Crouching"
+        );
+    }
+
+    #[test]
+    fn slide_ledge_handoff_preserves_live_eye_in_crouching() {
+        let mut desc = slide_descriptor();
+        desc.slide = Some(SlideParams {
+            slide_drag: 0.0,
+            slope_assist: 0.0,
+            min_duration_ms: 1_000.0,
+            ..desc.slide.clone().expect("test descriptor has slide")
+        });
+        let world = empty_world();
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        let mut pos = Vec3::new(0.0, 5.0, 0.0);
+        grounded_slide_state(&mut comp, &mut pos, Vec3::new(10.0, 0.0, 0.0), 0.0, 0.35);
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(
+            is_sliding(&comp) && !comp.is_grounded(),
+            "the ledge tick clears grounded state before the next intent handoff"
+        );
+        let MovementState::Sliding {
+            eye_current: eye_at_ledge,
+            ..
+        } = comp.movement_state
+        else {
+            unreachable!();
+        };
+        assert!(approx_eq(comp.capsule.eye_height, eye_at_ledge, POS_EPS));
+
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let MovementState::Crouching { eye_current } = comp.movement_state else {
+            panic!("an airborne slide must hand off to Crouching");
+        };
+        assert!(
+            approx_eq(eye_current, eye_at_ledge, POS_EPS)
+                && approx_eq(comp.capsule.eye_height, eye_at_ledge, POS_EPS),
+            "ledge handoff must preserve the live eye value: slide={eye_at_ledge}, crouch={eye_current}, capsule={}",
+            comp.capsule.eye_height
+        );
+    }
+
+    #[test]
+    fn slide_cancel_stands_when_clear_and_stays_crouched_when_blocked() {
+        let desc = slide_descriptor();
+        let open = floor_and_ceiling_world(50.0);
+        let initial_eye = 0.35;
+
+        let (mut clear, mut clear_pos) = settle_player(&desc);
+        run_ticks(&mut clear, &open, &mut clear_pos, 8, &idle_input());
+        grounded_slide_state(
+            &mut clear,
+            &mut clear_pos,
+            Vec3::new(10.0, 0.0, 0.0),
+            desc.slide
+                .as_ref()
+                .expect("test descriptor has slide")
+                .min_duration_ms,
+            initial_eye,
+        );
+        let clear_bottom = capsule_bottom(&clear, clear_pos);
+        run_ticks(&mut clear, &open, &mut clear_pos, 1, &idle_input());
+        assert!(
+            matches!(clear.movement_state, MovementState::Normal),
+            "released slide with clear headroom must stand"
+        );
+        assert!(
+            approx_eq(clear.capsule.half_height, desc.capsule.half_height, POS_EPS)
+                && approx_eq(clear.capsule.eye_height, desc.capsule.eye_height, POS_EPS),
+            "clear slide-cancel must restore standing capsule and eye targets"
+        );
+        assert!(
+            approx_eq(capsule_bottom(&clear, clear_pos), clear_bottom, 0.02),
+            "clear slide-cancel must keep feet planted"
+        );
+
+        let (mut blocked, mut blocked_pos) = settle_player(&desc);
+        run_ticks(&mut blocked, &open, &mut blocked_pos, 8, &idle_input());
+        grounded_slide_state(
+            &mut blocked,
+            &mut blocked_pos,
+            Vec3::new(10.0, 0.0, 0.0),
+            desc.slide
+                .as_ref()
+                .expect("test descriptor has slide")
+                .min_duration_ms,
+            initial_eye,
+        );
+        let crouched_top = capsule_top(&blocked, blocked_pos);
+        let blocked_world = floor_and_ceiling_world(crouched_top + 0.2);
+        run_ticks(
+            &mut blocked,
+            &blocked_world,
+            &mut blocked_pos,
+            1,
+            &idle_input(),
+        );
+        let MovementState::Crouching { eye_current } = blocked.movement_state else {
+            panic!("released slide with blocked headroom must remain crouched");
+        };
+        let crouch = desc.crouch.as_ref().expect("test descriptor has crouch");
+        let alpha = 1.0 - (-crouch.transition_rate * DT).exp();
+        let expected_eye = initial_eye + (crouch.eye_height - initial_eye) * alpha;
+        assert!(
+            approx_eq(blocked.capsule.half_height, crouch.half_height, POS_EPS),
+            "blocked slide-cancel must retain the crouched capsule"
+        );
+        assert!(
+            approx_eq(eye_current, expected_eye, POS_EPS)
+                && approx_eq(blocked.capsule.eye_height, expected_eye, POS_EPS),
+            "blocked slide-cancel must hand the smoothed eye to Crouching: expected={expected_eye}, state={eye_current}, capsule={}",
+            blocked.capsule.eye_height
+        );
+    }
+
+    #[test]
     fn slide_slope_assist_outpaces_flat_drag_and_max_guard_ends_held_slide_crouched() {
         let desc = slide_descriptor();
         let slope = 0.3;
@@ -5385,6 +5797,46 @@ mod tests {
         assert!(
             horiz_speed(&down) > horiz_speed(&level),
             "downhill projection must add speed beyond flat slide drag"
+        );
+
+        let mut no_assist_desc = desc.clone();
+        no_assist_desc
+            .slide
+            .as_mut()
+            .expect("test descriptor has slide")
+            .slope_assist = 0.0;
+        let (mut no_assist, mut no_assist_pos) = settle_player(&no_assist_desc);
+        no_assist.set_grounded(true);
+        no_assist.last_floor_normal = Some(Vec3::new(-slope, 1.0, 0.0).normalize());
+        slide_state(&mut no_assist, -10.0, 0.0);
+        run_ticks(
+            &mut no_assist,
+            &sloped,
+            &mut no_assist_pos,
+            1,
+            &crouch_hold_input(),
+        );
+        let MovementState::Sliding {
+            boost: no_assist_boost,
+            ..
+        } = no_assist.movement_state
+        else {
+            panic!("zero slope-assist slide must remain active");
+        };
+        let expected_dragged_speed = 10.0
+            - no_assist_desc
+                .slide
+                .as_ref()
+                .expect("test descriptor has slide")
+                .slide_drag
+                * DT;
+        assert!(
+            approx_eq(
+                Vec2::new(no_assist_boost.x, no_assist_boost.z).length(),
+                expected_dragged_speed,
+                VEL_EPS,
+            ),
+            "zero slopeAssist must add no downhill acceleration"
         );
 
         // The time backstop ignores the min duration and never stands a held crouch.

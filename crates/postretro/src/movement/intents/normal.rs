@@ -27,8 +27,8 @@ use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 /// (next state + its carry-rule) or `None` to stay in `Normal`. `Normal`
 /// transitions to `Dash` on a rising-edge dash input (see `try_enter_dash`) and
 /// to `Crouching` on the resolved `crouch_intent` bit when `CrouchParams` is
-/// present; future states (slide, wall-run) plug in behind the same seam without
-/// reshaping callers.
+/// present; slide and future states such as wall-run plug in behind the same seam
+/// without reshaping callers.
 ///
 /// `jump_edges` are the forgiveness-derived edges (coyote + buffer), computed
 /// ONCE per tick by `derive_jump_edges` before this intent runs (D5). The jump

@@ -103,21 +103,33 @@ pub(crate) fn floor_world() -> CollisionWorld {
     }
 }
 
-/// Broad walkable plane tilted about Z. The slope is intentionally shared by the
-/// host and client harness so replay only differs when the authoritative slide
-/// baseline fails to restore its forwarded floor normal.
-pub(crate) fn sloped_floor_world(slope: f32) -> CollisionWorld {
-    let y = |x: f32| slope * x;
+/// Flat floor joined continuously to a downhill facet at `z = -1`. Forward
+/// movement crosses the crease, so prediction can hold a newer contact normal
+/// than an authoritative baseline restored on the flat facet.
+pub(crate) fn faceted_slope_world(slope: f32) -> CollisionWorld {
+    let far_y = slope * (-500.0 + 1.0);
     let points = vec![
-        Point::new(-500.0, y(-500.0), -500.0),
-        Point::new(500.0, y(500.0), -500.0),
-        Point::new(500.0, y(500.0), 500.0),
-        Point::new(-500.0, y(-500.0), 500.0),
+        Point::new(-500.0, far_y, -500.0),
+        Point::new(500.0, far_y, -500.0),
+        Point::new(500.0, 0.0, -1.0),
+        Point::new(-500.0, 0.0, -1.0),
+        Point::new(-500.0, 0.0, -1.0),
+        Point::new(500.0, 0.0, -1.0),
+        Point::new(500.0, 0.0, 500.0),
+        Point::new(-500.0, 0.0, 500.0),
     ];
     CollisionWorld {
-        mesh: TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2]]),
+        mesh: TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]]),
         isometry: Isometry::identity(),
     }
+}
+
+pub(crate) fn faceted_floor_height(slope: f32, z: f32) -> f32 {
+    if z < -1.0 { slope * (z + 1.0) } else { 0.0 }
+}
+
+pub(crate) fn downhill_facet_normal(slope: f32) -> Vec3 {
+    Vec3::new(0.0, 1.0, -slope).normalize()
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn

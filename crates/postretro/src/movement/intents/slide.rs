@@ -138,16 +138,26 @@ pub(crate) fn sliding_intent(
     eye_current: &mut f32,
 ) -> Option<Transition> {
     // A descriptor hot-swap may remove slide or crouch while the state is live.
-    // Do not retain an invalid capsule state; hand it to crouch when available.
-    let (slide, crouch) = match (component.slide.as_ref(), component.crouch.as_ref()) {
-        (Some(slide), Some(crouch)) => (slide.clone(), crouch.clone()),
-        _ => {
-            return Some(Transition {
-                next: MovementState::Normal,
-                carry: CarryRule::KEEP_ALL,
-            });
-        }
-    };
+    // Use the normal slide-exit handoff so released crouch restores standing
+    // geometry only when headroom is clear; a blocked capsule stays crouched
+    // and retries through `Crouching` on following ticks.
+    if component.slide.is_none() || component.crouch.is_none() {
+        return Some(natural_exit(
+            component,
+            input,
+            collision,
+            position,
+            *eye_current,
+        ));
+    }
+    let slide = component
+        .slide
+        .clone()
+        .expect("slide present (checked above)");
+    let crouch = component
+        .crouch
+        .clone()
+        .expect("crouch present (checked above)");
 
     // Jump is intentionally first among exits. Coyote / air-jump edges can fire
     // on the same stale-airborne tick that would otherwise hand off to crouch.

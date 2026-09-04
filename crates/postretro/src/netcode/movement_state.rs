@@ -192,6 +192,7 @@ mod tests {
                 eye_height: 0.25,
                 transition_rate: 8.0,
             }),
+            slide: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,

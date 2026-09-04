@@ -175,6 +175,22 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `slide` is optional: absence disables slide. When present, every field
+    // is required and validated, mirroring the `dash`/`crouch` discipline.
+    let slide = if obj.contains_key("slide").map_err(js_err)? {
+        let raw: JsValue = obj.get("slide").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let slide_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.slide` must be an object".to_string(),
+            })?;
+            Some(slide_params_from_js(&slide_obj)?)
+        }
+    } else {
+        None
+    };
+
     // `viewFeel` is optional: absence disables view feel. When present, each of
     // `bob`/`tilt`/`sway` is independently optional; an absent sub-object
     // disables that motion. Within a present sub-object, all tuning fields are
@@ -204,6 +220,7 @@ pub fn movement_descriptor_from_js<'js>(
         dash,
         forgiveness,
         crouch,
+        slide,
         view_feel,
     })
 }
@@ -493,6 +510,43 @@ pub fn crouch_params_from_js<'js>(
         half_height,
         eye_height,
         transition_rate,
+    })
+}
+
+/// Parse a `slide` sub-object. All tuning is literal descriptor data: state
+/// mechanics consume it natively at fixed-tick time.
+pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, DescriptorError> {
+    let min_speed = validate_positive_finite(
+        get_required_f32_js(obj, "minSpeed")?,
+        "movement.slide.minSpeed",
+    )?;
+    let slide_drag = validate_non_negative_finite(
+        get_required_f32_js(obj, "slideDrag")?,
+        "movement.slide.slideDrag",
+    )?;
+    let slope_assist = validate_non_negative_finite(
+        get_required_f32_js(obj, "slopeAssist")?,
+        "movement.slide.slopeAssist",
+    )?;
+    let steer_rate = validate_non_negative_finite(
+        get_required_f32_js(obj, "steerRate")?,
+        "movement.slide.steerRate",
+    )?;
+    let entry_boost = validate_non_negative_finite(
+        get_required_f32_js(obj, "entryBoost")?,
+        "movement.slide.entryBoost",
+    )?;
+    let min_duration_ms = validate_non_negative_finite(
+        get_required_f32_js(obj, "minDurationMs")?,
+        "movement.slide.minDurationMs",
+    )?;
+    Ok(SlideParams {
+        min_speed,
+        slide_drag,
+        slope_assist,
+        steer_rate,
+        entry_boost,
+        min_duration_ms,
     })
 }
 

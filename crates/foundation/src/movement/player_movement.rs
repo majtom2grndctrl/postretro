@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // boundary is crossed.
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, NumberOrIr, PlayerMovementDescriptor, ViewFeelParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, ViewFeelParams,
 };
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
@@ -186,6 +186,11 @@ pub struct PlayerMovementComponent {
     /// Optional crouch tuning, materialized from the descriptor's `crouch`
     /// field. `None` ⇒ crouch disabled.
     pub crouch: Option<CrouchParams>,
+    /// Optional slide tuning, materialized from the descriptor's `slide`
+    /// field. `None` ⇒ slide disabled. Slide depends on crouched capsule
+    /// dimensions, so a descriptor that enables slide without crouch visibly
+    /// degrades to this disabled state during materialization.
+    pub slide: Option<SlideParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
@@ -304,6 +309,17 @@ impl PlayerMovementComponent {
         // Mirror how `air_jumps_remaining` is seeded from `air.jumps`: the
         // air-dash budget starts full at construction, 0 when dash is disabled.
         let air_dashes_remaining = dash.as_ref().map_or(0, |d| d.air_dashes);
+        // Slide reuses the crouched capsule. Keep a malformed descriptor from
+        // creating a runtime state the movement layer cannot materialize: warn
+        // once at the descriptor-to-component boundary and disable slide.
+        let slide = if desc.slide.is_some() && desc.crouch.is_none() {
+            log::warn!(
+                "[Movement] slide tuning requires crouch; disabling slide for this descriptor"
+            );
+            None
+        } else {
+            desc.slide.clone()
+        };
         // Forgiveness windows materialize here: an absent `forgiveness`
         // sub-object applies the documented engine defaults; a present one
         // already merged per-field defaults at parse time (0 disables a grace).
@@ -316,6 +332,7 @@ impl PlayerMovementComponent {
             dash,
             dash_programs,
             crouch: desc.crouch.clone(),
+            slide,
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
@@ -388,7 +405,7 @@ mod tests {
     use super::*;
     use crate::data_descriptors::{
         AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-        PlayerMovementDescriptor, SpeedParams,
+        PlayerMovementDescriptor, SlideParams, SpeedParams,
     };
 
     /// Minimal descriptor used by tests that only need a valid materialization
@@ -430,6 +447,7 @@ mod tests {
                 jump_buffer_ms: 0.0,
             }),
             crouch: None,
+            slide: None,
             view_feel: None,
         }
     }
@@ -470,5 +488,25 @@ mod tests {
         assert!(comp.dash_programs.dash_drag.is_none());
         assert!(comp.dash_programs.cooldown_ms.is_none());
         assert!(comp.dash_programs.preserve_vertical.is_none());
+    }
+
+    #[test]
+    fn from_descriptor_disables_slide_without_crouch() {
+        let mut desc = minimal_descriptor();
+        desc.slide = Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 12.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 2.0,
+            min_duration_ms: 100.0,
+        });
+
+        let component = PlayerMovementComponent::from_descriptor(&desc);
+
+        assert!(
+            component.slide.is_none(),
+            "slide must degrade to disabled when its required crouch tuning is absent"
+        );
     }
 }

@@ -149,7 +149,8 @@ mod tests {
 
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FireMode, ForgivenessParams,
-        GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams, ViewFeelParams,
+        GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SpeedParams,
+        ViewFeelParams,
     };
 
     use super::*;
@@ -213,6 +214,7 @@ mod tests {
                 jump_buffer_ms: 110.0,
             }),
             crouch: None,
+            slide: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -257,8 +259,16 @@ mod tests {
     }
 
     #[test]
-    fn payload_round_trips_nested_and_ir_tuning_without_view_feel() {
-        let descriptor = movement_descriptor();
+    fn payload_round_trips_nested_ir_and_slide_tuning_without_view_feel() {
+        let mut descriptor = movement_descriptor();
+        descriptor.slide = Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 12.0,
+            slope_assist: 1.5,
+            steer_rate: 180.0,
+            entry_boost: 2.0,
+            min_duration_ms: 120.0,
+        });
         assert!(descriptor.view_feel.is_some());
         let payload = TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
@@ -269,6 +279,7 @@ mod tests {
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(json["movement"]["view_feel"].is_null());
+        assert_eq!(json["movement"]["slide"]["min_speed"], 8.0);
         let wieldables = json["wieldables"].as_array().unwrap();
         assert_eq!(wieldables.len(), WIELDABLE_SLOT_CAPACITY);
         assert_eq!(wieldables[0]["canonical_name"], "reference_pistol");
@@ -297,9 +308,11 @@ mod tests {
             decoded,
             TuningPayload::new(payload.movement, payload.wieldables)
         );
-        let dash = decoded.movement.unwrap().dash.unwrap();
+        let movement = decoded.movement.unwrap();
+        let dash = movement.dash.as_ref().unwrap();
         assert_eq!(dash.boost_speed, NumberOrIr::Literal(18.0));
         assert!(matches!(dash.momentum_retention, NumberOrIr::Ir(_)));
+        assert_eq!(movement.slide.unwrap().entry_boost, 2.0);
     }
 
     #[test]

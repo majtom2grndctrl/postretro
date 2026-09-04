@@ -931,6 +931,7 @@ mod tests {
                 dash: None,
                 forgiveness: None,
                 crouch: None,
+                slide: None,
                 view_feel: None,
             }),
             weapon: None,

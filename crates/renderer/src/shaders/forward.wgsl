@@ -133,9 +133,9 @@ struct ChunkGridInfo {
 @group(2) @binding(5) var<storage, read> chunk_indices: array<u32>;
 
 // Group 3 — octahedral irradiance atlas. The sampled total atlas carries
-// composed indirect irradiance, with alpha as the baked per-probe validity bit.
-// A 3D texture (@binding(14) sh_depth_moments) carries per-probe depth moments
-// (R = mean, G = mean²) for the depth-aware visibility term.
+// composed indirect irradiance. Alpha is used only as L1 stored-corner
+// presence; the depth-moment word is the source of probe validity. A 3D Uint
+// texture (@binding(14) sh_depth_moments) carries f16 depth-moment bits in R/G.
 // When `grid.has_sh_volume` is 0 the bindings point at dummy textures and
 // the shader skips SH sampling. See crates/renderer/src/render/sh_volume.rs.
 struct ShGridInfo {
@@ -197,7 +197,7 @@ struct AnimationDescriptor {
 // light-loop counter `i`. `is_active == 0` → static GpuLight.color used unchanged.
 // Uploaded by `LightBridge::update → Renderer::upload_bridge_descriptors`.
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
-@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 
 // Group 4 — baked directional lightmap (static direct lighting).
 // See context/lib/rendering_pipeline.md §4.
@@ -403,9 +403,9 @@ fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer:
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
 // concatenated after this source at pipeline-build time (render/mod.rs
 // `SHADER_SOURCE`). It reads the composed atlas, filtering sampler, depth
-// moments, and grid metadata declared above by lexical name. The helper drops
-// invalid (in-wall) probes via atlas alpha, downweights backfacing probes,
-// applies moment visibility, and renormalizes survivors.
+// moments, and grid metadata declared above by lexical name. The helper gets
+// invalid (in-wall) status from the carried word, downweights backfacing
+// probes, applies moment visibility, and renormalizes survivors.
 
 // Normal-offset wrapper. Biases the lookup toward the lit side and derives the
 // grid index / sub-cell fraction, then defers the corrected 8-corner blend to

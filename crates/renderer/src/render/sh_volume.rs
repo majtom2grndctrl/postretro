@@ -90,8 +90,8 @@ pub struct ShVolumeResources {
     pub base_atlas_view: wgpu::TextureView,
     /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
     pub total_atlas_storage_view: wgpu::TextureView,
-    /// Per-probe depth-moment texture (`Rgba16Float` — R = E[d], G = E[d²],
-    /// B/A currently hold the inert raw halves of the load-derived word).
+    /// Per-probe depth-moment texture (`Rgba16Uint` — R/G carry the f16 bits
+    /// for E[d]/E[d²], B/A carry the raw halves of the load-derived word).
     /// Already bound on group 3 binding 14 for the forward/billboard/fog
     /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
@@ -795,7 +795,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         binding: BIND_SH_DEPTH_MOMENTS,
         visibility: vis,
         ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            sample_type: wgpu::TextureSampleType::Uint,
             view_dimension: wgpu::TextureViewDimension::D3,
             multisampled: false,
         },
@@ -806,12 +806,11 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     entries
 }
 
-/// Pack per-probe depth moments into one `Rgba16Float` 3D texture payload.
+/// Pack per-probe depth moments into one `Rgba16Uint` 3D texture payload.
 /// Probes are already ordered z-major/y/x by the PRL section; keeping the same
 /// linear order as the SH band textures makes the moment texture index-aligned
 /// with every band. Valid probes copy baked f16 bits directly into RG. B/A
-/// carry the raw low/high halves of the load-derived indirection word; this
-/// texture stays `Rgba16Float` until Task 5 changes the sampler type atomically.
+/// carry the raw low/high halves of the load-derived indirection word.
 pub(super) fn pack_probe_depth_moments(
     probes: &[OctahedralShProbe],
     grid: [u32; 3],
@@ -1032,7 +1031,7 @@ fn upload_depth_moment_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D3,
-        format: wgpu::TextureFormat::Rgba16Float,
+        format: wgpu::TextureFormat::Rgba16Uint,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -1208,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_sh_depth_moment_dummy_payload_is_one_zero_rgba16f_texel() {
+    fn missing_sh_depth_moment_dummy_payload_is_one_zero_rgba16u_texel() {
         assert_eq!(dummy_depth_moment_payload(), [0, 0, 0, 0]);
         assert_eq!(dummy_depth_moment_payload().len(), 4);
 
@@ -1277,12 +1276,84 @@ mod tests {
         assert!(entry.count.is_none());
         match entry.ty {
             wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                sample_type: wgpu::TextureSampleType::Uint,
                 view_dimension: wgpu::TextureViewDimension::D3,
                 multisampled: false,
             } => {}
             other => panic!("unexpected SH depth moment binding type: {other:?}"),
         }
+
+        let mesh_entry = mesh_bind_group_layout_entries()
+            .into_iter()
+            .find(|entry| entry.binding == BIND_SH_DEPTH_MOMENTS)
+            .expect("mesh SH superset should inherit the moments binding");
+        assert!(matches!(
+            mesh_entry.ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn every_sh_reader_declares_uint_moments_and_uses_the_canonical_word_decode() {
+        const SH_SAMPLE: &str = include_str!("../shaders/sh_sample.wgsl");
+        const SH_INDIRECTION: &str = include_str!("../shaders/sh_indirection.wgsl");
+        const READERS: [(&str, &str, &str); 6] = [
+            (
+                "forward",
+                include_str!("../shaders/forward.wgsl"),
+                "@group(3) @binding(14)",
+            ),
+            (
+                "fog",
+                include_str!("../shaders/fog_volume.wgsl"),
+                "@group(3) @binding(14)",
+            ),
+            (
+                "billboard",
+                include_str!("../shaders/billboard.wgsl"),
+                "@group(3) @binding(14)",
+            ),
+            (
+                "skinned mesh",
+                include_str!("../shaders/skinned_mesh.wgsl"),
+                "@group(4) @binding(14)",
+            ),
+            (
+                "kinematic brush",
+                include_str!("../shaders/kinematic_brush.wgsl"),
+                "@group(4) @binding(14)",
+            ),
+            (
+                "SDF shadow",
+                include_str!("../shaders/sdf_shadow.wgsl"),
+                "@group(1) @binding(2)",
+            ),
+        ];
+
+        for (label, source, binding) in READERS {
+            assert!(
+                source.contains(binding)
+                    && source.contains("var sh_depth_moments: texture_3d<u32>;"),
+                "{label} must keep its existing moments binding and declare it as texture_3d<u32>",
+            );
+        }
+        assert!(
+            SH_SAMPLE.contains("decode_sh_probe_indirection(")
+                && SH_SAMPLE.contains("packed.b | (packed.a << 16u)")
+                && !SH_SAMPLE.contains("sample_a.a >= 0.5")
+                && !SH_SAMPLE.contains("sample_indirect.a >= 0.5")
+                && !SH_SAMPLE.contains("enable f16"),
+            "samplers must derive validity from the canonical B/A word decode, not atlas alpha",
+        );
+        assert!(
+            SH_INDIRECTION.contains("fn decode_sh_probe_indirection")
+                && SH_SAMPLE.contains("sample_l1_whole_cell_atlas"),
+            "the shared decoder and mandatory L1 whole-cell resolver must remain linked",
+        );
     }
 
     #[test]
@@ -1374,6 +1445,8 @@ mod tests {
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
             "\n",
+            include_str!("../shaders/sh_indirection.wgsl"),
+            "\n",
             include_str!("../shaders/sh_sample.wgsl"),
             "\n",
             // sdf-per-light-shadows Task 3: forward now calls the shared
@@ -1397,10 +1470,14 @@ mod tests {
         const BILLBOARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/billboard.wgsl"),
             "\n",
+            include_str!("../shaders/sh_indirection.wgsl"),
+            "\n",
             include_str!("../shaders/sh_sample.wgsl"),
         );
         const FOG_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/fog_volume.wgsl"),
+            "\n",
+            include_str!("../shaders/sh_indirection.wgsl"),
             "\n",
             include_str!("../shaders/sh_sample.wgsl"),
         );

@@ -176,6 +176,8 @@ fn plan_frame_layout<'a>(collections: &[(&'a str, &'a [u8])]) -> Option<FrameLay
 const BILLBOARD_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/billboard.wgsl"),
     "\n",
+    include_str!("../shaders/sh_indirection.wgsl"),
+    "\n",
     include_str!("../shaders/sh_sample.wgsl"),
 );
 

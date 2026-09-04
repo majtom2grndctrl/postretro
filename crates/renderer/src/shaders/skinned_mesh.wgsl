@@ -220,7 +220,7 @@ struct ShGridInfo {
 @group(4) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
-@group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
+@group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
 // render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it
@@ -341,8 +341,8 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
 // concatenated after this source at pipeline-build time (render/mesh_pass.rs).
 // It reads `sh_total_atlas`, `sh_atlas_sampler`, `sh_grid`, and
 // `sh_depth_moments` (declared at group 4 above) by lexical name. The helper
-// drops invalid (in-wall) probes via atlas alpha, applies moment visibility, and
-// renormalizes survivors.
+// derives invalid (in-wall) probes from the depth-moment word, applies moment
+// visibility, and renormalizes survivors.
 
 // Normal-offset wrapper, mirrored from forward.wgsl's `sample_sh_indirect` but
 // with backface rejection OFF (entities are not static surfaces — matches the

@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.1
 
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
@@ -10,7 +11,7 @@ use postretro_render_cpu::sh_compose::{
     u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
-use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolumeResources};
+use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
 // mirrors these (changing either requires updating both).
@@ -43,14 +44,25 @@ const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
 const INVALID_PROBE_INDIRECTION: u32 = u32::MAX;
 /// GPU-side compose pass. Always present — levels without an SH section get
 /// dummy 1×1 octahedral atlases plus valid zeroed depth-moment resources and a
-/// single workgroup dispatch. Unconditional dispatch avoids branching in the
-/// frame loop.
+/// valid one-workgroup copy-through dispatch. After that initial pass, the
+/// full-grid compose is gated on animated-descriptor activity or a frame-mask
+/// change; when it dispatches, it still performs no per-cell or per-tile cull.
 pub struct ShComposeResources {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     /// Affinity-cell dimensions. One 8×8 workgroup reconstructs and writes the
     /// 4×4×4 probe tiles belonging to one brick.
     dispatch_dimensions: [u32; 3],
+    /// Per-delta-light map to the shared animated-light descriptor slot.
+    /// This is the same list bound at binding 25.
+    animation_descriptor_indices: Vec<u32>,
+    /// The total atlas starts zeroed and must receive the base copy before its
+    /// first world-frame sample.
+    pending_copy_through: bool,
+    /// Retains one base-only dispatch after animated activity ends.
+    was_active: bool,
+    /// Frame mask that produced the current total atlas.
+    last_composed_mask: LightTermMask,
 }
 
 impl ShComposeResources {
@@ -293,11 +305,6 @@ impl ShComposeResources {
             entries: &entries,
         });
 
-        // Keep the `AnimatedLightBuffers` import live; the type is borrowed
-        // via bind group entries above, not held directly.
-        let _ = std::marker::PhantomData::<AnimatedLightBuffers>;
-        let _ = ANIMATION_DESCRIPTOR_SIZE;
-
         log::info!(
             "[Renderer] SH compose: base grid {}×{}×{}, {} animated delta light(s)",
             sh.grid_dimensions[0],
@@ -306,34 +313,75 @@ impl ShComposeResources {
             light_count,
         );
 
+        let dispatch_dimensions = buffers.affinity_dims;
+        let animation_descriptor_indices = buffers.animation_descriptor_indices;
         Self {
             pipeline,
             bind_group,
-            dispatch_dimensions: buffers.affinity_dims,
+            dispatch_dimensions,
+            animation_descriptor_indices,
+            pending_copy_through: true,
+            was_active: false,
+            last_composed_mask: LightTermMask::ALL,
         }
     }
 
-    /// Encode the per-frame compose dispatch. The accumulated animated delta is
-    /// always added to the base at full weight (the `delta_scale` knob was
-    /// retired with the indirect-only delta).
-    pub fn dispatch(
-        &self,
+    /// Whether any delta light consumed by this pass is active in the shared
+    /// animation descriptor mirror.
+    pub fn has_active_animated_descriptor(&self, animation: &AnimatedLightBuffers) -> bool {
+        animation.any_active_for_descriptor_indices(&self.animation_descriptor_indices)
+    }
+
+    /// Encode a compose dispatch only when the full composed atlas could have
+    /// changed. The accumulated animated delta is always added to the base at
+    /// full weight (the `delta_scale` knob was retired with the indirect-only
+    /// delta).
+    pub fn dispatch_if_needed(
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
+        active: bool,
+        frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("SH Compose"),
-            timestamp_writes,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, uniform_bind_group, &[]);
-        pass.set_bind_group(1, &self.bind_group, &[]);
-        let wg_x = self.dispatch_dimensions[0].max(1);
-        let wg_y = self.dispatch_dimensions[1].max(1);
-        let wg_z = self.dispatch_dimensions[2].max(1);
-        pass.dispatch_workgroups(wg_x, wg_y, wg_z);
+        if !indirect_compose_should_dispatch(
+            active,
+            self.pending_copy_through,
+            self.was_active,
+            frame_light_term_mask,
+            self.last_composed_mask,
+        ) {
+            return;
+        }
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("SH Compose"),
+                timestamp_writes,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, uniform_bind_group, &[]);
+            pass.set_bind_group(1, &self.bind_group, &[]);
+            let wg_x = self.dispatch_dimensions[0].max(1);
+            let wg_y = self.dispatch_dimensions[1].max(1);
+            let wg_z = self.dispatch_dimensions[2].max(1);
+            pass.dispatch_workgroups(wg_x, wg_y, wg_z);
+        }
+
+        self.pending_copy_through = false;
+        self.was_active = active;
+        self.last_composed_mask = frame_light_term_mask;
     }
+}
+
+fn indirect_compose_should_dispatch(
+    active: bool,
+    pending_copy_through: bool,
+    was_active: bool,
+    frame_light_term_mask: LightTermMask,
+    last_composed_mask: LightTermMask,
+) -> bool {
+    active || pending_copy_through || was_active || frame_light_term_mask != last_composed_mask
 }
 
 fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -512,10 +560,15 @@ fn build_probe_indirection_words(
 #[cfg(test)]
 mod tests {
     use super::{
-        BIND_BASE_ATLAS_SAMPLER, INVALID_PROBE_INDIRECTION, build_probe_indirection_words,
-        compose_bgl_entries,
+        BIND_BASE_ATLAS_SAMPLER, INVALID_PROBE_INDIRECTION, build_delta_buffers,
+        build_probe_indirection_words, compose_bgl_entries, indirect_compose_should_dispatch,
+    };
+    use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+    use postretro_level_format::octahedral::{
+        DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
     use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
+    use postretro_render_cpu::frame_uniforms::LightTermMask;
 
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
@@ -674,6 +727,121 @@ mod tests {
         assert!(matches!(
             sampler.ty,
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+        ));
+    }
+
+    #[test]
+    fn indirect_compose_schedules_load_active_and_zero_transition() {
+        assert!(indirect_compose_should_dispatch(
+            false,
+            true,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(indirect_compose_should_dispatch(
+            true,
+            false,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(indirect_compose_should_dispatch(
+            false,
+            false,
+            true,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+        assert!(!indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
+        ));
+    }
+
+    #[test]
+    fn indirect_compose_mask_change_and_return_to_all_re_dirty() {
+        let mut static_indirect_off = LightTermMask::ALL;
+        static_indirect_off.set_enabled(LightTermMask::INDIRECT_STATIC, false);
+
+        assert!(indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            static_indirect_off,
+            LightTermMask::ALL,
+        ));
+        assert!(indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            LightTermMask::ALL,
+            static_indirect_off,
+        ));
+    }
+
+    #[test]
+    fn indirect_compose_mask_change_stays_dirty_until_a_world_dispatch_records_it() {
+        let mut animated_indirect_off = LightTermMask::ALL;
+        animated_indirect_off.set_enabled(LightTermMask::INDIRECT_ANIMATED, false);
+        let last_composed_mask = LightTermMask::ALL;
+
+        // A non-world frame never calls dispatch_if_needed, so it cannot
+        // consume the mask change before the next world frame.
+        assert!(indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_indirect_off,
+            last_composed_mask,
+        ));
+        assert!(indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_indirect_off,
+            last_composed_mask,
+        ));
+        assert!(!indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            animated_indirect_off,
+            animated_indirect_off,
+        ));
+    }
+
+    #[test]
+    fn empty_indirect_descriptor_indices_leave_compose_idle_after_copy_through() {
+        // This is CPU-only coverage for the load-time data feeding binding 25.
+        // With no animated indirect delta lights, the shared activity helper
+        // receives an empty descriptor-index list and the pass may idle once
+        // its initial base copy-through completed.
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: Vec::new(),
+            valid_probe_masks: vec![0],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+
+        let buffers = build_delta_buffers(Some(&section), [4, 4, 4]);
+        assert_eq!(buffers.animated_light_count, 0);
+        assert!(buffers.animation_descriptor_indices.is_empty());
+        assert!(!indirect_compose_should_dispatch(
+            false,
+            false,
+            false,
+            LightTermMask::ALL,
+            LightTermMask::ALL,
         ));
     }
 }

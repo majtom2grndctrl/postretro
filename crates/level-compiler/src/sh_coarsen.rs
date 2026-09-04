@@ -91,10 +91,31 @@ pub(crate) fn classify_levels(
     protect_aabbs: &[[f32; 6]],
     params: &CoarsenParams,
 ) -> Vec<u8> {
+    let unconstrained = vec![Level::L2.to_u8(); bricks.len()];
+    classify_levels_with_ceiling(bricks, affinity_dims, protect_aabbs, &unconstrained, params)
+}
+
+/// Classify every brick with a maximum allowed level per brick. A ceiling of
+/// L0/L1/L2 means the classifier may only retain that level or something
+/// finer. The ceiling is applied alongside protection *before* the smoothing
+/// fixpoint, so a pinned L0 can demote an L2 neighbor to L1 and the structural
+/// face-adjacency invariant still holds.
+pub(crate) fn classify_levels_with_ceiling(
+    bricks: &[BrickClass],
+    affinity_dims: [u32; 3],
+    protect_aabbs: &[[f32; 6]],
+    ceilings: &[u8],
+    params: &CoarsenParams,
+) -> Vec<u8> {
     debug_assert_eq!(
         bricks.len(),
         affinity_dims.iter().map(|&d| d as usize).product::<usize>(),
         "bricks.len() must equal product(affinity_dims); seam-smoothing indexes by affinity coords",
+    );
+    debug_assert_eq!(
+        ceilings.len(),
+        bricks.len(),
+        "every classified brick needs a ceiling before seam smoothing"
     );
     // --- Phase A — map-wide magnitude. ---
     let mut valid_mags: Vec<f32> = bricks
@@ -174,10 +195,15 @@ pub(crate) fn classify_levels(
         l1_eligible.push(l1_ok);
     }
 
-    // --- Phase C — protection (after the gate, before smoothing). ---
-    // Protected bricks are forced to the finest level and can force coarser
-    // neighbors to demote, but can never demote further.
+    // --- Phase C — protection + storage ceilings (after the gate, before
+    // smoothing). Protected bricks are forced to the finest level. A ceiling
+    // similarly only demotes, so either source can force coarser neighbors to
+    // refine without ever being undone by the smoothing pass.
     for (i, b) in bricks.iter().enumerate() {
+        let ceiling = Level::from_u8(ceilings[i]).unwrap_or(Level::L0);
+        if levels[i].to_u8() > ceiling.to_u8() {
+            levels[i] = ceiling;
+        }
         if protect_aabbs
             .iter()
             .any(|a| aabb_overlap(&b.world_min, &b.world_max, a))
@@ -1143,5 +1169,85 @@ mod tests {
         );
 
         assert_eq!(out, vec![L0, L1]);
+    }
+
+    #[test]
+    fn base_delta_ceiling_pins_only_when_candidate_is_coarser() {
+        // AC7's pin directions: an L2 candidate falls to a present L0 or L1
+        // delta, while an L1 candidate remains L1 when the delta is L2.
+        let l2 = brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1));
+        let l1 = brick(10.0, 10.0, (0.1, 0.1), (2.0, 2.0));
+        assert_eq!(
+            classify_levels_with_ceiling(&[l2], [1, 1, 1], &[], &[L0], &CoarsenParams::default(),),
+            vec![L0],
+        );
+        assert_eq!(
+            classify_levels_with_ceiling(&[l2], [1, 1, 1], &[], &[L1], &CoarsenParams::default(),),
+            vec![L1],
+        );
+        assert_eq!(
+            classify_levels_with_ceiling(&[l1], [1, 1, 1], &[], &[L2], &CoarsenParams::default(),),
+            vec![L1],
+        );
+    }
+
+    #[test]
+    fn base_no_delta_ceiling_keeps_candidate_level() {
+        let candidate = brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1));
+        assert_eq!(
+            classify_levels_with_ceiling(
+                &[candidate],
+                [1, 1, 1],
+                &[],
+                &[L2],
+                &CoarsenParams::default(),
+            ),
+            vec![L2],
+            "a no-delta cell keeps its classifier candidate"
+        );
+    }
+
+    #[test]
+    fn base_ceiling_runs_before_smoothing() {
+        // Both candidates are L2, but the left cell is pinned to L0. Applying
+        // the pin before smoothing refines the adjacent L2 to L1 rather than
+        // leaving an L0/L2 seam.
+        let bricks = vec![
+            at_x(brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1)), 0),
+            at_x(brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1)), 1),
+        ];
+        assert_eq!(
+            classify_levels_with_ceiling(
+                &bricks,
+                [2, 1, 1],
+                &[],
+                &[L0, L2],
+                &CoarsenParams::default(),
+            ),
+            vec![L0, L1],
+        );
+    }
+
+    #[test]
+    fn fidelity_multiplier_is_monotone_for_every_candidate() {
+        let bricks = vec![
+            brick(10.0, 10.0, (0.05, 0.05), (0.5, 0.5)),
+            brick(10.0, 10.0, (0.2, 0.2), (2.0, 2.0)),
+        ];
+        let mut tighter = CoarsenParams::default();
+        tighter.rel_p95_max *= 0.1;
+        tighter.rel_max_max *= 0.1;
+        let mut looser = CoarsenParams::default();
+        looser.rel_p95_max *= 2.0;
+        looser.rel_max_max *= 2.0;
+        let tight = classify_levels(&bricks, [2, 1, 1], &[], &tighter);
+        let loose = classify_levels(&bricks, [2, 1, 1], &[], &looser);
+        assert!(
+            tight
+                .iter()
+                .zip(&loose)
+                .all(|(tight, loose)| tight <= loose),
+            "a tighter base-density fidelity multiplier must never choose a coarser level"
+        );
     }
 }

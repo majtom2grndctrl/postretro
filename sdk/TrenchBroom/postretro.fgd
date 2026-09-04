@@ -32,6 +32,10 @@
         0 : "Uniform L0 (disable id-41 coarsening)"
         1 : "Adaptive id 41 (default)"
     ]
+    // Multiplies the base-SH classifier's relative reconstruction-error gates.
+    // Smaller values retain more L0 data; larger values permit coarser stored
+    // probe bricks. Invalid values use the compiler default (1.0).
+    _sh_density_fidelity(float) : "Base SH probe-density fidelity multiplier (default 1.0; smaller = finer)" : ""
     // Compiler-owned thresholds for selecting baked static lights that may cast
     // runtime shadows onto moving entities. These tune the heuristic per map;
     // individual lights do not carry an opt-in/opt-out KVP.

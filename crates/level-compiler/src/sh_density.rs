@@ -11,16 +11,36 @@ use postretro_level_format::sh_reconstruct::{
 };
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
+use crate::sh_analyze::{
+    AnalyzeInputs, DeltaView, LevelKind, brick_world_aabb, build_brick_tiles, level_errors,
+    level_errors_with_l1_zero_fallback, tile_magnitude,
+};
 use crate::sh_bake::MAX_SH_ATLAS_DIMENSION;
+use crate::sh_coarsen::{
+    BrickClass, CoarsenParams, DeltaSectionsRef, classify_levels, classify_levels_with_ceiling,
+};
+
+/// Default multiplier for the inherited composed-error relative gates.
+pub(crate) const DEFAULT_SH_DENSITY_FIDELITY: f32 = 1.0;
 
 type PackedTile = Vec<OctahedralAtlasTexel>;
 
-/// The one level assigned to each affinity brick before stored-set packing.
-///
-/// This interim task intentionally selects uniform L0 unless the measurement
-/// flag requests another representable level. Task 6 replaces that selection
-/// with the classifier plus delta ceilings and seam smoothing, while reusing the
-/// packers below.
+/// Final base-density selection plus the bake-summary attribution needed to
+/// distinguish classifier choice from storage constraints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DensityClassification {
+    pub levels: Vec<Level>,
+    /// Bricks whose unconstrained candidate exceeded a present delta's level,
+    /// in id 27 / id 41 / id 45 order. A brick can deliberately appear in more
+    /// than one bucket when multiple sections constrain it.
+    pub delta_pins: [u64; 3],
+    /// Bricks the mapper/CLI protection union lowered from a non-L0 candidate.
+    pub protection_pins: u64,
+}
+
+/// Build an explicit fixed-level array for the measurement override. Production
+/// selection uses [`classify_base_levels`]; this path deliberately retains only
+/// the representability checks that an override cannot bypass.
 pub(crate) fn force_levels(
     grid_dimensions: [u32; 3],
     probe_validity: &[bool],
@@ -35,8 +55,7 @@ pub(crate) fn force_levels(
     }
 
     let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
-    let brick_count = checked_probe_count(affinity_dimensions)?;
-    let mut levels = vec![Level::L0; brick_count];
+    let mut levels = uniform_l0_levels(grid_dimensions)?;
     let Some(forced_level) = forced_level else {
         return Ok(levels);
     };
@@ -46,6 +65,10 @@ pub(crate) fn force_levels(
             for brick_x in 0..affinity_dimensions[0] as usize {
                 let brick = brick_index(brick_x, brick_y, brick_z, affinity_dimensions);
                 if brick_is_partial(brick_x, brick_y, brick_z, grid_dimensions) {
+                    continue;
+                }
+                if !brick_has_any_valid(brick_x, brick_y, brick_z, grid_dimensions, probe_validity)
+                {
                     continue;
                 }
                 if forced_level == Level::L1
@@ -66,12 +89,562 @@ pub(crate) fn force_levels(
     Ok(levels)
 }
 
+/// Uniform L0 storage used for the map-level opt-out and degenerate fallback.
+/// It is deliberately a level-array constructor, rather than a special packer
+/// branch, so metadata stamps and stored-set payloads still share one path.
+pub(crate) fn uniform_l0_levels(grid_dimensions: [u32; 3]) -> Result<Vec<Level>, String> {
+    let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
+    Ok(vec![Level::L0; checked_probe_count(affinity_dimensions)?])
+}
+
+/// Compute the most-coarse representable base level for every brick. A base
+/// stored slot must never be coarser than any present grid-matched delta entry:
+/// the compose passes can then read each delta from the same stored slot. Edge
+/// bricks are always L0 because neither sparse stored set represents a partial
+/// 4×4×4 lattice.
+pub(crate) fn storage_level_ceilings(
+    grid_dimensions: [u32; 3],
+    deltas: DeltaSectionsRef<'_>,
+) -> Result<Vec<Level>, String> {
+    let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
+    let cells = checked_probe_count(affinity_dimensions)?;
+    let mut ceilings = vec![Level::L2; cells];
+
+    apply_delta_ceiling(
+        &mut ceilings,
+        affinity_dimensions,
+        deltas.indirect.map(|section| {
+            (
+                section.affinity_dims,
+                section.affinity_offsets.as_slice(),
+                section.cell_levels.as_slice(),
+            )
+        }),
+        "id 27",
+    )?;
+    apply_delta_ceiling(
+        &mut ceilings,
+        affinity_dimensions,
+        deltas.direct.map(|section| {
+            (
+                section.affinity_dims,
+                section.affinity_offsets.as_slice(),
+                section.cell_levels.as_slice(),
+            )
+        }),
+        "id 41",
+    )?;
+    apply_delta_ceiling(
+        &mut ceilings,
+        affinity_dimensions,
+        deltas.anim_direct.map(|section| {
+            (
+                section.affinity_dims,
+                section.affinity_offsets.as_slice(),
+                section.cell_levels.as_slice(),
+            )
+        }),
+        "id 45",
+    )?;
+
+    for brick_z in 0..affinity_dimensions[2] as usize {
+        for brick_y in 0..affinity_dimensions[1] as usize {
+            for brick_x in 0..affinity_dimensions[0] as usize {
+                if brick_is_partial(brick_x, brick_y, brick_z, grid_dimensions) {
+                    ceilings[brick_index(brick_x, brick_y, brick_z, affinity_dimensions)] =
+                        Level::L0;
+                }
+            }
+        }
+    }
+    Ok(ceilings)
+}
+
+/// Apply a previously derived storage ceiling to any level source, including
+/// the measurement-only force-level bypass. The final packer receives only this
+/// already-clamped array, keeping metadata stamps and stored payload membership
+/// in lockstep.
+pub(crate) fn apply_storage_level_ceilings(levels: &mut [Level], ceilings: &[Level]) {
+    debug_assert_eq!(levels.len(), ceilings.len());
+    for (level, ceiling) in levels.iter_mut().zip(ceilings) {
+        if level.to_u8() > ceiling.to_u8() {
+            *level = *ceiling;
+        }
+    }
+}
+
+/// Apply the non-error-gate constraints to the force-level measurement path.
+/// A force level intentionally bypasses classification, but it must not bypass
+/// delta ceilings, mapper protection, or the post-constraint seam invariant.
+pub(crate) fn apply_forced_level_constraints(
+    levels: &mut [Level],
+    base: &OctahedralShVolumeSection,
+    ceilings: &[Level],
+    protect_aabbs: &[[f32; 6]],
+) -> Result<(), String> {
+    let dimensions = base.grid_dimensions;
+    let affinity_dimensions = dimensions.map(|dimension| dimension.div_ceil(4));
+    if levels.len() != checked_probe_count(affinity_dimensions)? || levels.len() != ceilings.len() {
+        return Err("base SH forced-level constraints do not match the affinity grid".to_string());
+    }
+    let validity: Vec<bool> = base
+        .probes
+        .iter()
+        .map(|probe| probe.validity != 0)
+        .collect();
+    if validity.len() != checked_probe_count(dimensions)? {
+        return Err("base SH forced-level validity does not match the probe grid".to_string());
+    }
+    apply_storage_level_ceilings(levels, ceilings);
+
+    let (ax, ay, az) = (
+        affinity_dimensions[0] as usize,
+        affinity_dimensions[1] as usize,
+        affinity_dimensions[2] as usize,
+    );
+    let mut participating = vec![false; levels.len()];
+    let mut l1_eligible = vec![false; levels.len()];
+    for z in 0..az {
+        for y in 0..ay {
+            for x in 0..ax {
+                let brick = brick_index(x, y, z, affinity_dimensions);
+                participating[brick] = brick_has_any_valid(x, y, z, dimensions, &validity);
+                l1_eligible[brick] = brick_has_valid_corner(x, y, z, dimensions, &validity);
+                if brick_intersects_protection(
+                    x,
+                    y,
+                    z,
+                    dimensions,
+                    base.grid_origin,
+                    base.cell_size,
+                    protect_aabbs,
+                ) {
+                    levels[brick] = Level::L0;
+                }
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for z in 0..az {
+            for y in 0..ay {
+                for x in 0..ax {
+                    let brick = brick_index(x, y, z, affinity_dimensions);
+                    if !participating[brick] {
+                        continue;
+                    }
+                    if x + 1 < ax {
+                        changed |= smooth_forced_pair(
+                            levels,
+                            &participating,
+                            &l1_eligible,
+                            brick,
+                            brick + 1,
+                        );
+                    }
+                    if y + 1 < ay {
+                        changed |= smooth_forced_pair(
+                            levels,
+                            &participating,
+                            &l1_eligible,
+                            brick,
+                            brick + ax,
+                        );
+                    }
+                    if z + 1 < az {
+                        changed |= smooth_forced_pair(
+                            levels,
+                            &participating,
+                            &l1_eligible,
+                            brick,
+                            brick + ax * ay,
+                        );
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn brick_intersects_protection(
+    brick_x: usize,
+    brick_y: usize,
+    brick_z: usize,
+    dimensions: [u32; 3],
+    grid_origin: [f32; 3],
+    cell_size: [f32; 3],
+    protect_aabbs: &[[f32; 6]],
+) -> bool {
+    let max = [
+        ((brick_x + 1) * 4 - 1).min(dimensions[0] as usize - 1),
+        ((brick_y + 1) * 4 - 1).min(dimensions[1] as usize - 1),
+        ((brick_z + 1) * 4 - 1).min(dimensions[2] as usize - 1),
+    ];
+    let min = [brick_x * 4, brick_y * 4, brick_z * 4];
+    protect_aabbs.iter().any(|aabb| {
+        (0..3).all(|axis| {
+            grid_origin[axis] + min[axis] as f32 * cell_size[axis] <= aabb[axis + 3]
+                && grid_origin[axis] + max[axis] as f32 * cell_size[axis] >= aabb[axis]
+        })
+    })
+}
+
+fn smooth_forced_pair(
+    levels: &mut [Level],
+    participating: &[bool],
+    l1_eligible: &[bool],
+    a: usize,
+    b: usize,
+) -> bool {
+    if !participating[a] || !participating[b] {
+        return false;
+    }
+    let (a_level, b_level) = (levels[a].to_u8(), levels[b].to_u8());
+    if a_level.abs_diff(b_level) < 2 {
+        return false;
+    }
+    let coarse = if a_level > b_level { a } else { b };
+    levels[coarse] = match levels[coarse] {
+        Level::L2 if l1_eligible[coarse] => Level::L1,
+        Level::L2 | Level::L1 | Level::L0 => Level::L0,
+    };
+    true
+}
+
+/// Build the base-SH classifier inputs from the dense composed receiver field
+/// and apply mapper protection plus every present delta ceiling before the
+/// shared smoothing fixpoint. This must run before delta valid-probe
+/// compaction: [`DeltaView`] strides payloads by their dense validity masks.
+pub(crate) fn classify_base_levels(
+    base_indirect: &OctahedralShVolumeSection,
+    base_direct: Option<&DirectShVolumeSection>,
+    deltas: DeltaSectionsRef<'_>,
+    protect_aabbs: &[[f32; 6]],
+    params: &CoarsenParams,
+) -> Result<DensityClassification, String> {
+    let dimensions = base_indirect.grid_dimensions;
+    let affinity_dimensions = dimensions.map(|dimension| dimension.div_ceil(4));
+    let brick_count = checked_probe_count(affinity_dimensions)?;
+    let (nx, ny, nz) = (
+        dimensions[0] as usize,
+        dimensions[1] as usize,
+        dimensions[2] as usize,
+    );
+    let total_probes = nx
+        .checked_mul(ny)
+        .and_then(|count| count.checked_mul(nz))
+        .ok_or_else(|| "SH density grid dimensions overflow usize".to_string())?;
+    let tile_dimension = base_indirect.tile_dimension as usize;
+    let border = base_indirect.tile_border as usize;
+    let interior = tile_dimension.saturating_sub(2 * border);
+    if total_probes == 0 || interior == 0 || brick_count == 0 {
+        return Ok(DensityClassification {
+            levels: vec![Level::L0; brick_count],
+            ..Default::default()
+        });
+    }
+
+    let validity: Vec<u8> = base_indirect
+        .probes
+        .iter()
+        .map(|probe| probe.validity)
+        .collect();
+    if validity.len() != total_probes {
+        return Err(format!(
+            "SH density base metadata has {} probes for grid {dimensions:?}, expected {total_probes}",
+            validity.len()
+        ));
+    }
+    let mut valid_rank = vec![-1i64; total_probes];
+    let mut rank = 0i64;
+    for (probe, rank_slot) in valid_rank.iter_mut().enumerate() {
+        if validity[probe] != 0 {
+            *rank_slot = rank;
+            rank += 1;
+        }
+    }
+
+    let guard = |view: Option<DeltaView<'_>>| {
+        view.filter(|section| section.affinity_dims == affinity_dimensions)
+    };
+    let delta_indirect = guard(deltas.indirect.map(DeltaView::from_indirect));
+    let delta_direct = guard(deltas.direct.map(DeltaView::from_direct));
+    let delta_animated = guard(deltas.anim_direct.map(DeltaView::from_anim_direct));
+    let inputs = AnalyzeInputs {
+        grid_origin: base_indirect.grid_origin,
+        cell_size: base_indirect.cell_size,
+        grid_dims: dimensions,
+        validity: &validity,
+        base_indirect,
+        base_direct,
+        delta_indirect: deltas.indirect,
+        delta_direct: deltas.direct,
+        delta_anim_direct: deltas.anim_direct,
+        protect_aabbs: &[],
+        thresholds: &[],
+    };
+    let texels = interior * interior;
+    let weights = vec![1.0; texels];
+    let (ax, ay, az) = (
+        affinity_dimensions[0] as usize,
+        affinity_dimensions[1] as usize,
+        affinity_dimensions[2] as usize,
+    );
+    let mut bricks = Vec::with_capacity(brick_count);
+    for cell_z in 0..az {
+        for cell_y in 0..ay {
+            for cell_x in 0..ax {
+                let cell = cell_x + cell_y * ax + cell_z * ax * ay;
+                let tiles = build_brick_tiles(
+                    &inputs,
+                    base_indirect,
+                    tile_dimension,
+                    interior,
+                    border,
+                    &valid_rank,
+                    dimensions,
+                    cell,
+                    cell_x,
+                    cell_y,
+                    cell_z,
+                    ax,
+                    ay,
+                    &delta_indirect,
+                    &delta_direct,
+                    &delta_animated,
+                );
+                let magnitude = tile_magnitude(&tiles.composed, texels);
+                let l1 =
+                    level_errors_with_l1_zero_fallback(&tiles.composed, texels, interior, &weights);
+                let l2 = level_errors(&tiles.composed, LevelKind::L2, texels, interior, &weights);
+                // The zero fallback faithfully scores what reconstruction would
+                // produce for a missing L1 corner lattice, but a v10 base
+                // brick with no valid corner is not allowed to carry an L1
+                // stamp. Reserve L1 for bricks with an actual valid corner;
+                // otherwise the classifier can still use its always-
+                // representable L2 mean or L0.
+                let l1_has_stored_corner = corner_locals()
+                    .into_iter()
+                    .any(|local| tiles.valid_mask[local]);
+                let (world_min, world_max) =
+                    brick_world_aabb(&inputs, dimensions, cell_x, cell_y, cell_z);
+                bricks.push(BrickClass {
+                    mag_p95: magnitude.p95,
+                    mag_max: magnitude.max,
+                    l1_p95: l1.p95,
+                    l1_max: l1.max,
+                    l1_evaluable: l1.texel_samples > 0 && l1_has_stored_corner,
+                    l2_p95: l2.p95,
+                    l2_max: l2.max,
+                    l2_evaluable: l2.texel_samples > 0,
+                    has_any_valid: tiles.valid_mask.iter().any(|&valid| valid),
+                    world_min: world_min.to_array(),
+                    world_max: world_max.to_array(),
+                });
+            }
+        }
+    }
+
+    let candidate = classify_levels(&bricks, affinity_dimensions, &[], params);
+    let candidate_levels: Vec<Level> = candidate
+        .iter()
+        .map(|&level| Level::from_u8(level).expect("classifier only produces supported levels"))
+        .collect();
+    let ceilings = storage_level_ceilings(dimensions, deltas)?;
+    let delta_pins = delta_pin_counts(&candidate_levels, dimensions, deltas)?;
+    let protection_pins = protection_pin_count(&candidate_levels, base_indirect, protect_aabbs)?;
+    let ceiling_bytes: Vec<u8> = ceilings.iter().map(|level| level.to_u8()).collect();
+    let levels = classify_levels_with_ceiling(
+        &bricks,
+        affinity_dimensions,
+        protect_aabbs,
+        &ceiling_bytes,
+        params,
+    )
+    .into_iter()
+    .map(|level| Level::from_u8(level).expect("classifier only produces supported levels"))
+    .collect();
+    Ok(DensityClassification {
+        levels,
+        delta_pins,
+        protection_pins,
+    })
+}
+
+/// Count direct ceiling constraints per section for the final bake summary.
+/// `levels` must be the source's candidate array before its ceiling is applied;
+/// this keeps the attribution meaningful for both the adaptive classifier and
+/// the measurement-only forced-level path.
+pub(crate) fn delta_pin_counts(
+    levels: &[Level],
+    grid_dimensions: [u32; 3],
+    deltas: DeltaSectionsRef<'_>,
+) -> Result<[u64; 3], String> {
+    let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
+    if levels.len() != checked_probe_count(affinity_dimensions)? {
+        return Err("base SH delta pin attribution does not match the affinity grid".to_string());
+    }
+    let candidates: Vec<u8> = levels.iter().map(|level| level.to_u8()).collect();
+    Ok([
+        count_delta_pins(
+            &candidates,
+            affinity_dimensions,
+            deltas.indirect.map(|section| {
+                (
+                    section.affinity_dims,
+                    &section.affinity_offsets,
+                    &section.cell_levels,
+                )
+            }),
+        ),
+        count_delta_pins(
+            &candidates,
+            affinity_dimensions,
+            deltas.direct.map(|section| {
+                (
+                    section.affinity_dims,
+                    &section.affinity_offsets,
+                    &section.cell_levels,
+                )
+            }),
+        ),
+        count_delta_pins(
+            &candidates,
+            affinity_dimensions,
+            deltas.anim_direct.map(|section| {
+                (
+                    section.affinity_dims,
+                    &section.affinity_offsets,
+                    &section.cell_levels,
+                )
+            }),
+        ),
+    ])
+}
+
+/// Count mapper/CLI protection demotions for the bake summary before the
+/// protection phase changes the level array.
+pub(crate) fn protection_pin_count(
+    levels: &[Level],
+    base: &OctahedralShVolumeSection,
+    protect_aabbs: &[[f32; 6]],
+) -> Result<u64, String> {
+    let dimensions = base.grid_dimensions;
+    let affinity_dimensions = dimensions.map(|dimension| dimension.div_ceil(4));
+    if levels.len() != checked_probe_count(affinity_dimensions)? {
+        return Err("base SH protection attribution does not match the affinity grid".to_string());
+    }
+    let (ax, ay, az) = (
+        affinity_dimensions[0] as usize,
+        affinity_dimensions[1] as usize,
+        affinity_dimensions[2] as usize,
+    );
+    let mut pins = 0u64;
+    for z in 0..az {
+        for y in 0..ay {
+            for x in 0..ax {
+                let brick = brick_index(x, y, z, affinity_dimensions);
+                if levels[brick] != Level::L0
+                    && brick_intersects_protection(
+                        x,
+                        y,
+                        z,
+                        dimensions,
+                        base.grid_origin,
+                        base.cell_size,
+                        protect_aabbs,
+                    )
+                {
+                    pins += 1;
+                }
+            }
+        }
+    }
+    Ok(pins)
+}
+
+fn apply_delta_ceiling(
+    ceilings: &mut [Level],
+    expected_dimensions: [u32; 3],
+    section: Option<([u32; 3], &[u32], &[u8])>,
+    label: &str,
+) -> Result<(), String> {
+    let Some((dimensions, offsets, levels)) = section else {
+        return Ok(());
+    };
+    if dimensions != expected_dimensions {
+        return Ok(());
+    }
+    if offsets.len() != ceilings.len() + 1 || levels.len() != ceilings.len() {
+        return Err(format!(
+            "{label} delta metadata does not match base affinity grid {expected_dimensions:?}"
+        ));
+    }
+    for cell in 0..ceilings.len() {
+        if offsets[cell + 1] <= offsets[cell] {
+            continue;
+        }
+        let level = Level::from_u8(levels[cell]).ok_or_else(|| {
+            format!(
+                "{label} delta has invalid cell level {} at cell {cell}",
+                levels[cell]
+            )
+        })?;
+        if level.to_u8() < ceilings[cell].to_u8() {
+            ceilings[cell] = level;
+        }
+    }
+    Ok(())
+}
+
+fn count_delta_pins(
+    candidates: &[u8],
+    expected_dimensions: [u32; 3],
+    section: Option<([u32; 3], &[u32], &[u8])>,
+) -> u64 {
+    let Some((dimensions, offsets, levels)) = section else {
+        return 0;
+    };
+    if dimensions != expected_dimensions
+        || offsets.len() != candidates.len() + 1
+        || levels.len() != candidates.len()
+    {
+        return 0;
+    }
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|&(cell, candidate)| offsets[cell + 1] > offsets[cell] && *candidate > levels[cell])
+        .count() as u64
+}
+
 /// Repack the indirect bake's legacy valid-probe-order lossless intermediate
 /// into the v10 brick-major stored set. The grouped bake cache remains upstream:
 /// this is deliberately invoked only after cold and warm assembly converge.
 pub(crate) fn pack_indirect_section(
-    mut section: OctahedralShVolumeSection,
+    section: OctahedralShVolumeSection,
     forced_level: Option<Level>,
+) -> Result<(OctahedralShVolumeSection, DensityPackStats), String> {
+    let validity: Vec<bool> = section
+        .probes
+        .iter()
+        .map(|probe| probe.validity != 0)
+        .collect();
+    let levels = force_levels(section.grid_dimensions, &validity, forced_level)?;
+    pack_indirect_section_with_levels(section, &levels)
+}
+
+/// Repack the dense RGBA16F base bake using a final, already-representable and
+/// delta-clamped per-brick level array. This is deliberately separate from the
+/// legacy force-level wrapper above: Task 6 selects these levels after all
+/// delta classifiers and the runtime-safe envelope have settled.
+pub(crate) fn pack_indirect_section_with_levels(
+    mut section: OctahedralShVolumeSection,
+    levels: &[Level],
 ) -> Result<(OctahedralShVolumeSection, DensityPackStats), String> {
     require_rgba16f(section.irradiance_format, "indirect")?;
     let validity: Vec<bool> = section
@@ -79,10 +652,15 @@ pub(crate) fn pack_indirect_section(
         .iter()
         .map(|probe| probe.validity != 0)
         .collect();
-    let levels = force_levels(section.grid_dimensions, &validity, forced_level)?;
+    let affinity_dimensions = section
+        .grid_dimensions
+        .map(|dimension| dimension.div_ceil(4));
+    if levels.len() != checked_probe_count(affinity_dimensions)? {
+        return Err("SH density final level count does not match the affinity grid".to_string());
+    }
     let source_tiles = decode_indirect_intermediate_tiles(&section, &validity)?;
-    stamp_levels(&mut section, &levels)?;
-    let (tiles, prefix) = stored_tiles(section.grid_dimensions, &validity, &levels, &source_tiles)?;
+    stamp_levels(&mut section, levels)?;
+    let (tiles, prefix) = stored_tiles(section.grid_dimensions, &validity, levels, &source_tiles)?;
     let layout = stored_layout(prefix.total_stored_tiles, section.tile_dimension)?;
     section.atlas_dimensions = [layout.atlas_width, layout.atlas_height];
     section.layer_count = layout.layer_count;
@@ -93,7 +671,7 @@ pub(crate) fn pack_indirect_section(
 
     Ok((
         section,
-        DensityPackStats::from_levels(&levels, prefix.total_stored_tiles),
+        DensityPackStats::from_levels(levels, prefix.total_stored_tiles),
     ))
 }
 
@@ -202,14 +780,44 @@ fn brick_has_valid_corner(
         let local_x = local % 4;
         let local_y = (local / 4) % 4;
         let local_z = local / 16;
-        let index = probe_index(
-            brick_x * 4 + local_x,
-            brick_y * 4 + local_y,
-            brick_z * 4 + local_z,
-            dimensions,
-        );
+        let x = brick_x * 4 + local_x;
+        let y = brick_y * 4 + local_y;
+        let z = brick_z * 4 + local_z;
+        if x >= dimensions[0] as usize || y >= dimensions[1] as usize || z >= dimensions[2] as usize
+        {
+            return false;
+        }
+        let index = probe_index(x, y, z, dimensions);
         validity[index]
     })
+}
+
+fn brick_has_any_valid(
+    brick_x: usize,
+    brick_y: usize,
+    brick_z: usize,
+    dimensions: [u32; 3],
+    validity: &[bool],
+) -> bool {
+    for local_z in 0..4 {
+        for local_y in 0..4 {
+            for local_x in 0..4 {
+                let (x, y, z) = (
+                    brick_x * 4 + local_x,
+                    brick_y * 4 + local_y,
+                    brick_z * 4 + local_z,
+                );
+                if x < dimensions[0] as usize
+                    && y < dimensions[1] as usize
+                    && z < dimensions[2] as usize
+                    && validity[probe_index(x, y, z, dimensions)]
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn stamp_levels(section: &mut OctahedralShVolumeSection, levels: &[Level]) -> Result<(), String> {
@@ -533,6 +1141,9 @@ fn pack_tiles_into_atlas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+    use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+    use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, irradiance_atlas_array_layout,
@@ -630,6 +1241,83 @@ mod tests {
         ]))
     }
 
+    fn indirect_delta(levels: &[u8], entries: &[bool]) -> DeltaShVolumesSection {
+        DeltaShVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [levels.len() as u32, 1, 1],
+            tile_dimension: TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX; levels.len()],
+            cell_levels: levels.to_vec(),
+            affinity_offsets: entries
+                .iter()
+                .scan(0u32, |offset, &entry| {
+                    let current = *offset;
+                    *offset += u32::from(entry);
+                    Some(current)
+                })
+                .chain(std::iter::once(
+                    entries.iter().filter(|&&entry| entry).count() as u32,
+                ))
+                .collect(),
+            affinity_lights: vec![0; entries.iter().filter(|&&entry| entry).count()],
+            delta_subblocks: Vec::new(),
+        }
+    }
+
+    fn direct_delta(levels: &[u8], entries: &[bool]) -> DirectShDeltaVolumesSection {
+        DirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [levels.len() as u32, 1, 1],
+            tile_dimension: TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            valid_probe_masks: vec![u64::MAX; levels.len()],
+            cell_levels: levels.to_vec(),
+            affinity_offsets: entries
+                .iter()
+                .scan(0u32, |offset, &entry| {
+                    let current = *offset;
+                    *offset += u32::from(entry);
+                    Some(current)
+                })
+                .chain(std::iter::once(
+                    entries.iter().filter(|&&entry| entry).count() as u32,
+                ))
+                .collect(),
+            affinity_lights: vec![0; entries.iter().filter(|&&entry| entry).count()],
+            delta_subblocks: Vec::new(),
+        }
+    }
+
+    fn animated_direct_delta(
+        levels: &[u8],
+        entries: &[bool],
+    ) -> AnimatedDirectShDeltaVolumesSection {
+        AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [levels.len() as u32, 1, 1],
+            tile_dimension: TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX; levels.len()],
+            cell_levels: levels.to_vec(),
+            affinity_offsets: entries
+                .iter()
+                .scan(0u32, |offset, &entry| {
+                    let current = *offset;
+                    *offset += u32::from(entry);
+                    Some(current)
+                })
+                .chain(std::iter::once(
+                    entries.iter().filter(|&&entry| entry).count() as u32,
+                ))
+                .collect(),
+            affinity_lights: vec![0; entries.iter().filter(|&&entry| entry).count()],
+            delta_subblocks: Vec::new(),
+        }
+    }
+
     #[test]
     fn stored_set_packing_matches_each_level_on_a_constructed_brick() {
         for (level, expected_slots) in [(Level::L0, 64), (Level::L1, 8), (Level::L2, 1)] {
@@ -687,5 +1375,63 @@ mod tests {
         let validity = vec![true; 5 * 4 * 4];
         let levels = force_levels([5, 4, 4], &validity, Some(Level::L2)).unwrap();
         assert_eq!(levels, vec![Level::L2, Level::L0]);
+
+        // P20: an L1 request may not produce an unloadable L1 stamp when a
+        // full brick has valid interior probes but no valid corner.
+        let mut no_corner_validity = vec![false; 4 * 4 * 4];
+        no_corner_validity[1] = true;
+        assert_eq!(
+            force_levels([4, 4, 4], &no_corner_validity, Some(Level::L1)).unwrap(),
+            vec![Level::L0]
+        );
+    }
+
+    #[test]
+    fn delta_ceilings_follow_present_entries_and_partial_edges() {
+        // AC7: an id-27 L0 entry pins the first base brick, an id-41 L1 entry
+        // pins the second, and an id-45 L0 entry can independently pin it too.
+        let indirect = indirect_delta(&[Level::L0.to_u8(), Level::L2.to_u8()], &[true, false]);
+        let direct = direct_delta(&[Level::L2.to_u8(), Level::L1.to_u8()], &[false, true]);
+        let animated =
+            animated_direct_delta(&[Level::L2.to_u8(), Level::L0.to_u8()], &[false, true]);
+        let ceilings = storage_level_ceilings(
+            [8, 4, 4],
+            DeltaSectionsRef {
+                indirect: Some(&indirect),
+                direct: Some(&direct),
+                anim_direct: Some(&animated),
+            },
+        )
+        .unwrap();
+        assert_eq!(ceilings, vec![Level::L0, Level::L0]);
+
+        let no_delta = storage_level_ceilings([8, 4, 4], DeltaSectionsRef::default()).unwrap();
+        assert_eq!(no_delta, vec![Level::L2, Level::L2]);
+        let partial = storage_level_ceilings([5, 4, 4], DeltaSectionsRef::default()).unwrap();
+        assert_eq!(partial, vec![Level::L2, Level::L0]);
+    }
+
+    #[test]
+    fn optout_uniform_levels_are_all_l0() {
+        // The pipeline calls this after worldspawn `_sh_coarsen "0"` short
+        // circuits both classifiers, so even a full brick has an L0 stamp.
+        assert_eq!(
+            uniform_l0_levels([8, 4, 4]).unwrap(),
+            vec![Level::L0, Level::L0]
+        );
+    }
+
+    #[test]
+    fn forced_level_respects_protection_and_smooths_the_boundary() {
+        let base = raw_indirect([8, 4, 4], |_| true);
+        let mut levels = vec![Level::L2, Level::L2];
+        apply_forced_level_constraints(
+            &mut levels,
+            &base,
+            &[Level::L2, Level::L2],
+            &[[0.1, 0.1, 0.1, 0.2, 0.2, 0.2]],
+        )
+        .unwrap();
+        assert_eq!(levels, vec![Level::L0, Level::L1]);
     }
 }

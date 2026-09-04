@@ -10,7 +10,7 @@ use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
     map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density,
-    resolve_prm_root_via_cargo, resolve_texture_root,
+    resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
 };
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
@@ -795,26 +795,16 @@ fn run_after_parsing(
         alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as
     // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
-    // records format-independent; the emitted v10 base atlas defaults to BC6H here.
+    // records format-independent; final v10 packing/BC6H encoding happens only
+    // after the delta envelope and base-density classifier settle.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
-    // Output-preserving SH analysis and the coarsening classifier both need the
-    // base indirect tiles at full RGBA16F precision — capture the compact
-    // section BEFORE the lossy BC6H re-encode below. Cloned only under
-    // `--sh-analyze` or the default-on id-41 classifier; changes no emitted
-    // bytes (the clone is read, never packed).
-    let sh_analyze_base_indirect: Option<
+    // Base stored-set packing now happens only after all delta classifiers have
+    // finalized their cell levels. Retain this dense RGBA16F source for every
+    // v10 bake — including `_sh_coarsen "0"` — so both the final pack and an
+    // optional analysis have the same pre-BC6H tiles.
+    let mut sh_analyze_base_indirect: Option<
         postretro_level_format::sh_volume::OctahedralShVolumeSection,
-    > = if args.sh_analyze || sh_coarsening_enabled {
-        Some(sh_volume_section.clone())
-    } else {
-        None
-    };
-    let (packed_sh_volume, sh_density_stats) =
-        sh_density::pack_indirect_section(sh_volume_section, args.sh_density_force_level)
-            .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
-    sh_volume_section = packed_sh_volume;
-    sh_volume_section =
-        sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
+    > = Some(sh_volume_section.clone());
     let total_probes = sh_volume_section.total_probes();
     let valid_probes = sh_volume_section
         .probes
@@ -823,9 +813,7 @@ fn run_after_parsing(
         .count();
     log::info!(
         "[Compiler] OctahedralShVolume compact atlas: {valid_probes}/{total_probes} valid probes, \
-         compact {compact_atlas_bytes} bytes, encoded {} bytes, format tag {}",
-        sh_volume_section.compact_atlas.len(),
-        sh_volume_section.irradiance_format,
+         dense RGBA16F source {compact_atlas_bytes} bytes",
     );
     finish_stage(
         &mut timings,
@@ -886,12 +874,12 @@ fn run_after_parsing(
     // static lights exist — preserving byte-identity with the baseline and keeping
     // the downstream EntityShadowLights selection running exactly as before.
     let mut direct_sh_present = false;
-    // Pre-BC6H base-direct capture for the SH analysis (RGBA16F precision).
-    // Populated only under `--sh-analyze`; read-only, never packed.
+    // Pre-BC6H base-direct capture for the final shared stored-set pack and
+    // optional analysis. Every id-35 bake retains it, including an opt-out map.
     let mut sh_analyze_base_direct: Option<
         postretro_level_format::direct_sh_volume::DirectShVolumeSection,
     > = None;
-    let direct_sh_volume_section = if static_baked_lights.is_empty() {
+    let mut direct_sh_volume_section = if static_baked_lights.is_empty() {
         if args.verbose {
             log::info!("DirectShVolume: skipped (no static lights)");
         }
@@ -915,36 +903,8 @@ fn run_after_parsing(
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
         direct_sh_present = raw.grid_dimensions != [0, 0, 0];
-        if args.sh_analyze || sh_coarsening_enabled {
-            sh_analyze_base_direct = Some(raw.clone());
-        }
-        // Re-encode the uncompressed RGBA16F bake output into the production
-        // BC6H section, honoring the lightmap path's debug bypass. Emitted
-        // unconditionally (matching baseline) even for a degenerate grid, where the
-        // encoder passes the empty section through unchanged.
-        let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-        let packed = sh_density::pack_direct_section(raw, &sh_volume_section)
-            .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))?;
-        let section = direct_sh_bake::encode_direct_section_bc6h(
-            &packed,
-            lightmap_config.uncompressed_irradiance,
-        );
-        if args.verbose {
-            // Report both footprints alongside indirect SH for comparison.
-            let post_compression = section.atlas.len();
-            let indirect_atlas = sh_volume_section
-                .try_to_bytes()
-                .map_err(|error| {
-                    anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
-                })?
-                .len();
-            log::info!(
-                "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
-                 (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
-                 section {indirect_atlas} bytes",
-            );
-        }
-        Some(section)
+        sh_analyze_base_direct = Some(raw.clone());
+        Some(raw)
     };
     finish_stage(
         &mut timings,
@@ -953,28 +913,6 @@ fn run_after_parsing(
         stage_start,
         direct_sh_present,
     );
-    let indirect_section_bytes = sh_volume_section
-        .try_to_bytes()
-        .map_err(|error| anyhow::anyhow!("OctahedralShVolume v10 serialization failed: {error}"))?
-        .len();
-    let direct_section_bytes = direct_sh_volume_section
-        .as_ref()
-        .map(|section| section.try_to_bytes().map(|bytes| bytes.len()))
-        .transpose()
-        .map_err(|error| anyhow::anyhow!("DirectShVolume v3 serialization failed: {error}"))?;
-    log::info!(
-        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, id34 {} bytes, id35 {}, format tag {}",
-        sh_density_stats.brick_levels[0],
-        sh_density_stats.brick_levels[1],
-        sh_density_stats.brick_levels[2],
-        sh_density_stats.stored_tiles,
-        indirect_section_bytes,
-        direct_section_bytes
-            .map(|bytes| format!("{bytes} bytes"))
-            .unwrap_or_else(|| "absent".to_owned()),
-        sh_volume_section.irradiance_format,
-    );
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedDirectShBake);
     let animated_direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(
@@ -1160,6 +1098,76 @@ fn run_after_parsing(
             &script_mutable_descriptor_slots,
         )
     })?;
+
+    // The base stored-density classifier consumes the same dense composed
+    // receiver tiles as id 41, but it runs only after that classifier and its
+    // runtime-safe envelope have finalized every delta level. Crucially this is
+    // still before valid-probe compaction: DeltaView walks dense 64-probe
+    // payloads here. The map opt-out is a hard all-L0 short-circuit even when a
+    // measurement force flag is present.
+    let protect_aabbs = combined_protect_aabbs(&args.sh_protect_aabbs, &map_data.sh_protect_aabbs);
+    let all_deltas = sh_coarsen::DeltaSectionsRef {
+        indirect: delta_sections.indirect.as_ref(),
+        direct: delta_sections.direct.as_ref(),
+        anim_direct: delta_sections.animated_direct.as_ref(),
+    };
+    let density_classification = if !sh_coarsening_enabled {
+        sh_density::DensityClassification {
+            levels: sh_density::uniform_l0_levels(sh_volume_section.grid_dimensions)
+                .map_err(|error| anyhow::anyhow!("base SH uniform levels failed: {error}"))?,
+            ..Default::default()
+        }
+    } else if let Some(force_level) = args.sh_density_force_level {
+        let validity: Vec<bool> = sh_volume_section
+            .probes
+            .iter()
+            .map(|probe| probe.validity != 0)
+            .collect();
+        let mut levels = sh_density::force_levels(
+            sh_volume_section.grid_dimensions,
+            &validity,
+            Some(force_level),
+        )
+        .map_err(|error| anyhow::anyhow!("base SH force-level selection failed: {error}"))?;
+        let ceilings =
+            sh_density::storage_level_ceilings(sh_volume_section.grid_dimensions, all_deltas)
+                .map_err(|error| anyhow::anyhow!("base SH delta ceiling failed: {error}"))?;
+        let delta_pins =
+            sh_density::delta_pin_counts(&levels, sh_volume_section.grid_dimensions, all_deltas)
+                .map_err(|error| {
+                    anyhow::anyhow!("base SH delta pin attribution failed: {error}")
+                })?;
+        let protection_pins =
+            sh_density::protection_pin_count(&levels, &sh_volume_section, &protect_aabbs).map_err(
+                |error| anyhow::anyhow!("base SH protection pin attribution failed: {error}"),
+            )?;
+        sh_density::apply_forced_level_constraints(
+            &mut levels,
+            &sh_volume_section,
+            &ceilings,
+            &protect_aabbs,
+        )
+        .map_err(|error| anyhow::anyhow!("base SH forced-level constraints failed: {error}"))?;
+        sh_density::DensityClassification {
+            levels,
+            delta_pins,
+            protection_pins,
+        }
+    } else {
+        let fidelity =
+            resolve_sh_density_fidelity(args.sh_density_fidelity, map_data.sh_density_fidelity);
+        let mut params = sh_coarsen::CoarsenParams::default();
+        params.rel_p95_max *= fidelity;
+        params.rel_max_max *= fidelity;
+        sh_density::classify_base_levels(
+            &sh_volume_section,
+            direct_sh_volume_section.as_ref(),
+            all_deltas,
+            &protect_aabbs,
+            &params,
+        )
+        .map_err(|error| anyhow::anyhow!("base SH density classification failed: {error}"))?
+    };
     delta_sections.apply_valid_probe_compaction(&sh_volume_section)?;
     delta_sections.enforce_payload_cap()?;
     if let (Some(selection), Some(deltas)) = (
@@ -1199,6 +1207,54 @@ fn run_after_parsing(
             delta_sections.animated_direct.as_ref(),
         );
     }
+
+    // P16/P17: only now that all delta levels are final do we stamp the one
+    // shared base level map and pack id 34/id 35 from their dense RGBA16F
+    // captures. Both sections therefore derive their slots and geometry from
+    // exactly the same prefix scheme.
+    let dense_indirect = sh_analyze_base_indirect
+        .take()
+        .expect("every v10 bake retains its dense RGBA16F indirect source");
+    let (packed_sh_volume, sh_density_stats) = sh_density::pack_indirect_section_with_levels(
+        dense_indirect,
+        &density_classification.levels,
+    )
+    .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
+    sh_volume_section =
+        sh_bake::encode_sh_volume_section_bc6h(&packed_sh_volume, args.uncompressed_irradiance);
+    if let Some(raw_direct) = sh_analyze_base_direct.take() {
+        let packed_direct = sh_density::pack_direct_section(raw_direct, &sh_volume_section)
+            .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))?;
+        direct_sh_volume_section = Some(direct_sh_bake::encode_direct_section_bc6h(
+            &packed_direct,
+            lightmap_config.uncompressed_irradiance,
+        ));
+    }
+    let indirect_section_bytes = sh_volume_section
+        .try_to_bytes()
+        .map_err(|error| anyhow::anyhow!("OctahedralShVolume v10 serialization failed: {error}"))?
+        .len();
+    let direct_section_bytes = direct_sh_volume_section
+        .as_ref()
+        .map(|section| section.try_to_bytes().map(|bytes| bytes.len()))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("DirectShVolume v3 serialization failed: {error}"))?;
+    log::info!(
+        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, delta pins id27/id41/id45 {}/{}/{}, protection pins {}, id34 {} bytes, id35 {}, format tag {}",
+        sh_density_stats.brick_levels[0],
+        sh_density_stats.brick_levels[1],
+        sh_density_stats.brick_levels[2],
+        sh_density_stats.stored_tiles,
+        density_classification.delta_pins[0],
+        density_classification.delta_pins[1],
+        density_classification.delta_pins[2],
+        density_classification.protection_pins,
+        indirect_section_bytes,
+        direct_section_bytes
+            .map(|bytes| format!("{bytes} bytes"))
+            .unwrap_or_else(|| "absent".to_owned()),
+        sh_volume_section.irradiance_format,
+    );
 
     // Billboard scatter is deliberately baked after `PostBakeDeltaSections`
     // finalizes id 45. The animated scatter section must duplicate id 45's

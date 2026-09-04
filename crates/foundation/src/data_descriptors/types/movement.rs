@@ -8,7 +8,8 @@ use crate::ir::IrNode;
 /// Authored player-movement component preset. The four core sub-objects
 /// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is
 /// present; `dash` is optional — its absence disables dash entirely; `crouch`
-/// is optional — its absence disables crouch entirely. The data-archetype
+/// is optional — its absence disables crouch entirely; `slide` is optional —
+/// its absence disables slide entirely. The data-archetype
 /// spawn path materializes the runtime movement component from this.
 /// `ground.max_slope` is in degrees on the wire and converted to a cosine at
 /// materialization (not here).
@@ -38,6 +39,10 @@ pub struct PlayerMovementDescriptor {
     /// materialized). When present, all of its fields are required, matching
     /// the present-then-all-required discipline of `dash`.
     pub crouch: Option<CrouchParams>,
+    /// Optional slide tuning. Absent ⇒ slide disabled (no `SlideParams`
+    /// materialized). When present, all of its fields are required, matching
+    /// the present-then-all-required discipline of `dash`/`crouch`.
+    pub slide: Option<SlideParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway). Absent ⇒ view feel disabled (no `ViewFeelParams` materialized).
     /// A render-only camera effect — see `ViewFeelParams`.
@@ -271,6 +276,29 @@ pub struct CrouchParams {
     /// Rate at which the capsule interpolates between standing and crouched
     /// extents, per-sec. Must be finite > 0.
     pub transition_rate: f32,
+}
+
+/// Slide tuning. Optional on [`PlayerMovementDescriptor`] (absent disables
+/// slide); when present, all fields are required and validated. Field names are
+/// camelCase on the wire (`minSpeed`, `slideDrag`, …) and snake_case in Rust.
+/// Stored later by [`PlayerMovementComponent`](crate::movement::PlayerMovementComponent)
+/// as `Option<SlideParams>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlideParams {
+    /// Horizontal entry-speed gate, world-units/sec. Must be finite > 0.
+    pub min_speed: f32,
+    /// Linear decay rate for the slide boost, world-units/sec². Must be finite
+    /// and ≥ 0; `0` permits a frictionless slide.
+    pub slide_drag: f32,
+    /// Unitless downhill-assist scale. Must be finite and ≥ 0.
+    pub slope_assist: f32,
+    /// Maximum in-slide steering rate, degrees/sec. Must be finite and ≥ 0.
+    pub steer_rate: f32,
+    /// Horizontal entry-speed kick, world-units/sec. Must be finite and ≥ 0.
+    pub entry_boost: f32,
+    /// Minimum duration before ordinary exits may apply, milliseconds. Must be
+    /// finite and ≥ 0.
+    pub min_duration_ms: f32,
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,

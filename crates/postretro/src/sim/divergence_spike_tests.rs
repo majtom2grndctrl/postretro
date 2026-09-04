@@ -319,6 +319,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
             jump_buffer_ms: 0.0,
         }),
         crouch: None,
+        slide: None,
         view_feel: None,
     }
 }

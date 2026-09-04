@@ -25,7 +25,7 @@ pub const DIRECT_SH_VOLUME_VERSION: u32 = 3;
 ///   - it carries direct (not indirect) coefficients, and
 ///   - it has NO depth moments and NO animation data.
 ///
-/// Direct light is static and dense, so no animation table is needed. Depth
+/// Direct light is static, so no animation table is needed. Depth
 /// moments and per-probe validity are NOT duplicated here: the direct probe grid
 /// is byte-identical in position to the indirect grid, so the runtime reads them
 /// from the existing `OctahedralShVolumeSection`. This section still carries its
@@ -481,7 +481,7 @@ mod tests {
     use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_array_layout};
 
     /// Build a populated section whose atlas is a stand-in BC6H blob sized to the
-    /// 4×4-block count for the grid's atlas dimensions.
+    /// 4×4-block count for the stored atlas dimensions.
     fn direct_section(grid: [u32; 3], format: u32) -> DirectShVolumeSection {
         direct_section_with_max_dim(grid, format, 8192)
     }

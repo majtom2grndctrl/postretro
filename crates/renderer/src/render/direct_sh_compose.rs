@@ -15,6 +15,7 @@ use super::animated_direct_sh_compose::{
     AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
+use super::sh_indirection::probe_indirection_storage_bytes;
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -30,6 +31,10 @@ pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
 /// Bindings 0..=28 are the existing Pass-A contract; append the private
 /// per-frame mask instead of changing any established binding.
 const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
+/// Load-derived id-34 indirection words. The shader starts consuming this in
+/// Task 4; reserve and populate the carrier now so all compose paths receive
+/// byte-identical words from one builder.
+pub(super) const BIND_PROBE_INDIRECTION: u32 = 30;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
 /// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
 const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
@@ -159,6 +164,7 @@ impl DirectShComposeResources {
         device: &wgpu::Device,
         direct: &DirectShResources,
         animation: &AnimatedLightBuffers,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
@@ -170,6 +176,7 @@ impl DirectShComposeResources {
                 device,
                 direct,
                 animation,
+                probe_indirection_words,
                 delta,
                 animated_delta,
                 weights_buffer,
@@ -177,13 +184,20 @@ impl DirectShComposeResources {
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
-            None => Self::new_case1(device, direct, delta, weights_buffer),
+            None => Self::new_case1(
+                device,
+                direct,
+                probe_indirection_words,
+                delta,
+                weights_buffer,
+            ),
         }
     }
 
     fn new_case1(
         device: &wgpu::Device,
         direct: &DirectShResources,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
     ) -> Self {
@@ -201,6 +215,7 @@ impl DirectShComposeResources {
             device,
             direct,
             layout,
+            probe_indirection_words,
             delta,
             weights_buffer,
             composed_storage_view,
@@ -223,6 +238,7 @@ impl DirectShComposeResources {
         device: &wgpu::Device,
         direct: &DirectShResources,
         animation: &AnimatedLightBuffers,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
@@ -248,6 +264,7 @@ impl DirectShComposeResources {
             device,
             direct,
             layout,
+            probe_indirection_words,
             delta,
             weights_buffer,
             intermediate_storage_view,
@@ -256,6 +273,7 @@ impl DirectShComposeResources {
             device,
             animation,
             layout,
+            probe_indirection_words,
             animated_delta,
             intermediate_sampled_view,
             composed_storage_view,
@@ -355,6 +373,7 @@ fn build_promotion_pass(
     device: &wgpu::Device,
     direct: &DirectShResources,
     layout: DirectAtlasLayout,
+    probe_indirection_words: &[u32],
     delta: Option<&DirectShDeltaVolumesSection>,
     weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
@@ -394,6 +413,11 @@ fn build_promotion_pass(
         contents: &lights_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Direct SH Compose Probe Indirection"),
+        contents: &probe_indirection_storage_bytes(probe_indirection_words),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
 
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Grid Dims"),
@@ -406,10 +430,10 @@ fn build_promotion_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
-            // Direct compose retains the dense base-atlas geometry, so the
-            // compact id-34 tail words are intentionally unused here.
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
+            // Retain the fixed 64-byte uniform layout: both field pairs now
+            // name the same stored-tile atlas geometry.
+            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });
@@ -498,6 +522,10 @@ fn build_promotion_pass(
                 binding: BIND_FRAME_LIGHT_TERM_MASK,
                 resource: light_term_mask_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_PROBE_INDIRECTION,
+                resource: probe_indirection_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -541,6 +569,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_SELECTION_WEIGHTS),
         uniform_bgl_entry(BIND_DEBUG_OVERRIDE),
         direct_compose_params_bgl_entry(),
+        storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
 }
 
@@ -884,6 +913,29 @@ mod tests {
                     }
                 )
         }));
+        assert!(entries.iter().any(|entry| {
+            entry.binding == BIND_PROBE_INDIRECTION
+                && matches!(
+                    &entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                )
+        }));
+        let storage_count = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(storage_count, 6);
     }
 
     #[test]

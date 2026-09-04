@@ -16,6 +16,7 @@ use super::direct_sh_compose::{
     texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
+use super::sh_indirection::probe_indirection_storage_bytes;
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -57,6 +58,9 @@ const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
 /// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
 /// pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
+/// Load-derived id-34 indirection words. Kept at an otherwise unused binding
+/// until Task 4 switches this pass from dense grid writes to stored slots.
+const BIND_PROBE_INDIRECTION: u32 = 28;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]
 const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
@@ -72,6 +76,7 @@ pub(super) fn build_animated_direct_pass(
     device: &wgpu::Device,
     animation: &AnimatedLightBuffers,
     layout: DirectAtlasLayout,
+    probe_indirection_words: &[u32],
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
     intermediate_sampled_view: &wgpu::TextureView,
     output_storage_view: &wgpu::TextureView,
@@ -123,6 +128,11 @@ pub(super) fn build_animated_direct_pass(
         contents: &descriptor_indices_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Animated Direct SH Compose Probe Indirection"),
+        contents: &probe_indirection_storage_bytes(probe_indirection_words),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
         contents: &build_compose_grid_bytes(ComposeGridParams {
@@ -134,10 +144,10 @@ pub(super) fn build_animated_direct_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
-            // Direct compose retains dense base geometry; the compact id-34
-            // tail words are only consumed by indirect `sh_compose.wgsl`.
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
+            // Retain the existing 64-byte uniform layout: its former compact
+            // tail now repeats the stored atlas geometry.
+            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });
@@ -229,6 +239,10 @@ pub(super) fn build_animated_direct_pass(
                 binding: BIND_ANIMATED_DEBUG_OVERRIDE,
                 resource: debug_override_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_PROBE_INDIRECTION,
+                resource: probe_indirection_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -254,6 +268,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
         uniform_bgl_entry(BIND_ANIMATED_DEBUG_OVERRIDE),
+        storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
 }
 
@@ -262,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn animated_pass_binds_compaction_metadata_as_its_seventh_storage_buffer() {
+    fn animated_pass_binds_compaction_metadata_and_indirection_within_eight_storage_buffers() {
         let storage_bindings: Vec<u32> = animated_compose_bgl_entries()
             .into_iter()
             .filter_map(|entry| {
@@ -286,8 +301,10 @@ mod tests {
                 BIND_ANIMATION_SAMPLES,
                 BIND_AFFINITY_LIGHTS,
                 BIND_ANIMATION_DESCRIPTOR_INDICES,
+                BIND_PROBE_INDIRECTION,
             ]
         );
+        assert_eq!(storage_bindings.len(), 8);
         assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
             entry.binding == BIND_ANIMATED_DEBUG_OVERRIDE
                 && matches!(

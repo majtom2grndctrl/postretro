@@ -12,9 +12,9 @@ use wgpu::util::DeviceExt;
 
 use super::sh_volume::AnimatedLightBuffers;
 
-/// Direct-SH atlas geometry shared by the promotion and animated-add compose
-/// passes. It is captured at level load so the compose passes do not need to
-/// reach back into the indirect SH resource owner.
+/// Direct-SH stored-tile atlas geometry shared by the promotion and
+/// animated-add compose passes. It is captured at level load so the compose
+/// passes do not need to reach back into the indirect SH resource owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DirectAtlasLayout {
     pub(super) grid_dimensions: [u32; 3],
@@ -220,6 +220,7 @@ pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayout
     }
 }
 
+/// Check a stored-tile 2D-array geometry against the device limits.
 pub(super) fn atlas_fits(per_layer_dim: [u32; 2], layer_count: u32, limits: &wgpu::Limits) -> bool {
     per_layer_dim[0] > 0
         && per_layer_dim[1] > 0
@@ -395,6 +396,7 @@ mod tests {
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
+    use postretro_level_format::octahedral::irradiance_atlas_array_layout;
 
     fn direct_section() -> DirectShVolumeSection {
         DirectShVolumeSection {
@@ -470,10 +472,19 @@ mod tests {
     }
 
     #[test]
-    fn animated_direct_only_enables_direct_composed_and_intermediate_atlas() {
+    fn animated_direct_only_allocates_from_stored_base_geometry() {
+        // A 128-probe dense grid whose stored set contains only eight tiles.
+        // The fallback direct atlas must use this stored geometry, never derive
+        // a texture extent from the dense grid dimensions.
+        let stored = irradiance_atlas_array_layout([8, 1, 1], 6, 8192).unwrap();
         let mut sh = postretro_level_format::sh_volume::OctahedralShVolumeSection::placeholder();
-        sh.atlas_dimensions = [12, 6];
-        sh.layer_count = 2;
+        sh.grid_dimensions = [8, 4, 4];
+        sh.tile_dimension = 6;
+        sh.tile_border = 1;
+        sh.atlas_dimensions = [stored.atlas_width, stored.atlas_height];
+        sh.layer_count = stored.layer_count;
+        sh.tiles_per_layer = stored.tiles_per_layer;
+        sh.atlas_tiles_per_row = stored.atlas_tiles_per_row;
         let animated = AnimatedDirectShDeltaVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [1, 1, 1],
@@ -498,6 +509,8 @@ mod tests {
         assert!(usage.needs_intermediate_atlas);
         assert_eq!(usage.atlas_dimensions, sh.atlas_dimensions);
         assert_eq!(usage.layer_count, sh.layer_count);
+        assert_eq!(usage.atlas_dimensions, [18, 18]);
+        assert_eq!(usage.layer_count, 1);
     }
 
     #[test]

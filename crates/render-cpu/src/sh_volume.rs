@@ -29,7 +29,7 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   28..32  _pad0             (u32)
 ///   32..44  grid_dimensions   (vec3<u32>)
 ///   44..48  _pad1             (u32)
-///   48..56  atlas_dimensions  (vec2<u32>)
+///   48..56  stored_atlas_dimensions  (vec2<u32>)
 ///   56..60  tile_dimension    (u32)
 ///   60..64  tile_border       (u32)
 ///   64..68  atlas_tiles_per_row (u32)
@@ -63,6 +63,7 @@ pub struct ShGridInfoParams {
     pub grid_origin: [f32; 3],
     pub cell_size: [f32; 3],
     pub grid_dimensions: [u32; 3],
+    /// Stored-tile atlas dimensions. The field offsets are unchanged.
     pub atlas_dimensions: [u32; 2],
     pub tile_dimension: u32,
     pub tile_border: u32,
@@ -286,10 +287,6 @@ mod tests {
             tiles_per_layer,
             atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); probe_count],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
             compact_atlas: Vec::new(),
             animation_descriptors,

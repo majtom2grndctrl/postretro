@@ -3,7 +3,7 @@
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
-use glam::{DVec3, Vec3};
+use glam::{DVec3, IVec3, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
+use crate::geometry_utils::clip_winding_to_half_spaces;
 use crate::light_namespaces::AlphaLightsNs;
 use crate::lightmap_bake;
 use crate::map_data::{LightType, MapLight, ShadowType};
@@ -33,13 +34,19 @@ pub const DEFAULT_PER_CHUNK_LIGHT_CAP: u32 = DEFAULT_PER_CHUNK_CAP;
 /// the section's on-disk version: a cache epoch invalidates disposable local
 /// entries, while the section version governs persisted PRL compatibility.
 pub const CHUNK_LIGHT_LIST_STAGE_ID: &str = "chunk_light_list";
-pub const CHUNK_LIGHT_LIST_STAGE_VERSION: u32 = 2;
+pub const CHUNK_LIGHT_LIST_STAGE_VERSION: u32 = 3;
 
 /// Cap total `offset table + index list` memory at 16 MB.
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// Offset along ray direction to avoid self-intersection on the emitting surface.
 const RAY_EPSILON: f32 = 1.0e-3;
+
+/// Move a receiver sample slightly into the light-facing side of its surface
+/// before tracing, so the receiving triangle is not mistaken for an occluder.
+/// This stays far below the normal 8 m chunk edge while meeting the ray's
+/// numerical separation floor.
+const RECEIVER_NORMAL_OFFSET_METERS: f32 = 2.0e-3;
 
 /// A hit within this distance of a visibility sample does not count as
 /// occlusion. Samples are proxies for receiver SURFACES, so the closing
@@ -79,6 +86,12 @@ pub struct ChunkLightListInputs<'a> {
     pub tree: &'a BspTree,
     pub portals: &'a [Portal],
     pub exterior_leaves: &'a HashSet<usize>,
+}
+
+/// A static triangle that can supply a shaded fragment to one or more chunks.
+#[derive(Clone, Copy)]
+struct ReceiverTriangle {
+    vertices: [Vec3; 3],
 }
 
 /// Static lights in exactly the compacted `spec_lights` order used by this
@@ -378,12 +391,16 @@ pub fn bake_chunk_light_list(
     // and reused everywhere downstream (per-cell construction, the oversubscription
     // warning, the emitted `ChunkLightListSection`), so the shift flows through
     // consistently.
-    let (geo_min, geo_max) = world_aabb(inputs.geometry);
     let (world_min, cell, dims) = chunk_grid_layout(inputs.geometry, cell_size_meters);
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
     let nz = dims[2] as usize;
     let chunk_count = nx * ny * nz;
+
+    // Receiver triangles, unlike volume-proxy points, are guaranteed to
+    // represent fragments the forward shader can actually shade. Bin once so
+    // the per-(chunk, light) loop only clips local candidates.
+    let receiver_triangles = build_receiver_triangle_bins(inputs.geometry, world_min, cell, dims);
 
     let cap = per_chunk_cap as usize;
 
@@ -496,13 +513,13 @@ pub fn bake_chunk_light_list(
                             }
                         }
                     }
-                    if !any_ray_unoccluded(
+                    if !any_receiver_unoccluded(
                         inputs.bvh,
                         inputs.primitives,
                         inputs.geometry,
                         light,
+                        &receiver_triangles[chunk_idx],
                         (chunk_min, chunk_max),
-                        (geo_min, geo_max),
                     ) {
                         continue;
                     }
@@ -715,6 +732,68 @@ fn chunk_grid_layout(geo: &GeometryResult, cell_size_meters: f32) -> (Vec3, f32,
     (world_min, cell, dims)
 }
 
+/// Assign each static geometry triangle to every chunk whose AABB it overlaps.
+/// The receiver test clips the triangle again before sampling, so these bins
+/// may conservatively include a triangle that only touches a chunk boundary.
+fn build_receiver_triangle_bins(
+    geometry: &GeometryResult,
+    world_min: Vec3,
+    cell: f32,
+    dims: [u32; 3],
+) -> Vec<Vec<ReceiverTriangle>> {
+    let nx = dims[0] as usize;
+    let ny = dims[1] as usize;
+    let nz = dims[2] as usize;
+    let mut bins = vec![Vec::new(); nx * ny * nz];
+    let vertices = &geometry.geometry.vertices;
+
+    for indices in geometry.geometry.indices.chunks_exact(3) {
+        let triangle = ReceiverTriangle {
+            vertices: [
+                Vec3::from(vertices[indices[0] as usize].position),
+                Vec3::from(vertices[indices[1] as usize].position),
+                Vec3::from(vertices[indices[2] as usize].position),
+            ],
+        };
+        let triangle_min = triangle
+            .vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+        let triangle_max = triangle
+            .vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+
+        let start = ((triangle_min - world_min) / cell)
+            .floor()
+            .as_ivec3()
+            .clamp(
+                IVec3::ZERO,
+                IVec3::new(nx as i32 - 1, ny as i32 - 1, nz as i32 - 1),
+            );
+        let end = ((triangle_max - world_min) / cell)
+            .floor()
+            .as_ivec3()
+            .clamp(
+                IVec3::ZERO,
+                IVec3::new(nx as i32 - 1, ny as i32 - 1, nz as i32 - 1),
+            );
+
+        for z in start.z as usize..=end.z as usize {
+            for y in start.y as usize..=end.y as usize {
+                for x in start.x as usize..=end.x as usize {
+                    let chunk_idx = z * nx * ny + y * nx + x;
+                    bins[chunk_idx].push(triangle);
+                }
+            }
+        }
+    }
+
+    bins
+}
+
 fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
     match light.light_type {
         LightType::Directional => true,
@@ -752,38 +831,90 @@ fn chunk_light_influence(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> 
     attenuation * peak
 }
 
-/// Returns `true` if any of 9 shadow rays (sample-box center + 8 inset corners,
-/// see `sample_points`) reaches the light unoccluded. Directional lights cast
-/// from sample toward sun, mirroring the `segment_clear`-based hard-ray
-/// approach used by `lightmap_bake::soft_visibility`'s zero-size short-circuit.
+/// Returns `true` when an actual receiver fragment in this chunk can see the
+/// light. Each triangle is clipped before sampling, so a neighboring chunk
+/// receives the same shared surface without treating the chunk volume as a
+/// receiver.
 ///
-/// This is a CONSERVATIVE cull: it answers "could any receiver in this cell
-/// possibly see the light". A false KEEP costs one redundant runtime candidate;
-/// a false DROP is a cell-sized (8 m) hole cut out of the light — an `sdf`
-/// light's runtime direct term (and every static light's specular) reads this
-/// list per fragment, so a wrong drop is directly visible. Err lit.
-fn any_ray_unoccluded(
+/// This is deliberately not a normal-facing admission test. The normal only
+/// determines which side receives the self-intersection offset; both sides of
+/// a geometric receiver remain eligible to keep a light.
+fn any_receiver_unoccluded(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     light: &MapLight,
+    receiver_triangles: &[ReceiverTriangle],
     chunk_bounds: (Vec3, Vec3),
-    world_bounds: (Vec3, Vec3),
 ) -> bool {
-    let samples = sample_points(light, chunk_bounds, world_bounds);
-    for sample in samples {
-        if segment_clear(bvh, primitives, geometry, light, sample) {
-            return true;
+    let (chunk_min, chunk_max) = chunk_bounds;
+    let clip_planes = [
+        (DVec3::X, chunk_min.x as f64),
+        (-DVec3::X, -chunk_max.x as f64),
+        (DVec3::Y, chunk_min.y as f64),
+        (-DVec3::Y, -chunk_max.y as f64),
+        (DVec3::Z, chunk_min.z as f64),
+        (-DVec3::Z, -chunk_max.z as f64),
+    ];
+
+    for triangle in receiver_triangles {
+        let normal = (triangle.vertices[1] - triangle.vertices[0])
+            .cross(triangle.vertices[2] - triangle.vertices[0])
+            .normalize_or_zero();
+        if normal == Vec3::ZERO {
+            continue;
+        }
+        let winding = triangle
+            .vertices
+            .map(|vertex| DVec3::new(vertex.x as f64, vertex.y as f64, vertex.z as f64))
+            .to_vec();
+        let Some(mut clipped) =
+            clip_winding_to_half_spaces(winding, &clip_planes, RAY_EPSILON as f64)
+        else {
+            continue;
+        };
+        let centroid = clipped
+            .iter()
+            .copied()
+            .fold(DVec3::ZERO, |sum, vertex| sum + vertex)
+            / clipped.len() as f64;
+        clipped.push(centroid);
+
+        for sample in clipped {
+            let sample = Vec3::new(sample.x as f32, sample.y as f32, sample.z as f32);
+            let to_light = receiver_to_light_direction(light, sample);
+            let alignment = normal.dot(to_light);
+            let sample = if alignment > RAY_EPSILON {
+                sample + normal * RECEIVER_NORMAL_OFFSET_METERS
+            } else if alignment < -RAY_EPSILON {
+                sample - normal * RECEIVER_NORMAL_OFFSET_METERS
+            } else {
+                sample
+            };
+            if segment_clear(bvh, primitives, geometry, light, sample) {
+                return true;
+            }
         }
     }
     false
 }
 
-/// Visibility sample points for a (light, cell) pair: the center + 8 corners of
-/// the cell AABB clipped to the light's influence AABB (`origin ± falloff` —
-/// the only region where the light can matter) and to the geometry AABB (the
-/// only region where receivers can exist), with the corners inset off the box
-/// faces.
+fn receiver_to_light_direction(light: &MapLight, sample: Vec3) -> Vec3 {
+    match light.light_type {
+        LightType::Point | LightType::Spot => (Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        ) - sample)
+            .normalize_or_zero(),
+        LightType::Directional => {
+            -Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero()
+        }
+    }
+}
+
+/// The former production volume-proxy samples, retained only to prove the
+/// regression coverage against the pre-receiver-cull behavior.
 ///
 /// The former scheme (cell centroid + 3 light-facing face midpoints) sampled
 /// cell-geometry landmarks that routinely DEGENERATE onto world geometry: with
@@ -796,6 +927,7 @@ fn any_ray_unoccluded(
 /// a box-shaped hole out of the light. The influence/world clip keeps every
 /// sample where visibility is actually at stake, and the inset keeps corners
 /// off planes that coincide with cell or world faces.
+#[cfg(test)]
 fn sample_points(
     light: &MapLight,
     (chunk_min, chunk_max): (Vec3, Vec3),
@@ -1281,6 +1413,62 @@ mod tests {
         }
     }
 
+    fn triangle_geometry(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+        let mut vertices = Vec::with_capacity(triangles.len() * 3);
+        let mut indices = Vec::with_capacity(triangles.len() * 3);
+        let mut faces = Vec::with_capacity(triangles.len());
+        let mut face_index_ranges = Vec::with_capacity(triangles.len());
+
+        for triangle in triangles {
+            let base = vertices.len() as u32;
+            for position in triangle {
+                vertices.push(Vertex::new(
+                    *position,
+                    [0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    true,
+                    [0.0, 0.0],
+                    0,
+                ));
+            }
+            let index_offset = indices.len() as u32;
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+            faces.push(FaceMeta {
+                leaf_index: 0,
+                texture_index: 0,
+            });
+            face_index_ranges.push(FaceIndexRange {
+                index_offset,
+                index_count: 3,
+            });
+        }
+
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges,
+        }
+    }
+
+    fn push_quad(triangles: &mut Vec<[[f32; 3]; 3]>, corners: [[f32; 3]; 4]) {
+        triangles.push([corners[0], corners[1], corners[2]]);
+        triangles.push([corners[0], corners[2], corners[3]]);
+    }
+
+    fn section_chunk_slots(section: &ChunkLightListSection, x: u32, y: u32, z: u32) -> &[u32] {
+        let [nx, ny, nz] = section.grid_dimensions;
+        assert!(x < nx && y < ny && z < nz);
+        let chunk_idx = (z * nx * ny + y * nx + x) as usize;
+        let entry = section.offsets[chunk_idx];
+        let start = entry.offset as usize;
+        &section.light_indices[start..start + entry.count as usize]
+    }
+
     #[test]
     fn empty_geometry_returns_placeholder() {
         let geo = GeometryResult {
@@ -1696,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn occluded_chunk_drops_light() {
+    fn fully_occluded_receiver_behind_two_room_wall_is_dropped() {
         let geo = two_room_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let light_pos = DVec3::new(-5.0, 2.0, 0.0);
@@ -1717,7 +1905,7 @@ mod tests {
         let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
         assert_eq!(section.has_grid, 1);
 
-        let far_point = Vec3::new(5.0, 2.0, 0.0); // deep in Room B
+        let far_point = Vec3::new(5.0, 0.1, 0.0); // floor receiver deep in Room B
         let origin = Vec3::from(section.grid_origin);
         let cell = section.cell_size;
         let cx = ((far_point.x - origin.x) / cell).floor() as i32;
@@ -1731,8 +1919,193 @@ mod tests {
         let count = entry.count;
         assert_eq!(
             count, 0,
-            "expected the far chunk to see no lights through the wall, got {count}"
+            "expected the floor-receiver chunk to see no lights through the wall, got {count}"
         );
+    }
+
+    // Regression: a thin floor receiver under a small ceiling aperture was
+    // previously dropped because every volume-proxy ray crossed the ceiling.
+    #[test]
+    fn receiver_sampling_keeps_thin_ceiling_sliver_when_all_volume_proxies_are_occluded() {
+        let mut triangles = vec![[[1.22, 0.0, 1.22], [1.25, 0.0, 1.28], [1.28, 0.0, 1.22]]];
+        // A thin ceiling with only the small aperture over the receiver.
+        push_quad(
+            &mut triangles,
+            [
+                [-2.0, 1.0, -2.0],
+                [1.20, 1.0, -2.0],
+                [1.20, 1.0, 2.0],
+                [-2.0, 1.0, 2.0],
+            ],
+        );
+        push_quad(
+            &mut triangles,
+            [
+                [1.30, 1.0, -2.0],
+                [2.0, 1.0, -2.0],
+                [2.0, 1.0, 2.0],
+                [1.30, 1.0, 2.0],
+            ],
+        );
+        push_quad(
+            &mut triangles,
+            [
+                [1.20, 1.0, -2.0],
+                [1.30, 1.0, -2.0],
+                [1.30, 1.0, 1.20],
+                [1.20, 1.0, 1.20],
+            ],
+        );
+        push_quad(
+            &mut triangles,
+            [
+                [1.20, 1.0, 1.30],
+                [1.30, 1.0, 1.30],
+                [1.30, 1.0, 2.0],
+                [1.20, 1.0, 2.0],
+            ],
+        );
+        let geo = triangle_geometry(&triangles);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let light = point_light(DVec3::new(1.25, 3.0, 1.25), 10.0);
+        let lights = vec![light.clone()];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        let (slots, chunk_min, chunk_max) =
+            chunk_slots_and_bounds_at(&section, Vec3::new(1.25, 0.1, 1.25));
+        assert_eq!(slots, vec![0], "the aperture receiver must keep its light");
+
+        let former_proxy_samples = sample_points(&light, (chunk_min, chunk_max), world_aabb(&geo));
+        assert!(
+            former_proxy_samples
+                .into_iter()
+                .all(|sample| !segment_clear(&bvh, &prims, &geo, &light, sample)),
+            "the former nine volume proxy segments must all be blocked by the ceiling"
+        );
+    }
+
+    #[test]
+    fn receiver_triangle_spanning_chunk_plane_keeps_light_on_both_neighbors() {
+        // Its reverse winding proves admission does not require a receiver
+        // normal to face the light; the normal only picks the offset side.
+        let geo = triangle_geometry(&[[[-1.0, 0.0, -1.0], [5.0, 0.0, -1.0], [2.0, 0.0, 3.0]]]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(8.0, 3.0, -0.5), 30.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        let (left, _, _) = chunk_slots_and_bounds_at(&section, Vec3::new(0.0, 0.1, -0.5));
+        let (right, _, _) = chunk_slots_and_bounds_at(&section, Vec3::new(2.0, 0.1, -0.5));
+        assert_eq!(left, vec![0]);
+        assert_eq!(right, vec![0]);
+    }
+
+    #[test]
+    fn empty_air_chunk_overlapped_by_light_omits_light() {
+        // The distant marker only expands the grid. The intervening chunk is
+        // inside the light sphere but has no binned receiver triangle.
+        let geo = triangle_geometry(&[
+            [[-0.25, 0.0, -0.25], [0.25, 0.0, -0.25], [0.0, 0.0, 0.25]],
+            [[20.0, 0.0, -0.25], [20.5, 0.0, -0.25], [20.25, 0.0, 0.25]],
+        ]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let light = point_light(DVec3::new(-1.0, 3.0, 0.0), 10.0);
+        let lights = vec![light.clone()];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        let (slots, chunk_min, chunk_max) =
+            chunk_slots_and_bounds_at(&section, Vec3::new(4.0, 0.1, 0.0));
+        assert!(
+            overlaps_chunk(&light, chunk_min, chunk_max),
+            "the light sphere must reach the empty-air chunk"
+        );
+        assert!(
+            slots.is_empty(),
+            "an empty receiver bin must not keep a light"
+        );
+    }
+
+    #[test]
+    fn receiver_binning_uses_z_y_x_linearization_on_asymmetric_grid() {
+        // Bounds produce nx=4, ny=1, nz=3. Only the small receiver is in
+        // range; the three distant markers establish the asymmetric grid.
+        let geo = triangle_geometry(&[
+            [[1.75, 0.0, 3.25], [2.25, 0.0, 3.25], [2.0, 0.0, 3.75]],
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.0, 0.1]],
+            [[6.0, 0.0, 0.0], [5.9, 0.0, 0.0], [6.0, 0.0, 0.1]],
+            [[0.0, 0.0, 4.0], [0.1, 0.0, 4.0], [0.0, 0.0, 3.9]],
+        ]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let light = point_light(DVec3::new(2.0, 3.0, 7.0), 6.0);
+        let lights = vec![light.clone()];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+
+        let section = bake_chunk_light_list(&inputs, 2.0, 64).unwrap();
+        assert_eq!(section.grid_dimensions, [4, 1, 3]);
+        let (receiver_x, receiver_y, receiver_z) = (1u32, 0u32, 2u32);
+        let [nx, ny, _] = section.grid_dimensions;
+        let correct_index = (receiver_z * nx * ny + receiver_y * nx + receiver_x) as usize;
+        let transposed_index = (receiver_x * nx * ny + receiver_y * nx + receiver_z) as usize;
+        assert_eq!(section.offsets[correct_index].count, 1);
+        assert_eq!(
+            section.light_indices[section.offsets[correct_index].offset as usize],
+            0
+        );
+        assert_eq!(
+            section.offsets[transposed_index].count, 0,
+            "the x/z-transposed cell must not receive the receiver triangle"
+        );
+
+        let transposed_x = transposed_index as u32 % nx;
+        let transposed_z = transposed_index as u32 / (nx * ny);
+        let transposed_slots = section_chunk_slots(&section, transposed_x, 0, transposed_z);
+        assert!(transposed_slots.is_empty());
     }
 
     #[test]

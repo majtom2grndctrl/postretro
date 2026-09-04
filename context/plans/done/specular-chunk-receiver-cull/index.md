@@ -128,9 +128,11 @@ finally honors; the volume proxies violated it.
       chunk-grid plane, lit and unoccluded on both sides, retains the light in
       **both** neighboring chunks' `light_indices`, so no reachability-stage cut
       falls mid-surface at the grid plane.
-- [ ] **Empty-air chunk drops the light.** A chunk overlapped by an in-range
-      light but containing no receiver triangle omits the light — no receiver, no
-      fragment to shade, correctly no candidate.
+- [ ] **Empty-air chunk drops the non-contained candidate.** A non-contained
+      light candidate that reaches receiver admission, overlaps a chunk, and finds
+      no receiver triangle omits the light — no receiver, no fragment to shade,
+      correctly no candidate. The preserved contained-light guard remains an
+      intentional pre-admission exception.
 - [ ] **Eviction preserved.** This spec edits no code inside the
       `if bucket.len() > cap` block — a review gate, not a runnable assertion. The
       existing eviction tests in `chunk_light_list_bake.rs` (the `overflow_*`,
@@ -224,7 +226,8 @@ that a direct replay of the nine former proxy segments is all-occluded so the te
 documents the exact condition the fix repairs), AC 2 (refuse; a two-room wall
 between light and receiver, extending the existing `two_room_geometry` shape), AC 3
 (a receiver triangle spanning a chunk-grid plane kept in both chunks), and AC 4
-(empty-air chunk). Keep the existing eviction tests green unchanged (AC 5). Note
+(empty-air, non-contained candidate). Keep the existing eviction tests green
+unchanged (AC 5). Note
 the bake-time cost: the prepass is `O(triangles + Σ per-chunk triangle counts)` and
 the admission test now traces one segment per clipped receiver point rather than up
 to nine fixed proxies; this is bake-only, no runtime cost.
@@ -301,9 +304,11 @@ cull; asserts zero false negatives against it.
   wall, exactly as under the volume proxies, so the light stays dropped. This is
   the `absent-vertex-unoccluded false` class the diagnosis found is the majority of
   mixed-membership drops; it must not regress into a keep.
-- *Empty air (AC 4).* No triangle bins into the chunk, so there is no receiver
-  point; the function returns `false` and the light is dropped. Correct — the
-  runtime shades no fragment in an air chunk.
+- *Empty air (AC 4).* A non-contained light candidate reaches receiver admission,
+  but no triangle bins into the chunk. There is no receiver point, so the function
+  returns `false` and the light is dropped. Correct — the runtime shades no
+  fragment in an air chunk. The preserved contained-light guard remains a
+  pre-admission exception.
 
 The rule is the same question `any_ray_unoccluded` asked ("can any receiver in this
 chunk see the light"), evaluated on the receivers that actually exist instead of on

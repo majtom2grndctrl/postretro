@@ -882,6 +882,17 @@ fn any_receiver_unoccluded(
 
         for sample in clipped {
             let sample = Vec3::new(sample.x as f32, sample.y as f32, sample.z as f32);
+            if matches!(light.light_type, LightType::Point | LightType::Spot) {
+                let light_origin = Vec3::new(
+                    light.origin.x as f32,
+                    light.origin.y as f32,
+                    light.origin.z as f32,
+                );
+                let range = light.falloff_range.max(0.0);
+                if (sample - light_origin).length_squared() > range * range {
+                    continue;
+                }
+            }
             let to_light = receiver_to_light_direction(light, sample);
             let alignment = normal.dot(to_light);
             let sample = if alignment > RAY_EPSILON {
@@ -916,17 +927,12 @@ fn receiver_to_light_direction(light: &MapLight, sample: Vec3) -> Vec3 {
 /// The former production volume-proxy samples, retained only to prove the
 /// regression coverage against the pre-receiver-cull behavior.
 ///
-/// The former scheme (cell centroid + 3 light-facing face midpoints) sampled
-/// cell-geometry landmarks that routinely DEGENERATE onto world geometry: with
-/// the grid's half-cell pad, a ground-layer cell's midheight sits exactly on
-/// the floor plane of any map whose geometry min is the floor, face midpoints
-/// sit on cell faces (which walls love to align with), and the vertical face
-/// midpoint lands above low ceilings. All four rays then graze or cross
-/// geometry and the light is dropped from a cell it plainly illuminates — the
-/// observed failure dropped a light from the very cell CONTAINING it, cutting
-/// a box-shaped hole out of the light. The influence/world clip keeps every
-/// sample where visibility is actually at stake, and the inset keeps corners
-/// off planes that coincide with cell or world faces.
+/// The former scheme (cell center + eight inset corners) sampled cell-geometry
+/// landmarks that can DEGENERATE onto world geometry. Its nine rays could all
+/// graze or cross geometry while a real receiver remained visible, dropping a
+/// light from a cell it plainly illuminated. The influence/world clip keeps
+/// every sample where visibility is actually at stake, and the inset keeps
+/// corners off planes that coincide with cell or world faces.
 #[cfg(test)]
 fn sample_points(
     light: &MapLight,
@@ -1999,6 +2005,50 @@ mod tests {
         );
     }
 
+    // Regression: a finite light grazing a chunk used to admit a clear receiver
+    // at the opposite corner even though runtime range culling makes it dead.
+    #[test]
+    fn receiver_sampling_rejects_clear_out_of_range_receiver_in_grazed_chunk() {
+        let in_range = ReceiverTriangle {
+            vertices: [
+                Vec3::new(0.00, 0.0, 1.98),
+                Vec3::new(0.03, 0.0, 1.98),
+                Vec3::new(0.015, 0.0, 2.02),
+            ],
+        };
+        let out_of_range = ReceiverTriangle {
+            vertices: [
+                Vec3::new(3.60, 0.0, 1.90),
+                Vec3::new(3.80, 0.0, 1.90),
+                Vec3::new(3.70, 0.0, 2.10),
+            ],
+        };
+        let geo = triangle_geometry(&[
+            in_range.vertices.map(|vertex| vertex.to_array()),
+            out_of_range.vertices.map(|vertex| vertex.to_array()),
+        ]);
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let light = point_light(DVec3::new(-1.0, 0.4, 2.0), 1.1);
+        let chunk_bounds = (Vec3::ZERO, Vec3::splat(4.0));
+
+        assert!(
+            overlaps_chunk(&light, chunk_bounds.0, chunk_bounds.1),
+            "the finite-light sphere must graze the chunk"
+        );
+        assert!(
+            any_receiver_unoccluded(&bvh, &prims, &geo, &light, &[in_range], chunk_bounds,),
+            "an in-range clear receiver must keep the light"
+        );
+        assert!(
+            segment_clear(&bvh, &prims, &geo, &light, out_of_range.vertices[0],),
+            "the opposite-corner receiver is clear; range, not occlusion, rejects it"
+        );
+        assert!(
+            !any_receiver_unoccluded(&bvh, &prims, &geo, &light, &[out_of_range], chunk_bounds,),
+            "a clear receiver beyond a finite light's range must not admit it"
+        );
+    }
+
     #[test]
     fn receiver_triangle_spanning_chunk_plane_keeps_light_on_both_neighbors() {
         // Its reverse winding proves admission does not require a receiver
@@ -2943,10 +2993,11 @@ mod tests {
     /// Every cell a light's influence sphere touches must KEEP the light on an
     /// open floor — even though the grid's half-cell pad puts every ground
     /// cell's midheight (and thus the sample-box y, clamped to the floor-only
-    /// geometry AABB) exactly ON the floor plane. Under the old centroid + 3
-    /// face-midpoint sampling those grazing rays read as occlusion by float
-    /// luck, randomly cutting cell-sized box holes out of the light (observed
-    /// on combat-demo: the sdf spot was dropped from the cell containing it).
+    /// geometry AABB) exactly ON the floor plane. Under the old center + eight
+    /// inset-corner sampling those grazing rays could read as occlusion by
+    /// float luck, randomly cutting cell-sized box holes out of the light
+    /// (observed on combat-demo: the sdf spot was dropped from the cell
+    /// containing it).
     /// `SAMPLE_END_TOLERANCE_METERS` makes an endpoint graze read as the
     /// receiving surface, not an occluder.
     #[test]

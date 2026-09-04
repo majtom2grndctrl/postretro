@@ -5,18 +5,18 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
-    pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
+    build_animated_direct_delta_buffers, build_compose_grid_bytes, pad_storage_bytes,
+    u16_slice_to_bytes, u32_slice_to_bytes, ComposeGridParams,
 };
 
 use super::direct_sh_compose::{
-    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
-    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
     nearest_sampler, sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry,
-    texture_bgl_entry, uniform_bgl_entry,
+    texture_bgl_entry, uniform_bgl_entry, BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS,
+    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_DESCRIPTOR_INDICES, BIND_ANIMATION_SAMPLES,
+    BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
-use super::sh_indirection::probe_indirection_storage_bytes;
+use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -167,11 +167,14 @@ pub(super) fn build_animated_direct_pass(
         bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
         immediate_size: 0,
     });
-    let shader_source = concat!(
+    let shader_source = [
         include_str!("../shaders/animated_direct_sh_compose.wgsl"),
         "\n",
         include_str!("../shaders/curve_eval.wgsl"),
-    );
+        "\n",
+        WGSL_DECODE_HELPER,
+    ]
+    .concat();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Animated Direct SH Compose Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
@@ -329,13 +332,12 @@ mod tests {
     }
 
     #[test]
-    fn animated_shader_uses_validity_to_gate_delta_reconstruction() {
+    fn animated_shader_uses_indirection_to_gate_stored_slot_reconstruction() {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
         assert!(
-            source.contains(
-                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
-            ),
-            "id-45 has no base probe-indirection, so its validity mask must gate delta reads"
+            source.contains("let output_is_stored = stored_slot.write;")
+                && source.contains("@group(1) @binding(28) var<storage, read> probe_indirection"),
+            "Pass B must derive stored-slot writes from Task 3's id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),
@@ -348,11 +350,8 @@ mod tests {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
         assert!(source.contains("light_term_mask: u32,"));
         assert!(source.contains("const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;"));
-        assert!(
-            source.contains(
-                "if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u)"
-            )
-        );
+        assert!(source
+            .contains("if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u)"));
     }
 
     #[test]
@@ -368,6 +367,14 @@ mod tests {
         assert!(source.contains("if (level == 0u)"));
         assert!(source.contains("if (level == 1u && local_probe_is_kept"));
         assert!(source.contains("if (level == 2u)"));
+        assert!(
+            source.contains("fn slot_tile_origin(slot: u32)")
+                && !source.contains("fn atlas_tile_origin(")
+                && source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains("select(0.0, 1.0, stored_slot.valid)"),
+            "Pass B must sample the compact intermediate and write the same stored slots"
+        );
     }
 
     #[test]
@@ -389,12 +396,15 @@ mod tests {
 
     #[test]
     fn shader_parses_and_exports_pass_b() {
-        let source = concat!(
+        let source = [
             include_str!("../shaders/animated_direct_sh_compose.wgsl"),
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
-        );
-        let module = naga::front::wgsl::parse_str(source)
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let module = naga::front::wgsl::parse_str(&source)
             .expect("animated direct compose shader should parse as WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

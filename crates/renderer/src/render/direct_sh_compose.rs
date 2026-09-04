@@ -7,15 +7,15 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, DirectDeltaComposeBuffers, build_compose_grid_bytes,
-    build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
+    build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
+    u32_slice_to_bytes, ComposeGridParams, DirectDeltaComposeBuffers,
 };
 
 use super::animated_direct_sh_compose::{
-    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
+    build_animated_direct_pass, AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
-use super::sh_indirection::probe_indirection_storage_bytes;
+use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -459,9 +459,15 @@ fn build_promotion_pass(
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
+    let shader_source = [
+        include_str!("../shaders/direct_sh_compose.wgsl"),
+        "\n",
+        WGSL_DECODE_HELPER,
+    ]
+    .concat();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Direct SH Compose Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/direct_sh_compose.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Direct SH Compose Pipeline"),
@@ -882,9 +888,14 @@ mod tests {
 
     #[test]
     fn direct_sh_compose_shader_parses_and_exports_compose_main() {
-        let module =
-            naga::front::wgsl::parse_str(include_str!("../shaders/direct_sh_compose.wgsl"))
-                .expect("direct_sh_compose.wgsl should parse as WGSL");
+        let source = [
+            include_str!("../shaders/direct_sh_compose.wgsl"),
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("direct_sh_compose.wgsl should parse as WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -968,13 +979,12 @@ mod tests {
     }
 
     #[test]
-    fn direct_compose_uses_validity_to_gate_delta_reconstruction() {
+    fn direct_compose_uses_indirection_to_gate_stored_slot_reconstruction() {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
         assert!(
-            source.contains(
-                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
-            ),
-            "id-41 has no base probe-indirection, so its validity mask must gate delta reads"
+            source.contains("let output_is_stored = stored_slot.write;")
+                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
+            "Pass A must derive stored-slot writes from Task 3's id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),
@@ -989,7 +999,7 @@ mod tests {
         assert!(source.contains(
             "let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;"
         ));
-        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains("if (output_is_stored && use_baked_direct_static)"));
         assert!(source.contains(
             "let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;"
         ));
@@ -1034,14 +1044,14 @@ mod tests {
             .map(|offset| dense_start + offset)
             .expect("bit 3 and bit 5 must uniformly guard the coarsened path");
         let output_start = source[coarsened_start..]
-            .find("\n    if (in_grid) {")
+            .find("\n    if (output_is_stored) {")
             .map(|offset| coarsened_start + offset)
             .expect("shader must retain its output-store path");
         let dense_path = &source[dense_start..coarsened_start];
         let coarsened_path = &source[coarsened_start..output_start];
 
         assert!(
-            dense_path.contains("if (output_is_valid && use_promotion_subtraction)")
+            dense_path.contains("if (output_is_stored && use_promotion_subtraction)")
                 && dense_path.contains("read_delta_texel("),
             "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
         );
@@ -1066,5 +1076,13 @@ mod tests {
         assert!(source.contains("if (level == 0u)"));
         assert!(source.contains("if (level == 1u && local_probe_is_kept"));
         assert!(source.contains("if (level == 2u)"));
+        assert!(
+            source.contains("fn slot_tile_origin(slot: u32)")
+                && !source.contains("fn atlas_tile_origin(")
+                && source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains("select(0.0, 1.0, stored_slot.valid)"),
+            "Pass A must read and write only id-34 shared stored slots"
+        );
     }
 }

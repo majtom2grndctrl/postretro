@@ -8,11 +8,11 @@ variable-density sampler)?
 
 **Answer: no.** Do not open that door on a forward predictor.
 
-This is the measurement-first spike the archived base-density plan
-(`context/research/archived-plans/lighting-scale--adaptive-base-probe-density/`) said its go/no-go
-depended on. It closes the **bake-time** branch of that line. The storage/bandwidth branch already
-shipped (`context/plans/done/lighting-scale--sh-adaptive-coarsening-v2/`); only the bake-time win
-rode on the predictor.
+This is the measurement-first spike the stopped base-density line said its go/no-go depended on
+(that plan has since been removed from the repo; its reasoning survives in git history). It closes
+the **bake-time** branch of that line. The storage/bandwidth branch already shipped
+(`context/plans/done/lighting-scale--sh-adaptive-coarsening-v2/`); only the bake-time win rode on
+the predictor.
 
 ## What was measured
 
@@ -93,7 +93,7 @@ partial pre-pass), authored as a new spike on new evidence, not a resumption of 
 ## Lineage
 
 - Prior sibling (post-hoc coarsenability; contribution-aware beats distance): `context/research/coarsening-gating-spike/`.
-- The door this gates (held/archived): `context/research/archived-plans/lighting-scale--adaptive-base-probe-density/`.
+- The door this gates: the base-density bake-time win (base-grid `density_level` format + renderer variable-density sampler). The plan that would have opened it was removed from the repo once this record closed its go/no-go; its reasoning survives in git history.
 - Shipped storage/bandwidth branch: `context/plans/done/lighting-scale--sh-adaptive-coarsening-v2/`.
 - Build-to-learn method and posture: `context/lib/experimental_spikes.md`.
 - Harness (reverted; measurement-only, byte-preserving): branch `claude/ready-folder-spike-bsk6pa`

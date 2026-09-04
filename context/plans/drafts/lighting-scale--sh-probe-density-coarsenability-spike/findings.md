@@ -8,9 +8,9 @@ Build-to-learn spike. Deliverable is a decision, not a shippable feature.
 > **Key finding:** adaptive SH probe density pays, and the payoff grows with intentional
 > lighting. The right density predictor is **light contribution** (cone + falloff + facing),
 > not distance-to-light — which is why the archived surface-distance classifier failed.
-> **Related:** `context/plans/drafts/lighting-scale--adaptive-sh-probe-density/` (superseded
-> draft this evidence feeds) · `context/research/archived-plans/lighting-scale--adaptive-base-probe-density/`
-> (stopped; its distance-only classifier is the thing this note refutes) ·
+> **Related:** `context/plans/done/lighting-scale--sh-adaptive-coarsening-v2/` (the shipped
+> storage/bandwidth spec this evidence gated) · `context/research/base-density-forward-predictor.md`
+> (the bake-time-win follow-on this evidence fed, since closed) ·
 > `context/plans/done/lighting-scale--sh-base-atlas-at-rest-slimming/` · `context/lib/experimental_spikes.md`
 > · `context/plans/drafts/lighting-scale--cold-bake-reaching-light-spike/out-of-scope-findings.md` §4.
 
@@ -118,9 +118,9 @@ maximizes.
 
 **A distance-only classifier over-protects.** Near each spot, ~16 in-cone bricks need density and
 ~198 out-of-cone bricks do not; distance-to-light keeps all ~214 dense. This measurement refutes
-distance-to-**light** directly. The archived `adaptive-base-probe-density` classifier keyed on
+distance-to-**light** directly. The stopped base-density plan's classifier keyed on
 *surface* distance (distance to nearest world triangle), a different predictor this spike did not
-measure — but it shares the same cone-blindness, and the archived plan already self-invalidated it on
+measure — but it shares the same cone-blindness, and that plan already self-invalidated it on
 review. The correct predictor is proximity to *delivered light* — cone + falloff + facing. That is
 the same contribution signal the cold lightmap already applies and the SH cull still lacks
 (`cold-bake-reaching-light-spike/out-of-scope-findings.md` §4); §4's byte-identical result covers the

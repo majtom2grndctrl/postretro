@@ -76,5 +76,6 @@ range; cheap.
 ## Already tracked (not new)
 
 The 1.0 m default `--sh-probe-spacing` explodes on any large world — `stress-warren`'s
-README insists on a coarse override or it bakes "millions of probes." Owned by
-`drafts/lighting-scale--adaptive-sh-probe-density`.
+README insists on a coarse override or it bakes "millions of probes." This was the base-density
+line's bake-time concern; the forward-predictor path that would have cut probe counts was measured
+and closed — see `context/research/base-density-forward-predictor.md`.

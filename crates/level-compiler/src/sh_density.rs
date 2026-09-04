@@ -640,6 +640,7 @@ fn count_delta_pins(
 /// Repack the indirect bake's legacy valid-probe-order lossless intermediate
 /// into the v10 brick-major stored set. The grouped bake cache remains upstream:
 /// this is deliberately invoked only after cold and warm assembly converge.
+#[cfg(test)]
 pub(crate) fn pack_indirect_section(
     section: OctahedralShVolumeSection,
     forced_level: Option<Level>,

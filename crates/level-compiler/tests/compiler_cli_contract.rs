@@ -97,7 +97,7 @@ fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let section = read_section_data(&mut cursor, &metadata, SectionId::OctahedralShVolume as u32)
         .expect("read OctahedralShVolume section")
         .expect("OctahedralShVolume section must be present");
-    OctahedralShVolumeSection::from_bytes(&section).expect("parse v9 OctahedralShVolume")
+    OctahedralShVolumeSection::from_bytes(&section).expect("parse v10 OctahedralShVolume")
 }
 
 fn run_compiler(args: &[&str]) -> Output {
@@ -307,7 +307,7 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     );
 }
 
-/// The v9 compact base atlas must be deterministic at the actual compiler seam:
+/// The v10 brick-major stored base atlas must be deterministic at the compiler seam:
 /// `--no-cache` selects the monolithic bake and the pipeline then chooses the
 /// uncompressed debug payload or default BC6H payload. `gate-heavily-lit` keeps
 /// the four cold bakes representative without making the regular test target

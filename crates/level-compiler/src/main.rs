@@ -47,6 +47,7 @@ pub mod sdf_bake;
 pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_coarsen;
+pub mod sh_density;
 pub mod sh_group;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
@@ -696,6 +697,10 @@ pub struct Args {
     /// id-41 classifier and the analysis's protected projection. Repeatable.
     /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
+    /// Measurement-only override for base SH stored density. The classifier and
+    /// delta ceilings land in Task 6; this interim flag exists to exercise the
+    /// L1/L2 pack and runtime paths before that classifier is wired.
+    sh_density_force_level: Option<postretro_level_format::sh_reconstruct::Level>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -734,6 +739,7 @@ fn help_text() -> String {
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
+         --sh-density-force-level <0|1|2> Measurement-only base SH brick level override; partial bricks and L1 bricks with no valid corner remain L0 (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -770,6 +776,7 @@ where
     let mut sh_analyze = false;
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
+    let mut sh_density_force_level = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -917,6 +924,19 @@ where
                     .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
                 sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
             }
+            "--sh-density-force-level" => {
+                let value = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--sh-density-force-level requires one of 0, 1, or 2")
+                })?;
+                let parsed: u8 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
+                })?;
+                let level = postretro_level_format::sh_reconstruct::Level::from_u8(parsed)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
+                    })?;
+                sh_density_force_level = Some(level);
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -958,6 +978,7 @@ where
         sh_analyze,
         sh_analyze_out,
         sh_protect_aabbs,
+        sh_density_force_level,
     })
 }
 
@@ -2180,6 +2201,38 @@ mod tests {
         assert!(!parsed.sh_analyze);
         assert!(parsed.sh_analyze_out.is_none());
         assert!(parsed.sh_protect_aabbs.is_empty());
+        assert!(parsed.sh_density_force_level.is_none());
+    }
+
+    #[test]
+    fn parse_args_sh_density_force_level_accepts_only_the_three_stored_levels() {
+        use postretro_level_format::sh_reconstruct::Level;
+
+        for (value, expected) in [("0", Level::L0), ("1", Level::L1), ("2", Level::L2)] {
+            let parsed = parse_args_from(
+                [
+                    "input.map".to_owned(),
+                    "--sh-density-force-level".to_owned(),
+                    value.to_owned(),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+            assert_eq!(parsed.sh_density_force_level, Some(expected));
+        }
+        for value in ["3", "-1", "coarse"] {
+            assert!(
+                parse_args_from(
+                    [
+                        "input.map".to_owned(),
+                        "--sh-density-force-level".to_owned(),
+                        value.to_owned()
+                    ]
+                    .into_iter(),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -563,7 +563,7 @@ pub(crate) struct ShVolumeShell {
 
 /// Dense intermediate used only while the grouped path places cached records.
 /// It preserves the v8 dense tile locations so cached values are byte-copied
-/// before the v9 compact packaging transform runs.
+/// before the v10 stored-set packaging transform runs.
 pub(crate) struct DenseAssembledSection {
     pub(crate) section: OctahedralShVolumeSection,
     pub(crate) dense_atlas: Vec<OctahedralAtlasTexel>,
@@ -592,10 +592,6 @@ pub(crate) fn empty_assembled_section(
                 tiles_per_layer: 0,
                 atlas_tiles_per_row: 0,
                 probes: Vec::new(),
-                compact_atlas_dimensions: [0, 0],
-                compact_atlas_tiles_per_row: 0,
-                compact_atlas_tiles_per_layer: 0,
-                compact_atlas_layer_count: 0,
                 irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
                 compact_atlas: Vec::new(),
                 animation_descriptors: shell.animation_descriptors,
@@ -630,10 +626,6 @@ pub(crate) fn empty_assembled_section(
             tiles_per_layer: atlas_layout.tiles_per_layer,
             atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); total],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             compact_atlas: Vec::new(),
             animation_descriptors: shell.animation_descriptors,

@@ -58,10 +58,10 @@ fn bright_base(cells: usize, value: f32) -> OctahedralShVolumeSection {
     base.tile_dimension = TILE;
     base.tile_border = BORDER;
     base.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
-    base.compact_atlas_dimensions = [total as u32 * TILE, TILE];
-    base.compact_atlas_tiles_per_row = total as u32;
-    base.compact_atlas_tiles_per_layer = total as u32;
-    base.compact_atlas_layer_count = 1;
+    base.atlas_dimensions = [total as u32 * TILE, TILE];
+    base.atlas_tiles_per_row = total as u32;
+    base.tiles_per_layer = total as u32;
+    base.layer_count = 1;
     base.probes = vec![
         OctahedralShProbe {
             validity: 1,

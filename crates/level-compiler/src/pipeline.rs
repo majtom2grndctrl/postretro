@@ -18,8 +18,8 @@ use crate::{
     chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
     fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer,
     map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake,
-    sh_coarsen, sh_group, shadowmask_bake, texture_mips, texture_validation, trigger_volumes,
-    visibility,
+    sh_coarsen, sh_density, sh_group, shadowmask_bake, texture_mips, texture_validation,
+    trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -794,8 +794,8 @@ fn run_after_parsing(
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as
-    // the same compact RGBA16F v9 section. Keep group-cache records lossless and
-    // format-independent; the emitted base atlas defaults to BC6H here.
+    // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
+    // records format-independent; the emitted v10 base atlas defaults to BC6H here.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
     // Output-preserving SH analysis and the coarsening classifier both need the
     // base indirect tiles at full RGBA16F precision — capture the compact
@@ -809,6 +809,10 @@ fn run_after_parsing(
     } else {
         None
     };
+    let (packed_sh_volume, sh_density_stats) =
+        sh_density::pack_indirect_section(sh_volume_section, args.sh_density_force_level)
+            .map_err(|error| anyhow::anyhow!("indirect SH stored-set packing failed: {error}"))?;
+    sh_volume_section = packed_sh_volume;
     sh_volume_section =
         sh_bake::encode_sh_volume_section_bc6h(&sh_volume_section, args.uncompressed_irradiance);
     let total_probes = sh_volume_section.total_probes();
@@ -918,18 +922,20 @@ fn run_after_parsing(
         // BC6H section, honoring the lightmap path's debug bypass. Emitted
         // unconditionally (matching baseline) even for a degenerate grid, where the
         // encoder passes the empty section through unchanged.
+        let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
+        let packed = sh_density::pack_direct_section(raw, &sh_volume_section)
+            .map_err(|error| anyhow::anyhow!("direct SH stored-set packing failed: {error}"))?;
         let section = direct_sh_bake::encode_direct_section_bc6h(
-            &raw,
+            &packed,
             lightmap_config.uncompressed_irradiance,
         );
         if args.verbose {
             // Report both footprints alongside indirect SH for comparison.
             let post_compression = section.atlas.len();
-            let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
             let indirect_atlas = sh_volume_section
                 .try_to_bytes()
                 .map_err(|error| {
-                    anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+                    anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
                 })?
                 .len();
             log::info!(
@@ -946,6 +952,27 @@ fn run_after_parsing(
         StageId::DirectShBake,
         stage_start,
         direct_sh_present,
+    );
+    let indirect_section_bytes = sh_volume_section
+        .try_to_bytes()
+        .map_err(|error| anyhow::anyhow!("OctahedralShVolume v10 serialization failed: {error}"))?
+        .len();
+    let direct_section_bytes = direct_sh_volume_section
+        .as_ref()
+        .map(|section| section.try_to_bytes().map(|bytes| bytes.len()))
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("DirectShVolume v3 serialization failed: {error}"))?;
+    log::info!(
+        "[Compiler] SH base-density summary: L0/L1/L2 bricks {}/{}/{}, stored tiles {}, id34 {} bytes, id35 {}, format tag {}",
+        sh_density_stats.brick_levels[0],
+        sh_density_stats.brick_levels[1],
+        sh_density_stats.brick_levels[2],
+        sh_density_stats.stored_tiles,
+        indirect_section_bytes,
+        direct_section_bytes
+            .map(|bytes| format!("{bytes} bytes"))
+            .unwrap_or_else(|| "absent".to_owned()),
+        sh_volume_section.irradiance_format,
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedDirectShBake);

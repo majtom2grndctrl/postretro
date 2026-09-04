@@ -759,7 +759,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.try_to_bytes().map_err(|error| {
-        anyhow::anyhow!("OctahedralShVolume violates its v9 wire contract: {error}")
+        anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
     })?;
     let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
     let entity_shadow_light_count = entity_shadow_lights
@@ -1509,10 +1509,6 @@ mod tests {
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),

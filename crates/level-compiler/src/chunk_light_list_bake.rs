@@ -1067,8 +1067,11 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
 mod tests {
     use super::*;
     use crate::bvh_build::build_bvh;
+    use crate::fixture_pipeline::load_fixture;
     use crate::geometry::FaceIndexRange;
+    use crate::light_namespaces::AlphaLightsNs;
     use crate::map_data::{FalloffModel, LightType, MapLight};
+    use crate::portals::generate_portals;
     use glam::DVec3;
     use log::Level;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -3135,6 +3138,154 @@ mod tests {
         assert_eq!(
             section.offsets[linear].count, 1,
             "the cell containing the boxed-in light must keep it"
+        );
+    }
+
+    // Regression: diagnosis found six pre-fix pairs under volume proxies; this
+    // oracle covers vertex-in-chunk cases, while Phase 1 clipping also covers
+    // spanning triangles without an in-chunk vertex.
+    #[test]
+    #[ignore = "campaign-test is a slow, independent receiver-cull oracle"]
+    fn campaign_test_vertex_receivers_in_range_are_not_omitted_from_chunk_light_lists() {
+        let fixture = load_fixture("campaign-test");
+        let portals = generate_portals(&fixture.tree);
+        let alpha_lights = AlphaLightsNs::from_lights(&fixture.lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+            lights: &alpha_lights,
+            tree: &fixture.tree,
+            portals: &portals,
+            exterior_leaves: &fixture.exterior_leaves,
+        };
+        let section = bake_chunk_light_list(
+            &inputs,
+            DEFAULT_CELL_SIZE_METERS,
+            DEFAULT_PER_CHUNK_LIGHT_CAP,
+        )
+        .expect("campaign-test chunk light list bake should succeed");
+        assert_eq!(
+            section.has_grid, 1,
+            "campaign-test must produce a chunk grid"
+        );
+
+        // This must stay in the bake's compacted static-light slot order, not
+        // AlphaLights source order: `light_indices` addresses this exact view.
+        let static_lights = compacted_static_lights(&inputs);
+        let vertices = &fixture.geometry.geometry.vertices;
+        let indices = &fixture.geometry.geometry.indices;
+        let origin = Vec3::from(section.grid_origin);
+        let [nx, ny, nz] = section.grid_dimensions;
+        let mut false_negatives = Vec::new();
+
+        for (slot, light) in static_lights.into_iter().enumerate() {
+            if !matches!(light.light_type, LightType::Point | LightType::Spot)
+                || light.falloff_range <= 0.0
+            {
+                continue;
+            }
+            let light_position = Vec3::new(
+                light.origin.x as f32,
+                light.origin.y as f32,
+                light.origin.z as f32,
+            );
+            let range_squared = light.falloff_range * light.falloff_range;
+
+            for z in 0..nz {
+                for y in 0..ny {
+                    for x in 0..nx {
+                        let chunk_index = (z * nx * ny + y * nx + x) as usize;
+                        let entry = section.offsets[chunk_index];
+                        let start = entry.offset as usize;
+                        let baked_slots =
+                            &section.light_indices[start..start + entry.count as usize];
+                        if baked_slots.contains(&(slot as u32)) {
+                            continue;
+                        }
+
+                        let chunk_min =
+                            origin + Vec3::new(x as f32, y as f32, z as f32) * section.cell_size;
+                        let chunk_max = chunk_min + Vec3::splat(section.cell_size);
+                        if !overlaps_chunk(light, chunk_min, chunk_max) {
+                            continue;
+                        }
+
+                        let mut clear_receiver_found = false;
+                        for triangle_indices in indices.chunks_exact(3) {
+                            let triangle = [
+                                Vec3::from(vertices[triangle_indices[0] as usize].position),
+                                Vec3::from(vertices[triangle_indices[1] as usize].position),
+                                Vec3::from(vertices[triangle_indices[2] as usize].position),
+                            ];
+                            let normal = (triangle[1] - triangle[0])
+                                .cross(triangle[2] - triangle[0])
+                                .normalize_or_zero();
+                            if normal == Vec3::ZERO {
+                                continue;
+                            }
+
+                            for receiver in triangle {
+                                if !receiver.cmpge(chunk_min).all()
+                                    || !receiver.cmple(chunk_max).all()
+                                    || (light_position - receiver).length_squared() > range_squared
+                                {
+                                    continue;
+                                }
+                                if normal.dot((light_position - receiver).normalize_or_zero())
+                                    <= RAY_EPSILON
+                                {
+                                    continue;
+                                }
+
+                                // Independent oracle: brute-force every geometry
+                                // triangle, with the same end-graze allowance that
+                                // prevents the receiver's own triangle blocking it.
+                                let delta = receiver - light_position;
+                                let length = delta.length();
+                                if length <= RAY_EPSILON {
+                                    clear_receiver_found = true;
+                                    break;
+                                }
+                                let direction = delta / length;
+                                let ray_origin = light_position + direction * RAY_EPSILON;
+                                let max_distance =
+                                    length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
+                                let blocked = max_distance > 0.0
+                                    && indices.chunks_exact(3).any(|occluder_indices| {
+                                        let a = Vec3::from(
+                                            vertices[occluder_indices[0] as usize].position,
+                                        );
+                                        let b = Vec3::from(
+                                            vertices[occluder_indices[1] as usize].position,
+                                        );
+                                        let c = Vec3::from(
+                                            vertices[occluder_indices[2] as usize].position,
+                                        );
+                                        ray_triangle_hit(ray_origin, direction, a, b, c)
+                                            .is_some_and(|distance| distance < max_distance)
+                                    });
+                                if !blocked {
+                                    clear_receiver_found = true;
+                                    break;
+                                }
+                            }
+                            if clear_receiver_found {
+                                break;
+                            }
+                        }
+
+                        if clear_receiver_found {
+                            false_negatives.push((slot, x, y, z));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            false_negatives.is_empty(),
+            "campaign-test omitted visible static-light receiver pairs: {false_negatives:?}"
         );
     }
 }

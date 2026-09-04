@@ -852,10 +852,10 @@ mod tests {
         base.tile_dimension = 1;
         base.tile_border = 0;
         base.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
-        base.compact_atlas_dimensions = [total as u32, 1];
-        base.compact_atlas_tiles_per_row = total as u32;
-        base.compact_atlas_tiles_per_layer = total as u32;
-        base.compact_atlas_layer_count = 1;
+        base.atlas_dimensions = [total as u32, 1];
+        base.atlas_tiles_per_row = total as u32;
+        base.tiles_per_layer = total as u32;
+        base.layer_count = 1;
         let [lo, hi] = f32_to_f16_bits(value).to_le_bytes();
         let mut atlas = vec![0u8; total * 8];
         for r in 0..total {

@@ -233,10 +233,6 @@ pub fn bake_sh_volume_controlled(
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
@@ -315,10 +311,6 @@ pub fn bake_sh_volume_controlled(
         tiles_per_layer: atlas_layout.tiles_per_layer,
         atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
         probes: base_probes,
-        compact_atlas_dimensions: [0, 0],
-        compact_atlas_tiles_per_row: 0,
-        compact_atlas_tiles_per_layer: 0,
-        compact_atlas_layer_count: 0,
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         compact_atlas: Vec::new(),
         animation_descriptors,
@@ -369,13 +361,15 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
     );
 }
 
-/// Convert a dense, layer-major tile atlas from a bake into the v9 compact
-/// payload. The source's tile locations retain the dense grid layout, while the
-/// destination assigns slots only to metadata-valid probes in x-fastest order.
+/// Convert a dense, layer-major tile atlas from a bake into the lossless
+/// valid-probe-order intermediate. The source's tile locations retain the dense
+/// grid layout, while the destination assigns slots only to metadata-valid probes
+/// in x-fastest order.
 ///
-/// The compact result deliberately remains `Rgba16Float` here. The pipeline
-/// seam re-encodes it to BC6H after both the grouped and monolithic bake paths
-/// converge, so the group cache never stores an output-format-specific value.
+/// The intermediate deliberately remains `Rgba16Float` here. The pipeline's
+/// downstream density pack converts it into the v10 brick-major stored set after
+/// grouped and monolithic assembly converge, so the group cache never stores an
+/// output-format-specific value.
 pub(crate) fn compact_section_from_dense_atlas(
     mut section: OctahedralShVolumeSection,
     dense_atlas: &[OctahedralAtlasTexel],
@@ -450,17 +444,17 @@ pub(crate) fn compact_section_from_dense_atlas(
     }
     debug_assert_eq!(compact_slot, valid_probe_count);
 
-    section.compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
-    section.compact_atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
-    section.compact_atlas_tiles_per_layer = compact_layout.tiles_per_layer;
-    section.compact_atlas_layer_count = compact_layout.layer_count;
+    section.atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
+    section.atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
+    section.tiles_per_layer = compact_layout.tiles_per_layer;
+    section.layer_count = compact_layout.layer_count;
     section.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
     section.compact_atlas = atlas_texels_to_bytes(&compact_atlas);
     section
 }
 
-/// Re-encode the compact, lossless v9 base atlas for its at-rest representation.
-/// The logical compact geometry stays unchanged; only the BC6H input gains a
+/// Re-encode the packed, lossless base atlas for its at-rest representation.
+/// The stored geometry stays unchanged; only the BC6H input gains a
 /// zero-filled 4×4 fringe that is never addressed by the runtime tile layout.
 pub(crate) fn encode_sh_volume_section_bc6h(
     section: &OctahedralShVolumeSection,
@@ -474,18 +468,17 @@ pub(crate) fn encode_sh_volume_section_bc6h(
         "SH BC6H encode expects the compact RGBA16F section from the bake",
     );
 
-    let width = section.compact_atlas_dimensions[0];
-    let height = section.compact_atlas_dimensions[1];
+    let width = section.atlas_dimensions[0];
+    let height = section.atlas_dimensions[1];
     let padded_width = width.div_ceil(4) * 4;
     let padded_height = height.div_ceil(4) * 4;
     let source_layer_stride = width as usize * height as usize * 8;
     let encoded_layer_len = (padded_width / 4) as usize * (padded_height / 4) as usize * 16;
-    let mut compact_atlas =
-        Vec::with_capacity(section.compact_atlas_layer_count as usize * encoded_layer_len);
+    let mut compact_atlas = Vec::with_capacity(section.layer_count as usize * encoded_layer_len);
 
-    for layer in 0..section.compact_atlas_layer_count as usize {
+    for layer in 0..section.layer_count as usize {
         // BC6H consumes f32 RGBA input but encodes RGB only. The valid-probe
-        // metadata, not alpha, defines compact payload membership in v9.
+        // metadata, not alpha, defines stored payload membership in v10.
         let mut rgba_f32 = vec![0.0f32; padded_width as usize * padded_height as usize * 4];
         let source_layer = layer * source_layer_stride;
         for y in 0..height {
@@ -1511,10 +1504,6 @@ mod tests {
                     density_level: 0,
                 },
             ],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
@@ -1528,10 +1517,10 @@ mod tests {
             2 * tile_bytes,
             "two valid probes must contribute exactly two 288-byte tiles before encoding",
         );
-        assert_eq!(compact.compact_atlas_dimensions, [12, 6]);
-        assert_eq!(compact.compact_atlas_tiles_per_row, 2);
-        assert_eq!(compact.compact_atlas_tiles_per_layer, 2);
-        assert_eq!(compact.compact_atlas_layer_count, 1);
+        assert_eq!(compact.atlas_dimensions, [12, 6]);
+        assert_eq!(compact.atlas_tiles_per_row, 2);
+        assert_eq!(compact.tiles_per_layer, 2);
+        assert_eq!(compact.layer_count, 1);
         assert_eq!(
             u16::from_le_bytes([compact.compact_atlas[0], compact.compact_atlas[1]]),
             10,

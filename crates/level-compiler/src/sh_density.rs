@@ -7,7 +7,8 @@ use postretro_level_format::octahedral::{
     IrradianceAtlasArrayLayout, irradiance_array_tile_location, irradiance_atlas_array_layout,
 };
 use postretro_level_format::sh_reconstruct::{
-    Level, StoredTile, corner_locals, reconstruct_l2_tile, stored_brick_prefix_sum, stored_tile_set,
+    Level, StoredTile, corner_locals, local_xyz, reconstruct_l2_tile, stored_brick_prefix_sum,
+    stored_tile_set,
 };
 use postretro_level_format::sh_volume::{OctahedralAtlasTexel, OctahedralShVolumeSection};
 
@@ -368,12 +369,18 @@ pub(crate) fn classify_base_levels(
         }
     }
 
-    let guard = |view: Option<DeltaView<'_>>| {
-        view.filter(|section| section.affinity_dims == affinity_dimensions)
-    };
-    let delta_indirect = guard(deltas.indirect.map(DeltaView::from_indirect));
-    let delta_direct = guard(deltas.direct.map(DeltaView::from_direct));
-    let delta_animated = guard(deltas.anim_direct.map(DeltaView::from_anim_direct));
+    let delta_indirect = deltas
+        .indirect
+        .map(DeltaView::from_indirect)
+        .filter(|section| section.affinity_dims == affinity_dimensions);
+    let delta_direct = deltas
+        .direct
+        .map(DeltaView::from_direct)
+        .filter(|section| section.affinity_dims == affinity_dimensions);
+    let delta_animated = deltas
+        .anim_direct
+        .map(DeltaView::from_anim_direct)
+        .filter(|section| section.affinity_dims == affinity_dimensions);
     let inputs = AnalyzeInputs {
         grid_origin: base_indirect.grid_origin,
         cell_size: base_indirect.cell_size,
@@ -427,9 +434,17 @@ pub(crate) fn classify_base_levels(
                 // stamp. Reserve L1 for bricks with an actual valid corner;
                 // otherwise the classifier can still use its always-
                 // representable L2 mean or L0.
-                let l1_has_stored_corner = corner_locals()
-                    .into_iter()
-                    .any(|local| tiles.valid_mask[local]);
+                let local_is_valid = |local: usize| {
+                    let (local_x, local_y, local_z) = local_xyz(local);
+                    let probe_x = cell_x * 4 + local_x;
+                    let probe_y = cell_y * 4 + local_y;
+                    let probe_z = cell_z * 4 + local_z;
+                    probe_x < nx
+                        && probe_y < ny
+                        && probe_z < nz
+                        && validity[probe_x + probe_y * nx + probe_z * nx * ny] != 0
+                };
+                let l1_has_stored_corner = corner_locals().into_iter().any(local_is_valid);
                 let (world_min, world_max) =
                     brick_world_aabb(&inputs, dimensions, cell_x, cell_y, cell_z);
                 bricks.push(BrickClass {
@@ -441,7 +456,7 @@ pub(crate) fn classify_base_levels(
                     l2_p95: l2.p95,
                     l2_max: l2.max,
                     l2_evaluable: l2.texel_samples > 0,
-                    has_any_valid: tiles.valid_mask.iter().any(|&valid| valid),
+                    has_any_valid: (0..64).any(local_is_valid),
                     world_min: world_min.to_array(),
                     world_max: world_max.to_array(),
                 });
@@ -496,8 +511,8 @@ pub(crate) fn delta_pin_counts(
             deltas.indirect.map(|section| {
                 (
                     section.affinity_dims,
-                    &section.affinity_offsets,
-                    &section.cell_levels,
+                    section.affinity_offsets.as_slice(),
+                    section.cell_levels.as_slice(),
                 )
             }),
         ),
@@ -507,8 +522,8 @@ pub(crate) fn delta_pin_counts(
             deltas.direct.map(|section| {
                 (
                     section.affinity_dims,
-                    &section.affinity_offsets,
-                    &section.cell_levels,
+                    section.affinity_offsets.as_slice(),
+                    section.cell_levels.as_slice(),
                 )
             }),
         ),
@@ -518,8 +533,8 @@ pub(crate) fn delta_pin_counts(
             deltas.anim_direct.map(|section| {
                 (
                     section.affinity_dims,
-                    &section.affinity_offsets,
-                    &section.cell_levels,
+                    section.affinity_offsets.as_slice(),
+                    section.cell_levels.as_slice(),
                 )
             }),
         ),

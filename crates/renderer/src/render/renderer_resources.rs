@@ -472,6 +472,7 @@ impl Renderer {
                 full.sh_volume_resources.atlas_tiles_per_row,
                 full.sh_volume_resources.tiles_per_layer,
                 full.sh_volume_resources.atlas_layer_count,
+                &full.sh_volume_resources.probe_indirection_words,
             );
         }
 

@@ -7,11 +7,11 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
-    u32_slice_to_bytes, ComposeGridParams,
+    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
+    u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
-use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
+use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -531,12 +531,12 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::sh_indirection::{build_probe_indirection_words, INVALID_PROBE_INDIRECTION};
+    use super::super::sh_indirection::{INVALID_PROBE_INDIRECTION, build_probe_indirection_words};
     use super::{
-        build_delta_buffers, compose_bgl_entries, indirect_compose_should_dispatch,
-        BIND_BASE_ATLAS_SAMPLER,
+        BIND_BASE_ATLAS_SAMPLER, build_delta_buffers, compose_bgl_entries,
+        indirect_compose_should_dispatch,
     };
-    use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, AFFINITY_FACTOR};
+    use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };

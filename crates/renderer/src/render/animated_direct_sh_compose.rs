@@ -5,18 +5,18 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    build_animated_direct_delta_buffers, build_compose_grid_bytes, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes, ComposeGridParams,
+    ComposeGridParams, build_animated_direct_delta_buffers, build_compose_grid_bytes,
+    pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::direct_sh_compose::{
+    BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS, BIND_ANIMATION_DESCRIPTOR_INDICES,
+    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_SAMPLES, BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
     nearest_sampler, sampler_bgl_entry, storage_bgl_entry, storage_texture_bgl_entry,
-    texture_bgl_entry, uniform_bgl_entry, BIND_AFFINITY_LIGHTS, BIND_AFFINITY_OFFSETS,
-    BIND_ANIMATION_DESCRIPTORS, BIND_ANIMATION_DESCRIPTOR_INDICES, BIND_ANIMATION_SAMPLES,
-    BIND_BASE_SAMPLER, BIND_DELTA_SUBBLOCKS,
+    texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
-use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
+use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -350,8 +350,11 @@ mod tests {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
         assert!(source.contains("light_term_mask: u32,"));
         assert!(source.contains("const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;"));
-        assert!(source
-            .contains("if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u)"));
+        assert!(
+            source.contains(
+                "if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u)"
+            )
+        );
     }
 
     #[test]

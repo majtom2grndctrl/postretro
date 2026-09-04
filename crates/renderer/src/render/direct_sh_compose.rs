@@ -7,15 +7,15 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
-    u32_slice_to_bytes, ComposeGridParams, DirectDeltaComposeBuffers,
+    ComposeGridParams, DirectDeltaComposeBuffers, build_compose_grid_bytes,
+    build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::animated_direct_sh_compose::{
-    build_animated_direct_pass, AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride,
+    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
-use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
+use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;

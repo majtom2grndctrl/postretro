@@ -118,6 +118,11 @@ pub struct ShVolumeResources {
     /// Consumed by `sh_diagnostics::emit` for probe-marker coloring.
     #[cfg(feature = "dev-tools")]
     pub validity: Vec<u8>,
+    /// CPU mirror of the id-34 brick density level stamped on each probe,
+    /// z-major like `validity`. This is metadata captured once at level load,
+    /// so the density diagnostic never waits for or triggers atlas readback.
+    #[cfg(feature = "dev-tools")]
+    pub density_levels: Vec<u8>,
     /// CPU mirror of each probe's average tile-interior irradiance as linear
     /// RGB, z-major like `validity`; consumed by `sh_diagnostics::emit`.
     #[cfg(feature = "dev-tools")]
@@ -362,6 +367,15 @@ impl ShVolumeResources {
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
             .map(|s| s.probes.iter().map(|p| p.validity).collect())
+            .unwrap_or_default();
+
+        // Keep the stamped metadata beside validity for the dev-tools density
+        // overlay. Do not derive this from the indirection word: invalid probes
+        // intentionally carry the all-zero word but still belong to a brick
+        // whose level is useful to inspect.
+        #[cfg(feature = "dev-tools")]
+        let density_levels: Vec<u8> = usable
+            .map(|s| s.probes.iter().map(|p| p.density_level).collect())
             .unwrap_or_default();
 
         // The compact base atlas is BC6H by default and has no CPU decoder in
@@ -663,6 +677,8 @@ impl ShVolumeResources {
             scripted_sample_byte_offset,
             #[cfg(feature = "dev-tools")]
             validity,
+            #[cfg(feature = "dev-tools")]
+            density_levels,
             #[cfg(feature = "dev-tools")]
             probe_irradiance,
             grid_origin,

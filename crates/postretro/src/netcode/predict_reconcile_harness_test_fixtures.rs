@@ -54,9 +54,9 @@ use postretro_entities::{
     MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
-    AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor,
-    SpeedParams,
+    AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+    GroundParams, GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent,
+    PlayerMovementDescriptor, SlideParams, SpeedParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -101,6 +101,35 @@ pub(crate) fn floor_world() -> CollisionWorld {
         mesh: TriMesh::new(points, triangles),
         isometry: Isometry::identity(),
     }
+}
+
+/// Flat floor joined continuously to a downhill facet at `z = -1`. Forward
+/// movement crosses the crease, so prediction can hold a newer contact normal
+/// than an authoritative baseline restored on the flat facet.
+pub(crate) fn faceted_slope_world(slope: f32) -> CollisionWorld {
+    let far_y = slope * (-500.0 + 1.0);
+    let points = vec![
+        Point::new(-500.0, far_y, -500.0),
+        Point::new(500.0, far_y, -500.0),
+        Point::new(500.0, 0.0, -1.0),
+        Point::new(-500.0, 0.0, -1.0),
+        Point::new(-500.0, 0.0, -1.0),
+        Point::new(500.0, 0.0, -1.0),
+        Point::new(500.0, 0.0, 500.0),
+        Point::new(-500.0, 0.0, 500.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]]),
+        isometry: Isometry::identity(),
+    }
+}
+
+pub(crate) fn faceted_floor_height(slope: f32, z: f32) -> f32 {
+    if z < -1.0 { slope * (z + 1.0) } else { 0.0 }
+}
+
+pub(crate) fn downhill_facet_normal(slope: f32) -> Vec3 {
+    Vec3::new(0.0, 1.0, -slope).normalize()
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn
@@ -150,7 +179,19 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             coyote_ms: 0.0,
             jump_buffer_ms: 0.0,
         }),
-        crouch: None,
+        crouch: Some(CrouchParams {
+            half_height: 0.4,
+            eye_height: 0.2,
+            transition_rate: 15.0,
+        }),
+        slide: Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 2.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 1.5,
+            min_duration_ms: 250.0,
+        }),
         view_feel: None,
     }
 }

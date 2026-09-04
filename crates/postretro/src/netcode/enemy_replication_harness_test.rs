@@ -1121,6 +1121,7 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
                 dash: None,
                 forgiveness: None,
                 crouch: None,
+                slide: None,
                 view_feel: None,
             }),
         )

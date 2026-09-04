@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // boundary is crossed.
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, NumberOrIr, PlayerMovementDescriptor, ViewFeelParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, ViewFeelParams,
 };
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
@@ -123,11 +123,11 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Three states exist today:
+/// applies any transition the intent returns. Four states exist today:
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
-/// velocity-impulse burst), and `Crouching` (reduced-speed locomotion with
-/// a shrunk collision capsule). Later states (slide, wall-run, vault) plug
-/// in behind the same seam.
+/// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
+/// shrunk collision capsule), and `Sliding` (speed-preserving crouched motion).
+/// Later states (wall-run, vault) plug in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -158,6 +158,16 @@ pub enum MovementState {
     /// resize/probe need persist on the component (`standing_half_height` /
     /// `standing_eye_height`), since the live `capsule` is the crouched size.
     Crouching { eye_current: f32 },
+    /// Active speed-preserving slide. `boost` is the horizontal momentum banked
+    /// at entry (and subsequently slope-accelerated, steered, and drag-decayed),
+    /// while `elapsed_ms` guards the committed minimum and hard maximum duration.
+    /// `eye_current` is the crouch-eye smoothing source, carried explicitly so a
+    /// slide handoff into `Crouching` remains visually continuous.
+    Sliding {
+        elapsed_ms: f32,
+        boost: Vec3,
+        eye_current: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,6 +196,11 @@ pub struct PlayerMovementComponent {
     /// Optional crouch tuning, materialized from the descriptor's `crouch`
     /// field. `None` ⇒ crouch disabled.
     pub crouch: Option<CrouchParams>,
+    /// Optional slide tuning, materialized from the descriptor's `slide`
+    /// field. `None` ⇒ slide disabled. Slide depends on crouched capsule
+    /// dimensions, so a descriptor that enables slide without crouch visibly
+    /// degrades to this disabled state during materialization.
+    pub slide: Option<SlideParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
@@ -203,6 +218,10 @@ pub struct PlayerMovementComponent {
     pub standing_eye_height: f32,
     pub ground: GroundRef,
     pub velocity: Vec3,
+    /// The most recent walkable floor-contact normal, forwarded by the
+    /// collision substrate after each tick. Per-state intents read this on
+    /// their following tick instead of querying collision directly.
+    pub last_floor_normal: Option<Vec3>,
     pub air_jumps_remaining: u32,
     /// Air-dash charges left before landing. Seeded from `dash.air_dashes` at
     /// construction (0 when dash is disabled) and refreshed on landing through
@@ -300,6 +319,17 @@ impl PlayerMovementComponent {
         // Mirror how `air_jumps_remaining` is seeded from `air.jumps`: the
         // air-dash budget starts full at construction, 0 when dash is disabled.
         let air_dashes_remaining = dash.as_ref().map_or(0, |d| d.air_dashes);
+        // Slide reuses the crouched capsule. Keep a malformed descriptor from
+        // creating a runtime state the movement layer cannot materialize: warn
+        // once at the descriptor-to-component boundary and disable slide.
+        let slide = if desc.slide.is_some() && desc.crouch.is_none() {
+            log::warn!(
+                "[Movement] slide tuning requires crouch; disabling slide for this descriptor"
+            );
+            None
+        } else {
+            desc.slide.clone()
+        };
         // Forgiveness windows materialize here: an absent `forgiveness`
         // sub-object applies the documented engine defaults; a present one
         // already merged per-field defaults at parse time (0 disables a grace).
@@ -312,6 +342,7 @@ impl PlayerMovementComponent {
             dash,
             dash_programs,
             crouch: desc.crouch.clone(),
+            slide,
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
@@ -323,6 +354,7 @@ impl PlayerMovementComponent {
             cos_walkable,
             ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
+            last_floor_normal: None,
             air_jumps_remaining,
             air_dashes_remaining,
             dash_cooldown_ms: 0.0,
@@ -383,7 +415,7 @@ mod tests {
     use super::*;
     use crate::data_descriptors::{
         AirParams, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-        PlayerMovementDescriptor, SpeedParams,
+        PlayerMovementDescriptor, SlideParams, SpeedParams,
     };
 
     /// Minimal descriptor used by tests that only need a valid materialization
@@ -425,6 +457,7 @@ mod tests {
                 jump_buffer_ms: 0.0,
             }),
             crouch: None,
+            slide: None,
             view_feel: None,
         }
     }
@@ -465,5 +498,25 @@ mod tests {
         assert!(comp.dash_programs.dash_drag.is_none());
         assert!(comp.dash_programs.cooldown_ms.is_none());
         assert!(comp.dash_programs.preserve_vertical.is_none());
+    }
+
+    #[test]
+    fn from_descriptor_disables_slide_without_crouch() {
+        let mut desc = minimal_descriptor();
+        desc.slide = Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 12.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 2.0,
+            min_duration_ms: 100.0,
+        });
+
+        let component = PlayerMovementComponent::from_descriptor(&desc);
+
+        assert!(
+            component.slide.is_none(),
+            "slide must degrade to disabled when its required crouch tuning is absent"
+        );
     }
 }

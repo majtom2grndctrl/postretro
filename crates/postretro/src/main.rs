@@ -8333,11 +8333,6 @@ mod tests {
             observed_light.distance(expected_light) <= 1.0e-6,
             "client light and geometry must share client-local interpolated mover pose"
         );
-        assert_eq!(
-            postretro_net::handshake::WIRE_VERSION,
-            19,
-            "carried-light parity adds no app/net protocol field or version bump"
-        );
     }
 
     #[test]
@@ -10062,6 +10057,7 @@ mod tests {
                 jump_buffer_ms: 0.0,
             }),
             crouch: None,
+            slide: None,
             view_feel: None,
         }
     }

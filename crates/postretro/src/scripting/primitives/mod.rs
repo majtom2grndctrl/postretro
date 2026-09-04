@@ -594,7 +594,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")
-        .doc("Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.")
+        .doc("Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.")
         .field("capsule", "CapsuleParams", "Required collision capsule and camera attachment geometry, in metres.")
         .field("ground", "GroundParams", "Required on-ground speed, acceleration, stepping, and slope limits.")
         .field("air", "AirParams", "Required jump and mid-air steering parameters.")
@@ -613,6 +613,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "crouch?",
             "CrouchParams",
             "Optional crouch tuning. When omitted, crouch is disabled. When present, all of its fields are required.",
+        )
+        .field(
+            "slide?",
+            "SlideParams",
+            "Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.",
         )
         .field(
             "viewFeel?",
@@ -689,6 +694,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("halfHeight", "f32", "Crouched capsule half-height in metres. Must be finite > 0.")
         .field("eyeHeight", "f32", "Crouched camera attachment point measured upward from the capsule center in metres. Must lie in (0, crouched halfHeight + radius].")
         .field("transitionRate", "f32", "Rate the capsule interpolates between standing and crouched extents, per-sec. Must be finite > 0.")
+        .finish();
+    registry
+        .register_type("SlideParams")
+        .doc("Slide tuning. Optional on `PlayerMovementDescriptor` — when omitted, slide is disabled. Slide requires crouch. When present, all fields are required and validated.")
+        .field("minSpeed", "f32", "Horizontal entry-speed gate in metres/sec. Must be finite and > 0.")
+        .field("slideDrag", "f32", "Linear decay rate of the slide boost in metres/sec². Must be finite and ≥ 0; 0 permits a frictionless slide.")
+        .field("slopeAssist", "f32", "Unitless downhill-assist scale. Must be finite and ≥ 0.")
+        .field("steerRate", "f32", "Maximum in-slide steering rate in degrees/sec. Must be finite and ≥ 0.")
+        .field("entryBoost", "f32", "Horizontal entry-speed kick in metres/sec. Must be finite and ≥ 0.")
+        .field("minDurationMs", "f32", "Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0.")
         .finish();
     registry
         .register_type("ViewFeelParams")

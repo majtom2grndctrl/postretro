@@ -12,7 +12,7 @@ use thiserror::Error;
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 6;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 7;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -355,14 +355,14 @@ mod tests {
     fn payload_rejects_previous_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(4);
+        json["epoch"] = serde_json::json!(6);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 6,
-                received: 4,
+                expected: 7,
+                received: 6,
             })
         ));
     }

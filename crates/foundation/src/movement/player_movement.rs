@@ -125,9 +125,9 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// active state's intent step, runs the shared collision substrate, then
 /// applies any transition the intent returns. Four states exist today:
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
-/// velocity-impulse burst), and `Crouching` (reduced-speed locomotion with
-/// a shrunk collision capsule). Later states (slide, wall-run, vault) plug
-/// in behind the same seam.
+/// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
+/// shrunk collision capsule), and `Sliding` (speed-preserving crouched motion).
+/// Later states (wall-run, vault) plug in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]

@@ -5,8 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec3;
+use postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
+use postretro_level_format::sh_reconstruct::{corner_locals, local_xyz, trilinear_weight};
 
 use super::debug_lines::DebugLineRenderer;
+use super::sh_indirection::decode_probe_indirection_word;
 use super::sh_volume::{DeltaVolumeMeta, ShVolumeResources};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::sh_compose::f16_bits_to_f32;
@@ -16,6 +19,8 @@ use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 pub enum MarkerMode {
     /// Green for `validity != 0`, red for invalid probes.
     Validity,
+    /// Color each probe from its baked 4×4×4 brick's stored density level.
+    DensityLevel,
     /// All probes drawn with the same neutral color.
     Uniform,
     /// Each marker tinted by the probe's averaged baked irradiance.
@@ -81,6 +86,21 @@ const COLOR_CELL_CULLED: [u8; 4] = [0, 220, 220, 200];
 const COLOR_PROBE_VALID: [u8; 4] = [60, 230, 80, 255];
 const COLOR_PROBE_INVALID: [u8; 4] = [230, 60, 60, 255];
 const COLOR_PROBE_UNIFORM: [u8; 4] = [230, 230, 230, 255];
+const COLOR_PROBE_DENSITY_L0: [u8; 4] = [60, 230, 80, 255];
+const COLOR_PROBE_DENSITY_L1: [u8; 4] = [255, 210, 60, 255];
+const COLOR_PROBE_DENSITY_L2: [u8; 4] = [90, 150, 255, 255];
+
+/// Map an id-34 density-level byte to the marker color. The loader validates
+/// the byte, but rendering an unexpected value as red makes a malformed CPU
+/// mirror obvious without adding any diagnostic work to the frame loop.
+fn density_level_marker_color(level: u8) -> [u8; 4] {
+    match level {
+        0 => COLOR_PROBE_DENSITY_L0,
+        1 => COLOR_PROBE_DENSITY_L1,
+        2 => COLOR_PROBE_DENSITY_L2,
+        _ => COLOR_PROBE_INVALID,
+    }
+}
 
 /// Map a probe's average irradiance to a marker color. The irradiance is HDR,
 /// so a luminance-preserving Reinhard compresses it into `[0, 1]` without
@@ -255,6 +275,16 @@ fn emit_markers(
                             COLOR_PROBE_INVALID
                         }
                     }
+                    MarkerMode::DensityLevel => {
+                        let idx = probe_index(x, y, z, dims);
+                        // `density_levels` is copied from the validated id-34
+                        // metadata at load. In particular it retains a level
+                        // for invalid probes, unlike the all-zero indirection
+                        // word those probes receive for GPU sampling.
+                        density_level_marker_color(
+                            sh.density_levels.get(idx).copied().unwrap_or_default(),
+                        )
+                    }
                     MarkerMode::Irradiance => {
                         let idx = probe_index(x, y, z, dims);
                         let irradiance = sh.probe_irradiance.get(idx).copied().unwrap_or([0.0; 3]);
@@ -281,12 +311,17 @@ pub struct ShProbeReadback {
     buffer: wgpu::Buffer,
     buffer_size: u64,
     grid_dimensions: [u32; 3],
-    atlas_dimensions: [u32; 2],
+    /// Stored-tile atlas extent, not dense grid-derived geometry. The copy and
+    /// all following decode use this exact extent.
+    stored_atlas_dimensions: [u32; 2],
     tile_dimension: u32,
     tile_border: u32,
     atlas_tiles_per_row: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
+    /// One load-derived word for each dense-grid probe. It maps probe markers
+    /// back into the compact stored atlas without a GPU readback of metadata.
+    probe_indirection_words: Vec<u32>,
     /// Row stride in the readback buffer: `atlas_width * 8` rounded up to
     /// `COPY_BYTES_PER_ROW_ALIGNMENT`. The decode skips the per-row padding.
     padded_bytes_per_row: u32,
@@ -311,15 +346,16 @@ impl ShProbeReadback {
     pub fn new(
         device: &wgpu::Device,
         grid_dimensions: [u32; 3],
-        atlas_dimensions: [u32; 2],
+        stored_atlas_dimensions: [u32; 2],
         tile_dimension: u32,
         tile_border: u32,
         atlas_tiles_per_row: u32,
         tiles_per_layer: u32,
         atlas_layer_count: u32,
+        probe_indirection_words: &[u32],
     ) -> Self {
-        let atlas_width = atlas_dimensions[0].max(1);
-        let atlas_height = atlas_dimensions[1].max(1);
+        let atlas_width = stored_atlas_dimensions[0].max(1);
+        let atlas_height = stored_atlas_dimensions[1].max(1);
         let layer_count = atlas_layer_count.max(1);
         let unpadded = atlas_width * Self::BYTES_PER_TEXEL;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -337,12 +373,13 @@ impl ShProbeReadback {
             buffer,
             buffer_size,
             grid_dimensions,
-            atlas_dimensions,
+            stored_atlas_dimensions,
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
             tiles_per_layer,
             atlas_layer_count: layer_count,
+            probe_indirection_words: probe_indirection_words.to_vec(),
             padded_bytes_per_row,
             wanted: false,
             copied_pending: false,
@@ -383,12 +420,12 @@ impl ShProbeReadback {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(self.atlas_dimensions[1].max(1)),
+                    rows_per_image: Some(self.stored_atlas_dimensions[1].max(1)),
                 },
             },
             wgpu::Extent3d {
-                width: self.atlas_dimensions[0].max(1),
-                height: self.atlas_dimensions[1].max(1),
+                width: self.stored_atlas_dimensions[0].max(1),
+                height: self.stored_atlas_dimensions[1].max(1),
                 depth_or_array_layers: self.atlas_layer_count,
             },
         );
@@ -407,12 +444,13 @@ impl ShProbeReadback {
             let decoded = decode_probe_irradiance_atlas(
                 &view,
                 self.grid_dimensions,
-                self.atlas_dimensions,
+                self.stored_atlas_dimensions,
                 self.tile_dimension,
                 self.tile_border,
                 self.atlas_tiles_per_row,
                 self.tiles_per_layer,
                 self.atlas_layer_count,
+                &self.probe_indirection_words,
                 self.padded_bytes_per_row,
             );
             drop(view);
@@ -450,9 +488,15 @@ impl ShProbeReadback {
     }
 }
 
-/// Decode a mapped atlas readback into per-probe average irradiance RGB,
-/// z-major (`x + y*Nx + z*Nx*Ny`). Skips the per-row alignment padding and
-/// averages each probe tile's interior from the dense composed-atlas layout.
+/// Decode a mapped stored-atlas readback into per-probe average irradiance RGB,
+/// z-major (`x + y*Nx + z*Nx*Ny`). Each dense-grid probe first resolves through
+/// its load-derived indirection word: L0 reads its stored slot, L1 reconstructs
+/// from the brick's eight canonical corner slots, and L2 reads the brick mean.
+///
+/// The readback averages each stored tile's interior before reconstruction.
+/// That commutes with the shared reconstruction's weighted tile sum, so marker
+/// colors have the same L1/L2 semantics as the composed field without retaining
+/// every texel on the CPU.
 #[allow(clippy::too_many_arguments)]
 fn decode_probe_irradiance_atlas(
     bytes: &[u8],
@@ -463,6 +507,7 @@ fn decode_probe_irradiance_atlas(
     atlas_tiles_per_row: u32,
     tiles_per_layer: u32,
     atlas_layer_count: u32,
+    probe_indirection_words: &[u32],
     padded_bytes_per_row: u32,
 ) -> Vec<[f32; 3]> {
     let nx = dims[0].max(1) as usize;
@@ -479,55 +524,206 @@ fn decode_probe_irradiance_atlas(
         .saturating_sub(tile_border)
         .max(interior_start);
     for probe in 0..nx * ny * nz {
-        let [layer, tile_x, tile_y] =
-            postretro_level_format::octahedral::irradiance_array_tile_location(
-                probe,
-                tiles_per_layer,
+        let Some(&word) = probe_indirection_words.get(probe) else {
+            out.push([0.0; 3]);
+            continue;
+        };
+        let indirection = decode_probe_indirection_word(word);
+        if !indirection.valid {
+            out.push([0.0; 3]);
+            continue;
+        }
+
+        let value = match indirection.level {
+            0 | 2 => read_stored_tile_average(
+                bytes,
+                indirection.slot,
+                atlas_width,
+                atlas_height,
+                layer_count,
+                tile_dimension,
+                interior_start,
+                interior_end,
                 atlas_tiles_per_row,
-            );
-        if layer >= layer_count {
-            out.push([0.0; 3]);
-            continue;
-        }
-        let origin = [
-            tile_x.saturating_mul(tile_dimension),
-            tile_y.saturating_mul(tile_dimension),
-        ];
-        let layer_offset = layer as usize * layer_stride;
-        let mut sum = [0.0f32; 3];
-        let mut count = 0u32;
-        for local_y in interior_start..interior_end {
-            for local_x in interior_start..interior_end {
-                let x = origin[0].saturating_add(local_x).min(atlas_width - 1);
-                let y = origin[1].saturating_add(local_y).min(atlas_height - 1);
-                let o = layer_offset + y as usize * stride + x as usize * 8;
-                // Guard against a readback buffer shorter than the atlas geometry
-                // implies — e.g. a stale `bytes` captured before an atlas-dimension
-                // change on level reload. We read 6 bytes (RGB f16) here, so any
-                // tile whose texel would start past the buffer is skipped rather
-                // than indexing out of bounds.
-                if o + 5 >= bytes.len() {
-                    continue;
-                }
-                sum[0] += f16_bits_to_f32(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
-                sum[1] += f16_bits_to_f32(u16::from_le_bytes([bytes[o + 2], bytes[o + 3]]));
-                sum[2] += f16_bits_to_f32(u16::from_le_bytes([bytes[o + 4], bytes[o + 5]]));
-                count += 1;
-            }
-        }
-        if count == 0 {
-            out.push([0.0; 3]);
-            continue;
-        }
-        let inv = 1.0 / count as f32;
-        out.push([sum[0] * inv, sum[1] * inv, sum[2] * inv]);
+                tiles_per_layer,
+                stride,
+                layer_stride,
+            ),
+            1 => reconstruct_l1_probe_average(
+                bytes,
+                probe,
+                dims,
+                probe_indirection_words,
+                indirection.slot,
+                atlas_width,
+                atlas_height,
+                layer_count,
+                tile_dimension,
+                interior_start,
+                interior_end,
+                atlas_tiles_per_row,
+                tiles_per_layer,
+                stride,
+                layer_stride,
+            ),
+            _ => [0.0; 3],
+        };
+        out.push(value);
     }
     out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_stored_tile_average(
+    bytes: &[u8],
+    slot: u32,
+    atlas_width: u32,
+    atlas_height: u32,
+    atlas_layer_count: u32,
+    tile_dimension: u32,
+    interior_start: u32,
+    interior_end: u32,
+    atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    stride: usize,
+    layer_stride: usize,
+) -> [f32; 3] {
+    let [layer, tile_x, tile_y] =
+        postretro_level_format::octahedral::irradiance_array_tile_location(
+            slot as usize,
+            tiles_per_layer,
+            atlas_tiles_per_row,
+        );
+    if layer >= atlas_layer_count {
+        return [0.0; 3];
+    }
+    let origin = [
+        tile_x.saturating_mul(tile_dimension),
+        tile_y.saturating_mul(tile_dimension),
+    ];
+    if origin[0] >= atlas_width || origin[1] >= atlas_height {
+        return [0.0; 3];
+    }
+
+    let layer_offset = layer as usize * layer_stride;
+    let mut sum = [0.0f32; 3];
+    let mut count = 0u32;
+    for local_y in interior_start..interior_end {
+        for local_x in interior_start..interior_end {
+            let x = origin[0].saturating_add(local_x).min(atlas_width - 1);
+            let y = origin[1].saturating_add(local_y).min(atlas_height - 1);
+            let o = layer_offset + y as usize * stride + x as usize * 8;
+            // Guard against a readback buffer shorter than the stored-atlas
+            // geometry implies — e.g. a stale buffer during a level reload.
+            // We read 6 bytes (RGB f16), so skip a texel that would overrun.
+            if o + 5 >= bytes.len() {
+                continue;
+            }
+            sum[0] += f16_bits_to_f32(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
+            sum[1] += f16_bits_to_f32(u16::from_le_bytes([bytes[o + 2], bytes[o + 3]]));
+            sum[2] += f16_bits_to_f32(u16::from_le_bytes([bytes[o + 4], bytes[o + 5]]));
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return [0.0; 3];
+    }
+    let inv = 1.0 / count as f32;
+    [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_l1_probe_average(
+    bytes: &[u8],
+    probe: usize,
+    dims: [u32; 3],
+    probe_indirection_words: &[u32],
+    brick_base_slot: u32,
+    atlas_width: u32,
+    atlas_height: u32,
+    atlas_layer_count: u32,
+    tile_dimension: u32,
+    interior_start: u32,
+    interior_end: u32,
+    atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    stride: usize,
+    layer_stride: usize,
+) -> [f32; 3] {
+    let nx = dims[0].max(1) as usize;
+    let ny = dims[1].max(1) as usize;
+    let x = probe % nx;
+    let y = (probe / nx) % ny;
+    let z = probe / (nx * ny);
+    let factor = AFFINITY_FACTOR as usize;
+    let target_local = (x % factor) + (y % factor) * factor + (z % factor) * factor * factor;
+    let brick_origin = [
+        x / factor * factor,
+        y / factor * factor,
+        z / factor * factor,
+    ];
+
+    let mut sum = [0.0; 3];
+    let mut weight_sum = 0.0f32;
+    for (corner, corner_local) in corner_locals().into_iter().enumerate() {
+        let (corner_x, corner_y, corner_z) = local_xyz(corner_local);
+        let corner_global = [
+            brick_origin[0] + corner_x,
+            brick_origin[1] + corner_y,
+            brick_origin[2] + corner_z,
+        ];
+        if corner_global[0] >= dims[0] as usize
+            || corner_global[1] >= dims[1] as usize
+            || corner_global[2] >= dims[2] as usize
+        {
+            continue;
+        }
+        let corner_probe = corner_global[0] + corner_global[1] * nx + corner_global[2] * nx * ny;
+        let Some(&corner_word) = probe_indirection_words.get(corner_probe) else {
+            continue;
+        };
+        if !decode_probe_indirection_word(corner_word).valid {
+            continue;
+        }
+        let weight = trilinear_weight(local_xyz(target_local), local_xyz(corner_local));
+        if weight <= 0.0 {
+            continue;
+        }
+        let rgb = read_stored_tile_average(
+            bytes,
+            brick_base_slot + corner as u32,
+            atlas_width,
+            atlas_height,
+            atlas_layer_count,
+            tile_dimension,
+            interior_start,
+            interior_end,
+            atlas_tiles_per_row,
+            tiles_per_layer,
+            stride,
+            layer_stride,
+        );
+        for (channel, value) in sum.iter_mut().zip(rgb) {
+            *channel += value * weight;
+        }
+        weight_sum += weight;
+    }
+    if weight_sum <= 0.0 {
+        return [0.0; 3];
+    }
+    for channel in &mut sum {
+        *channel /= weight_sum;
+    }
+    sum
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn indirection_word(level: u32, slot: u32) -> u32 {
+        (slot << 3) | 0b100 | level
+    }
 
     #[test]
     fn marker_mode_defaults_to_irradiance() {
@@ -559,12 +755,23 @@ mod tests {
     }
 
     #[test]
+    fn density_level_markers_color_an_all_l0_map_as_l0() {
+        let all_l0 = [0u8; 64];
+        assert!(
+            all_l0
+                .into_iter()
+                .all(|level| density_level_marker_color(level) == COLOR_PROBE_DENSITY_L0)
+        );
+        assert_ne!(COLOR_PROBE_DENSITY_L0, COLOR_PROBE_DENSITY_L1);
+        assert_ne!(COLOR_PROBE_DENSITY_L1, COLOR_PROBE_DENSITY_L2);
+    }
+
+    #[test]
     fn decode_probe_irradiance_atlas_averages_tile_interiors_in_probe_order() {
         use crate::render::sh_volume::f32_to_f16_bits;
 
-        // Regression: the live SH probe readback used to copy the composed
-        // atlas as though it were the old 3D grid texture. The atlas is now a
-        // 2D tile sheet; marker colors come from each probe tile's interior average.
+        // Stored L0 slots remain a 2D tile sheet; marker colors come from each
+        // stored tile's interior average, not a grid-indexed texture location.
         let dims = [2u32, 1, 1];
         let tile_dimension = 4u32;
         let tile_border = 1u32;
@@ -600,6 +807,7 @@ mod tests {
             atlas_tiles_per_row,
             2,
             1,
+            &[indirection_word(0, 0), indirection_word(0, 1)],
             stride as u32,
         );
         assert_eq!(out.len(), 2);
@@ -652,10 +860,88 @@ mod tests {
             atlas_tiles_per_row,
             tiles_per_layer,
             atlas_layer_count,
+            &[
+                indirection_word(0, 0),
+                indirection_word(0, 1),
+                indirection_word(0, 2),
+            ],
             stride as u32,
         );
 
         assert_eq!(out, vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]);
+    }
+
+    #[test]
+    fn decode_probe_irradiance_atlas_reconstructs_l1_from_canonical_corner_slots() {
+        use crate::render::sh_volume::f32_to_f16_bits;
+
+        let dims = [4u32, 4, 4];
+        let stride = 256usize;
+        let mut bytes = vec![0u8; stride];
+        for slot in 0..8usize {
+            let offset = slot * 8;
+            bytes[offset..offset + 2].copy_from_slice(&f32_to_f16_bits(slot as f32).to_le_bytes());
+        }
+        let words = vec![indirection_word(1, 0); 64];
+
+        let out = decode_probe_irradiance_atlas(
+            &bytes,
+            dims,
+            [8, 1],
+            1,
+            0,
+            8,
+            8,
+            1,
+            &words,
+            stride as u32,
+        );
+
+        let target_local = 1 + 4 + 16;
+        let expected: f32 = corner_locals()
+            .into_iter()
+            .enumerate()
+            .map(|(corner, local)| {
+                trilinear_weight(local_xyz(target_local), local_xyz(local)) * corner as f32
+            })
+            .sum();
+        assert!(
+            (out[target_local][0] - expected).abs() < 1.0e-6,
+            "L1 marker decode must use the shared corner order and weights: {:?} vs {expected}",
+            out[target_local]
+        );
+        assert_eq!(out[target_local][1], 0.0);
+        assert_eq!(out[target_local][2], 0.0);
+    }
+
+    #[test]
+    fn decode_probe_irradiance_atlas_reads_l2_brick_mean_slot() {
+        use crate::render::sh_volume::f32_to_f16_bits;
+
+        let dims = [4u32, 4, 4];
+        let stride = 256usize;
+        let mut bytes = vec![0u8; stride];
+        let mean = [0.25, 0.5, 1.0];
+        for (channel, value) in mean.into_iter().enumerate() {
+            bytes[channel * 2..channel * 2 + 2]
+                .copy_from_slice(&f32_to_f16_bits(value).to_le_bytes());
+        }
+        let words = vec![indirection_word(2, 0); 64];
+
+        let out = decode_probe_irradiance_atlas(
+            &bytes,
+            dims,
+            [1, 1],
+            1,
+            0,
+            1,
+            1,
+            1,
+            &words,
+            stride as u32,
+        );
+
+        assert!(out.iter().all(|&rgb| rgb == mean));
     }
 
     /// Probe storage layout is z-major: index = x + y*Nx + z*Nx*Ny. This

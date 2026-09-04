@@ -11,6 +11,7 @@ use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 use super::dash::try_enter_dash;
+use super::slide::try_enter_slide;
 use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 
 /// gravity, jump/air-jump, ground/air acceleration, ground friction, and the
@@ -191,6 +192,11 @@ pub(crate) fn normal_intent(
     // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
     if input.crouch_intent {
+        if component.is_grounded() {
+            if let Some(transition) = try_enter_slide(component, position) {
+                return Some(transition);
+            }
+        }
         if let Some(crouch) = component.crouch.as_ref() {
             let target_half_height = crouch.half_height;
             let target_eye_height = crouch.eye_height;

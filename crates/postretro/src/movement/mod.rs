@@ -22,7 +22,7 @@ use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integra
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 #[cfg(test)]
-use crate::movement::intents::{DASH_MAX_MS, dash_intent};
+use crate::movement::intents::{DASH_MAX_MS, SLIDE_MAX_MS, dash_intent};
 #[cfg(test)]
 use crate::movement::substrate::{
     ResizeAnchor, resize_capsule, standup_clearance_probe, step_up_lift,
@@ -257,7 +257,7 @@ mod tests {
     use postretro_foundation::{
         AirParams, BobParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
         ForgivenessParams, GroundParams, GroundRef, NumberOrIr, PlayerMovementDescriptor,
-        SpeedParams, SwayParams, TiltParams, ViewFeelParams,
+        SlideParams, SpeedParams, SwayParams, TiltParams, ViewFeelParams,
     };
     use postretro_foundation::{IrNode, IrValue};
 
@@ -5263,6 +5263,183 @@ mod tests {
             approx_eq(comp.capsule.eye_height, 0.2, 0.01),
             "eye should converge toward the crouched target 0.2, got {}",
             comp.capsule.eye_height
+        );
+    }
+
+    // ----- `Sliding` state: entry, carry, slope, terminal guards ----------------
+
+    fn slide_descriptor() -> PlayerMovementDescriptor {
+        let mut desc = crouch_descriptor();
+        desc.slide = Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 2.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 1.5,
+            min_duration_ms: 250.0,
+        });
+        desc
+    }
+
+    fn is_sliding(comp: &PlayerMovementComponent) -> bool {
+        matches!(comp.movement_state, MovementState::Sliding { .. })
+    }
+
+    fn slide_state(comp: &mut PlayerMovementComponent, speed: f32, elapsed_ms: f32) {
+        comp.velocity = Vec3::new(speed, 0.0, 0.0);
+        comp.movement_state = MovementState::Sliding {
+            elapsed_ms,
+            boost: Vec3::new(speed, 0.0, 0.0),
+            eye_current: comp.capsule.eye_height,
+        };
+    }
+
+    #[test]
+    fn slide_entry_requires_speed_and_banks_horizontal_velocity_with_crouched_feet() {
+        let desc = slide_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+
+        let bottom_before = capsule_bottom(&comp, pos);
+        comp.velocity = Vec3::new(12.0, 0.0, 0.0);
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let MovementState::Sliding {
+            boost, eye_current, ..
+        } = comp.movement_state
+        else {
+            panic!("grounded crouch above the slide threshold must enter Sliding");
+        };
+        assert!(
+            boost.x > 12.0,
+            "entry boost adds to banked horizontal velocity"
+        );
+        assert!(
+            approx_eq(boost.y, 0.0, VEL_EPS),
+            "slide boost stays horizontal"
+        );
+        assert!(approx_eq(comp.capsule.half_height, 0.4, POS_EPS));
+        assert!(approx_eq(comp.capsule.eye_height, 0.5, POS_EPS));
+        assert!(approx_eq(eye_current, 0.5, POS_EPS));
+        assert!(
+            approx_eq(capsule_bottom(&comp, pos), bottom_before, 0.02),
+            "slide entry must keep feet planted"
+        );
+
+        let (mut below, mut below_pos) = settle_player(&desc);
+        run_ticks(&mut below, &world, &mut below_pos, 8, &idle_input());
+        below.velocity = Vec3::new(7.0, 0.0, 0.0);
+        run_ticks(&mut below, &world, &mut below_pos, 1, &crouch_hold_input());
+        assert!(
+            is_crouching(&below),
+            "below threshold falls through to crouching"
+        );
+    }
+
+    #[test]
+    fn slide_jump_and_release_keep_banked_speed_and_respect_minimum_duration() {
+        let desc = slide_descriptor();
+        let world = floor_and_ceiling_world(50.0);
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 8, &idle_input());
+        comp.velocity = Vec3::new(12.0, 0.0, 0.0);
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(is_sliding(&comp));
+        let banked_speed = horiz_speed(&comp);
+
+        // Release before the committed window: the state remains Sliding.
+        run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+        assert!(is_sliding(&comp), "release waits for min_duration_ms");
+
+        let jump = MovementInput {
+            jump_pressed: true,
+            crouch_intent: true,
+            ..crouch_hold_input()
+        };
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump);
+        assert!(events.jumped, "slide jump must never be swallowed");
+        assert!(matches!(comp.movement_state, MovementState::Normal));
+        assert!(
+            horiz_speed(&comp) >= banked_speed - 0.2,
+            "slide jump KEEP_ALL must retain banked horizontal speed"
+        );
+        assert!(approx_eq(comp.velocity.y, desc.air.jump_velocity, VEL_EPS));
+    }
+
+    #[test]
+    fn slide_slope_assist_outpaces_flat_drag_and_max_guard_ends_held_slide_crouched() {
+        let desc = slide_descriptor();
+        let slope = 0.3;
+        let sloped = sloped_floor_world(slope);
+        let flat = floor_and_ceiling_world(50.0);
+        let (mut down, mut down_pos) = settle_player(&desc);
+        let (mut level, mut level_pos) = settle_player(&desc);
+        down.set_grounded(true);
+        level.set_grounded(true);
+        down.last_floor_normal = Some(Vec3::new(-slope, 1.0, 0.0).normalize());
+        level.last_floor_normal = Some(Vec3::Y);
+        slide_state(&mut down, -10.0, 0.0);
+        slide_state(&mut level, -10.0, 0.0);
+        run_ticks(&mut down, &sloped, &mut down_pos, 1, &crouch_hold_input());
+        run_ticks(&mut level, &flat, &mut level_pos, 1, &crouch_hold_input());
+        assert!(
+            horiz_speed(&down) > horiz_speed(&level),
+            "downhill projection must add speed beyond flat slide drag"
+        );
+
+        // The time backstop ignores the min duration and never stands a held crouch.
+        let (mut guarded, mut guarded_pos) = settle_player(&desc);
+        guarded.set_grounded(true);
+        guarded.capsule.half_height = 0.4;
+        guarded.capsule.eye_height = 0.2;
+        slide_state(&mut guarded, 10.0, SLIDE_MAX_MS - DT * 1000.0);
+        run_ticks(
+            &mut guarded,
+            &flat,
+            &mut guarded_pos,
+            1,
+            &crouch_hold_input(),
+        );
+        assert!(
+            is_crouching(&guarded),
+            "SLIDE_MAX_MS exits a held slide to Crouching without a stand probe"
+        );
+    }
+
+    #[test]
+    fn slide_reconciles_wall_clipped_boost_without_a_backward_kick_and_needs_crouch() {
+        let desc = slide_descriptor();
+        let world = flat_floor_and_wall_world();
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        let mut pos = Vec3::new(4.4, 1.21, 0.0);
+        comp.set_grounded(true);
+        comp.capsule.half_height = 0.4;
+        comp.capsule.eye_height = 0.2;
+        slide_state(&mut comp, 20.0, 0.0);
+        run_ticks(&mut comp, &world, &mut pos, 2, &crouch_hold_input());
+        assert!(
+            comp.velocity.x >= -VEL_EPS,
+            "stale boost reconciliation must not create a backward wall kick: {:?}",
+            comp.velocity
+        );
+
+        let mut no_crouch = canonical_descriptor();
+        no_crouch.slide = Some(SlideParams {
+            min_speed: 1.0,
+            ..desc.slide.expect("test descriptor has slide")
+        });
+        let (mut disabled, mut disabled_pos) = settle_player(&no_crouch);
+        disabled.velocity = Vec3::new(12.0, 0.0, 0.0);
+        run_ticks(
+            &mut disabled,
+            &world,
+            &mut disabled_pos,
+            1,
+            &crouch_hold_input(),
+        );
+        assert!(
+            matches!(disabled.movement_state, MovementState::Normal),
+            "slide without crouch is disabled rather than entering an invalid state"
         );
     }
 }

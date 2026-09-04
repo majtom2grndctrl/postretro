@@ -14,8 +14,10 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
 /// dedicated E16 presentation channel and payload family advance this to 19.
+/// `WireMovementState::Sliding` changes the snapshot wire layout, advancing it
+/// to 20 so transport rejects pre-slide peers before snapshot decode.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 19;
+pub const WIRE_VERSION: u32 = 20;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -100,8 +102,8 @@ mod tests {
             "presentation vocabulary requires application protocol PRL7"
         );
         assert_eq!(
-            WIRE_VERSION, 19,
-            "presentation channel and payload change the wire layout"
+            WIRE_VERSION, 20,
+            "sliding snapshot state changes the wire layout"
         );
         assert_ne!(
             transport_protocol_id(),

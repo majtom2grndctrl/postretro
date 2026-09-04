@@ -56,10 +56,9 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
 /// loopback latency.
 pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 
-/// Dash correction cap: a correction on a tick whose history entry crossed a dash
-/// (`included_dash`) tolerates a larger smoothed offset — a dash burst legitimately
-/// produces a bigger visible delta than ordinary locomotion. Still smoothed, not
-/// snapped, up to this magnitude.
+/// Boost-carrying correction cap: a correction on a tick whose history entry crossed
+/// dash or slide (`included_dash`) tolerates a larger smoothed offset. Both states can
+/// legitimately produce a bigger visible delta than ordinary locomotion.
 pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 
 /// Teleport threshold: a correction at or above this (in metres) is too large to
@@ -90,7 +89,7 @@ pub(crate) enum CorrectionClass {
     /// `<= ORDINARY_CORRECTION_MAX_M`: a small mispredict, smoothed.
     Ordinary,
     /// `<= DASH_CORRECTION_MAX_M` on an `included_dash` tick: a larger but expected
-    /// dash-window correction, smoothed.
+    /// boost-carrying-state correction, smoothed.
     Dash,
     /// `>= TELEPORT_CORRECTION_MIN_M`: snapped, not smoothed.
     Teleport,
@@ -103,13 +102,13 @@ pub(crate) enum CorrectionClass {
 }
 
 /// Classify a correction by its displacement `magnitude` (metres) and whether the
-/// corrected tick crossed a dash. Pure: the single source of truth for the AC
+/// corrected tick crossed a boost-carrying movement state. Pure: the single source of truth for the AC
 /// thresholds, shared by the reconcile path and its tests.
 ///
 /// - `>= TELEPORT_CORRECTION_MIN_M` → [`CorrectionClass::Teleport`] (checked first:
 ///   a teleport-sized delta is a teleport regardless of dash).
 /// - `<= ORDINARY_CORRECTION_MAX_M` → [`CorrectionClass::Ordinary`].
-/// - `<= DASH_CORRECTION_MAX_M` on a dash tick → [`CorrectionClass::Dash`].
+/// - `<= DASH_CORRECTION_MAX_M` on a boost-carrying tick → [`CorrectionClass::Dash`].
 /// - otherwise → [`CorrectionClass::OversizedSmoothed`] (still smoothed).
 pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> CorrectionClass {
     if magnitude >= TELEPORT_CORRECTION_MIN_M {
@@ -145,10 +144,9 @@ pub(crate) struct PredictedTick {
     /// The exact command frame sent to the host for this tick. Retained so
     /// reconciliation can re-feed it to [`replay`] verbatim.
     pub(crate) command: InputCommand,
-    /// Whether the movement state entered or stayed in `Dash` while predicting
-    /// this tick. Phase 3 instrumentation: reconciliation surfaces whether a
-    /// rewound window crossed a dash so smoothing (Task 5) can special-case the
-    /// larger visible correction a dash burst produces.
+    /// Whether the movement state entered or stayed in a boost-carrying state
+    /// (`Dash` or `Sliding`) while predicting this tick. Reconciliation uses the
+    /// wider dash-tier visual correction band for either state.
     pub(crate) included_dash: bool,
 }
 
@@ -321,8 +319,11 @@ impl ClientPrediction {
             dt,
         );
 
-        let included_dash =
-            dash_requested || matches!(movement.movement_state, MovementState::Dash { .. });
+        let included_dash = dash_requested
+            || matches!(
+                movement.movement_state,
+                MovementState::Dash { .. } | MovementState::Sliding { .. }
+            );
 
         if self.history.len() == MAX_HISTORY {
             // Drop the oldest unacked tick: a stalled ack must never grow history
@@ -365,7 +366,7 @@ impl ClientPrediction {
 
     /// Whether `included_dash` is set on any retained (unacked) history entry. The
     /// reconcile path reads this to classify the correction: a correction landing on
-    /// a window that crossed a dash tolerates the larger [`DASH_CORRECTION_MAX_M`]
+    /// a window that crossed a boost-carrying state tolerates the larger [`DASH_CORRECTION_MAX_M`]
     /// smoothed cap. Checked over the post-prune ring (the unacked tail that was
     /// replayed onto the authoritative baseline).
     pub(crate) fn unacked_window_included_dash(&self) -> bool {
@@ -477,8 +478,9 @@ mod tests {
     use postretro_net::wire::{InputCommand, WireFireButtonState, WireMovementInput};
 
     use postretro_foundation::{
-        AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
-        GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
+        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams,
+        SpeedParams,
     };
 
     const EPSILON: f32 = 1e-4;
@@ -552,6 +554,33 @@ mod tests {
 
     fn component() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&descriptor())
+    }
+
+    fn sliding_component() -> PlayerMovementComponent {
+        let mut descriptor = descriptor();
+        descriptor.crouch = Some(CrouchParams {
+            half_height: 0.4,
+            eye_height: 0.2,
+            transition_rate: 15.0,
+        });
+        descriptor.slide = Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 2.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 1.0,
+            min_duration_ms: 100.0,
+        });
+        let mut component = PlayerMovementComponent::from_descriptor(&descriptor);
+        component.set_grounded(true);
+        component.velocity = Vec3::new(10.0, 0.0, 0.0);
+        component.movement_state = MovementState::Sliding {
+            elapsed_ms: 0.0,
+            boost: Vec3::new(10.0, 0.0, 0.0),
+            eye_current: component.capsule.eye_height,
+        };
+        component.last_floor_normal = Some(Vec3::Y);
+        component
     }
 
     fn start_transform() -> Transform {
@@ -768,6 +797,30 @@ mod tests {
         assert!(
             entry.included_dash,
             "a dash command predicts a Dash state through the movement-only path"
+        );
+    }
+
+    #[test]
+    fn predicted_sliding_tick_uses_the_dash_tier_correction_band() {
+        let world = floor_world();
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(10), EntityId::from_raw(5));
+
+        let output = prediction.predict_tick(
+            forward_command(0, false),
+            (start_transform(), sliding_component()),
+            &world,
+            GRAVITY,
+            DT,
+        );
+        assert!(output.is_some(), "armed sliding pawn predicts a tick");
+        assert!(
+            prediction.history().back().unwrap().included_dash,
+            "Sliding must mark the boost-carrying correction band"
+        );
+        assert!(
+            prediction.unacked_window_included_dash(),
+            "a retained Sliding tick earns dash-tier correction smoothing"
         );
     }
 

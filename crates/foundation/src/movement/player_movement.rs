@@ -123,7 +123,7 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Three states exist today:
+/// applies any transition the intent returns. Four states exist today:
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
 /// velocity-impulse burst), and `Crouching` (reduced-speed locomotion with
 /// a shrunk collision capsule). Later states (slide, wall-run, vault) plug
@@ -158,6 +158,16 @@ pub enum MovementState {
     /// resize/probe need persist on the component (`standing_half_height` /
     /// `standing_eye_height`), since the live `capsule` is the crouched size.
     Crouching { eye_current: f32 },
+    /// Active speed-preserving slide. `boost` is the horizontal momentum banked
+    /// at entry (and subsequently slope-accelerated, steered, and drag-decayed),
+    /// while `elapsed_ms` guards the committed minimum and hard maximum duration.
+    /// `eye_current` is the crouch-eye smoothing source, carried explicitly so a
+    /// slide handoff into `Crouching` remains visually continuous.
+    Sliding {
+        elapsed_ms: f32,
+        boost: Vec3,
+        eye_current: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

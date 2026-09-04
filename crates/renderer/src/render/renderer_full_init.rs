@@ -561,6 +561,7 @@ pub(crate) fn build_full_renderer(
         device,
         &sh_volume_resources.direct,
         &sh_volume_resources.animation,
+        &sh_volume_resources.probe_indirection_words,
         geometry.and_then(|g| g.direct_sh_delta_volumes),
         geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,

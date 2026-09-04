@@ -29,6 +29,7 @@ use super::direct_sh_resources::{
     DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
+use super::sh_indirection::build_probe_indirection_words;
 
 /// Dev-tools marker color while the composed dense-atlas readback has not yet
 /// completed. This deliberately replaces the removed CPU-side base-atlas
@@ -70,7 +71,7 @@ pub struct ShVolumeResources {
     pub present: bool,
     /// Probe grid dimensions (in cells, x/y/z).
     pub grid_dimensions: [u32; 3],
-    /// Atlas dimensions in texels.
+    /// Stored-tile atlas dimensions in texels.
     pub atlas_dimensions: [u32; 2],
     #[allow(dead_code)]
     pub tile_dimension: u32,
@@ -82,11 +83,15 @@ pub struct ShVolumeResources {
     pub tiles_per_layer: u32,
     #[allow(dead_code)]
     pub atlas_layer_count: u32,
+    /// Load-derived from id-34 metadata once per level. Every compose carrier
+    /// and the depth-moment B/A payload receives these exact words.
+    pub(super) probe_indirection_words: Vec<u32>,
     /// Sampled view over the base octahedral atlas; consumed by the compose pass.
     pub base_atlas_view: wgpu::TextureView,
     /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
     pub total_atlas_storage_view: wgpu::TextureView,
-    /// Per-probe depth-moment texture (Rg16Float — R = E[d], G = E[d²]).
+    /// Per-probe depth-moment texture (`Rgba16Float` — R = E[d], G = E[d²],
+    /// B/A currently hold the inert raw halves of the load-derived word).
     /// Already bound on group 3 binding 14 for the forward/billboard/fog
     /// passes; held here so the SDF shadow pass can mint its own
     /// `TextureView` via `make_depth_moment_view` (wgpu views aren't `Clone`,
@@ -352,6 +357,7 @@ impl ShVolumeResources {
         let base_atlas_texture: wgpu::Texture;
         let total_atlas_texture: wgpu::Texture;
         let depth_moment_texture: wgpu::Texture;
+        let probe_indirection_words = build_probe_indirection_words(usable);
 
         #[cfg(feature = "dev-tools")]
         let validity: Vec<u8> = usable
@@ -375,7 +381,11 @@ impl ShVolumeResources {
                 sec.layer_count,
                 "SH Total Octahedral Atlas",
             );
-            let moments = pack_probe_depth_moments(&sec.probes, sec.grid_dimensions);
+            let moments = pack_probe_depth_moments(
+                &sec.probes,
+                sec.grid_dimensions,
+                &probe_indirection_words,
+            );
             depth_moment_texture =
                 upload_depth_moment_texture(device, queue, sec.grid_dimensions, &moments);
             grid_origin = sec.grid_origin;
@@ -643,6 +653,7 @@ impl ShVolumeResources {
             atlas_tiles_per_row,
             tiles_per_layer,
             atlas_layer_count,
+            probe_indirection_words,
             base_atlas_view,
             total_atlas_storage_view,
             depth_moment_texture,
@@ -798,20 +809,34 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
 /// Pack per-probe depth moments into one `Rgba16Float` 3D texture payload.
 /// Probes are already ordered z-major/y/x by the PRL section; keeping the same
 /// linear order as the SH band textures makes the moment texture index-aligned
-/// with every band. Valid probes copy baked f16 bits directly into RG; invalid
-/// probes remain all zero.
-fn pack_probe_depth_moments(probes: &[OctahedralShProbe], grid: [u32; 3]) -> Vec<u16> {
+/// with every band. Valid probes copy baked f16 bits directly into RG. B/A
+/// carry the raw low/high halves of the load-derived indirection word; this
+/// texture stays `Rgba16Float` until Task 5 changes the sampler type atomically.
+pub(super) fn pack_probe_depth_moments(
+    probes: &[OctahedralShProbe],
+    grid: [u32; 3],
+    probe_indirection_words: &[u32],
+) -> Vec<u16> {
     let total = (grid[0] as usize) * (grid[1] as usize) * (grid[2] as usize);
     debug_assert_eq!(probes.len(), total);
+    debug_assert_eq!(probe_indirection_words.len(), total);
 
     let mut moments = vec![0u16; total * 4];
     for (probe_idx, probe) in probes.iter().enumerate() {
-        if probe.validity == 0 {
-            continue;
-        }
         let off = probe_idx * 4;
-        moments[off] = probe.mean_distance;
-        moments[off + 1] = probe.mean_sq_distance;
+        let word = probe_indirection_words[probe_idx];
+        if probe.validity != 0 {
+            moments[off] = probe.mean_distance;
+            moments[off + 1] = probe.mean_sq_distance;
+        } else {
+            debug_assert_eq!(word, 0, "invalid metadata probes must have an invalid word");
+        }
+        // B/A are always copied from the sole word builder. Invalid probes
+        // still produce zero halves because their word is the all-zero
+        // sentinel, rather than because this packer independently decides
+        // their representation.
+        moments[off + 2] = word as u16;
+        moments[off + 3] = (word >> 16) as u16;
     }
     moments
 }
@@ -857,9 +882,9 @@ fn compact_base_atlas_allocation(
         };
     };
 
-    let empty_compact_atlas = section.compact_atlas_dimensions[0] == 0
-        || section.compact_atlas_dimensions[1] == 0
-        || section.compact_atlas_layer_count == 0;
+    let empty_compact_atlas = section.atlas_dimensions[0] == 0
+        || section.atlas_dimensions[1] == 0
+        || section.layer_count == 0;
     match section.irradiance_format {
         IRRADIANCE_FORMAT_BC6H if empty_compact_atlas => BaseAtlasAllocation {
             format: wgpu::TextureFormat::Bc6hRgbUfloat,
@@ -872,9 +897,9 @@ fn compact_base_atlas_allocation(
         IRRADIANCE_FORMAT_BC6H => BaseAtlasAllocation {
             format: wgpu::TextureFormat::Bc6hRgbUfloat,
             extent: wgpu::Extent3d {
-                width: section.compact_atlas_dimensions[0].div_ceil(4) * 4,
-                height: section.compact_atlas_dimensions[1].div_ceil(4) * 4,
-                depth_or_array_layers: section.compact_atlas_layer_count,
+                width: section.atlas_dimensions[0].div_ceil(4) * 4,
+                height: section.atlas_dimensions[1].div_ceil(4) * 4,
+                depth_or_array_layers: section.layer_count,
             },
         },
         IRRADIANCE_FORMAT_RGBA16F if empty_compact_atlas => BaseAtlasAllocation {
@@ -888,9 +913,9 @@ fn compact_base_atlas_allocation(
         IRRADIANCE_FORMAT_RGBA16F => BaseAtlasAllocation {
             format: wgpu::TextureFormat::Rgba16Float,
             extent: wgpu::Extent3d {
-                width: section.compact_atlas_dimensions[0],
-                height: section.compact_atlas_dimensions[1],
-                depth_or_array_layers: section.compact_atlas_layer_count,
+                width: section.atlas_dimensions[0],
+                height: section.atlas_dimensions[1],
+                depth_or_array_layers: section.layer_count,
             },
         },
         // `OctahedralShVolumeSection::from_bytes` rejects unknown tags. Keep
@@ -925,9 +950,9 @@ fn upload_compact_base_atlas_texture(
     queue: &wgpu::Queue,
     section: &OctahedralShVolumeSection,
 ) -> wgpu::Texture {
-    let empty_compact_atlas = section.compact_atlas_dimensions[0] == 0
-        || section.compact_atlas_dimensions[1] == 0
-        || section.compact_atlas_layer_count == 0;
+    let empty_compact_atlas = section.atlas_dimensions[0] == 0
+        || section.atlas_dimensions[1] == 0
+        || section.layer_count == 0;
     let zero_bc6h = [0u8; 16];
     let zero_rgba16f = [0u8; 8];
     let allocation = compact_base_atlas_allocation(Some(section));
@@ -1032,8 +1057,8 @@ fn upload_depth_moment_texture(
     texture
 }
 
-/// Create the total octahedral atlas texture. No data is uploaded — wgpu
-/// zero-initializes; the compose pass overwrites every texel each frame.
+/// Create the stored-tile total octahedral atlas texture. No data is uploaded
+/// — wgpu zero-initializes; the compose pass overwrites every stored texel.
 fn create_total_atlas_texture(
     device: &wgpu::Device,
     atlas_dimensions: [u32; 2],
@@ -1129,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn pack_probe_depth_moments_preserves_valid_probe_f16_bits() {
+    fn pack_probe_depth_moments_preserves_rg_f16_bits_and_packs_ba_word() {
         let probe_a = OctahedralShProbe {
             validity: 1,
             mean_distance: 0x4200,
@@ -1143,13 +1168,14 @@ mod tests {
             density_level: 0,
         };
 
-        let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1]);
+        let words = [0x1234_5674, 0xabcd_efc4];
+        let moments = pack_probe_depth_moments(&[probe_a, probe_b], [2, 1, 1], &words);
 
         assert_eq!(
             moments,
             vec![
-                0x4200, 0x4900, 0, 0, //
-                0x3c00, 0x4000, 0, 0,
+                0x4200, 0x4900, 0x5674, 0x1234, //
+                0x3c00, 0x4000, 0xefc4, 0xabcd,
             ],
         );
     }
@@ -1169,12 +1195,13 @@ mod tests {
             density_level: 0,
         };
 
-        let moments = pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1]);
+        let moments =
+            pack_probe_depth_moments(&[probe_valid, probe_invalid], [2, 1, 1], &[0x0000_0004, 0]);
 
         assert_eq!(
             moments,
             vec![
-                0x4400, 0x4c00, 0, 0, //
+                0x4400, 0x4c00, 4, 0, //
                 0, 0, 0, 0,
             ],
         );

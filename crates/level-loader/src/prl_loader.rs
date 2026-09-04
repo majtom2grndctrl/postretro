@@ -44,7 +44,9 @@ use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::sh_volume::{
+    OctahedralShVolumeSection, validate_storage_levels_against_delta,
+};
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -1079,6 +1081,38 @@ pub(crate) fn validate_direct_sh_layout(
     }
 
     Ok(())
+}
+
+/// Enforce I2 for every present, grid-matched delta section before renderer
+/// resources are created. The metadata-derived base storage may be finer than
+/// a delta entry, never coarser; accepting a violation would make a later
+/// stored-slot compose reconstruct from data that was never emitted.
+fn validate_storage_ceiling_for_delta(
+    section_name: &'static str,
+    base: &OctahedralShVolumeSection,
+    cell_levels: &[u8],
+    affinity_offsets: &[u32],
+) -> Result<(), PrlLoadError> {
+    validate_storage_levels_against_delta(
+        base.grid_dimensions,
+        &base.probes,
+        cell_levels,
+        affinity_offsets,
+    )
+    .map_err(|error| section_validation_from_error(section_name, error))
+}
+
+/// I2 applies to every parsed delta section whose affinity grid names this
+/// id-34 grid, even if another optional direct-light contract later chooses to
+/// disable that section. Keep the grid test separate so legacy soft-failure
+/// handling for unrelated optional-section defects remains unchanged.
+fn delta_grid_matches_base(
+    base: &OctahedralShVolumeSection,
+    affinity_factor: u8,
+    affinity_dims: [u32; 3],
+) -> bool {
+    affinity_factor == AFFINITY_FACTOR
+        && affinity_dims == expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR)
 }
 
 pub(crate) fn validate_direct_sh_delta(
@@ -2585,6 +2619,12 @@ fn load_prl_with_section_limits(
                 // bake must fail the load with a clear error rather than feed the
                 // compose pass garbage. `sh_volume` (id 34) was loaded above.
                 validate_delta_sh(&section, sh_volume.as_ref())?;
+                validate_storage_ceiling_for_delta(
+                    "DeltaShVolumes",
+                    sh_volume.as_ref().expect("id-34 is required before id-27"),
+                    &section.cell_levels,
+                    &section.affinity_offsets,
+                )?;
 
                 log::info!(
                     "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
@@ -2616,6 +2656,19 @@ fn load_prl_with_section_limits(
             BoundedDeltaSectionData::Data(data) => {
                 match AnimatedDirectShDeltaVolumesSection::from_bytes(data) {
                     Ok(section) => {
+                        let base = sh_volume.as_ref().expect("id-34 is required before id-45");
+                        if delta_grid_matches_base(
+                            base,
+                            section.affinity_factor,
+                            section.affinity_dims,
+                        ) {
+                            validate_storage_ceiling_for_delta(
+                                "AnimatedDirectShDeltaVolumes",
+                                base,
+                                &section.cell_levels,
+                                &section.affinity_offsets,
+                            )?;
+                        }
                         match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
                             Ok(()) => {
                                 log::info!(
@@ -2786,48 +2839,32 @@ fn load_prl_with_section_limits(
         &meta,
         SectionId::DirectShVolume as u32,
     )? {
-        Some(data) => match DirectShVolumeSection::from_bytes(&data) {
-            Ok(section) => {
-                if let Some(base) = sh_volume.as_ref() {
-                    match validate_direct_sh_layout(&section, base) {
-                        Ok(()) => {
-                            log::info!(
-                                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, format {}, {} atlas byte(s))",
-                                section.grid_dimensions[0],
-                                section.grid_dimensions[1],
-                                section.grid_dimensions[2],
-                                section.total_probes(),
-                                section.atlas_dimensions[0],
-                                section.atlas_dimensions[1],
-                                section.layer_count,
-                                section.tile_dimension,
-                                section.tile_border,
-                                section.atlas_tiles_per_row,
-                                section.tiles_per_layer,
-                                section.irradiance_format,
-                                section.atlas.len(),
-                            );
-                            Some(section)
-                        }
-                        Err(err) => {
-                            log::warn!(
-                                "[PRL] DirectShVolume layout does not match OctahedralShVolume; ignoring section: {err}"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    log::warn!(
-                        "[PRL] DirectShVolume present without OctahedralShVolume; ignoring section"
-                    );
-                    None
-                }
-            }
-            Err(err) => {
-                log::warn!("[PRL] DirectShVolume malformed; ignoring section: {err}");
-                None
-            }
-        },
+        Some(data) => {
+            // id-35 is a stored-set sibling of required id-34. A present stale,
+            // malformed, geometry-mismatched, or length-mismatched payload has
+            // no safe downgrade: it would address a different stored slot map.
+            let section = DirectShVolumeSection::from_bytes(&data)
+                .map_err(|error| section_validation_from_error("DirectShVolume", error))?;
+            let base = sh_volume.as_ref().expect("id-34 is required before id-35");
+            validate_direct_sh_layout(&section, base)?;
+            log::info!(
+                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} stored atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, format {}, {} atlas byte(s))",
+                section.grid_dimensions[0],
+                section.grid_dimensions[1],
+                section.grid_dimensions[2],
+                section.total_probes(),
+                section.atlas_dimensions[0],
+                section.atlas_dimensions[1],
+                section.layer_count,
+                section.tile_dimension,
+                section.tile_border,
+                section.atlas_tiles_per_row,
+                section.tiles_per_layer,
+                section.irradiance_format,
+                section.atlas.len(),
+            );
+            Some(section)
+        }
         None => None,
     };
 
@@ -2886,14 +2923,27 @@ fn load_prl_with_section_limits(
             max_delta_section_binding_bytes,
         )? {
             BoundedDeltaSectionData::Data(data) => {
-                if entity_shadow_lights.is_empty() {
-                    log::warn!(
-                        "[PRL] DirectShDeltaVolumes present without selected EntityShadowLights; ignoring section"
-                    );
-                    None
-                } else {
-                    match DirectShDeltaVolumesSection::from_bytes(data) {
-                        Ok(section) => {
+                match DirectShDeltaVolumesSection::from_bytes(data) {
+                    Ok(section) => {
+                        let base = sh_volume.as_ref().expect("id-34 is required before id-41");
+                        if delta_grid_matches_base(
+                            base,
+                            section.affinity_factor,
+                            section.affinity_dims,
+                        ) {
+                            validate_storage_ceiling_for_delta(
+                                "DirectShDeltaVolumes",
+                                base,
+                                &section.cell_levels,
+                                &section.affinity_offsets,
+                            )?;
+                        }
+                        if entity_shadow_lights.is_empty() {
+                            log::warn!(
+                                "[PRL] DirectShDeltaVolumes present without selected EntityShadowLights; ignoring section"
+                            );
+                            None
+                        } else {
                             if let (Some(direct), Some(base)) =
                                 (direct_sh_volume.as_ref(), sh_volume.as_ref())
                             {
@@ -2932,14 +2982,14 @@ fn load_prl_with_section_limits(
                                 None
                             }
                         }
-                        Err(err) => {
-                            log::warn!(
-                                "[PRL] DirectShDeltaVolumes malformed; clearing {} selected static light(s): {err}",
-                                entity_shadow_lights.len()
-                            );
-                            entity_shadow_lights.clear();
-                            None
-                        }
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[PRL] DirectShDeltaVolumes malformed; clearing {} selected static light(s): {err}",
+                            entity_shadow_lights.len()
+                        );
+                        entity_shadow_lights.clear();
+                        None
                     }
                 }
             }

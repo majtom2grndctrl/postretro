@@ -445,6 +445,7 @@ impl Renderer {
             device,
             &full.sh_volume_resources.direct,
             &full.sh_volume_resources.animation,
+            &full.sh_volume_resources.probe_indirection_words,
             geometry.direct_sh_delta_volumes,
             geometry.animated_direct_sh_delta_volumes,
             &full.promoted_static_weight_buffer,

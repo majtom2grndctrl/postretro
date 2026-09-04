@@ -1437,13 +1437,6 @@ mod tests {
     fn base_octahedral_section(grid_dimensions: [u32; 3]) -> OctahedralShVolumeSection {
         let probe_count =
             grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
-        let layout = postretro_level_format::octahedral::irradiance_atlas_array_layout(
-            grid_dimensions,
-            DEFAULT_IRRADIANCE_TILE_DIMENSION,
-            8192,
-        )
-        .unwrap();
-        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
         OctahedralShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -1451,23 +1444,47 @@ mod tests {
             probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            atlas_dimensions,
-            layer_count: layout.layer_count,
-            tiles_per_layer: layout.tiles_per_layer,
-            atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
+            atlas_tiles_per_row: 0,
             probes: vec![
                 postretro_level_format::sh_volume::OctahedralShProbe::default();
                 probe_count
             ],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
+    }
+
+    /// One complete affinity brick at L2: valid metadata but only one stored
+    /// tile. This is the smallest fixture that can violate I2 against an L0
+    /// delta cell while preserving id-34's v10 stored-geometry contract.
+    fn l2_storage_ceiling_base() -> OctahedralShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+        use postretro_level_format::octahedral::irradiance_atlas_array_layout;
+
+        let mut base = base_octahedral_section([4, 4, 4]);
+        for probe in &mut base.probes {
+            probe.validity = 1;
+            probe.density_level = 2;
+        }
+        let stored_layout =
+            irradiance_atlas_array_layout([1, 1, 1], DEFAULT_IRRADIANCE_TILE_DIMENSION, 8192)
+                .expect("one L2 brick stores exactly one tile");
+        base.atlas_dimensions = [stored_layout.atlas_width, stored_layout.atlas_height];
+        base.atlas_tiles_per_row = stored_layout.atlas_tiles_per_row;
+        base.tiles_per_layer = stored_layout.tiles_per_layer;
+        base.layer_count = stored_layout.layer_count;
+        base.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+        base.compact_atlas = vec![
+            0;
+            (stored_layout.atlas_width * stored_layout.atlas_height * stored_layout.layer_count * 8)
+                as usize
+        ];
+        base
     }
 
     fn base_octahedral_section_for_direct(
@@ -1486,15 +1503,14 @@ mod tests {
             tiles_per_layer: direct.tiles_per_layer,
             atlas_tiles_per_row: direct.atlas_tiles_per_row,
             probes: vec![
-                postretro_level_format::sh_volume::OctahedralShProbe::default();
+                postretro_level_format::sh_volume::OctahedralShProbe {
+                    validity: 1,
+                    ..Default::default()
+                };
                 probe_count
             ],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
-            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
-            compact_atlas: Vec::new(),
+            irradiance_format: direct.irradiance_format,
+            compact_atlas: direct.atlas.clone(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }
@@ -2200,10 +2216,6 @@ mod tests {
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
@@ -2293,6 +2305,14 @@ mod tests {
     ) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::ShadowmaskAtlas as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn delta_sh_volume_blob(section: DeltaShVolumesSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::DeltaShVolumes as u32,
             version: 1,
             data: section.to_bytes(),
         }
@@ -5271,6 +5291,7 @@ mod tests {
                 version: 1,
                 data: section.to_bytes(),
             },
+            octahedral_sh_volume_blob(base_octahedral_section_for_direct(&section)),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -5290,9 +5311,9 @@ mod tests {
     }
 
     #[test]
-    fn load_prl_clears_direct_sh_volume_when_layout_mismatches_base_sh_volume() {
-        // Regression: DirectShVolume reuses OctahedralShVolume layout; accepting
-        // mismatched probe/tile/array fields lets shaders derive bad layers.
+    fn load_prl_rejects_present_direct_sh_volume_when_layout_mismatches_base_sh_volume() {
+        // id-35 shares id-34's stored-slot geometry. A present mismatch is
+        // malformed PRL, not an optional direct-light downgrade.
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
         let direct_sh = minimal_direct_sh_volume_section();
@@ -5317,14 +5338,128 @@ mod tests {
             sections,
             "postretro_test_direct_sh_volume_layout_mismatch.prl",
         );
-        let world = load_prl(tmp.to_str().unwrap())
-            .expect("mismatched DirectShVolume layout must degrade without failing load");
-
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("mismatched present DirectShVolume must reject the PRL");
         assert!(
-            world.direct_sh_volume.is_none(),
-            "mismatched DirectShVolume must be cleared before reaching LevelWorld"
+            error
+                .to_string()
+                .contains("DirectShVolume validation error"),
+            "expected named id-35 validation failure, got {error}"
         );
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_stale_present_direct_sh_volume() {
+        let direct = minimal_direct_sh_volume_section();
+        let base = base_octahedral_section_for_direct(&direct);
+        let mut stale_bytes = direct.to_bytes();
+        stale_bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base),
+            prl_format::SectionBlob {
+                section_id: SectionId::DirectShVolume as u32,
+                version: 1,
+                data: stale_bytes,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_v2.prl");
+        let error =
+            load_prl(tmp.to_str().unwrap()).expect_err("stale present id-35 must reject the PRL");
+        assert!(
+            error
+                .to_string()
+                .contains("DirectShVolume validation error")
+                && error.to_string().contains("v3 stored-atlas format"),
+            "expected named id-35 stale-format error, got {error}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_delta_storage_level_coarser_than_present_delta_cell() {
+        let base = l2_storage_ceiling_base();
+
+        // id-27 L0 still has one CSR entry, so I2 requires base L0 here.
+        let delta = delta_section_for([1, 1, 1]);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base),
+            delta_sh_volume_blob(delta),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_i2_storage_ceiling.prl");
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("I2 storage-level violation must reject the PRL");
+        assert!(
+            error
+                .to_string()
+                .contains("DeltaShVolumes validation error")
+                && error
+                    .to_string()
+                    .contains("density_level 2 exceeds delta cell_level 0"),
+            "expected named I2 malformed-PRL error, got {error}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_i2_violation_in_grid_matched_animated_direct_delta() {
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(l2_storage_ceiling_base()),
+            animated_direct_sh_delta_blob(animated_direct_delta_section_for([1, 1, 1])),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_i2_id45_storage_ceiling.prl");
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("a grid-matched id-45 I2 violation must reject the PRL");
+        assert!(
+            error
+                .to_string()
+                .contains("AnimatedDirectShDeltaVolumes validation error")
+                && error
+                    .to_string()
+                    .contains("density_level 2 exceeds delta cell_level 0"),
+            "expected named id-45 I2 malformed-PRL error, got {error}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_i2_violation_in_grid_matched_direct_delta_without_selection() {
+        // No EntityShadowLights are selected, which normally soft-disables
+        // id-41. I2 is stronger: a grid-matched present section must still be
+        // rejected before that optional-path decision.
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(l2_storage_ceiling_base()),
+            direct_sh_delta_blob(direct_delta_section_for([1, 1, 1], vec![0])),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_i2_id41_storage_ceiling.prl");
+        let error = load_prl(tmp.to_str().unwrap())
+            .expect_err("a grid-matched id-41 I2 violation must reject the PRL");
+        assert!(
+            error
+                .to_string()
+                .contains("DirectShDeltaVolumes validation error")
+                && error
+                    .to_string()
+                    .contains("density_level 2 exceeds delta cell_level 0"),
+            "expected named id-41 I2 malformed-PRL error, got {error}"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -5565,10 +5700,10 @@ mod tests {
             8192,
         )
         .expect("one valid probe must have a compact atlas layout");
-        base.compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
-        base.compact_atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
-        base.compact_atlas_tiles_per_layer = compact_layout.tiles_per_layer;
-        base.compact_atlas_layer_count = compact_layout.layer_count;
+        base.atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
+        base.atlas_tiles_per_row = compact_layout.atlas_tiles_per_row;
+        base.tiles_per_layer = compact_layout.tiles_per_layer;
+        base.layer_count = compact_layout.layer_count;
         base.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
         base.compact_atlas = vec![
             0;

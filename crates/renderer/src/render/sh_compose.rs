@@ -11,6 +11,7 @@ use postretro_render_cpu::sh_compose::{
     u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
+use super::sh_indirection::probe_indirection_storage_bytes;
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -41,7 +42,6 @@ const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_PROBE_INDIRECTION: u32 = 26;
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
-const INVALID_PROBE_INDIRECTION: u32 = u32::MAX;
 /// GPU-side compose pass. Always present — levels without an SH section get
 /// dummy 1×1 octahedral atlases plus valid zeroed depth-moment resources and a
 /// valid one-workgroup copy-through dispatch. After that initial pass, the
@@ -99,11 +99,9 @@ impl ShComposeResources {
             pad_storage_bytes(u32_slice_to_bytes(&buffers.animation_descriptor_indices), 4);
         let compaction_meta_bytes =
             pad_storage_bytes(u32_slice_to_bytes(&buffers.compaction_meta_words()), 4);
-        // This one word per dense-grid probe maps it to its compact id-34 tile
-        // slot. Unlike `pad_storage_bytes`, the required empty buffer value is
-        // the invalid sentinel, not zero (zero would incorrectly fetch slot 0).
-        let probe_indirection_bytes =
-            u32_slice_to_bytes(&build_probe_indirection_words(sh_section));
+        // ShVolumeResources derives this once from id-34 metadata. The direct
+        // compose carriers and B/A moment payload use the exact same words.
+        let probe_indirection_bytes = probe_indirection_storage_bytes(&sh.probe_indirection_words);
 
         use wgpu::util::DeviceExt;
         let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -165,10 +163,10 @@ impl ShComposeResources {
             atlas_layer_count: sh.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
             compact_atlas_tiles_per_row: sh_section
-                .map(|section| section.compact_atlas_tiles_per_row)
+                .map(|section| section.atlas_tiles_per_row)
                 .unwrap_or(1),
             compact_atlas_tiles_per_layer: sh_section
-                .map(|section| section.compact_atlas_tiles_per_layer)
+                .map(|section| section.tiles_per_layer)
                 .unwrap_or(1),
         });
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -528,40 +526,12 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     ]
 }
 
-/// Derive the compact-tile slot for every dense grid probe. The v9 payload
-/// keeps valid probes in x-fastest metadata order, so its slot is their rank
-/// among valid metadata records. This map is intentionally load-derived and
-/// never serialized: metadata validity is the sole source of truth.
-fn build_probe_indirection_words(
-    sh_section: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
-) -> Vec<u32> {
-    let Some(section) = sh_section else {
-        return vec![INVALID_PROBE_INDIRECTION];
-    };
-
-    let mut words = Vec::with_capacity(section.probes.len().max(1));
-    let mut next_compact_slot = 0u32;
-    for probe in &section.probes {
-        if probe.validity == 0 {
-            words.push(INVALID_PROBE_INDIRECTION);
-        } else {
-            words.push(next_compact_slot);
-            next_compact_slot = next_compact_slot
-                .checked_add(1)
-                .expect("SH compact probe slot count exceeds u32");
-        }
-    }
-    if words.is_empty() {
-        words.push(INVALID_PROBE_INDIRECTION);
-    }
-    words
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::sh_indirection::{INVALID_PROBE_INDIRECTION, build_probe_indirection_words};
     use super::{
-        BIND_BASE_ATLAS_SAMPLER, INVALID_PROBE_INDIRECTION, build_delta_buffers,
-        build_probe_indirection_words, compose_bgl_entries, indirect_compose_should_dispatch,
+        BIND_BASE_ATLAS_SAMPLER, build_delta_buffers, compose_bgl_entries,
+        indirect_compose_should_dispatch,
     };
     use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
     use postretro_level_format::octahedral::{
@@ -659,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_indirection_uses_valid_probe_rank_and_invalid_sentinel() {
+    fn probe_indirection_uses_metadata_builder_and_zero_invalid_sentinel() {
         let mut section = OctahedralShVolumeSection::placeholder();
         section.grid_dimensions = [5, 1, 1];
         section.probes = vec![
@@ -689,10 +659,10 @@ mod tests {
             build_probe_indirection_words(Some(&section)),
             vec![
                 INVALID_PROBE_INDIRECTION,
-                0,
-                1,
+                4,
+                12,
                 INVALID_PROBE_INDIRECTION,
-                2
+                20
             ],
         );
         assert_eq!(

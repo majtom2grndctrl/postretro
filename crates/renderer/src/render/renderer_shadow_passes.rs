@@ -271,6 +271,7 @@ impl Renderer {
         cam_vis: CameraCullVisibility<'_>,
         view_proj: Mat4,
         render_world: bool,
+        frame_light_term_mask: LightTermMask,
     ) {
         let visible: &VisibleCells = cam_vis.cells;
         let Self {
@@ -476,8 +477,16 @@ impl Renderer {
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
-            full.sh_compose
-                .dispatch(encoder, &full.uniform_bind_group, sh_compose_ts);
+            let indirect_active = full
+                .sh_compose
+                .has_active_animated_descriptor(&full.sh_volume_resources.animation);
+            full.sh_compose.dispatch_if_needed(
+                encoder,
+                &full.uniform_bind_group,
+                indirect_active,
+                frame_light_term_mask,
+                sh_compose_ts,
+            );
         }
     }
 }

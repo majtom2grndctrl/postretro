@@ -1181,6 +1181,7 @@ mod tests {
             classify_levels_with_ceiling(&[l2], [1, 1, 1], &[], &[L0], &CoarsenParams::default(),),
             vec![L0],
         );
+        let l2 = brick(10.0, 10.0, (0.1, 0.1), (0.1, 0.1));
         assert_eq!(
             classify_levels_with_ceiling(&[l2], [1, 1, 1], &[], &[L1], &CoarsenParams::default(),),
             vec![L1],

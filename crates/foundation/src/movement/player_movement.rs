@@ -203,6 +203,10 @@ pub struct PlayerMovementComponent {
     pub standing_eye_height: f32,
     pub ground: GroundRef,
     pub velocity: Vec3,
+    /// The most recent walkable floor-contact normal, forwarded by the
+    /// collision substrate after each tick. Per-state intents read this on
+    /// their following tick instead of querying collision directly.
+    pub last_floor_normal: Option<Vec3>,
     pub air_jumps_remaining: u32,
     /// Air-dash charges left before landing. Seeded from `dash.air_dashes` at
     /// construction (0 when dash is disabled) and refreshed on landing through
@@ -323,6 +327,7 @@ impl PlayerMovementComponent {
             cos_walkable,
             ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
+            last_floor_normal: None,
             air_jumps_remaining,
             air_dashes_remaining,
             dash_cooldown_ms: 0.0,

@@ -193,6 +193,11 @@ pub(super) fn integrate_collision(
         displace_from_movers(component, previous_ground, collision, &capsule, current_pos);
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
+    // Each of the substrate's walkable-contact paths overwrites this with its
+    // contact normal. The result is forwarded by `tick` only after the active
+    // state's intent completes, so intents consume prior-tick contact rather
+    // than reaching sideways into collision.
+    let mut last_floor_normal = None;
     let mut ground_ref_this_tick = GroundRef::Airborne;
 
     // Step-up probe before the main loop: lift only commits when a wall-like
@@ -275,6 +280,7 @@ pub(super) fn integrate_collision(
                 let consumed;
                 if normal.y >= component.cos_walkable {
                     hit_floor_this_tick = true;
+                    last_floor_normal = Some(normal);
                     ground_ref_this_tick = ground_ref_from_hit(h);
                     current_pos += dir * toi;
                     // Project velocity tangent to the surface FIRST, then
@@ -426,6 +432,7 @@ pub(super) fn integrate_collision(
                 if n.y >= component.cos_walkable {
                     current_pos.y -= h.time_of_impact;
                     hit_floor_this_tick = true;
+                    last_floor_normal = Some(n);
                     ground_ref_this_tick = ground_ref_from_hit(h);
                     snapped = true;
                 }
@@ -460,6 +467,7 @@ pub(super) fn integrate_collision(
                         if drop > 0.0 && drop <= max_down {
                             current_pos.y -= drop;
                             hit_floor_this_tick = true;
+                            last_floor_normal = Some(h.normal);
                             ground_ref_this_tick = ground_ref_from_hit(h);
                         }
                     }
@@ -500,6 +508,7 @@ pub(super) fn integrate_collision(
         current_pos,
         SubstrateResult {
             hit_floor: hit_floor_this_tick,
+            floor_normal: last_floor_normal,
             landed,
         },
     )

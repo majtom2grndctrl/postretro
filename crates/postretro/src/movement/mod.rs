@@ -77,13 +77,18 @@ pub(crate) struct MovementEvents {
 /// component itself (`is_grounded`, `air_ticks`, `velocity`); these fields
 /// report the gameplay-relevant outcomes the tick maps onto events and
 /// ability-budget refreshes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct SubstrateResult {
     /// Floor contact was (re)acquired this tick — either through the slide
     /// loop or the ground-stick down-cast. The tick uses this as the
     /// landing-refresh point for ability budgets (e.g. `air_jumps_remaining`),
     /// a gameplay-state write the substrate deliberately does not perform.
     pub(crate) hit_floor: bool,
+    /// The last walkable floor-contact normal found while resolving this tick.
+    /// `tick` forwards it onto the component after intent dispatch, so a state
+    /// intent can consume the previous tick's contact without querying
+    /// collision itself.
+    pub(crate) floor_normal: Option<Vec3>,
     /// A genuine landing transition (airborne → grounded) cleared the
     /// air-tick hysteresis gate. Maps directly to `MovementEvents::landed`.
     pub(crate) landed: bool,
@@ -193,6 +198,12 @@ pub(crate) fn tick(
         previous_ground,
         events.jumped,
     );
+
+    // Contact flows forward through the tick seam: the active intent has
+    // already run, so this result becomes input for the NEXT tick's intent.
+    // Write `None` as well when no walkable floor was found, preventing a
+    // stale normal from surviving an airborne tick.
+    component.last_floor_normal = substrate.floor_normal;
 
     // Landing-refresh point: the ability-budget reset is a gameplay-state write
     // the substrate deliberately leaves to the tick. Driven by the substrate's
@@ -1324,6 +1335,70 @@ mod tests {
             mesh,
             isometry: Isometry::identity(),
         }
+    }
+
+    /// Broad floor with `y = slope * x`. The upward-facing contact normal is
+    /// `(-slope, 1, 0).normalize()`, so a non-zero slope exercises forwarding
+    /// of the substrate's real walkable normal rather than merely `Vec3::Y`.
+    fn sloped_floor_world(slope: f32) -> CollisionWorld {
+        let y = |x: f32| slope * x;
+        let points = vec![
+            Point::new(-20.0, y(-20.0), -20.0),
+            Point::new(20.0, y(20.0), -20.0),
+            Point::new(20.0, y(20.0), 20.0),
+            Point::new(-20.0, y(-20.0), 20.0),
+        ];
+        let mesh = TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2]]);
+        CollisionWorld {
+            mesh,
+            isometry: Isometry::identity(),
+        }
+    }
+
+    #[test]
+    fn substrate_forwards_walkable_floor_normal_to_component() {
+        let slope = 0.3;
+        let desc = canonical_descriptor();
+        let world = sloped_floor_world(slope);
+        let (mut component, mut position) = settle_player(&desc);
+
+        // Settle through the actual tick seam so the component receives the
+        // substrate result only after the intent has finished.
+        run_ticks(&mut component, &world, &mut position, 6, &idle_input());
+
+        let normal = component
+            .last_floor_normal
+            .expect("walkable slope contact should forward its normal");
+        let expected = Vec3::new(-slope, 1.0, 0.0).normalize();
+        assert!(
+            normal.y >= component.cos_walkable,
+            "forwarded normal must be walkable: normal={normal:?}, cos_walkable={}",
+            component.cos_walkable
+        );
+        assert!(
+            (normal - expected).length() < 1.0e-3,
+            "forwarded normal must match the substrate contact: got {normal:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn substrate_clears_forwarded_floor_normal_when_airborne() {
+        let world = empty_world();
+        let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        // Prove the tick overwrites an old contact rather than merely leaving
+        // the construction-time `None` in place.
+        component.last_floor_normal = Some(Vec3::Y);
+
+        let (_position, _events) = tick(
+            &mut component,
+            &idle_input(),
+            &world,
+            GRAVITY,
+            DT,
+            Vec3::new(0.0, 20.0, 0.0),
+        );
+
+        assert_eq!(component.last_floor_normal, None);
     }
 
     // Regression: step-up lift (step_height + 0.05) exceeded the ground-stick

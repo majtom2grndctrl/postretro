@@ -140,7 +140,10 @@ pub enum ServerPresentationPayload {
 ///
 /// Bumped to 13 for E17 blocking movers: kinematic mover phase gained the
 /// host-authoritative `blocked` stop-hold flag.
-pub const SNAPSHOT_VERSION: u16 = 13;
+///
+/// Bumped to 14 for slide: `WireMovementState` gained its `Sliding` variant,
+/// including the floor normal needed to replay a sloped authoritative baseline.
+pub const SNAPSHOT_VERSION: u16 = 14;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -200,8 +203,21 @@ impl WireTransform {
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub enum WireMovementState {
     Normal,
-    Dash { elapsed_ms: f32, boost: [f32; 3] },
-    Crouching { eye_current: f32 },
+    Dash {
+        elapsed_ms: f32,
+        boost: [f32; 3],
+    },
+    Crouching {
+        eye_current: f32,
+    },
+    Sliding {
+        elapsed_ms: f32,
+        boost: [f32; 3],
+        eye_current: f32,
+        /// The prior substrate contact. It is paid only while sliding because
+        /// replay needs the authoritative slope on its first replayed tick.
+        floor_normal: Option<[f32; 3]>,
+    },
 }
 
 /// Wire mirror of the player's generalized ground reference. `Mover` carries the
@@ -255,6 +271,19 @@ impl WireMovementState {
                 elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
             }
             WireMovementState::Crouching { eye_current } => eye_current.is_finite(),
+            WireMovementState::Sliding {
+                elapsed_ms,
+                boost,
+                eye_current,
+                floor_normal,
+            } => {
+                elapsed_ms.is_finite()
+                    && boost.iter().all(|c| c.is_finite())
+                    && eye_current.is_finite()
+                    && floor_normal
+                        .as_ref()
+                        .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
+            }
         }
     }
 }
@@ -1450,6 +1479,18 @@ mod tests {
                 boost: [1.0, -2.0, 3.0],
             },
             WireMovementState::Crouching { eye_current: 0.9 },
+            WireMovementState::Sliding {
+                elapsed_ms: 25.0,
+                boost: [1.0, 0.0, 3.0],
+                eye_current: 0.8,
+                floor_normal: Some([0.2, 0.9, 0.0]),
+            },
+            WireMovementState::Sliding {
+                elapsed_ms: 25.0,
+                boost: [1.0, 0.0, 3.0],
+                eye_current: 0.8,
+                floor_normal: None,
+            },
         ] {
             let movement = WirePlayerMovementState {
                 movement_state: state,
@@ -1648,10 +1689,10 @@ mod tests {
     }
 
     #[test]
-    fn presentation_message_payloads_round_trip_without_changing_snapshot_version() {
+    fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
         assert_eq!(
-            SNAPSHOT_VERSION, 13,
-            "presentation uses its own channel, not the snapshot record"
+            SNAPSHOT_VERSION, 14,
+            "slide's snapshot-state layout requires snapshot version 14"
         );
 
         let spawn = ServerPresentationMessage {
@@ -1957,14 +1998,14 @@ mod tests {
     }
 
     #[test]
-    fn blocked_mover_phase_snapshot_version_rejects_immediately_previous_layout() {
-        const PRE_BLOCKED_MOVER_SNAPSHOT_VERSION: u16 = 12;
+    fn sliding_snapshot_version_rejects_immediately_previous_layout() {
+        const PRE_SLIDING_SNAPSHOT_VERSION: u16 = 13;
         assert_eq!(
-            SNAPSHOT_VERSION, 13,
-            "blocked mover phase requires snapshot version 13"
+            SNAPSHOT_VERSION, 14,
+            "sliding movement state requires snapshot version 14"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_BLOCKED_MOVER_SNAPSHOT_VERSION,
+            version: PRE_SLIDING_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -1975,7 +2016,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_BLOCKED_MOVER_SNAPSHOT_VERSION,
+                received: PRE_SLIDING_SNAPSHOT_VERSION,
             })
         );
     }
@@ -2544,7 +2585,7 @@ mod tests {
     /// field.
     #[test]
     fn non_finite_movement_state_rejects_each_field() {
-        let mutators: [fn(&mut WirePlayerMovementState); 10] = [
+        let mutators: [fn(&mut WirePlayerMovementState); 14] = [
             |m| m.velocity[0] = f32::NAN,
             |m| m.velocity[2] = f32::INFINITY,
             |m| m.dash_cooldown_ms = f32::NAN,
@@ -2562,6 +2603,38 @@ mod tests {
             |m| {
                 m.movement_state = WireMovementState::Crouching {
                     eye_current: f32::INFINITY,
+                }
+            },
+            |m| {
+                m.movement_state = WireMovementState::Sliding {
+                    elapsed_ms: f32::NAN,
+                    boost: [0.0, 0.0, 0.0],
+                    eye_current: 0.5,
+                    floor_normal: None,
+                }
+            },
+            |m| {
+                m.movement_state = WireMovementState::Sliding {
+                    elapsed_ms: 1.0,
+                    boost: [0.0, f32::INFINITY, 0.0],
+                    eye_current: 0.5,
+                    floor_normal: None,
+                }
+            },
+            |m| {
+                m.movement_state = WireMovementState::Sliding {
+                    elapsed_ms: 1.0,
+                    boost: [0.0, 0.0, 0.0],
+                    eye_current: f32::NAN,
+                    floor_normal: None,
+                }
+            },
+            |m| {
+                m.movement_state = WireMovementState::Sliding {
+                    elapsed_ms: 1.0,
+                    boost: [0.0, 0.0, 0.0],
+                    eye_current: 0.5,
+                    floor_normal: Some([0.0, f32::NEG_INFINITY, 0.0]),
                 }
             },
         ];
@@ -2760,6 +2833,12 @@ mod tests {
                 boost: [0.0, 0.0, 0.0],
             },
             WireMovementState::Crouching { eye_current: 0.5 },
+            WireMovementState::Sliding {
+                elapsed_ms: 1.0,
+                boost: [0.0, 0.0, 0.0],
+                eye_current: 0.5,
+                floor_normal: Some([0.0, 1.0, 0.0]),
+            },
         ];
         for state in variants {
             // A finite instance of every variant must pass the finiteness gate.
@@ -2770,6 +2849,9 @@ mod tests {
                 WireMovementState::Normal => 0,
                 WireMovementState::Dash { .. } => 4, // elapsed_ms + 3 boost components
                 WireMovementState::Crouching { .. } => 1,
+                WireMovementState::Sliding { floor_normal, .. } => {
+                    5 + floor_normal.map_or(0, |_| 3)
+                }
             };
             // Non-`Normal` variants carry floats and so are non-finite-detectable.
             assert_eq!(

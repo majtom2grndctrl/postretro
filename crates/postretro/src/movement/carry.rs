@@ -15,11 +15,13 @@ use glam::Vec3;
 /// as non-breaking new variants when `movement--wall-run` lands.
 ///
 /// `Zero`/`Scale` ship as the transform library but have no production consumer
-/// yet — today only the `Normal`↔`Dash` transitions exist and both use the
-/// `KEEP_ALL` no-op (`KeepHorizontal` + `KeepBoost`); `movement--slide` is the
-/// first non-trivial consumer of `Zero` or `Scale`. The transforms are
+/// yet — today `Dash`, crouch, and slide all preserve momentum with the
+/// `KEEP_ALL` no-op (`KeepHorizontal` + `KeepBoost`). `Sliding` is the first
+/// gameplay-meaningful `KEEP_ALL` consumer: its slide-jump and slide-cancel
+/// handoffs retain real banked speed. `Zero`/`Scale` remain forward-looking
+/// environment-probe vocabulary for wall-run or a vault. The transforms are
 /// unit-tested now so the seam, policy, and library land together.
-#[allow(dead_code)] // `Zero`/`Scale`: forward-looking vocabulary, consumed by `movement--slide`.
+#[allow(dead_code)] // `Zero`/`Scale`: forward-looking environment-probe vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum HorizontalCarry {
     /// Preserve the outgoing horizontal velocity unchanged.

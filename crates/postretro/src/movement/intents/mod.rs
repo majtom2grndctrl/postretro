@@ -9,12 +9,16 @@ use postretro_foundation::PlayerMovementComponent;
 mod crouching;
 mod dash;
 mod normal;
+mod slide;
 
 pub(super) use crouching::crouching_intent;
 #[cfg(test)]
 pub(super) use dash::DASH_MAX_MS;
 pub(super) use dash::dash_intent;
 pub(super) use normal::normal_intent;
+#[cfg(test)]
+pub(super) use slide::SLIDE_MAX_MS;
+pub(super) use slide::sliding_intent;
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
 /// stop/slide-threshold friction model. Value matches Quake's default

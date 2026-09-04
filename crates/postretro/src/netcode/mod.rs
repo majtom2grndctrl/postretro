@@ -841,6 +841,19 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
             elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
         }
         WireMovementState::Crouching { eye_current } => eye_current.is_finite(),
+        WireMovementState::Sliding {
+            elapsed_ms,
+            boost,
+            eye_current,
+            floor_normal,
+        } => {
+            elapsed_ms.is_finite()
+                && boost.iter().all(|c| c.is_finite())
+                && eye_current.is_finite()
+                && floor_normal
+                    .as_ref()
+                    .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
+        }
     };
     m.velocity.iter().all(|c| c.is_finite())
         && m.dash_cooldown_ms.is_finite()
@@ -4156,13 +4169,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            19,
-            "the fire-time snapshot and declaration reuse are host-internal"
+            20,
+            "sliding's snapshot wire variant changes transport layout"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            13,
-            "projectile presentation reuses Transform plus entity_class snapshots"
+            14,
+            "sliding's movement snapshot state changes the record layout"
         );
     }
 

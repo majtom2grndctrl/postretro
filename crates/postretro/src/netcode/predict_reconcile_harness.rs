@@ -23,7 +23,8 @@ use postretro_net::wire::{
 
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
-    ROTATING_PLATFORM_RIDER_START, forward_command, idle_command, input_at, use_command,
+    ROTATING_PLATFORM_RIDER_START, forward_command, idle_command, input_at, sloped_floor_world,
+    use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -565,6 +566,53 @@ fn dash_correction_classifies_as_dash_and_smooths() {
         "a dash correction seeds a smoothed presentation offset (not a snap)"
     );
     assert!(h.bystanders_alive());
+}
+
+#[test]
+fn sloped_slide_baseline_and_replay_entry_reconcile_with_authoritative_floor_normal() {
+    let mut h = LoopbackHarness::new(light_link());
+    h.world = sloped_floor_world(0.3);
+
+    // First arm and build enough sprint speed to cross the authored slide gate.
+    h.step_until_armed(&forward_command(false));
+    for _ in 0..30 {
+        h.step(&forward_command(false));
+    }
+
+    // This transition is deliberately inside the unacked window. Once the host
+    // snapshots the already-sliding baseline, reconcile must restore both boost
+    // and the host's forwarded normal before replaying the remaining crouch-held
+    // commands; otherwise a faceted downhill diverges on the first replay tick.
+    let mut slide = forward_command(false);
+    slide.movement.crouch_intent = true;
+    for _ in 0..45 {
+        h.step(&slide);
+    }
+    assert!(
+        matches!(
+            h.host_registry
+                .get_component::<PlayerMovementComponent>(h.host_pawn)
+                .expect("host pawn has movement")
+                .movement_state,
+            postretro_foundation::MovementState::Sliding { .. }
+        ),
+        "host baseline reaches the sliding state before the drain"
+    );
+
+    let mut drain_iters = 0;
+    while !h.is_drained() && drain_iters < 4_000 {
+        h.drain_step();
+        drain_iters += 1;
+    }
+    assert!(
+        h.is_drained(),
+        "sloped slide harness must drain deterministically"
+    );
+    assert!(
+        h.position_error() <= 0.05,
+        "authoritative slide normal must restore before replay: error={}",
+        h.position_error()
+    );
 }
 
 // --- Teleport correction: a correction at/above the teleport floor snaps hard —

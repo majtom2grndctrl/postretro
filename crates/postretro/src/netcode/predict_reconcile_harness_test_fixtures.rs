@@ -54,9 +54,9 @@ use postretro_entities::{
     MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
-    AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor,
-    SpeedParams,
+    AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
+    GroundParams, GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent,
+    PlayerMovementDescriptor, SlideParams, SpeedParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -99,6 +99,23 @@ pub(crate) fn floor_world() -> CollisionWorld {
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
     CollisionWorld {
         mesh: TriMesh::new(points, triangles),
+        isometry: Isometry::identity(),
+    }
+}
+
+/// Broad walkable plane tilted about Z. The slope is intentionally shared by the
+/// host and client harness so replay only differs when the authoritative slide
+/// baseline fails to restore its forwarded floor normal.
+pub(crate) fn sloped_floor_world(slope: f32) -> CollisionWorld {
+    let y = |x: f32| slope * x;
+    let points = vec![
+        Point::new(-500.0, y(-500.0), -500.0),
+        Point::new(500.0, y(500.0), -500.0),
+        Point::new(500.0, y(500.0), 500.0),
+        Point::new(-500.0, y(-500.0), 500.0),
+    ];
+    CollisionWorld {
+        mesh: TriMesh::new(points, vec![[0, 2, 1], [0, 3, 2]]),
         isometry: Isometry::identity(),
     }
 }
@@ -150,8 +167,19 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             coyote_ms: 0.0,
             jump_buffer_ms: 0.0,
         }),
-        crouch: None,
-        slide: None,
+        crouch: Some(CrouchParams {
+            half_height: 0.4,
+            eye_height: 0.2,
+            transition_rate: 15.0,
+        }),
+        slide: Some(SlideParams {
+            min_speed: 8.0,
+            slide_drag: 2.0,
+            slope_assist: 1.0,
+            steer_rate: 180.0,
+            entry_boost: 1.5,
+            min_duration_ms: 250.0,
+        }),
         view_feel: None,
     }
 }

@@ -7,11 +7,11 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
 use postretro_render_cpu::sh_compose::{
-    ComposeGridParams, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
+    u32_slice_to_bytes, ComposeGridParams,
 };
 
-use super::sh_indirection::probe_indirection_storage_bytes;
+use super::sh_indirection::{probe_indirection_storage_bytes, WGSL_DECODE_HELPER};
 use super::sh_volume::{AnimatedLightBuffers, ShVolumeResources};
 
 // SH Compose Bind Group (`@group(1)`) binding index assignments. The shader
@@ -209,11 +209,14 @@ impl ShComposeResources {
         });
 
         // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
-        let shader_source = concat!(
+        let shader_source = [
             include_str!("../shaders/sh_compose.wgsl"),
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
-        );
+            "\n",
+            WGSL_DECODE_HELPER,
+        ]
+        .concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SH Compose Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
@@ -528,12 +531,12 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::sh_indirection::{INVALID_PROBE_INDIRECTION, build_probe_indirection_words};
+    use super::super::sh_indirection::{build_probe_indirection_words, INVALID_PROBE_INDIRECTION};
     use super::{
-        BIND_BASE_ATLAS_SAMPLER, build_delta_buffers, compose_bgl_entries,
-        indirect_compose_should_dispatch,
+        build_delta_buffers, compose_bgl_entries, indirect_compose_should_dispatch,
+        BIND_BASE_ATLAS_SAMPLER,
     };
-    use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+    use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, AFFINITY_FACTOR};
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
@@ -543,13 +546,16 @@ mod tests {
     #[test]
     fn sh_compose_shader_parses_and_exports_compose_main() {
         // curve_eval.wgsl must be appended to resolve Catmull-Rom helpers.
-        let src = concat!(
+        let src = [
             include_str!("../shaders/sh_compose.wgsl"),
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
-        );
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
         let module =
-            naga::front::wgsl::parse_str(src).expect("sh_compose.wgsl should parse as WGSL");
+            naga::front::wgsl::parse_str(&src).expect("sh_compose.wgsl should parse as WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -587,6 +593,17 @@ mod tests {
             source.contains("if (level == 2u)"),
             "L2 must load its single synthesized mean tile"
         );
+        assert!(
+            source.contains("fn slot_tile_origin(slot: u32)")
+                && !source.contains("fn atlas_tile_origin("),
+            "compose writes must resolve stored slots rather than dense probe indices"
+        );
+        assert!(
+            source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains("select(0.0, 1.0, stored_slot.valid)"),
+            "L1 must write its eight slots with alpha validity and L2 must write local zero"
+        );
     }
 
     #[test]
@@ -595,7 +612,7 @@ mod tests {
 
         assert!(
             source.contains("let use_indirect_static = (uniforms.light_term_mask & 0x02u) != 0u;")
-                && source.contains("if (output_is_valid && use_indirect_static)"),
+                && source.contains("if (output_is_stored && use_indirect_static)"),
             "the static base must be selected from the live group-0 mask"
         );
         assert!(
@@ -605,7 +622,7 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches("if (output_is_valid && use_indirect_animated)")
+                .matches("if (output_is_stored && use_indirect_animated)")
                 .count(),
             1,
             "dense L0 delta accumulation must be gated per valid output; coarsened L1/L2 uses the uniform gate asserted below so every workgroup invocation reaches its barriers",
@@ -613,7 +630,7 @@ mod tests {
         let coarsened_delta_path = source
             .split("    } else {\n        // Coarsened L1/L2 cells")
             .nth(1)
-            .and_then(|path| path.split("\n    if (in_grid) {").next())
+            .and_then(|path| path.split("\n    if (output_is_stored) {").next())
             .expect("shader must retain its coarsened L1/L2 compose path");
         assert!(
             coarsened_delta_path.contains(

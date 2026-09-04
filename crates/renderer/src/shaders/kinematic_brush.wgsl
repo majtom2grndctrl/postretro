@@ -99,7 +99,7 @@ struct ShGridInfo {
 @group(4) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
-@group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
+@group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
 @group(4) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 struct DynamicDirectParams {

@@ -127,6 +127,8 @@ fn build_instance_entry(
 const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/skinned_mesh.wgsl"),
     "\n",
+    include_str!("../shaders/sh_indirection.wgsl"),
+    "\n",
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),

@@ -333,6 +333,8 @@ fn billboard_wgsl_uniforms_match_forward_layout() {
     const BILLBOARD_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/billboard.wgsl"),
         "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+        "\n",
         include_str!("../../shaders/sh_sample.wgsl"),
     );
 

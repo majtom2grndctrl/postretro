@@ -429,12 +429,12 @@ fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
             },
             count: None,
         },
-        // Binding 2: SH depth moments (Rg16Float 3D, non-filterable load).
+        // Binding 2: SH depth moments (Rgba16Uint 3D, non-filterable load).
         wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: vis,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                sample_type: wgpu::TextureSampleType::Uint,
                 view_dimension: wgpu::TextureViewDimension::D3,
                 multisampled: false,
             },
@@ -618,10 +618,28 @@ mod tests {
             }
         ));
 
+        let moments = entries
+            .iter()
+            .find(|e| e.binding == 2)
+            .expect("BGL must retain SH depth moments at binding 2");
+        assert!(matches!(
+            moments.ty,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            }
+        ));
+
         let src = include_str!("../shaders/sdf_shadow.wgsl");
         assert!(
             src.contains("@group(1) @binding(3) var shadow_factor"),
             "shadow_factor must be at @group(1) @binding(3) after the renumber",
+        );
+        assert!(
+            src.contains("var sh_depth_moments: texture_3d<u32>;")
+                && src.contains("unpack2x16float(packed.r | (packed.g << 16u))"),
+            "SDF open-space lookup must decode the Uint RG f16 pair",
         );
     }
 

@@ -61,8 +61,9 @@ struct ShadowPassParams {
 
 @group(1) @binding(0) var<uniform> params: ShadowPassParams;
 @group(1) @binding(1) var depth_tex: texture_depth_2d;
-// DDGI E[d] / E[d^2] depth moments (R = mean, G = mean^2). 3D probe grid.
-@group(1) @binding(2) var sh_depth_moments: texture_3d<f32>;
+// DDGI E[d] / E[d^2] depth moments stored as f16 bit pairs in R/G. B/A carry
+// the sampler indirection word; this SDF path only needs the decoded mean.
+@group(1) @binding(2) var sh_depth_moments: texture_3d<u32>;
 // Half-res output. R/G/B/A = the K = 4 per-light SDF visibility slices (see
 // sdf_light_select.wgsl). The animated dominant-direction trace that once
 // reserved the G channel is removed — all four channels are per-light now.
@@ -416,8 +417,8 @@ fn sample_open_distance(world: vec3<f32>) -> f32 {
         return 1.0e4;
     }
     let coord = vec3<i32>(clamp(local, vec3<f32>(0.0), grid_f - vec3<f32>(1.0)));
-    let moments = textureLoad(sh_depth_moments, coord, 0);
-    return moments.r; // E[d] — mean ray distance to occluder
+    let packed = textureLoad(sh_depth_moments, coord, 0);
+    return unpack2x16float(packed.r | (packed.g << 16u)).x; // E[d]
 }
 
 // Trace the static SDF from `origin` toward `dir` (unit) for shadow occlusion.

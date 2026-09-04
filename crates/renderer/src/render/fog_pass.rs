@@ -32,6 +32,8 @@ pub const SCATTER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float
 const FOG_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fog_volume.wgsl"),
     "\n",
+    include_str!("../shaders/sh_indirection.wgsl"),
+    "\n",
     include_str!("../shaders/sh_sample.wgsl"),
 );
 

@@ -17,8 +17,7 @@ use std::rc::Rc;
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Vec2, Vec3};
 
-use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityRegistry, Transform};
 
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
@@ -38,8 +37,8 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 use super::{
-    AimCommand, CommandEntry, PawnHealth, PlayerPawnSummary, TickEventRecord,
-    build_output_document, parse_runspec, to_deterministic_json,
+    AimCommand, CommandEntry, TickEventRecord, build_output_document, build_player_summary,
+    parse_runspec, to_deterministic_json,
 };
 
 /// Fixed game-logic tick length. Pinned to `1/60` s exactly (NOT
@@ -455,35 +454,11 @@ fn to_owned_cow_strings(events: &[Cow<'static, str>]) -> Vec<String> {
     events.iter().map(|event| event.to_string()).collect()
 }
 
-/// Resolve the pawn summarized by headless observability.
-fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
-    registry.local_player_movement_pawn()
-}
-
-/// Build the curated player-pawn summary from the post-run registry. `None` when
-/// no player pawn spawned (a map without a `player_spawn`).
-fn build_player_summary(registry: &EntityRegistry, facing_yaw: f32) -> Option<PlayerPawnSummary> {
-    let id = local_pawn(registry)?;
-    let transform = registry.get_component::<Transform>(id).ok()?;
-    let health = registry
-        .get_component::<HealthComponent>(id)
-        .ok()
-        .map(|health| PawnHealth {
-            current: health.current,
-            max: health.max,
-        });
-    Some(PlayerPawnSummary {
-        entity: id.to_raw(),
-        position: transform.position.to_array(),
-        facing_yaw,
-        health,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use postretro_entities::DataRegistry;
+    use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::data_descriptors::{

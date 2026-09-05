@@ -4,12 +4,19 @@
 // See: context/plans/done/agentic-observability
 
 mod document;
+#[cfg(feature = "observability")]
 mod driver;
 mod runspec;
 
+#[cfg(feature = "observability")]
 pub(crate) use driver::run_headless;
 
-pub(crate) use document::{PawnHealth, PlayerPawnSummary, TickEventRecord, build_output_document};
+pub(crate) use document::{
+    OutOfFrame, OutputDocument, PawnHealth, PlayerPawnSummary, TickEventRecord, apply_dump,
+    build_output_document, build_player_summary,
+};
+pub(crate) use runspec::DumpSpec;
+#[cfg(feature = "observability")]
 pub(crate) use runspec::{AimCommand, CommandEntry, parse_runspec};
 
 use postretro_entities::ComponentKind;

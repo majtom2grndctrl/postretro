@@ -1,24 +1,25 @@
-// Output document vocabulary: the headless state dump and its entity filter.
+// Shared batch/live output-document vocabulary and entity filter.
 // See: context/plans/done/agentic-observability
 
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use postretro_entities::{ComponentValue, EntityRegistry};
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::{ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_level_loader::{CoupledCellPair, LevelWorld};
 
 use super::runspec::DumpSpec;
 use super::{ALL_KINDS, DumpError};
 
-/// The headless output document — the stable, tool-facing surface a run emits.
+/// Stable, tool-facing document emitted by batch runs and live queries.
 /// Field order here is the emitted top-level order; nested map keys are sorted by
 /// [`super::to_deterministic_json`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct OutputDocument {
-    /// The map the run loaded (echoed from the runspec for provenance).
+    /// Caller-supplied map identity.
     pub map: String,
-    /// Number of fixed ticks actually advanced.
+    /// Caller-supplied tick count.
     pub ticks_run: u32,
     /// Filtered entity records (see [`EntityRecord`]).
     pub entities: Vec<EntityRecord>,
@@ -26,15 +27,16 @@ pub(crate) struct OutputDocument {
     /// truncated; a positive value is reported explicitly so a truncated dump is
     /// never silently short.
     pub truncated: usize,
-    /// Per-tick event lists. Empty when `dump.events` is false.
+    /// Caller-supplied tick events. Live queries leave this empty and declare
+    /// the omission in `out_of_frame.present_not_dumped`.
     pub events: Vec<TickEventRecord>,
-    /// Summary of the local player pawn, when one exists.
+    /// Current local player-pawn summary, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player: Option<PlayerPawnSummary>,
-    /// Baked cell-to-cell visibility relation, when requested by the runspec.
+    /// Baked cell-to-cell visibility relation, when requested by the dump.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_visibility: Option<CellVisibilityDump>,
-    /// What headless mode leaves out of frame, in two categories.
+    /// State absent from this output, split into two categories.
     pub out_of_frame: OutOfFrame,
 }
 
@@ -50,8 +52,7 @@ pub(crate) struct EntityRecord {
     pub component: ComponentValue,
 }
 
-/// Per-tick event lists collected across the run. The driver fills these from the
-/// sim's `TickEvents`; the builder includes them only when `dump.events` is set.
+/// Per-tick event lists supplied by the caller.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub(crate) struct TickEventRecord {
     pub tick: u32,
@@ -65,8 +66,7 @@ pub(crate) struct TickEventRecord {
     pub death: Vec<String>,
 }
 
-/// Curated view of the local player pawn. Filled by the driver from the
-/// post-run registry.
+/// Curated view of the local player pawn at document-build time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PlayerPawnSummary {
     pub entity: u32,
@@ -105,19 +105,20 @@ pub(crate) struct CoupledCellPairRecord {
     pub aperture: Option<u32>,
 }
 
-/// The two-category out-of-frame declaration: what a headless run cannot or does
-/// not report, so a consumer never mistakes absence for "there is none".
+/// Two categories of omitted state, so consumers never mistake absence for
+/// "there is none." `headless()` supplies the batch-specific base declaration;
+/// other channels extend it with their own omissions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct OutOfFrame {
     /// State that does not exist as entities in headless mode at all.
     pub absent_headless: Vec<String>,
-    /// State — non-entity runtime data, or a windowed runtime behavior — that is
-    /// present in the world but deliberately outside the headless dump or sim.
+    /// State deliberately omitted from this document, including channel-specific
+    /// omissions.
     pub present_not_dumped: Vec<String>,
 }
 
 impl OutOfFrame {
-    /// The canonical headless declaration. Constant across runs.
+    /// Batch headless base declaration. Constant across runs.
     pub(crate) fn headless() -> Self {
         Self {
             // Baked map lights live in level data, not the entity registry, so
@@ -203,10 +204,10 @@ pub(crate) fn apply_dump(
     Ok(DumpSelection { records, truncated })
 }
 
-/// Assemble the full output document. Applies the entity filter to `registry`,
-/// carries through the driver-supplied per-tick events (only when `dump.events`
-/// is set), requested cell-visibility data from `world`, and player summary,
-/// then stamps the constant out-of-frame declaration.
+/// Assemble a shared output document from caller-supplied map, tick, event, and
+/// player data. Applies the entity filter and requested cell visibility, and
+/// starts with the batch headless out-of-frame declaration. Live callers pass
+/// empty events, then add the `events` omission to the returned declaration.
 pub(crate) fn build_output_document(
     map: impl Into<String>,
     ticks_run: u32,
@@ -228,6 +229,34 @@ pub(crate) fn build_output_document(
             .cell_visibility
             .then(|| build_cell_visibility_dump(world)),
         out_of_frame: OutOfFrame::headless(),
+    })
+}
+
+/// Resolve the pawn summarized by observability.
+fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
+    registry.local_player_movement_pawn()
+}
+
+/// Build the curated player-pawn summary from the current registry. `None` when
+/// no player pawn exists.
+pub(crate) fn build_player_summary(
+    registry: &EntityRegistry,
+    facing_yaw: f32,
+) -> Option<PlayerPawnSummary> {
+    let id = local_pawn(registry)?;
+    let transform = registry.get_component::<Transform>(id).ok()?;
+    let health = registry
+        .get_component::<HealthComponent>(id)
+        .ok()
+        .map(|health| PawnHealth {
+            current: health.current,
+            max: health.max,
+        });
+    Some(PlayerPawnSummary {
+        entity: id.to_raw(),
+        position: transform.position.to_array(),
+        facing_yaw,
+        health,
     })
 }
 

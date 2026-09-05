@@ -954,13 +954,8 @@ mod tests {
             0,
         );
 
-        let [visual] = presentations
-            .flights
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
-            .as_slice()
-        else {
+        let visuals = presentations.flights.keys().copied().collect::<Vec<_>>();
+        let [visual] = visuals.as_slice() else {
             panic!("enemy gameplay projectile creates one presentation mirror");
         };
         let host_provenance = registry
@@ -989,7 +984,7 @@ mod tests {
                 postretro_net::wire::EntityRecord::FullBaseline {
                     entity_class: Some(entity_class),
                     ..
-                } if entity_class == "enemy_rifle"
+                } if entity_class == "projectile:enemy_rifle"
             )
         }));
 

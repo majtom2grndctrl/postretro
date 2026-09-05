@@ -1380,10 +1380,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // provenance table from its retained ids rather than from the authored
     // brush list position. `Face::brush_index` is this resulting vector's
     // enumerate index.
-    let brush_assembly: Vec<Option<usize>> = world_hulls
-        .iter()
-        .map(|(brush_id, _)| assembly_by_brush_id.get(brush_id).copied())
-        .collect();
+    let brush_assembly = brush_assembly_for_retained_hulls(&world_hulls, &assembly_by_brush_id);
     let brush_volumes: Vec<BrushVolume> =
         world_hulls.into_iter().map(|(_, volume)| volume).collect();
     debug_assert_eq!(brush_volumes.len(), brush_assembly.len());
@@ -1783,6 +1780,19 @@ fn build_brush_volumes_with_ids(
     }
 
     brush_volumes
+}
+
+/// Translate authored brush membership only for hulls that survived parsing.
+/// Keeping this at the retained-`BrushId` seam prevents an omitted degenerate
+/// brush from shifting diagnostic provenance onto a later brush.
+fn brush_assembly_for_retained_hulls(
+    retained_hulls: &[(BrushId, BrushVolume)],
+    assembly_by_brush_id: &HashMap<BrushId, usize>,
+) -> Vec<Option<usize>> {
+    retained_hulls
+        .iter()
+        .map(|(brush_id, _)| assembly_by_brush_id.get(brush_id).copied())
+        .collect()
 }
 
 /// Whether `hull` may intrude into the axis-aligned box `box_min..box_max`.
@@ -4743,6 +4753,41 @@ mod tests {
     }
 
     #[test]
+    fn sibling_group_members_preceding_their_marker_resolve_like_an_explicit_carrier() {
+        // The marker pre-pass, rather than source walk order, owns sibling
+        // recognition. Keep the marker after both members to pin that seam.
+        let grouped = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        );
+        let marker_start = grouped
+            .find("// entity 5")
+            .expect("grouped fixture has a marker");
+        let marker_end = grouped[marker_start..]
+            .find("// entity 4")
+            .map(|offset| marker_start + offset)
+            .expect("marker precedes the grouped light");
+        let marker = &grouped[marker_start..marker_end];
+        let without_marker = format!("{}{}", &grouped[..marker_start], &grouped[marker_end..]);
+        let late_marker =
+            without_marker.replacen("// entity 4", &format!("{marker}// entity 4"), 1);
+
+        let explicit = late_marker.replacen(
+            "\"_tb_group\" \"1\"\n",
+            "\"_tb_group\" \"1\"\n\"carrier\" \"lift_a\"\n",
+            1,
+        );
+        let grouped = parse_inline_map(&late_marker).expect("late marker should still bind");
+        let explicit = parse_inline_map(&explicit).expect("explicit carrier should bind");
+
+        assert_eq!(grouped.carried_light_links.len(), 1);
+        assert_eq!(grouped.carried_light_links, explicit.carried_light_links);
+    }
+
+    #[test]
     fn grouped_multiple_movers_with_eligible_light_warns_and_leaves_light_unbound() {
         let map_text = grouped_kinematic_map_with_light(
             kinematic_map_with_duplicate_named_mover(grouped_kinematic_map("lift_a")),
@@ -4917,6 +4962,155 @@ mod tests {
     }
 
     #[test]
+    fn brace_and_sibling_groups_share_assemblies_without_crossing_forms() {
+        let brace_brush = box_brush([384, -64, -32], [448, 64, 32], "brace_tex");
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        )
+        .replacen(
+            "\"_tb_name\" \"lift assembly\"\n\"_tb_id\" \"1\"\n}",
+            &format!("\"_tb_name\" \"shared assembly\"\n\"_tb_id\" \"1\"\n{brace_brush}\n}}"),
+            1,
+        );
+        let map_text = map_text.replacen(
+            "// entity 3",
+            "// entity 6\n{\n\"classname\" \"func_group\"\n\"origin\" \"0 0 0\"\n\"_tb_type\" \"_tb_group\"\n\"_tb_name\" \"shared assembly\"\n\"_tb_id\" \"2\"\n}\n// entity 3",
+            1,
+        );
+
+        let map_data = parse_inline_map(&map_text).expect("cross-form group fixture should parse");
+
+        assert_eq!(
+            map_data.assemblies.len(),
+            2,
+            "empty markers retain inert slots"
+        );
+        assert_eq!(map_data.assemblies[0].group_id, "1");
+        assert_eq!(map_data.assemblies[1].group_id, "2");
+        assert_eq!(map_data.brush_assembly, vec![None, Some(0)]);
+        assert_eq!(map_data.carried_light_links.len(), 1);
+        assert_eq!(
+            map_data.carried_light_links[0].mover_id, map_data.kinematic_movers[0].mover_id,
+            "sibling membership binds to its marker, independently of brace provenance"
+        );
+        assert_eq!(
+            crate::pipeline::watertight_open_edge_provenance(
+                &crate::partition::OpenEdge {
+                    midpoint: DVec3::ZERO,
+                    brush_index: 1,
+                },
+                &map_data.brush_assembly,
+                &map_data.assemblies,
+            ),
+            Some("shared assembly (1)".to_string()),
+            "same-named marker identities stay independently nameable"
+        );
+    }
+
+    #[test]
+    fn grouped_leak_provenance_flows_from_parse_through_partition_to_open_edges() {
+        let grouped_open_face = "( 384 0  32 ) ( 384 1  32 ) ( 385 0  32 ) group_tex 0 0 0 1 1\n";
+        let ungrouped_open_face =
+            "( 256 0  32 ) ( 256 1  32 ) ( 257 0  32 ) static_tex 0 0 0 1 1\n";
+        let map_text = grouped_brush_test_map()
+            .replacen(grouped_open_face, "", 1)
+            .replacen(ungrouped_open_face, "", 1);
+        let map_data = parse_inline_map(&map_text).expect("open grouped fixture should parse");
+        let partitioned = crate::partition::partition(&map_data.brush_volumes)
+            .expect("open brushes still partition for diagnostics");
+        let report = crate::partition::check_watertight(&partitioned.faces);
+
+        assert!(
+            !report.is_watertight(),
+            "fixture must retain both authored leaks"
+        );
+        let provenances: Vec<_> = report
+            .samples
+            .iter()
+            .map(|edge| {
+                crate::pipeline::watertight_open_edge_provenance(
+                    edge,
+                    &map_data.brush_assembly,
+                    &map_data.assemblies,
+                )
+            })
+            .collect();
+        assert!(
+            provenances
+                .iter()
+                .any(|name| name.as_deref() == Some("grouped_static_brush"))
+        );
+        assert!(provenances.iter().any(Option::is_none));
+    }
+
+    #[test]
+    fn absent_sibling_marker_leaves_a_dynamic_light_at_its_authored_origin() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a").replacen(
+                "\"_tb_id\" \"1\"",
+                "\"_tb_id\" \"missing\"",
+                1,
+            ),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        );
+        let map_data = parse_inline_map(&map_text).expect("absent marker must degrade safely");
+
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(map_data.carried_light_links.is_empty());
+    }
+
+    #[test]
+    fn grouped_switch_brushes_remain_ungrouped_in_open_edge_diagnostics() {
+        // The switch branch still contributes its brush through the world path,
+        // not the func_group flattening branch. This deliberately pins the
+        // documented deferred provenance gap.
+        let map_text = switch_map("\"_tb_group\" \"switch-group\"");
+        let map_text = map_text.replacen(
+            "// entity 3",
+            "// entity 5\n{\n\"classname\" \"func_group\"\n\"origin\" \"0 0 0\"\n\"_tb_type\" \"_tb_group\"\n\"_tb_name\" \"switch assembly\"\n\"_tb_id\" \"switch-group\"\n}\n// entity 3",
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("grouped switch fixture should parse");
+        assert_eq!(map_data.assemblies.len(), 1);
+        assert!(map_data.brush_assembly.iter().all(Option::is_none));
+        assert_eq!(
+            crate::pipeline::watertight_open_edge_provenance(
+                &crate::partition::OpenEdge {
+                    midpoint: DVec3::ZERO,
+                    brush_index: 1,
+                },
+                &map_data.brush_assembly,
+                &map_data.assemblies,
+            ),
+            None,
+            "an open edge from the grouped switch remains unnamed until the deferred switch branch work"
+        );
+    }
+
+    #[test]
+    fn dropped_brace_group_brush_does_not_shift_surviving_brush_provenance() {
+        // `BrushId(8)` stands in for a degenerate brace-owned brush that the
+        // hull builder discarded. The retained hull carries its source ID, so
+        // the following brush must still resolve to its own assembly instead
+        // of taking membership by authored-list position.
+        let parsed = parse_inline_map(grouped_brush_test_map()).expect("fixture should parse");
+        let retained = vec![(BrushId(9), parsed.brush_volumes[1].clone())];
+        let assembly_by_brush_id = HashMap::from([(BrushId(8), 41), (BrushId(9), 0)]);
+
+        assert_eq!(
+            brush_assembly_for_retained_hulls(&retained, &assembly_by_brush_id),
+            vec![Some(0)]
+        );
+    }
+
+    #[test]
     fn empty_trenchbroom_func_group_is_not_a_runtime_entity() {
         // Regression: empty editor-group markers with an origin used to flow
         // into generic runtime entity records.
@@ -4978,6 +5172,18 @@ mod tests {
         let map_data = parse_inline_map(&map_text).expect("unnamed group should parse");
 
         assert_eq!(map_data.assemblies[0].provenance, "group 1");
+        assert_eq!(
+            crate::pipeline::watertight_open_edge_provenance(
+                &crate::partition::OpenEdge {
+                    midpoint: DVec3::ZERO,
+                    brush_index: 1,
+                },
+                &map_data.brush_assembly,
+                &map_data.assemblies,
+            ),
+            Some("group 1".to_string()),
+            "empty _tb_name falls back to a nameable marker id in diagnostics"
+        );
     }
 
     #[test]

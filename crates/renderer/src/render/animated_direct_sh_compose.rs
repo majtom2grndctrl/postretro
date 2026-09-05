@@ -72,14 +72,20 @@ pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) last_debug_override_bytes: [u8; ANIMATED_DEBUG_OVERRIDE_SIZE],
 }
 
+/// The two textures that carry animated-direct composition from the promotion
+/// pass into the final stored atlas.
+pub(super) struct AnimatedDirectShPassViews<'a> {
+    pub(super) intermediate_sampled: &'a wgpu::TextureView,
+    pub(super) output_storage: &'a wgpu::TextureView,
+}
+
 pub(super) fn build_animated_direct_pass(
     device: &wgpu::Device,
     animation: &AnimatedLightBuffers,
     layout: DirectAtlasLayout,
     probe_indirection_words: &[u32],
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
-    intermediate_sampled_view: &wgpu::TextureView,
-    output_storage_view: &wgpu::TextureView,
+    views: AnimatedDirectShPassViews<'_>,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> AnimatedDirectShComposePipeline {
     let buffers = build_animated_direct_delta_buffers(Some(animated_delta), layout.grid_dimensions);
@@ -196,7 +202,7 @@ pub(super) fn build_animated_direct_pass(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(intermediate_sampled_view),
+                resource: wgpu::BindingResource::TextureView(views.intermediate_sampled),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_BASE_SAMPLER,
@@ -204,7 +210,7 @@ pub(super) fn build_animated_direct_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(output_storage_view),
+                resource: wgpu::BindingResource::TextureView(views.output_storage),
             },
             wgpu::BindGroupEntry {
                 binding: 18,

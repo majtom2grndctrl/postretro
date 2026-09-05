@@ -12,7 +12,8 @@ use postretro_render_cpu::sh_compose::{
 };
 
 use super::animated_direct_sh_compose::{
-    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
+    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, AnimatedDirectShPassViews,
+    build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
 use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
@@ -275,8 +276,10 @@ impl DirectShComposeResources {
             layout,
             probe_indirection_words,
             animated_delta,
-            intermediate_sampled_view,
-            composed_storage_view,
+            AnimatedDirectShPassViews {
+                intermediate_sampled: intermediate_sampled_view,
+                output_storage: composed_storage_view,
+            },
             uniform_bind_group_layout,
         ));
 

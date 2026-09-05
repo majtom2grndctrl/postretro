@@ -352,8 +352,8 @@ fn observe_live_port_arg(args: &[String]) -> Option<u16> {
             return None;
         };
         return match value.parse::<u16>() {
-            Ok(port) => Some(port),
-            Err(_) => {
+            Ok(port) if port != 0 => Some(port),
+            _ => {
                 log::warn!(
                     "[Observe live] invalid --observe-live port {value:?}; live introspection disabled"
                 );
@@ -785,7 +785,7 @@ mod tests {
 
     #[cfg(feature = "observe-live")]
     #[test]
-    fn observe_live_port_arg_accepts_only_u16_ports() {
+    fn observe_live_port_arg_accepts_only_nonzero_u16_ports() {
         let split = vec![
             "postretro".to_string(),
             "--observe-live".to_string(),
@@ -804,5 +804,8 @@ mod tests {
 
         let too_large = vec!["postretro".to_string(), "--observe-live=65536".to_string()];
         assert_eq!(observe_live_port_arg(&too_large), None);
+
+        let zero = vec!["postretro".to_string(), "--observe-live=0".to_string()];
+        assert_eq!(observe_live_port_arg(&zero), None);
     }
 }

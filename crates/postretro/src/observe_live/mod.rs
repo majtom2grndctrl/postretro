@@ -1,4 +1,5 @@
 //! Engine-free localhost transport for the live introspection channel.
+//! See: context/lib/networking.md §Not netcode: the live introspection channel
 //!
 //! This module deliberately moves only opaque request and response bytes across
 //! its channel. Request parsing and response serialization belong to the
@@ -559,6 +560,7 @@ mod tests {
             run_ingress_when_ready(&service_rx, |payload| {
                 service_observe_request(
                     payload,
+                    true,
                     "path:fixture.prl",
                     Some(&registry),
                     Some(&world),
@@ -584,6 +586,7 @@ mod tests {
             run_ingress_when_ready(&service_rx, |payload| {
                 service_observe_request(
                     payload,
+                    true,
                     "path:fixture.prl",
                     Some(&registry),
                     Some(&world),

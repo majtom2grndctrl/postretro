@@ -82,6 +82,7 @@ pub(crate) enum BoundLayer {
 
 pub(crate) struct BrainEntityPrograms {
     graph: Arc<BehaviorGraphDescriptor>,
+    descriptor_generation: u64,
     envelopes: Vec<BoundEnvelope>,
     candidate_filter: Option<BoundProgram<CandidateScope>>,
     resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
@@ -163,12 +164,14 @@ impl BrainPrograms {
         (filter, candidate_scope)
     }
 
-    /// Bind changed graphs and release dead entries. All growth happens here,
-    /// outside the hot evaluator and its zero-allocation probe window.
+    /// Bind changed graphs, refresh descriptor-derived attacks, and release
+    /// dead entries. All growth happens here, outside the hot evaluator and
+    /// its zero-allocation probe window.
     pub(crate) fn sync(
         &mut self,
         registry: &EntityRegistry,
         descriptors: &[EntityTypeDescriptor],
+        descriptor_generation: u64,
         warned: &mut HashSet<String>,
     ) {
         self.live.clear();
@@ -177,11 +180,11 @@ impl BrainPrograms {
                 continue;
             };
             self.live.insert(entity);
-            let unchanged = self
+            let graph_unchanged = self
                 .entries
                 .get(&entity)
                 .is_some_and(|entry| Arc::ptr_eq(&entry.graph, &brain.graph));
-            if !unchanged {
+            if !graph_unchanged {
                 if self.entries.contains_key(&entity) {
                     self.pending_reseats.insert(entity);
                 }
@@ -192,9 +195,16 @@ impl BrainPrograms {
                         &self.candidate_scope,
                         Arc::clone(&brain.graph),
                         descriptors,
+                        descriptor_generation,
                         warned,
                     ),
                 );
+            } else if let Some(entry) = self.entries.get_mut(&entity)
+                && entry.descriptor_generation != descriptor_generation
+            {
+                entry.resolved_projectile_attacks =
+                    resolve_projectile_attacks(&brain.graph, descriptors, warned);
+                entry.descriptor_generation = descriptor_generation;
             }
         }
         self.entries.retain(|entity, _| self.live.contains(entity));
@@ -208,6 +218,7 @@ pub(super) fn bind_graph(
     candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
     descriptors: &[EntityTypeDescriptor],
+    descriptor_generation: u64,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
     let mut envelopes = Vec::new();
@@ -219,6 +230,7 @@ pub(super) fn bind_graph(
     let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
     BrainEntityPrograms {
         graph,
+        descriptor_generation,
         envelopes,
         candidate_filter,
         resolved_projectile_attacks,
@@ -549,7 +561,7 @@ mod tests {
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
 
-        programs.sync(&registry, &descriptors, &mut warned);
+        programs.sync(&registry, &descriptors, 1, &mut warned);
 
         let resolved = programs
             .get(enemy)
@@ -565,12 +577,81 @@ mod tests {
     }
 
     #[test]
-    fn sync_disables_missing_and_nonprojectile_weapon_attacks_and_warns_once() {
+    fn sync_refreshes_projectile_tuning_and_visual_when_descriptor_generation_changes() {
+        // Regression: weapon-only hot reload left a live brain's derived
+        // projectile stats and visual on the prior descriptor snapshot.
+        let graph = graph_with_attacks(BTreeMap::from([(
+            "shoot".to_string(),
+            weapon_attack("enemy-rifle"),
+        )]));
+        let (registry, enemy) = registry_with_brain(&graph);
+        let first = weapon_descriptor("enemy-rifle", 8.0, 3.0, 500.0);
+        let mut next = weapon_descriptor("enemy-rifle", 30.0, 19.0, 200.0);
+        let next_weapon = next.weapon.as_mut().expect("test descriptor has weapon");
+        next_weapon.credit_source = Some("enemy.rifle.reloaded".to_string());
+        let next_projectile = next_weapon
+            .projectile
+            .as_mut()
+            .expect("test weapon is projectile-resolved");
+        next_projectile.speed = 42.0;
+        let ProjectileBodyVisual::Sprite { size, tint, .. } = &mut next_projectile.visual.body
+        else {
+            panic!("test projectile has a sprite body");
+        };
+        *size = 0.5;
+        *tint = [0.2, 0.4, 1.0];
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+
+        programs.sync(&registry, &[first], 1, &mut warned);
+        let bound_graph = Arc::clone(&programs.get(enemy).expect("brain is bound").graph);
+
+        programs.sync(&registry, &[next], 2, &mut warned);
+
+        assert!(
+            Arc::ptr_eq(
+                &programs.get(enemy).expect("live brain remains bound").graph,
+                &bound_graph,
+            ),
+            "descriptor refresh keeps the existing bound graph lifecycle"
+        );
+        assert!(
+            !programs.take_reseat(enemy),
+            "descriptor-only refresh does not restart graph activity"
+        );
+        let entry = programs.get(enemy).expect("live brain remains bound");
+        let resolved = entry
+            .resolved_projectile_attack("shoot")
+            .expect("replacement descriptor refreshes the derived attack");
+        assert_float_eq(resolved.range(), 30.0);
+        assert_float_eq(resolved.damage(), 19.0);
+        assert_float_eq(resolved.cooldown_ms(), 200.0);
+        assert_eq!(resolved.credit_source(), Some("enemy.rifle.reloaded"));
+        assert_float_eq(resolved.projectile().speed, 42.0);
+        let ProjectileBodyVisual::Sprite { size, tint, .. } = &resolved.projectile().visual.body
+        else {
+            panic!("resolved projectile keeps its sprite body");
+        };
+        assert_float_eq(*size, 0.5);
+        for (actual, expected) in tint.iter().zip([0.2, 0.4, 1.0]) {
+            assert_float_eq(*actual, expected);
+        }
+        assert!(warned.is_empty());
+    }
+
+    #[test]
+    fn sync_disables_attacks_when_reloaded_weapons_become_nonprojectile_or_missing() {
+        // Regression: invalidated weapon descriptors left live enemies firing
+        // the last resolved projectile after a descriptor-only hot reload.
         let graph = graph_with_attacks(BTreeMap::from([
             ("missing".to_string(), weapon_attack("missing-rifle")),
             ("hitscan".to_string(), weapon_attack("hitscan-rifle")),
         ]));
-        let (mut registry, enemy) = registry_with_brain(&graph);
+        let (registry, enemy) = registry_with_brain(&graph);
+        let initially_valid = [
+            weapon_descriptor("missing-rifle", 24.0, 13.0, 350.0),
+            weapon_descriptor("hitscan-rifle", 24.0, 13.0, 350.0),
+        ];
         let mut hitscan = weapon_descriptor("hitscan-rifle", 24.0, 13.0, 350.0);
         let weapon = hitscan
             .weapon
@@ -582,11 +663,14 @@ mod tests {
         let mut warned = HashSet::new();
         let capture = LogCapture::start();
 
-        programs.sync(&registry, &[hitscan], &mut warned);
-        registry
-            .set_component(enemy, BrainComponent::from_graph(&graph))
-            .expect("enemy remains live");
-        programs.sync(&registry, &[], &mut warned);
+        programs.sync(&registry, &initially_valid, 1, &mut warned);
+        assert!(
+            programs
+                .get(enemy)
+                .is_some_and(|entry| entry.resolved_projectile_attacks.len() == 2)
+        );
+        programs.sync(&registry, &[hitscan.clone()], 2, &mut warned);
+        programs.sync(&registry, &[hitscan], 3, &mut warned);
 
         let entry = programs.get(enemy).expect("brain remains bound");
         assert!(entry.resolved_projectile_attack("missing").is_none());
@@ -619,7 +703,7 @@ mod tests {
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
 
-        programs.sync(&registry, &descriptors, &mut warned);
+        programs.sync(&registry, &descriptors, 1, &mut warned);
         assert_float_eq(
             programs
                 .get(enemy)
@@ -632,7 +716,7 @@ mod tests {
         registry
             .set_component(enemy, BrainComponent::from_graph(&second_graph))
             .expect("enemy remains live");
-        programs.sync(&registry, &descriptors, &mut warned);
+        programs.sync(&registry, &descriptors, 1, &mut warned);
 
         let resolved = programs
             .get(enemy)

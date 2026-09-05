@@ -574,6 +574,7 @@ mod statechart_tests {
             &candidate_scope,
             Arc::new(graph.clone()),
             &[],
+            0,
             &mut HashSet::new(),
         );
         (programs, scope)

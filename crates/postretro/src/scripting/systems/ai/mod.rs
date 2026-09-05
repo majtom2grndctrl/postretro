@@ -329,6 +329,19 @@ pub(crate) struct AiTickResult {
     pub(crate) projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
 }
 
+/// Borrowed world data read by one host-side AI tick.
+///
+/// The descriptor slice and its generation are one snapshot: callers must
+/// obtain both from the same data-registry borrow. Keeping the world data
+/// borrowed makes this a stack-only view with no per-tick allocation or
+/// ownership transfer.
+pub(crate) struct AiTickInputs<'a> {
+    pub(crate) nav_graph: Option<&'a NavGraph>,
+    pub(crate) collision_world: Option<&'a CollisionWorld>,
+    pub(crate) descriptors: &'a [EntityTypeDescriptor],
+    pub(crate) descriptor_generation: u64,
+}
+
 /// The AI tick's run-long state, owned by `App` across ticks.
 ///
 /// Two things outlive a tick: the warn-once latch and the evaluator's bound
@@ -434,9 +447,12 @@ pub(crate) fn run_ai_tick_with_navigation(
         registry,
         runtime,
         tick_dt,
-        nav_graph,
-        collision_world,
-        &[],
+        AiTickInputs {
+            nav_graph,
+            collision_world,
+            descriptors: &[],
+            descriptor_generation: 0,
+        },
         |_| {},
     )
     .events
@@ -446,11 +462,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
     tick_dt: f32,
-    nav_graph: Option<&NavGraph>,
-    collision_world: Option<&CollisionWorld>,
-    descriptors: &[EntityTypeDescriptor],
+    inputs: AiTickInputs<'_>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> AiTickResult {
+    let AiTickInputs {
+        nav_graph,
+        collision_world,
+        descriptors,
+        descriptor_generation,
+    } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
     // Reconcile the bound-guard side-table with the registry's live brains
@@ -463,7 +483,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         programs,
         los_grace,
     } = runtime;
-    programs.sync(registry, descriptors, warned);
+    programs.sync(registry, descriptors, descriptor_generation, warned);
 
     // Bound the blocked-warn latch to entities that still carry a brain: the
     // side-table `sync` just reconciled is the authoritative live set, so this
@@ -892,7 +912,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
                         let perception = target_perception?;
                         let origin = perception.enemy_eye;
-                        let direction = (perception.target_aim - origin).normalize();
+                        let direction = (perception.target_aim - origin).try_normalize()?;
                         let credit_source = resolved
                             .credit_source()
                             .unwrap_or_else(|| resolved.canonical_weapon_name())

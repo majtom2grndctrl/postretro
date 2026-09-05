@@ -121,7 +121,7 @@ threaded as formatted context into a call site.
 - Portal-count-0 warning carries no positional context.
 
 **Alignment plumbing.** `build_brush_volumes_with_ids` already returns
-`(BrushId, BrushVolume)`; retaining the `BrushId` (instead of `.map(|(_, v)| v)`) plus a
+`(BrushId, BrushVolume)`; retaining the `BrushId` (instead of `.map(|(_, volume)| volume)`) plus a
 `BrushId → AssemblyId` map built during the walk yields `brush_assembly[i]` aligned to
 `brush_volumes[i]` even if a degenerate brush is dropped (keyed by id, not position).
 

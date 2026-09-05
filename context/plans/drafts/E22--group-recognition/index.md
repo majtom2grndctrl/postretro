@@ -48,7 +48,12 @@ flattening into worldspawn with geometry byte-identical to today.
 - **Naming the group in the switch use-reach clamp or geometry-integrity diagnostics.**
   The switch clamp identifies occluders by plane, not brush; geometry-integrity is an
   unbuilt draft (`research.md §5`). The `brush_assembly` map is available to a later
-  pass; wiring those sites is not this spec.
+  pass; wiring those sites is not this spec. Only brace-owned `func_group` brushes gain a
+  `brush_assembly` entry: a grouped brush *entity* (`switch`, `trigger_volume`) routes its
+  brushes to the world or trigger set through its own walk branch, not the `func_group`
+  flatten, so an open edge on a grouped switch names no group — accepted; provenance here
+  is a brace-owned-brush aid, and AC 6's sibling association is entity recognition, not
+  brush provenance.
 - **New PRL section or FGD KVP.** Assemblies are compile-time only; brush provenance is a
   diagnostic aid, not emitted to PRL; grouped carry reuses spec 1's `CarriedLightLink`
   already carried in `KinematicGeometry` v5. No wire or FGD surface changes.
@@ -153,8 +158,9 @@ no instance-of design.
 - [ ] An empty `func_group` → no static brushes, no runtime entity, and no
   member-bearing assembly.
 - [ ] No `_tb_*` key appears in any `MapEntityRecord.key_values` (strip unchanged).
-- [ ] Two `func_group`s sharing a `_tb_name` but with distinct `_tb_linked_group_id` →
-  two distinct assemblies, each independently nameable in a diagnostic.
+- [ ] Two `func_group`s sharing a `_tb_name` (their `_tb_id`s always distinct — TrenchBroom
+  assigns `_tb_id` per file) → two distinct assemblies keyed by `_tb_id`, each independently
+  nameable in a diagnostic, whether or not their `_tb_linked_group_id`s differ.
 - [ ] Both nesting forms recognized: a brace-owned brush and a sibling entity carrying
   `_tb_group "<id>"` each associate to the marker with matching `_tb_id`.
 - [ ] A group with exactly one named `kinematic_mover` and a co-grouped `light_dynamic`
@@ -164,14 +170,38 @@ no instance-of design.
 - [ ] A co-grouped member light with an explicit `carrier` → the explicit binding is used
   unchanged; when it names a mover other than the group's single mover, a warning names
   the group (contradiction) and the explicit binding wins.
-- [ ] A group with a `light_dynamic` member and **more than one** `kinematic_mover` → a
-  warning names the group; no carrier is synthesized (the light stays unbound at its
-  authored origin).
-- [ ] A group with a `light_dynamic` member and exactly one `kinematic_mover` whose
-  `name` is **empty** → a warning names the group; no carrier is synthesized.
+- [ ] A group with an **eligible** `light_dynamic` member (dynamic, not `bake_only`, no explicit
+  `carrier`) and **more than one** `kinematic_mover` → a warning names the group; no carrier
+  is synthesized (the light stays unbound at its authored origin). The same group with no
+  eligible member light warns nothing.
+- [ ] A group with an **eligible** `light_dynamic` member and exactly one `kinematic_mover`
+  whose `name` is **empty** → a warning names the group; no carrier is synthesized. The same
+  group with no eligible member light warns nothing.
 - [ ] A `_tb_linked_group_id` written `"{guid}"` and one written `"guid"` normalize to
   the same captured value; no instance-of relation, template, or dedup is produced from a
   shared GUID (deferred to spec 3).
+
+## Pinned behaviors
+
+Orderings and edge cases the tasks must pin. Task 2 and Task 3 reference these rows by id
+rather than restating them; the `Kind` column is `unit` throughout — every row is a
+compiler-level assertion, none needs manual verification.
+
+| id | Scenario | Expected outcome | Kind |
+|---|---|---|---|
+| P1 | Sibling light and mover where the light entity is walked before its marker | the light associates and its carrier synthesizes regardless of entity order (the marker pre-pass runs first) | unit |
+| P2 | One named mover with N ≥ 2 eligible dynamic lights in one group | `carrier` set on all N; N `CarriedLightLink`s produced | unit |
+| P3 | Group with one unnamed mover and no eligible member light | no warning; synthesize nothing | unit |
+| P4 | Group with more than one mover and no eligible member light | no warning; synthesize nothing | unit |
+| P5 | Group with one named mover whose only member light is baked or `bake_only` | no carrier synthesized for that light; no warning | unit |
+| P6 | One mover and one dynamic light whose explicit `carrier` names that same mover | the explicit binding is used; no contradiction warning | unit |
+| P7 | Brace group of two brushes, one degenerate and dropped from `brush_volumes` | `brush_assembly` stays aligned by retained `BrushId`; the surviving brush still names its group | unit |
+| P8 | Empty marker present alongside a brace-owned group | the empty assembly bears no members and is pruned by nobody; the real group's `brush_assembly` still resolves | unit |
+| P9 | Sibling `_tb_group "<id>"` referencing an absent marker | the sibling associates to no assembly; no panic; a member light is left at its authored origin | unit |
+| P10 | One marker owning both brace-owned brushes and back-referencing siblings | the brace brushes gain provenance and the siblings associate to the one assembly | unit |
+| P11 | Grouped `switch` (a sibling brush entity) with an open edge | the open edge names no group (`brush_assembly` is `None`) — the boundary §Scope states | unit |
+| P12 | Group with an eligible `light_dynamic` and more than one mover | a warning names the group and lists the movers; the light stays unbound at its origin | unit |
+| P13 | Marker with an empty `_tb_name` and a non-empty `_tb_id` | watertightness names the group by its `_tb_id`-derived provenance | unit |
 
 ## Tasks
 
@@ -181,9 +211,11 @@ Introduce `pub(crate) struct MapAssembly` in `crates/level-compiler/src/map_data
 carrying a provenance display name (`_tb_name` when non-empty, else a stable form of
 `_tb_id`), the adapter-local group id (`_tb_id`), and the **normalized** captured
 `_tb_linked_group_id: Option<String>` (strip surrounding braces so `"{g}"` and `"g"`
-compare equal — captured only, no instance-of derived; §Scope out). Add
-`MapData.assemblies: Vec<MapAssembly>` and `MapData.brush_assembly: Vec<Option<usize>>`
-aligned index-for-index to `MapData.brush_volumes` (value = index into `assemblies`, or
+compare equal — captured only, no instance-of derived; §Scope out). Add the `pub(crate)`
+fields `MapData.assemblies: Vec<MapAssembly>` and `MapData.brush_assembly:
+Vec<Option<usize>>` — `pub(crate)`, not `pub` like `MapData`'s other fields, so the
+internal `MapAssembly` type does not trip `private_interfaces` — aligned index-for-index to
+`MapData.brush_volumes` (value = index into `assemblies`, or
 `None` for worldspawn/ungrouped brushes). In `parse.rs`, run a **marker pre-pass** over
 `geo_map.entities` collecting every `func_group` marker's `_tb_id`/`_tb_name`/
 `_tb_linked_group_id` (read from the raw props, not through `is_runtime_map_entity_key`)
@@ -191,19 +223,37 @@ and its brace-owned brushes (`geo_map.entity_brushes`); build one `MapAssembly` 
 marker. In the existing entity walk, keep the `func_group` flatten
 (`world_brush_ids.extend(brush_ids); continue;`) geometry-identical but also record each
 appended `BrushId → assembly index` in a side map; for sibling entities carrying
-`_tb_group "<id>"`, associate them to the marker with matching `_tb_id`. Change
+`_tb_group "<id>"`, associate them to the marker with matching `_tb_id`. Capture that
+membership **inside each member branch, right after the member is pushed and before that
+branch's `continue`** — the light index after the `lights.push`, the mover after the
+pending-mover push — never at a single shared site: the light branch, the
+`kinematic_mover` branch, and the `switch` branch each `continue` before the point-entity
+tail, so a lone tail step would silently drop every grouped light and every grouped mover,
+exactly the two member kinds grouped carry needs. A sibling whose `_tb_group` matches no
+marker in the pre-pass map associates to no assembly and is dropped, as today. Change
 `build_brush_volumes_with_ids`'s consumption to **retain the returned `BrushId`** (today
-`.map(|(_, v)| v)` drops it) so `brush_assembly` is built keyed by `BrushId` — robust to a
+`.map(|(_, volume)| volume)` drops it) so `brush_assembly` is built keyed by `BrushId` — robust to a
 degenerate brush being dropped from `brush_volumes` — rather than by position. Do **not**
 loosen `is_runtime_map_entity_key`; `_tb_*` must stay out of `MapEntityRecord.key_values`.
-An empty marker (no brushes, no siblings) records no members and emits no runtime entity.
+An empty marker (no brushes, no siblings) records no members and emits no runtime entity;
+it still keeps its pre-pass `assemblies` slot as an inert, member-less entry. `assemblies`
+is append-only — never prune empty entries: `brush_assembly` and the transient map hold
+assembly indices, and reindexing after a prune would misalign them. AC 3's "no
+member-bearing assembly" is met by an assembly that bears no members, not by its removal.
 Duplicate `_tb_name`s across markers stay distinct assemblies (keyed by `_tb_id`). Then
-wire the thin-slice consumer: thread `brush_assembly` and the assemblies' provenance names
+wire the thin-slice consumer: thread `brush_assembly` and each assembly's provenance name **and** `group_id`
 from `MapData` to the watertightness reporting site in `pipeline.rs`
-(`check_watertight`), and for each `WatertightReport` sample append the owning group's
-provenance name when `brush_assembly[edge.brush_index]` is `Some` (confirm `brush_index`
-indexes `brush_volumes` order — it is the `enumerate` index in
-`partition/face_extract.rs`). Extend the existing
+(`check_watertight`), and for each `WatertightReport` sample whose
+`brush_assembly[edge.brush_index]` is `Some` append the owning group's provenance name —
+plus its `group_id` whenever another assembly shares that provenance name, so colliding
+names stay distinguishable (AC 2). Factor this per-edge naming into a pure, crate-visible
+helper — e.g. `pub(crate) fn watertight_open_edge_provenance(edge, brush_assembly:
+&[Option<usize>], assemblies: &[MapAssembly]) -> Option<String>` returning the owning
+group's provenance (plus its `group_id` when another assembly shares that provenance name)
+and `None` for an ungrouped brush — so the naming is unit-testable without running a full
+bake; the `pipeline.rs` watertightness loop calls it to build each per-edge line. Confirm
+`brush_index` indexes `brush_volumes` order — it is the `enumerate` index in
+`partition/face_extract.rs`. Extend the existing
 `trenchbroom_func_group_brushes_are_flattened_into_static_world` and
 `empty_trenchbroom_func_group_is_not_a_runtime_entity` tests to assert the new provenance
 without weakening their geometry/runtime-entity assertions, and keep
@@ -211,39 +261,64 @@ without weakening their geometry/runtime-entity assertions, and keep
 
 ### Task 2: Ergonomic carried-light synthesis via grouping
 
-Add a group pass in `parse.rs` that runs after the entity walk (assemblies and their
-transient group→{member `kinematic_mover` ids, member `MapLight` indices} map are built)
-and **before** `resolve_carried_light_links`. For each assembly containing at least one
-member `kinematic_mover`: if it has exactly one mover with a non-empty `name`, set
-`light.carrier = mover.name` for each member light that is `is_dynamic && !bake_only &&
-carrier.is_empty()`; leave any member light with a non-empty explicit `carrier` untouched
-(explicit wins), and when that explicit `carrier` names a mover other than the group's
-single mover, `log::warn!` naming the group (contradiction). If the assembly has more than
-one member mover, `log::warn!` naming the group and listing the movers, and synthesize
-nothing (ambiguous carrier). If it has exactly one member mover whose `name` is empty,
-`log::warn!` naming the group (grouped carry needs a named mover) and synthesize nothing.
-Assemblies with zero member movers synthesize nothing (light-only groups are normal).
+Add a group pass in `parse.rs` that runs after the entity walk — once the assemblies and
+the transient group→{member pending-mover indices, member `MapLight` indices} map are built —
+and **before** `resolve_carried_light_links`. The pass needs no resolved `mover_id`: a member
+mover's `name` already lives on its `PendingKinematicMover`, reached by the member's recorded
+pending index, and that `name` is the string the pass writes into each eligible member
+light's `carrier`. Place the pass after the entity walk and before
+`resolve_carried_light_links`; read the mover `name` from `pending_kinematic_movers[idx]`
+when placed before `resolve_kinematic_movers` consumes the vec (it takes
+`Vec<PendingKinematicMover>` by value), else from `kinematic_movers[idx]` — the pending
+index equals the eventual `mover_id`. For each assembly containing at least one member `kinematic_mover`, decide against the
+members it holds. Call a member light *eligible* when `is_dynamic && !bake_only &&
+carrier.is_empty()` — the only lights grouped carry may bind. The synthesize-nothing
+warnings exist to explain why an eligible light was not auto-carried, so an assembly with
+no eligible member light warns nothing whatever its movers (a mover-only group is a normal
+authoring state).
+
+| Member movers | Eligible member light? | Action |
+|---|---|---|
+| zero | any | synthesize nothing (light-only group is normal) |
+| one, non-empty `name` | any | set `light.carrier = mover.name` for each eligible light; leave any member light with a non-empty explicit `carrier` untouched (explicit wins), and when that explicit `carrier` names a mover other than the group's single mover, `log::warn!` naming the group (contradiction) |
+| one, empty `name` | yes | `log::warn!` naming the group (grouped carry needs a named mover); synthesize nothing |
+| one, empty `name` | no | synthesize nothing, no warning |
+| more than one | yes | `log::warn!` naming the group and listing the movers; synthesize nothing (ambiguous carrier) |
+| more than one | no | synthesize nothing, no warning |
+
 Construct no `CarriedLightLink` here — synthesis only sets the `carrier` string, so the
 unchanged `resolve_carried_light_links` (`research.md §4`) performs offset derivation,
 the baked/bake-only/spinner/duplicate-name degradation, and link construction for grouped
-and explicit bindings identically. Add unit tests for each warning arm (>1 mover, unnamed
-mover, explicit-carrier contradiction) and for the positive synthesis producing a link.
+and explicit bindings identically. Add unit tests for each warning arm (>1 mover with an
+eligible light — P12; unnamed mover with an eligible light; explicit-carrier
+contradiction), for each no-warning arm (>1 mover or unnamed
+mover with no eligible light, P3/P4; a named mover whose only member light is baked or
+`bake_only`, P5; an explicit `carrier` naming the group's single mover, P6), and for the
+positive synthesis producing links from one named mover to N ≥ 2 eligible lights (P2).
+These unit tests deliver Pinned-behaviors rows P2, P3, P4, P5, P6, and P12.
 
 ### Task 3: Fixtures and cross-form / parity tests
 
 Author the durable fixtures and the tests that exercise recognition and carry across both
 nesting forms. (a) A crafted grouped-leak test map: a `func_group` (brace form) whose
 single brush is deliberately non-watertight, asserting the watertightness warning names
-that group and that an ungrouped leak in the same map names no group (both sides of AC 2).
+that group and that an ungrouped leak in the same map names no group (both sides of AC 2),
+asserted via `parse_inline_map` → `partition::partition` → `partition::check_watertight` →
+`watertight_open_edge_provenance` rather than by running a full compile.
 (b) A light+mover group fixture — a `func_group` (sibling form) containing one named
 `kinematic_mover` and one `light_dynamic` with no explicit `carrier` — asserting the
 resulting `CarriedLightLink` (`mover_id`, `local_offset`) is identical to the link
 produced by an otherwise-identical map where the light instead sets an explicit `carrier`
-naming the mover (AC 7). (c) A cross-form recognition test: one map with a brace-owned
-brush group and a sibling-entity group, asserting both associate correctly and that two
-same-named/distinct-GUID markers stay distinct (AC 5, 6). (d) A GUID-normalization test:
+naming the mover (AC 7). (c) A cross-form recognition test: one map holding a brace-owned brush group and a
+sibling-form group side by side. Brace-form association is asserted through `brush_assembly`
+(a grouped brush names its group). Sibling-form membership is not persisted on `MapData`, so
+the sibling group carries a named `kinematic_mover` and an eligible `light_dynamic`, and its
+association is asserted through the synthesized `CarriedLightLink` binding that sibling light
+to that sibling group's mover. The test also asserts two same-named markers with distinct
+`_tb_id` stay distinct assemblies (AC 5, 6). (d) A GUID-normalization test:
 braced and bare `_tb_linked_group_id` spellings compare equal, and no instance-of/template
-is produced (AC 11).
+is produced (AC 11). Beyond (a)–(d), this task also delivers Pinned-behaviors rows P1, P7,
+P8, P9, P10, P11, and P13.
 
 ## Sequencing
 
@@ -266,7 +341,13 @@ membership Task 1 establishes.
 - `parse.rs`: marker pre-pass → `HashMap<group_id, assembly_index>` + brace-brush list;
   side map `BrushId → assembly_index` filled at the flatten; `brush_assembly` built from
   the retained `(BrushId, _)` pairs of `build_brush_volumes_with_ids`; transient
-  `HashMap<assembly_index, (Vec<mover_id>, Vec<light_index>)>` for Task 2.
+  `HashMap<assembly_index, (Vec<usize>, Vec<usize>)>` mapping an assembly to its member
+  pending-mover indices and its member light indices, for Task 2. `mover_id` does not exist
+  during the walk — `resolve_kinematic_movers` assigns it afterward in pending order, so the
+  pending index equals the eventual `mover_id`; the group pass reads the mover's `name` off
+  the pending mover (or off the resolved `kinematic_movers` once `resolve_kinematic_movers`
+  has consumed the pending vec) to write `light.carrier`, so it may run anywhere after the
+  walk and before `resolve_carried_light_links`.
 - `pipeline.rs`: watertightness loop indexes `brush_assembly[edge.brush_index]` →
   `assemblies[i].provenance` for the per-edge line.
 - Provenance display when names collide: include `group_id` (e.g. `'pink_ambient_lights'
@@ -282,6 +363,7 @@ membership Task 1 establishes.
 | `CarriedLightLink` construction lives only in `resolve_carried_light_links` | Task 2 (synthesizes `carrier` name only) | Task 2 constructing a link directly, duplicating offset/degradation logic | AC 7 |
 | Explicit `carrier` takes precedence over grouped synthesis | Task 2 (skips lights with non-empty `carrier`) | Task 2 overwriting a non-empty `carrier` | AC 8 |
 | `brush_assembly` aligned index-for-index to `brush_volumes` | Task 1 (keyed by retained `BrushId`, not position) | a degenerate brush dropped from `brush_volumes`; `brush_index` mis-indexed | AC 1, 2 |
+| `assemblies` append-only — indices never pruned or reused | Task 1 (empty markers keep an inert, member-less slot; no prune) | Task 1 pruning an empty entry would reindex the `assemblies` positions held in `brush_assembly` and the transient membership map | P8 (AC 3 requires the empty assembly, not its removal) |
 
 ## Open questions
 

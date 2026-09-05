@@ -1544,6 +1544,7 @@ mod tests {
             .clone();
         let events = weapon::tick_resolved_component(
             &registry,
+            None,
             &mut component,
             "weapon.unknown",
             0,
@@ -1758,6 +1759,7 @@ mod tests {
             .clone();
         let events = weapon::tick_resolved_component(
             &registry,
+            None,
             &mut component,
             "weapon.unknown",
             0,
@@ -1787,6 +1789,7 @@ mod tests {
             .clone();
         let events = weapon::tick_resolved_component(
             &registry,
+            None,
             &mut component,
             "weapon.unknown",
             0,
@@ -1814,6 +1817,7 @@ mod tests {
             .clone();
         let events = weapon::tick_resolved_component(
             &registry,
+            None,
             &mut component,
             "weapon.unknown",
             0,
@@ -2362,6 +2366,7 @@ mod tests {
         };
         let mut client_weapon_component = projectile_weapon_component("weapon.test.projectile");
         let launch = weapon::resolve_client_fire(
+            Some(client_pawn),
             &mut client_weapon_component,
             "weapon.test.projectile",
             0,

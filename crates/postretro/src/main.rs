@@ -6760,6 +6760,7 @@ impl App {
         let resolution = {
             let registry = script_ctx.registry.borrow();
             weapon::resolve_client_fire(
+                Some(local_pawn),
                 &mut component,
                 &pellet_salt_name,
                 active_slot,
@@ -9998,6 +9999,7 @@ mod tests {
         // a hitch frame to one rendered-pose cast and one shell-counter advance.
         let registry = postretro_entities::EntityRegistry::new();
         let resolution = weapon::resolve_client_fire(
+            None,
             &mut state,
             "weapon.unknown",
             0,

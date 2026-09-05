@@ -314,7 +314,7 @@ enum AttackOutcome {
         damage: f32,
     },
     Projectile {
-        launch: ProjectileLaunch,
+        launch: Box<ProjectileLaunch>,
         /// The resolved weapon descriptor is the presentation class. Enemy
         /// entities never stand in for a materialized wieldable descriptor.
         descriptor_class: String,
@@ -888,7 +888,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         resolved.range(),
                         resolved.cooldown_ms(),
                         AttackOutcome::Projectile {
-                            launch: ProjectileLaunch {
+                            launch: Box::new(ProjectileLaunch {
                                 origin,
                                 direction,
                                 speed: resolved.projectile().speed,
@@ -898,7 +898,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                                 damage: resolved.damage(),
                                 credit_source,
                                 descriptor: resolved.projectile().clone(),
-                            },
+                            }),
                             descriptor_class: resolved.canonical_weapon_name().to_string(),
                         },
                     ))
@@ -1128,7 +1128,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     // impact path uses this id only as engine-internal damage
                     // context provenance, never as a weapon lookup.
                     if let Some(projectile) =
-                        spawn_projectile(registry, outcome.id, outcome.id, launch, None)
+                        spawn_projectile(registry, outcome.id, outcome.id, *launch, None)
                     {
                         projectile_spawns.push(EnemyProjectilePresentationSpawn {
                             projectile,

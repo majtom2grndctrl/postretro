@@ -359,9 +359,10 @@ fn compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // L0 omits invalid probes, so read its compact payload directly. L1
-        // keeps valid brick corners in kept-rank order; only id-34 base reserves
-        // eight zero-filled corner slots. Avoid loading 64 tiles into shared memory.
+        // L0 omits invalid probes, so read its compact payload directly. Id-41 L1
+        // retains valid brick corners in kept-rank order; base atlases id-34 and
+        // id-35 share eight reserved zero-filled L1 corner slots. Avoid loading 64
+        // tiles into shared memory.
         if (output_is_stored && use_promotion_subtraction) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {

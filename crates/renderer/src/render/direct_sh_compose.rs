@@ -32,9 +32,8 @@ pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
 /// Bindings 0..=28 are the existing Pass-A contract; append the private
 /// per-frame mask instead of changing any established binding.
 const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
-/// Load-derived id-34 indirection words. The shader starts consuming this in
-/// Task 4; reserve and populate the carrier now so all compose paths receive
-/// byte-identical words from one builder.
+/// Load-derived id-34 indirection words shared by both direct-compose passes.
+/// They gate reconstruction and select each pass's stored output slot.
 pub(super) const BIND_PROBE_INDIRECTION: u32 = 30;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
 /// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.

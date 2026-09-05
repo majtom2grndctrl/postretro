@@ -543,7 +543,7 @@ fn step_graph(
 
     let mut programs = BrainPrograms::new();
     let mut warned = HashSet::new();
-    programs.sync(&reg, &mut warned);
+    programs.sync(&reg, &[], &mut warned);
     assert!(warned.is_empty(), "every generated guard binds");
     programs.scope_mut().refresh(
         &reg,
@@ -1542,6 +1542,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
         0.016,
         None,
         None,
+        &[],
         |registry| {
             registry
                 .entity_state_mut(player)

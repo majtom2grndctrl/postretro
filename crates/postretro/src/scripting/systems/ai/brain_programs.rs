@@ -10,11 +10,56 @@ use std::sync::Arc;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
-    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, bind,
+    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType,
+    ProjectileDescriptor, ResolutionMode, bind,
 };
+use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use super::brain_scope::BrainScope;
 use super::candidate_scope::CandidateScope;
+
+/// Descriptor-owned projectile tuning resolved once for a weapon-referencing
+/// attack. This stays beside bound programs rather than on `BrainComponent` so
+/// it is derived-only and never serialized with the retained graph.
+/// The fire seam consumes it in the next task; resolution deliberately lands
+/// before that consumer so no tick path can re-resolve descriptor data.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedProjectileAttack {
+    canonical_weapon_name: String,
+    range: f32,
+    damage: f32,
+    cooldown_ms: f32,
+    credit_source: Option<String>,
+    projectile: ProjectileDescriptor,
+}
+
+#[allow(dead_code)]
+impl ResolvedProjectileAttack {
+    pub(crate) fn canonical_weapon_name(&self) -> &str {
+        &self.canonical_weapon_name
+    }
+
+    pub(crate) fn range(&self) -> f32 {
+        self.range
+    }
+
+    pub(crate) fn damage(&self) -> f32 {
+        self.damage
+    }
+
+    pub(crate) fn cooldown_ms(&self) -> f32 {
+        self.cooldown_ms
+    }
+
+    pub(crate) fn credit_source(&self) -> Option<&str> {
+        self.credit_source.as_deref()
+    }
+
+    pub(crate) fn projectile(&self) -> &ProjectileDescriptor {
+        &self.projectile
+    }
+}
 
 /// Guards for one descriptor envelope. `wildcard` and every activity's `rows`
 /// remain in their authored declaration order. `None` is a disabled edge.
@@ -41,6 +86,8 @@ pub(crate) struct BrainEntityPrograms {
     graph: Arc<BehaviorGraphDescriptor>,
     envelopes: Vec<BoundEnvelope>,
     candidate_filter: Option<BoundProgram<CandidateScope>>,
+    #[allow(dead_code)] // The following fire-seam task consumes this derived table.
+    resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
 }
 
 impl BrainEntityPrograms {
@@ -50,6 +97,16 @@ impl BrainEntityPrograms {
 
     pub(crate) fn candidate_filter(&self) -> Option<&BoundProgram<CandidateScope>> {
         self.candidate_filter.as_ref()
+    }
+
+    /// Lookup is by the graph's authored attack name, so the fire evaluator
+    /// never repeats cross-descriptor resolution in its per-tick path.
+    #[allow(dead_code)] // The following fire-seam task reads the resolved attack by name.
+    pub(crate) fn resolved_projectile_attack(
+        &self,
+        attack_name: &str,
+    ) -> Option<&ResolvedProjectileAttack> {
+        self.resolved_projectile_attacks.get(attack_name)
     }
 }
 
@@ -112,7 +169,12 @@ impl BrainPrograms {
 
     /// Bind changed graphs and release dead entries. All growth happens here,
     /// outside the hot evaluator and its zero-allocation probe window.
-    pub(crate) fn sync(&mut self, registry: &EntityRegistry, warned: &mut HashSet<String>) {
+    pub(crate) fn sync(
+        &mut self,
+        registry: &EntityRegistry,
+        descriptors: &[EntityTypeDescriptor],
+        warned: &mut HashSet<String>,
+    ) {
         self.live.clear();
         for (entity, value) in registry.iter_with_kind(ComponentKind::Brain) {
             let ComponentValue::Brain(brain) = value else {
@@ -133,6 +195,7 @@ impl BrainPrograms {
                         &self.scope,
                         &self.candidate_scope,
                         Arc::clone(&brain.graph),
+                        descriptors,
                         warned,
                     ),
                 );
@@ -148,6 +211,7 @@ pub(super) fn bind_graph(
     scope: &BrainScope,
     candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
+    descriptors: &[EntityTypeDescriptor],
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
     let mut envelopes = Vec::new();
@@ -156,11 +220,58 @@ pub(super) fn bind_graph(
         .candidate_filter
         .as_ref()
         .and_then(|filter| bind_candidate_filter(scope, candidate_scope, filter, warned));
+    let resolved_projectile_attacks = resolve_projectile_attacks(&graph, descriptors, warned);
     BrainEntityPrograms {
         graph,
         envelopes,
         candidate_filter,
+        resolved_projectile_attacks,
     }
+}
+
+fn resolve_projectile_attacks(
+    graph: &BehaviorGraphDescriptor,
+    descriptors: &[EntityTypeDescriptor],
+    warned: &mut HashSet<String>,
+) -> HashMap<String, ResolvedProjectileAttack> {
+    graph
+        .attacks
+        .iter()
+        .filter_map(|(attack_name, attack)| {
+            let weapon_name = attack.weapon.as_deref()?;
+            let resolved = crate::scripting::builtins::data_archetype::find_descriptor(
+                descriptors,
+                weapon_name,
+            )
+            .and_then(|descriptor| descriptor.weapon.as_ref())
+            .filter(|weapon| weapon.resolution == ResolutionMode::Projectile)
+            .and_then(|weapon| {
+                weapon.projectile.as_ref().map(|projectile| ResolvedProjectileAttack {
+                    canonical_weapon_name: weapon_name.to_string(),
+                    range: weapon.range,
+                    damage: weapon.damage,
+                    cooldown_ms: weapon.cooldown_ms,
+                    credit_source: weapon.credit_source.clone(),
+                    projectile: projectile.clone(),
+                })
+            });
+
+            match resolved {
+                Some(resolved) => Some((attack_name.clone(), resolved)),
+                None => {
+                    let warning_key = format!("brain-attack-weapon:{attack_name}:{weapon_name}");
+                    if warned.insert(warning_key) {
+                        log::warn!(
+                            "[AI] behavior attack `{attack_name}` references weapon `{weapon_name}` \
+                             that is missing, has no weapon descriptor, or is not a projectile weapon; \
+                             attack disabled"
+                        );
+                    }
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 fn bind_envelope(
@@ -300,5 +411,240 @@ fn bind_candidate_filter(
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use log::Level;
+    use postretro_entities::Transform;
+    use postretro_entities::components::brain::BrainComponent;
+    use postretro_foundation::{
+        AttackParams, BehaviorActivityDescriptor, BehaviorGraphEnvelope, FireMode,
+        ProjectileBodyVisual, ProjectileVisual, WeaponDescriptor,
+    };
+    use postretro_test_log_capture::LogCapture;
+
+    use super::*;
+
+    const FLOAT_EPSILON: f32 = 1e-6;
+
+    fn assert_float_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= FLOAT_EPSILON,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn weapon_attack(weapon: &str) -> AttackParams {
+        AttackParams {
+            weapon: Some(weapon.to_string()),
+            damage: None,
+            max_range: None,
+            cooldown_ms: None,
+            engagement_radius: None,
+            standoff_distance: None,
+        }
+    }
+
+    fn graph_with_attacks(attacks: BTreeMap<String, AttackParams>) -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: None,
+                        motion: None,
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                )]),
+                transitions: BTreeMap::new(),
+            },
+            candidate_filter: None,
+            patrol: None,
+            attacks,
+            engagement_radius: None,
+            move_speed: 0.0,
+        }
+    }
+
+    fn projectile_descriptor() -> ProjectileDescriptor {
+        ProjectileDescriptor {
+            speed: 18.0,
+            radius: 0.15,
+            lifetime_ms: 1_500.0,
+            visual: ProjectileVisual {
+                body: ProjectileBodyVisual::Sprite {
+                    sprite: "sprites/projectiles/test-bolt.png".to_string(),
+                    size: 0.25,
+                    opacity: 1.0,
+                    rotation: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    emissive: 0.0,
+                    frame_duration_ms: None,
+                },
+                trail: None,
+                light: None,
+                impact_light: None,
+            },
+        }
+    }
+
+    fn weapon_descriptor(
+        canonical_name: &str,
+        range: f32,
+        damage: f32,
+        cooldown_ms: f32,
+    ) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(canonical_name.to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage,
+                pellet_count: 1,
+                spread_degrees: 0.0,
+                range,
+                cooldown_ms,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Projectile,
+                projectile: Some(projectile_descriptor()),
+                credit_source: Some("enemy.rifle".to_string()),
+                third_person_model: None,
+                viewmodel: None,
+                placement: None,
+                muzzle_offset: None,
+                resource: None,
+                lower_ms: 0,
+                raise_ms: 0,
+                block_during_reload: None,
+            }),
+            touchable: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        }
+    }
+
+    fn registry_with_brain(graph: &BehaviorGraphDescriptor) -> (EntityRegistry, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Transform::default());
+        registry
+            .set_component(enemy, BrainComponent::from_graph(graph))
+            .expect("fresh enemy is live");
+        (registry, enemy)
+    }
+
+    #[test]
+    fn sync_resolves_projectile_weapon_attack_stats_once() {
+        let graph = graph_with_attacks(BTreeMap::from([(
+            "shoot".to_string(),
+            weapon_attack("enemy-rifle"),
+        )]));
+        let (registry, enemy) = registry_with_brain(&graph);
+        let descriptors = [weapon_descriptor("enemy-rifle", 24.0, 13.0, 350.0)];
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+
+        programs.sync(&registry, &descriptors, &mut warned);
+
+        let resolved = programs
+            .get(enemy)
+            .and_then(|entry| entry.resolved_projectile_attack("shoot"))
+            .expect("projectile weapon attack resolves during sync");
+        assert_eq!(resolved.canonical_weapon_name(), "enemy-rifle");
+        assert_float_eq(resolved.range(), 24.0);
+        assert_float_eq(resolved.damage(), 13.0);
+        assert_float_eq(resolved.cooldown_ms(), 350.0);
+        assert_eq!(resolved.credit_source(), Some("enemy.rifle"));
+        assert_float_eq(resolved.projectile().speed, 18.0);
+        assert!(warned.is_empty());
+    }
+
+    #[test]
+    fn sync_disables_missing_and_nonprojectile_weapon_attacks_and_warns_once() {
+        let graph = graph_with_attacks(BTreeMap::from([
+            ("missing".to_string(), weapon_attack("missing-rifle")),
+            ("hitscan".to_string(), weapon_attack("hitscan-rifle")),
+        ]));
+        let (mut registry, enemy) = registry_with_brain(&graph);
+        let mut hitscan = weapon_descriptor("hitscan-rifle", 24.0, 13.0, 350.0);
+        let weapon = hitscan
+            .weapon
+            .as_mut()
+            .expect("test descriptor carries a weapon");
+        weapon.resolution = ResolutionMode::Hitscan;
+        weapon.projectile = None;
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        let capture = LogCapture::start();
+
+        programs.sync(&registry, &[hitscan], &mut warned);
+        registry
+            .set_component(enemy, BrainComponent::from_graph(&graph))
+            .expect("enemy remains live");
+        programs.sync(&registry, &[], &mut warned);
+
+        let entry = programs.get(enemy).expect("brain remains bound");
+        assert!(entry.resolved_projectile_attack("missing").is_none());
+        assert!(entry.resolved_projectile_attack("hitscan").is_none());
+        capture.assert_logged_once(
+            Level::Warn,
+            "attack `missing` references weapon `missing-rifle`",
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "attack `hitscan` references weapon `hitscan-rifle`",
+        );
+    }
+
+    #[test]
+    fn sync_rebuilds_resolved_weapon_stats_when_brain_graph_changes() {
+        let first_graph = graph_with_attacks(BTreeMap::from([(
+            "shoot".to_string(),
+            weapon_attack("weak-rifle"),
+        )]));
+        let second_graph = graph_with_attacks(BTreeMap::from([(
+            "shoot".to_string(),
+            weapon_attack("strong-rifle"),
+        )]));
+        let (mut registry, enemy) = registry_with_brain(&first_graph);
+        let descriptors = [
+            weapon_descriptor("weak-rifle", 8.0, 3.0, 500.0),
+            weapon_descriptor("strong-rifle", 30.0, 19.0, 200.0),
+        ];
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+
+        programs.sync(&registry, &descriptors, &mut warned);
+        assert_float_eq(
+            programs
+                .get(enemy)
+                .and_then(|entry| entry.resolved_projectile_attack("shoot"))
+                .expect("first graph resolves its attack")
+                .range(),
+            8.0,
+        );
+
+        registry
+            .set_component(enemy, BrainComponent::from_graph(&second_graph))
+            .expect("enemy remains live");
+        programs.sync(&registry, &descriptors, &mut warned);
+
+        let resolved = programs
+            .get(enemy)
+            .and_then(|entry| entry.resolved_projectile_attack("shoot"))
+            .expect("replacement graph rebuilds its derived table");
+        assert_eq!(resolved.canonical_weapon_name(), "strong-rifle");
+        assert_float_eq(resolved.range(), 30.0);
+        assert_float_eq(resolved.damage(), 19.0);
+        assert_float_eq(resolved.cooldown_ms(), 200.0);
     }
 }

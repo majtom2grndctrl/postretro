@@ -66,6 +66,7 @@ use postretro_entities::{
     EntityRegistry, EntityStateComponent, Transform,
 };
 use postretro_foundation::{ActionVerb, DamagePayload, MotionVerb, PatrolMode};
+use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::{
     TargetPawn, TargetSelection, acquisition_due, select_target, selected_target_alive,
     target_candidate, target_distance, target_offers,
@@ -408,6 +409,7 @@ pub(crate) fn run_ai_tick_with_navigation(
         tick_dt,
         nav_graph,
         collision_world,
+        &[],
         |_| {},
     )
 }
@@ -418,6 +420,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     tick_dt: f32,
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
+    descriptors: &[EntityTypeDescriptor],
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> Vec<Cow<'static, str>> {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
@@ -432,7 +435,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         programs,
         los_grace,
     } = runtime;
-    programs.sync(registry, warned);
+    programs.sync(registry, descriptors, warned);
 
     // Bound the blocked-warn latch to entities that still carry a brain: the
     // side-table `sync` just reconciled is the authoritative live set, so this

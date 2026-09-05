@@ -29,7 +29,7 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   28..32  _pad0             (u32)
 ///   32..44  grid_dimensions   (vec3<u32>)
 ///   44..48  _pad1             (u32)
-///   48..56  atlas_dimensions  (vec2<u32>)
+///   48..56  stored_atlas_dimensions  (vec2<u32>)
 ///   56..60  tile_dimension    (u32)
 ///   60..64  tile_border       (u32)
 ///   64..68  atlas_tiles_per_row (u32)
@@ -63,6 +63,7 @@ pub struct ShGridInfoParams {
     pub grid_origin: [f32; 3],
     pub cell_size: [f32; 3],
     pub grid_dimensions: [u32; 3],
+    /// Stored-tile atlas dimensions. The field offsets are unchanged.
     pub atlas_dimensions: [u32; 2],
     pub tile_dimension: u32,
     pub tile_border: u32,
@@ -262,7 +263,35 @@ pub fn f32_to_f16_bits(v: f32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+    use postretro_level_format::delta_sh_volumes::PROBES_PER_CELL;
+    use postretro_level_format::sh_reconstruct::{
+        Tile, corner_locals, local_xyz, reconstruct_l1_tile, trilinear_weight,
+    };
     use postretro_level_format::sh_volume::OctahedralShProbe;
+
+    fn l1_sampler_slots_and_weights(
+        target: (usize, usize, usize),
+        base_slot: u32,
+        present: [bool; 8],
+    ) -> Vec<(u32, f32)> {
+        let mut resolved = Vec::new();
+        let mut weight_sum = 0.0;
+        for (corner, local) in corner_locals().into_iter().enumerate() {
+            if !present[corner] {
+                continue;
+            }
+            let weight = trilinear_weight(target, local_xyz(local));
+            if weight > 0.0 {
+                resolved.push((base_slot + corner as u32, weight));
+                weight_sum += weight;
+            }
+        }
+        for (_, weight) in &mut resolved {
+            *weight /= weight_sum;
+        }
+        resolved
+    }
 
     fn test_octahedral_section(
         grid: [u32; 3],
@@ -286,10 +315,6 @@ mod tests {
             tiles_per_layer,
             atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); probe_count],
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
             compact_atlas: Vec::new(),
             animation_descriptors,
@@ -305,6 +330,62 @@ mod tests {
         assert_eq!(f32_to_f16_bits(0.5), 0x3800);
         assert_eq!(f32_to_f16_bits(2.0), 0x4000);
         assert_eq!(f32_to_f16_bits(-0.5), 0xb800);
+    }
+
+    #[test]
+    fn l1_sampler_resolve_uses_canonical_corner_slots_and_renormalized_weights() {
+        let base_slot = 41u32;
+        // The fourth stored L1 corner is deliberately absent (a zero-alpha
+        // tile in the GPU atlas). Every target must use the shared corner order
+        // and drop/renormalize that corner exactly like `reconstruct_l1_tile`.
+        let present = [true, true, true, false, true, true, false, true];
+        let mut tiles: [Option<Tile>; PROBES_PER_CELL] = std::array::from_fn(|_| None);
+        for (corner, local) in corner_locals().into_iter().enumerate() {
+            if present[corner] {
+                tiles[local] = Some(vec![Vec3::splat(corner as f32)]);
+            }
+        }
+
+        for local in 0..PROBES_PER_CELL {
+            let target_is_invalid_corner = corner_locals()
+                .into_iter()
+                .enumerate()
+                .any(|(corner, corner_local)| corner_local == local && !present[corner]);
+            if target_is_invalid_corner {
+                continue;
+            }
+            let target = local_xyz(local);
+            let resolved = l1_sampler_slots_and_weights(target, base_slot, present);
+            let expected_slots: Vec<u32> = corner_locals()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(corner, corner_local)| {
+                    (present[corner] && trilinear_weight(target, local_xyz(corner_local)) > 0.0)
+                        .then_some(base_slot + corner as u32)
+                })
+                .collect();
+            assert_eq!(
+                resolved.iter().map(|(slot, _)| *slot).collect::<Vec<_>>(),
+                expected_slots,
+                "target local {local} must use fixed `corner_locals` slot order",
+            );
+
+            let expected = reconstruct_l1_tile(&tiles, local, 1)
+                .expect("the fixture has a present corner for every target")[0]
+                .x;
+            let actual: f32 = resolved
+                .iter()
+                .map(|(slot, weight)| (*slot - base_slot) as f32 * weight)
+                .sum();
+            assert!(
+                (actual - expected).abs() < 1.0e-6,
+                "target local {local}: sampler resolve must match shared reconstruction",
+            );
+            assert!(
+                (resolved.iter().map(|(_, weight)| weight).sum::<f32>() - 1.0).abs() < 1.0e-6,
+                "target local {local}: surviving corner weights must renormalize",
+            );
+        }
     }
 
     #[test]

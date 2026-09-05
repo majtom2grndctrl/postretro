@@ -47,6 +47,7 @@ pub mod sdf_bake;
 pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_coarsen;
+pub mod sh_density;
 pub mod sh_group;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
@@ -302,6 +303,15 @@ fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
         .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
 }
 
+/// Resolve the base-SH classifier fidelity multiplier from its CLI override,
+/// worldspawn KVP, then the shipped operating point. This controls only the
+/// base stored-density classifier; id-41 retains its independently settled
+/// coarsening gates.
+fn resolve_sh_density_fidelity(cli: Option<f32>, kvp: Option<f32>) -> f32 {
+    cli.or(kvp)
+        .unwrap_or(sh_density::DEFAULT_SH_DENSITY_FIDELITY)
+}
+
 /// What the output-directory precheck decided to do for a parsed answer.
 ///
 /// `Create` carries the directory to create; `Abort` ends the run before any
@@ -527,6 +537,7 @@ fn main() -> anyhow::Result<()> {
                 match tui::run_config_screen(
                     &mut args,
                     prepared.map_data.lightmap_density,
+                    prepared.map_data.sh_density_fidelity,
                     &log_sink,
                 ) {
                     Ok(tui::ConfigOutcome::Start(session)) => Some(session),
@@ -643,6 +654,11 @@ pub struct Args {
     /// overrides any KVP (`--lightmap-density` keeps its hard-reject posture
     /// on non-finite/≤0 values in the CLI parser).
     lightmap_density: Option<f32>,
+    /// Multiplier for the base-SH classifier's relative error gates. `None`
+    /// falls through to worldspawn `_sh_density_fidelity`, then the default.
+    /// The CLI parser hard-rejects non-finite/non-positive values; map KVP
+    /// validation happens in the source-format parse layer.
+    sh_density_fidelity: Option<f32>,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
     /// invalidates cached lightmap layers, any shadowmask memo keyed through
     /// selected layer hashes, and the cached animated weight-map stage,
@@ -696,6 +712,10 @@ pub struct Args {
     /// id-41 classifier and the analysis's protected projection. Repeatable.
     /// Compiler-only measurement input; never stored.
     sh_protect_aabbs: Vec<[f32; 6]>,
+    /// Measurement-only override for base SH stored density. The classifier and
+    /// delta ceilings land in Task 6; this interim flag exists to exercise the
+    /// L1/L2 pack and runtime paths before that classifier is wired.
+    sh_density_force_level: Option<postretro_level_format::sh_reconstruct::Level>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -723,6 +743,7 @@ fn help_text() -> String {
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
          --lightmap-density <METERS> Fixed lightmap texel size in meters, > 0 (default: {density})\n    \
+         --sh-density-fidelity <MULTIPLIER> Base SH density fidelity multiplier, > 0 (default: {sh_density_fidelity})\n    \
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
@@ -734,9 +755,11 @@ fn help_text() -> String {
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
+         --sh-density-force-level <0|1|2> Measurement-only base SH brick level override; partial bricks and L1 bricks with no valid corner remain L0 (default: none)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
+        sh_density_fidelity = sh_density::DEFAULT_SH_DENSITY_FIDELITY,
         samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
         probe_floor = lightmap_bake::SOFT_PROBE_SAMPLES,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
@@ -756,6 +779,7 @@ where
     let mut format = DEFAULT_MAP_FORMAT;
     let mut probe_spacing = sh_bake::DEFAULT_PROBE_SPACING;
     let mut lightmap_density: Option<f32> = None;
+    let mut sh_density_fidelity: Option<f32> = None;
     let mut soft_shadow_samples = lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
     let mut voxel_size = sdf_bake::DEFAULT_VOXEL_SIZE_METERS;
     let mut cache_dir: Option<PathBuf> = None;
@@ -770,6 +794,7 @@ where
     let mut sh_analyze = false;
     let mut sh_analyze_out: Option<PathBuf> = None;
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
+    let mut sh_density_force_level = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -842,6 +867,19 @@ where
                     anyhow::bail!("--lightmap-density must be a positive number of meters");
                 }
                 lightmap_density = Some(parsed);
+            }
+            "--sh-density-fidelity" => {
+                quality_flag_supplied = true;
+                let fidelity_str = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--sh-density-fidelity requires a positive multiplier")
+                })?;
+                let parsed: f32 = fidelity_str.parse().map_err(|_| {
+                    anyhow::anyhow!("--sh-density-fidelity must be a positive multiplier")
+                })?;
+                if !parsed.is_finite() || parsed <= 0.0 {
+                    anyhow::bail!("--sh-density-fidelity must be a positive multiplier");
+                }
+                sh_density_fidelity = Some(parsed);
             }
             "--soft-shadow-samples" => {
                 quality_flag_supplied = true;
@@ -917,6 +955,19 @@ where
                     .ok_or_else(|| anyhow::anyhow!("--sh-protect-aabb requires a value"))?;
                 sh_protect_aabbs.push(parse_protect_aabb(&spec)?);
             }
+            "--sh-density-force-level" => {
+                let value = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--sh-density-force-level requires one of 0, 1, or 2")
+                })?;
+                let parsed: u8 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
+                })?;
+                let level = postretro_level_format::sh_reconstruct::Level::from_u8(parsed)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("--sh-density-force-level must be one of 0, 1, or 2")
+                    })?;
+                sh_density_force_level = Some(level);
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -930,6 +981,7 @@ where
         anyhow::anyhow!(
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
+             [--sh-density-fidelity <MULTIPLIER>] \
              [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
@@ -944,6 +996,7 @@ where
         format,
         probe_spacing,
         lightmap_density,
+        sh_density_fidelity,
         soft_shadow_samples,
         voxel_size,
         cache_dir,
@@ -958,6 +1011,7 @@ where
         sh_analyze,
         sh_analyze_out,
         sh_protect_aabbs,
+        sh_density_force_level,
     })
 }
 
@@ -2048,6 +2102,38 @@ mod tests {
     }
 
     #[test]
+    fn sh_density_fidelity_uses_cli_then_map_then_default() {
+        assert_eq!(
+            resolve_sh_density_fidelity(None, None),
+            sh_density::DEFAULT_SH_DENSITY_FIDELITY
+        );
+        assert_eq!(resolve_sh_density_fidelity(None, Some(0.5)), 0.5);
+        assert_eq!(resolve_sh_density_fidelity(Some(2.0), Some(0.5)), 2.0);
+    }
+
+    #[test]
+    fn parse_args_sh_density_fidelity_requires_positive_finite_multiplier() {
+        let parsed = parse_args_from(
+            ["input.map", "--sh-density-fidelity", "0.5"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(parsed.sh_density_fidelity, Some(0.5));
+        for invalid in ["0", "-1", "nan", "not-a-number"] {
+            assert!(
+                parse_args_from(
+                    ["input.map", "--sh-density-fidelity", invalid]
+                        .into_iter()
+                        .map(str::to_owned),
+                )
+                .is_err(),
+                "{invalid} must be rejected by the CLI"
+            );
+        }
+    }
+
+    #[test]
     fn parse_args_lightmap_density_unset_is_none() {
         // Without --lightmap-density on the command line, Args carries None so
         // the resolver can fall through to the KVP / default.
@@ -2072,6 +2158,7 @@ mod tests {
         let cases: &[&[&str]] = &[
             &["--sh-probe-spacing", "0.5"],
             &["--lightmap-density", "0.03"],
+            &["--sh-density-fidelity", "0.5"],
             &["--soft-shadow-samples", "8"],
             &["--sdf-voxel-size", "0.25"],
             &["--release"],
@@ -2180,6 +2267,38 @@ mod tests {
         assert!(!parsed.sh_analyze);
         assert!(parsed.sh_analyze_out.is_none());
         assert!(parsed.sh_protect_aabbs.is_empty());
+        assert!(parsed.sh_density_force_level.is_none());
+    }
+
+    #[test]
+    fn parse_args_sh_density_force_level_accepts_only_the_three_stored_levels() {
+        use postretro_level_format::sh_reconstruct::Level;
+
+        for (value, expected) in [("0", Level::L0), ("1", Level::L1), ("2", Level::L2)] {
+            let parsed = parse_args_from(
+                [
+                    "input.map".to_owned(),
+                    "--sh-density-force-level".to_owned(),
+                    value.to_owned(),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+            assert_eq!(parsed.sh_density_force_level, Some(expected));
+        }
+        for value in ["3", "-1", "coarse"] {
+            assert!(
+                parse_args_from(
+                    [
+                        "input.map".to_owned(),
+                        "--sh-density-force-level".to_owned(),
+                        value.to_owned()
+                    ]
+                    .into_iter(),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

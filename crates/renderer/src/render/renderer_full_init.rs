@@ -252,6 +252,7 @@ pub(crate) fn build_full_renderer(
         sh_volume_resources.atlas_tiles_per_row,
         sh_volume_resources.tiles_per_layer,
         sh_volume_resources.atlas_layer_count,
+        &sh_volume_resources.probe_indirection_words,
     );
 
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
@@ -561,6 +562,7 @@ pub(crate) fn build_full_renderer(
         device,
         &sh_volume_resources.direct,
         &sh_volume_resources.animation,
+        &sh_volume_resources.probe_indirection_words,
         geometry.and_then(|g| g.direct_sh_delta_volumes),
         geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,

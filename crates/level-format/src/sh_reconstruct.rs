@@ -8,7 +8,7 @@
 //! `context/plans/drafts/lighting-scale--delta-sh-probe-coarsening/` (task G1).
 //!
 //! ## Three candidate stored levels per 4×4×4 brick
-//! - **L0** — all 64 base probes (dense; ground truth).
+//! - **L0** — every valid base probe, in local x-fastest order.
 //! - **L1** — the 8 corner probes (in-brick local ∈ {0,3}³), trilinear
 //!   reconstruction with per-axis weights `local/3`.
 //! - **L2** — a single brick-mean tile over the brick's VALID probes only.
@@ -171,19 +171,159 @@ pub fn kept_mask(level: Level, valid_probe_mask: u64) -> u64 {
     }
 }
 
-/// Stored tile count for a brick at a given level, intersected with validity.
-pub fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize {
+/// One stored tile in the base SH volume's on-disk stored set.
+///
+/// This deliberately differs from [`kept_mask`], which describes the delta
+/// sections' valid-only kept-rank payload. Base L1 needs arithmetic corner
+/// slots at sample time, so it reserves all eight corners and writes an invalid
+/// corner as a zero tile. L2's slot is a synthesized mean, not a copied probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoredTile {
+    /// A probe tile at this x-fastest local index. L1 includes invalid corners.
+    Probe(usize),
+    /// The one L2 brick mean over the brick's valid probes.
+    BrickMean,
+}
+
+/// The base SH stored set for one 4×4×4 brick, in payload order.
+///
+/// - L0 stores valid probes in x-fastest local order.
+/// - L1 stores all eight [`corner_locals`] in that order, including invalid
+///   corners as zero tiles.
+/// - L2 stores one synthesized mean tile.
+/// - A brick with no valid probes stores no tile at any level.
+pub fn stored_tile_set(level: Level, valid_probe_mask: u64) -> Vec<StoredTile> {
+    if valid_probe_mask == 0 {
+        return Vec::new();
+    }
+
     match level {
-        Level::L0 => valid_mask.iter().filter(|&&v| v).count(),
-        Level::L1 => corner_locals().iter().filter(|&&l| valid_mask[l]).count(),
-        Level::L2 => {
-            if valid_mask.iter().any(|&v| v) {
-                1
-            } else {
-                0
+        Level::L0 => (0..PROBES_PER_CELL)
+            .filter(|&local| valid_probe_mask & (1u64 << local) != 0)
+            .map(StoredTile::Probe)
+            .collect(),
+        Level::L1 => corner_locals().into_iter().map(StoredTile::Probe).collect(),
+        Level::L2 => vec![StoredTile::BrickMean],
+    }
+}
+
+/// Stored tile count for one base-volume brick under the v10 stored-set
+/// contract. This is intentionally not the delta kept-rank count: L1 reserves
+/// all eight corner slots whenever the brick has any valid probe.
+pub fn stored_tiles(level: Level, valid_mask: &[bool; PROBES_PER_CELL]) -> usize {
+    let valid_probe_mask =
+        valid_mask.iter().enumerate().fold(
+            0u64,
+            |mask, (local, &valid)| {
+                if valid { mask | (1u64 << local) } else { mask }
+            },
+        );
+    stored_tile_set(level, valid_probe_mask).len()
+}
+
+/// One brick's range in the stored-tile atlas. `base_slot` is the first slot
+/// owned by this brick; slots are allocated brick-major in x-fastest affinity
+/// order. An all-invalid brick has a zero count and its base equals the running
+/// prefix at that point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoredBrickRange {
+    pub base_slot: u32,
+    pub stored_tile_count: u32,
+}
+
+/// Prefix-sum layout of every affinity brick in a grid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredBrickPrefixSum {
+    pub affinity_dimensions: [u32; 3],
+    pub bricks: Vec<StoredBrickRange>,
+    pub total_stored_tiles: u32,
+}
+
+/// Whole-grid stored-tile prefix sum for the base-volume v10 contract.
+///
+/// `brick_levels` is one level per affinity brick in x-fastest order;
+/// `probe_validity` is one boolean per base probe in x-fastest grid order. The
+/// returned ranges provide every brick's stored count and first slot, and the
+/// total is `N_s` for `irradiance_atlas_array_layout([N_s, 1, 1], ...)`.
+/// `None` reports a malformed input shape or a count that cannot fit the
+/// on-wire `u32` slot space.
+pub fn stored_brick_prefix_sum(
+    grid_dimensions: [u32; 3],
+    brick_levels: &[Level],
+    probe_validity: &[bool],
+) -> Option<StoredBrickPrefixSum> {
+    let probe_count = grid_dimensions
+        .iter()
+        .try_fold(1usize, |count, &dimension| {
+            count.checked_mul(dimension as usize)
+        })?;
+    if probe_validity.len() != probe_count {
+        return None;
+    }
+
+    let affinity_dimensions =
+        grid_dimensions.map(|dimension| dimension.div_ceil(u32::from(AFFINITY_FACTOR)));
+    let brick_count = affinity_dimensions
+        .iter()
+        .try_fold(1usize, |count, &dimension| {
+            count.checked_mul(dimension as usize)
+        })?;
+    if brick_levels.len() != brick_count {
+        return None;
+    }
+
+    let mut total_stored_tiles = 0u32;
+    let mut bricks = Vec::with_capacity(brick_count);
+    for brick_z in 0..affinity_dimensions[2] as usize {
+        for brick_y in 0..affinity_dimensions[1] as usize {
+            for brick_x in 0..affinity_dimensions[0] as usize {
+                let brick_index = brick_x
+                    + brick_y * affinity_dimensions[0] as usize
+                    + brick_z * affinity_dimensions[0] as usize * affinity_dimensions[1] as usize;
+                let mut valid_probe_mask = 0u64;
+                for local_z in 0..AF {
+                    for local_y in 0..AF {
+                        for local_x in 0..AF {
+                            let probe_x = brick_x * AF + local_x;
+                            let probe_y = brick_y * AF + local_y;
+                            let probe_z = brick_z * AF + local_z;
+                            if probe_x >= grid_dimensions[0] as usize
+                                || probe_y >= grid_dimensions[1] as usize
+                                || probe_z >= grid_dimensions[2] as usize
+                            {
+                                continue;
+                            }
+                            let probe_index = probe_x
+                                + probe_y * grid_dimensions[0] as usize
+                                + probe_z
+                                    * grid_dimensions[0] as usize
+                                    * grid_dimensions[1] as usize;
+                            if probe_validity[probe_index] {
+                                let local = local_x + local_y * AF + local_z * AF * AF;
+                                valid_probe_mask |= 1u64 << local;
+                            }
+                        }
+                    }
+                }
+
+                let stored_tile_count = u32::try_from(
+                    stored_tile_set(brick_levels[brick_index], valid_probe_mask).len(),
+                )
+                .ok()?;
+                bricks.push(StoredBrickRange {
+                    base_slot: total_stored_tiles,
+                    stored_tile_count,
+                });
+                total_stored_tiles = total_stored_tiles.checked_add(stored_tile_count)?;
             }
         }
     }
+
+    Some(StoredBrickPrefixSum {
+        affinity_dimensions,
+        bricks,
+        total_stored_tiles,
+    })
 }
 
 /// Stored tile count for a delta entry at a candidate level = the popcount of
@@ -311,20 +451,68 @@ mod tests {
     }
 
     #[test]
-    fn stored_tile_counts_match_level_lattice() {
+    fn base_stored_tile_set_reserves_invalid_l1_corners() {
         let mut valid = [true; PROBES_PER_CELL];
         assert_eq!(stored_tiles(Level::L0, &valid), 64);
         assert_eq!(stored_tiles(Level::L1, &valid), 8);
         assert_eq!(stored_tiles(Level::L2, &valid), 1);
 
-        // Drop a corner (local 0) → L1 loses one, L2 still 1, L0 loses one.
+        // Base L1 stores an arithmetic corner slot even when that probe is
+        // invalid; the producer writes that slot as a zero tile.
         valid[0] = false;
         assert_eq!(stored_tiles(Level::L0, &valid), 63);
-        assert_eq!(stored_tiles(Level::L1, &valid), 7);
+        assert_eq!(stored_tiles(Level::L1, &valid), 8);
         assert_eq!(stored_tiles(Level::L2, &valid), 1);
 
         let empty = [false; PROBES_PER_CELL];
+        assert_eq!(stored_tiles(Level::L0, &empty), 0);
+        assert_eq!(stored_tiles(Level::L1, &empty), 0);
         assert_eq!(stored_tiles(Level::L2, &empty), 0);
+
+        let mask = !(1u64 << 0);
+        assert_eq!(
+            stored_tile_set(Level::L1, mask),
+            corner_locals().map(StoredTile::Probe).to_vec()
+        );
+        assert_eq!(
+            stored_tile_set(Level::L2, mask),
+            vec![StoredTile::BrickMean]
+        );
+    }
+
+    #[test]
+    fn stored_brick_prefix_sum_is_brick_major_and_x_fastest() {
+        // Two complete bricks along X. The first L0 brick has two valid probes;
+        // the second L1 brick has one valid non-corner probe but still reserves
+        // all eight arithmetic corner slots.
+        let grid = [8, 4, 4];
+        let mut valid = vec![false; 8 * 4 * 4];
+        valid[0] = true;
+        valid[1] = true;
+        valid[5] = true;
+        let prefix = stored_brick_prefix_sum(grid, &[Level::L0, Level::L1], &valid).unwrap();
+
+        assert_eq!(prefix.affinity_dimensions, [2, 1, 1]);
+        assert_eq!(
+            prefix.bricks,
+            vec![
+                StoredBrickRange {
+                    base_slot: 0,
+                    stored_tile_count: 2,
+                },
+                StoredBrickRange {
+                    base_slot: 2,
+                    stored_tile_count: 8,
+                },
+            ]
+        );
+        assert_eq!(prefix.total_stored_tiles, 10);
+    }
+
+    #[test]
+    fn stored_brick_prefix_sum_rejects_mismatched_input_shapes() {
+        assert!(stored_brick_prefix_sum([4, 4, 4], &[], &[true; 64]).is_none());
+        assert!(stored_brick_prefix_sum([4, 4, 4], &[Level::L0], &[]).is_none());
     }
 
     #[test]

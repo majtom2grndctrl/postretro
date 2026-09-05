@@ -89,6 +89,8 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/material_shading.wgsl"),
     "\n",
+    include_str!("../shaders/sh_indirection.wgsl"),
+    "\n",
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),

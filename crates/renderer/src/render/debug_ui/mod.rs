@@ -556,6 +556,11 @@ fn draw_volumes_tab(
             ui.horizontal(|ui| {
                 ui.label("Marker mode");
                 ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Validity, "Validity");
+                ui.radio_value(
+                    &mut sh_state.marker_mode,
+                    MarkerMode::DensityLevel,
+                    "Density level",
+                );
                 ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Uniform, "Uniform");
                 ui.radio_value(
                     &mut sh_state.marker_mode,

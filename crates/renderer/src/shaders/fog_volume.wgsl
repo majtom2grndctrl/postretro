@@ -85,7 +85,7 @@ struct AnimationDescriptor {
 }
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
-@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 
 // --- Group 5: Spot shadow maps ---
 

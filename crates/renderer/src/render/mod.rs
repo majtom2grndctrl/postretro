@@ -27,6 +27,7 @@ mod sdf_shadow;
 mod sh_compose;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
+mod sh_indirection;
 mod sh_volume;
 mod shadowmask;
 mod smoke;

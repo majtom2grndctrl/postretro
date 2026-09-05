@@ -24,14 +24,18 @@
     // maps need to author this. Non-finite / <= 0 values are warned and the
     // default is used. The `--lightmap-density` CLI flag overrides this KVP.
     _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
-    // Direct SH-delta coarsening is enabled when this key is absent. Choose
-    // Uniform only as a per-map quality fallback; ids 27/45 remain uniform in
-    // either mode.
-    _sh_coarsen(choices) : "Direct SH delta probe density" : 1 =
+    // Adaptive base-SH and direct-delta density are enabled when this key is
+    // absent. Choose Uniform only as a per-map quality fallback; ids 27/45
+    // remain uniform in either mode.
+    _sh_coarsen(choices) : "SH probe density" : 1 =
     [
-        0 : "Uniform L0 (disable id-41 coarsening)"
-        1 : "Adaptive id 41 (default)"
+        0 : "Uniform L0 (disable base and id-41 coarsening)"
+        1 : "Adaptive base and id 41 (default)"
     ]
+    // Multiplies the base-SH classifier's relative reconstruction-error gates.
+    // Smaller values retain more L0 data; larger values permit coarser stored
+    // probe bricks. Invalid values use the compiler default (1.0).
+    _sh_density_fidelity(float) : "Base SH probe-density fidelity multiplier (default 1.0; smaller = finer)" : ""
     // Compiler-owned thresholds for selecting baked static lights that may cast
     // runtime shadows onto moving entities. These tune the heuristic per map;
     // individual lights do not carry an opt-in/opt-out KVP.
@@ -564,14 +568,14 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
-// Invisible brush volume that preserves full SH delta-probe density in a
-// sensitive area. The compiler resolves the brush hull to an engine-space AABB;
-// it emits no world geometry, collision, or runtime entity.
+// Invisible brush volume that preserves full SH probe density in a sensitive
+// area. The compiler resolves the brush hull to an engine-space AABB; it emits
+// no world geometry, collision, or runtime entity.
 //
 // `dilation` is in world/engine meters, not map units. When this brush hugs a
 // 4×4×4 probe-brick edge, use roughly half a probe cell of dilation so the
 // brick's probe-span AABB still intersects the protection volume.
-@SolidClass = sh_protect_volume : "Keep SH delta probes dense (brush)"
+@SolidClass = sh_protect_volume : "Keep SH probes dense (brush)"
 [
     dilation(float) : "AABB expansion in world/engine meters. Use about half a probe cell when the brush hugs a probe-brick edge." : "0"
 ]

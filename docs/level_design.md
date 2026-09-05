@@ -174,16 +174,25 @@ Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It 
 
 ## SH Probe Protection Volumes
 
-Direct SH-delta probe coarsening (PRL id 41) is enabled by default. To keep a
-specific map on the uniform L0 grid, set `_sh_coarsen` to `0` on `worldspawn`.
-The compiler skips classification entirely for that map. Animated/scripted
-delta sections ids 27 and 45 remain uniform L0 in either mode.
+Adaptive SH probe density is enabled by default. The compiler stores each
+4×4×4 base-irradiance brick at L0 (all valid probes), L1 (its eight corners),
+or L2 (one mean) according to the composed-lighting error classifier. Direct
+SH-delta id 41 also uses adaptive 4×4×4 brick classification; animated/scripted
+delta sections ids 27 and 45 remain uniform L0.
+
+To keep a specific map on the uniform L0 grid, set `_sh_coarsen` to `0` on
+`worldspawn`. The compiler skips both base-density and direct-delta
+classification for that map. `_sh_density_fidelity` on `worldspawn` scales the
+base-density classifier's error gates (default `1.0`): smaller positive values
+retain more L0 data, while larger values permit more L1/L2 storage. Invalid
+values fall back to the default. The `--sh-density-fidelity` compiler flag
+overrides the worldspawn value for a bake.
 
 `sh_protect_volume` is an invisible brush entity that forces every intersecting
-4×4×4 probe brick to L0 (full valid-probe density) in the coarsened direct
-delta section. Use it where coarsened lighting changes would be noticeable,
-such as around a small hero prop, a sharp lighting transition, or a gameplay
-focal point.
+4×4×4 probe brick to L0 (full valid-probe density) in both the stored base
+irradiance and coarsened direct-delta data. Use it where coarsened lighting
+changes would be noticeable, such as around a small hero prop, a sharp
+lighting transition, or a gameplay focal point.
 
 Create brushwork around the area, then tie it to
 `sh_protect_volume`. The compiler converts the brush hull to a world-space
@@ -194,11 +203,11 @@ static world geometry.
 |-----|------|---------|-------------|
 | `dilation` | float | `0` | Expands the resolved AABB on all six faces, in world/engine meters. Negative values are a compile error. |
 
-The coarsening classifier forces every intersecting 4×4×4 probe brick to L0
-before it smooths density seams. A brush authored flush to a brick edge can
-miss because bricks intersect against their probe-span bounds rather than an
-outer cell boundary. When a volume hugs an edge, set `dilation` to roughly
-half a probe cell or more.
+The base-density and direct-delta classifiers force every intersecting 4×4×4
+probe brick to L0 before they smooth density seams. A brush authored flush to
+a brick edge can miss because bricks intersect against their probe-span bounds
+rather than an outer cell boundary. When a volume hugs an edge, set `dilation`
+to roughly half a probe cell or more.
 
 ---
 

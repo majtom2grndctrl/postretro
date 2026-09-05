@@ -12,9 +12,11 @@ use postretro_render_cpu::sh_compose::{
 };
 
 use super::animated_direct_sh_compose::{
-    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
+    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, AnimatedDirectShPassViews,
+    build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
+use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
 pub(super) const BIND_BASE_SAMPLER: u32 = 2;
@@ -30,6 +32,9 @@ pub(super) const BIND_DELTA_COMPACTION_META: u32 = 28;
 /// Bindings 0..=28 are the existing Pass-A contract; append the private
 /// per-frame mask instead of changing any established binding.
 const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
+/// Load-derived id-34 indirection words shared by both direct-compose passes.
+/// They gate reconstruction and select each pass's stored output slot.
+pub(super) const BIND_PROBE_INDIRECTION: u32 = 30;
 const DEBUG_OVERRIDE_SIZE: usize = 32;
 /// WGSL `DirectComposeParams`: mask at byte 0, followed by three u32 pads.
 const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
@@ -159,6 +164,7 @@ impl DirectShComposeResources {
         device: &wgpu::Device,
         direct: &DirectShResources,
         animation: &AnimatedLightBuffers,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
@@ -170,6 +176,7 @@ impl DirectShComposeResources {
                 device,
                 direct,
                 animation,
+                probe_indirection_words,
                 delta,
                 animated_delta,
                 weights_buffer,
@@ -177,13 +184,20 @@ impl DirectShComposeResources {
             ),
             // Section 45 absent: Pass A still performs base copy-through so
             // the static-direct mask works even without promotion deltas.
-            None => Self::new_case1(device, direct, delta, weights_buffer),
+            None => Self::new_case1(
+                device,
+                direct,
+                probe_indirection_words,
+                delta,
+                weights_buffer,
+            ),
         }
     }
 
     fn new_case1(
         device: &wgpu::Device,
         direct: &DirectShResources,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
     ) -> Self {
@@ -201,6 +215,7 @@ impl DirectShComposeResources {
             device,
             direct,
             layout,
+            probe_indirection_words,
             delta,
             weights_buffer,
             composed_storage_view,
@@ -223,6 +238,7 @@ impl DirectShComposeResources {
         device: &wgpu::Device,
         direct: &DirectShResources,
         animation: &AnimatedLightBuffers,
+        probe_indirection_words: &[u32],
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
@@ -248,6 +264,7 @@ impl DirectShComposeResources {
             device,
             direct,
             layout,
+            probe_indirection_words,
             delta,
             weights_buffer,
             intermediate_storage_view,
@@ -256,9 +273,12 @@ impl DirectShComposeResources {
             device,
             animation,
             layout,
+            probe_indirection_words,
             animated_delta,
-            intermediate_sampled_view,
-            composed_storage_view,
+            AnimatedDirectShPassViews {
+                intermediate_sampled: intermediate_sampled_view,
+                output_storage: composed_storage_view,
+            },
             uniform_bind_group_layout,
         ));
 
@@ -355,6 +375,7 @@ fn build_promotion_pass(
     device: &wgpu::Device,
     direct: &DirectShResources,
     layout: DirectAtlasLayout,
+    probe_indirection_words: &[u32],
     delta: Option<&DirectShDeltaVolumesSection>,
     weights_buffer: &wgpu::Buffer,
     output_storage_view: &wgpu::TextureView,
@@ -394,6 +415,11 @@ fn build_promotion_pass(
         contents: &lights_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Direct SH Compose Probe Indirection"),
+        contents: &probe_indirection_storage_bytes(probe_indirection_words),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
 
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Grid Dims"),
@@ -406,10 +432,10 @@ fn build_promotion_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
-            // Direct compose retains the dense base-atlas geometry, so the
-            // compact id-34 tail words are intentionally unused here.
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
+            // Retain the fixed 64-byte uniform layout: both field pairs now
+            // name the same stored-tile atlas geometry.
+            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });
@@ -435,9 +461,15 @@ fn build_promotion_pass(
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
+    let shader_source = [
+        include_str!("../shaders/direct_sh_compose.wgsl"),
+        "\n",
+        WGSL_DECODE_HELPER,
+    ]
+    .concat();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Direct SH Compose Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/direct_sh_compose.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Direct SH Compose Pipeline"),
@@ -498,6 +530,10 @@ fn build_promotion_pass(
                 binding: BIND_FRAME_LIGHT_TERM_MASK,
                 resource: light_term_mask_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_PROBE_INDIRECTION,
+                resource: probe_indirection_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -541,6 +577,7 @@ fn promotion_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_SELECTION_WEIGHTS),
         uniform_bgl_entry(BIND_DEBUG_OVERRIDE),
         direct_compose_params_bgl_entry(),
+        storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
 }
 
@@ -853,9 +890,14 @@ mod tests {
 
     #[test]
     fn direct_sh_compose_shader_parses_and_exports_compose_main() {
-        let module =
-            naga::front::wgsl::parse_str(include_str!("../shaders/direct_sh_compose.wgsl"))
-                .expect("direct_sh_compose.wgsl should parse as WGSL");
+        let source = [
+            include_str!("../shaders/direct_sh_compose.wgsl"),
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let module = naga::front::wgsl::parse_str(&source)
+            .expect("direct_sh_compose.wgsl should parse as WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -884,6 +926,29 @@ mod tests {
                     }
                 )
         }));
+        assert!(entries.iter().any(|entry| {
+            entry.binding == BIND_PROBE_INDIRECTION
+                && matches!(
+                    &entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    }
+                )
+        }));
+        let storage_count = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(storage_count, 6);
     }
 
     #[test]
@@ -916,13 +981,12 @@ mod tests {
     }
 
     #[test]
-    fn direct_compose_uses_validity_to_gate_delta_reconstruction() {
+    fn direct_compose_uses_indirection_to_gate_stored_slot_reconstruction() {
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
         assert!(
-            source.contains(
-                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
-            ),
-            "id-41 has no base probe-indirection, so its validity mask must gate delta reads"
+            source.contains("let output_is_stored = stored_slot.write;")
+                && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
+            "Pass A must derive stored-slot writes from Task 3's id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),
@@ -937,7 +1001,7 @@ mod tests {
         assert!(source.contains(
             "let use_baked_direct_static = (direct_compose_params.light_term_mask & LIGHT_TERM_BAKED_DIRECT_STATIC) != 0u;"
         ));
-        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains("if (output_is_stored && use_baked_direct_static)"));
         assert!(source.contains(
             "let required_terms = LIGHT_TERM_BAKED_DIRECT_STATIC | LIGHT_TERM_DYNAMIC_DIRECT;"
         ));
@@ -982,14 +1046,14 @@ mod tests {
             .map(|offset| dense_start + offset)
             .expect("bit 3 and bit 5 must uniformly guard the coarsened path");
         let output_start = source[coarsened_start..]
-            .find("\n    if (in_grid) {")
+            .find("\n    if (output_is_stored) {")
             .map(|offset| coarsened_start + offset)
             .expect("shader must retain its output-store path");
         let dense_path = &source[dense_start..coarsened_start];
         let coarsened_path = &source[coarsened_start..output_start];
 
         assert!(
-            dense_path.contains("if (output_is_valid && use_promotion_subtraction)")
+            dense_path.contains("if (output_is_stored && use_promotion_subtraction)")
                 && dense_path.contains("read_delta_texel("),
             "the combined bit-3/bit-5 guard must wrap dense L0 delta reads",
         );
@@ -1014,5 +1078,13 @@ mod tests {
         assert!(source.contains("if (level == 0u)"));
         assert!(source.contains("if (level == 1u && local_probe_is_kept"));
         assert!(source.contains("if (level == 2u)"));
+        assert!(
+            source.contains("fn slot_tile_origin(slot: u32)")
+                && !source.contains("fn atlas_tile_origin(")
+                && source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains("select(0.0, 1.0, stored_slot.valid)"),
+            "Pass A must read and write only id-34 shared stored slots"
+        );
     }
 }

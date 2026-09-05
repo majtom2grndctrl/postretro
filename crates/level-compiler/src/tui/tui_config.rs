@@ -12,7 +12,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::{Args, lightmap_bake, logger::LogSink, resolve_lightmap_density, sh_bake};
+use crate::{
+    Args, lightmap_bake, logger::LogSink, resolve_lightmap_density, resolve_sh_density_fidelity,
+    sh_bake, sh_density,
+};
 
 use super::tui_terminal::{TuiSession, panic_message};
 
@@ -62,14 +65,16 @@ impl BuildMode {
 enum ConfigField {
     ProbeSpacing,
     LightmapDensity,
+    ShDensityFidelity,
     SoftShadowSamples,
     BuildMode,
 }
 
 impl ConfigField {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::ProbeSpacing,
         Self::LightmapDensity,
+        Self::ShDensityFidelity,
         Self::SoftShadowSamples,
         Self::BuildMode,
     ];
@@ -112,9 +117,12 @@ struct FormState {
     output: String,
     probe_spacing: String,
     lightmap_density: String,
+    sh_density_fidelity: String,
     soft_shadow_samples: String,
     lightmap_density_touched: bool,
+    sh_density_fidelity_touched: bool,
     density_source: DensitySource,
+    sh_density_fidelity_source: DensitySource,
     build_mode: BuildMode,
     selected: ConfigField,
     editing: Option<ConfigField>,
@@ -122,10 +130,21 @@ struct FormState {
 }
 
 impl FormState {
-    fn from_args(args: &Args, worldspawn_lightmap_density: Option<f32>) -> Self {
+    fn from_args(
+        args: &Args,
+        worldspawn_lightmap_density: Option<f32>,
+        worldspawn_sh_density_fidelity: Option<f32>,
+    ) -> Self {
         let density_source = if args.lightmap_density.is_some() {
             DensitySource::Cli
         } else if worldspawn_lightmap_density.is_some() {
+            DensitySource::MapKvp
+        } else {
+            DensitySource::Default
+        };
+        let sh_density_fidelity_source = if args.sh_density_fidelity.is_some() {
+            DensitySource::Cli
+        } else if worldspawn_sh_density_fidelity.is_some() {
             DensitySource::MapKvp
         } else {
             DensitySource::Default
@@ -139,12 +158,19 @@ impl FormState {
                 worldspawn_lightmap_density,
             )
             .to_string(),
+            sh_density_fidelity: resolve_sh_density_fidelity(
+                args.sh_density_fidelity,
+                worldspawn_sh_density_fidelity,
+            )
+            .to_string(),
             soft_shadow_samples: args.soft_shadow_samples.to_string(),
             // The screen is gated off for CLI density overrides. Keep the form
             // defensive anyway: a density supplied to this form is already an
             // explicit value and should not be discarded if it is confirmed.
             lightmap_density_touched: args.lightmap_density.is_some(),
+            sh_density_fidelity_touched: args.sh_density_fidelity.is_some(),
             density_source,
+            sh_density_fidelity_source,
             build_mode: if args.release || args.no_cache {
                 BuildMode::Production
             } else {
@@ -164,10 +190,19 @@ impl FormState {
         }
     }
 
+    fn sh_density_fidelity_source_label(&self) -> &'static str {
+        if self.sh_density_fidelity_touched {
+            "screen"
+        } else {
+            self.sh_density_fidelity_source.label()
+        }
+    }
+
     fn value(&self, field: ConfigField) -> Option<&str> {
         match field {
             ConfigField::ProbeSpacing => Some(&self.probe_spacing),
             ConfigField::LightmapDensity => Some(&self.lightmap_density),
+            ConfigField::ShDensityFidelity => Some(&self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&self.soft_shadow_samples),
             ConfigField::BuildMode => None,
         }
@@ -177,6 +212,7 @@ impl FormState {
         match field {
             ConfigField::ProbeSpacing => Some(&mut self.probe_spacing),
             ConfigField::LightmapDensity => Some(&mut self.lightmap_density),
+            ConfigField::ShDensityFidelity => Some(&mut self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&mut self.soft_shadow_samples),
             ConfigField::BuildMode => None,
         }
@@ -246,6 +282,9 @@ impl FormState {
         if field == ConfigField::LightmapDensity {
             self.lightmap_density_touched = true;
         }
+        if field == ConfigField::ShDensityFidelity {
+            self.sh_density_fidelity_touched = true;
+        }
         self.validation_error = None;
     }
 
@@ -258,6 +297,9 @@ impl FormState {
         self.value_mut(field).expect("numeric field").pop();
         if field == ConfigField::LightmapDensity {
             self.lightmap_density_touched = true;
+        }
+        if field == ConfigField::ShDensityFidelity {
+            self.sh_density_fidelity_touched = true;
         }
         self.validation_error = None;
     }
@@ -278,6 +320,15 @@ fn validate_field(field: ConfigField, value: &str) -> Result<ValidatedField, Str
                 .map_err(|_| "must be a positive number of meters".to_owned())?;
             if !parsed.is_finite() || parsed <= 0.0 {
                 return Err("must be a positive number of meters".to_owned());
+            }
+            Ok(ValidatedField::Metric(parsed))
+        }
+        ConfigField::ShDensityFidelity => {
+            let parsed = value
+                .parse::<f32>()
+                .map_err(|_| "must be a positive finite multiplier".to_owned())?;
+            if !parsed.is_finite() || parsed <= 0.0 {
+                return Err("must be a positive finite multiplier".to_owned());
             }
             Ok(ValidatedField::Metric(parsed))
         }
@@ -320,6 +371,10 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
         .lightmap_density_touched
         .then(|| metric(ConfigField::LightmapDensity))
         .transpose()?;
+    args.sh_density_fidelity = form
+        .sh_density_fidelity_touched
+        .then(|| metric(ConfigField::ShDensityFidelity))
+        .transpose()?;
     match form.build_mode {
         BuildMode::IncrementalBuild => {
             args.release = false;
@@ -341,9 +396,14 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
 pub(crate) fn run_config_screen(
     args: &mut Args,
     worldspawn_lightmap_density: Option<f32>,
+    worldspawn_sh_density_fidelity: Option<f32>,
     logs: &LogSink,
 ) -> anyhow::Result<ConfigOutcome> {
-    let mut form = FormState::from_args(args, worldspawn_lightmap_density);
+    let mut form = FormState::from_args(
+        args,
+        worldspawn_lightmap_density,
+        worldspawn_sh_density_fidelity,
+    );
     let mut session = TuiSession::enter()?;
     // Keep `session` outside the catch boundary. On a configuration panic its
     // terminal and panic-hook guards must be dropped only after the unwind has
@@ -493,6 +553,21 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
     append_field(
         &mut lines,
         form,
+        ConfigField::ShDensityFidelity,
+        "Base SH density fidelity",
+        format!(
+            "{}× ({})",
+            form.sh_density_fidelity,
+            form.sh_density_fidelity_source_label()
+        ),
+        format!(
+            "Default {}×; smaller = finer stored SH / larger atlas.",
+            sh_density::DEFAULT_SH_DENSITY_FIDELITY
+        ),
+    );
+    append_field(
+        &mut lines,
+        form,
         ConfigField::SoftShadowSamples,
         "Soft-shadow samples",
         form.soft_shadow_samples.clone(),
@@ -607,7 +682,11 @@ mod tests {
 
     #[test]
     fn validation_matches_cli_metric_and_sample_boundaries() {
-        for field in [ConfigField::ProbeSpacing, ConfigField::LightmapDensity] {
+        for field in [
+            ConfigField::ProbeSpacing,
+            ConfigField::LightmapDensity,
+            ConfigField::ShDensityFidelity,
+        ] {
             match validate_field(field, "0.25") {
                 Ok(ValidatedField::Metric(value)) => {
                     assert!((value - 0.25).abs() < f32::EPSILON);
@@ -630,7 +709,7 @@ mod tests {
     #[test]
     fn untouched_density_keeps_map_precedence_and_displays_its_source() {
         let mut args = default_args();
-        let form = FormState::from_args(&args, Some(0.025));
+        let form = FormState::from_args(&args, Some(0.025), None);
 
         assert_eq!(form.lightmap_density, "0.025");
         assert_eq!(form.density_source_label(), "map KVP");
@@ -642,7 +721,7 @@ mod tests {
     #[test]
     fn touched_density_becomes_the_cli_screen_override() {
         let mut args = default_args();
-        let mut form = FormState::from_args(&args, Some(0.025));
+        let mut form = FormState::from_args(&args, Some(0.025), None);
         form.lightmap_density = "0.02".to_owned();
         form.lightmap_density_touched = true;
 
@@ -653,9 +732,24 @@ mod tests {
     }
 
     #[test]
+    fn sh_density_fidelity_keeps_map_precedence_until_edited() {
+        let mut args = default_args();
+        let mut form = FormState::from_args(&args, None, Some(0.5));
+        assert_eq!(form.sh_density_fidelity, "0.5");
+        assert_eq!(form.sh_density_fidelity_source_label(), "map KVP");
+        apply_outcome(&mut args, &form).unwrap();
+        assert_eq!(args.sh_density_fidelity, None);
+
+        form.sh_density_fidelity = "2".to_owned();
+        form.sh_density_fidelity_touched = true;
+        apply_outcome(&mut args, &form).unwrap();
+        assert_eq!(args.sh_density_fidelity, Some(2.0));
+    }
+
+    #[test]
     fn build_mode_writeback_selects_exact_or_warm_cache_contract() {
         let mut args = default_args();
-        let mut form = FormState::from_args(&args, None);
+        let mut form = FormState::from_args(&args, None, None);
 
         assert_eq!(BuildMode::IncrementalBuild.label(), "Incremental build");
 
@@ -672,7 +766,7 @@ mod tests {
 
     #[test]
     fn draw_config_renders_effective_density_and_survives_resize() {
-        let form = FormState::from_args(&default_args(), Some(0.025));
+        let form = FormState::from_args(&default_args(), Some(0.025), None);
         for (width, height) in [(100, 24), (52, 12)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw_config(frame, &form)).unwrap();
@@ -686,7 +780,7 @@ mod tests {
 
     #[test]
     fn configuration_sections_indent_their_children() {
-        let form = FormState::from_args(&default_args(), None);
+        let form = FormState::from_args(&default_args(), None, None);
 
         assert_eq!(section_heading("Files").spans[0].content, "  Files");
         assert_eq!(readonly_line("Input", "map").spans[0].content, "    ");
@@ -710,7 +804,7 @@ mod tests {
 
     #[test]
     fn configuration_only_shows_guidance_for_the_selected_field() {
-        let mut form = FormState::from_args(&default_args(), None);
+        let mut form = FormState::from_args(&default_args(), None, None);
         form.selected = ConfigField::LightmapDensity;
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -732,7 +826,7 @@ mod tests {
                 .map(str::to_owned),
         )
         .unwrap();
-        let form = FormState::from_args(&args, None);
+        let form = FormState::from_args(&args, None, None);
 
         apply_outcome(&mut args, &form).unwrap();
 

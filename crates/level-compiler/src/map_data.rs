@@ -610,6 +610,11 @@ pub struct MapData {
     /// resolves the effective bake density from this plus the `--lightmap-density`
     /// CLI flag (CLI overrides the KVP; KVP overrides `DEFAULT_TEXEL_DENSITY_METERS`).
     pub lightmap_density: Option<f32>,
+    /// Worldspawn `_sh_density_fidelity` multiplier for the base-SH composed
+    /// error classifier. `None` when absent or invalid; the compiler resolves
+    /// it with `--sh-density-fidelity` and the default multiplier at bake time.
+    /// This is compiler-only authoring metadata and is not emitted to the PRL.
+    pub sh_density_fidelity: Option<f32>,
     /// Resolved navigation-bake agent and grid parameters. Each field is taken
     /// from its `nav_*` worldspawn KVP when authored and valid, else the engine
     /// default in [`NavParams::default`]. These ride the map-data struct into

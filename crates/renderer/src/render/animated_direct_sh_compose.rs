@@ -16,6 +16,7 @@ use super::direct_sh_compose::{
     texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
+use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
 /// Pass-B-only dev-tools override. Its `light_index` is in the
@@ -57,6 +58,8 @@ const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
 /// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
 /// pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
+/// Load-derived id-34 indirection words that map probes to stored atlas slots.
+const BIND_PROBE_INDIRECTION: u32 = 28;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]
 const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
@@ -68,13 +71,20 @@ pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) last_debug_override_bytes: [u8; ANIMATED_DEBUG_OVERRIDE_SIZE],
 }
 
+/// The two textures that carry animated-direct composition from the promotion
+/// pass into the final stored atlas.
+pub(super) struct AnimatedDirectShPassViews<'a> {
+    pub(super) intermediate_sampled: &'a wgpu::TextureView,
+    pub(super) output_storage: &'a wgpu::TextureView,
+}
+
 pub(super) fn build_animated_direct_pass(
     device: &wgpu::Device,
     animation: &AnimatedLightBuffers,
     layout: DirectAtlasLayout,
+    probe_indirection_words: &[u32],
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
-    intermediate_sampled_view: &wgpu::TextureView,
-    output_storage_view: &wgpu::TextureView,
+    views: AnimatedDirectShPassViews<'_>,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> AnimatedDirectShComposePipeline {
     let buffers = build_animated_direct_delta_buffers(Some(animated_delta), layout.grid_dimensions);
@@ -123,6 +133,11 @@ pub(super) fn build_animated_direct_pass(
         contents: &descriptor_indices_bytes,
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Animated Direct SH Compose Probe Indirection"),
+        contents: &probe_indirection_storage_bytes(probe_indirection_words),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
         contents: &build_compose_grid_bytes(ComposeGridParams {
@@ -134,10 +149,10 @@ pub(super) fn build_animated_direct_pass(
             tiles_per_layer: layout.tiles_per_layer,
             atlas_layer_count: layout.atlas_layer_count,
             affinity_dims: buffers.affinity_dims,
-            // Direct compose retains dense base geometry; the compact id-34
-            // tail words are only consumed by indirect `sh_compose.wgsl`.
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
+            // Retain the existing 64-byte uniform layout: its former compact
+            // tail now repeats the stored atlas geometry.
+            compact_atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            compact_atlas_tiles_per_layer: layout.tiles_per_layer,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });
@@ -157,11 +172,14 @@ pub(super) fn build_animated_direct_pass(
         bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
         immediate_size: 0,
     });
-    let shader_source = concat!(
+    let shader_source = [
         include_str!("../shaders/animated_direct_sh_compose.wgsl"),
         "\n",
         include_str!("../shaders/curve_eval.wgsl"),
-    );
+        "\n",
+        WGSL_DECODE_HELPER,
+    ]
+    .concat();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Animated Direct SH Compose Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
@@ -183,7 +201,7 @@ pub(super) fn build_animated_direct_pass(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(intermediate_sampled_view),
+                resource: wgpu::BindingResource::TextureView(views.intermediate_sampled),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_BASE_SAMPLER,
@@ -191,7 +209,7 @@ pub(super) fn build_animated_direct_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(output_storage_view),
+                resource: wgpu::BindingResource::TextureView(views.output_storage),
             },
             wgpu::BindGroupEntry {
                 binding: 18,
@@ -229,6 +247,10 @@ pub(super) fn build_animated_direct_pass(
                 binding: BIND_ANIMATED_DEBUG_OVERRIDE,
                 resource: debug_override_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_PROBE_INDIRECTION,
+                resource: probe_indirection_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -254,6 +276,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
         uniform_bgl_entry(BIND_ANIMATED_DEBUG_OVERRIDE),
+        storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
 }
 
@@ -262,7 +285,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn animated_pass_binds_compaction_metadata_as_its_seventh_storage_buffer() {
+    fn animated_pass_binds_compaction_metadata_and_indirection_within_eight_storage_buffers() {
         let storage_bindings: Vec<u32> = animated_compose_bgl_entries()
             .into_iter()
             .filter_map(|entry| {
@@ -286,8 +309,10 @@ mod tests {
                 BIND_ANIMATION_SAMPLES,
                 BIND_AFFINITY_LIGHTS,
                 BIND_ANIMATION_DESCRIPTOR_INDICES,
+                BIND_PROBE_INDIRECTION,
             ]
         );
+        assert_eq!(storage_bindings.len(), 8);
         assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
             entry.binding == BIND_ANIMATED_DEBUG_OVERRIDE
                 && matches!(
@@ -312,13 +337,12 @@ mod tests {
     }
 
     #[test]
-    fn animated_shader_uses_validity_to_gate_delta_reconstruction() {
+    fn animated_shader_uses_indirection_to_gate_stored_slot_reconstruction() {
         let source = include_str!("../shaders/animated_direct_sh_compose.wgsl");
         assert!(
-            source.contains(
-                "let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);"
-            ),
-            "id-45 has no base probe-indirection, so its validity mask must gate delta reads"
+            source.contains("let output_is_stored = stored_slot.write;")
+                && source.contains("@group(1) @binding(28) var<storage, read> probe_indirection"),
+            "Pass B must derive stored-slot writes from Task 3's id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),
@@ -351,6 +375,14 @@ mod tests {
         assert!(source.contains("if (level == 0u)"));
         assert!(source.contains("if (level == 1u && local_probe_is_kept"));
         assert!(source.contains("if (level == 2u)"));
+        assert!(
+            source.contains("fn slot_tile_origin(slot: u32)")
+                && !source.contains("fn atlas_tile_origin(")
+                && source.contains("brick_indirection.level == 1u && local_probe_is_l1_corner")
+                && source.contains("brick_indirection.level == 2u && local_probe == 0u")
+                && source.contains("select(0.0, 1.0, stored_slot.valid)"),
+            "Pass B must sample the compact intermediate and write the same stored slots"
+        );
     }
 
     #[test]
@@ -372,12 +404,15 @@ mod tests {
 
     #[test]
     fn shader_parses_and_exports_pass_b() {
-        let source = concat!(
+        let source = [
             include_str!("../shaders/animated_direct_sh_compose.wgsl"),
             "\n",
             include_str!("../shaders/curve_eval.wgsl"),
-        );
-        let module = naga::front::wgsl::parse_str(source)
+            "\n",
+            super::WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let module = naga::front::wgsl::parse_str(&source)
             .expect("animated direct compose shader should parse as WGSL");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

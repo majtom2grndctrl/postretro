@@ -67,9 +67,16 @@ pub struct ProjectileVisual {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectileLight {
+    /// Linear RGB colour, each channel in `[0, 1]`. Multiplied by `intensity`
+    /// to produce the radiance cast on nearby surfaces.
     pub color: [f32; 3],
+    /// Linear multiplier on `color`. Under the default `Linear` falloff the
+    /// near-field radiance is roughly `color_channel * intensity` (bounded); a
+    /// surface blooms once that exceeds the 1.0 bloom threshold.
     pub intensity: f32,
+    /// Distance in metres over which the light attenuates to zero.
     pub falloff_range: f32,
+    /// Distance-attenuation model. Defaults to [`FalloffKind::Linear`].
     #[serde(default = "default_projectile_light_falloff_model")]
     pub falloff_model: FalloffKind,
 }
@@ -80,16 +87,24 @@ pub struct ProjectileLight {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectileImpactLight {
+    /// Linear RGB colour, each channel in `[0, 1]`. Multiplied by `intensity`
+    /// to produce the radiance cast on nearby surfaces.
     pub color: [f32; 3],
+    /// Linear multiplier on `color`. A surface blooms once the resulting
+    /// near-field radiance exceeds the 1.0 bloom threshold.
     pub intensity: f32,
+    /// Starting distance in metres over which the flash attenuates to zero.
     pub radius: f32,
+    /// Optional final attenuation distance in metres; when present it must be
+    /// `>= radius` and the flash expands from `radius` to it while fading.
     #[serde(default)]
     pub peak_radius: Option<f32>,
+    /// Fade duration in milliseconds.
     pub fade_ms: f32,
 }
 
 const fn default_projectile_light_falloff_model() -> FalloffKind {
-    FalloffKind::InverseSquared
+    FalloffKind::Linear
 }
 
 /// The projectile's visible body. A mesh body is rigid; no animation state is

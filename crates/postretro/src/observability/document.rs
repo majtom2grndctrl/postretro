@@ -5,7 +5,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use postretro_entities::{ComponentValue, EntityRegistry};
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::{ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_level_loader::{CoupledCellPair, LevelWorld};
 
 use super::runspec::DumpSpec;
@@ -228,6 +229,34 @@ pub(crate) fn build_output_document(
             .cell_visibility
             .then(|| build_cell_visibility_dump(world)),
         out_of_frame: OutOfFrame::headless(),
+    })
+}
+
+/// Resolve the pawn summarized by observability.
+fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
+    registry.local_player_movement_pawn()
+}
+
+/// Build the curated player-pawn summary from the registry. `None` when no
+/// player pawn spawned (a map without a `player_spawn`).
+pub(crate) fn build_player_summary(
+    registry: &EntityRegistry,
+    facing_yaw: f32,
+) -> Option<PlayerPawnSummary> {
+    let id = local_pawn(registry)?;
+    let transform = registry.get_component::<Transform>(id).ok()?;
+    let health = registry
+        .get_component::<HealthComponent>(id)
+        .ok()
+        .map(|health| PawnHealth {
+            current: health.current,
+            max: health.max,
+        });
+    Some(PlayerPawnSummary {
+        entity: id.to_raw(),
+        position: transform.position.to_array(),
+        facing_yaw,
+        health,
     })
 }
 

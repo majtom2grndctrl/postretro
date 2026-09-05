@@ -53,10 +53,10 @@ mod netcode;
 // main-thread service that parses requests is added separately.
 #[cfg(feature = "observe-live")]
 mod observe_live;
-// Headless batch-mode observability vocabulary: runspec, entity dump, and
-// deterministic JSON output. Feature-gated; consumed by the headless driver.
+// Shared batch/live observability vocabulary: dump filters, entity documents,
+// and deterministic JSON output. The headless driver remains observability-only.
 // See: context/plans/done/agentic-observability
-#[cfg(feature = "observability")]
+#[cfg(any(feature = "observability", feature = "observe-live"))]
 mod observability;
 // Static offscreen frame-capture scene parser and renderer driver. It exits
 // before boot constructs winit state, so this remains independent of UI.

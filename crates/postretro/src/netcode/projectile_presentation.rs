@@ -64,6 +64,14 @@ pub(crate) struct HostProjectilePresentations {
     flights: HashMap<EntityId, PresentationFlight>,
 }
 
+/// Host-local source facts for one gameplay projectile mirror. The source's class
+/// becomes the existing snapshot `entity_class`; it never alters gameplay state.
+pub(crate) struct GameplayProjectilePresentationSource<'a> {
+    pub(crate) projectile_id: EntityId,
+    pub(crate) descriptor_class: &'a str,
+    pub(crate) spawn_tick: u32,
+}
+
 impl HostProjectilePresentations {
     /// Retain a validated contact endpoint on the matching remote-fire visual.
     /// Unknown or already-retired shots are ignored, so contact state cannot leak
@@ -161,20 +169,21 @@ impl HostProjectilePresentations {
         projectile_id: EntityId,
         spawn_tick: u32,
     ) {
-        let Some((transform, descriptor_class)) =
-            local_projectile_presentation_source(registry, projectile_id)
+        let Some(descriptor_class) =
+            local_projectile_presentation_descriptor_class(registry, projectile_id)
         else {
             return;
         };
-        self.mirror_gameplay_projectile_from_source(
+        self.mirror_gameplay_projectile_with_descriptor_class(
             registry,
             allocator,
             replicable,
             replication,
-            projectile_id,
-            transform,
-            &descriptor_class,
-            spawn_tick,
+            GameplayProjectilePresentationSource {
+                projectile_id,
+                descriptor_class: &descriptor_class,
+                spawn_tick,
+            },
         );
     }
 
@@ -188,43 +197,21 @@ impl HostProjectilePresentations {
         allocator: &mut NetworkIdAllocator,
         replicable: &mut ReplicableSet,
         replication: &ServerReplication,
-        projectile_id: EntityId,
-        descriptor_class: &str,
-        spawn_tick: u32,
+        source: GameplayProjectilePresentationSource<'_>,
     ) {
-        let Some(transform) = gameplay_projectile_transform(registry, projectile_id) else {
+        let Some(transform) = gameplay_projectile_transform(registry, source.projectile_id) else {
             return;
         };
-        self.mirror_gameplay_projectile_from_source(
-            registry,
-            allocator,
-            replicable,
-            replication,
-            projectile_id,
-            transform,
-            descriptor_class,
-            spawn_tick,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn mirror_gameplay_projectile_from_source(
-        &mut self,
-        registry: &mut EntityRegistry,
-        allocator: &mut NetworkIdAllocator,
-        replicable: &mut ReplicableSet,
-        replication: &ServerReplication,
-        projectile_id: EntityId,
-        transform: Transform,
-        descriptor_class: &str,
-        spawn_tick: u32,
-    ) {
-        if !replication.has_registered_clients() || descriptor_class.is_empty() {
+        if !replication.has_registered_clients() || source.descriptor_class.is_empty() {
             return;
         }
-        let Some(id) =
-            spawn_presentation_entity(registry, transform, descriptor_class, None, spawn_tick)
-        else {
+        let Some(id) = spawn_presentation_entity(
+            registry,
+            transform,
+            source.descriptor_class,
+            None,
+            source.spawn_tick,
+        ) else {
             return;
         };
         allocator.stamp(id);
@@ -232,7 +219,7 @@ impl HostProjectilePresentations {
         self.flights.insert(
             id,
             PresentationFlight::FollowGameplay {
-                source: projectile_id,
+                source: source.projectile_id,
                 pose_dirty: true,
                 contact_point: None,
                 endpoint: None,
@@ -448,11 +435,10 @@ fn set_presentation_endpoint(registry: &mut EntityRegistry, id: EntityId, point:
     changed
 }
 
-fn local_projectile_presentation_source(
+fn local_projectile_presentation_descriptor_class(
     registry: &EntityRegistry,
     projectile_id: EntityId,
-) -> Option<(Transform, String)> {
-    let transform = gameplay_projectile_transform(registry, projectile_id)?;
+) -> Option<String> {
     let projectile = registry
         .get_component::<ProjectileComponent>(projectile_id)
         .ok()?;
@@ -461,7 +447,7 @@ fn local_projectile_presentation_source(
         .ok()?
         .canonical_name
         .clone();
-    (!descriptor_class.is_empty()).then_some((transform, descriptor_class))
+    (!descriptor_class.is_empty()).then_some(descriptor_class)
 }
 
 fn gameplay_projectile_transform(
@@ -949,9 +935,11 @@ mod tests {
             &mut allocator,
             &mut replicable,
             &replication,
-            source,
-            "enemy_rifle",
-            0,
+            GameplayProjectilePresentationSource {
+                projectile_id: source,
+                descriptor_class: "enemy_rifle",
+                spawn_tick: 0,
+            },
         );
 
         let visuals = presentations.flights.keys().copied().collect::<Vec<_>>();

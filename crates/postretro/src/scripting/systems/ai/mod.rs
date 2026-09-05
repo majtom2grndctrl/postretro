@@ -862,80 +862,78 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         let entered = brain.take_entry_pending();
         let mut attacked = false;
         let mut attack_outcome = None;
-        let attack_candidate = programs
-            .with_entry_scope(snap.id, |bound, scope| {
-                action_for_path(bound, scope, &brain).and_then(|action| match action {
-                    ActionVerb::Attack(name) => {
-                        let attack = brain.graph.attacks.get(name)?.clone();
-                        let projectile = bound.resolved_projectile_attack(name).cloned();
-                        Some((name.clone(), attack, projectile))
-                    }
-                })
-            })
-            .flatten()
-            .and_then(|(attack_name, attack, resolved_projectile)| {
-                if attack.weapon.is_some() {
-                    let resolved = resolved_projectile?;
-                    let target_perception = target_perception?;
-                    let origin = target_perception.enemy_eye;
-                    let direction = (target_perception.target_aim - origin).normalize();
-                    let credit_source = resolved
-                        .credit_source()
-                        .unwrap_or_else(|| resolved.canonical_weapon_name())
-                        .to_string();
-                    Some((
-                        attack_name,
-                        resolved.range(),
-                        resolved.cooldown_ms(),
-                        AttackOutcome::Projectile {
-                            launch: Box::new(ProjectileLaunch {
-                                origin,
-                                direction,
-                                speed: resolved.projectile().speed,
-                                radius: resolved.projectile().radius,
-                                range: resolved.range(),
-                                lifetime: resolved.projectile().lifetime_ms / 1000.0,
-                                damage: resolved.damage(),
-                                credit_source,
-                                descriptor: resolved.projectile().clone(),
-                            }),
-                            descriptor_class: resolved.canonical_weapon_name().to_string(),
-                        },
-                    ))
-                } else {
-                    let (Some(damage), Some(max_range), Some(cooldown_ms)) =
-                        (attack.damage, attack.max_range, attack.cooldown_ms)
-                    else {
-                        return None;
-                    };
-                    Some((
-                        attack_name,
-                        max_range,
-                        cooldown_ms,
-                        AttackOutcome::Contact { damage },
-                    ))
-                }
-            });
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
-            && let Some((attack_name, max_range, cooldown_ms, outcome)) = attack_candidate
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
-            && distance <= max_range
-            && brain
-                .attack_cooldown_remaining_ms
-                .get(&attack_name)
-                .copied()
-                .unwrap_or(0.0)
-                <= 0.0
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
             && post_slew_facing_is_within_tolerance
+            && let Some((attack_name, cooldown_ms, outcome)) = programs
+                .with_entry_scope(snap.id, |bound, scope| {
+                    let action = action_for_path(bound, scope, &brain)?;
+                    let ActionVerb::Attack(name) = action;
+                    let attack = brain.graph.attacks.get(name)?;
+
+                    if brain
+                        .attack_cooldown_remaining_ms
+                        .get(name)
+                        .copied()
+                        .unwrap_or(0.0)
+                        > 0.0
+                    {
+                        return None;
+                    }
+
+                    if attack.weapon.is_some() {
+                        let resolved = bound.resolved_projectile_attack(name)?;
+                        if distance > resolved.range() {
+                            return None;
+                        }
+
+                        let perception = target_perception?;
+                        let origin = perception.enemy_eye;
+                        let direction = (perception.target_aim - origin).normalize();
+                        let credit_source = resolved
+                            .credit_source()
+                            .unwrap_or_else(|| resolved.canonical_weapon_name())
+                            .to_string();
+                        Some((
+                            name.clone(),
+                            resolved.cooldown_ms(),
+                            AttackOutcome::Projectile {
+                                launch: Box::new(ProjectileLaunch {
+                                    origin,
+                                    direction,
+                                    speed: resolved.projectile().speed,
+                                    radius: resolved.projectile().radius,
+                                    range: resolved.range(),
+                                    lifetime: resolved.projectile().lifetime_ms / 1000.0,
+                                    damage: resolved.damage(),
+                                    credit_source,
+                                    descriptor: resolved.projectile().clone(),
+                                }),
+                                descriptor_class: resolved.canonical_weapon_name().to_string(),
+                            },
+                        ))
+                    } else {
+                        let (Some(damage), Some(max_range), Some(cooldown_ms)) =
+                            (attack.damage, attack.max_range, attack.cooldown_ms)
+                        else {
+                            return None;
+                        };
+                        if distance > max_range {
+                            return None;
+                        }
+                        Some((name.clone(), cooldown_ms, AttackOutcome::Contact { damage }))
+                    }
+                })
+                .flatten()
         {
             attacked = true;
             attack_outcome = Some(outcome);
             brain
                 .attack_cooldown_remaining_ms
-                .insert(attack_name.clone(), cooldown_ms);
+                .insert(attack_name, cooldown_ms);
             brain.record_successful_attack_fire();
         }
 

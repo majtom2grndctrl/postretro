@@ -7424,19 +7424,14 @@ impl App {
                 *tick,
             );
         }
-        for spawn in enemy_projectile_spawns {
-            projectile_presentations.mirror_gameplay_projectile_with_descriptor_class(
-                &mut registry,
-                allocator,
-                replicable,
-                replication,
-                netcode::GameplayProjectilePresentationSource {
-                    projectile_id: spawn.projectile,
-                    descriptor_class: &spawn.descriptor_class,
-                    spawn_tick: *tick,
-                },
-            );
-        }
+        projectile_presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            allocator,
+            replicable,
+            replication,
+            enemy_projectile_spawns,
+            *tick,
+        );
     }
 
     fn host_advance_projectile_presentations(

@@ -45,6 +45,8 @@ mod ai_tests;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, find_path};
+use crate::sim::spawn_projectile;
+use crate::weapon::ProjectileLaunch;
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use combat_slots::resolve_combat_slots;
@@ -288,11 +290,12 @@ pub(super) struct EnemyOutcome {
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
-    /// `true` when an attack landed this tick (damage applied, event raised).
+    /// `true` when an attack fired this tick (event raised; projectile contact
+    /// damage arrives in a later simulation stage).
     attacked: bool,
-    /// Damage already resolved at the one fire-latch seam. The apply pass never
-    /// re-derives an action from a potentially changed path.
-    attack_damage: Option<f32>,
+    /// Fire-time resolution already selected at the one fire-latch seam. The
+    /// apply pass never re-derives an action from a potentially changed path.
+    attack: Option<AttackOutcome>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(super) prior_standoff_distance: f32,
@@ -300,6 +303,15 @@ pub(super) struct EnemyOutcome {
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
+}
+
+/// One successful fire-latch's engine-owned resolution. Contact attacks keep
+/// their direct-damage path; weapon attacks carry the launch materialized by
+/// the apply pass, after the immutable evaluator has released its registry
+/// borrow.
+enum AttackOutcome {
+    Contact { damage: f32 },
+    Projectile { launch: ProjectileLaunch },
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -819,11 +831,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             yaw_within_attack_tolerance(post_slew_yaw, perception.target_aim - perception.enemy_eye)
         });
 
-        // (4) Attack: the active firing leaf latches one graph-wide contact
-        // attack on its first clear dwell tick. Its own cooldown must have
-        // elapsed, the SELECTED target must be inside its `maxRange`, and it
-        // must still be alive. The LOS and facing gates read this tick's shared
-        // debounced perception and post-slew heading respectively.
+        // (4) Attack: the active firing leaf latches one graph-wide attack on
+        // its first clear dwell tick. Its own cooldown must have elapsed, the
+        // SELECTED target must be inside its effective range, and it must still
+        // be alive. The LOS and facing gates read this tick's shared debounced
+        // perception and post-slew heading respectively.
         // The range gate lets a graph declare the action without making it
         // connect from across the room.
         // An unresolved action name configures no range and no damage, so it
@@ -833,23 +845,63 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // different co-op pawn than the one this enemy chose.
         let entered = brain.take_entry_pending();
         let mut attacked = false;
-        let mut attack_damage = None;
+        let mut attack_outcome = None;
+        let attack_candidate = programs
+            .with_entry_scope(snap.id, |bound, scope| {
+                action_for_path(bound, scope, &brain).and_then(|action| match action {
+                    ActionVerb::Attack(name) => {
+                        let attack = brain.graph.attacks.get(name)?.clone();
+                        let projectile = bound.resolved_projectile_attack(name).cloned();
+                        Some((name.clone(), attack, projectile))
+                    }
+                })
+            })
+            .flatten()
+            .and_then(|(attack_name, attack, resolved_projectile)| {
+                if attack.weapon.is_some() {
+                    let resolved = resolved_projectile?;
+                    let target_perception = target_perception?;
+                    let origin = target_perception.enemy_eye;
+                    let direction = (target_perception.target_aim - origin).normalize();
+                    let credit_source = resolved
+                        .credit_source()
+                        .unwrap_or_else(|| resolved.canonical_weapon_name())
+                        .to_string();
+                    Some((
+                        attack_name,
+                        resolved.range(),
+                        resolved.cooldown_ms(),
+                        AttackOutcome::Projectile {
+                            launch: ProjectileLaunch {
+                                origin,
+                                direction,
+                                speed: resolved.projectile().speed,
+                                radius: resolved.projectile().radius,
+                                range: resolved.range(),
+                                lifetime: resolved.projectile().lifetime_ms / 1000.0,
+                                damage: resolved.damage(),
+                                credit_source,
+                                descriptor: resolved.projectile().clone(),
+                            },
+                        },
+                    ))
+                } else {
+                    let (Some(damage), Some(max_range), Some(cooldown_ms)) =
+                        (attack.damage, attack.max_range, attack.cooldown_ms)
+                    else {
+                        return None;
+                    };
+                    Some((
+                        attack_name,
+                        max_range,
+                        cooldown_ms,
+                        AttackOutcome::Contact { damage },
+                    ))
+                }
+            });
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
-            && let Some((attack_name, attack)) = programs
-                .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_path(bound, scope, &brain).and_then(|action| match action {
-                        ActionVerb::Attack(name) => brain
-                            .graph
-                            .attacks
-                            .get(name)
-                            .cloned()
-                            .map(|attack| (name.clone(), attack)),
-                    })
-                })
-                .flatten()
-            && let (Some(damage), Some(max_range), Some(cooldown_ms)) =
-                (attack.damage, attack.max_range, attack.cooldown_ms)
+            && let Some((attack_name, max_range, cooldown_ms, outcome)) = attack_candidate
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && distance <= max_range
             && brain
@@ -863,7 +915,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             && post_slew_facing_is_within_tolerance
         {
             attacked = true;
-            attack_damage = Some(damage);
+            attack_outcome = Some(outcome);
             brain
                 .attack_cooldown_remaining_ms
                 .insert(attack_name.clone(), cooldown_ms);
@@ -898,7 +950,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             graph_reseated,
             state_changed,
             attacked,
-            attack_damage,
+            attack: attack_outcome,
             prior_standoff_distance,
             standoff_distance,
             on_enter,
@@ -1022,27 +1074,40 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             let _ = registry.set_component(outcome.id, transform);
         }
 
-        // Damage: route the configured amount through the chokepoint to the
-        // SELECTED target id, and raise the attack event. The chokepoint no-ops
-        // on a non-health / stale target, but attacks are only marked above
-        // after confirming this selected pawn currently has live Health.
+        // Fire: contact attacks route their configured amount through the
+        // chokepoint to the SELECTED target id. Projectile attacks instead
+        // materialize a host-owned flight entity; the shared projectile stage
+        // resolves its later contact through that same chokepoint. In both
+        // cases the selected target was confirmed live before the latch.
         if outcome.attacked {
-            if let Some(target) = outcome.target {
-                apply_damage_with_context(
-                    registry,
-                    target.entity,
-                    &DamagePayload {
-                        amount: outcome.attack_damage.unwrap_or(0.0),
-                    },
-                    DamageContext {
-                        source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
-                        attacker: Some(outcome.id),
-                        weapon: None,
-                        zone: None,
-                        producer: DamageProducer::InTick,
-                    },
-                );
-                on_impact(registry);
+            match outcome
+                .attack
+                .take()
+                .expect("a successful enemy fire latch carries its resolution")
+            {
+                AttackOutcome::Contact { damage } => {
+                    if let Some(target) = outcome.target {
+                        apply_damage_with_context(
+                            registry,
+                            target.entity,
+                            &DamagePayload { amount: damage },
+                            DamageContext {
+                                source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
+                                attacker: Some(outcome.id),
+                                weapon: None,
+                                zone: None,
+                                producer: DamageProducer::InTick,
+                            },
+                        );
+                        on_impact(registry);
+                    }
+                }
+                AttackOutcome::Projectile { launch } => {
+                    // Enemies have no materialized weapon entity. The projectile
+                    // impact path uses this id only as engine-internal damage
+                    // context provenance, never as a weapon lookup.
+                    let _ = spawn_projectile(registry, outcome.id, outcome.id, launch, None);
+                }
             }
             events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
         }

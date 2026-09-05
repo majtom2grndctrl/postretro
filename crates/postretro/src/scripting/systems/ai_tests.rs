@@ -6,7 +6,9 @@
 // graph.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use glam::Vec3;
 use parry3d::math::{Isometry, Point};
@@ -23,6 +25,7 @@ use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::scripting_systems::hit_zones::HitZoneStore;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -39,11 +42,12 @@ use postretro_foundation::{
     BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
     BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
     BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    bind,
+    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
+    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
+    WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
-    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
+    AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
 };
 
@@ -7400,6 +7404,85 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
     })
 }
 
+fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescriptor {
+    let mut graph = standing_attack_graph();
+    graph.attacks.insert(
+        "attack".to_string(),
+        AttackParams {
+            weapon: Some(weapon_name.to_string()),
+            damage: None,
+            max_range: None,
+            cooldown_ms: None,
+            engagement_radius: None,
+            standoff_distance: None,
+        },
+    );
+    graph
+}
+
+fn projectile_weapon_descriptor(
+    canonical_name: &str,
+    range: f32,
+    damage: f32,
+    cooldown_ms: f32,
+) -> EntityTypeDescriptor {
+    EntityTypeDescriptor {
+        canonical_name: Some(canonical_name.to_string()),
+        inventory: None,
+        light: None,
+        emitter: None,
+        movement: None,
+        weapon: Some(WeaponDescriptor {
+            damage,
+            pellet_count: 1,
+            spread_degrees: 0.0,
+            range,
+            cooldown_ms,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Projectile,
+            projectile: Some(ProjectileDescriptor {
+                speed: 18.0,
+                radius: 0.1,
+                lifetime_ms: 1_000.0,
+                visual: ProjectileVisual {
+                    body: ProjectileBodyVisual::Sprite {
+                        sprite: "sprites/projectiles/test-bolt.png".to_string(),
+                        size: 0.25,
+                        opacity: 1.0,
+                        rotation: 0.0,
+                        tint: [1.0, 1.0, 1.0],
+                        emissive: 0.0,
+                        frame_duration_ms: None,
+                    },
+                    trail: None,
+                    light: None,
+                    impact_light: None,
+                },
+            }),
+            credit_source: Some("enemy.rifle".to_string()),
+            third_person_model: None,
+            viewmodel: None,
+            placement: None,
+            muzzle_offset: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
+        }),
+        touchable: None,
+        mesh: None,
+        health: None,
+        behavior: None,
+    }
+}
+
+fn projectile_ids(registry: &EntityRegistry) -> Vec<EntityId> {
+    registry
+        .iter_with_kind(postretro_entities::ComponentKind::Projectile)
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// A minimal hold-at-standoff offense cycle. Its nested `aim` leaf deliberately
 /// exposes no action while the parent move selector remains capable of chasing,
 /// matching the committed ranged-aim shape without relying on demo content.
@@ -7534,6 +7617,218 @@ fn an_attack_state_deals_no_damage_outside_attack_range() {
         "the dwell latch fires once when its range gate first opens"
     );
     assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_tick() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let mut player_health = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("test pawn carries health")
+        .clone();
+    player_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.25, 1.0, 0.25),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(pawn, player_health)
+        .expect("test pawn remains live");
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+        &descriptors,
+        |_| {},
+    );
+    assert!(
+        events.is_empty(),
+        "the resolved weapon range gates the fire"
+    );
+    assert!(projectile_ids(&registry).is_empty());
+    assert_eq!(player_hp(&registry, pawn), 100.0);
+
+    let mut pawn_transform = *registry
+        .get_component::<Transform>(pawn)
+        .expect("test pawn has a transform");
+    pawn_transform.position = Vec3::X;
+    registry
+        .set_component(pawn, pawn_transform)
+        .expect("test pawn remains live");
+
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+        &descriptors,
+        |_| {},
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(
+        player_hp(&registry, pawn),
+        100.0,
+        "a projectile fire tick does not apply contact damage"
+    );
+    let projectiles = projectile_ids(&registry);
+    let [projectile] = projectiles.as_slice() else {
+        panic!("the resolved projectile attack must materialize exactly one projectile");
+    };
+    let projectile = *projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            projectile,
+        )
+        .expect("enemy fire attaches the common projectile component");
+    assert_eq!(component.owner_pawn, enemy);
+    assert_eq!(component.owner_weapon, enemy);
+    assert_eq!(component.predicted_shot_id, None);
+    assert!(
+        component.spawned,
+        "the common spawn grace owns the fire tick"
+    );
+    assert_eq!(component.credit_source, "enemy.rifle");
+    assert!((component.damage - 13.0).abs() <= EPS);
+    assert!((component.remaining_range - 2.0).abs() <= EPS);
+    assert_eq!(
+        registry
+            .get_component::<Transform>(projectile)
+            .expect("projectile carries the enemy-eye origin")
+            .position,
+        Vec3::ZERO
+    );
+    assert!(
+        (Vec3::from_array(component.direction) - Vec3::new(1.0, 0.5, 0.0).normalize()).length()
+            <= EPS,
+        "projectile direction follows the same enemy-eye-to-target-aim segment as the fire gate"
+    );
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    crate::sim::advance(
+        &registry,
+        &world,
+        &hit_zones,
+        0.0,
+        1.0 / 60.0,
+        &mut ignore_impact,
+    );
+    assert_eq!(
+        player_hp(&registry.borrow(), pawn),
+        100.0,
+        "spawn grace prevents an impact during the fire tick's projectile pass"
+    );
+
+    crate::sim::advance(&registry, &world, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+    let registry = registry.borrow();
+    assert_eq!(player_hp(&registry, pawn), 87.0);
+    assert!(!registry.exists(projectile));
+    let [credit] = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("target keeps health after the impact")
+        .contributor_ledger
+        .entries()
+    else {
+        panic!("projectile impact must reach the shared damage chokepoint");
+    };
+    assert_eq!(credit.source_id, "enemy.rifle");
+    assert_eq!(credit.last_attacker, Some(enemy));
+    assert_eq!(credit.last_weapon, Some(enemy));
+}
+
+#[test]
+fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::X);
+    let mut player_health = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("test pawn carries health")
+        .clone();
+    player_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.25, 1.0, 0.25),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(pawn, player_health)
+        .expect("test pawn remains live");
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        None,
+        Some(&CollisionWorld::new()),
+        &descriptors,
+        |_| {},
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    let projectiles = projectile_ids(&registry);
+    let [projectile] = projectiles.as_slice() else {
+        panic!("enemy fire must create a projectile before it can be occluded");
+    };
+    let projectile = *projectile;
+    let registry = Rc::new(RefCell::new(registry));
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let hit_zones = HitZoneStore::new();
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    crate::sim::advance(
+        &registry,
+        &wall,
+        &hit_zones,
+        0.0,
+        1.0 / 60.0,
+        &mut ignore_impact,
+    );
+    crate::sim::advance(&registry, &wall, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+
+    let registry = registry.borrow();
+    assert!(!registry.exists(projectile));
+    assert_eq!(player_hp(&registry, pawn), 100.0);
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(pawn)
+            .expect("target remains live")
+            .contributor_ledger
+            .entries()
+            .len(),
+        0,
+        "world impact never routes damage through the target chokepoint"
+    );
+    assert!(registry.exists(enemy));
 }
 
 #[test]

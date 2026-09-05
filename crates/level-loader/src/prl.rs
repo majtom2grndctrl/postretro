@@ -600,10 +600,10 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
     /// v3 metadata-derived stored-tile direct SH atlas for dynamic objects
-    /// (mesh entities + billboards). `None` when the map has no static direct
-    /// SH/static lights, or when the section is unusable — dynamic objects fall
-    /// back to indirect-only (the renderer binds a 4×4 BC6H zero dummy). Tile
-    /// geometry derives from `sh_volume` metadata; runtime reuses its grid
+    /// (mesh entities + billboards). `None` only when id35 is absent. A present
+    /// malformed, stale, geometry-mismatched, or tag-mismatched id35 is a fatal
+    /// loader error. Renderer device-limit fallback does not clear this field.
+    /// Tile geometry derives from `sh_volume` metadata; runtime reuses its grid
     /// uniform + depth moments.
     #[cfg(feature = "load-prl")]
     pub direct_sh_volume: Option<DirectShVolumeSection>,

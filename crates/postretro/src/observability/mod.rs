@@ -1,15 +1,23 @@
-// Headless observability vocabulary: runspec input, output dumps, and
-// deterministic JSON serialization for byte-identical runs. Driver
-// (`driver::run_headless`) is wired from `startup::build_session`.
+// Shared batch/live observability vocabulary: dump filters, output documents,
+// and deterministic JSON serialization. Batch driver: `driver::run_headless`.
 // See: context/plans/done/agentic-observability
 
 mod document;
+#[cfg(feature = "observability")]
 mod driver;
 mod runspec;
 
+#[cfg(feature = "observability")]
 pub(crate) use driver::run_headless;
 
-pub(crate) use document::{PawnHealth, PlayerPawnSummary, TickEventRecord, build_output_document};
+#[cfg(feature = "observability")]
+pub(crate) use document::TickEventRecord;
+#[cfg(feature = "observe-live")]
+pub(crate) use document::{OutOfFrame, OutputDocument};
+pub(crate) use document::{build_output_document, build_player_summary};
+#[cfg(feature = "observe-live")]
+pub(crate) use runspec::DumpSpec;
+#[cfg(feature = "observability")]
 pub(crate) use runspec::{AimCommand, CommandEntry, parse_runspec};
 
 use postretro_entities::ComponentKind;

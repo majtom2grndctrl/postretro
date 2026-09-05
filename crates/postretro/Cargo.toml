@@ -98,6 +98,9 @@ dev-tools = [
 # no optional deps, no egui, independent of dev-tools.
 # See: context/plans/done/agentic-observability
 observability = []
+# Windowed localhost live-introspection channel. Like `observability`, this only
+# gates binary modules and deliberately adds no dependencies.
+observe-live = []
 # Static offscreen frame capture for content CI. Gates binary-only modules and
 # adds no dependencies or UI surface.
 capture = []

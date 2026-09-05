@@ -1,13 +1,16 @@
 // Runspec input vocabulary: the tool-facing JSON a headless run is driven from.
 // See: context/plans/done/agentic-observability
 
+#[cfg(feature = "observability")]
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "observability")]
 use thiserror::Error;
 
 use postretro_entities::ComponentKind;
 
 use super::{DumpError, parse_component_kind};
+#[cfg(feature = "observability")]
 use crate::movement::MovementInput;
 
 /// Default entry cap when a runspec omits `dump.cap`. Bounds the dumped entity
@@ -19,6 +22,7 @@ const DEFAULT_DUMP_CAP: usize = 1000;
 /// concise, targeted exercise; a longer run means the runspec needs better
 /// setup. Guardrail against fat-fingering, not a hard limit — raise
 /// deliberately with a concrete use case.
+#[cfg(feature = "observability")]
 const MAX_TICKS: u32 = 72_000;
 
 /// A complete headless run description: which map, how many fixed ticks, the
@@ -27,6 +31,7 @@ const MAX_TICKS: u32 = 72_000;
 /// `deny_unknown_fields` makes a typo or stale key a hard parse error rather than
 /// a silently-ignored field — the runspec is a stable tool-facing surface, so
 /// drift must be loud.
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunSpec {
@@ -50,6 +55,7 @@ pub(crate) struct RunSpec {
 /// `MovementInput`; `facing_yaw` is intentionally absent — the driver derives it
 /// from `aim.direction` and threads it into the movement input, mirroring how the
 /// windowed engine derives facing from the camera.
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CommandEntry {
@@ -70,6 +76,7 @@ pub(crate) struct CommandEntry {
     pub reload: bool,
 }
 
+#[cfg(feature = "observability")]
 impl CommandEntry {
     /// Build the engine `MovementInput` for this command, supplying the
     /// `facing_yaw` the driver derived from the active aim direction. Centralizes
@@ -94,6 +101,7 @@ impl CommandEntry {
 /// Movement intent, field-for-field mirroring the engine `MovementInput` (minus
 /// the driver-derived `facing_yaw`). Every field defaults to neutral so a
 /// partial `movement` block reads cleanly.
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct MovementCommand {
@@ -110,6 +118,7 @@ pub(crate) struct MovementCommand {
 /// Aim ray for the post-movement command: `SimCommand` carries no pitch, so aim
 /// is authored here and fed in after movement, matching the windowed engine's
 /// camera-derived aim.
+#[cfg(feature = "observability")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AimCommand {
@@ -170,6 +179,7 @@ impl DumpSpec {
 /// which already carries a line/column and, for `deny_unknown_fields`, the
 /// offending field name — a useful diagnostic the driver can print before
 /// exiting non-zero.
+#[cfg(feature = "observability")]
 #[derive(Debug, Error)]
 pub(crate) enum RunSpecError {
     #[error("invalid runspec: {0}")]
@@ -226,6 +236,7 @@ pub(crate) enum RunSpecError {
 /// or duplicate command ticks, non-finite or out-of-range `wish_dir`
 /// components, non-finite `aim.origin` components, and a `ticks` value above
 /// [`MAX_TICKS`] all yield an `Err` with a diagnostic message.
+#[cfg(feature = "observability")]
 pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
     let spec: RunSpec = serde_json::from_str(json)?;
     if spec.ticks > MAX_TICKS {
@@ -245,6 +256,7 @@ pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
 /// [`RunSpecError::NonFiniteWishDir`], [`RunSpecError::WishDirOutOfRange`],
 /// and [`RunSpecError::NonFiniteAimOrigin`] for why these are parse-time
 /// rejections rather than silent sort/clamp.
+#[cfg(feature = "observability")]
 fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
     let mut previous_tick: Option<u32> = None;
     for (index, entry) in commands.iter().enumerate() {
@@ -278,7 +290,7 @@ fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "observability"))]
 mod tests {
     use super::*;
 

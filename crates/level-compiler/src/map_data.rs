@@ -129,6 +129,23 @@ pub struct MapEntityRecord {
     pub tags: Vec<String>,
 }
 
+/// Compiler-only assembly identity translated from source-format grouping.
+///
+/// The format adapter owns source metadata recognition; downstream compiler
+/// stages use this engine-shaped record for diagnostics and later assembly
+/// consumers without seeing editor-specific keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MapAssembly {
+    /// Human-readable diagnostic label. Uses the authored group name when it
+    /// exists, otherwise a stable label derived from the adapter-local id.
+    pub(crate) provenance: String,
+    /// Stable adapter-local identity for sibling member association.
+    pub(crate) group_id: String,
+    /// Captured normalized linked-group identifier. This is only provenance
+    /// for a future consumer; it does not imply an instance relation here.
+    pub(crate) linked_group_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KinematicMoveMode {
     Once,
@@ -549,6 +566,16 @@ pub struct MapData {
     /// editor groups. BSP partition, face extraction, and portal stages all
     /// consume this representation.
     pub brush_volumes: Vec<BrushVolume>,
+    /// Compiler-only source-group identities, retained after the input adapter
+    /// has flattened static group brushes into canonical world geometry.
+    // `prl-build` consumes this compiler-only seam; the library target exposes
+    // geometry helpers but does not run the compile pipeline.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) assemblies: Vec<MapAssembly>,
+    /// One entry per retained [`Self::brush_volumes`] item. An entry names the
+    /// assembly which supplied the brush, or is `None` for ungrouped geometry.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) brush_assembly: Vec<Option<usize>>,
     /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
     /// brushes are flattened into static brush volumes, while semantic brush
     /// entities are resolved by their owning subsystems.

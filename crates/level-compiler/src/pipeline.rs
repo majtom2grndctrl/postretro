@@ -22,6 +22,28 @@ use crate::{
     trigger_volumes, visibility,
 };
 
+/// Resolve an open-edge sample to its assembly provenance, when the source
+/// brush came from a recognized static editor group.
+pub(crate) fn watertight_open_edge_provenance(
+    edge: &partition::OpenEdge,
+    brush_assembly: &[Option<usize>],
+    assemblies: &[map_data::MapAssembly],
+) -> Option<String> {
+    let assembly_index = brush_assembly.get(edge.brush_index).copied().flatten()?;
+    let assembly = assemblies.get(assembly_index)?;
+    let name_collides = assemblies
+        .iter()
+        .filter(|candidate| candidate.provenance == assembly.provenance)
+        .nth(1)
+        .is_some();
+
+    Some(if name_collides {
+        format!("{} ({})", assembly.provenance, assembly.group_id)
+    } else {
+        assembly.provenance.clone()
+    })
+}
+
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
     reporter.begin_stage(id);
     Instant::now()
@@ -345,13 +367,28 @@ fn run_after_parsing(
             watertight.samples.len(),
         );
         for edge in &watertight.samples {
-            log::warn!(
-                "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {}",
-                edge.midpoint.x,
-                edge.midpoint.y,
-                edge.midpoint.z,
-                edge.brush_index,
-            );
+            if let Some(provenance) = watertight_open_edge_provenance(
+                edge,
+                &map_data.brush_assembly,
+                &map_data.assemblies,
+            ) {
+                log::warn!(
+                    "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {} in group {}",
+                    edge.midpoint.x,
+                    edge.midpoint.y,
+                    edge.midpoint.z,
+                    edge.brush_index,
+                    provenance,
+                );
+            } else {
+                log::warn!(
+                    "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {}",
+                    edge.midpoint.x,
+                    edge.midpoint.y,
+                    edge.midpoint.z,
+                    edge.brush_index,
+                );
+            }
         }
     } else if args.verbose {
         log::info!("[Compiler] Watertightness: world geometry is closed (0 open edges)");
@@ -1942,6 +1979,7 @@ pub(crate) fn log_direct_sh_delta_stats_for_test(
 mod tests {
     use super::*;
 
+    use glam::DVec3;
     use log::Level;
     use postretro_test_log_capture::LogCapture;
 
@@ -1968,6 +2006,54 @@ mod tests {
         assert!(combined_protect_aabbs(&empty, &empty).is_empty());
         assert_eq!(combined_protect_aabbs(&one, &empty), one);
         assert_eq!(combined_protect_aabbs(&empty, &one), one);
+    }
+
+    #[test]
+    fn watertight_open_edge_provenance_names_groups_and_leaves_ungrouped_edges_unnamed() {
+        let edge = partition::OpenEdge {
+            midpoint: DVec3::ZERO,
+            brush_index: 1,
+        };
+        let assemblies = vec![map_data::MapAssembly {
+            provenance: "service tunnel".to_string(),
+            group_id: "17".to_string(),
+            linked_group_id: None,
+        }];
+
+        assert_eq!(
+            watertight_open_edge_provenance(&edge, &[None, Some(0)], &assemblies),
+            Some("service tunnel".to_string())
+        );
+        assert_eq!(
+            watertight_open_edge_provenance(&edge, &[None, None], &assemblies),
+            None,
+            "worldspawn brushes retain the existing ungrouped diagnostic"
+        );
+    }
+
+    #[test]
+    fn watertight_open_edge_provenance_disambiguates_same_named_groups() {
+        let edge = partition::OpenEdge {
+            midpoint: DVec3::ZERO,
+            brush_index: 0,
+        };
+        let assemblies = vec![
+            map_data::MapAssembly {
+                provenance: "pink ambient lights".to_string(),
+                group_id: "3".to_string(),
+                linked_group_id: None,
+            },
+            map_data::MapAssembly {
+                provenance: "pink ambient lights".to_string(),
+                group_id: "4".to_string(),
+                linked_group_id: Some("other-template".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            watertight_open_edge_provenance(&edge, &[Some(1)], &assemblies),
+            Some("pink ambient lights (4)".to_string())
+        );
     }
 
     #[test]

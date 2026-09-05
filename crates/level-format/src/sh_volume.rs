@@ -481,12 +481,10 @@ fn validate_octahedral_tile_geometry(tile_dimension: u32, tile_border: u32) -> c
 
 fn validate_grid_dimensions(grid_dimensions: [u32; 3]) -> crate::Result<()> {
     let zero_axes = grid_dimensions.iter().filter(|&&d| d == 0).count();
-    if zero_axes > 0 {
-        if zero_axes != 3 {
-            return Err(invalid_data(format!(
-                "octahedral sh volume grid_dimensions {grid_dimensions:?} are malformed: empty grids must be [0, 0, 0]"
-            )));
-        }
+    if zero_axes > 0 && zero_axes != 3 {
+        return Err(invalid_data(format!(
+            "octahedral sh volume grid_dimensions {grid_dimensions:?} are malformed: empty grids must be [0, 0, 0]"
+        )));
     }
     Ok(())
 }

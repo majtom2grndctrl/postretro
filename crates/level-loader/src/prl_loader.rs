@@ -1079,6 +1079,15 @@ pub(crate) fn validate_direct_sh_layout(
             ),
         ));
     }
+    if section.irradiance_format != base.irradiance_format {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "irradiance_format {} does not match OctahedralShVolume irradiance_format {}",
+                section.irradiance_format, base.irradiance_format
+            ),
+        ));
+    }
 
     Ok(())
 }
@@ -3370,6 +3379,7 @@ mod tests {
         KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
         KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
     };
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
     use postretro_test_log_capture::LogCapture;
 
     #[test]
@@ -4400,6 +4410,19 @@ mod tests {
         let err = validate_direct_sh_layout(&direct, &base).unwrap_err();
 
         assert_direct_sh_layout_message(err, "cell_size");
+    }
+
+    #[test]
+    fn direct_sh_layout_requires_matching_irradiance_format() {
+        let (mut direct, base) = matching_direct_and_base_sh();
+
+        validate_direct_sh_layout(&direct, &base)
+            .expect("matching id-35 and id-34 stored geometry and format must be accepted");
+
+        direct.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+        let err = validate_direct_sh_layout(&direct, &base).unwrap_err();
+
+        assert_direct_sh_layout_message(err, "irradiance_format");
     }
 
     #[test]

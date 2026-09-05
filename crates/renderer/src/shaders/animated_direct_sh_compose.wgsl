@@ -395,8 +395,8 @@ fn animated_compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // Dense L0 has no dropped probes, so keep its direct compact-payload
-        // reads and do not spend shared memory loading 64 tiles.
+        // L0 compacts valid probes; L1 reserves all eight corners. Keep direct
+        // compact-payload reads and avoid loading 64 tiles into shared memory.
         if (output_is_stored) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {

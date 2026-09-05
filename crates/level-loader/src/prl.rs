@@ -599,12 +599,12 @@ pub struct LevelWorld {
     /// base→total copy.
     #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
-    /// Dense baked DIRECT static-light octahedral atlas for dynamic objects
+    /// v3 metadata-derived stored-tile direct SH atlas for dynamic objects
     /// (mesh entities + billboards). `None` when the map has no static direct
     /// SH/static lights, or when the section is unusable — dynamic objects fall
     /// back to indirect-only (the renderer binds a 4×4 BC6H zero dummy). Tile
-    /// geometry is byte-identical to `sh_volume`; the runtime reuses that
-    /// section's grid uniform + depth moments.
+    /// geometry derives from `sh_volume` metadata; runtime reuses its grid
+    /// uniform + depth moments.
     #[cfg(feature = "load-prl")]
     pub direct_sh_volume: Option<DirectShVolumeSection>,
     /// Sparse direct-SH deltas for selected static lights. `None` when no

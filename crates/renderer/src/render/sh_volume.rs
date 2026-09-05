@@ -869,7 +869,7 @@ fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> boo
         && grid_dimensions[2] <= limits.max_texture_dimension_3d
 }
 
-/// Upload id-34's valid-probe-only atlas without re-expanding it. BC6H blobs
+/// Upload v10's metadata-derived stored-tile atlas without re-expanding it. BC6H blobs
 /// remain compressed through upload and hardware-decode only in the compose
 /// pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
 ///

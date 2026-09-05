@@ -1074,6 +1074,7 @@ mod tests {
             .unwrap()
             .clone();
         let resolution = crate::weapon::resolve_client_fire(
+            None,
             &mut weapon,
             "reference_pistol",
             0,

@@ -619,6 +619,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             tick_dt,
             nav_graph,
             Some(collision_world),
+            descriptors,
             &mut on_impact,
         )
     };

@@ -16,7 +16,7 @@ use winit::event_loop::EventLoop;
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
-use crate::startup::StartupTimings;
+use crate::startup::{LevelSource, StartupTimings};
 use crate::trigger_pools::{TriggerPoolSeedPolicy, entropy_seed};
 use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
 use postretro_foundation::{ModThemeTokens, SwitchingDescriptor};
@@ -150,6 +150,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // a new entropy seed while headless defaults to arm-all.
     let session_boot_config = SessionBootConfig::from_args(&args);
     let headless = headless_arg(&args);
+    #[cfg(feature = "observe-live")]
+    let observe_live_port = observe_live_port_arg(&args);
 
     // Static frame capture terminates the process instead of returning a
     // `BootSession`, so no event loop, window, or session is ever created. As
@@ -208,6 +210,23 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // (`spawn_position()`) when no player start exists.
     let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
     let initial_state = InterpolableState::new(initial_camera_pos);
+    let active_level_source: Option<LevelSource> = None;
+
+    #[cfg(feature = "observe-live")]
+    let observe_live = observe_live_port.map(|port| {
+        let map = active_level_source
+            .as_ref()
+            .map(|source| crate::startup::lifecycle::level_identity(source, &content_root))
+            .unwrap_or_default();
+        crate::observe_live::spawn_observe_live_transport(
+            port,
+            crate::observe_live::ServerHello {
+                protocol: crate::observe_live::OBSERVE_LIVE_PROTOCOL,
+                map,
+                engine: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
+    });
 
     let app = App {
         renderer: None,
@@ -222,6 +241,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         // group, net endpoint) is built post-first-pixel by
         // `PendingSessionInit::install`; `None` through the boot phase.
         session: None,
+        #[cfg(feature = "observe-live")]
+        observe_live,
         remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
         crouch_toggle_active: false,
         ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
@@ -268,7 +289,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         mod_timings: StartupTimings::new(),
         level_timings: StartupTimings::new(),
         active_level_tags: Vec::new(),
-        active_level_source: None,
+        active_level_source,
         level_load: None,
         level_rx: None,
         level_worker: None,
@@ -287,7 +308,11 @@ pub(crate) fn build_session() -> Result<BootSession> {
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--content-root" || arg == "--mod" || arg == "--pool-seed" {
+        if arg == "--content-root"
+            || arg == "--mod"
+            || arg == "--pool-seed"
+            || arg == "--observe-live"
+        {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
@@ -296,11 +321,45 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
         if arg.starts_with("--content-root=")
             || arg.starts_with("--mod=")
             || arg.starts_with("--pool-seed=")
+            || arg.starts_with("--observe-live=")
             || arg.starts_with("--")
         {
             continue;
         }
         return Some(arg.clone());
+    }
+    None
+}
+
+/// Parse the live-channel port without ever accepting a bindable address.
+#[cfg(feature = "observe-live")]
+fn observe_live_port_arg(args: &[String]) -> Option<u16> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--observe-live" {
+            iter.next_if(|value| !value.starts_with("--"))
+                .map(String::as_str)
+        } else if let Some(value) = arg.strip_prefix("--observe-live=") {
+            Some(value)
+        } else {
+            continue;
+        };
+
+        let Some(value) = value.filter(|value| !value.is_empty()) else {
+            log::warn!(
+                "[Observe live] --observe-live requires a localhost TCP port; live introspection disabled"
+            );
+            return None;
+        };
+        return match value.parse::<u16>() {
+            Ok(port) => Some(port),
+            Err(_) => {
+                log::warn!(
+                    "[Observe live] invalid --observe-live port {value:?}; live introspection disabled"
+                );
+                None
+            }
+        };
     }
     None
 }
@@ -708,5 +767,42 @@ mod tests {
             resolve_map_path(&args),
             Some("content/base/maps/e1m1.prl".to_string()),
         );
+    }
+
+    #[test]
+    fn resolve_map_path_skips_observe_live_port() {
+        let args = vec![
+            "postretro".to_string(),
+            "--observe-live".to_string(),
+            "8998".to_string(),
+            "content/dev/maps/campaign-test.prl".to_string(),
+        ];
+        assert_eq!(
+            resolve_map_path(&args),
+            Some("content/dev/maps/campaign-test.prl".to_string()),
+        );
+    }
+
+    #[cfg(feature = "observe-live")]
+    #[test]
+    fn observe_live_port_arg_accepts_only_u16_ports() {
+        let split = vec![
+            "postretro".to_string(),
+            "--observe-live".to_string(),
+            u16::MAX.to_string(),
+        ];
+        assert_eq!(observe_live_port_arg(&split), Some(u16::MAX));
+
+        let equals = vec!["postretro".to_string(), "--observe-live=8998".to_string()];
+        assert_eq!(observe_live_port_arg(&equals), Some(8998));
+
+        let address = vec![
+            "postretro".to_string(),
+            "--observe-live=127.0.0.1:8998".to_string(),
+        ];
+        assert_eq!(observe_live_port_arg(&address), None);
+
+        let too_large = vec!["postretro".to_string(), "--observe-live=65536".to_string()];
+        assert_eq!(observe_live_port_arg(&too_large), None);
     }
 }

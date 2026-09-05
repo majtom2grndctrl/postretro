@@ -12,6 +12,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod ingress;
+
+pub(crate) use ingress::{run_observe_ingress_stage, service_observe_request};
+
 pub(crate) const OBSERVE_LIVE_PROTOCOL: u32 = 1;
 pub(crate) const OBSERVE_LIVE_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -124,9 +128,22 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::net::{Shutdown, SocketAddr};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Instant;
 
     const TEST_WAIT: Duration = Duration::from_secs(2);
+
+    // Each socket test reserves an ephemeral port before the daemon thread
+    // binds it. Serialize that handoff to keep the focused suite deterministic
+    // when the test harness otherwise runs cases in parallel.
+    static SOCKET_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn socket_test_lock() -> MutexGuard<'static, ()> {
+        SOCKET_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("socket test lock is not poisoned")
+    }
 
     struct PrefixOnlyReader {
         prefix: [u8; 4],
@@ -230,6 +247,7 @@ mod tests {
 
     #[test]
     fn socket_round_trip_uses_fake_raw_byte_servicer() {
+        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut client = connect_when_ready(port);
         let hello_bytes = read_frame(&mut client).expect("read hello");
@@ -254,7 +272,48 @@ mod tests {
     }
 
     #[test]
+    fn connection_enqueues_one_request_until_its_prior_reply_is_sent() {
+        let _socket_test_lock = socket_test_lock();
+        let (port, service_rx, _handle) = spawn_test_transport();
+        let mut client = connect_when_ready(port);
+        let _ = read_frame(&mut client).expect("read hello");
+
+        send_frame(&mut client, b"first request");
+        send_frame(&mut client, b"second request");
+        let first = service_rx
+            .recv_timeout(TEST_WAIT)
+            .expect("receive first request");
+        assert_eq!(first.payload, b"first request");
+        assert!(matches!(
+            service_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        first
+            .reply
+            .send(b"first response".to_vec())
+            .expect("reply to first request");
+        assert_eq!(
+            read_frame(&mut client).expect("read first response"),
+            b"first response"
+        );
+        let second = service_rx
+            .recv_timeout(TEST_WAIT)
+            .expect("receive second request after first reply");
+        assert_eq!(second.payload, b"second request");
+        second
+            .reply
+            .send(b"second response".to_vec())
+            .expect("reply to second request");
+        assert_eq!(
+            read_frame(&mut client).expect("read second response"),
+            b"second response"
+        );
+    }
+
+    #[test]
     fn reaccepts_after_client_disconnect() {
+        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let first_hello = read_frame(&mut first).expect("read first hello");
@@ -283,6 +342,7 @@ mod tests {
 
     #[test]
     fn second_client_waits_behind_open_first_client() {
+        let _socket_test_lock = socket_test_lock();
         let (port, _service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let _ = read_frame(&mut first).expect("read first hello");
@@ -310,6 +370,7 @@ mod tests {
 
     #[test]
     fn reply_timeout_closes_only_connection_and_preserves_listener() {
+        let _socket_test_lock = socket_test_lock();
         let (port, service_rx, _handle) = spawn_test_transport();
         let mut first = connect_when_ready(port);
         let _ = read_frame(&mut first).expect("read first hello");

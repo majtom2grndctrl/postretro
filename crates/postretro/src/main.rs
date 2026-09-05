@@ -668,6 +668,12 @@ pub(crate) struct App {
     /// See: context/lib/boot_sequence.md §1.
     session: Option<session::Session>,
 
+    /// Localhost live-introspection transport, created only for
+    /// `--observe-live <PORT>`. The daemon handle is retained but never joined:
+    /// it can be blocked in `accept` or a socket read during shutdown.
+    #[cfg(feature = "observe-live")]
+    observe_live: Option<(mpsc::Receiver<observe_live::ServiceRequest>, JoinHandle<()>)>,
+
     /// Current-frame interpolation-derived remote-avatar inputs. These are kept on
     /// the App between the interpolation and presentation assembly stages so remote
     /// aim/heading follows the exact transform the renderer receives.
@@ -2202,6 +2208,9 @@ impl ApplicationHandler for App {
                 let tick_dt = self.frame_timing.tick_dt();
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
+
+                #[cfg(feature = "observe-live")]
+                self.drain_observe_live_requests();
 
                 // Seat holds measure elapsed rendered time rather than fixed
                 // simulation time: Frontend and Loading keep polling a host even
@@ -4571,6 +4580,35 @@ impl frame_order::ReplicatedStateFrame for App {
 }
 
 impl App {
+    /// Service queued localhost reads at the head of every windowed Input stage.
+    #[cfg(feature = "observe-live")]
+    fn drain_observe_live_requests(&self) {
+        let Some((requests, _daemon)) = self.observe_live.as_ref() else {
+            return;
+        };
+
+        let _ = observe_live::run_observe_ingress_stage(requests, |payload| {
+            let world = self.level.as_ref();
+            let map = world.and_then(|_| {
+                self.active_level_source.as_ref().map(|source| {
+                    crate::startup::lifecycle::level_identity(source, &self.content_root)
+                })
+            });
+            let registry = world.and_then(|_| {
+                self.session
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.registry.borrow())
+            });
+            observe_live::service_observe_request(
+                payload,
+                map.as_deref().unwrap_or_default(),
+                registry.as_deref(),
+                world,
+                self.camera.yaw,
+            )
+        });
+    }
+
     /// Advance the host-local seat hold clock once for this rendered frame.
     ///
     /// Poll drains only evaluate expiry; they must not consume `frame_dt`, since

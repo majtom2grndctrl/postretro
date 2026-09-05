@@ -17,7 +17,9 @@ use std::rc::Rc;
 use anyhow::{Context, Result, anyhow, bail};
 use glam::{Vec2, Vec3};
 
-use postretro_entities::{EntityRegistry, Transform};
+use postretro_entities::EntityRegistry;
+#[cfg(test)]
+use postretro_entities::Transform;
 
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;

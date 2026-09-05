@@ -432,9 +432,28 @@ cargo run -p xtask -- run --features observe-live -- --observe-live 8998 \
   content/dev/maps/campaign-test.prl
 
 # Terminal 2 — read the ServerHello, then request a dump.
-#   Frame = 4-byte LE length prefix + JSON body. A tiny client (python/nc-with-framing)
-#   connects to 127.0.0.1:8998, reads the ServerHello frame, sends
-#   {"verb":"dump","spec":{}} framed, and prints the response document.
+python3 - <<'PY'
+import json, socket, struct
+
+def read_exact(sock, size):
+    body = bytearray()
+    while len(body) < size:
+        body += sock.recv(size - len(body))
+    return body
+
+def read_frame(sock):
+    size, = struct.unpack("<I", read_exact(sock, 4))
+    return json.loads(read_exact(sock, size))
+
+def write_frame(sock, value):
+    body = json.dumps(value, separators=(",", ":")).encode()
+    sock.sendall(struct.pack("<I", len(body)) + body)
+
+with socket.create_connection(("127.0.0.1", 8998)) as sock:
+    print(read_frame(sock))
+    write_frame(sock, {"verb": "dump", "spec": {}})
+    print(read_frame(sock))
+PY
 ```
 
 Expect: a `ServerHello` carrying the spawn-time `map` snapshot (empty when the channel

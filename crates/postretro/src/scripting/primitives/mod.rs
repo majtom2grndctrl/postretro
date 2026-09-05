@@ -319,19 +319,19 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ProjectileLight")
-        .doc("A dynamic point light attached to a travelling projectile. It uses the same falloff choices as runtime lights and casts no entity shadows.")
-        .field("color", "[f32; 3]", "Linear RGB multiplier as exactly three finite numbers.")
-        .field("intensity", "f32", "Brightness multiplier. Use a finite number of 0 or greater.")
-        .field("falloffRange", "f32", "How far the light reaches in metres. Use a finite number greater than 0.")
-        .field("falloffModel?", "FalloffKind", "Distance attenuation model. Omit for the inverse-square default.")
+        .doc("A dynamic point light that travels with the projectile body. It lights nearby surfaces only, casts no entity shadows, and never changes damage or hit detection.")
+        .field("color", "[f32; 3]", "The light's colour as exactly three finite numbers `[r, g, b]`, in linear space with each channel in `[0, 1]`. It is multiplied by `intensity` to produce the radiance cast on nearby surfaces.")
+        .field("intensity", "f32", "Linear multiplier on `color` that sets how bright the cast light is. Use a finite number of 0 or greater. Under the default `Linear` falloff, the near-field radiance on a surface is roughly `colorChannel * intensity` (bounded), and a surface blooms once that result exceeds the bloom threshold of 1.0 — so keep `intensity` at about 1.0 or below for a bright glow that does not bloom.")
+        .field("falloffRange", "f32", "The distance in metres over which the light attenuates to zero. Use a finite number greater than 0.")
+        .field("falloffModel?", "FalloffKind", "How the light attenuates with distance. Optional; defaults to `Linear`. `Linear` — bounded attenuation in `[0, 1]`, the default and least likely to bloom. `InverseDistance` — `1/d` falloff. `InverseSquared` — physically-accurate `1/d²` falloff; unbounded near the source so it blooms easily, use with care on fast or close projectiles.")
         .finish();
     registry
         .register_type("ProjectileImpactLight")
-        .doc("A transient point light spawned at a projectile impact. It always fades over `fadeMs` and casts no entity shadows.")
-        .field("color", "[f32; 3]", "Linear RGB multiplier as exactly three finite numbers.")
-        .field("intensity", "f32", "Brightness multiplier. Use a finite number of 0 or greater.")
-        .field("radius", "f32", "Starting falloff radius in metres. Use a finite number greater than 0.")
-        .field("peakRadius?", "f32", "Optional final falloff radius in metres. When present it must be at least `radius` and expands the flash while it fades.")
+        .doc("A transient point light spawned at a projectile impact. It always fades over `fadeMs`, casts no entity shadows, and never changes damage or hit detection.")
+        .field("color", "[f32; 3]", "The flash colour as exactly three finite numbers `[r, g, b]`, in linear space with each channel in `[0, 1]`. It is multiplied by `intensity` to produce the radiance cast on nearby surfaces.")
+        .field("intensity", "f32", "Linear multiplier on `color` that sets how bright the flash is. Use a finite number of 0 or greater. A surface blooms once the resulting near-field radiance exceeds the bloom threshold of 1.0, so keep `intensity` at about 1.0 or below for a bright flash that does not bloom.")
+        .field("radius", "f32", "The starting distance in metres over which the flash attenuates to zero. Use a finite number greater than 0.")
+        .field("peakRadius?", "f32", "Optional final distance in metres over which the flash attenuates to zero. When present it must be at least `radius`, and the reached distance expands from `radius` to `peakRadius` while the flash fades. Omit to hold `radius` for the whole flash.")
         .field("fadeMs", "f32", "How long the flash fades in milliseconds. Use a finite number greater than 0.")
         .finish();
     registry

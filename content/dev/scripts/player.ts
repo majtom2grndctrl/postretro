@@ -93,6 +93,17 @@ export const playerEntity = defineEntity({
         eyeHeight: 0.3,
         transitionRate: 8.0,
       },
+      // Slide is opt-in and requires crouch. The entry gate (minSpeed 8.0) sits
+      // above the 7.0 walk speed and below the 11.0 run speed, so a crouch input
+      // while running slides but while walking only crouches.
+      slide: {
+        minSpeed: 8.0,
+        slideDrag: 6.0,
+        slopeAssist: 12.0,
+        steerRate: 240.0,
+        entryBoost: 3.0,
+        minDurationMs: 400.0,
+      },
       viewFeel: {
         bob: {
           verticalFrequency: 0.25,

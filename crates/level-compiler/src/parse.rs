@@ -15,8 +15,8 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
-    LightType, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint,
-    MapLight, MapTriggerVolume, NavParams, TextureProjection,
+    LightType, MapAssembly, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover,
+    MapKinematicWaypoint, MapLight, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{
@@ -105,6 +105,45 @@ struct PendingKinematicMover {
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
+}
+
+/// Transient indices of sibling members recognized by the format adapter.
+///
+/// Assemblies themselves remain compiler-shaped identity/provenance records;
+/// this map exists only while the parser has indices into its typed outputs.
+/// A later assembly consumer can use it before those temporary parse vectors
+/// are resolved without letting `_tb_group` enter a generic runtime KVP bag.
+#[derive(Debug, Default)]
+struct AssemblyMembers {
+    light_indices: Vec<usize>,
+    pending_mover_indices: Vec<usize>,
+    map_entity_indices: Vec<usize>,
+    trigger_indices: Vec<usize>,
+}
+
+impl AssemblyMembers {
+    #[cfg(debug_assertions)]
+    fn indices_are_in_bounds(
+        &self,
+        light_count: usize,
+        pending_mover_count: usize,
+        map_entity_count: usize,
+        trigger_count: usize,
+    ) -> bool {
+        self.light_indices.iter().all(|&index| index < light_count)
+            && self
+                .pending_mover_indices
+                .iter()
+                .all(|&index| index < pending_mover_count)
+            && self
+                .map_entity_indices
+                .iter()
+                .all(|&index| index < map_entity_count)
+            && self
+                .trigger_indices
+                .iter()
+                .all(|&index| index < trigger_count)
+    }
 }
 
 /// Sentinel standing in for a space inside an encoded brush-face material name.
@@ -260,6 +299,40 @@ fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<
 
 fn is_runtime_map_entity_key(key: &str) -> bool {
     !quake_map::RESERVED_MAP_ENTITY_KEYS.contains(&key) && !key.starts_with("_tb_")
+}
+
+/// Read a `func_group` marker into the canonical identity the rest of the
+/// compiler can use. The editor-specific keys stop at this adapter boundary.
+fn map_assembly_from_marker(geo_map: &GeoMap, entity_id: &EntityId) -> MapAssembly {
+    let group_id = get_property(geo_map, entity_id, "_tb_id")
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default();
+    let provenance = get_property(geo_map, entity_id, "_tb_name")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if group_id.is_empty() {
+                "group <unnamed>".to_string()
+            } else {
+                format!("group {group_id}")
+            }
+        });
+    let linked_group_id = get_property(geo_map, entity_id, "_tb_linked_group_id")
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .strip_prefix('{')
+                .and_then(|value| value.strip_suffix('}'))
+                .unwrap_or(&value)
+                .to_owned()
+        });
+
+    MapAssembly {
+        provenance,
+        group_id,
+        linked_group_id,
+    }
 }
 
 fn parse_kinematic_mover(
@@ -593,6 +666,29 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
     let geo_map = GeoMap::new(shalrath_map);
 
+    // Recognize editor-group markers before the entity walk. Sibling members
+    // may appear before their marker in source order, but static brush
+    // flattening remains in the existing walk below so its geometry ordering is
+    // unchanged.
+    let mut assemblies = Vec::new();
+    let mut assembly_by_group_id = HashMap::new();
+    for entity_id in geo_map.entities.iter() {
+        let classname = get_property(&geo_map, entity_id, "classname");
+        if classname.as_deref() != Some("func_group") {
+            continue;
+        }
+
+        let assembly = map_assembly_from_marker(&geo_map, entity_id);
+        let assembly_index = assemblies.len();
+        assembly_by_group_id
+            .entry(assembly.group_id.clone())
+            .or_insert(assembly_index);
+        assemblies.push(assembly);
+    }
+    let mut assembly_members: Vec<AssemblyMembers> = (0..assemblies.len())
+        .map(|_| AssemblyMembers::default())
+        .collect();
+
     // Identify worldspawn entity
     let worldspawn_id = geo_map
         .entities
@@ -641,6 +737,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .get(&worldspawn_id)
         .cloned()
         .unwrap_or_default();
+    // Associate only brushes flattened through the `func_group` branch below.
+    // Other paths such as `switch` deliberately retain their current ungrouped
+    // diagnostic behavior until their own provenance work lands.
+    let mut assembly_by_brush_id: HashMap<BrushId, usize> = HashMap::new();
 
     // Collect entity info and entity brush counts
     let mut entities = Vec::new();
@@ -834,6 +934,14 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             origin,
         });
 
+        // Sibling members identify a marker through `_tb_group`; capture that
+        // source relation before the branches below translate or strip their
+        // property bags. A missing marker is ordinary malformed authoring data
+        // here: it simply has no assembly association.
+        let sibling_assembly_index = get_property(&geo_map, entity_id, "_tb_group")
+            .map(|value| value.trim().to_owned())
+            .and_then(|group_id| assembly_by_group_id.get(&group_id).copied());
+
         if !entity_classnames.contains(&classname) {
             entity_classnames.push(classname.clone());
         }
@@ -858,6 +966,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             })?;
             match quake_map::translate_light(&props, light_origin, &classname) {
                 Ok(light) => {
+                    let light_index = lights.len();
                     light_start_active_defaults.push(
                         quake_map::authored_light_start_active(&props).map_err(|error| {
                             anyhow::anyhow!(
@@ -866,6 +975,11 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                         })?,
                     );
                     lights.push(light);
+                    if let Some(assembly_index) = sibling_assembly_index {
+                        assembly_members[assembly_index]
+                            .light_indices
+                            .push(light_index);
+                    }
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
@@ -888,6 +1002,14 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .unwrap_or_default();
 
         if quake_map::is_editor_group_classname(&classname) {
+            let group_id = get_property(&geo_map, entity_id, "_tb_id")
+                .map(|value| value.trim().to_owned())
+                .unwrap_or_default();
+            if let Some(&assembly_index) = assembly_by_group_id.get(&group_id) {
+                for brush_id in &brush_ids {
+                    assembly_by_brush_id.insert(*brush_id, assembly_index);
+                }
+            }
             world_brush_ids.extend(brush_ids);
             continue;
         }
@@ -1084,13 +1206,25 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     margin: use_reach * scale as f32,
                     brush_ids: brush_ids.clone(),
                 });
+                let trigger_index = trigger_volumes.len();
                 trigger_volumes.push(trigger);
+                if let Some(assembly_index) = sibling_assembly_index {
+                    assembly_members[assembly_index]
+                        .trigger_indices
+                        .push(trigger_index);
+                }
                 world_brush_ids.extend(brush_ids.iter().copied());
                 continue;
             }
             if classname == "kinematic_mover" {
                 let props = collect_entity_properties(&geo_map, entity_id);
+                let pending_mover_index = pending_kinematic_movers.len();
                 pending_kinematic_movers.push(parse_kinematic_mover(&props, origin, brush_ids)?);
+                if let Some(assembly_index) = sibling_assembly_index {
+                    assembly_members[assembly_index]
+                        .pending_mover_indices
+                        .push(pending_mover_index);
+                }
                 continue;
             }
             if classname == "fog_volume" {
@@ -1196,6 +1330,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // MapEntity persists this sequence; HashMap iteration order is randomized.
         key_values.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
+        let map_entity_index = map_entities.len();
         map_entities.push(MapEntityRecord {
             classname: classname.clone(),
             origin: entity_origin,
@@ -1203,7 +1338,24 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             key_values,
             tags,
         });
+        if let Some(assembly_index) = sibling_assembly_index {
+            assembly_members[assembly_index]
+                .map_entity_indices
+                .push(map_entity_index);
+        }
     }
+
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        assembly_members
+            .iter()
+            .all(|members| members.indices_are_in_bounds(
+                lights.len(),
+                pending_kinematic_movers.len(),
+                map_entities.len(),
+                trigger_volumes.len(),
+            ))
+    );
 
     let world_hulls = build_brush_volumes_with_ids(&geo_map, &world_brush_ids, scale);
     // Kinematic mover brushes never reach the world set, but a switch mounted on a
@@ -1224,8 +1376,17 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         &world_hulls,
         &mover_hulls,
     );
+    // `build_brush_volumes_with_ids` drops degenerate brushes, so derive the
+    // provenance table from its retained ids rather than from the authored
+    // brush list position. `Face::brush_index` is this resulting vector's
+    // enumerate index.
+    let brush_assembly: Vec<Option<usize>> = world_hulls
+        .iter()
+        .map(|(brush_id, _)| assembly_by_brush_id.get(brush_id).copied())
+        .collect();
     let brush_volumes: Vec<BrushVolume> =
         world_hulls.into_iter().map(|(_, volume)| volume).collect();
+    debug_assert_eq!(brush_volumes.len(), brush_assembly.len());
     let total_vertex_count: usize = brush_volumes
         .iter()
         .flat_map(|brush| brush.sides.iter())
@@ -1257,6 +1418,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
     Ok(MapData {
         brush_volumes,
+        assemblies,
+        brush_assembly,
         entity_brushes: entity_brushes_summary,
         entities,
         lights,
@@ -4386,6 +4549,11 @@ mod tests {
                 .all(|entity| entity.classname != "func_group"),
             "editor group marker must not become a runtime classname-dispatch entity"
         );
+        assert_eq!(map_data.assemblies.len(), 1);
+        assert_eq!(map_data.assemblies[0].provenance, "grouped_static_brush");
+        assert_eq!(map_data.assemblies[0].group_id, "1");
+        assert_eq!(map_data.assemblies[0].linked_group_id, None);
+        assert_eq!(map_data.brush_assembly, vec![None, Some(0)]);
     }
 
     #[test]
@@ -4407,6 +4575,73 @@ mod tests {
                 .all(|entity| entity.classname != "func_group"),
             "empty editor group marker must not become a runtime classname-dispatch entity"
         );
+        assert_eq!(map_data.assemblies.len(), 1);
+        assert_eq!(map_data.assemblies[0].provenance, "empty_marker");
+        assert_eq!(map_data.assemblies[0].group_id, "2");
+        assert!(
+            map_data.brush_assembly.iter().all(Option::is_none),
+            "an empty marker must not associate any retained brush"
+        );
+    }
+
+    #[test]
+    fn func_group_normalizes_braced_and_bare_linked_group_ids() {
+        let braced = grouped_brush_test_map().replacen(
+            "\"_tb_id\" \"1\"",
+            "\"_tb_id\" \"1\"\n\"_tb_linked_group_id\" \"{linked-guid}\"",
+            1,
+        );
+        let bare = braced.replacen("\"{linked-guid}\"", "\"linked-guid\"", 1);
+
+        let braced = parse_inline_map(&braced).expect("braced linked group should parse");
+        let bare = parse_inline_map(&bare).expect("bare linked group should parse");
+
+        assert_eq!(braced.assemblies.len(), 1);
+        assert_eq!(bare.assemblies.len(), 1);
+        assert_eq!(
+            braced.assemblies[0].linked_group_id,
+            Some("linked-guid".to_string())
+        );
+        assert_eq!(
+            braced.assemblies[0].linked_group_id, bare.assemblies[0].linked_group_id,
+            "the captured GUID is normalized only; no relation is derived from it"
+        );
+    }
+
+    #[test]
+    fn unnamed_func_group_uses_its_stable_id_as_provenance() {
+        let map_text = grouped_brush_test_map().replacen(
+            "\"_tb_name\" \"grouped_static_brush\"",
+            "\"_tb_name\" \"   \"",
+            1,
+        );
+        let map_data = parse_inline_map(&map_text).expect("unnamed group should parse");
+
+        assert_eq!(map_data.assemblies[0].provenance, "group 1");
+    }
+
+    #[test]
+    fn same_named_func_groups_remain_distinct_by_group_id() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .join("content/dev/maps/kinematic-platform.map");
+        let map_text = std::fs::read_to_string(path)
+            .expect("kinematic-platform map fixture should be readable")
+            .replacen(
+                "\"_tb_name\" \"Ambient Room Light\"",
+                "\"_tb_name\" \"Spot lights\"",
+                1,
+            );
+
+        let map_data = parse_inline_map(&map_text).expect("same-named markers should parse");
+
+        assert_eq!(map_data.assemblies.len(), 2);
+        assert_eq!(map_data.assemblies[0].provenance, "Spot lights");
+        assert_eq!(map_data.assemblies[1].provenance, "Spot lights");
+        assert_eq!(map_data.assemblies[0].group_id, "1");
+        assert_eq!(map_data.assemblies[1].group_id, "2");
     }
 
     #[test]

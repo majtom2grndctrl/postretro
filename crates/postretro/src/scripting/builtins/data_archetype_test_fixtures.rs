@@ -142,9 +142,10 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "claw".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1200.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1200.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },

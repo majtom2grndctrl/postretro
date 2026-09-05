@@ -168,9 +168,10 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -2302,9 +2303,10 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -4860,9 +4862,10 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -5304,9 +5307,10 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
     attacker_graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
-            damage: 100.0,
-            max_range: 2.0,
-            cooldown_ms: 1000.0,
+            weapon: None,
+            damage: Some(100.0),
+            max_range: Some(2.0),
+            cooldown_ms: Some(1000.0),
             engagement_radius: None,
             standoff_distance: None,
         },
@@ -5503,9 +5507,10 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -6198,9 +6203,10 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: JAB_RANGE,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(JAB_RANGE),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6208,9 +6214,10 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: SLAM_RANGE,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(SLAM_RANGE),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
                 },
@@ -6426,9 +6433,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: JAB_RANGE,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(JAB_RANGE),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6436,9 +6444,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: SLAM_RANGE,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(SLAM_RANGE),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
                 },
@@ -6918,9 +6927,10 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: 2.0,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6928,9 +6938,10 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: 3.5,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(3.5),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
                 },
@@ -7375,9 +7386,10 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -7457,9 +7469,10 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "shoot".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: 5.0,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(5.0),
+                cooldown_ms: Some(0.0),
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
             },
@@ -7691,9 +7704,10 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -8154,9 +8168,10 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -8244,9 +8259,10 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },

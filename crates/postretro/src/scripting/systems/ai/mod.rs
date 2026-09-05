@@ -840,13 +840,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                             .graph
                             .attacks
                             .get(name)
-                            .copied()
+                            .cloned()
                             .map(|attack| (name.clone(), attack)),
                     })
                 })
                 .flatten()
+            && let (Some(damage), Some(max_range), Some(cooldown_ms)) =
+                (attack.damage, attack.max_range, attack.cooldown_ms)
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
-            && distance <= attack.max_range
+            && distance <= max_range
             && brain
                 .attack_cooldown_remaining_ms
                 .get(&attack_name)
@@ -858,10 +860,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             && post_slew_facing_is_within_tolerance
         {
             attacked = true;
-            attack_damage = Some(attack.damage);
+            attack_damage = Some(damage);
             brain
                 .attack_cooldown_remaining_ms
-                .insert(attack_name.clone(), attack.cooldown_ms);
+                .insert(attack_name.clone(), cooldown_ms);
             brain.record_successful_attack_fire();
         }
 

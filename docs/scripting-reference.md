@@ -714,7 +714,7 @@ defineEntity({
 | `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
-| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius?, standoffDistance? } }` (optional) | Named attack vocabulary. An activity action must name an entry here. |
+| `attacks` | `{ [name]: ContactAttack \| WeaponAttack }` (optional) | Named attack vocabulary. An activity action must name an entry here. Each entry is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
@@ -732,6 +732,30 @@ A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
 targets, empty activities, retired flat fields, a missing move fallback, and a
 composite with two nested graph layers are load errors.
+
+### Attack entries
+
+An entry in `attacks` has one of two mutually exclusive forms. Use the contact
+form for an immediate direct-impact attack:
+
+```typescript
+slam: { damage: 8, maxRange: 2, cooldownMs: 1200 }
+```
+
+Use the weapon form when the attack should use a weapon descriptor, including a
+traveling projectile. `weapon` supplies the damage, range, and cooldown; keep
+only AI positioning (`engagementRadius` and/or `standoffDistance`) on the attack
+entry:
+
+```typescript
+shoot: { weapon: "enemy_rifle", standoffDistance: 6 }
+```
+
+Do not mix `weapon` with `damage`, `maxRange`, or `cooldownMs`; the forms are
+mutually exclusive and descriptor validation rejects the combination. A named
+weapon is resolved when the behavior program is built. It must resolve to a
+projectile `WeaponDescriptor` at runtime; an unknown or non-projectile weapon
+does not fire, and the engine reports the invalid attack configuration.
 
 ### Layers, verbs, and animation
 

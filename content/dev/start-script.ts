@@ -15,6 +15,7 @@ import { targetDummyEntity } from "./scripts/target-dummy";
 import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
 import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
+import { enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
@@ -112,6 +113,7 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
+    enemyRifleEntity,
     limitatorEntity,
     ...referenceEntities,
   ],

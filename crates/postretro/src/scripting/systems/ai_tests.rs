@@ -6,7 +6,9 @@
 // graph.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use glam::Vec3;
 use parry3d::math::{Isometry, Point};
@@ -23,6 +25,7 @@ use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::scripting_systems::hit_zones::HitZoneStore;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -30,8 +33,9 @@ use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
-use postretro_entities::{EntityStateComponent, ScriptCtx};
+use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
     BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
@@ -39,11 +43,12 @@ use postretro_foundation::{
     BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
     BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
     BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    bind,
+    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
+    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
+    WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
-    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
+    AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
 };
 
@@ -168,9 +173,10 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -542,7 +548,7 @@ fn step_graph(
 
     let mut programs = BrainPrograms::new();
     let mut warned = HashSet::new();
-    programs.sync(&reg, &mut warned);
+    programs.sync(&reg, &[], 0, &mut warned);
     assert!(warned.is_empty(), "every generated guard binds");
     programs.scope_mut().refresh(
         &reg,
@@ -1539,15 +1545,20 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
         &mut registry,
         &mut runtime,
         0.016,
-        None,
-        None,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+        },
         |registry| {
             registry
                 .entity_state_mut(player)
                 .expect("player carries entity state")
                 .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
         },
-    );
+    )
+    .events;
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT, ENEMY_ATTACK_EVENT]);
     assert_eq!(enemy_state_name(&registry, first), TEST_ATTACK_STATE);
     assert_eq!(enemy_state_name(&registry, second), TEST_ATTACK_STATE);
@@ -2039,6 +2050,10 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
     let events = run_ai_tick(&mut reg, &mut warned, dt);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0, "one hit lands");
+    assert!(
+        projectile_ids(&reg).is_empty(),
+        "a legacy inline contact attack remains direct damage and does not spawn a projectile"
+    );
     {
         let health = reg.get_component::<HealthComponent>(pawn).unwrap();
         let entries = health.contributor_ledger.entries();
@@ -2302,9 +2317,10 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -4860,9 +4876,10 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -5304,9 +5321,10 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
     attacker_graph.attacks.insert(
         "attack".to_string(),
         AttackParams {
-            damage: 100.0,
-            max_range: 2.0,
-            cooldown_ms: 1000.0,
+            weapon: None,
+            damage: Some(100.0),
+            max_range: Some(2.0),
+            cooldown_ms: Some(1000.0),
             engagement_radius: None,
             standoff_distance: None,
         },
@@ -5503,9 +5521,10 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -6198,9 +6217,10 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: JAB_RANGE,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(JAB_RANGE),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6208,9 +6228,10 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: SLAM_RANGE,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(SLAM_RANGE),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
                 },
@@ -6426,9 +6447,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: JAB_RANGE,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(JAB_RANGE),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6436,9 +6458,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: SLAM_RANGE,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(SLAM_RANGE),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
                 },
@@ -6918,9 +6941,10 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "jab".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: 2.0,
-                    cooldown_ms: 1200.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -6928,9 +6952,10 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             (
                 "slam".to_string(),
                 AttackParams {
-                    damage: 14.0,
-                    max_range: 3.5,
-                    cooldown_ms: 1800.0,
+                    weapon: None,
+                    damage: Some(14.0),
+                    max_range: Some(3.5),
+                    cooldown_ms: Some(1800.0),
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
                 },
@@ -7375,9 +7400,10 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -7385,6 +7411,97 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         engagement_radius: None,
         move_speed: 3.5,
     })
+}
+
+fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescriptor {
+    let mut graph = standing_attack_graph();
+    graph.attacks.insert(
+        "attack".to_string(),
+        AttackParams {
+            weapon: Some(weapon_name.to_string()),
+            damage: None,
+            max_range: None,
+            cooldown_ms: None,
+            engagement_radius: None,
+            standoff_distance: None,
+        },
+    );
+    graph
+}
+
+fn projectile_weapon_descriptor(
+    canonical_name: &str,
+    range: f32,
+    damage: f32,
+    cooldown_ms: f32,
+) -> EntityTypeDescriptor {
+    EntityTypeDescriptor {
+        canonical_name: Some(canonical_name.to_string()),
+        inventory: None,
+        light: None,
+        emitter: None,
+        movement: None,
+        weapon: Some(WeaponDescriptor {
+            damage,
+            pellet_count: 1,
+            spread_degrees: 0.0,
+            range,
+            cooldown_ms,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Projectile,
+            projectile: Some(ProjectileDescriptor {
+                speed: 18.0,
+                radius: 0.1,
+                lifetime_ms: 1_000.0,
+                visual: ProjectileVisual {
+                    body: ProjectileBodyVisual::Sprite {
+                        sprite: "sprites/projectiles/test-bolt.png".to_string(),
+                        size: 0.25,
+                        opacity: 1.0,
+                        rotation: 0.0,
+                        tint: [1.0, 1.0, 1.0],
+                        emissive: 0.0,
+                        frame_duration_ms: None,
+                    },
+                    trail: None,
+                    light: None,
+                    impact_light: None,
+                },
+            }),
+            credit_source: Some("enemy.rifle".to_string()),
+            third_person_model: None,
+            viewmodel: None,
+            placement: None,
+            muzzle_offset: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
+        }),
+        touchable: None,
+        mesh: None,
+        health: None,
+        behavior: None,
+    }
+}
+
+fn projectile_ids(registry: &EntityRegistry) -> Vec<EntityId> {
+    registry
+        .iter_with_kind(postretro_entities::ComponentKind::Projectile)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn reset_enemy_fire_latch(registry: &mut EntityRegistry, enemy: EntityId) {
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("test enemy carries a brain")
+        .clone();
+    brain.attacks_fired_in_activity.fill(0);
+    brain.attack_cooldown_remaining_ms.clear();
+    registry
+        .set_component(enemy, brain)
+        .expect("test enemy remains live");
 }
 
 /// A minimal hold-at-standoff offense cycle. Its nested `aim` leaf deliberately
@@ -7457,9 +7574,10 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "shoot".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: 5.0,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(5.0),
+                cooldown_ms: Some(0.0),
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
             },
@@ -7520,6 +7638,502 @@ fn an_attack_state_deals_no_damage_outside_attack_range() {
         "the dwell latch fires once when its range gate first opens"
     );
     assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_tick() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let mut player_health = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("test pawn carries health")
+        .clone();
+    player_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.25, 1.0, 0.25),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(pawn, player_health)
+        .expect("test pawn remains live");
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
+        |_| {},
+    )
+    .events;
+    assert!(
+        events.is_empty(),
+        "the resolved weapon range gates the fire"
+    );
+    assert!(projectile_ids(&registry).is_empty());
+    assert_eq!(player_hp(&registry, pawn), 100.0);
+
+    let mut pawn_transform = *registry
+        .get_component::<Transform>(pawn)
+        .expect("test pawn has a transform");
+    pawn_transform.position = Vec3::X;
+    registry
+        .set_component(pawn, pawn_transform)
+        .expect("test pawn remains live");
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
+        |_| {},
+    );
+    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(
+        player_hp(&registry, pawn),
+        100.0,
+        "a projectile fire tick does not apply contact damage"
+    );
+    let projectiles = projectile_ids(&registry);
+    let [projectile] = projectiles.as_slice() else {
+        panic!("the resolved projectile attack must materialize exactly one projectile");
+    };
+    let projectile = *projectile;
+    assert_eq!(
+        result.projectile_spawns,
+        vec![crate::sim::EnemyProjectilePresentationSpawn {
+            projectile,
+            descriptor_class: "enemy.rifle".to_string(),
+        }],
+        "the AI stage surfaces the gameplay id with its resolved weapon class for the host mirror"
+    );
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            projectile,
+        )
+        .expect("enemy fire attaches the common projectile component");
+    assert_eq!(component.owner_pawn, enemy);
+    assert_eq!(component.owner_weapon, enemy);
+    assert_eq!(component.predicted_shot_id, None);
+    assert!(
+        component.spawned,
+        "the common spawn grace owns the fire tick"
+    );
+    assert_eq!(component.credit_source, "enemy.rifle");
+    assert!((component.damage - 13.0).abs() <= EPS);
+    assert!((component.remaining_range - 2.0).abs() <= EPS);
+    assert_eq!(
+        registry
+            .get_component::<Transform>(projectile)
+            .expect("projectile carries the enemy-eye origin")
+            .position,
+        Vec3::ZERO
+    );
+    assert!(
+        (Vec3::from_array(component.direction) - Vec3::new(1.0, 0.5, 0.0).normalize()).length()
+            <= EPS,
+        "projectile direction follows the same enemy-eye-to-target-aim segment as the fire gate"
+    );
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    crate::sim::advance(
+        &registry,
+        &world,
+        &hit_zones,
+        0.0,
+        1.0 / 60.0,
+        &mut ignore_impact,
+    );
+    assert_eq!(
+        player_hp(&registry.borrow(), pawn),
+        100.0,
+        "spawn grace prevents an impact during the fire tick's projectile pass"
+    );
+
+    crate::sim::advance(&registry, &world, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+    let registry = registry.borrow();
+    assert_eq!(player_hp(&registry, pawn), 87.0);
+    assert!(!registry.exists(projectile));
+    let [credit] = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("target keeps health after the impact")
+        .contributor_ledger
+        .entries()
+    else {
+        panic!("projectile impact must reach the shared damage chokepoint");
+    };
+    assert_eq!(credit.source_id, "enemy.rifle");
+    assert_eq!(credit.last_attacker, Some(enemy));
+    assert_eq!(credit.last_weapon, Some(enemy));
+}
+
+#[test]
+fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replacements() {
+    // Regression: weapon-only hot reload left a live enemy firing the prior
+    // resolved tuning and visual, including after the weapon became invalid.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let mut data = DataRegistry::new();
+    data.replace_entity_types(vec![projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        3.0,
+        500.0,
+    )]);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let first = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert_eq!(first.events, vec![ENEMY_ATTACK_EVENT]);
+    reset_enemy_fire_latch(&mut registry, enemy);
+
+    let mut reloaded = projectile_weapon_descriptor("enemy.rifle", 12.0, 19.0, 125.0);
+    let weapon = reloaded
+        .weapon
+        .as_mut()
+        .expect("test descriptor has weapon");
+    weapon.credit_source = Some("enemy.rifle.reloaded".to_string());
+    let projectile = weapon
+        .projectile
+        .as_mut()
+        .expect("test descriptor has projectile tuning");
+    projectile.speed = 42.0;
+    projectile.radius = 0.3;
+    projectile.lifetime_ms = 2_500.0;
+    projectile.visual.body = ProjectileBodyVisual::Sprite {
+        sprite: "sprites/projectiles/test-bolt.png".to_string(),
+        size: 0.5,
+        opacity: 0.75,
+        rotation: 0.25,
+        tint: [0.2, 0.4, 1.0],
+        emissive: 3.0,
+        frame_duration_ms: Some(50.0),
+    };
+    data.replace_entity_types(vec![reloaded.clone()]);
+
+    let refreshed = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert_eq!(refreshed.events, vec![ENEMY_ATTACK_EVENT]);
+    let refreshed_projectile = refreshed
+        .projectile_spawns
+        .first()
+        .expect("reloaded weapon still fires")
+        .projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            refreshed_projectile,
+        )
+        .expect("reloaded shot carries projectile state");
+    assert!((component.remaining_range - 12.0).abs() <= EPS);
+    assert!((component.damage - 19.0).abs() <= EPS);
+    assert!((component.speed - 42.0).abs() <= EPS);
+    assert!((component.radius - 0.3).abs() <= EPS);
+    assert!((component.remaining_lifetime - 2.5).abs() <= EPS);
+    assert_eq!(component.credit_source, "enemy.rifle.reloaded");
+    let visual = registry
+        .get_component::<SpriteVisual>(refreshed_projectile)
+        .expect("reloaded projectile materializes its refreshed visual");
+    assert_eq!(visual.sprite, "sprites/projectiles/test-bolt.png");
+    assert!((visual.size - 0.5).abs() <= EPS);
+    assert!((visual.opacity - 0.75).abs() <= EPS);
+    assert!((visual.rotation - 0.25).abs() <= EPS);
+    assert!(
+        visual
+            .tint
+            .iter()
+            .zip([0.2, 0.4, 1.0])
+            .all(|(actual, expected)| (*actual - expected).abs() <= EPS)
+    );
+    assert!(
+        (registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .attack_cooldown_remaining_ms["attack"]
+            - 125.0)
+            .abs()
+            <= EPS
+    );
+
+    let mut nonprojectile = reloaded;
+    let weapon = nonprojectile
+        .weapon
+        .as_mut()
+        .expect("test descriptor has weapon");
+    weapon.resolution = ResolutionMode::Hitscan;
+    weapon.projectile = None;
+    data.replace_entity_types(vec![nonprojectile]);
+    reset_enemy_fire_latch(&mut registry, enemy);
+    let projectile_count = projectile_ids(&registry).len();
+    let disabled_nonprojectile = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert!(disabled_nonprojectile.events.is_empty());
+    assert_eq!(projectile_ids(&registry).len(), projectile_count);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .activity_attack_count(0),
+        Some(0)
+    );
+
+    data.replace_entity_types(Vec::new());
+    reset_enemy_fire_latch(&mut registry, enemy);
+    let disabled_missing = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert!(disabled_missing.events.is_empty());
+    assert_eq!(projectile_ids(&registry).len(), projectile_count);
+    assert!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none(),
+        "invalid reload does not consume cooldown"
+    );
+}
+
+#[test]
+fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
+    // Regression: a zero eye-to-aim vector spawned a malformed projectile and
+    // consumed the attack latch, cooldown, and event.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::new(0.0, -0.5, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+        },
+        |_| {},
+    );
+
+    assert!(result.events.is_empty());
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("test enemy keeps its brain");
+    assert_eq!(brain.activity_attack_count(0), Some(0));
+    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
+}
+
+#[test]
+fn projectile_attack_accepts_finite_vertical_aim_direction() {
+    // Regression: rejecting degenerate aim must not reject a finite vertical
+    // direction, whose yaw gate intentionally preserves established behavior.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::new(0.0, 0.5, 0.0));
+    let _enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
+    let projectile = result
+        .projectile_spawns
+        .first()
+        .expect("vertical finite aim fires")
+        .projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            projectile,
+        )
+        .expect("vertical shot carries projectile state");
+    assert!((Vec3::from_array(component.direction) - Vec3::Y).length() <= EPS);
+}
+
+#[test]
+fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut registry, Vec3::X);
+    let mut player_health = registry
+        .get_component::<HealthComponent>(pawn)
+        .expect("test pawn carries health")
+        .clone();
+    player_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.25, 1.0, 0.25),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(pawn, player_health)
+        .expect("test pawn remains live");
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let events = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
+        |_| {},
+    )
+    .events;
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    let projectiles = projectile_ids(&registry);
+    let [projectile] = projectiles.as_slice() else {
+        panic!("enemy fire must create a projectile before it can be occluded");
+    };
+    let projectile = *projectile;
+    let registry = Rc::new(RefCell::new(registry));
+    let wall = wall_world(0.5, -1.0, 2.0);
+    let hit_zones = HitZoneStore::new();
+    let mut ignore_impact = |_: &mut EntityRegistry| {};
+    crate::sim::advance(
+        &registry,
+        &wall,
+        &hit_zones,
+        0.0,
+        1.0 / 60.0,
+        &mut ignore_impact,
+    );
+    crate::sim::advance(&registry, &wall, &hit_zones, 0.0, 1.0, &mut ignore_impact);
+
+    let registry = registry.borrow();
+    assert!(!registry.exists(projectile));
+    assert_eq!(player_hp(&registry, pawn), 100.0);
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(pawn)
+            .expect("target remains live")
+            .contributor_ledger
+            .entries()
+            .len(),
+        0,
+        "world impact never routes damage through the target chokepoint"
+    );
+    assert!(registry.exists(enemy));
 }
 
 #[test]
@@ -7691,9 +8305,10 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -8154,9 +8769,10 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },
@@ -8244,9 +8860,10 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
-                damage: TEST_ATTACK_DAMAGE,
-                max_range: TEST_ATTACK_RANGE,
-                cooldown_ms: TEST_ATTACK_COOLDOWN_MS,
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
             },

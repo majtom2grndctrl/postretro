@@ -371,9 +371,10 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
         attacks: std::collections::BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 8.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(8.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },

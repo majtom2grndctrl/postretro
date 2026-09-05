@@ -493,9 +493,10 @@ mod tests {
         behavior.attacks.insert(
             "slam".to_string(),
             AttackParams {
-                damage: 12.0,
-                max_range: 2.0,
-                cooldown_ms: 0.0,
+                weapon: None,
+                damage: Some(12.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },

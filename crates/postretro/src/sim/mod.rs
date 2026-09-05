@@ -54,6 +54,8 @@ use postretro_foundation::{
 };
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+#[cfg(test)]
+pub(crate) use projectile_stage::advance;
 pub(crate) use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
 };
@@ -292,6 +294,10 @@ pub(crate) struct TickEvents {
     /// Locally simulated projectiles that a listen host mirrors for remote observers.
     /// The host's renderer suppresses the mirror and continues to draw this source.
     pub(crate) local_projectile_spawns: Vec<EntityId>,
+    /// Host-authoritative enemy projectiles that need a presentation-only mirror for
+    /// connected clients. The canonical weapon name is transient host event data:
+    /// the existing snapshot carries it as the presentation entity's `entity_class`.
+    pub(crate) enemy_projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
     /// Locally simulated projectile contacts that retire listen-host mirror flights.
     pub(crate) local_projectile_contacts: Vec<ProjectileContactEvent>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
@@ -321,6 +327,15 @@ pub(crate) struct TickEvents {
     pub(crate) trigger_fires: Vec<TriggerEvent>,
     #[cfg(test)]
     pub(crate) trigger_command_fires: Vec<TriggerCommandFire>,
+}
+
+/// A host-owned enemy projectile and the resolved weapon descriptor that supplies
+/// its presentation class. This is deliberately an in-process tick event, never a
+/// replicated gameplay component or a new wire record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnemyProjectilePresentationSpawn {
+    pub(crate) projectile: EntityId,
+    pub(crate) descriptor_class: String,
 }
 
 /// Advance transient presentation work on a connected client. Connected clients
@@ -378,6 +393,7 @@ pub(crate) fn simulate_tick(
         tick_dt,
         &mut touch_system,
         &[],
+        0,
         None,
         &touch_edges,
         &touch_edges,
@@ -409,6 +425,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     tick_dt: f32,
     touch_system: &mut TouchSystem,
     descriptors: &[EntityTypeDescriptor],
+    descriptor_generation: u64,
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
@@ -611,17 +628,23 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
-    let ai = {
+    let ai_result = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
             &mut registry,
             ai_runtime,
             tick_dt,
-            nav_graph,
-            Some(collision_world),
+            scripting_systems::ai::AiTickInputs {
+                nav_graph,
+                collision_world: Some(collision_world),
+                descriptors,
+                descriptor_generation,
+            },
             &mut on_impact,
         )
     };
+    let ai = ai_result.events;
+    let enemy_projectile_spawns = ai_result.projectile_spawns;
 
     let post_movement_command = post_movement(&registry);
 
@@ -727,6 +750,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             .projectile_presentation_launches,
         rejected_remote_projectile_fires: remote_weapon_result.rejected_projectile_fires,
         local_projectile_spawns: local_result.projectile_spawns,
+        enemy_projectile_spawns,
         local_projectile_contacts,
         reload_deliveries,
         repointed_pawns,
@@ -2041,6 +2065,7 @@ mod tests {
             1.0 / 60.0,
             &mut touch_system,
             &[],
+            0,
             None,
             &edges,
             &edges,
@@ -2159,6 +2184,7 @@ mod tests {
             1.0 / 60.0,
             &mut touch_system,
             &[],
+            0,
             None,
             &use_edges,
             &HashMap::new(),

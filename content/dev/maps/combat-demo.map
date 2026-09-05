@@ -289,7 +289,7 @@
 ( 176 224 0 ) ( 176 288 64 ) ( 176 288 0 ) concrete_pavement_036 0 0 0 1 1
 }
 }
-// Limitator — ranged enemy holding the AR_4 rifle (hand_r attachment).
+// Limitator — projectile-rifle proof surface; holds the AR_4 rifle (hand_r attachment).
 {
 "classname" "limitator"
 // Starts with raw LOS to the player; the nearby west-side cover pillar is the

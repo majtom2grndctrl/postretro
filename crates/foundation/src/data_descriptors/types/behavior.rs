@@ -44,12 +44,21 @@ impl ActionVerb {
 }
 
 /// Tuning consumed by a named [`ActionVerb::Attack`] entry.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// Contact attacks retain their inline combat stats. Weapon attacks instead
+/// name a canonical weapon descriptor and leave those stats absent until the
+/// runtime resolves them into derived evaluator state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttackParams {
-    pub damage: f32,
-    pub max_range: f32,
-    pub cooldown_ms: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_range: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_ms: Option<f32>,
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     #[serde(default)]

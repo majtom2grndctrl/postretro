@@ -130,15 +130,11 @@ export const limitatorEntity = defineEntity({
       initial: "idle",
       moveSpeed: 4,
       attacks: {
-        // Hitscan-style ranged shot: long reach, held at a standoff. Cooldown
-        // sits just under AIM_MS + FIRE_MS, pacing fire-dwell re-entry cycles.
-        // maxRange only needs to cover the fire band (a shot can only be issued
-        // from the `fire` state, entered inside FIRE_RANGE and held to
-        // BREAK_RANGE); a small margin past BREAK_RANGE is defense in depth.
+        // The weapon owns damage, reach, and cooldown; this entry keeps only AI
+        // positioning. Its 12 m reach covers the fire band (entered inside
+        // FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
         shoot: {
-          damage: 10,
-          maxRange: BREAK_RANGE + 3,
-          cooldownMs: 750,
+          weapon: "enemy_rifle",
           standoffDistance: STANDOFF_DISTANCE,
         },
       },

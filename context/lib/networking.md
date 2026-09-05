@@ -575,6 +575,10 @@ Trap-pool arming follows the same host-only shape: at level install a seeded pas
 
 **Connected-client AI-enemy spawn suppression.** A connected client does not spawn local authoritative copies of AI enemies, whether map-placed or runtime-spawned (e.g. via a `spawnFromSpawner` reaction fired through the client's own trigger/named-reaction drain paths). Both are host-authoritative: the client receives them solely as host snapshots, runtime spawns arriving `RuntimeSpawn`-classified. A `SpawnContext` runtime-spawn authority flag, set false for a connected client, enforces suppression for the runtime-spawn path (see `spawner.rs`, `session/mod.rs`). Client-side materialization attaches only the descriptor's mesh presentation; `Brain`, `Agent`, `Health`, and `Weapon` components are never attached on the client for a remote enemy. Remote enemies are presentation-only — they carry no local simulation state.
 
+## Not netcode: the live introspection channel
+
+A separate localhost TCP channel (`observe-live` feature, planned — not built) lets an agent or CI attach to a running windowed session and read world state back over a socket. It shares no code with this netcode transport: a different socket, a length-prefixed-JSON wire (not the bitcode codec), and its own background thread — so the "no spawned threads" rule of the transport contract binds the *netcode* transport, not the engine. Read-only: it borrows the registry immutably at one main-thread frame boundary and never mutates, staying off the game-logic-owned apply path. It reuses the batch `observability` dump vocabulary — one vocabulary, two entry points, not a fork.
+
 ## Non-goals
 
 - Deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer, full server-rewind lag compensation (see `index.md` §4).

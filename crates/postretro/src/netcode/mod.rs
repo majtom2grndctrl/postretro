@@ -4161,21 +4161,21 @@ mod tests {
     }
 
     #[test]
-    fn projectile_authority_reuses_the_existing_wire_versions() {
+    fn enemy_projectile_authority_reuses_the_existing_wire_versions() {
         assert_eq!(
             postretro_net::handshake::PROTOCOL_ID,
             0x_5052_4C37,
-            "projectile authority adds no application message vocabulary"
+            "enemy projectiles add no application message vocabulary"
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
             20,
-            "sliding's snapshot wire variant changes transport layout"
+            "enemy projectile damage and presentation reuse the transport layout"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
             14,
-            "sliding's movement snapshot state changes the record layout"
+            "enemy projectile presentation reuses Transform plus entity_class"
         );
     }
 

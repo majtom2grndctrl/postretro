@@ -3003,6 +3003,7 @@ impl ApplicationHandler for App {
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
                             &tick_events.local_projectile_spawns,
+                            &tick_events.enemy_projectile_spawns,
                         );
                         self.host_note_local_projectile_contacts(
                             &tick_events.local_projectile_contacts,
@@ -7386,6 +7387,7 @@ impl App {
         registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
         remote_launches: &[sim::RemoteProjectilePresentationLaunch],
         local_projectile_spawns: &[postretro_entities::EntityId],
+        enemy_projectile_spawns: &[sim::EnemyProjectilePresentationSpawn],
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
@@ -7419,6 +7421,17 @@ impl App {
                 replicable,
                 replication,
                 projectile,
+                *tick,
+            );
+        }
+        for spawn in enemy_projectile_spawns {
+            projectile_presentations.mirror_gameplay_projectile_with_descriptor_class(
+                &mut registry,
+                allocator,
+                replicable,
+                replication,
+                spawn.projectile,
+                &spawn.descriptor_class,
                 *tick,
             );
         }

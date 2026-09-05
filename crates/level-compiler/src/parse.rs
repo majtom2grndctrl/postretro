@@ -671,19 +671,52 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // flattening remains in the existing walk below so its geometry ordering is
     // unchanged.
     let mut assemblies = Vec::new();
-    let mut assembly_by_group_id = HashMap::new();
     for entity_id in geo_map.entities.iter() {
         let classname = get_property(&geo_map, entity_id, "classname");
         if classname.as_deref() != Some("func_group") {
             continue;
         }
 
-        let assembly = map_assembly_from_marker(&geo_map, entity_id);
-        let assembly_index = assemblies.len();
-        assembly_by_group_id
-            .entry(assembly.group_id.clone())
-            .or_insert(assembly_index);
-        assemblies.push(assembly);
+        assemblies.push(map_assembly_from_marker(&geo_map, entity_id));
+    }
+
+    // Association is safe only when a marker identity is non-empty and unique.
+    // Keep every marker as an append-only assembly for diagnostics and future
+    // consumers, but do not guess which marker owns members in malformed input.
+    let empty_marker_count = assemblies
+        .iter()
+        .filter(|assembly| assembly.group_id.is_empty())
+        .count();
+    if empty_marker_count > 0 {
+        log::warn!(
+            "[Compiler] {empty_marker_count} func_group marker(s) have an empty `_tb_id`; brace brushes and sibling members from those markers will remain unassociated; assign every func_group a unique non-empty `_tb_id`"
+        );
+    }
+
+    let mut marker_count_by_group_id = HashMap::new();
+    for assembly in &assemblies {
+        if !assembly.group_id.is_empty() {
+            *marker_count_by_group_id
+                .entry(assembly.group_id.clone())
+                .or_insert(0usize) += 1;
+        }
+    }
+
+    let mut assembly_by_group_id = HashMap::new();
+    let mut warned_duplicate_group_ids = HashSet::new();
+    for (assembly_index, assembly) in assemblies.iter().enumerate() {
+        match marker_count_by_group_id.get(&assembly.group_id) {
+            Some(&1) => {
+                assembly_by_group_id.insert(assembly.group_id.clone(), assembly_index);
+            }
+            Some(_) if warned_duplicate_group_ids.insert(assembly.group_id.clone()) => {
+                log::warn!(
+                    "[Compiler] duplicate func_group `_tb_id` `{}`; brace brushes and sibling members for every marker with this id will remain unassociated; assign each func_group a unique non-empty `_tb_id`",
+                    assembly.group_id,
+                );
+            }
+            _ => {}
+        }
     }
     let mut assembly_members: Vec<AssemblyMembers> = (0..assemblies.len())
         .map(|_| AssemblyMembers::default())
@@ -936,8 +969,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
         // Sibling members identify a marker through `_tb_group`; capture that
         // source relation before the branches below translate or strip their
-        // property bags. A missing marker is ordinary malformed authoring data
-        // here: it simply has no assembly association.
+        // property bags. A missing or ambiguous marker identity is malformed
+        // authoring data here: it simply has no assembly association.
         let sibling_assembly_index = get_property(&geo_map, entity_id, "_tb_group")
             .map(|value| value.trim().to_owned())
             .and_then(|group_id| assembly_by_group_id.get(&group_id).copied());
@@ -4773,17 +4806,30 @@ mod tests {
         let marker = &grouped[marker_start..marker_end];
         let without_marker = format!("{}{}", &grouped[..marker_start], &grouped[marker_end..]);
         let late_marker =
-            without_marker.replacen("// entity 4", &format!("{marker}// entity 4"), 1);
+            without_marker.replacen("// entity 3", &format!("{marker}// entity 3"), 1);
+
+        let mover_position = late_marker
+            .find("\"classname\" \"kinematic_mover\"")
+            .expect("fixture has a grouped mover");
+        let light_position = late_marker
+            .find("\"classname\" \"light_dynamic\"")
+            .expect("fixture has a grouped light");
+        let marker_position = late_marker
+            .find("\"classname\" \"func_group\"")
+            .expect("fixture has a late marker");
+        assert!(marker_position > mover_position);
+        assert!(marker_position > light_position);
 
         let explicit = late_marker.replacen(
-            "\"_tb_group\" \"1\"\n",
-            "\"_tb_group\" \"1\"\n\"carrier\" \"lift_a\"\n",
+            "\"classname\" \"light_dynamic\"\n\"origin\" \"0 0 64\"\n",
+            "\"classname\" \"light_dynamic\"\n\"origin\" \"0 0 64\"\n\"carrier\" \"lift_a\"\n",
             1,
         );
         let grouped = parse_inline_map(&late_marker).expect("late marker should still bind");
         let explicit = parse_inline_map(&explicit).expect("explicit carrier should bind");
 
         assert_eq!(grouped.carried_light_links.len(), 1);
+        assert_eq!(explicit.lights[0].carrier, "lift_a");
         assert_eq!(grouped.carried_light_links, explicit.carried_light_links);
     }
 
@@ -4964,12 +5010,28 @@ mod tests {
     #[test]
     fn brace_and_sibling_groups_share_assemblies_without_crossing_forms() {
         let brace_brush = box_brush([384, -64, -32], [448, 64, 32], "brace_tex");
-        let map_text = grouped_kinematic_map_with_light(
+        let map_text = kinematic_map_with_duplicate_named_mover(grouped_kinematic_map_with_light(
             grouped_kinematic_map("lift_a"),
             "light_dynamic",
             "0 0 64",
             None,
             "",
+        ));
+        let duplicate_mover_start = map_text
+            .find("// entity 5")
+            .expect("duplicated grouped mover precedes the original marker");
+        let (before_duplicate_mover, duplicate_mover_and_rest) =
+            map_text.split_at(duplicate_mover_start);
+        let duplicate_mover_and_rest = duplicate_mover_and_rest
+            .replacen("\"name\" \"lift_a\"", "\"name\" \"lift_b\"", 1)
+            .replacen("\"_tb_group\" \"1\"", "\"_tb_group\" \"2\"", 1);
+        let map_text = format!("{before_duplicate_mover}{duplicate_mover_and_rest}");
+        let map_text = kinematic_map_with_light(
+            map_text,
+            "light_dynamic",
+            "64 0 96",
+            None,
+            "\"_tb_group\" \"2\"\n",
         )
         .replacen(
             "\"_tb_name\" \"lift assembly\"\n\"_tb_id\" \"1\"\n}",
@@ -4984,18 +5046,41 @@ mod tests {
 
         let map_data = parse_inline_map(&map_text).expect("cross-form group fixture should parse");
 
-        assert_eq!(
-            map_data.assemblies.len(),
-            2,
-            "empty markers retain inert slots"
-        );
+        assert_eq!(map_data.assemblies.len(), 2);
         assert_eq!(map_data.assemblies[0].group_id, "1");
         assert_eq!(map_data.assemblies[1].group_id, "2");
         assert_eq!(map_data.brush_assembly, vec![None, Some(0)]);
-        assert_eq!(map_data.carried_light_links.len(), 1);
+        assert_eq!(map_data.lights.len(), 2);
+        assert_eq!(map_data.kinematic_movers.len(), 2);
+        assert_eq!(map_data.carried_light_links.len(), 2);
+        assert_eq!(map_data.lights[0].carrier, "lift_a");
+        assert_eq!(map_data.lights[1].carrier, "lift_b");
+        assert_eq!(map_data.carried_light_links[0].source_light_index, 0);
+        assert_eq!(map_data.carried_light_links[0].mover_id, 0);
+        assert_eq!(map_data.carried_light_links[1].source_light_index, 1);
+        assert_eq!(map_data.carried_light_links[1].mover_id, 1);
+        assert_ne!(
+            map_data.carried_light_links[0].local_offset,
+            map_data.carried_light_links[1].local_offset,
+            "same-named assemblies must retain distinguishable sibling bindings"
+        );
+        let mover_id_named = |name| {
+            map_data
+                .kinematic_movers
+                .iter()
+                .find(|mover| mover.name == name)
+                .expect("fixture must retain each uniquely named mover")
+                .mover_id
+        };
         assert_eq!(
-            map_data.carried_light_links[0].mover_id, map_data.kinematic_movers[0].mover_id,
-            "sibling membership binds to its marker, independently of brace provenance"
+            map_data.carried_light_links[0].mover_id,
+            mover_id_named("lift_a"),
+            "first grouped light must bind to its own form's mover"
+        );
+        assert_eq!(
+            map_data.carried_light_links[1].mover_id,
+            mover_id_named("lift_b"),
+            "second grouped light must bind to its own form's mover"
         );
         assert_eq!(
             crate::pipeline::watertight_open_edge_provenance(
@@ -5009,6 +5094,75 @@ mod tests {
             Some("shared assembly (1)".to_string()),
             "same-named marker identities stay independently nameable"
         );
+    }
+
+    #[test]
+    fn duplicate_group_ids_leave_brace_and_sibling_members_unassociated() {
+        let brace_brush = box_brush([384, -64, -32], [448, 64, 32], "duplicate_group_tex");
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        )
+        .replacen(
+            "\"_tb_name\" \"lift assembly\"\n\"_tb_id\" \"1\"\n}",
+            &format!("\"_tb_name\" \"first marker\"\n\"_tb_id\" \"1\"\n{brace_brush}\n}}"),
+            1,
+        );
+        let map_text = map_text.replacen(
+            "// entity 3",
+            "// entity 6\n{\n\"classname\" \"func_group\"\n\"origin\" \"0 0 0\"\n\"_tb_type\" \"_tb_group\"\n\"_tb_name\" \"second marker\"\n\"_tb_id\" \"1\"\n}\n// entity 3",
+            1,
+        );
+        let capture = LogCapture::start();
+
+        let map_data = parse_inline_map(&map_text).expect("duplicate marker ids should degrade");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "duplicate func_group `_tb_id` `1`; brace brushes and sibling members for every marker with this id will remain unassociated",
+        );
+        assert_eq!(map_data.assemblies.len(), 2);
+        assert_eq!(map_data.assemblies[0].group_id, "1");
+        assert_eq!(map_data.assemblies[1].group_id, "1");
+        assert_eq!(map_data.brush_assembly, vec![None, None]);
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(map_data.carried_light_links.is_empty());
+    }
+
+    #[test]
+    fn empty_group_id_leaves_brace_and_sibling_members_unassociated() {
+        let brace_brush = box_brush([384, -64, -32], [448, 64, 32], "empty_group_tex");
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        )
+        .replacen(
+            "\"_tb_name\" \"lift assembly\"\n\"_tb_id\" \"1\"\n}",
+            &format!(
+                "\"_tb_name\" \"empty identity marker\"\n\"_tb_id\" \"   \"\n{brace_brush}\n}}"
+            ),
+            1,
+        )
+        .replace("\"_tb_group\" \"1\"", "\"_tb_group\" \"   \"");
+        let capture = LogCapture::start();
+
+        let map_data = parse_inline_map(&map_text).expect("empty marker id should degrade");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "1 func_group marker(s) have an empty `_tb_id`; brace brushes and sibling members from those markers will remain unassociated",
+        );
+        assert_eq!(map_data.assemblies.len(), 1);
+        assert!(map_data.assemblies[0].group_id.is_empty());
+        assert_eq!(map_data.brush_assembly, vec![None, None]);
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(map_data.carried_light_links.is_empty());
     }
 
     #[test]
@@ -5095,18 +5249,55 @@ mod tests {
     }
 
     #[test]
-    fn dropped_brace_group_brush_does_not_shift_surviving_brush_provenance() {
-        // `BrushId(8)` stands in for a degenerate brace-owned brush that the
-        // hull builder discarded. The retained hull carries its source ID, so
-        // the following brush must still resolve to its own assembly instead
-        // of taking membership by authored-list position.
-        let parsed = parse_inline_map(grouped_brush_test_map()).expect("fixture should parse");
-        let retained = vec![(BrushId(9), parsed.brush_volumes[1].clone())];
-        let assembly_by_brush_id = HashMap::from([(BrushId(8), 41), (BrushId(9), 0)]);
+    fn parsed_degenerate_brace_brush_preserves_following_group_provenance_in_final_map_data() {
+        // Regression: exercise the real parse_map_file -> MapData seam. The
+        // source parser requires at least one plane per brush, and GeoMap adds
+        // each parsed brush's face and plane records together, so source text
+        // cannot reach build_brush_volumes_with_ids's missing/empty rejection
+        // branches. A single-plane brush is the closest authored degeneracy.
+        let degenerate_group = r#"// entity 8
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "degenerate assembly"
+"_tb_id" "degenerate"
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) degenerate_tex 0 0 0 1 1
+}
+}
+"#;
+        let map_text = grouped_brush_test_map()
+            .replacen("// entity 1", &format!("{degenerate_group}// entity 1"), 1)
+            .replacen(
+                "\"_tb_name\" \"grouped_static_brush\"\n\"_tb_id\" \"1\"",
+                "\"_tb_name\" \"retained assembly\"\n\"_tb_id\" \"retained\"",
+                1,
+            );
 
+        let map_data = parse_inline_map(&map_text).expect("degenerate source brush should parse");
+        let degenerate_brush_index = map_data
+            .brush_volumes
+            .iter()
+            .position(|brush| brush.planes.len() == 1)
+            .expect("the closest source-level degeneracy is retained by the hull builder");
+        let retained_brush_index = map_data
+            .brush_volumes
+            .iter()
+            .position(|brush| brush.sides.iter().any(|side| side.texture == "group_tex"))
+            .expect("following valid grouped brush must survive into final MapData");
+
+        assert_eq!(map_data.assemblies.len(), 2);
+        assert!(
+            map_data.brush_volumes[degenerate_brush_index]
+                .sides
+                .is_empty()
+        );
+        assert_eq!(map_data.brush_assembly[degenerate_brush_index], Some(0));
+        assert_eq!(map_data.assemblies[1].provenance, "retained assembly");
         assert_eq!(
-            brush_assembly_for_retained_hulls(&retained, &assembly_by_brush_id),
-            vec![Some(0)]
+            map_data.brush_assembly[retained_brush_index],
+            Some(1),
+            "the following valid brush must keep its own parsed group identity"
         );
     }
 

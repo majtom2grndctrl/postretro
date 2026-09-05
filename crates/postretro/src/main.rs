@@ -49,6 +49,10 @@ mod nav;
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
 mod netcode;
+// Localhost-only, bytes-only transport for windowed live introspection. The
+// main-thread service that parses requests is added separately.
+#[cfg(feature = "observe-live")]
+mod observe_live;
 // Headless batch-mode observability vocabulary: runspec, entity dump, and
 // deterministic JSON output. Feature-gated; consumed by the headless driver.
 // See: context/plans/done/agentic-observability

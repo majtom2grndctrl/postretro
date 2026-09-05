@@ -26,9 +26,10 @@ the running session, not an identifier.
   socket, no thread).
 - A background transport thread that owns the socket, frames length-prefixed JSON,
   and marshals request/reply **bytes** over mpsc — never touching engine state.
-- A main-thread frame-boundary drain (Input-stage head) that services queued
-  requests against the live `EntityRegistry` with exclusive access, builds an
-  `OutputDocument`, and serializes it deterministically.
+- A main-thread frame-boundary drain (Input-stage head) that services at most one
+  queued request against the live `EntityRegistry`, builds an `OutputDocument`,
+  and serializes it deterministically. A single-slot transport queue rejects
+  overload by closing that connection instead of accumulating stale work.
 - One read-only verb: `dump`, carrying a `DumpSpec` (the batch runner's dump
   vocabulary), returning an `OutputDocument`.
 - A `ServerHello` handshake frame (protocol version, engine version, spawn-time map
@@ -80,8 +81,9 @@ loop can read it safely.
   A read borrows immutably; nothing here mutates. The transport thread is
   compiler-barred from the registry (`ScriptCtx: !Send + !Sync`).
 - *Frame ordering* (dev_guide §4.3) and *event-loop ownership* (§4.2). The drain
-  slots into the Input stage and never blocks the loop (`try_recv`); the thread
-  blocks off-loop.
+  slots into the Input stage, uses nonblocking receive, and services at most one
+  request per frame. The transport uses nonblocking admission to a single-slot
+  queue, then blocks off-loop only while waiting for an admitted reply.
 - *Distinct from `crates/net/`.* That transport is UDP, polled-synchronous, no
   threads. This is a separate localhost TCP transport with its own thread — no
   shared code, no conflation.
@@ -145,6 +147,9 @@ loop can read it safely.
       the reply reflects settled post-previous-tick state. If the main thread runs no
       frames (suspended), the transport thread's reply times out and it closes the
       connection rather than hanging.
+- [ ] Overload is bounded: at most one `ServiceRequest` waits for the main thread,
+      a full queue closes the new requesting connection, and the Input-stage drain
+      builds and serializes at most one response per frame.
 
 ## Tasks
 
@@ -199,12 +204,14 @@ then that many UTF-8 JSON bytes, for every frame; a request length prefix over t
 64 KiB cap is a protocol violation — the thread rejects it before allocating the
 body and **closes the connection**. The transport thread (`std::thread`,
 `std::net::TcpListener`) binds `127.0.0.1:<port>`, writes the caller-supplied
-`ServerHello` frame on accept, then loops: read one request frame → send
-`ServiceRequest { payload, reply }` over the provided `mpsc::Sender`, where
+`ServerHello` frame on accept, then loops: read one request frame → try to send
+`ServiceRequest { payload, reply }` over a single-slot `mpsc::SyncSender`, where
 `payload` is the raw request-frame body and `reply` is a fresh per-request
 `mpsc::channel()` sender → block on the reply receiver with
 `recv_timeout(OBSERVE_LIVE_REPLY_TIMEOUT)` → write the received reply bytes as a
-response frame. `OBSERVE_LIVE_REPLY_TIMEOUT` is a pinned `Duration` constant declared
+response frame. Full queue admission closes that connection immediately; the
+transport never blocks on main-thread capacity or extends the stale backlog.
+`OBSERVE_LIVE_REPLY_TIMEOUT` is a pinned `Duration` constant declared
 beside `OBSERVE_LIVE_PROTOCOL` (`Duration::from_secs(5)`); because the drain runs on
 every windowed frame in every boot state, the gap between two drains is one frame's
 wall time — normally a display interval, so a merely slow or hitching frame under the
@@ -230,9 +237,11 @@ setup-error posture (degrade, never block boot). The `JoinHandle` is never
 joined at shutdown: the thread spends its life parked in a blocking `accept()` or
 socket read that no exit signal unblocks, so joining it would hang the quit path. It
 is a daemon — process exit abandons it; the handle is retained only to keep the
-channel endpoint owned for the App's lifetime (and for test teardown), not to join. Focused tests: length-prefix
-encode/decode round-trip; oversized-prefix rejection closes without allocating;
-`ServerHello` serde round-trip; a socket round-trip driving a real
+channel endpoint owned for the App's lifetime (and for test teardown), not to join.
+Focused tests: length-prefix encode/decode round-trip; oversized-prefix rejection
+closes without allocating; a real oversized-prefix socket closes before any body
+arrives and the listener reaccepts; full-queue admission closes the client without
+growing the backlog; `ServerHello` serde round-trip; a socket round-trip driving a real
 `TcpListener`/`TcpStream` pair against a **fake servicer** loop (draining the
 receiver and replying with canned bytes) — falsifies the transport contract without
 a window (thin-slice falsification). These plus the transport-side rows of the
@@ -281,9 +290,10 @@ being `None` (Booting/Splash) as well as a session holding no level; the service
 (below) returns the no-world document in those states. Conversely, the full-document path
 runs only when `App.level` is `Some`, where `App.session` is necessarily `Some` too — a
 level installs after the session, so the registry that path borrows through `App.session`
-is always present. The stage `try_recv`s all
-queued `ServiceRequest`s (non-blocking — never blocks the event loop, dev_guide
-§4.2) and for each: parse the payload as `ObserveRequest`. For `Dump` when a level is
+is always present. The stage `try_recv`s at most one queued `ServiceRequest` per
+frame (non-blocking — never blocks the event loop, dev_guide §4.2), bounding registry
+walks and response serialization. For that request, parse the payload as
+`ObserveRequest`. For `Dump` when a level is
 loaded (`App.level` is `Some`), build the `OutputDocument` via `build_output_document`
 — which internally runs `apply_dump`, so the two are one call, not two — passing the
 live `EntityRegistry` (immutable borrow through the session's `ScriptCtx`), the
@@ -305,8 +315,8 @@ the `ObserveResponse` via `to_deterministic_json` to a `String`, and
 `reply.send(bytes)`; `reply.send` returns `Err` when the transport thread already
 dropped that request's reply receiver — its `recv_timeout` fired and closed the
 connection while the `ServiceRequest` still sat in the queue (a request outlives its
-reply channel on the timeout path) — and the drain discards that `Err` and services
-the next request, never unwrapping it. A parse failure or dump error becomes a
+reply channel on the timeout path) — and the drain discards that `Err`; a later frame
+can service the next admitted request. It never unwraps the send result. A parse failure or dump error becomes a
 `ObserveResponse::Error` frame, not a panic. The document's `map` is re-read live at each drain (the same `level_identity` of the
 current `App.active_level_source`), so it tracks host level changes; `ticks_run` is
 `0` — the live sampler runs no tick loop, mirroring the no-world path (no session-wide
@@ -317,7 +327,9 @@ fork). Include focused tests callable without a window: service a `ObserveReques
 a constructed registry fixture and assert the `OutputDocument` matches
 `build_output_document` of the same inputs (the shared builder — not `run_headless`,
 which is `observability`-gated) modulo `events`; two services of a frozen fixture
-byte-identical; a no-world request returns the "no world" document; and the windowless
+byte-identical; a no-world request returns the "no world" document; a composed real
+listener-to-registry round trip returns an error for non-UTF8 JSON and then serves a
+valid dump on the same connection; and the windowless
 service-side rows of the pinned-behaviors table (§Pinned behaviors: P1 no-world reply,
 P2 a timed-out request discarded without a panic, P6 an empty-queue drain, P7 the
 serialized one-request-per-connection contract, P9 a zero-tick-frame reply). P8
@@ -354,8 +366,9 @@ the protocol crate is earned, and human-readable for agents.
 - Empty/optional fields follow the reused `DumpSpec` serde defaults (`#[serde(default)]`).
 - `ServerHello` is the first frame the server writes, unsolicited, on accept.
 - One response frame per request frame, in order (single serialized connection).
-  A transport-level violation (oversized prefix, reply timeout) closes the
-  connection with no further frame; application errors return a normal frame.
+  A transport-level violation (oversized prefix, reply timeout, or full service
+  queue) closes the connection with no further frame; application errors return a
+  normal frame.
 
 ## Boundary inventory
 
@@ -397,12 +410,12 @@ Task 3 test bullets reference these ids rather than restate the scenarios.
 | id | scenario | ordering | expected outcome | Kind |
 |---|---|---|---|---|
 | P1 | Request arrives while no world is loaded (menu / `Frontend`, or during `Loading`). | connect → `ServerHello` → `dump` while no world → drain runs before `drive_boot_state_for_redraw` → services with a session that has no world, and with no session at all. | Valid "no world" document (empty entities, `player` and `cell_visibility` omitted since `None`), built directly (not via `build_output_document`); connection stays open; no timeout. | unit |
-| P2 | Request times out, then the drain services it. | transport thread enqueues `ServiceRequest` → `recv_timeout` fires, reply receiver dropped, connection closed → a later drain `try_recv`s the stale request → `reply.send` returns `Err`. | Drain discards the `Err`, no panic, services the next request; engine keeps running. | unit |
+| P2 | Request times out, then the drain services it. | transport thread enqueues `ServiceRequest` → `recv_timeout` fires, reply receiver dropped, connection closed → a later drain `try_recv`s the stale request → `reply.send` returns `Err`. | Drain discards the `Err`, no panic; later frames continue servicing admitted work. | unit |
 | P3 | Reconnect after a connection closes (timeout or disconnect). | client A served → A closes → transport thread loops to `accept()` → client B connects. | B receives `ServerHello` and is served; the port is not dead after A's close. | unit |
 | P4 | Second client connects while the first is open. | A open → B `connect()` → OS backlog holds B → A closes → transport thread `accept`s B. | B's `connect` does not error; B is not served (no `ServerHello`) until A closes; A is never starved by B. | unit |
 | P5 | Process exits while an agent is connected but idle. | agent parked (no request) → user quits (`event_loop.exit`) → `App` dropped. | Quit completes promptly; the `JoinHandle` is not joined, so the parked read never hangs shutdown. | manual |
 | P6 | Drain runs with an empty queue (every idle frame). | empty mpsc → `try_recv` returns `Empty` immediately. | No-op: no registry borrow, no allocation, event loop never blocks. | unit |
-| P7 | Two requests queued for one drain from a single client. | transport thread reads req1 → enqueues → blocks on reply1 → cannot read req2 until reply1 is written. | At most one live request per connection reaches any drain; >1 only across a stale timed-out request plus a reconnect. | unit |
+| P7 | A request arrives while a stale timed-out request occupies the queue. | stale request remains queued → reconnect receives `ServerHello` → transport reads new request → nonblocking admission finds the single slot full. | New connection closes without enqueueing; backlog remains one. After the stale request is serviced, a later client can proceed normally. | unit |
 | P8 | A same-frame mutation must not appear in this frame's reply. | frame N: drain reads registry (= end of N−1) → snapshot apply mutates → tick loop mutates. | Reply equals end-of-frame-(N−1) state; a frame-N mutation appears only in the next reply (one-frame latency). | manual |
 | P9 | Request drained on a run of consecutive zero-tick frames. | frames N…N+k all zero-tick → drained at N+k. | Reply reflects the most recent frame that ran ≥1 tick; state is stable, never torn. | unit |
 | P10 | No reply arrives within the timeout window. | transport thread enqueues `ServiceRequest` → no drain sends a reply within `OBSERVE_LIVE_REPLY_TIMEOUT` → `recv_timeout` returns `Err(Timeout)`. | Thread closes the connection (no response frame) and loops back to `accept()`; the listener survives. The window elapses only when no drain completes for it — an OS suspension, or one synchronous main-thread frame (a large level install, cold pipeline warmup) longer than the window — not a stream of short frames, each of which drains a multi-second `Loading` in time. | unit |
@@ -431,9 +444,11 @@ by a windowless test. Smoke recipe:
 cargo run -p xtask -- run --features observe-live -- --observe-live 8998 \
   content/dev/maps/campaign-test.prl
 
-# Terminal 2 — read the ServerHello, then request a dump.
+# Terminal 2 — read the ServerHello, then poll framed dump requests until the
+# level has installed. The listener starts before level load, so an early valid
+# reply can describe no world.
 python3 - <<'PY'
-import json, socket, struct
+import json, socket, struct, time
 
 def read_exact(sock, size):
     body = bytearray()
@@ -451,11 +466,22 @@ def write_frame(sock, value):
 
 with socket.create_connection(("127.0.0.1", 8998)) as sock:
     print(read_frame(sock))
-    write_frame(sock, {"verb": "dump", "spec": {}})
-    print(read_frame(sock))
+    deadline = time.monotonic() + 20
+    while True:
+        write_frame(sock, {"verb": "dump", "spec": {}})
+        response = read_frame(sock)
+        dump = response.get("dump", {})
+        if response.get("status") == "ok" and dump.get("map"):
+            print(response)
+            break
+        if time.monotonic() >= deadline:
+            raise SystemExit("campaign-test did not load within 20 seconds")
+        time.sleep(0.1)
 PY
 ```
 
 Expect: a `ServerHello` carrying the spawn-time `map` snapshot (empty when the channel
-spawned before `campaign-test` loaded), then an `OutputDocument` whose `map` names
-`campaign-test` and whose entities and player position track the live game as it runs.
+spawned before `campaign-test` loaded). The client may first receive a valid no-world
+dump; it keeps sending framed `dump` requests until an `ok` response has a nonempty
+`dump.map`. That response names `campaign-test`, and its entities and player position
+track the live game as it runs.

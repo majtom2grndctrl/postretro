@@ -15,6 +15,10 @@ use crate::observability::{
     to_deterministic_json,
 };
 
+/// A live dump can walk and serialize the registry, so each frame spends at
+/// most one such unit of work. Further admitted work remains queued.
+pub(crate) const OBSERVE_LIVE_REQUESTS_PER_FRAME: usize = 1;
+
 /// JSON request vocabulary for the localhost live-introspection channel.
 ///
 /// Internally tagged enums are sound for this JSON-only channel. The bitcode
@@ -36,7 +40,7 @@ pub(crate) enum ObserveResponse {
     Error { message: String },
 }
 
-/// Drain every currently queued request at the Input-stage frame boundary.
+/// Service a bounded number of queued requests at the Input-stage boundary.
 ///
 /// The service closure runs only after a request is dequeued, so an idle frame
 /// need not borrow engine state. Neither engine state nor typed protocol data
@@ -47,10 +51,13 @@ pub(crate) fn run_observe_ingress_stage(
 ) -> usize {
     let mut serviced = 0;
 
-    while let Ok(request) = requests.try_recv() {
+    for _ in 0..OBSERVE_LIVE_REQUESTS_PER_FRAME {
+        let Ok(request) = requests.try_recv() else {
+            break;
+        };
         let response = service(&request.payload);
         // A transport timeout can drop this request's receiver while it waits in
-        // the queue. The next request must still be serviced in that case.
+        // the queue. That stale reply must not poison later frame services.
         let _ = request.reply.send(response);
         serviced += 1;
     }
@@ -275,7 +282,13 @@ mod tests {
             run_observe_ingress_stage(&receiver, |payload| {
                 service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
             }),
-            2
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
+        );
+        assert_eq!(
+            run_observe_ingress_stage(&receiver, |payload| {
+                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+            }),
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
         assert_eq!(
             first.recv().expect("receive first response"),
@@ -325,7 +338,14 @@ mod tests {
             run_observe_ingress_stage(&receiver, |payload| {
                 service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
             }),
-            2
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
+        );
+        assert!(matches!(live.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert_eq!(
+            run_observe_ingress_stage(&receiver, |payload| {
+                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+            }),
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
         assert!(matches!(
             decode_response(&live.recv().expect("receive response after stale request")),
@@ -342,6 +362,42 @@ mod tests {
             }),
             0
         );
+    }
+
+    // Regression: resume could serialize the entire stale backlog in one frame.
+    #[test]
+    fn ingress_stage_leaves_over_budget_backlog_for_later_frames() {
+        let (requests, receiver) = mpsc::channel();
+        let responses = (0..OBSERVE_LIVE_REQUESTS_PER_FRAME + 2)
+            .map(|index| queue_request(&requests, vec![index as u8]))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            run_observe_ingress_stage(&receiver, |payload| payload.to_vec()),
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
+        );
+        for response in responses.iter().take(OBSERVE_LIVE_REQUESTS_PER_FRAME) {
+            assert!(response.try_recv().is_ok());
+        }
+        for response in responses.iter().skip(OBSERVE_LIVE_REQUESTS_PER_FRAME) {
+            assert!(matches!(
+                response.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        }
+        assert_eq!(
+            run_observe_ingress_stage(&receiver, |payload| payload.to_vec()),
+            OBSERVE_LIVE_REQUESTS_PER_FRAME
+        );
+        assert!(
+            responses[OBSERVE_LIVE_REQUESTS_PER_FRAME]
+                .try_recv()
+                .is_ok()
+        );
+        assert!(matches!(
+            responses[OBSERVE_LIVE_REQUESTS_PER_FRAME + 1].try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[test]

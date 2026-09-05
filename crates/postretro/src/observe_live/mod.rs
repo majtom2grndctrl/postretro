@@ -19,6 +19,11 @@ pub(crate) use ingress::{run_observe_ingress_stage, service_observe_request};
 pub(crate) const OBSERVE_LIVE_PROTOCOL: u32 = 1;
 pub(crate) const OBSERVE_LIVE_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The serialized protocol has at most one legitimate in-flight request.
+/// A full slot therefore contains stale work from a timed-out connection; new
+/// clients are closed instead of extending the backlog.
+pub(crate) const OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY: usize = 1;
+
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 /// The unsolicited first frame sent to every newly accepted client.
@@ -43,7 +48,7 @@ pub(crate) fn spawn_observe_live_transport(
     port: u16,
     hello: ServerHello,
 ) -> (mpsc::Receiver<ServiceRequest>, JoinHandle<()>) {
-    let (service_tx, service_rx) = mpsc::channel();
+    let (service_tx, service_rx) = mpsc::sync_channel(OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY);
     // This data-only value is infallibly serializable. Serializing once also pins
     // the hello bytes sent on every later re-accept to the spawn-time snapshot.
     let hello_bytes = serde_json::to_vec(&hello).expect("ServerHello is serializable");
@@ -73,7 +78,7 @@ pub(crate) fn spawn_observe_live_transport(
 fn serve_connection(
     mut stream: TcpStream,
     hello_bytes: &[u8],
-    service_tx: &mpsc::Sender<ServiceRequest>,
+    service_tx: &mpsc::SyncSender<ServiceRequest>,
 ) {
     if write_frame(&mut stream, hello_bytes).is_err() {
         return;
@@ -82,12 +87,14 @@ fn serve_connection(
     while let Ok(payload) = read_request_frame(&mut stream) {
         let (reply_tx, reply_rx) = mpsc::channel();
         if service_tx
-            .send(ServiceRequest {
+            .try_send(ServiceRequest {
                 payload,
                 reply: reply_tx,
             })
             .is_err()
         {
+            // Never wait for main-thread capacity on the transport thread. A
+            // full queue is overload, so this client is closed and may retry.
             return;
         }
 
@@ -212,6 +219,24 @@ mod tests {
         (port, service_rx, handle)
     }
 
+    fn run_ingress_when_ready(
+        service_rx: &mpsc::Receiver<ServiceRequest>,
+        mut service: impl FnMut(&[u8]) -> Vec<u8>,
+    ) -> usize {
+        let deadline = Instant::now() + TEST_WAIT;
+        loop {
+            let serviced = run_observe_ingress_stage(service_rx, &mut service);
+            if serviced != 0 {
+                return serviced;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "transport did not enqueue the request"
+            );
+            thread::yield_now();
+        }
+    }
+
     #[test]
     fn framing_round_trip_preserves_raw_bytes() {
         let body = br#"{\"verb\":\"not-parsed-here\"}"#;
@@ -233,6 +258,51 @@ mod tests {
 
         let error = read_request_frame(&mut reader).expect_err("oversized prefix is rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    // Regression: timed-out reconnects could grow the service backlog without bound.
+    #[test]
+    fn full_service_queue_closes_client_without_extending_backlog() {
+        let _socket_test_lock = socket_test_lock();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let address = listener.local_addr().expect("read listener address");
+        let hello_bytes = serde_json::to_vec(&hello()).expect("serialize hello");
+        let (service_tx, service_rx) = mpsc::sync_channel(OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY);
+        for index in 0..OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY {
+            let (occupied_reply, _occupied_response) = mpsc::channel();
+            service_tx
+                .try_send(ServiceRequest {
+                    payload: format!("stale request {index}").into_bytes(),
+                    reply: occupied_reply,
+                })
+                .expect("occupy a service queue slot");
+        }
+
+        let server = thread::spawn(move || {
+            let (stream, _peer) = listener.accept().expect("accept test client");
+            serve_connection(stream, &hello_bytes, &service_tx);
+        });
+        let mut client = TcpStream::connect(address).expect("connect test client");
+        let _ = read_frame(&mut client).expect("read hello");
+        send_frame(&mut client, b"overload request");
+        client
+            .set_read_timeout(Some(TEST_WAIT))
+            .expect("set close timeout");
+
+        let error = read_frame(&mut client).expect_err("overloaded client is closed");
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+        ));
+        server.join().expect("server exits after rejecting client");
+        let queued = service_rx.try_recv().expect("stale request remains queued");
+        assert_eq!(queued.payload, b"stale request 0");
+        assert!(matches!(
+            service_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
@@ -341,6 +411,34 @@ mod tests {
     }
 
     #[test]
+    fn oversized_socket_request_closes_connection_and_listener_reaccepts() {
+        let _socket_test_lock = socket_test_lock();
+        let (port, _service_rx, _handle) = spawn_test_transport();
+        let mut first = connect_when_ready(port);
+        let _ = read_frame(&mut first).expect("read first hello");
+        first
+            .write_all(&((MAX_REQUEST_BODY_BYTES as u32) + 1).to_le_bytes())
+            .expect("write oversized prefix without a body");
+        first
+            .set_read_timeout(Some(TEST_WAIT))
+            .expect("set close timeout");
+        let error = read_frame(&mut first).expect_err("oversized prefix closes connection");
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+        ));
+        drop(first);
+
+        let mut second = connect_when_ready(port);
+        assert_eq!(
+            read_frame(&mut second).expect("listener reaccepts after oversized request"),
+            serde_json::to_vec(&hello()).expect("serialize expected hello")
+        );
+    }
+
+    #[test]
     fn second_client_waits_behind_open_first_client() {
         let _socket_test_lock = socket_test_lock();
         let (port, _service_rx, _handle) = spawn_test_transport();
@@ -404,6 +502,108 @@ mod tests {
         assert_eq!(
             read_frame(&mut second).expect("read response after timeout"),
             b"answered response"
+        );
+    }
+
+    #[test]
+    fn socket_round_trip_keeps_connection_after_malformed_json() {
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_entities::{ComponentValue, EntityRegistry, Transform};
+        use postretro_level_loader::{CellData, CellLocatorChild, LevelWorld};
+        use std::collections::HashMap;
+
+        let _socket_test_lock = socket_test_lock();
+        let (port, service_rx, _handle) = spawn_test_transport();
+        let mut client = connect_when_ready(port);
+        let _ = read_frame(&mut client).expect("read hello");
+
+        let cells = vec![CellData {
+            bounds_min: glam::Vec3::ZERO,
+            bounds_max: glam::Vec3::ONE,
+            face_start: 0,
+            face_count: 0,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
+            is_solid: false,
+            is_exterior: false,
+            is_drawable: false,
+        }];
+        let world = LevelWorld::new_visibility_only(
+            cells,
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("minimal live-observe world is valid");
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform::default());
+        registry
+            .set_component_value(
+                entity,
+                ComponentValue::Health(HealthComponent {
+                    max: 100.0,
+                    current: 75.0,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: HashMap::new(),
+                    contributor_ledger: Default::default(),
+                }),
+            )
+            .expect("fixture entity accepts health");
+
+        send_frame(&mut client, &[0xff, b'{']);
+        assert_eq!(
+            run_ingress_when_ready(&service_rx, |payload| {
+                service_observe_request(
+                    payload,
+                    "path:fixture.prl",
+                    Some(&registry),
+                    Some(&world),
+                    1.25,
+                )
+            }),
+            1
+        );
+        assert!(matches!(
+            serde_json::from_slice::<ingress::ObserveResponse>(
+                &read_frame(&mut client).expect("read malformed-request response")
+            )
+            .expect("decode malformed-request response"),
+            ingress::ObserveResponse::Error { .. }
+        ));
+
+        let valid = serde_json::to_vec(&ingress::ObserveRequest::Dump {
+            spec: crate::observability::DumpSpec::default(),
+        })
+        .expect("serialize valid request");
+        send_frame(&mut client, &valid);
+        assert_eq!(
+            run_ingress_when_ready(&service_rx, |payload| {
+                service_observe_request(
+                    payload,
+                    "path:fixture.prl",
+                    Some(&registry),
+                    Some(&world),
+                    1.25,
+                )
+            }),
+            1
+        );
+        let response = serde_json::from_slice::<ingress::ObserveResponse>(
+            &read_frame(&mut client).expect("read valid response on same connection"),
+        )
+        .expect("decode valid response");
+        let ingress::ObserveResponse::Ok { dump } = response else {
+            panic!("valid follow-up request must return an OK response");
+        };
+        assert_eq!(dump.map, "path:fixture.prl");
+        assert!(
+            dump.entities
+                .iter()
+                .any(|record| matches!(&record.component, ComponentValue::Health(_)))
         );
     }
 }

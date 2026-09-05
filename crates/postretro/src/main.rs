@@ -2890,6 +2890,7 @@ impl ApplicationHandler for App {
                         // re-borrow `self.session`.
                         let data_registry = script_ctx.data_registry.borrow();
                         let descriptors = &data_registry.entities;
+                        let descriptor_generation = data_registry.entity_types_generation();
                         let default_weapon_placement =
                             data_registry.default_weapon_placement.as_ref();
                         let session = self.session.as_mut().expect("running session installed");
@@ -2944,6 +2945,7 @@ impl ApplicationHandler for App {
                             tick_dt,
                             touch_system,
                             descriptors,
+                            descriptor_generation,
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,
@@ -3003,6 +3005,7 @@ impl ApplicationHandler for App {
                             &script_ctx.registry,
                             &tick_events.remote_projectile_presentation_launches,
                             &tick_events.local_projectile_spawns,
+                            &tick_events.enemy_projectile_spawns,
                         );
                         self.host_note_local_projectile_contacts(
                             &tick_events.local_projectile_contacts,
@@ -6760,6 +6763,7 @@ impl App {
         let resolution = {
             let registry = script_ctx.registry.borrow();
             weapon::resolve_client_fire(
+                Some(local_pawn),
                 &mut component,
                 &pellet_salt_name,
                 active_slot,
@@ -7385,6 +7389,7 @@ impl App {
         registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
         remote_launches: &[sim::RemoteProjectilePresentationLaunch],
         local_projectile_spawns: &[postretro_entities::EntityId],
+        enemy_projectile_spawns: &[sim::EnemyProjectilePresentationSpawn],
     ) {
         let Some(netcode::NetEndpoint::Host {
             allocator,
@@ -7421,6 +7426,14 @@ impl App {
                 *tick,
             );
         }
+        projectile_presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            allocator,
+            replicable,
+            replication,
+            enemy_projectile_spawns,
+            *tick,
+        );
     }
 
     fn host_advance_projectile_presentations(
@@ -9998,6 +10011,7 @@ mod tests {
         // a hitch frame to one rendered-pose cast and one shell-counter advance.
         let registry = postretro_entities::EntityRegistry::new();
         let resolution = weapon::resolve_client_fire(
+            None,
             &mut state,
             "weapon.unknown",
             0,

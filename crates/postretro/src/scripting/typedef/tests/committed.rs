@@ -221,6 +221,39 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
     );
 }
 
+#[test]
+fn sdk_attack_params_discriminate_weapon_and_contact_entries() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    let ts_attack_union = "export type AttackParams = { weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number };";
+    let luau_attack_union = "export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number? }";
+
+    assert!(
+        generated_ts.contains(ts_attack_union) && committed_ts.contains(ts_attack_union),
+        "TypeScript must expose mutually exclusive contact and weapon attack entries"
+    );
+    assert!(
+        generated_luau.contains(luau_attack_union) && committed_luau.contains(luau_attack_union),
+        "Luau must expose mutually exclusive contact and weapon attack entries"
+    );
+}
+
 /// `worldQuery` exposes raw snapshots; the `world.query` SDK vocabulary is
 /// the layer that attaches light/fog capability methods plus mover and trigger
 /// commands.

@@ -14,7 +14,10 @@ use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight};
 use postretro_net::replication::ServerReplication;
 
-use crate::sim::{RemoteProjectilePresentationLaunch, projectile_model_body_rotation};
+use crate::sim::{
+    EnemyProjectilePresentationSpawn, RemoteProjectilePresentationLaunch,
+    projectile_model_body_rotation,
+};
 use crate::weapon;
 
 use super::{
@@ -62,6 +65,14 @@ struct EndpointPublication {
 #[derive(Debug, Default)]
 pub(crate) struct HostProjectilePresentations {
     flights: HashMap<EntityId, PresentationFlight>,
+}
+
+/// Host-local source facts for one gameplay projectile mirror. The source's class
+/// becomes the existing snapshot `entity_class`; it never alters gameplay state.
+pub(crate) struct GameplayProjectilePresentationSource<'a> {
+    pub(crate) projectile_id: EntityId,
+    pub(crate) descriptor_class: &'a str,
+    pub(crate) spawn_tick: u32,
 }
 
 impl HostProjectilePresentations {
@@ -161,17 +172,49 @@ impl HostProjectilePresentations {
         projectile_id: EntityId,
         spawn_tick: u32,
     ) {
-        if !replication.has_registered_clients() {
-            return;
-        }
-        let Some((transform, descriptor_class)) =
-            local_projectile_presentation_source(registry, projectile_id)
+        let Some(descriptor_class) =
+            local_projectile_presentation_descriptor_class(registry, projectile_id)
         else {
             return;
         };
-        let Some(id) =
-            spawn_presentation_entity(registry, transform, &descriptor_class, None, spawn_tick)
-        else {
+        self.mirror_gameplay_projectile_with_descriptor_class(
+            registry,
+            allocator,
+            replicable,
+            replication,
+            GameplayProjectilePresentationSource {
+                projectile_id,
+                descriptor_class: &descriptor_class,
+                spawn_tick,
+            },
+        );
+    }
+
+    /// Mirror a host-authoritative gameplay projectile whose descriptor class is
+    /// supplied by the producer. Enemy projectiles deliberately use the resolved
+    /// weapon name here: their `owner_weapon` is the enemy damage-provenance id,
+    /// not a descriptor-backed wieldable entity.
+    pub(crate) fn mirror_gameplay_projectile_with_descriptor_class(
+        &mut self,
+        registry: &mut EntityRegistry,
+        allocator: &mut NetworkIdAllocator,
+        replicable: &mut ReplicableSet,
+        replication: &ServerReplication,
+        source: GameplayProjectilePresentationSource<'_>,
+    ) {
+        let Some(transform) = gameplay_projectile_transform(registry, source.projectile_id) else {
+            return;
+        };
+        if !replication.has_registered_clients() || source.descriptor_class.is_empty() {
+            return;
+        }
+        let Some(id) = spawn_presentation_entity(
+            registry,
+            transform,
+            source.descriptor_class,
+            None,
+            source.spawn_tick,
+        ) else {
             return;
         };
         allocator.stamp(id);
@@ -179,12 +222,38 @@ impl HostProjectilePresentations {
         self.flights.insert(
             id,
             PresentationFlight::FollowGameplay {
-                source: projectile_id,
+                source: source.projectile_id,
                 pose_dirty: true,
                 contact_point: None,
                 endpoint: None,
             },
         );
+    }
+
+    /// Mirror every enemy projectile surfaced by one fixed tick. Each source keeps
+    /// its own resolved weapon class; registry exhaustion refuses only that mirror.
+    pub(crate) fn mirror_enemy_gameplay_projectiles(
+        &mut self,
+        registry: &mut EntityRegistry,
+        allocator: &mut NetworkIdAllocator,
+        replicable: &mut ReplicableSet,
+        replication: &ServerReplication,
+        spawns: &[EnemyProjectilePresentationSpawn],
+        spawn_tick: u32,
+    ) {
+        for spawn in spawns {
+            self.mirror_gameplay_projectile_with_descriptor_class(
+                registry,
+                allocator,
+                replicable,
+                replication,
+                GameplayProjectilePresentationSource {
+                    projectile_id: spawn.projectile,
+                    descriptor_class: &spawn.descriptor_class,
+                    spawn_tick,
+                },
+            );
+        }
     }
 
     /// Mark each live pose as represented by the baseline replication just
@@ -395,11 +464,10 @@ fn set_presentation_endpoint(registry: &mut EntityRegistry, id: EntityId, point:
     changed
 }
 
-fn local_projectile_presentation_source(
+fn local_projectile_presentation_descriptor_class(
     registry: &EntityRegistry,
     projectile_id: EntityId,
-) -> Option<(Transform, String)> {
-    let transform = *registry.get_component::<Transform>(projectile_id).ok()?;
+) -> Option<String> {
     let projectile = registry
         .get_component::<ProjectileComponent>(projectile_id)
         .ok()?;
@@ -408,7 +476,20 @@ fn local_projectile_presentation_source(
         .ok()?
         .canonical_name
         .clone();
-    (!descriptor_class.is_empty()).then_some((transform, descriptor_class))
+    (!descriptor_class.is_empty()).then_some(descriptor_class)
+}
+
+fn gameplay_projectile_transform(
+    registry: &EntityRegistry,
+    projectile_id: EntityId,
+) -> Option<Transform> {
+    registry
+        .get_component::<ProjectileComponent>(projectile_id)
+        .ok()?;
+    registry
+        .get_component::<Transform>(projectile_id)
+        .ok()
+        .copied()
 }
 
 fn advance_straight_line_visual(
@@ -592,6 +673,7 @@ mod tests {
         FireMode, ProjectileBodyVisual, ProjectileImpactLight, ProjectileLight, ProjectileVisual,
         ResolutionMode, WeaponDescriptor,
     };
+    use postretro_test_log_capture::LogCapture;
 
     const FIRING_CLIENT: u64 = 7;
     const OBSERVING_CLIENT: u64 = 8;
@@ -667,6 +749,65 @@ mod tests {
             .expect("test descriptor declares its projectile weapon")
             .projectile = Some(model_descriptor());
         descriptor
+    }
+
+    fn projectile_visual_descriptor_named(
+        canonical_name: &str,
+        sprite: &str,
+    ) -> EntityTypeDescriptor {
+        let mut descriptor = projectile_visual_descriptor();
+        descriptor.canonical_name = Some(canonical_name.to_string());
+        let body = &mut descriptor
+            .weapon
+            .as_mut()
+            .expect("test descriptor declares a weapon")
+            .projectile
+            .as_mut()
+            .expect("test weapon declares a projectile")
+            .visual
+            .body;
+        let ProjectileBodyVisual::Sprite {
+            sprite: body_sprite,
+            ..
+        } = body
+        else {
+            unreachable!("the shared test descriptor has a sprite body");
+        };
+        *body_sprite = sprite.to_string();
+        descriptor
+    }
+
+    fn spawn_enemy_gameplay_projectile(
+        registry: &mut EntityRegistry,
+        owner: EntityId,
+        position: Vec3,
+    ) -> EntityId {
+        let projectile = registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                projectile,
+                ProjectileComponent {
+                    direction: Vec3::NEG_Z.to_array(),
+                    speed: 4.0,
+                    radius: 0.1,
+                    remaining_range: 12.0,
+                    remaining_lifetime: 1.0,
+                    damage: 10.0,
+                    credit_source: "enemy.rifle".to_string(),
+                    owner_pawn: owner,
+                    owner_weapon: owner,
+                    spawned: true,
+                    predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
+                    impact_light: None,
+                },
+            )
+            .expect("gameplay projectile accepts the common component");
+        projectile
     }
 
     fn ack_current_entity_baseline(
@@ -827,6 +968,414 @@ mod tests {
         assert!(
             (observer_transform.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
             "the replicated visual keeps the model aligned with the firing aim"
+        );
+    }
+
+    #[test]
+    fn enemy_gameplay_mirror_uses_the_resolved_weapon_class_not_enemy_provenance() {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                enemy,
+                DescriptorProvenance {
+                    canonical_name: "limitator".to_string(),
+                    owned_components: BTreeSet::new(),
+                    map_overrides: BTreeSet::new(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .expect("enemy accepts its authored provenance");
+        let source = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                source,
+                ProjectileComponent {
+                    direction: Vec3::NEG_Z.to_array(),
+                    speed: 4.0,
+                    radius: 0.1,
+                    remaining_range: 12.0,
+                    remaining_lifetime: 1.0,
+                    damage: 10.0,
+                    credit_source: "enemy.rifle".to_string(),
+                    owner_pawn: enemy,
+                    // Enemy projectiles preserve the enemy id for common impact
+                    // damage provenance; it must never choose the visual class.
+                    owner_weapon: enemy,
+                    spawned: true,
+                    predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
+                    impact_light: None,
+                },
+            )
+            .expect("gameplay projectile accepts the common component");
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+
+        presentations.mirror_gameplay_projectile_with_descriptor_class(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &replication,
+            GameplayProjectilePresentationSource {
+                projectile_id: source,
+                descriptor_class: "enemy_rifle",
+                spawn_tick: 0,
+            },
+        );
+
+        let visuals = presentations.flights.keys().copied().collect::<Vec<_>>();
+        let [visual] = visuals.as_slice() else {
+            panic!("enemy gameplay projectile creates one presentation mirror");
+        };
+        let host_provenance = registry
+            .get_component::<DescriptorProvenance>(*visual)
+            .expect("presentation carries a descriptor class");
+        assert_eq!(host_provenance.canonical_name, "enemy_rifle");
+        assert_ne!(host_provenance.canonical_name, "limitator");
+
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(snapshots);
+        let sequence = replication.begin_batch();
+        let snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 1, sequence)
+            .expect("connected observer receives the mirror baseline")
+            .validate()
+            .expect("the existing snapshot layout accepts the mirror");
+        assert!(snapshot.records.iter().any(|record| {
+            matches!(
+                record,
+                postretro_net::wire::EntityRecord::FullBaseline {
+                    entity_class: Some(entity_class),
+                    ..
+                } if entity_class == "projectile:enemy_rifle"
+            )
+        }));
+
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let outcome = observer_replication.apply_snapshot(&mut observer_registry, &snapshot);
+        let [remote] = outcome.remote_entities.as_slice() else {
+            panic!("the existing Transform plus entity-class baseline creates one remote");
+        };
+        let mut weapon_descriptor = projectile_visual_descriptor();
+        weapon_descriptor.canonical_name = Some("enemy_rifle".to_string());
+        assert!(
+            super::super::remote_materialize::materialize_armed_remote_projectile(
+                remote,
+                &[weapon_descriptor],
+                &mut observer_registry,
+                0,
+            )
+        );
+        assert_eq!(
+            observer_registry
+                .get_component::<SpriteVisual>(remote.entity_id)
+                .expect("client materializes the weapon projectile visual")
+                .sprite,
+            "sprites/projectiles/remote-bolt.png"
+        );
+        assert_eq!(
+            observer_registry
+                .get_component::<DescriptorProvenance>(remote.entity_id)
+                .expect("remote mirror retains its class")
+                .canonical_name,
+            "enemy_rifle"
+        );
+    }
+
+    // Regression: multiple enemy shots surfaced by one AI tick had no seam-crossing
+    // coverage for independent classes, interpolation state, and tombstone cleanup.
+    #[test]
+    fn same_tick_enemy_projectile_events_replicate_interpolate_and_retire_independently() {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Transform::default());
+        let starts = [Vec3::new(-2.0, 1.0, 3.0), Vec3::new(4.0, 2.0, -1.0)];
+        let ends = [Vec3::new(-2.0, 1.0, -1.0), Vec3::new(8.0, 2.0, -1.0)];
+        let sources = [
+            spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[0]),
+            spawn_enemy_gameplay_projectile(&mut registry, enemy, starts[1]),
+        ];
+        let mut tick_events = crate::sim::TickEvents::default();
+        tick_events.enemy_projectile_spawns = vec![
+            EnemyProjectilePresentationSpawn {
+                projectile: sources[0],
+                descriptor_class: "enemy_plasma_blue".to_string(),
+            },
+            EnemyProjectilePresentationSpawn {
+                projectile: sources[1],
+                descriptor_class: "enemy_plasma_orange".to_string(),
+            },
+        ];
+        let descriptors = [
+            projectile_visual_descriptor_named("enemy_plasma_blue", "sprites/projectiles/blue.png"),
+            projectile_visual_descriptor_named(
+                "enemy_plasma_orange",
+                "sprites/projectiles/orange.png",
+            ),
+        ];
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+
+        presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &replication,
+            &tick_events.enemy_projectile_spawns,
+            41,
+        );
+        assert_eq!(presentations.flights.len(), 2);
+        assert_eq!(replicable.iter().count(), 2);
+
+        replication.ingest_tick(produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        ));
+        presentations.mark_current_poses_ingested();
+        let sequence = replication.begin_batch();
+        let baseline = replication
+            .encode_in_batch(OBSERVING_CLIENT, 41, sequence)
+            .expect("observer receives both same-tick enemy mirrors")
+            .validate()
+            .expect("same-tick mirror baseline validates");
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let baseline_outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &baseline);
+        assert_eq!(baseline_outcome.remote_entities.len(), 2);
+
+        let mut client_entities = HashMap::new();
+        for remote in &baseline_outcome.remote_entities {
+            assert!(
+                super::super::remote_materialize::materialize_armed_remote_projectile(
+                    remote,
+                    &descriptors,
+                    &mut observer_registry,
+                    41,
+                )
+            );
+            let class = observer_registry
+                .get_component::<DescriptorProvenance>(remote.entity_id)
+                .expect("materialized mirror retains its resolved weapon class")
+                .canonical_name
+                .clone();
+            client_entities.insert(class, (remote.network_id, remote.entity_id));
+        }
+        assert_eq!(client_entities.len(), 2);
+        for (class, expected_sprite) in [
+            ("enemy_plasma_blue", "sprites/projectiles/blue.png"),
+            ("enemy_plasma_orange", "sprites/projectiles/orange.png"),
+        ] {
+            let (_, entity) = client_entities
+                .get(class)
+                .expect("each same-tick weapon class materializes once");
+            assert_eq!(
+                observer_registry
+                    .get_component::<SpriteVisual>(*entity)
+                    .expect("materialized mirror carries its projectile body")
+                    .sprite,
+                expected_sprite
+            );
+        }
+        let baseline_ack = baseline_outcome
+            .ack
+            .expect("applied same-tick baseline produces an ack");
+        replication.apply_ack(
+            OBSERVING_CLIENT,
+            baseline_ack.latest_snapshot_sequence,
+            &baseline_ack.entity_baselines,
+            &baseline_ack.despawn_tombstones,
+        );
+
+        for (source, position) in sources.into_iter().zip(ends) {
+            registry
+                .set_component(
+                    source,
+                    Transform {
+                        position,
+                        ..Transform::default()
+                    },
+                )
+                .expect("gameplay source accepts its advanced pose");
+        }
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &OpenAuthorizedShots::new(),
+            0.0,
+        );
+        replication.ingest_tick(produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        ));
+        presentations.mark_current_poses_ingested();
+        let sequence = replication.begin_batch();
+        let advanced = replication
+            .encode_in_batch(OBSERVING_CLIENT, 43, sequence)
+            .expect("observer receives both advanced enemy mirrors")
+            .validate()
+            .expect("advanced same-tick mirrors validate");
+        let advanced_outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &advanced);
+        let advanced_ack = advanced_outcome
+            .ack
+            .expect("applied mirror deltas produce an ack");
+        replication.apply_ack(
+            OBSERVING_CLIENT,
+            advanced_ack.latest_snapshot_sequence,
+            &advanced_ack.entity_baselines,
+            &advanced_ack.despawn_tombstones,
+        );
+
+        let stats = observer_replication.sample_into_registry(&mut observer_registry, 42.0, 0.0);
+        assert_eq!(stats.presented, 2);
+        for (index, class) in ["enemy_plasma_blue", "enemy_plasma_orange"]
+            .into_iter()
+            .enumerate()
+        {
+            let (_, entity) = client_entities
+                .get(class)
+                .expect("both classes keep independent interpolation identities");
+            let expected = starts[index].lerp(ends[index], 0.5);
+            let presented = observer_registry
+                .get_component::<Transform>(*entity)
+                .expect("interpolation writes the remote presentation pose");
+            assert!(presented.position.distance(expected) <= 1.0e-6);
+        }
+
+        for source in sources {
+            registry
+                .despawn(source)
+                .expect("gameplay projectile reaches its terminal state");
+        }
+        presentations.advance(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut replication,
+            &OpenAuthorizedShots::new(),
+            0.0,
+        );
+        assert!(presentations.flights.is_empty());
+        replication.ingest_tick(Vec::new());
+        let sequence = replication.begin_batch();
+        let tombstones = replication
+            .encode_in_batch(OBSERVING_CLIENT, 44, sequence)
+            .expect("observer receives both mirror tombstones")
+            .validate()
+            .expect("same-tick mirror tombstones validate");
+        assert_eq!(
+            tombstones
+                .records
+                .iter()
+                .filter(|record| {
+                    matches!(record, postretro_net::wire::EntityRecord::Despawn { .. })
+                })
+                .count(),
+            2
+        );
+        let retired = observer_replication.apply_snapshot(&mut observer_registry, &tombstones);
+        assert!(retired.retired_projectile_presentations.is_empty());
+        for (network_id, entity) in client_entities.values() {
+            assert!(!observer_registry.exists(*entity));
+            assert_eq!(observer_replication.sample_count(*network_id), 0);
+        }
+    }
+
+    // Regression: mirror-capacity exhaustion lacked a deterministic contract for
+    // preserving gameplay sources and already-created mirrors.
+    #[test]
+    fn same_tick_enemy_mirror_capacity_refuses_only_overflow_and_warns() {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Transform::default());
+        let sources = [
+            spawn_enemy_gameplay_projectile(&mut registry, enemy, Vec3::ZERO),
+            spawn_enemy_gameplay_projectile(&mut registry, enemy, Vec3::X),
+        ];
+        registry.set_test_capacity_limit(4);
+        let mut tick_events = crate::sim::TickEvents::default();
+        tick_events.enemy_projectile_spawns = vec![
+            EnemyProjectilePresentationSpawn {
+                projectile: sources[0],
+                descriptor_class: "enemy_plasma_blue".to_string(),
+            },
+            EnemyProjectilePresentationSpawn {
+                projectile: sources[1],
+                descriptor_class: "enemy_plasma_orange".to_string(),
+            },
+        ];
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+        let logs = LogCapture::start();
+
+        presentations.mirror_enemy_gameplay_projectiles(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &replication,
+            &tick_events.enemy_projectile_spawns,
+            7,
+        );
+
+        assert_eq!(presentations.flights.len(), 1);
+        assert_eq!(replicable.iter().count(), 1);
+        assert!(registry.exists(sources[0]));
+        assert!(registry.exists(sources[1]));
+        assert!(presentations.flights.values().any(|flight| {
+            matches!(
+                flight,
+                PresentationFlight::FollowGameplay { source, .. } if *source == sources[0]
+            )
+        }));
+        assert!(presentations.flights.values().all(|flight| {
+            !matches!(
+                flight,
+                PresentationFlight::FollowGameplay { source, .. } if *source == sources[1]
+            )
+        }));
+        let mirrored = *presentations
+            .flights
+            .keys()
+            .next()
+            .expect("the first same-tick spawn fits presentation capacity");
+        assert_eq!(
+            registry
+                .get_component::<DescriptorProvenance>(mirrored)
+                .expect("accepted mirror keeps its own resolved class")
+                .canonical_name,
+            "enemy_plasma_blue"
+        );
+        logs.assert_logged_once(
+            log::Level::Warn,
+            "[Net] entity registry exhausted; dropping projectile presentation",
         );
     }
 

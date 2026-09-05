@@ -203,7 +203,7 @@ impl BehaviorGraphDescriptor {
             Some(ActionVerb::Attack(name)) => self
                 .attacks
                 .get(name)
-                .map(|attack| attack.engagement_radius.unwrap_or(attack.max_range))
+                .and_then(|attack| attack.engagement_radius.or(attack.max_range))
                 .unwrap_or_else(|| self.engagement_radius()),
             None => self.engagement_radius(),
         }
@@ -613,26 +613,61 @@ fn validate_motion(
 
 fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), DescriptorError> {
     for (name, attack) in attacks {
-        if !attack.damage.is_finite() || attack.damage < 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.behavior.attacks.{name}.damage` must be a finite value >= 0.0, got {}",
-                    attack.damage
-                ),
-            });
-        }
-        validate_positive(&format!("attacks.{name}.maxRange"), attack.max_range)?;
-        validate_positive(&format!("attacks.{name}.cooldownMs"), attack.cooldown_ms)?;
-        if let Some(radius) = attack.engagement_radius {
-            validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
-            if radius > attack.max_range {
+        let inline_stats = [
+            ("damage", attack.damage),
+            ("maxRange", attack.max_range),
+            ("cooldownMs", attack.cooldown_ms),
+        ];
+        if attack.weapon.is_some() {
+            if let Some((field, _)) = inline_stats.iter().find(|(_, value)| value.is_some()) {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
-                        "`components.behavior.attacks.{name}.engagementRadius` must be <= `components.behavior.attacks.{name}.maxRange` ({}), got {radius}",
-                        attack.max_range
+                        "`components.behavior.attacks.{name}.{field}` must be omitted when `components.behavior.attacks.{name}.weapon` is present"
                     ),
                 });
             }
+        } else {
+            let damage = attack.damage.ok_or_else(|| DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.behavior.attacks.{name}.damage` is required when `components.behavior.attacks.{name}.weapon` is absent"
+                ),
+            })?;
+            let max_range = attack.max_range.ok_or_else(|| DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.behavior.attacks.{name}.maxRange` is required when `components.behavior.attacks.{name}.weapon` is absent"
+                ),
+            })?;
+            let cooldown_ms = attack.cooldown_ms.ok_or_else(|| DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.behavior.attacks.{name}.cooldownMs` is required when `components.behavior.attacks.{name}.weapon` is absent"
+                ),
+            })?;
+
+            if !damage.is_finite() || damage < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.attacks.{name}.damage` must be a finite value >= 0.0, got {damage}"
+                    ),
+                });
+            }
+            validate_positive(&format!("attacks.{name}.maxRange"), max_range)?;
+            validate_positive(&format!("attacks.{name}.cooldownMs"), cooldown_ms)?;
+
+            if let Some(radius) = attack.engagement_radius {
+                validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
+                if radius > max_range {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.behavior.attacks.{name}.engagementRadius` must be <= `components.behavior.attacks.{name}.maxRange` ({max_range}), got {radius}"
+                        ),
+                    });
+                }
+            }
+        }
+        if attack.weapon.is_some()
+            && let Some(radius) = attack.engagement_radius
+        {
+            validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
         }
         if let Some(standoff_distance) = attack.standoff_distance {
             validate_positive(
@@ -704,9 +739,10 @@ mod tests {
             attacks: BTreeMap::from([(
                 "slam".to_string(),
                 AttackParams {
-                    damage: 1.0,
-                    max_range: 4.0,
-                    cooldown_ms: 1.0,
+                    weapon: None,
+                    damage: Some(1.0),
+                    max_range: Some(4.0),
+                    cooldown_ms: Some(1.0),
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
                 },
@@ -736,9 +772,10 @@ mod tests {
         let attacks = BTreeMap::from([(
             "slam".to_string(),
             AttackParams {
-                damage: 1.0,
-                max_range: 4.0,
-                cooldown_ms: 1.0,
+                weapon: None,
+                damage: Some(1.0),
+                max_range: Some(4.0),
+                cooldown_ms: Some(1.0),
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
             },
@@ -749,6 +786,95 @@ mod tests {
             error.to_string().contains("attacks.slam.standoffDistance"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn validate_attacks_accepts_weapon_entries_and_preserves_contact_wire_shape() {
+        let contact: AttackParams = serde_json::from_value(serde_json::json!({
+            "damage": 8.0,
+            "maxRange": 2.0,
+            "cooldownMs": 1200.0,
+            "engagementRadius": 1.5,
+            "standoffDistance": 1.0,
+        }))
+        .expect("legacy contact attack must deserialize");
+        validate_attacks(&BTreeMap::from([("claw".to_string(), contact.clone())]))
+            .expect("legacy contact attack must remain valid");
+        assert_eq!(
+            serde_json::to_value(contact).expect("contact attack must serialize"),
+            serde_json::json!({
+                "damage": 8.0,
+                "maxRange": 2.0,
+                "cooldownMs": 1200.0,
+                "engagementRadius": 1.5,
+                "standoffDistance": 1.0,
+            })
+        );
+
+        let weapon: AttackParams = serde_json::from_value(serde_json::json!({
+            "weapon": "enemy_rifle",
+            "engagementRadius": 12.0,
+            "standoffDistance": 8.0,
+        }))
+        .expect("weapon attack must deserialize");
+        validate_attacks(&BTreeMap::from([("shoot".to_string(), weapon.clone())]))
+            .expect("weapon attack must be valid without inline contact stats");
+        assert_eq!(
+            serde_json::to_value(weapon).expect("weapon attack must serialize"),
+            serde_json::json!({
+                "weapon": "enemy_rifle",
+                "engagementRadius": 12.0,
+                "standoffDistance": 8.0,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_attacks_rejects_each_weapon_inline_stat_conflict_by_field_name() {
+        for (field, attack) in [
+            (
+                "damage",
+                AttackParams {
+                    weapon: Some("enemy_rifle".to_string()),
+                    damage: Some(8.0),
+                    max_range: None,
+                    cooldown_ms: None,
+                    engagement_radius: None,
+                    standoff_distance: None,
+                },
+            ),
+            (
+                "maxRange",
+                AttackParams {
+                    weapon: Some("enemy_rifle".to_string()),
+                    damage: None,
+                    max_range: Some(12.0),
+                    cooldown_ms: None,
+                    engagement_radius: None,
+                    standoff_distance: None,
+                },
+            ),
+            (
+                "cooldownMs",
+                AttackParams {
+                    weapon: Some("enemy_rifle".to_string()),
+                    damage: None,
+                    max_range: None,
+                    cooldown_ms: Some(250.0),
+                    engagement_radius: None,
+                    standoff_distance: None,
+                },
+            ),
+        ] {
+            let error = validate_attacks(&BTreeMap::from([("shoot".to_string(), attack)]))
+                .expect_err("weapon attack must reject an inline contact stat");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("attacks.shoot.{field}")),
+                "{error}"
+            );
+        }
     }
 
     #[test]

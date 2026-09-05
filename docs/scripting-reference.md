@@ -222,9 +222,8 @@ defineEntity({
 
 **Why the hitbox is the targetability switch.** Carrying a hitbox is exactly what
 makes an entity shootable. A shooting target declares both `max` and a `hitbox`.
-The player pawn, by contrast, declares health with **no** hitbox — so the weapon
-ray never targets the player (and a player can't shoot itself); the player's HP
-is driven only through an `applyDamage` reaction.
+The player pawn declares a body-spanning hitbox, so normal target queries can hit
+it. A weapon excludes its firing pawn from that query, preventing self-hits.
 
 **A health-bearing descriptor is map-placeable.** Like any `defineEntity`
 archetype, an entity carrying `components.health` is placed by `canonicalName` —
@@ -714,7 +713,7 @@ defineEntity({
 | `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
-| `attacks` | `{ [name]: { damage, maxRange, cooldownMs, engagementRadius?, standoffDistance? } }` (optional) | Named attack vocabulary. An activity action must name an entry here. |
+| `attacks` | `{ [name]: AttackParams }` (optional) | Named attack vocabulary. An activity action must name an entry here. Each `AttackParams` entry is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
@@ -732,6 +731,30 @@ A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
 targets, empty activities, retired flat fields, a missing move fallback, and a
 composite with two nested graph layers are load errors.
+
+### Attack entries
+
+An entry in `attacks` has one of two mutually exclusive forms. Use the contact
+form for an immediate direct-impact attack:
+
+```typescript
+slam: { damage: 8, maxRange: 2, cooldownMs: 1200 }
+```
+
+Use the weapon form when the attack should use a weapon descriptor, including a
+traveling projectile. `weapon` supplies the damage, range, and cooldown; keep
+only AI positioning (`engagementRadius` and/or `standoffDistance`) on the attack
+entry:
+
+```typescript
+shoot: { weapon: "enemy_rifle", standoffDistance: 6 }
+```
+
+Do not mix `weapon` with `damage`, `maxRange`, or `cooldownMs`; the forms are
+mutually exclusive and descriptor validation rejects the combination. A named
+weapon is resolved when the behavior program is built. It must resolve to a
+projectile `WeaponDescriptor` at runtime; an unknown or non-projectile weapon
+does not fire, and the engine reports the invalid attack configuration.
 
 ### Layers, verbs, and animation
 
@@ -948,13 +971,16 @@ oracle.
 
 Three separate knobs that are easy to conflate:
 
-- **An attack entry's `maxRange` gates damage.** It is the distance within which
-  a state selecting that entry actually lands a hit, checked every tick. A state
-  may select an attack at any distance; this is what stops it connecting from
-  across the room.
-- **`engagementRadius` resolves an action's default combat distance.** A named
-  attack uses its entry's `engagementRadius`, or its `maxRange` when that field
-  is omitted. Non-attack states use the graph-wide `engagementRadius`.
+- **A contact attack's `maxRange` gates its direct damage.** It is the distance
+  within which a state selecting that entry actually lands a hit, checked every
+  tick. A state may select an attack at any distance; this is what stops a
+  contact attack connecting from across the room. A weapon attack has no inline
+  `maxRange`: its projectile range and cooldown come from its named weapon
+  descriptor.
+- **`engagementRadius` supplies an explicit action combat distance.** When it
+  is omitted, a contact attack falls back to its `maxRange`; a weapon attack
+  falls back to the graph-level engagement behavior. Non-attack states also use
+  the graph-level behavior.
 - **`standoffDistance` sets attack combat positioning.** It controls the ring
   and scoring the engine uses to place engaged agents around their target. It
   must be finite and greater than zero. When omitted, it uses that action's
@@ -967,15 +993,18 @@ would generate no slots at all and pile every chaser onto the target. If your
 pursuers should crowd tighter or hang back, author the graph-wide
 `engagementRadius` outright.
 
-An attack entry's `engagementRadius` defaults to its own `maxRange`. Set
-`standoffDistance` when an attack should stand at a different distance without
-changing its damage reach or default action distance. Graph-wide and
-attack-specific positioning are separate, so retuning one named attack does not
-re-space non-attack states or other attacks.
+An attack entry's `engagementRadius` defaults to its own `maxRange` only for a
+contact attack. A weapon attack without an explicit `engagementRadius` uses the
+graph-wide radius (or the 2 m engine default). Set `standoffDistance` when an
+attack should stand at a different distance without changing its damage reach
+or default action distance. Graph-wide and attack-specific positioning are
+separate, so retuning one named attack does not re-space non-attack states or
+other attacks.
 
-Each named cooldown is independent. Switching states never resets another
-attack's timer, so a graph can alternate attacks without bypassing their
-individual `cooldownMs` values.
+Each named attack cooldown is independent. Contact attacks use their inline
+`cooldownMs`; weapon attacks use the cooldown from their named weapon
+descriptor. Switching states never resets another attack's timer, so a graph
+can alternate attacks without bypassing those individual cooldowns.
 
 ### The level-wide pursuer
 

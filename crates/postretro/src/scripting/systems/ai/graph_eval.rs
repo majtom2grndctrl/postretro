@@ -504,9 +504,10 @@ mod statechart_tests {
             attacks: BTreeMap::from([(
                 "slam".to_string(),
                 AttackParams {
-                    damage: 8.0,
-                    max_range: 2.0,
-                    cooldown_ms: 100.0,
+                    weapon: None,
+                    damage: Some(8.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(100.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },
@@ -572,6 +573,8 @@ mod statechart_tests {
             &scope,
             &candidate_scope,
             Arc::new(graph.clone()),
+            &[],
+            0,
             &mut HashSet::new(),
         );
         (programs, scope)

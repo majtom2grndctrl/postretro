@@ -13,7 +13,11 @@ use postretro_foundation::{
 };
 
 use crate::collision::{CollisionWorld, cast_ray};
-use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
+#[cfg(test)]
+use crate::scripting_systems::hit_zones::nearest_entity_hit;
+use crate::scripting_systems::hit_zones::{
+    EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
+};
 #[cfg(test)]
 use crate::{
     camera::Camera,
@@ -395,6 +399,7 @@ pub(crate) fn tick_resolved(
 
     let events = tick_resolved_component(
         registry,
+        None,
         &mut weapon,
         &pellet_salt_name,
         0,
@@ -413,6 +418,7 @@ pub(crate) fn tick_resolved(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_resolved_component(
     registry: &EntityRegistry,
+    owner_pawn: Option<EntityId>,
     weapon: &mut WeaponComponent,
     pellet_salt_name: &str,
     active_slot: usize,
@@ -441,6 +447,7 @@ pub(crate) fn tick_resolved_component(
             weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
             let (origin, direction) = if resolution == ResolutionMode::Projectile {
                 resolve_projectile_launch_pose(
+                    owner_pawn,
                     command.aim_origin,
                     command.aim_direction,
                     placement,
@@ -455,6 +462,7 @@ pub(crate) fn tick_resolved_component(
                 (command.aim_origin, command.aim_direction)
             };
             fire_hitscan(
+                owner_pawn,
                 origin,
                 direction,
                 collision_world,
@@ -483,6 +491,7 @@ pub(crate) fn tick_resolved_component(
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
 fn fire_hitscan(
+    owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
     collision_world: &CollisionWorld,
@@ -522,15 +531,16 @@ fn fire_hitscan(
                     pellet_rng.next_f32(),
                     pellet_rng.next_f32(),
                 );
-                let impact = match resolve_nearest_hit(
+                let impact = match resolve_nearest_hit(NearestHitQuery {
+                    owner_pawn,
                     origin,
-                    pellet_direction,
+                    direction: pellet_direction,
                     collision_world,
                     registry,
                     hit_zone_store,
                     anim_time,
                     range,
-                ) {
+                }) {
                     Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
                     Some(NearestHit::World(world)) => WeaponImpact {
                         point: world.point,
@@ -570,6 +580,7 @@ fn fire_hitscan(
 
 #[allow(clippy::too_many_arguments)] // mirrors the host/single-player hitscan inputs.
 pub(crate) fn resolve_client_fire(
+    owner_pawn: Option<EntityId>,
     weapon: &mut WeaponComponent,
     pellet_salt_name: &str,
     active_slot: usize,
@@ -620,6 +631,7 @@ pub(crate) fn resolve_client_fire(
     let (hits, projectile_launch) = match resolution {
         ResolutionMode::Hitscan => (
             resolve_client_hitscan(
+                owner_pawn,
                 aim_origin,
                 aim_direction,
                 collision_world,
@@ -639,6 +651,7 @@ pub(crate) fn resolve_client_fire(
         ResolutionMode::Projectile => {
             let projectile = projectile?;
             let (origin, direction) = resolve_projectile_launch_pose(
+                owner_pawn,
                 aim_origin,
                 aim_direction,
                 placement,
@@ -699,6 +712,7 @@ pub(crate) fn advance_client_fire_state(
 
 #[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
 fn resolve_client_hitscan(
+    owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
     collision_world: &CollisionWorld,
@@ -731,15 +745,16 @@ fn resolve_client_hitscan(
                 // Only an entity hit produces a local hit record; a nearer world
                 // hit (or no hit) yields none — the client owns no world-impact
                 // record.
-                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(
+                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(NearestHitQuery {
+                    owner_pawn,
                     origin,
-                    pellet_direction,
+                    direction: pellet_direction,
                     collision_world,
                     registry,
                     hit_zone_store,
                     anim_time,
                     range,
-                ) {
+                }) {
                     hits.push(local_hit_record(entity));
                 }
             }
@@ -754,6 +769,7 @@ fn resolve_client_hitscan(
 
 #[allow(clippy::too_many_arguments)]
 fn resolve_projectile_launch_pose(
+    owner_pawn: Option<EntityId>,
     aim_origin: Vec3,
     aim_direction: Vec3,
     placement: &WeaponPlacementDescriptor,
@@ -770,15 +786,16 @@ fn resolve_projectile_launch_pose(
     };
 
     let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
-    let convergence = resolve_nearest_hit(
-        aim_origin,
-        aim_direction,
+    let convergence = resolve_nearest_hit(NearestHitQuery {
+        owner_pawn,
+        origin: aim_origin,
+        direction: aim_direction,
         collision_world,
         registry,
         hit_zone_store,
         anim_time,
         range,
-    )
+    })
     .map_or(aim_origin + aim_direction * range, |hit| match hit {
         NearestHit::World(hit) => hit.point,
         NearestHit::Entity(hit) => hit.point,
@@ -846,15 +863,28 @@ enum NearestHit {
 /// wall is never reached because its toi exceeds the wall's. Both the sim fire
 /// path (`fire_hitscan`) and the client prediction path (`resolve_client_hitscan`)
 /// resolve through here so the tie-break lives in one place.
-fn resolve_nearest_hit(
+struct NearestHitQuery<'a> {
+    owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
-    collision_world: &CollisionWorld,
-    registry: &EntityRegistry,
-    hit_zone_store: &HitZoneStore,
+    collision_world: &'a CollisionWorld,
+    registry: &'a EntityRegistry,
+    hit_zone_store: &'a HitZoneStore,
     anim_time: f64,
     range: f32,
-) -> Option<NearestHit> {
+}
+
+fn resolve_nearest_hit(query: NearestHitQuery<'_>) -> Option<NearestHit> {
+    let NearestHitQuery {
+        owner_pawn,
+        origin,
+        direction,
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        range,
+    } = query;
     // World geometry hit — parry returns the nearest triangle intersection.
     let world_hit = cast_ray(
         collision_world,
@@ -870,7 +900,7 @@ fn resolve_nearest_hit(
 
     // Nearest entity hit (authored AABB or bone-posed capsule), resolved entirely
     // by the standalone hit-zone facility.
-    let entity_hit = nearest_entity_hit(
+    let entity_hit = nearest_entity_hit_ignoring(
         registry,
         hit_zone_store,
         anim_time,
@@ -878,6 +908,7 @@ fn resolve_nearest_hit(
         direction,
         range,
         0.0,
+        |candidate| owner_pawn == Some(candidate),
     );
 
     match (world_hit, entity_hit) {
@@ -1201,6 +1232,7 @@ pub(crate) mod tests {
         let zones = HitZoneStore::new();
 
         let (far_origin, far_direction) = resolve_projectile_launch_pose(
+            None,
             Vec3::ZERO,
             Vec3::NEG_Z,
             &placement,
@@ -1218,6 +1250,7 @@ pub(crate) mod tests {
         );
 
         let (hit_origin, hit_direction) = resolve_projectile_launch_pose(
+            None,
             Vec3::ZERO,
             Vec3::NEG_Z,
             &placement,
@@ -1242,6 +1275,7 @@ pub(crate) mod tests {
         let zones = HitZoneStore::new();
         for muzzle in [Vec3::new(0.0, 0.0, -6.0), Vec3::new(0.0, 0.0, -5.0)] {
             let (origin, direction) = resolve_projectile_launch_pose(
+                None,
                 Vec3::ZERO,
                 Vec3::NEG_Z,
                 &placement,
@@ -1275,6 +1309,7 @@ pub(crate) mod tests {
         let eye = Vec3::new(1.0, 2.0, 3.0);
         let aim = Vec3::new(0.2, -0.1, -0.97).normalize();
         let resolution = resolve_client_fire(
+            None,
             &mut weapon,
             "weapon.unknown",
             0,
@@ -1327,6 +1362,7 @@ pub(crate) mod tests {
         let mut weapon = projectile_weapon_component(Some(muzzle_local));
         let events = tick_resolved_component(
             &registry,
+            None,
             &mut weapon,
             "weapon.unknown",
             0,
@@ -1370,6 +1406,7 @@ pub(crate) mod tests {
         };
 
         let first = resolve_client_fire(
+            None,
             &mut state,
             "weapon.unknown",
             0,
@@ -1395,6 +1432,7 @@ pub(crate) mod tests {
         );
 
         let blocked = resolve_client_fire(
+            None,
             &mut state,
             "weapon.unknown",
             0,
@@ -1525,6 +1563,7 @@ pub(crate) mod tests {
         weapon.spread_degrees = 4.0;
 
         let resolution = resolve_client_fire(
+            None,
             &mut weapon,
             "weapon.unknown",
             0,
@@ -1576,6 +1615,7 @@ pub(crate) mod tests {
         .expect("the legacy r = 0 entity ray has a target");
 
         let resolution = resolve_client_fire(
+            None,
             &mut weapon,
             "weapon.unknown",
             0,
@@ -1607,6 +1647,124 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn player_sized_hitbox_is_targetable_but_owner_fire_skips_it() {
+        let mut registry = EntityRegistry::new();
+        // This is the authored player body: its eye-origin is inside y=[0, 1.6].
+        let player = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::new(0.2, 0.8, 0.2),
+            Vec3::ZERO,
+        );
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.8, -5.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        let zones = HitZoneStore::new();
+
+        let player_hit = nearest_entity_hit(
+            &registry,
+            &zones,
+            0.0,
+            Vec3::new(0.0, 0.8, 2.0),
+            Vec3::NEG_Z,
+            10.0,
+            0.0,
+        )
+        .expect("the player body is targetable from outside");
+        assert_eq!(player_hit.target, player);
+
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::new(0.0, 0.8, 0.0),
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        let mut authoritative_hitscan = weapon_component(FireMode::Auto, 0.0);
+        authoritative_hitscan.pellet_count = 8;
+        let authoritative_events = tick_resolved_component(
+            &registry,
+            Some(player),
+            &mut authoritative_hitscan,
+            "weapon.player",
+            0,
+            &command,
+            &WeaponPlacementDescriptor::default(),
+            &CollisionWorld::new(),
+            &zones,
+            0.0,
+            WeaponFireAuthorization::Accepted,
+        );
+        assert_eq!(authoritative_events.impacts.len(), 8);
+        assert!(
+            authoritative_events
+                .impacts
+                .iter()
+                .all(|impact| impact.target == Some(target))
+        );
+
+        let mut hitscan = weapon_component(FireMode::Auto, 0.0);
+        hitscan.pellet_count = 8;
+        let hits = resolve_client_fire(
+            Some(player),
+            &mut hitscan,
+            "weapon.player",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            None,
+            1,
+            &CollisionWorld::new(),
+            &registry,
+            &zones,
+            0.0,
+            0.0,
+        )
+        .expect("the pellet shell resolves");
+        assert_eq!(hits.hits.len(), 8);
+        assert!(hits.hits.iter().all(|hit| hit.target == target));
+
+        let mut projectile = projectile_weapon_component(Some(Vec3::new(0.5, 0.0, -0.4)));
+        let launch = resolve_client_fire(
+            Some(player),
+            &mut projectile,
+            "weapon.player.projectile",
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::NEG_Z,
+            &WeaponPlacementDescriptor::default(),
+            Some(Vec3::new(0.5, 0.0, -0.4)),
+            2,
+            &CollisionWorld::new(),
+            &registry,
+            &zones,
+            0.0,
+            0.0,
+        )
+        .expect("the projectile shell resolves")
+        .projectile_launch
+        .expect("the projectile launch is deferred");
+        assert!(
+            launch.direction.x < -0.05,
+            "muzzle convergence aims at the other target, not the owner's interior hitbox"
+        );
+    }
+
+    #[test]
     fn client_fire_gate_does_not_advance_shell_counter_without_a_resolved_shell() {
         let registry = EntityRegistry::new();
         let mut weapon = weapon_component(FireMode::Auto, 100.0);
@@ -1614,6 +1772,7 @@ pub(crate) mod tests {
         weapon.cooldown_remaining_ms = 1.0;
 
         let resolution = resolve_client_fire(
+            None,
             &mut weapon,
             "weapon.unknown",
             0,
@@ -2096,6 +2255,7 @@ pub(crate) mod tests {
         );
 
         let resolution = resolve_client_fire(
+            None,
             &mut state,
             "weapon.unknown",
             0,

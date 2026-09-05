@@ -722,9 +722,10 @@ mod tests {
             attacks: std::collections::BTreeMap::from([(
                 "claw".to_string(),
                 AttackParams {
-                    damage: 5.0,
-                    max_range: 2.0,
-                    cooldown_ms: 900.0,
+                    weapon: None,
+                    damage: Some(5.0),
+                    max_range: Some(2.0),
+                    cooldown_ms: Some(900.0),
                     engagement_radius: None,
                     standoff_distance: None,
                 },

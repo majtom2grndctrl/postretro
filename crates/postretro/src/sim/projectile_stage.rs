@@ -259,6 +259,7 @@ fn advance_matching(
             segment_length,
             component.radius,
             projectile_id,
+            component.owner_pawn,
         ) {
             let impact = match hit {
                 NearestProjectileHit::World(world) => WeaponImpact {
@@ -380,6 +381,7 @@ fn nearest_projectile_hit(
     range: f32,
     radius: f32,
     projectile_id: EntityId,
+    owner_pawn: EntityId,
 ) -> Option<NearestProjectileHit> {
     let world_hit = cast_sphere_exact(
         collision_world,
@@ -401,7 +403,7 @@ fn nearest_projectile_hit(
         direction,
         range,
         radius,
-        |id| projectile_collision_excludes(registry, projectile_id, id),
+        |id| projectile_collision_excludes(registry, projectile_id, owner_pawn, id),
     );
 
     match (world_hit, entity_hit) {
@@ -417,9 +419,11 @@ fn nearest_projectile_hit(
 fn projectile_collision_excludes(
     registry: &EntityRegistry,
     active_projectile: EntityId,
+    owner_pawn: EntityId,
     candidate: EntityId,
 ) -> bool {
-    if candidate == active_projectile
+    if candidate == owner_pawn
+        || candidate == active_projectile
         || registry
             .has_component_kind(candidate, ComponentKind::Projectile)
             .unwrap_or(false)
@@ -686,6 +690,65 @@ mod tests {
     }
 
     #[test]
+    fn projectile_passes_through_its_owner_and_damages_a_later_target() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let owner = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .owner_pawn;
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        registry
+            .borrow_mut()
+            .set_component(
+                owner,
+                HealthComponent {
+                    max: 20.0,
+                    current: 20.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.25),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("owner hitbox attaches around the projectile spawn point");
+
+        advance_once(&registry, 1.0);
+        advance_once(&registry, 1.0);
+
+        let registry = registry.borrow();
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(owner)
+                .expect("owner remains live")
+                .current,
+            20.0,
+            "the projectile must not self-impact after its spawn grace pass"
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .expect("later target remains live")
+                .current,
+            15.0,
+            "excluding the owner must not exclude other targets"
+        );
+        assert!(
+            !registry.exists(projectile),
+            "the projectile resolves once on the later target"
+        );
+    }
+
+    #[test]
     fn projectile_expiring_at_range_limit_applies_no_damage() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let target = spawn_target(
@@ -871,6 +934,10 @@ mod tests {
         // independent visual projectile could consume another projectile's flight.
         let mut registry = EntityRegistry::new();
         let active = spawn_projectile(&mut registry, 1.0, 0.1, 5.0);
+        let owner = registry
+            .get_component::<ProjectileComponent>(active)
+            .expect("projectile component attaches")
+            .owner_pawn;
         registry
             .set_component(
                 active,
@@ -903,11 +970,19 @@ mod tests {
             )
             .expect("intentional mesh target attaches");
 
-        assert!(projectile_collision_excludes(&registry, active, active));
-        assert!(projectile_collision_excludes(&registry, active, observer));
+        assert!(projectile_collision_excludes(
+            &registry, active, owner, active,
+        ));
+        assert!(projectile_collision_excludes(
+            &registry, active, owner, owner,
+        ));
+        assert!(projectile_collision_excludes(
+            &registry, active, owner, observer,
+        ));
         assert!(!projectile_collision_excludes(
             &registry,
             active,
+            owner,
             intentional_mesh_target,
         ));
     }

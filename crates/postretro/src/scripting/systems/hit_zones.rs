@@ -694,6 +694,7 @@ pub(crate) struct EntityRayHit {
 /// `store` is the per-model hit-zone data ([`HitZoneStore`]). The result's `zone`
 /// carries the struck bone's tag for a capsule hit (the zone-multiplier damage
 /// routing site reads it).
+#[allow(dead_code)] // owner-aware weapon paths use `nearest_entity_hit_ignoring` directly.
 pub(crate) fn nearest_entity_hit(
     registry: &EntityRegistry,
     store: &HitZoneStore,

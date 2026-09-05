@@ -464,6 +464,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     }
     let mut events = weapon::tick_resolved_component(
         &registry,
+        pawn,
         &mut weapon_component,
         &pellet_salt_name,
         active_slot,

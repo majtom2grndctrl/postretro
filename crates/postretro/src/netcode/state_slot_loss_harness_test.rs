@@ -16,6 +16,10 @@
 
 #![cfg(test)]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use glam::Vec3;
 use postretro_net::harness::{LinkConfig, PacketConditioner};
 use postretro_net::state_slots::RawStateSlotRecord;
 use postretro_net::wire::{
@@ -23,7 +27,7 @@ use postretro_net::wire::{
 };
 
 use super::state_slots::{ClientStateApply, HostStateReplication, ReplicatedSlotIdentity};
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
@@ -31,8 +35,8 @@ use postretro_entities::{
     SlotSchema, SlotTable, SlotType, SlotValue, Transform,
 };
 use postretro_foundation::{
-    AmmoResource, FireMode, HealthDescriptor, IrNode, ReloadStyle, ResolutionMode,
-    WeaponDescriptor, WeaponResource,
+    AmmoResource, FireMode, HealthDescriptor, IrNode, ProjectileBodyVisual, ProjectileDescriptor,
+    ProjectileVisual, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
 };
 use postretro_scripting_core::StoreIdentityLedger;
 
@@ -41,6 +45,9 @@ use crate::scripting_systems::slot_accumulators::{
 };
 
 use super::command_queue::{MovementOwners, WeaponOwners};
+use crate::collision::CollisionWorld;
+use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::weapon::ProjectileLaunch;
 
 const CLIENT_A: u64 = 1;
 const CLIENT_B: u64 = 2;
@@ -210,6 +217,10 @@ struct StateSlotHarness {
     /// Count of `StateBaselineRefresh` requests the server has received (after the
     /// conditioned return path), for the repair-seam assertion.
     refreshes_received: u32,
+    /// The client-to-host path is shared with combat declarations. Keeping this
+    /// explicit lets the co-op projectile test prove ordinary Health replication
+    /// did not require a client-authored HIT message.
+    hit_declarations_received: u32,
 }
 
 impl StateSlotHarness {
@@ -265,6 +276,7 @@ impl StateSlotHarness {
             sequence: 0,
             now_ms: 0,
             refreshes_received: 0,
+            hit_declarations_received: 0,
         }
     }
 
@@ -441,6 +453,9 @@ impl StateSlotHarness {
                     self.host
                         .request_refresh(self.client_id, slot_id, missing_baseline_ref);
                 }
+                ClientMessage::HitDeclaration(_) => {
+                    self.hit_declarations_received += 1;
+                }
                 _ => {}
             }
         }
@@ -466,6 +481,147 @@ fn snapshot_with_state(
         state_schema_fingerprint: fingerprint,
         state_records,
     }
+}
+
+// E16 Task 6: the connected client's pawn is hit by a host-only enemy
+// projectile. The authoritative impact changes Health first; the existing
+// owner-private Health projection then carries that result to the client. No
+// client prediction, AuthorizedShot, or HitDeclaration participates.
+#[test]
+fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
+    let direct = LinkConfig {
+        delay: 0,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0xe16_0601,
+    };
+    let mut h = StateSlotHarness::new(CLIENT_A, direct, direct);
+    let mut target_transform = *h
+        .registry
+        .get_component::<Transform>(h.owner_pawn)
+        .expect("connected pawn has a transform");
+    target_transform.position = Vec3::X;
+    h.registry
+        .set_component(h.owner_pawn, target_transform)
+        .expect("connected pawn remains live");
+    let mut target_health = h
+        .registry
+        .get_component::<HealthComponent>(h.owner_pawn)
+        .expect("connected pawn has health")
+        .clone();
+    target_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::splat(0.25),
+        offset: Vec3::ZERO,
+    });
+    h.registry
+        .set_component(h.owner_pawn, target_health)
+        .expect("connected pawn accepts its host hitbox");
+
+    let enemy = h.registry.spawn(Transform::default());
+    let projectile = crate::sim::spawn_projectile(
+        &mut h.registry,
+        enemy,
+        enemy,
+        ProjectileLaunch {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+            speed: 4.0,
+            radius: 0.1,
+            range: 8.0,
+            lifetime: 2.0,
+            damage: 10.0,
+            credit_source: "enemy.rifle".to_string(),
+            descriptor: ProjectileDescriptor {
+                speed: 4.0,
+                radius: 0.1,
+                lifetime_ms: 2_000.0,
+                visual: ProjectileVisual {
+                    body: ProjectileBodyVisual::Sprite {
+                        sprite: "sprites/projectiles/enemy-bolt.png".to_string(),
+                        size: 0.2,
+                        opacity: 1.0,
+                        rotation: 0.0,
+                        tint: [1.0, 0.2, 0.1],
+                        emissive: 0.0,
+                        frame_duration_ms: None,
+                    },
+                    trail: None,
+                    light: None,
+                    impact_light: None,
+                },
+            },
+        },
+        None,
+    )
+    .expect("host enemy projectile has capacity to spawn");
+    assert_eq!(
+        h.registry
+            .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+                projectile,
+            )
+            .expect("spawned projectile has common gameplay state")
+            .predicted_shot_id,
+        None,
+        "an enemy flight has no client-authorized shot identity"
+    );
+
+    let registry = Rc::new(RefCell::new(std::mem::replace(
+        &mut h.registry,
+        EntityRegistry::new(),
+    )));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut ignored_impact_effects = |_: &mut EntityRegistry| {};
+    assert!(
+        crate::sim::advance(
+            &registry,
+            &world,
+            &hit_zones,
+            0.0,
+            1.0 / 60.0,
+            &mut ignored_impact_effects,
+        )
+        .is_empty(),
+        "the common spawn grace holds the fire tick"
+    );
+    let contacts = crate::sim::advance(
+        &registry,
+        &world,
+        &hit_zones,
+        0.0,
+        1.0,
+        &mut ignored_impact_effects,
+    );
+    assert_eq!(contacts.len(), 1, "the host resolves one later impact");
+    h.registry = Rc::into_inner(registry)
+        .expect("the host projectile stage releases its registry")
+        .into_inner();
+
+    let health = h
+        .registry
+        .get_component::<HealthComponent>(h.owner_pawn)
+        .expect("connected pawn remains host-owned after impact");
+    assert_eq!(
+        health.current, 90.0,
+        "damage applied at the shared host chokepoint"
+    );
+    let [credit] = health.contributor_ledger.entries() else {
+        panic!("enemy impact records its ordinary health credit");
+    };
+    assert_eq!(credit.source_id, "enemy.rifle");
+    assert_eq!(credit.last_attacker, Some(enemy));
+    assert_eq!(credit.last_weapon, Some(enemy));
+
+    h.step();
+    assert_eq!(
+        h.client_value("player.health"),
+        Some(SlotValue::Number(90.0)),
+        "the connected client receives ordinary owner-private Health replication"
+    );
+    assert_eq!(
+        h.hit_declarations_received, 0,
+        "the host-side enemy impact did not require a client HitDeclaration"
+    );
 }
 
 // Under a lossy link with changing values, the client's UI-visible slots converge to

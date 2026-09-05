@@ -9,14 +9,18 @@ import {
 export const playerEntity = defineEntity({
   canonicalName: "player",
   components: {
-    // The player pawn carries health but DELIBERATELY no `hitbox`: a hitbox is
-    // what makes an entity hitscan-targetable, so omitting it keeps the player
-    // out of weapon ray-targeting (and forecloses self-hit). HP is driven only
-    // through the `apply_damage` chokepoint — e.g. the combat-demo level's
-    // `applyDamage` reaction. Without this block the engine `player.health`
-    // producer, its `[0, max]` slot range, and any player-damage reaction all
-    // silently no-op. `max: 100` is the conventional full-health baseline.
-    health: { max: 100 },
+    // The body-spanning hitbox makes the player a normal targetable presence.
+    // It mirrors the 0.2 m-radius, 0.8 m-half-height movement capsule: feet at
+    // y=0, head at y=1.6, and the 0.5 m camera eye lies inside its Y range.
+    // Player weapon queries exclude their firing pawn, preventing that interior
+    // eye ray from reporting a range-0 self-hit.
+    health: {
+      max: 100,
+      hitbox: {
+        halfExtents: [0.2, 0.8, 0.2],
+        offset: [0, 0.8, 0],
+      },
+    },
     inventory: {
       // Projectile references live in the standard dev loadout, so any dev
       // map can fire both the sprite-bolt and model-plus-trail variants.

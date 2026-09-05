@@ -884,7 +884,7 @@ mod tests {
         );
 
         let source = include_str!("../shaders/direct_sh_compose.wgsl");
-        assert!(source.contains("if (in_grid && use_baked_direct_static)"));
+        assert!(source.contains("if (output_is_stored && use_baked_direct_static)"));
         assert!(source.contains("accum[texel_index] = vec4<f32>(0.0);"));
     }
 

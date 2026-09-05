@@ -2046,6 +2046,10 @@ fn attack_applies_configured_damage_once_per_entry_and_respects_cooldown() {
     let events = run_ai_tick(&mut reg, &mut warned, dt);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0, "one hit lands");
+    assert!(
+        projectile_ids(&reg).is_empty(),
+        "a legacy inline contact attack remains direct damage and does not spawn a projectile"
+    );
     {
         let health = reg.get_component::<HealthComponent>(pawn).unwrap();
         let entries = health.contributor_ledger.entries();

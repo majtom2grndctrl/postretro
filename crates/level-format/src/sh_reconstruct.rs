@@ -8,7 +8,7 @@
 //! `context/plans/drafts/lighting-scale--delta-sh-probe-coarsening/` (task G1).
 //!
 //! ## Three candidate stored levels per 4×4×4 brick
-//! - **L0** — all 64 base probes (dense; ground truth).
+//! - **L0** — every valid base probe, in local x-fastest order.
 //! - **L1** — the 8 corner probes (in-brick local ∈ {0,3}³), trilinear
 //!   reconstruction with per-axis weights `local/3`.
 //! - **L2** — a single brick-mean tile over the brick's VALID probes only.

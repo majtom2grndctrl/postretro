@@ -1372,12 +1372,12 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            // The shared fixture base volume marks every probe invalid, so
-            // retained zero-length entries are the matching id-41 spelling.
-            valid_probe_masks: vec![0; cell_count],
+            // Regression: the v10 stored-atlas fixture has one valid probe;
+            // id 41 must carry the same validity and one tile per CSR entry.
+            valid_probe_masks: vec![1; cell_count],
             cell_levels: vec![0u8; cell_count],
             affinity_offsets: offsets,
-            delta_subblocks: Vec::new(),
+            delta_subblocks: vec![0; affinity_lights.len() * DEFAULT_DELTA_PROBE_F16_STRIDE],
             affinity_lights,
         }
     }
@@ -6204,11 +6204,11 @@ mod tests {
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
             vec![0],
         );
-        // The section validates its own compact length, but id 34 marks every
-        // fixture probe invalid. This must clear 40 + 41 + 42 before renderer
+        // The section validates its own compact length, but id 34 marks the
+        // fixture probe valid. This must clear 40 + 41 + 42 before renderer
         // buffer construction rather than letting the mask misalign later CSR entries.
-        direct_sh_delta.valid_probe_masks[0] = 1;
-        direct_sh_delta.delta_subblocks = vec![0; DEFAULT_DELTA_PROBE_F16_STRIDE];
+        direct_sh_delta.valid_probe_masks[0] = 0;
+        direct_sh_delta.delta_subblocks.clear();
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),

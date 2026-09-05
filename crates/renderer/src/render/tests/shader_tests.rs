@@ -282,9 +282,11 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
         src.contains("@group(3) @binding(17) var billboard_direct_scatter: texture_3d<f32>;")
             && src
                 .contains("fn sample_billboard_direct_scatter(world_pos: vec3<f32>) -> vec3<f32>")
-            && src.contains("let is_valid = sample.a >= 0.5;")
+            && src.contains("let is_valid = sh_probe_indirection(idx).valid;")
             && src.contains("sh_probe_weight(")
-            && src.contains("vec3<f32>(0.0),\n            is_valid,\n            false,"),
+            && src.contains(
+                "vec3<f32>(0.0),\n            is_valid,\n            false,\n            true,\n            sh_grid.probe_occlusion != 0u,"
+            ),
         "scatter must use the depth-aware SH weighting convention without supplying a sprite normal",
     );
     assert!(
@@ -989,9 +991,14 @@ fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
         include_str!("../../shaders/sh_compose.wgsl"),
         "\n",
         include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
     );
-    const DIRECT_SH_COMPOSE_SHADER_SOURCE: &str =
-        include_str!("../../shaders/direct_sh_compose.wgsl");
+    const DIRECT_SH_COMPOSE_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/direct_sh_compose.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+    );
 
     for (label, source) in [
         ("sh_compose", SH_COMPOSE_SHADER_SOURCE),

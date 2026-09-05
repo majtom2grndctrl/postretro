@@ -121,8 +121,8 @@ fn sh_l1_local(idx: vec3<i32>) -> vec3<u32> {
 
 // Exact WGSL mirror of `sh_reconstruct::trilinear_weight`. `corner` follows
 // `corner_locals`' x-fastest order, and a zero-alpha stored tile is absent.
-fn sh_l1_corner_weight(target: vec3<u32>, corner: u32) -> f32 {
-    let fraction = vec3<f32>(target) / f32(SH_AFFINITY_FACTOR - 1u);
+fn sh_l1_corner_weight(probe_local: vec3<u32>, corner: u32) -> f32 {
+    let fraction = vec3<f32>(probe_local) / f32(SH_AFFINITY_FACTOR - 1u);
     let high = sh_corner_offset(corner) != vec3<u32>(0u);
     let axis = select(vec3<f32>(1.0) - fraction, fraction, high);
     return axis.x * axis.y * axis.z;

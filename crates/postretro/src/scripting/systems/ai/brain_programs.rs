@@ -21,9 +21,8 @@ use super::candidate_scope::CandidateScope;
 /// Descriptor-owned projectile tuning resolved once for a weapon-referencing
 /// attack. This stays beside bound programs rather than on `BrainComponent` so
 /// it is derived-only and never serialized with the retained graph.
-/// The fire seam consumes it in the next task; resolution deliberately lands
-/// before that consumer so no tick path can re-resolve descriptor data.
-#[allow(dead_code)]
+/// Evaluator-owned derived state keeps the tick path from re-resolving weapon
+/// descriptor data for each firing attempt.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedProjectileAttack {
     canonical_weapon_name: String,
@@ -34,7 +33,6 @@ pub(crate) struct ResolvedProjectileAttack {
     projectile: ProjectileDescriptor,
 }
 
-#[allow(dead_code)]
 impl ResolvedProjectileAttack {
     pub(crate) fn canonical_weapon_name(&self) -> &str {
         &self.canonical_weapon_name
@@ -86,7 +84,6 @@ pub(crate) struct BrainEntityPrograms {
     graph: Arc<BehaviorGraphDescriptor>,
     envelopes: Vec<BoundEnvelope>,
     candidate_filter: Option<BoundProgram<CandidateScope>>,
-    #[allow(dead_code)] // The following fire-seam task consumes this derived table.
     resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
 }
 
@@ -101,7 +98,6 @@ impl BrainEntityPrograms {
 
     /// Lookup is by the graph's authored attack name, so the fire evaluator
     /// never repeats cross-descriptor resolution in its per-tick path.
-    #[allow(dead_code)] // The following fire-seam task reads the resolved attack by name.
     pub(crate) fn resolved_projectile_attack(
         &self,
         attack_name: &str,

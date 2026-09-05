@@ -1394,6 +1394,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         .sum();
     let total_side_count: usize = brush_volumes.iter().map(|brush| brush.sides.len()).sum();
 
+    synthesize_grouped_light_carriers(
+        &assemblies,
+        &assembly_members,
+        &pending_kinematic_movers,
+        &mut lights,
+    );
     let kinematic_movers = resolve_kinematic_movers(
         &geo_map,
         pending_kinematic_movers,
@@ -1440,6 +1446,92 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         nav_params,
         entity_shadow_params,
     })
+}
+
+/// Fill eligible dynamic-light carrier names from unambiguous editor assemblies.
+///
+/// This deliberately stops at the canonical carrier name. The existing resolver
+/// below remains the only place that derives offsets, applies degradation, and
+/// constructs carried-light links.
+fn synthesize_grouped_light_carriers(
+    assemblies: &[MapAssembly],
+    assembly_members: &[AssemblyMembers],
+    pending_movers: &[PendingKinematicMover],
+    lights: &mut [MapLight],
+) {
+    debug_assert_eq!(assemblies.len(), assembly_members.len());
+
+    for (assembly, members) in assemblies.iter().zip(assembly_members) {
+        let eligible_light_indices: Vec<usize> = members
+            .light_indices
+            .iter()
+            .copied()
+            .filter(|&index| {
+                let light = &lights[index];
+                light.is_dynamic && !light.bake_only && light.carrier.is_empty()
+            })
+            .collect();
+
+        match members.pending_mover_indices.as_slice() {
+            [] => {}
+            [mover_index] => {
+                let mover = &pending_movers[*mover_index];
+                if mover.name.is_empty() {
+                    if !eligible_light_indices.is_empty() {
+                        log::warn!(
+                            "[Compiler] group `{}` (id `{}`) contains an eligible dynamic light but its only kinematic_mover has no name; grouped carry needs a named mover",
+                            assembly.provenance,
+                            assembly.group_id,
+                        );
+                    }
+                    continue;
+                }
+
+                for &light_index in &members.light_indices {
+                    let light = &lights[light_index];
+                    let names_another_mover = light.is_dynamic
+                        && !light.bake_only
+                        && !light.carrier.is_empty()
+                        && light.carrier != mover.name
+                        && pending_movers
+                            .iter()
+                            .any(|other| other.name == light.carrier);
+                    if names_another_mover {
+                        log::warn!(
+                            "[Compiler] group `{}` (id `{}`) contains a dynamic light with explicit carrier `{}` instead of its grouped kinematic_mover `{}`; explicit carrier wins",
+                            assembly.provenance,
+                            assembly.group_id,
+                            light.carrier,
+                            mover.name,
+                        );
+                    }
+                }
+
+                for light_index in eligible_light_indices {
+                    lights[light_index].carrier.clone_from(&mover.name);
+                }
+            }
+            mover_indices => {
+                if eligible_light_indices.is_empty() {
+                    continue;
+                }
+
+                let movers = mover_indices
+                    .iter()
+                    .map(|&index| {
+                        let mover = &pending_movers[index];
+                        format!("`{}` (member {index})", mover.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                log::warn!(
+                    "[Compiler] group `{}` (id `{}`) contains eligible dynamic lights but multiple kinematic_movers {movers}; grouped carry is ambiguous",
+                    assembly.provenance,
+                    assembly.group_id,
+                );
+            }
+        }
+    }
 }
 
 /// Resolve dynamic-light carrier names after all movers are available.
@@ -2825,6 +2917,54 @@ mod tests {
         let duplicate = map[mover_start..waypoint_start].replacen("// entity 1", "// entity 5", 1);
 
         map.replacen("// entity 2", &format!("{duplicate}// entity 2"), 1)
+    }
+
+    fn grouped_kinematic_map(mover_name: &str) -> String {
+        let map = kinematic_test_map("wp_b").replacen(
+            "\"classname\" \"kinematic_mover\"\n\"name\" \"lift_a\"",
+            &format!(
+                "\"classname\" \"kinematic_mover\"\n\"name\" \"{mover_name}\"\n\"_tb_group\" \"1\""
+            ),
+            1,
+        );
+        let marker = r#"// entity 5
+{
+"classname" "func_group"
+"origin" "0 0 0"
+"_tb_type" "_tb_group"
+"_tb_name" "lift assembly"
+"_tb_id" "1"
+}
+"#;
+        map.replacen("// entity 3", &format!("{marker}// entity 3"), 1)
+    }
+
+    fn grouped_kinematic_map_with_light(
+        map: String,
+        classname: &str,
+        origin: &str,
+        carrier: Option<&str>,
+        extra_properties: &str,
+    ) -> String {
+        kinematic_map_with_light(
+            map,
+            classname,
+            origin,
+            carrier,
+            &format!("\"_tb_group\" \"1\"\n{extra_properties}"),
+        )
+    }
+
+    fn grouped_kinematic_map_with_second_ungrouped_mover(map: String, name: &str) -> String {
+        let map = kinematic_map_with_duplicate_named_mover(map);
+        let duplicate_start = map
+            .find("// entity 5")
+            .expect("duplicate mover should use entity 5");
+        let (before_duplicate, duplicate) = map.split_at(duplicate_start);
+        let duplicate = duplicate
+            .replacen("\"name\" \"lift_a\"", &format!("\"name\" \"{name}\""), 1)
+            .replacen("\"_tb_group\" \"1\"\n", "", 1);
+        format!("{before_duplicate}{duplicate}")
     }
 
     fn kinematic_test_map_with_nexts(path_next: &str, wp_b_next: &str) -> String {
@@ -4518,6 +4658,226 @@ mod tests {
                 .iter()
                 .all(|record| record.level != Level::Warn),
             "absent and cleared carriers must not produce a warning"
+        );
+    }
+
+    #[test]
+    fn grouped_named_mover_synthesizes_carriers_and_resolves_every_eligible_light() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map_with_light(
+                grouped_kinematic_map("lift_a"),
+                "light_dynamic",
+                "0 0 64",
+                None,
+                "",
+            ),
+            "light_dynamic",
+            "0 0 96",
+            None,
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("grouped dynamic lights should parse");
+
+        assert_eq!(map_data.lights.len(), 2);
+        assert!(
+            map_data
+                .lights
+                .iter()
+                .all(|light| light.carrier == "lift_a")
+        );
+        assert_eq!(map_data.carried_light_links.len(), 2);
+        assert_eq!(
+            map_data
+                .carried_light_links
+                .iter()
+                .map(|link| link.source_light_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+        );
+        assert!(
+            map_data
+                .carried_light_links
+                .iter()
+                .all(|link| link.mover_id == map_data.kinematic_movers[0].mover_id)
+        );
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "an unambiguous named grouped carrier must not warn"
+        );
+    }
+
+    #[test]
+    fn grouped_named_mover_uses_the_same_carried_light_resolution_as_an_explicit_carrier() {
+        let grouped_map = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        );
+        let explicit_map = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        );
+
+        let grouped = parse_inline_map(&grouped_map).expect("grouped carrier should parse");
+        let explicit = parse_inline_map(&explicit_map).expect("explicit carrier should parse");
+
+        assert_eq!(grouped.carried_light_links.len(), 1);
+        assert_eq!(explicit.carried_light_links.len(), 1);
+        assert_eq!(
+            grouped.carried_light_links[0].mover_id,
+            explicit.carried_light_links[0].mover_id,
+        );
+        assert_eq!(
+            grouped.carried_light_links[0].local_offset,
+            explicit.carried_light_links[0].local_offset,
+        );
+    }
+
+    #[test]
+    fn grouped_multiple_movers_with_eligible_light_warns_and_leaves_light_unbound() {
+        let map_text = grouped_kinematic_map_with_light(
+            kinematic_map_with_duplicate_named_mover(grouped_kinematic_map("lift_a")),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("ambiguous grouped carrier should parse");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "group `lift assembly` (id `1`) contains eligible dynamic lights but multiple kinematic_movers",
+        );
+        capture.assert_logged_once(Level::Warn, "`lift_a` (member 0), `lift_a` (member 1)");
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(map_data.carried_light_links.is_empty());
+    }
+
+    #[test]
+    fn grouped_unnamed_mover_with_eligible_light_warns_and_leaves_light_unbound() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map(""),
+            "light_dynamic",
+            "0 0 64",
+            None,
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("unnamed grouped mover should parse");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "group `lift assembly` (id `1`) contains an eligible dynamic light but its only kinematic_mover has no name",
+        );
+        assert!(map_data.lights[0].carrier.is_empty());
+        assert!(map_data.carried_light_links.is_empty());
+    }
+
+    #[test]
+    fn grouped_explicit_carrier_for_another_mover_warns_and_explicit_binding_wins() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map_with_second_ungrouped_mover(
+                grouped_kinematic_map("lift_a"),
+                "lift_b",
+            ),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_b"),
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("explicit grouped carrier should parse");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "group `lift assembly` (id `1`) contains a dynamic light with explicit carrier `lift_b` instead of its grouped kinematic_mover `lift_a`; explicit carrier wins",
+        );
+        assert_eq!(map_data.lights[0].carrier, "lift_b");
+        assert_eq!(map_data.carried_light_links.len(), 1);
+        assert_eq!(map_data.carried_light_links[0].mover_id, 1);
+    }
+
+    #[test]
+    fn grouped_movers_without_eligible_lights_are_silent() {
+        let capture = LogCapture::start();
+        let unnamed = parse_inline_map(&grouped_kinematic_map(""))
+            .expect("unnamed mover without grouped light should parse");
+        assert!(unnamed.carried_light_links.is_empty());
+
+        let multiple = parse_inline_map(&kinematic_map_with_duplicate_named_mover(
+            grouped_kinematic_map("lift_a"),
+        ))
+        .expect("multiple movers without grouped light should parse");
+
+        assert!(multiple.carried_light_links.is_empty());
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "mover-only groups are ordinary authoring and must not warn"
+        );
+    }
+
+    #[test]
+    fn grouped_baked_and_bake_only_lights_are_ineligible_and_silent() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map_with_light(
+                grouped_kinematic_map("lift_a"),
+                "light",
+                "0 0 64",
+                None,
+                "",
+            ),
+            "light_dynamic",
+            "0 0 96",
+            None,
+            "\"_bake_only\" \"1\"\n",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("ineligible grouped lights should parse");
+
+        assert!(map_data.lights.iter().all(|light| light.carrier.is_empty()));
+        assert!(map_data.carried_light_links.is_empty());
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "baked and bake-only lights must not make grouped carry ambiguous"
+        );
+    }
+
+    #[test]
+    fn grouped_explicit_carrier_for_its_mover_is_silent() {
+        let map_text = grouped_kinematic_map_with_light(
+            grouped_kinematic_map("lift_a"),
+            "light_dynamic",
+            "0 0 64",
+            Some("lift_a"),
+            "",
+        );
+        let capture = LogCapture::start();
+        let map_data = parse_inline_map(&map_text).expect("matching explicit carrier should parse");
+
+        assert_eq!(map_data.lights[0].carrier, "lift_a");
+        assert_eq!(map_data.carried_light_links.len(), 1);
+        assert!(
+            capture
+                .records()
+                .iter()
+                .all(|record| record.level != Level::Warn),
+            "an explicit carrier matching the grouped mover is not contradictory"
         );
     }
 

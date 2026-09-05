@@ -359,7 +359,7 @@ It is cosmetic, casts no entity shadows, and never changes collision or damage.
 | `color` | `[number, number, number]` | Three finite linear-RGB multipliers. |
 | `intensity` | `number` | Finite brightness multiplier `>= 0`. |
 | `falloffRange` | `number` | Finite attenuation distance in metres, `> 0`. |
-| `falloffModel` | `FalloffKind` (optional) | Distance attenuation model; omit for inverse-square. |
+| `falloffModel` | `FalloffKind` (optional) | Distance attenuation model (`"Linear"`, `"InverseDistance"`, `"InverseSquared"`); omit for the `"Linear"` default. |
 
 `visual.impactLight` is an optional stationary point light spawned on a real
 projectile contact. It fades locally and is cosmetic; a flight that simply

@@ -54,6 +54,8 @@ use postretro_foundation::{
 };
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+#[cfg(test)]
+pub(crate) use projectile_stage::advance;
 pub(crate) use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
 };

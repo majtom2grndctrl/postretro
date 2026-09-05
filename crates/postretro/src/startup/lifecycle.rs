@@ -2201,6 +2201,8 @@ mod tests {
                 #[cfg(feature = "dev-tools")]
                 debug_ui: None,
             }),
+            #[cfg(feature = "observe-live")]
+            observe_live: None,
             remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
             ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),

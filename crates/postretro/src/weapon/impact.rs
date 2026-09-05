@@ -82,7 +82,7 @@ pub(crate) fn spawn_projectile_impact_light(
             light_type: LightKind::Point,
             intensity: config.intensity,
             color: config.color,
-            falloff_model: FalloffKind::InverseSquared,
+            falloff_model: FalloffKind::Linear,
             falloff_range: config.radius,
             cone_angle_inner: None,
             cone_angle_outer: None,

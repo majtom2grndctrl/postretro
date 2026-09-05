@@ -414,8 +414,8 @@ fn compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // L0's compact payload omits invalid probes; direct reads avoid loading
-        // L1's reserved eight-corner tile set into shared memory.
+        // Delta id 27 compacts L0/L1; L1 keeps valid brick corners by kept
+        // rank. Direct reads avoid shared-memory loads; only base id 34 reserves zero corners.
         if (output_is_stored && use_indirect_animated) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {

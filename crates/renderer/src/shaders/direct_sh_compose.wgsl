@@ -359,8 +359,8 @@ fn compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // Dense L0 has no dropped probes, so keep its direct compact-payload
-        // reads and do not spend shared memory loading 64 tiles.
+        // L0 omits invalid probes; L1 reserves all 8 corners. Keep L0's
+        // compact-payload reads and do not spend shared memory loading 64 tiles.
         if (output_is_stored && use_promotion_subtraction) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {

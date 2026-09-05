@@ -360,9 +360,10 @@ pub struct LevelGeometry<'a> {
     /// `None` → compose pass falls back to a base→total copy.
     pub delta_sh_volumes:
         Option<&'a postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
-    /// Dense baked DIRECT static-light octahedral atlas sampled by the dynamic
-    /// pipelines (mesh + billboard). `None` → renderer binds a 4×4 BC6H zero
-    /// dummy and the dynamic shaders skip the direct sample (indirect-only).
+    /// V3 metadata-derived stored-tile atlas of baked static-light direct SH,
+    /// sampled by dynamic pipelines (mesh + billboard). `None` → renderer binds
+    /// a 4×4 BC6H zero dummy and dynamic shaders skip the direct sample
+    /// (indirect-only).
     pub direct_sh_volume:
         Option<&'a postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     /// Sparse per-selected-light direct SH deltas used to compose the sampled

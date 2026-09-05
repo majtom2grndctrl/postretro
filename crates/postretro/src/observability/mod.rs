@@ -11,10 +11,12 @@ mod runspec;
 #[cfg(feature = "observability")]
 pub(crate) use driver::run_headless;
 
-pub(crate) use document::{
-    OutOfFrame, OutputDocument, PawnHealth, PlayerPawnSummary, TickEventRecord, apply_dump,
-    build_output_document, build_player_summary,
-};
+#[cfg(feature = "observability")]
+pub(crate) use document::TickEventRecord;
+#[cfg(feature = "observe-live")]
+pub(crate) use document::{OutOfFrame, OutputDocument};
+pub(crate) use document::{build_output_document, build_player_summary};
+#[cfg(feature = "observe-live")]
 pub(crate) use runspec::DumpSpec;
 #[cfg(feature = "observability")]
 pub(crate) use runspec::{AimCommand, CommandEntry, parse_runspec};

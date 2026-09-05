@@ -1,4 +1,5 @@
 //! Main-thread request service for the live introspection transport.
+//! See: context/lib/networking.md §Not netcode: the live introspection channel
 //!
 //! The transport delivers only bytes. This module parses those bytes and reads
 //! the registry at the Input-stage frame boundary.
@@ -68,8 +69,13 @@ pub(crate) fn run_observe_ingress_stage(
 /// Parse and service one request using the engine state borrowed at the frame
 /// boundary. Called only after [`run_observe_ingress_stage`] dequeues a request,
 /// so an idle frame does not borrow the registry.
+///
+/// `has_installed_level` is the caller's semantic lifecycle gate. Retained
+/// level data after suspend must not be observable before the replacement
+/// level has installed.
 pub(crate) fn service_observe_request(
     payload: &[u8],
+    has_installed_level: bool,
     map: &str,
     registry: Option<&EntityRegistry>,
     world: Option<&LevelWorld>,
@@ -78,6 +84,7 @@ pub(crate) fn service_observe_request(
     service_payload(
         payload,
         IngressContext {
+            has_installed_level,
             map,
             registry,
             world,
@@ -88,6 +95,7 @@ pub(crate) fn service_observe_request(
 
 #[derive(Clone, Copy)]
 struct IngressContext<'a> {
+    has_installed_level: bool,
     map: &'a str,
     registry: Option<&'a EntityRegistry>,
     world: Option<&'a LevelWorld>,
@@ -118,6 +126,12 @@ fn build_live_document(
     context: IngressContext<'_>,
     spec: &DumpSpec,
 ) -> Result<OutputDocument, crate::observability::DumpError> {
+    let _ = spec.resolve_component()?;
+
+    if !context.has_installed_level {
+        return Ok(no_world_document());
+    }
+
     let (Some(registry), Some(world)) = (context.registry, context.world) else {
         return Ok(no_world_document());
     };
@@ -226,6 +240,14 @@ mod tests {
         serde_json::from_slice(bytes).expect("deserialize observe response")
     }
 
+    fn service_installed_request(
+        payload: &[u8],
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+    ) -> Vec<u8> {
+        service_observe_request(payload, true, MAP, Some(registry), Some(world), FACING_YAW)
+    }
+
     #[test]
     fn dump_protocol_defaults_its_spec() {
         let request: ObserveRequest =
@@ -243,7 +265,7 @@ mod tests {
 
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+                service_installed_request(payload, &registry, &world)
             }),
             1
         );
@@ -280,13 +302,13 @@ mod tests {
 
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+                service_installed_request(payload, &registry, &world)
             }),
             OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+                service_installed_request(payload, &registry, &world)
             }),
             OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
@@ -303,7 +325,7 @@ mod tests {
 
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, None, None, FACING_YAW)
+                service_observe_request(payload, false, MAP, None, None, FACING_YAW)
             }),
             1
         );
@@ -325,6 +347,50 @@ mod tests {
         );
     }
 
+    // Regression: resume exposed retained stale entities before the replacement level installed.
+    #[test]
+    fn service_returns_no_world_for_retained_state_when_level_is_not_installed() {
+        let registry = fixture_registry();
+        let world = test_world();
+        let response = service_observe_request(
+            &dump_payload(DumpSpec::default()),
+            false,
+            MAP,
+            Some(&registry),
+            Some(&world),
+            FACING_YAW,
+        );
+
+        let ObserveResponse::Ok { dump } = decode_response(&response) else {
+            panic!("valid dump request must return an OK response");
+        };
+        assert_eq!(dump, no_world_document());
+    }
+
+    // Regression: an unknown component filter bypassed validation while no world existed.
+    #[test]
+    fn service_rejects_unknown_component_filter_without_a_world() {
+        let response = service_observe_request(
+            &dump_payload(DumpSpec {
+                component: Some("not_a_component_kind".to_string()),
+                ..DumpSpec::default()
+            }),
+            false,
+            MAP,
+            None,
+            None,
+            FACING_YAW,
+        );
+
+        let ObserveResponse::Error { message } = decode_response(&response) else {
+            panic!("unknown component filter must return an error response");
+        };
+        assert_eq!(
+            message,
+            "unknown component-kind filter \"not_a_component_kind\""
+        );
+    }
+
     #[test]
     fn stale_reply_does_not_prevent_the_next_request_from_being_serviced() {
         let registry = fixture_registry();
@@ -336,14 +402,14 @@ mod tests {
 
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+                service_installed_request(payload, &registry, &world)
             }),
             OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
         assert!(matches!(live.try_recv(), Err(mpsc::TryRecvError::Empty)));
         assert_eq!(
             run_observe_ingress_stage(&receiver, |payload| {
-                service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+                service_installed_request(payload, &registry, &world)
             }),
             OBSERVE_LIVE_REQUESTS_PER_FRAME
         );
@@ -408,7 +474,7 @@ mod tests {
         let response = queue_request(&requests, dump_payload(DumpSpec::default()));
 
         let _ = run_observe_ingress_stage(&receiver, |payload| {
-            service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+            service_installed_request(payload, &registry, &world)
         });
         let ObserveResponse::Ok { dump } =
             decode_response(&response.recv().expect("receive zero-tick response"))
@@ -424,7 +490,7 @@ mod tests {
         let response = queue_request(&requests, br#"{"verb":"unknown"}"#.to_vec());
 
         let _ = run_observe_ingress_stage(&receiver, |payload| {
-            service_observe_request(payload, MAP, None, None, FACING_YAW)
+            service_observe_request(payload, false, MAP, None, None, FACING_YAW)
         });
         assert!(matches!(
             decode_response(&response.recv().expect("receive malformed-request response")),
@@ -446,7 +512,7 @@ mod tests {
         );
 
         let _ = run_observe_ingress_stage(&receiver, |payload| {
-            service_observe_request(payload, MAP, Some(&registry), Some(&world), FACING_YAW)
+            service_installed_request(payload, &registry, &world)
         });
         assert!(matches!(
             decode_response(&response.recv().expect("receive dump-failure response")),

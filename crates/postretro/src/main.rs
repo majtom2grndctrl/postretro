@@ -4588,7 +4588,12 @@ impl App {
         };
 
         let _ = observe_live::run_observe_ingress_stage(requests, |payload| {
-            let world = self.level.as_ref();
+            let has_installed_level = self.has_installed_level();
+            let world = if has_installed_level {
+                self.level.as_ref()
+            } else {
+                None
+            };
             let map = world.and_then(|_| {
                 self.active_level_source.as_ref().map(|source| {
                     crate::startup::lifecycle::level_identity(source, &self.content_root)
@@ -4601,6 +4606,7 @@ impl App {
             });
             observe_live::service_observe_request(
                 payload,
+                has_installed_level,
                 map.as_deref().unwrap_or_default(),
                 registry.as_deref(),
                 world,

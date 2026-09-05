@@ -222,9 +222,8 @@ defineEntity({
 
 **Why the hitbox is the targetability switch.** Carrying a hitbox is exactly what
 makes an entity shootable. A shooting target declares both `max` and a `hitbox`.
-The player pawn, by contrast, declares health with **no** hitbox — so the weapon
-ray never targets the player (and a player can't shoot itself); the player's HP
-is driven only through an `applyDamage` reaction.
+The player pawn declares a body-spanning hitbox, so normal target queries can hit
+it. A weapon excludes its firing pawn from that query, preventing self-hits.
 
 **A health-bearing descriptor is map-placeable.** Like any `defineEntity`
 archetype, an entity carrying `components.health` is placed by `canonicalName` —

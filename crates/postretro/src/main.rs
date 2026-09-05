@@ -2890,6 +2890,7 @@ impl ApplicationHandler for App {
                         // re-borrow `self.session`.
                         let data_registry = script_ctx.data_registry.borrow();
                         let descriptors = &data_registry.entities;
+                        let descriptor_generation = data_registry.entity_types_generation();
                         let default_weapon_placement =
                             data_registry.default_weapon_placement.as_ref();
                         let session = self.session.as_mut().expect("running session installed");
@@ -2944,6 +2945,7 @@ impl ApplicationHandler for App {
                             tick_dt,
                             touch_system,
                             descriptors,
+                            descriptor_generation,
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,

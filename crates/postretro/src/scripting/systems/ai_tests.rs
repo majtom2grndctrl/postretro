@@ -33,8 +33,9 @@ use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
-use postretro_entities::{EntityStateComponent, ScriptCtx};
+use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
     BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
@@ -547,7 +548,7 @@ fn step_graph(
 
     let mut programs = BrainPrograms::new();
     let mut warned = HashSet::new();
-    programs.sync(&reg, &[], &mut warned);
+    programs.sync(&reg, &[], 0, &mut warned);
     assert!(warned.is_empty(), "every generated guard binds");
     programs.scope_mut().refresh(
         &reg,
@@ -1544,9 +1545,12 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
         &mut registry,
         &mut runtime,
         0.016,
-        None,
-        None,
-        &[],
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+        },
         |registry| {
             registry
                 .entity_state_mut(player)
@@ -7488,6 +7492,18 @@ fn projectile_ids(registry: &EntityRegistry) -> Vec<EntityId> {
         .collect()
 }
 
+fn reset_enemy_fire_latch(registry: &mut EntityRegistry, enemy: EntityId) {
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("test enemy carries a brain")
+        .clone();
+    brain.attacks_fired_in_activity.fill(0);
+    brain.attack_cooldown_remaining_ms.clear();
+    registry
+        .set_component(enemy, brain)
+        .expect("test enemy remains live");
+}
+
 /// A minimal hold-at-standoff offense cycle. Its nested `aim` leaf deliberately
 /// exposes no action while the parent move selector remains capable of chasing,
 /// matching the committed ranged-aim shape without relying on demo content.
@@ -7658,9 +7674,12 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         &mut registry,
         &mut runtime,
         0.016,
-        None,
-        Some(&CollisionWorld::new()),
-        &descriptors,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
         |_| {},
     )
     .events;
@@ -7683,9 +7702,12 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         &mut registry,
         &mut runtime,
         0.016,
-        None,
-        Some(&CollisionWorld::new()),
-        &descriptors,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
         |_| {},
     );
     assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
@@ -7771,6 +7793,271 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
 }
 
 #[test]
+fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replacements() {
+    // Regression: weapon-only hot reload left a live enemy firing the prior
+    // resolved tuning and visual, including after the weapon became invalid.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let mut data = DataRegistry::new();
+    data.replace_entity_types(vec![projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        3.0,
+        500.0,
+    )]);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let first = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert_eq!(first.events, vec![ENEMY_ATTACK_EVENT]);
+    reset_enemy_fire_latch(&mut registry, enemy);
+
+    let mut reloaded = projectile_weapon_descriptor("enemy.rifle", 12.0, 19.0, 125.0);
+    let weapon = reloaded
+        .weapon
+        .as_mut()
+        .expect("test descriptor has weapon");
+    weapon.credit_source = Some("enemy.rifle.reloaded".to_string());
+    let projectile = weapon
+        .projectile
+        .as_mut()
+        .expect("test descriptor has projectile tuning");
+    projectile.speed = 42.0;
+    projectile.radius = 0.3;
+    projectile.lifetime_ms = 2_500.0;
+    projectile.visual.body = ProjectileBodyVisual::Sprite {
+        sprite: "sprites/projectiles/test-bolt.png".to_string(),
+        size: 0.5,
+        opacity: 0.75,
+        rotation: 0.25,
+        tint: [0.2, 0.4, 1.0],
+        emissive: 3.0,
+        frame_duration_ms: Some(50.0),
+    };
+    data.replace_entity_types(vec![reloaded.clone()]);
+
+    let refreshed = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert_eq!(refreshed.events, vec![ENEMY_ATTACK_EVENT]);
+    let refreshed_projectile = refreshed
+        .projectile_spawns
+        .first()
+        .expect("reloaded weapon still fires")
+        .projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            refreshed_projectile,
+        )
+        .expect("reloaded shot carries projectile state");
+    assert!((component.remaining_range - 12.0).abs() <= EPS);
+    assert!((component.damage - 19.0).abs() <= EPS);
+    assert!((component.speed - 42.0).abs() <= EPS);
+    assert!((component.radius - 0.3).abs() <= EPS);
+    assert!((component.remaining_lifetime - 2.5).abs() <= EPS);
+    assert_eq!(component.credit_source, "enemy.rifle.reloaded");
+    let visual = registry
+        .get_component::<SpriteVisual>(refreshed_projectile)
+        .expect("reloaded projectile materializes its refreshed visual");
+    assert_eq!(visual.sprite, "sprites/projectiles/test-bolt.png");
+    assert!((visual.size - 0.5).abs() <= EPS);
+    assert!((visual.opacity - 0.75).abs() <= EPS);
+    assert!((visual.rotation - 0.25).abs() <= EPS);
+    assert!(
+        visual
+            .tint
+            .iter()
+            .zip([0.2, 0.4, 1.0])
+            .all(|(actual, expected)| (*actual - expected).abs() <= EPS)
+    );
+    assert!(
+        (registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .attack_cooldown_remaining_ms["attack"]
+            - 125.0)
+            .abs()
+            <= EPS
+    );
+
+    let mut nonprojectile = reloaded;
+    let weapon = nonprojectile
+        .weapon
+        .as_mut()
+        .expect("test descriptor has weapon");
+    weapon.resolution = ResolutionMode::Hitscan;
+    weapon.projectile = None;
+    data.replace_entity_types(vec![nonprojectile]);
+    reset_enemy_fire_latch(&mut registry, enemy);
+    let projectile_count = projectile_ids(&registry).len();
+    let disabled_nonprojectile = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert!(disabled_nonprojectile.events.is_empty());
+    assert_eq!(projectile_ids(&registry).len(), projectile_count);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .activity_attack_count(0),
+        Some(0)
+    );
+
+    data.replace_entity_types(Vec::new());
+    reset_enemy_fire_latch(&mut registry, enemy);
+    let disabled_missing = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &data.entities,
+            descriptor_generation: data.entity_types_generation(),
+        },
+        |_| {},
+    );
+    assert!(disabled_missing.events.is_empty());
+    assert_eq!(projectile_ids(&registry).len(), projectile_count);
+    assert!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("live enemy keeps its brain")
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none(),
+        "invalid reload does not consume cooldown"
+    );
+}
+
+#[test]
+fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
+    // Regression: a zero eye-to-aim vector spawned a malformed projectile and
+    // consumed the attack latch, cooldown, and event.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::new(0.0, -0.5, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+        },
+        |_| {},
+    );
+
+    assert!(result.events.is_empty());
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("test enemy keeps its brain");
+    assert_eq!(brain.activity_attack_count(0), Some(0));
+    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
+}
+
+#[test]
+fn projectile_attack_accepts_finite_vertical_aim_direction() {
+    // Regression: rejecting degenerate aim must not reject a finite vertical
+    // direction, whose yaw gate intentionally preserves established behavior.
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let _pawn = spawn_player(&mut registry, Vec3::new(0.0, 0.5, 0.0));
+    let _enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
+    let projectile = result
+        .projectile_spawns
+        .first()
+        .expect("vertical finite aim fires")
+        .projectile;
+    let component = registry
+        .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
+            projectile,
+        )
+        .expect("vertical shot carries projectile state");
+    assert!((Vec3::from_array(component.direction) - Vec3::Y).length() <= EPS);
+}
+
+#[test]
 fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
     let graph = standing_projectile_attack_graph("enemy.rifle");
     let descriptors = [projectile_weapon_descriptor(
@@ -7804,9 +8091,12 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
         &mut registry,
         &mut runtime,
         0.016,
-        None,
-        Some(&CollisionWorld::new()),
-        &descriptors,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+        },
         |_| {},
     )
     .events;

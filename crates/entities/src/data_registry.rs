@@ -71,6 +71,10 @@ pub struct DataRegistry {
     /// via [`Self::upsert_entity_type`]. Read by the data-archetype spawn
     /// sweep. Not populated from `setupLevel()`.
     pub entities: Vec<EntityTypeDescriptor>,
+    /// Generation identity for the committed entity-descriptor snapshot.
+    /// Consumers of derived descriptor data use this to refresh once per
+    /// registry change without fingerprinting descriptors in a hot path.
+    entity_types_generation: u64,
     /// Mod map catalog entries. Engine-global — survive level unload.
     /// Populated by the boot caller from `ModManifest.maps` so the
     /// frontend and catalog-id load path can discover maps before a level is
@@ -255,10 +259,12 @@ impl DataRegistry {
                     name,
                 );
                 *existing = descriptor;
+                self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
                 return;
             }
         }
         self.entities.push(descriptor);
+        self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
     /// Dedup a complete entity descriptor snapshot before hot-reload commit,
@@ -303,6 +309,12 @@ impl DataRegistry {
     /// startup, so this is infallible.
     pub fn replace_entity_types(&mut self, descriptors: Vec<EntityTypeDescriptor>) {
         self.entities = Self::dedup_entity_type_snapshot(descriptors);
+        self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
+    }
+
+    /// Identity of the current complete entity-descriptor snapshot.
+    pub fn entity_types_generation(&self) -> u64 {
+        self.entity_types_generation
     }
 
     /// Replace the engine-global map catalog snapshot as one complete commit.
@@ -928,6 +940,39 @@ mod tests {
         r.upsert_entity_type(next.clone());
         assert_eq!(r.entities.len(), 1);
         assert_eq!(r.entities[0], next);
+    }
+
+    #[test]
+    fn entity_type_generation_tracks_descriptor_snapshot_commits() {
+        let mut r = DataRegistry::new();
+        assert_eq!(r.entity_types_generation(), 0);
+
+        r.upsert_entity_type(grunt_descriptor());
+        assert_eq!(r.entity_types_generation(), 1);
+
+        r.upsert_entity_type(grunt_descriptor());
+        assert_eq!(
+            r.entity_types_generation(),
+            1,
+            "an identical startup replay does not create a new snapshot"
+        );
+
+        let mut changed = grunt_descriptor();
+        changed.light = Some(crate::data_descriptors::LightDescriptor {
+            color: [1.0, 0.0, 0.0],
+            intensity: 1.0,
+            range: 5.0,
+            is_dynamic: true,
+        });
+        r.upsert_entity_type(changed.clone());
+        assert_eq!(r.entity_types_generation(), 2);
+
+        r.replace_entity_types(vec![changed]);
+        assert_eq!(
+            r.entity_types_generation(),
+            3,
+            "a staged replacement is a new committed snapshot even when equal"
+        );
     }
 
     #[test]

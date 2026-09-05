@@ -188,9 +188,10 @@ to reach you.
   torso/head/limb hit-zone capsules. The demo has no zone damage multipliers,
   so every successful hit uses the shotgun's base damage.
 - `content/dev/scripts/player.ts` — the player archetype, which carries
-  `health: { max: 100 }` and DELIBERATELY no `hitbox` (the player is not
-  ray-targetable; this also forecloses self-hit). Its HP is driven only through
-  the level's named `applyDamage` reaction.
+  `health: { max: 100, hitbox }`. Its body-spanning hitbox makes it a normal
+  ray-targetable presence, while player weapon queries exclude their firing
+  pawn to prevent a range-0 self-hit. In this demo, its HP is driven only
+  through the level's named `applyDamage` reaction.
 - `content/dev/scripts/combat-demo-reaction.ts` — the level **data script**
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
@@ -353,10 +354,10 @@ policies; they exercise two distinct recipient paths.
 
 The `dummy` tag is **exclusive to the target dummies**. The progress denominator
 counts every entity carrying the tag, so a shared tag would skew the ratio —
-e.g. tagging the player `dummy` too would make `at: 0.5` require killing 2 of 5,
-and the player can't be killed by the weapon (no hitbox), so the threshold could
-never be reached. The player gets its own `player` tag, matched only by the
-named retaliation reaction.
+e.g. tagging the player `dummy` too would make `at: 0.5` require killing 2 of 5.
+The player is targetable, but their own weapon queries exclude the firing pawn,
+so shooting cannot advance that extra progress entry. The player gets its own
+`player` tag, matched only by the named retaliation reaction.
 
 ## Authoring notes / caveats
 

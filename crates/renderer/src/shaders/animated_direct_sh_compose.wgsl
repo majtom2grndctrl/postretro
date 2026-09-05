@@ -395,9 +395,10 @@ fn animated_compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // Id 45 L0 compacts valid probes; L1 keeps valid brick corners by kept
-        // rank. Only base id 34 reserves eight zero-filled corners. Direct
-        // compact-payload reads avoid loading 64 tiles into shared memory.
+        // Id 45 L0 compacts valid probes; L1 retains valid brick corners in
+        // kept-rank order. Base atlases id 34 and id 35 reserve eight
+        // zero-filled L1 corner slots. Direct compact-payload reads avoid
+        // loading 64 tiles into shared memory.
         if (output_is_stored) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {

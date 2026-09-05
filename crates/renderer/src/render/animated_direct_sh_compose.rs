@@ -58,8 +58,7 @@ const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
 /// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
 /// pass-B debug override.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
-/// Load-derived id-34 indirection words. Kept at an otherwise unused binding
-/// until Task 4 switches this pass from dense grid writes to stored slots.
+/// Load-derived id-34 indirection words that map probes to stored atlas slots.
 const BIND_PROBE_INDIRECTION: u32 = 28;
 const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
 #[cfg(feature = "dev-tools")]

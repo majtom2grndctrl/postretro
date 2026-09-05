@@ -1430,9 +1430,10 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
         attacks: BTreeMap::from([(
             "attack".to_string(),
             AttackParams {
-                damage: 7.0,
-                max_range: 2.0,
-                cooldown_ms: 1000.0,
+                weapon: None,
+                damage: Some(7.0),
+                max_range: Some(2.0),
+                cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
             },

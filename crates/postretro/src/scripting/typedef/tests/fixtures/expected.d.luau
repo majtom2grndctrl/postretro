@@ -505,23 +505,12 @@ export type MotionVerb =
 
 --- What a behavior activity does besides moving. Omit the key for an activity with no action.
 export type ActionVerb = {
-  --- Name of the root graph contact attack this activity fires.
+  --- Name of the root graph attack this activity fires.
   attack: string,
 }
 
---- Tuning for one named contact attack in `BehaviorGraphDescriptor.attacks`.
-export type AttackParams = {
-  --- Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).
-  damage: number,
-  --- Maximum distance within which the attack lands, in metres. Must be finite and > 0.
-  maxRange: number,
-  --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
-  cooldownMs: number,
-  --- Optional action-specific engagement radius. Must be finite, > 0, and no greater than `maxRange`; defaults to `maxRange`.
-  engagementRadius: number?,
-  --- Optional combat-slot standoff for a state firing this attack. Must be finite and > 0; defaults to that action's resolved engagement radius.
-  standoffDistance: number?,
-}
+--- One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape.
+export type AttackParams = { weapon: never?, damage: number, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number? } | { weapon: string, damage: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number? }
 
 --- How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`.
 export type PatrolMode =
@@ -604,7 +593,7 @@ export type BehaviorGraphDescriptor = {
   candidateFilter: RuntimeValue?,
   --- Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion.
   patrol: PatrolDescriptor?,
-  --- Named contact-attack vocabulary. Any leaf or offense-layer action `{ attack: "name" }` must name one of these entries; omit for an attackless graph.
+  --- Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph.
   attacks: { [string]: AttackParams }?,
   --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,

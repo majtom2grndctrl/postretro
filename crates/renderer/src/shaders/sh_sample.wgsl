@@ -5,10 +5,23 @@ const SH_DEPTH_MIN_VARIANCE_M2: f32 = 1.0e-4;
 const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
 const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;
 const SH_WEIGHT_EPSILON: f32 = 1.0e-5;
+const SH_AFFINITY_FACTOR: u32 = 4u;
 
 fn sh_probe_depth_bias() -> f32 {
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
     return max(cell_min, 0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
+}
+
+fn sh_depth_moment_pair(packed: vec4<u32>) -> vec2<f32> {
+    return unpack2x16float(packed.r | (packed.g << 16u));
+}
+
+fn sh_indirection_from_moment_texel(packed: vec4<u32>) -> ShProbeIndirection {
+    return decode_sh_probe_indirection(packed.b | (packed.a << 16u));
+}
+
+fn sh_probe_indirection(idx: vec3<i32>) -> ShProbeIndirection {
+    return sh_indirection_from_moment_texel(textureLoad(sh_depth_moments, idx, 0));
 }
 
 fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid: bool) -> f32 {
@@ -16,9 +29,9 @@ fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid:
         return 0.0;
     }
 
-    let moments = textureLoad(sh_depth_moments, idx, 0).rg;
-    let mean = moments.r;
-    let mean2 = moments.g;
+    let moments = sh_depth_moment_pair(textureLoad(sh_depth_moments, idx, 0));
+    let mean = moments.x;
+    let mean2 = moments.y;
     let variance = max(mean2 - mean * mean, SH_DEPTH_MIN_VARIANCE_M2);
     let probe_world = sh_grid.grid_origin + vec3<f32>(idx) * sh_grid.cell_size;
     let distance = length(sample_world - probe_world);
@@ -68,15 +81,10 @@ struct ProbeAtlasLocation {
     tile_origin: vec2<u32>,
 };
 
-fn probe_tile_origin(idx: vec3<i32>) -> ProbeAtlasLocation {
-    let x = u32(idx.x);
-    let y = u32(idx.y);
-    let z = u32(idx.z);
-    let probe_index = x + y * sh_grid.grid_dimensions.x
-        + z * sh_grid.grid_dimensions.x * sh_grid.grid_dimensions.y;
+fn probe_slot_location(slot: u32) -> ProbeAtlasLocation {
     let tiles_per_layer = max(sh_grid.tiles_per_layer, 1u);
-    let layer = probe_index / tiles_per_layer;
-    let tile_slot = probe_index - layer * tiles_per_layer;
+    let layer = slot / tiles_per_layer;
+    let tile_slot = slot - layer * tiles_per_layer;
     let tiles_per_row = max(sh_grid.atlas_tiles_per_row, 1u);
     return ProbeAtlasLocation(
         layer,
@@ -87,16 +95,10 @@ fn probe_tile_origin(idx: vec3<i32>) -> ProbeAtlasLocation {
     );
 }
 
-// Atlas-parameterized tile fetch. The tile geometry (origin, octahedral remap,
-// border, dimensions) is identical across the indirect and direct octahedral
-// atlases because they share one probe grid layout, so the only difference is
-// which `texture_2d_array<f32>` is sampled. Passing the atlas as an argument keeps
-// `sh_sample.wgsl` binding-agnostic: consumers that only declare the indirect
-// atlas (forward.wgsl, fog_volume.wgsl) never name the direct atlas, while the
-// dynamic-entity shaders (skinned_mesh, billboard) can fetch a second atlas with
-// the same math. `sh_atlas_sampler`/`sh_grid` remain shared module bindings.
-fn sample_probe_atlas_tex(atlas: texture_2d_array<f32>, idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
-    let location = probe_tile_origin(idx);
+// Atlas-parameterized stored-slot fetch. Indirect and direct atlas tiles share
+// the same word-derived slot geometry, while their physical extents may differ.
+fn sample_probe_atlas_slot(atlas: texture_2d_array<f32>, slot: u32, dir: vec3<f32>) -> vec4<f32> {
+    let location = probe_slot_location(slot);
     let oct = oct_encode_unquantized(dir);
     let interior = max(sh_grid.tile_interior, 1u);
     // Mirror `irradiance_interior_texel_direction`: interior texel centers
@@ -105,18 +107,74 @@ fn sample_probe_atlas_tex(atlas: texture_2d_array<f32>, idx: vec3<i32>, dir: vec
     let texel = vec2<f32>(location.tile_origin)
         + vec2<f32>(f32(sh_grid.tile_border))
         + oct * vec2<f32>(f32(interior));
-    // Normalize by the SAMPLED atlas's OWN physical extent, not the logical
-    // `sh_grid.atlas_dimensions`. Tile texel POSITIONS are identical across the
-    // indirect and direct atlases (same probe layout; padding is appended only at
-    // the right/bottom edges), so only the divisor differs. The indirect atlas is
-    // stored at physical == logical extent, so `textureDimensions` returns the
-    // logical dims there and the indirect path is unchanged. The direct atlas is a
-    // BC6H texture rounded up to a 4-aligned physical extent; using its logical
-    // dims would progressively stretch the fetch and pull the zeroed fringe into
-    // the sample. `textureDimensions(atlas)` keeps this helper binding-agnostic.
+    // The direct BC6H atlas can have right/bottom block padding, so normalize by
+    // the sampled texture's physical extent rather than logical grid dimensions.
     let atlas_dimensions = max(textureDimensions(atlas), vec2<u32>(1u));
     let uv = texel / vec2<f32>(atlas_dimensions);
     return textureSampleLevel(atlas, sh_atlas_sampler, uv, i32(location.layer), 0.0);
+}
+
+fn sh_l1_local(idx: vec3<i32>) -> vec3<u32> {
+    let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
+    return probe - (probe / vec3<u32>(SH_AFFINITY_FACTOR)) * vec3<u32>(SH_AFFINITY_FACTOR);
+}
+
+// Exact WGSL mirror of `sh_reconstruct::trilinear_weight`. `corner` follows
+// `corner_locals`' x-fastest order, and a zero-alpha stored tile is absent.
+fn sh_l1_corner_weight(target: vec3<u32>, corner: u32) -> f32 {
+    let fraction = vec3<f32>(target) / f32(SH_AFFINITY_FACTOR - 1u);
+    let high = sh_corner_offset(corner) != vec3<u32>(0u);
+    let axis = select(vec3<f32>(1.0) - fraction, fraction, high);
+    return axis.x * axis.y * axis.z;
+}
+
+fn sample_l1_probe_atlas(
+    atlas: texture_2d_array<f32>,
+    idx: vec3<i32>,
+    slot: u32,
+    dir: vec3<f32>,
+) -> vec4<f32> {
+    let local = sh_l1_local(idx);
+    var sum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var corner: u32 = 0u; corner < 8u; corner = corner + 1u) {
+        let weight = sh_l1_corner_weight(local, corner);
+        if (weight <= 0.0) {
+            continue;
+        }
+        let sample = sample_probe_atlas_slot(atlas, slot + corner, dir);
+        let present_weight = weight * sample.a;
+        sum = sum + present_weight * max(sample.rgb, vec3<f32>(0.0));
+        weight_sum = weight_sum + present_weight;
+    }
+    if (weight_sum < SH_WEIGHT_EPSILON) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(sum / weight_sum, 1.0);
+}
+
+fn sample_probe_atlas_resolved(
+    atlas: texture_2d_array<f32>,
+    idx: vec3<i32>,
+    indirection: ShProbeIndirection,
+    dir: vec3<f32>,
+) -> vec4<f32> {
+    if (!indirection.valid) {
+        return vec4<f32>(0.0);
+    }
+    if (indirection.level == 1u) {
+        return sample_l1_probe_atlas(atlas, idx, indirection.slot, dir);
+    }
+    if (indirection.level == 0u || indirection.level == 2u) {
+        return sample_probe_atlas_slot(atlas, indirection.slot, dir);
+    }
+    return vec4<f32>(0.0);
+}
+
+// Public, atlas-parameterized resolver. Its signature stays stable for every
+// reader; validity is derived from the carried word, never composed alpha.
+fn sample_probe_atlas_tex(atlas: texture_2d_array<f32>, idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
+    return sample_probe_atlas_resolved(atlas, idx, sh_probe_indirection(idx), dir);
 }
 
 fn sample_probe_atlas(idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
@@ -164,6 +222,121 @@ fn sh_probe_weight(
     return trilinear * validity * backface * depth_visibility;
 }
 
+struct ShWholeCellResolution {
+    available: bool,
+    level: u32,
+    slot: u32,
+};
+
+// The whole-cell path is legal only when all eight base lattice corners stay
+// within one 4x4x4 brick. Face/edge/corner straddles use the per-corner path:
+// its L1 subface property limits it to 32 taps and eight distinct tiles.
+fn sh_whole_cell_resolution(gi: vec3<u32>) -> ShWholeCellResolution {
+    let first = sh_corner_index(gi, vec3<u32>(0u));
+    let first_probe = vec3<u32>(u32(first.x), u32(first.y), u32(first.z));
+    let brick = first_probe / vec3<u32>(SH_AFFINITY_FACTOR);
+    var found = false;
+    var level = 0u;
+    var slot = 0u;
+    for (var c: u32 = 0u; c < 8u; c = c + 1u) {
+        let idx = sh_corner_index(gi, sh_corner_offset(c));
+        let probe = vec3<u32>(u32(idx.x), u32(idx.y), u32(idx.z));
+        if (any(probe / vec3<u32>(SH_AFFINITY_FACTOR) != brick)) {
+            return ShWholeCellResolution(false, 0u, 0u);
+        }
+        let indirection = sh_probe_indirection(idx);
+        if (!indirection.valid) {
+            continue;
+        }
+        if (indirection.level != 1u && indirection.level != 2u) {
+            return ShWholeCellResolution(false, 0u, 0u);
+        }
+        if (!found) {
+            found = true;
+            level = indirection.level;
+            slot = indirection.slot;
+        } else if (indirection.level != level || indirection.slot != slot) {
+            return ShWholeCellResolution(false, 0u, 0u);
+        }
+    }
+    return ShWholeCellResolution(found, level, slot);
+}
+
+fn sh_whole_cell_weight_sum(
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+    use_depth_visibility: bool,
+    probe_occlusion_enabled: bool,
+) -> f32 {
+    var sum = 0.0;
+    for (var c: u32 = 0u; c < 8u; c = c + 1u) {
+        let corner_offset = sh_corner_offset(c);
+        let idx = sh_corner_index(gi, corner_offset);
+        let indirection = sh_probe_indirection(idx);
+        sum = sum + sh_probe_weight(
+            idx, corner_offset, gfrac, sample_world, geo_normal, indirection.valid,
+            reject_backface, use_depth_visibility, probe_occlusion_enabled,
+        );
+    }
+    return sum;
+}
+
+// P9's mandatory L1 path. The eight stored corners are sampled once then
+// reused to reconstruct all eight lattice values, exactly preserving the
+// per-probe `reconstruct_l1_tile` weights under depth/backface weighting.
+fn sample_l1_whole_cell_atlas(
+    atlas: texture_2d_array<f32>,
+    resolution: ShWholeCellResolution,
+    gi: vec3<u32>,
+    gfrac: vec3<f32>,
+    sample_world: vec3<f32>,
+    geo_normal: vec3<f32>,
+    reject_backface: bool,
+    use_depth_visibility: bool,
+    probe_occlusion_enabled: bool,
+    dir: vec3<f32>,
+) -> vec3<f32> {
+    var stored: array<vec4<f32>, 8>;
+    for (var corner: u32 = 0u; corner < 8u; corner = corner + 1u) {
+        stored[corner] = sample_probe_atlas_slot(atlas, resolution.slot + corner, dir);
+    }
+
+    var sum = vec3<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var c: u32 = 0u; c < 8u; c = c + 1u) {
+        let corner_offset = sh_corner_offset(c);
+        let idx = sh_corner_index(gi, corner_offset);
+        let indirection = sh_probe_indirection(idx);
+        let outer_weight = sh_probe_weight(
+            idx, corner_offset, gfrac, sample_world, geo_normal, indirection.valid,
+            reject_backface, use_depth_visibility, probe_occlusion_enabled,
+        );
+        if (outer_weight <= 0.0) {
+            continue;
+        }
+        let local = sh_l1_local(idx);
+        var reconstructed = vec3<f32>(0.0);
+        var reconstruction_weight = 0.0;
+        for (var corner: u32 = 0u; corner < 8u; corner = corner + 1u) {
+            let w = sh_l1_corner_weight(local, corner) * stored[corner].a;
+            reconstructed = reconstructed + w * max(stored[corner].rgb, vec3<f32>(0.0));
+            reconstruction_weight = reconstruction_weight + w;
+        }
+        if (reconstruction_weight < SH_WEIGHT_EPSILON) {
+            continue;
+        }
+        sum = sum + outer_weight * (reconstructed / reconstruction_weight);
+        weight_sum = weight_sum + outer_weight;
+    }
+    if (weight_sum < SH_WEIGHT_EPSILON) {
+        return vec3<f32>(0.0);
+    }
+    return sum / weight_sum;
+}
+
 fn sample_sh_indirect_corners_pair(
     gi: vec3<u32>,
     gfrac: vec3<f32>,
@@ -176,6 +349,39 @@ fn sample_sh_indirect_corners_pair(
     probe_occlusion_enabled: bool,
     reconstruct_b: bool,
 ) -> ShDirPair {
+    let whole = sh_whole_cell_resolution(gi);
+    if (whole.available && whole.level == 1u) {
+        var result: ShDirPair;
+        result.a = sample_l1_whole_cell_atlas(
+            sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
+            reject_backface, use_depth_visibility, probe_occlusion_enabled, normal_a,
+        );
+        result.b = vec3<f32>(0.0);
+        if (reconstruct_b) {
+            result.b = sample_l1_whole_cell_atlas(
+                sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
+                reject_backface, use_depth_visibility, probe_occlusion_enabled, normal_b,
+            );
+        }
+        return result;
+    }
+    if (whole.available && whole.level == 2u) {
+        let weight_sum = sh_whole_cell_weight_sum(
+            gi, gfrac, sample_world, geo_normal, reject_backface,
+            use_depth_visibility, probe_occlusion_enabled,
+        );
+        var result: ShDirPair;
+        result.a = vec3<f32>(0.0);
+        result.b = vec3<f32>(0.0);
+        if (weight_sum >= SH_WEIGHT_EPSILON) {
+            result.a = max(sample_probe_atlas_slot(sh_total_atlas, whole.slot, normal_a).rgb, vec3<f32>(0.0));
+            if (reconstruct_b) {
+                result.b = max(sample_probe_atlas_slot(sh_total_atlas, whole.slot, normal_b).rgb, vec3<f32>(0.0));
+            }
+        }
+        return result;
+    }
+
     var sum_a = vec3<f32>(0.0);
     var sum_b = vec3<f32>(0.0);
     var weight_sum = 0.0;
@@ -184,22 +390,25 @@ fn sample_sh_indirect_corners_pair(
         let corner_offset = sh_corner_offset(c);
         let idx = sh_corner_index(gi, corner_offset);
 
-        let sample_a = sample_probe_atlas(idx, normal_a);
-        let is_valid = sample_a.a >= 0.5;
+        let indirection = sh_probe_indirection(idx);
+        let sample_a = sample_probe_atlas_resolved(sh_total_atlas, idx, indirection, normal_a);
         let w = sh_probe_weight(
             idx,
             corner_offset,
             gfrac,
             sample_world,
             geo_normal,
-            is_valid,
+            indirection.valid,
             reject_backface,
             use_depth_visibility,
             probe_occlusion_enabled,
         );
         sum_a = sum_a + w * max(sample_a.rgb, vec3<f32>(0.0));
         if (reconstruct_b) {
-            sum_b = sum_b + w * max(sample_probe_atlas(idx, normal_b).rgb, vec3<f32>(0.0));
+            sum_b = sum_b + w * max(
+                sample_probe_atlas_resolved(sh_total_atlas, idx, indirection, normal_b).rgb,
+                vec3<f32>(0.0),
+            );
         }
         weight_sum = weight_sum + w;
     }
@@ -215,12 +424,9 @@ fn sample_sh_indirect_corners_pair(
     return result;
 }
 
-// Shared-weights indirect + direct corner blend. The per-probe weights (probe
-// selection, trilinear, validity from atlas alpha, backface, Chebyshev depth
-// visibility) are computed ONCE from the indirect atlas and reused for both
-// octahedral fetches — the two atlases differ only in the radiance they store,
-// not in probe layout or validity (both keyed on the shared grid, and validity
-// alpha is authored identically). Returns `.a` = indirect, `.b` = direct.
+// Shared-weights indirect + direct corner blend. The word supplies validity;
+// alpha is read only for L1 stored-corner presence. Returns `.a` = indirect,
+// `.b` = direct.
 //
 // `direct_atlas` is passed as an argument so this helper stays binding-agnostic;
 // only the dynamic-entity shaders that declare a direct atlas call it. Chebyshev
@@ -236,6 +442,33 @@ fn sample_sh_indirect_direct_corners(
     reject_backface: bool,
     probe_occlusion_enabled: bool,
 ) -> ShDirPair {
+    let whole = sh_whole_cell_resolution(gi);
+    if (whole.available && whole.level == 1u) {
+        var result: ShDirPair;
+        result.a = sample_l1_whole_cell_atlas(
+            sh_total_atlas, whole, gi, gfrac, sample_world, geo_normal,
+            reject_backface, true, probe_occlusion_enabled, shading_normal,
+        );
+        result.b = sample_l1_whole_cell_atlas(
+            direct_atlas, whole, gi, gfrac, sample_world, geo_normal,
+            reject_backface, true, probe_occlusion_enabled, shading_normal,
+        );
+        return result;
+    }
+    if (whole.available && whole.level == 2u) {
+        let weight_sum = sh_whole_cell_weight_sum(
+            gi, gfrac, sample_world, geo_normal, reject_backface, true, probe_occlusion_enabled,
+        );
+        var result: ShDirPair;
+        result.a = vec3<f32>(0.0);
+        result.b = vec3<f32>(0.0);
+        if (weight_sum >= SH_WEIGHT_EPSILON) {
+            result.a = max(sample_probe_atlas_slot(sh_total_atlas, whole.slot, shading_normal).rgb, vec3<f32>(0.0));
+            result.b = max(sample_probe_atlas_slot(direct_atlas, whole.slot, shading_normal).rgb, vec3<f32>(0.0));
+        }
+        return result;
+    }
+
     var sum_indirect = vec3<f32>(0.0);
     var sum_direct = vec3<f32>(0.0);
     var weight_sum = 0.0;
@@ -244,21 +477,25 @@ fn sample_sh_indirect_direct_corners(
         let corner_offset = sh_corner_offset(c);
         let idx = sh_corner_index(gi, corner_offset);
 
-        let sample_indirect = sample_probe_atlas_tex(sh_total_atlas, idx, shading_normal);
-        let is_valid = sample_indirect.a >= 0.5;
+        let indirection = sh_probe_indirection(idx);
+        let sample_indirect = sample_probe_atlas_resolved(
+            sh_total_atlas, idx, indirection, shading_normal,
+        );
         let w = sh_probe_weight(
             idx,
             corner_offset,
             gfrac,
             sample_world,
             geo_normal,
-            is_valid,
+            indirection.valid,
             reject_backface,
             true,
             probe_occlusion_enabled,
         );
         sum_indirect = sum_indirect + w * max(sample_indirect.rgb, vec3<f32>(0.0));
-        let sample_direct = sample_probe_atlas_tex(direct_atlas, idx, shading_normal);
+        let sample_direct = sample_probe_atlas_resolved(
+            direct_atlas, idx, indirection, shading_normal,
+        );
         sum_direct = sum_direct + w * max(sample_direct.rgb, vec3<f32>(0.0));
         weight_sum = weight_sum + w;
     }
@@ -274,10 +511,8 @@ fn sample_sh_indirect_direct_corners(
     return result;
 }
 
-// Direct-only corner blend (the `.b` of the shared-weights pair). The indirect
-// term is still fetched to derive validity alpha and to share the renormalizing
-// weight sum, but only the direct radiance is returned. Consumers that already
-// computed the indirect term separately use this to add the direct contribution.
+// Direct-only corner blend (the `.b` of the shared-weights pair). The shared
+// word-derived validity and renormalizing weight sum are retained.
 fn sample_sh_direct_corners_depth_aware(
     direct_atlas: texture_2d_array<f32>,
     gi: vec3<u32>,

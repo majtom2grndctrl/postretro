@@ -4,7 +4,7 @@
 use crate::FormatError;
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::octahedral::{
-    DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_array_layout,
+    DEFAULT_IRRADIANCE_TILE_BORDER, MAX_SH_ATLAS_LAYERS, RUNTIME_SUPPORTED_TILE_DIMENSION,
 };
 
 /// Section-internal version written as the first u32 of the `DirectShVolume`
@@ -12,31 +12,31 @@ use crate::octahedral::{
 /// reject stale `.prl` files with a clear error rather than silently misread
 /// them. Starts at 1 — this section is new and shares no history with the
 /// indirect `OctahedralShVolume` section's version line. Version 2 adds
-/// layer-aware atlas metadata for 2D array texture uploads.
-pub const DIRECT_SH_VOLUME_VERSION: u32 = 2;
+/// layer-aware atlas metadata for 2D array texture uploads. Version 3 changes
+/// that geometry from the dense grid to id-34's metadata-derived stored tiles.
+pub const DIRECT_SH_VOLUME_VERSION: u32 = 3;
 
 /// Direct-light octahedral irradiance volume section (ID 35).
 ///
-/// Carries a dense per-probe octahedral irradiance atlas holding DIRECT light
-/// from STATIC lights, sampled at runtime by dynamic objects (entities and
+/// Carries a stored-tile octahedral irradiance atlas holding DIRECT light from
+/// STATIC lights, sampled at runtime by dynamic objects (entities and
 /// billboards). It is a sibling to [`crate::sh_volume::OctahedralShVolumeSection`]
-/// (the INDIRECT atlas) and mirrors it EXACTLY except:
+/// (the INDIRECT atlas) and mirrors its stored atlas geometry exactly except:
 ///   - it carries direct (not indirect) coefficients, and
 ///   - it has NO depth moments and NO animation data.
 ///
-/// Direct light is static and dense, so no animation table is needed. Depth
+/// Direct light is static, so no animation table is needed. Depth
 /// moments and per-probe validity are NOT duplicated here: the direct probe grid
 /// is byte-identical in position to the indirect grid, so the runtime reads them
 /// from the existing `OctahedralShVolumeSection`. This section still carries its
 /// own grid header (byte-identical to the indirect grid) for round-trip and
 /// validation.
 ///
-/// The per-probe tile geometry (`tile_dimension` / `tile_border`,
+/// The stored-tile geometry (`tile_dimension` / `tile_border`,
 /// shared per-layer `atlas_dimensions`, `layer_count` / `tiles_per_layer`
-/// derivation, `atlas_tiles_per_row`) and the dense
-/// x-fastest linear probe order are IDENTICAL to the indirect atlas so the
-/// runtime sampler (`sh_sample.wgsl`) is reused verbatim. The atlas texel byte
-/// layout mirrors `OctahedralShVolumeSection`'s atlas block (see below).
+/// derivation, `atlas_tiles_per_row`) and brick-major stored slot order are
+/// IDENTICAL to the indirect atlas. This section has no metadata, so the
+/// loader cross-checks it against id 34 before runtime use.
 ///
 /// The atlas payload is stored BC6H-compressed at rest (`irradiance_format ==
 /// IRRADIANCE_FORMAT_BC6H`); the actual BC6H encode happens at emit time. The
@@ -54,8 +54,8 @@ pub const DIRECT_SH_VOLUME_VERSION: u32 = 2;
 ///     u32 × 3  grid_dimensions
 ///     u32      tile_dimension         (default 6, border included)
 ///     u32      tile_border            (default 1)
-///     u32      atlas_width            (shared per-layer texels)
-///     u32      atlas_height           (shared per-layer texels)
+///     u32      atlas_width            (stored-tile atlas, per-layer texels)
+///     u32      atlas_height           (stored-tile atlas, per-layer texels)
 ///     u32      atlas_tiles_per_row    (per-layer tile columns)
 ///     u32      layer_count            (2D array layers)
 ///     u32      tiles_per_layer        (whole probe tiles per layer)
@@ -89,7 +89,7 @@ pub struct DirectShVolumeSection {
     /// `IRRADIANCE_FORMAT_RGBA16F` (uncompressed-debug variant). Mirrors the
     /// lightmap section's `irradiance_format`.
     pub irradiance_format: u32,
-    /// Raw atlas bytes in the encoding named by `irradiance_format`.
+    /// Raw stored-atlas bytes in the encoding named by `irradiance_format`.
     pub atlas: Vec<u8>,
 }
 
@@ -119,19 +119,14 @@ impl DirectShVolumeSection {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        debug_assert!(
-            expected_array_layout(
-                self.grid_dimensions,
-                self.tile_dimension,
-                self.atlas_dimensions,
-            )
-            .is_some_and(|layout| {
-                self.layer_count == layout.layer_count
-                    && self.tiles_per_layer == layout.tiles_per_layer
-                    && self.atlas_tiles_per_row == layout.atlas_tiles_per_row
-                    && self.atlas_dimensions == [layout.atlas_width, layout.atlas_height]
-            })
-        );
+        self.try_to_bytes()
+            .expect("DirectShVolumeSection must satisfy its wire contract")
+    }
+
+    /// Encode only a canonical stored-atlas section whose payload fits the
+    /// fixed `u32` length field.
+    pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.validate_wire_contract()?;
 
         let mut buf = Vec::with_capacity(Self::HEADER_SIZE + self.atlas.len());
 
@@ -156,7 +151,7 @@ impl DirectShVolumeSection {
         buf.extend_from_slice(&(self.atlas.len() as u32).to_le_bytes());
 
         buf.extend_from_slice(&self.atlas);
-        buf
+        Ok(buf)
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
@@ -170,7 +165,7 @@ impl DirectShVolumeSection {
         if version != DIRECT_SH_VOLUME_VERSION {
             return Err(invalid_data(format!(
                 "direct sh volume section version {version}, expected {DIRECT_SH_VOLUME_VERSION} — \
-                 recompile the .prl with the current `prl-build`"
+                 recompile the .prl with the current `prl-build` for the v3 stored-atlas format"
             )));
         }
         if data.len() < Self::HEADER_SIZE {
@@ -222,7 +217,7 @@ impl DirectShVolumeSection {
         }
 
         validate_tile_geometry(tile_dimension, tile_border)?;
-        validate_grid_and_atlas(
+        validate_grid_and_stored_atlas(
             grid_dimensions,
             tile_dimension,
             atlas_dimensions,
@@ -266,6 +261,35 @@ impl DirectShVolumeSection {
             atlas,
         })
     }
+
+    fn validate_wire_contract(&self) -> crate::Result<()> {
+        validate_irradiance_format(self.irradiance_format)?;
+        validate_tile_geometry(self.tile_dimension, self.tile_border)?;
+        validate_grid_and_stored_atlas(
+            self.grid_dimensions,
+            self.tile_dimension,
+            self.atlas_dimensions,
+            self.layer_count,
+            self.tiles_per_layer,
+            self.atlas_tiles_per_row,
+        )?;
+        let expected_len = expected_irradiance_len(
+            self.irradiance_format,
+            self.atlas_dimensions,
+            self.layer_count,
+        )?;
+        if self.atlas.len() != expected_len {
+            return Err(invalid_data(format!(
+                "direct sh volume atlas length {}, expected {expected_len} for irradiance_format {}, atlas_dimensions {:?}, layer_count {}",
+                self.atlas.len(),
+                self.irradiance_format,
+                self.atlas_dimensions,
+                self.layer_count,
+            )));
+        }
+        atlas_len_for_header(self.atlas.len() as u64)?;
+        Ok(())
+    }
 }
 
 fn validate_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Result<()> {
@@ -290,7 +314,7 @@ fn validate_tile_geometry(tile_dimension: u32, tile_border: u32) -> crate::Resul
     Ok(())
 }
 
-fn validate_grid_and_atlas(
+fn validate_grid_and_stored_atlas(
     grid_dimensions: [u32; 3],
     tile_dimension: u32,
     atlas_dimensions: [u32; 2],
@@ -311,43 +335,19 @@ fn validate_grid_and_atlas(
             || atlas_tiles_per_row != 0
         {
             return Err(invalid_data(format!(
-                "direct sh volume empty grid must use atlas_dimensions [0, 0], layer_count 0, tiles_per_layer 0, and atlas_tiles_per_row 0, got atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}, tiles_per_layer {tiles_per_layer}, atlas_tiles_per_row {atlas_tiles_per_row}"
+                "direct sh volume empty grid must use zero stored-atlas geometry, got atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}, tiles_per_layer {tiles_per_layer}, atlas_tiles_per_row {atlas_tiles_per_row}"
             )));
         }
         return Ok(());
     }
 
-    let layout = expected_array_layout(grid_dimensions, tile_dimension, atlas_dimensions).ok_or_else(|| {
-        invalid_data(format!(
-            "direct sh volume grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}, and atlas_dimensions {atlas_dimensions:?} do not describe a valid layer-aware atlas layout"
-        ))
-    })?;
-    let expected_atlas_dimensions = [layout.atlas_width, layout.atlas_height];
-    if atlas_dimensions != expected_atlas_dimensions {
-        return Err(invalid_data(format!(
-            "direct sh volume atlas_dimensions {atlas_dimensions:?}, expected {expected_atlas_dimensions:?} for grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}"
-        )));
-    }
-    if layer_count != layout.layer_count {
-        return Err(invalid_data(format!(
-            "direct sh volume layer_count {layer_count}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.layer_count
-        )));
-    }
-    if tiles_per_layer != layout.tiles_per_layer {
-        return Err(invalid_data(format!(
-            "direct sh volume tiles_per_layer {tiles_per_layer}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.tiles_per_layer
-        )));
-    }
-    if atlas_tiles_per_row != layout.atlas_tiles_per_row {
-        return Err(invalid_data(format!(
-            "direct sh volume atlas_tiles_per_row {atlas_tiles_per_row}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.atlas_tiles_per_row
-        )));
-    }
-
-    Ok(())
+    validate_stored_atlas_shape(
+        tile_dimension,
+        atlas_dimensions,
+        layer_count,
+        tiles_per_layer,
+        atlas_tiles_per_row,
+    )
 }
 
 fn expected_irradiance_len(
@@ -387,13 +387,73 @@ fn checked_len(factors: &[usize], overflow_msg: &str) -> crate::Result<usize> {
     })
 }
 
-fn expected_array_layout(
-    grid_dimensions: [u32; 3],
+fn validate_stored_atlas_shape(
     tile_dimension: u32,
     atlas_dimensions: [u32; 2],
-) -> Option<crate::octahedral::IrradianceAtlasArrayLayout> {
-    let max_dim = atlas_dimensions[0].max(atlas_dimensions[1]);
-    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, max_dim)
+    layer_count: u32,
+    tiles_per_layer: u32,
+    atlas_tiles_per_row: u32,
+) -> crate::Result<()> {
+    if atlas_dimensions == [0, 0]
+        && layer_count == 0
+        && tiles_per_layer == 0
+        && atlas_tiles_per_row == 0
+    {
+        return Ok(());
+    }
+    if atlas_dimensions.contains(&0)
+        || layer_count == 0
+        || tiles_per_layer == 0
+        || atlas_tiles_per_row == 0
+    {
+        return Err(invalid_data(format!(
+            "direct sh volume stored atlas geometry must be entirely zero or nonzero, got atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}, tiles_per_layer {tiles_per_layer}, atlas_tiles_per_row {atlas_tiles_per_row}"
+        )));
+    }
+    if layer_count > MAX_SH_ATLAS_LAYERS {
+        return Err(invalid_data(format!(
+            "direct sh volume stored atlas layer_count {layer_count} exceeds maximum {MAX_SH_ATLAS_LAYERS}"
+        )));
+    }
+    if atlas_dimensions[0] % tile_dimension != 0 || atlas_dimensions[1] % tile_dimension != 0 {
+        return Err(invalid_data(format!(
+            "direct sh volume stored atlas_dimensions {atlas_dimensions:?} must be multiples of tile_dimension {tile_dimension}"
+        )));
+    }
+    let expected_tiles_per_row = atlas_dimensions[0] / tile_dimension;
+    let tile_rows = atlas_dimensions[1] / tile_dimension;
+    let expected_tiles_per_layer =
+        expected_tiles_per_row
+            .checked_mul(tile_rows)
+            .ok_or_else(|| {
+                invalid_data("direct sh volume stored atlas tile count overflows u32".into())
+            })?;
+    if atlas_tiles_per_row != expected_tiles_per_row || tiles_per_layer != expected_tiles_per_layer
+    {
+        return Err(invalid_data(format!(
+            "direct sh volume stored atlas geometry has tiles_per_row {atlas_tiles_per_row}, tiles_per_layer {tiles_per_layer}; expected {expected_tiles_per_row} and {expected_tiles_per_layer} for atlas_dimensions {atlas_dimensions:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
+    match irradiance_format {
+        IRRADIANCE_FORMAT_BC6H | IRRADIANCE_FORMAT_RGBA16F => Ok(()),
+        _ => Err(invalid_data(format!(
+            "direct sh volume irradiance_format {irradiance_format} is not a known tag \
+             (expected {IRRADIANCE_FORMAT_BC6H} BC6H or {IRRADIANCE_FORMAT_RGBA16F} RGBA16F)"
+        ))),
+    }
+}
+
+fn atlas_len_for_header(len: u64) -> crate::Result<u32> {
+    u32::try_from(len).map_err(|_| {
+        invalid_data(format!(
+            "direct sh volume stored atlas byte length {len} exceeds the v3 u32 header maximum {}",
+            u32::MAX,
+        ))
+    })
 }
 
 fn truncated(what: &str) -> FormatError {
@@ -418,10 +478,10 @@ fn read_u32(data: &[u8], at: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
+    use crate::octahedral::{DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_array_layout};
 
     /// Build a populated section whose atlas is a stand-in BC6H blob sized to the
-    /// 4×4-block count for the grid's atlas dimensions.
+    /// 4×4-block count for the stored atlas dimensions.
     fn direct_section(grid: [u32; 3], format: u32) -> DirectShVolumeSection {
         direct_section_with_max_dim(grid, format, 8192)
     }
@@ -431,9 +491,21 @@ mod tests {
         format: u32,
         max_dim: u32,
     ) -> DirectShVolumeSection {
+        let stored_tile_count = grid.iter().product();
+        direct_section_with_stored_tiles(grid, stored_tile_count, format, max_dim)
+    }
+
+    fn direct_section_with_stored_tiles(
+        grid: [u32; 3],
+        stored_tile_count: u32,
+        format: u32,
+        max_dim: u32,
+    ) -> DirectShVolumeSection {
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         let tile_border = DEFAULT_IRRADIANCE_TILE_BORDER;
-        let layout = irradiance_atlas_array_layout(grid, tile_dimension, max_dim).unwrap();
+        let layout =
+            irradiance_atlas_array_layout([stored_tile_count, 1, 1], tile_dimension, max_dim)
+                .unwrap();
         let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
         let atlas_len = if format == IRRADIANCE_FORMAT_BC6H {
             // The emitter rounds each axis up to a multiple of 4 (BC6H block
@@ -491,6 +563,19 @@ mod tests {
     }
 
     #[test]
+    fn direct_sh_volume_round_trips_stored_geometry_without_metadata() {
+        let section = direct_section_with_stored_tiles([8, 4, 4], 10, IRRADIANCE_FORMAT_BC6H, 8192);
+        assert_eq!(section.atlas_dimensions, [24, 18]);
+        assert_eq!(section.atlas_tiles_per_row, 4);
+        assert_eq!(section.tiles_per_layer, 12);
+        assert_eq!(section.layer_count, 1);
+        assert_eq!(
+            DirectShVolumeSection::from_bytes(&section.to_bytes()).unwrap(),
+            section
+        );
+    }
+
+    #[test]
     fn direct_sh_volume_round_trips_multi_layer_bc6h_atlas() {
         let section = direct_section_with_max_dim([20, 1, 1], IRRADIANCE_FORMAT_BC6H, 20);
         assert_eq!(section.layer_count, 3);
@@ -510,13 +595,14 @@ mod tests {
     fn direct_sh_volume_rejects_short_multi_layer_bc6h_atlas() {
         // Regression: a three-layer BC6H atlas could declare only one layer of
         // bytes, then fail later when renderer upload consumed the short blob.
-        let mut section = direct_section_with_max_dim([20, 1, 1], IRRADIANCE_FORMAT_BC6H, 20);
+        let section = direct_section_with_max_dim([20, 1, 1], IRRADIANCE_FORMAT_BC6H, 20);
         assert_eq!(section.layer_count, 3);
-        section
-            .atlas
-            .truncate(section.atlas.len() / section.layer_count as usize);
+        let short_len = section.atlas.len() / section.layer_count as usize;
+        let mut bytes = section.to_bytes();
+        bytes[72..76].copy_from_slice(&(short_len as u32).to_le_bytes());
+        bytes.truncate(DirectShVolumeSection::HEADER_SIZE + short_len);
 
-        let err = DirectShVolumeSection::from_bytes(&section.to_bytes()).unwrap_err();
+        let err = DirectShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("irradiance_len") && msg.contains("expected 1200"),
@@ -583,11 +669,13 @@ mod tests {
     fn direct_sh_volume_rejects_previous_section_version() {
         let section = direct_section([1, 1, 1], IRRADIANCE_FORMAT_BC6H);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
         let err = DirectShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 1") && msg.contains("expected 2"),
+            msg.contains("version 2")
+                && msg.contains("expected 3")
+                && msg.contains("v3 stored-atlas"),
             "expected version-mismatch error, got: {msg}",
         );
     }

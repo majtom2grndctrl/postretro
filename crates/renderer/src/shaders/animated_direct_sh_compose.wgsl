@@ -67,9 +67,11 @@ struct DebugOverride {
 // Low/high u32 words for every affinity-cell valid-probe mask, followed by one
 // widened coarsening level per cell, then one f16-half payload offset for every
 // post-drop CSR entry. id-27 and id-45 share this metadata layout, so their
-// accessors stay in lockstep. Pass B has no base probe-indirection binding, so
-// validity guards invalid-local reads.
+// accessors stay in lockstep; it describes the id-45 delta reconstruction.
 @group(1) @binding(27) var<storage, read> delta_compaction_meta: array<u32>;
+// Pass B reads the compact intermediate and writes the compact final direct
+// atlas at the id-34-derived slot carried by this Task-3 buffer.
+@group(1) @binding(28) var<storage, read> probe_indirection: array<u32>;
 
 const AFFINITY_FACTOR: u32 = 4u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
@@ -86,6 +88,7 @@ const MAX_KEPT_TILES: u32 = 8u;
 // output probe reconstructs from this brick-local lattice.
 var<workgroup> shared_kept_tiles: array<vec4<f32>, 288>;
 var<workgroup> shared_kept_present: array<u32, 8>;
+var<workgroup> shared_brick_indirection: u32;
 
 fn compaction_meta_offset_base() -> u32 {
     return grid.affinity_dims.x * grid.affinity_dims.y * grid.affinity_dims.z * 3u;
@@ -139,12 +142,6 @@ fn kept_probe_mask_word(cell: u32, word: u32) -> u32 {
     return valid;
 }
 
-fn local_probe_is_valid(cell: u32, local_probe: u32) -> bool {
-    let word = local_probe / 32u;
-    let bit = local_probe % 32u;
-    return (valid_probe_mask_word(cell, word) & (1u << bit)) != 0u;
-}
-
 fn local_probe_is_kept(cell: u32, local_probe: u32) -> bool {
     let word = local_probe / 32u;
     let bit = local_probe % 32u;
@@ -186,18 +183,57 @@ fn local_probe_coord(local_probe: u32) -> vec3<u32> {
     );
 }
 
-fn atlas_tile_origin(probe: vec3<u32>) -> vec3<u32> {
-    let probe_index = probe.x
-        + probe.y * grid.grid_dimensions.x
-        + probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+fn slot_tile_origin(slot: u32) -> vec3<u32> {
     let tiles_per_layer = max(grid.tiles_per_layer, 1u);
-    let tile_slot = probe_index % tiles_per_layer;
+    let tile_slot = slot % tiles_per_layer;
     let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
     return vec3<u32>(
         (tile_slot % tiles_per_row) * grid.tile_dimension,
         (tile_slot / tiles_per_row) * grid.tile_dimension,
-        probe_index / tiles_per_layer,
+        slot / tiles_per_layer,
     );
+}
+
+fn local_probe_is_l1_corner(local_probe: u32) -> bool {
+    let local = local_probe_coord(local_probe);
+    return (local.x == 0u || local.x == AFFINITY_FACTOR - 1u)
+        && (local.y == 0u || local.y == AFFINITY_FACTOR - 1u)
+        && (local.z == 0u || local.z == AFFINITY_FACTOR - 1u);
+}
+
+struct ComposeStoredSlot {
+    write: bool,
+    valid: bool,
+    slot: u32,
+}
+
+fn stored_slot_for_invocation(
+    local_probe: u32,
+    in_grid: bool,
+    local_indirection: ShProbeIndirection,
+    brick_indirection: ShProbeIndirection,
+) -> ComposeStoredSlot {
+    if (!in_grid || !brick_indirection.valid) {
+        return ComposeStoredSlot(false, false, 0u);
+    }
+    if (brick_indirection.level == 0u) {
+        return ComposeStoredSlot(
+            local_indirection.valid,
+            local_indirection.valid,
+            local_indirection.slot,
+        );
+    }
+    if (brick_indirection.level == 1u && local_probe_is_l1_corner(local_probe)) {
+        return ComposeStoredSlot(
+            true,
+            local_indirection.valid,
+            brick_indirection.slot + l1_shared_slot(local_probe),
+        );
+    }
+    if (brick_indirection.level == 2u && local_probe == 0u) {
+        return ComposeStoredSlot(true, true, brick_indirection.slot);
+    }
+    return ComposeStoredSlot(false, false, 0u);
 }
 
 fn l1_shared_slot(local_probe: u32) -> u32 {
@@ -288,24 +324,53 @@ fn animated_compose_main(
     @builtin(workgroup_id) brick: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
-    // One workgroup owns one 4×4×4 affinity brick. Its 64 invocations each
-    // write one scattered dense-atlas probe tile, rather than assuming atlas
-    // neighbors are brick neighbors.
+    // One workgroup owns one 4×4×4 affinity brick. Only stored-slot owners
+    // write; the remaining invocations still participate in shared barriers.
     let local_probe = local_id.x + local_id.y * 8u;
     let cell_index = brick.x
         + brick.y * grid.affinity_dims.x
         + brick.z * grid.affinity_dims.x * grid.affinity_dims.y;
     let probe = brick * AFFINITY_FACTOR + local_probe_coord(local_probe);
     let in_grid = !any(probe >= grid.grid_dimensions);
-    let output_is_valid = in_grid && local_probe_is_valid(cell_index, local_probe);
-    let tile_origin = atlas_tile_origin(probe);
+    let probe_index = probe.x
+        + probe.y * grid.grid_dimensions.x
+        + probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+    var local_indirection = decode_sh_probe_indirection(0u);
+    if (in_grid) {
+        local_indirection = decode_sh_probe_indirection(probe_indirection[probe_index]);
+    }
+    if (local_probe == 0u) {
+        shared_brick_indirection = 0u;
+        for (var candidate_local = 0u; candidate_local < AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR; candidate_local = candidate_local + 1u) {
+            let candidate_probe = brick * AFFINITY_FACTOR + local_probe_coord(candidate_local);
+            if (!any(candidate_probe >= grid.grid_dimensions)) {
+                let candidate_index = candidate_probe.x
+                    + candidate_probe.y * grid.grid_dimensions.x
+                    + candidate_probe.z * grid.grid_dimensions.x * grid.grid_dimensions.y;
+                let candidate_word = probe_indirection[candidate_index];
+                if (decode_sh_probe_indirection(candidate_word).valid) {
+                    shared_brick_indirection = candidate_word;
+                    break;
+                }
+            }
+        }
+    }
+    workgroupBarrier();
+    let stored_slot = stored_slot_for_invocation(
+        local_probe,
+        in_grid,
+        local_indirection,
+        decode_sh_probe_indirection(shared_brick_indirection),
+    );
+    let output_is_stored = stored_slot.write;
+    let tile_origin = slot_tile_origin(stored_slot.slot);
 
     // Keeping the accumulator private lets one shared kept lattice serve all
     // 64 output tiles without a second global delta read. The runtime tile
     // geometry is fixed at 6×6 by PRL validation.
     var accum: array<vec4<f32>, 36>;
     for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
-        if (in_grid) {
+        if (output_is_stored) {
             let tile_texel = vec2<u32>(
                 texel_index % RUNTIME_TILE_DIMENSION,
                 texel_index / RUNTIME_TILE_DIMENSION,
@@ -330,9 +395,11 @@ fn animated_compose_main(
     let end = affinity_offsets[cell_index + 1u];
 
     if (level == 0u) {
-        // Dense L0 has no dropped probes, so keep its direct compact-payload
-        // reads and do not spend shared memory loading 64 tiles.
-        if (output_is_valid) {
+        // Id 45 L0 compacts valid probes; L1 retains valid brick corners in
+        // kept-rank order. Base atlases id 34 and id 35 reserve eight
+        // zero-filled L1 corner slots. Direct compact-payload reads avoid
+        // loading 64 tiles into shared memory.
+        if (output_is_stored) {
             let probe_rank = within_cell_rank(cell_index, local_probe);
             for (var entry = start; entry < end; entry = entry + 1u) {
                 let scale = animated_light_scale(affinity_lights[entry]);
@@ -395,7 +462,7 @@ fn animated_compose_main(
             }
             workgroupBarrier();
 
-            if (output_is_valid) {
+            if (output_is_stored) {
                 let scale = animated_light_scale(affinity_lights[entry]);
                 for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
                     var delta = vec3<f32>(0.0);
@@ -415,7 +482,7 @@ fn animated_compose_main(
         }
     }
 
-    if (in_grid) {
+    if (output_is_stored) {
         for (var texel_index = 0u; texel_index < TILE_TEXEL_COUNT; texel_index = texel_index + 1u) {
             let tile_texel = vec2<u32>(
                 texel_index % RUNTIME_TILE_DIMENSION,
@@ -425,7 +492,10 @@ fn animated_compose_main(
                 direct_composed_atlas,
                 vec2<i32>(tile_origin.xy + tile_texel),
                 i32(tile_origin.z),
-                vec4<f32>(max(accum[texel_index].rgb, vec3<f32>(0.0)), accum[texel_index].a),
+                vec4<f32>(
+                    max(accum[texel_index].rgb, vec3<f32>(0.0)),
+                    select(0.0, 1.0, stored_slot.valid),
+                ),
             );
         }
     }

@@ -937,15 +937,21 @@ fn sh_grid_info_consumer_shaders_match_cpu_layout() {
     const BILLBOARD_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/billboard.wgsl"),
         "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+        "\n",
         include_str!("../../shaders/sh_sample.wgsl"),
     );
     const FOG_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/fog_volume.wgsl"),
         "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
+        "\n",
         include_str!("../../shaders/sh_sample.wgsl"),
     );
     const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
         include_str!("../../shaders/skinned_mesh.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_indirection.wgsl"),
         "\n",
         include_str!("../../shaders/sh_sample.wgsl"),
         "\n",

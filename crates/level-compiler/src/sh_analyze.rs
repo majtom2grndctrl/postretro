@@ -731,12 +731,12 @@ fn decode_base_indirect_tile(
         return None;
     }
     let tile_dim = section.tile_dimension as usize;
-    let width = section.compact_atlas_dimensions[0] as usize;
-    let height = section.compact_atlas_dimensions[1] as usize;
+    let width = section.atlas_dimensions[0] as usize;
+    let height = section.atlas_dimensions[1] as usize;
     let [layer, tx, ty] = irradiance_array_tile_location(
         valid_rank as usize,
-        section.compact_atlas_tiles_per_layer,
-        section.compact_atlas_tiles_per_row,
+        section.tiles_per_layer,
+        section.atlas_tiles_per_row,
     );
     let layer_off = layer as usize * width * height;
     let ox = tx as usize * tile_dim;
@@ -2620,10 +2620,6 @@ mod tests {
         base.layer_count = 1;
         base.tiles_per_layer = 1;
         base.atlas_tiles_per_row = 1;
-        base.compact_atlas_dimensions = [1, 1];
-        base.compact_atlas_tiles_per_row = 1;
-        base.compact_atlas_tiles_per_layer = 1;
-        base.compact_atlas_layer_count = 1;
         base.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
         base.compact_atlas = vec![0; 8];
 

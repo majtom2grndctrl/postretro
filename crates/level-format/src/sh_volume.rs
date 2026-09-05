@@ -7,6 +7,7 @@ use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_array_layout,
 };
+use crate::sh_reconstruct::{Level, StoredBrickPrefixSum, corner_locals, stored_brick_prefix_sum};
 
 /// Section-internal version written as the first u32 of the `OctahedralShVolume`
 /// section payload. Bumped any time the on-disk layout changes so the loader can
@@ -28,10 +29,11 @@ use crate::octahedral::{
 /// linear tile rows and stores `atlas_tiles_per_row` in the header; version 8
 /// — atlas metadata became layer-aware for 2D array texture uploads, storing
 /// shared per-layer dimensions plus `layer_count` and `tiles_per_layer`; version
-/// 9 (current) — the base atlas became a valid-probe-only compact payload with
-/// its own geometry and a BC6H/RGBA16F format tag. The original atlas geometry
-/// remains dense for the composed runtime atlas and sampler tile math.
-pub const SH_VOLUME_VERSION: u32 = 9;
+/// 9 — the base atlas became a valid-probe-only compact payload with its own
+/// geometry and a BC6H/RGBA16F format tag. Version 10 replaces the two v9 atlas
+/// geometry blocks with one metadata-derived stored-tile geometry: L0 stores
+/// valid probes, L1 reserves all corners, and L2 stores one brick mean.
+pub const SH_VOLUME_VERSION: u32 = 10;
 
 /// Sentinel for "this map light has no animated-light section slot" in
 /// `OctahedralShVolumeSection.slot_for_map_light`. Non-animated lights and any
@@ -55,15 +57,15 @@ pub struct OctahedralShProbe {
     pub mean_distance: u16,
     /// Mean squared ray distance `E[d²]`, f16 bits.
     pub mean_sq_distance: u16,
-    /// Reserved for the adaptive-density follow-up. Every v9 bake writes zero;
-    /// v9 parsing rejects nonzero values rather than assigning them semantics.
+    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. v10 requires
+    /// one shared value per full 4×4×4 brick and L0 on partial edge bricks.
     pub density_level: u8,
 }
 
 /// One `Rgba16Float` atlas texel, stored as raw f16 channel bits.
 ///
 /// This remains the compiler's uncompressed tile-packing representation. The
-/// v9 section payload itself is the tagged byte blob on
+/// v10 section payload itself is the tagged byte blob on
 /// [`OctahedralShVolumeSection::compact_atlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OctahedralAtlasTexel {
@@ -116,7 +118,7 @@ impl Default for AnimationDescriptor {
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (104 bytes):
+///   Header (84 bytes):
 ///     u32      version                (= SH_VOLUME_VERSION)
 ///     f32 × 3  grid_origin
 ///     f32 × 3  cell_size
@@ -125,37 +127,30 @@ impl Default for AnimationDescriptor {
 ///     u32      animated_light_count
 ///     u32      tile_dimension         (default 6, border included)
 ///     u32      tile_border            (default 1)
-///     u32      atlas_width            (shared per-layer texels)
-///     u32      atlas_height           (shared per-layer texels)
+///     u32      atlas_width            (stored-tile atlas, per-layer texels)
+///     u32      atlas_height           (stored-tile atlas, per-layer texels)
 ///     u32      atlas_tiles_per_row    (per-layer tile columns)
 ///     u32      layer_count            (2D array layers)
 ///     u32      tiles_per_layer        (whole probe tiles per layer)
-///
-///     The preceding atlas fields retain their v8 meanings: they describe the
-///     dense per-grid-probe composed atlas and sampler tile geometry.
-///
-///     u32      compact_atlas_width     (valid-probe payload, per layer)
-///     u32      compact_atlas_height    (valid-probe payload, per layer)
-///     u32      compact_atlas_tiles_per_row
-///     u32      compact_atlas_tiles_per_layer
-///     u32      compact_atlas_layer_count
 ///     u32      irradiance_format       (BC6H / RGBA16F tag from `lightmap`)
-///     u32      compact_atlas_len       (byte length of compact atlas blob)
+///     u32      compact_atlas_len       (byte length of stored atlas blob)
 ///
 ///   Probe metadata records (probe_stride bytes each, x-fastest order):
 ///     u8       validity
 ///     f16      mean_distance          (E[d])
 ///     f16      mean_sq_distance       (E[d²])
-///     u8       density_level          (= 0 in v9; nonzero is rejected)
+///     u8       density_level          (0 = L0, 1 = L1, 2 = L2)
 ///     u8 × 2   padding
 ///
-///   Compact atlas blob (compact_atlas_len bytes), carrying tiles only for
-///   metadata-valid probes in x-fastest probe order:
+///   Compact atlas blob (compact_atlas_len bytes), carrying the stored set in
+///   brick-major order (affinity bricks x-fastest): L0 valid probes in local
+///   x-fastest order; L1 all corners in `corner_locals` order with zero tiles
+///   for invalid corners; L2 one valid-probe mean; all-invalid bricks none.
 ///     IRRADIANCE_FORMAT_RGBA16F: layer-major, then row-major
-///                                compact_atlas_width × compact_atlas_height
+///                                atlas_width × atlas_height
 ///                                `f16 × 4` texels per layer.
 ///     IRRADIANCE_FORMAT_BC6H:    layer-major 4×4 `Bc6hRgbUfloat` blocks,
-///                                `compact_atlas_layer_count ×
+///                                `layer_count ×
 ///                                ceil(width / 4) × ceil(height / 4) × 16`
 ///                                bytes total.
 ///
@@ -177,24 +172,18 @@ pub struct OctahedralShVolumeSection {
     pub tiles_per_layer: u32,
     pub atlas_tiles_per_row: u32,
     pub probes: Vec<OctahedralShProbe>,
-    /// Per-layer dimensions for the compact valid-probe-only payload. These
-    /// never replace the dense `atlas_dimensions` sampler contract above.
-    pub compact_atlas_dimensions: [u32; 2],
-    pub compact_atlas_tiles_per_row: u32,
-    pub compact_atlas_tiles_per_layer: u32,
-    pub compact_atlas_layer_count: u32,
     /// Format tag for `compact_atlas`: `IRRADIANCE_FORMAT_BC6H` (default at
-    /// rest) or `IRRADIANCE_FORMAT_RGBA16F` (uncompressed debug path).
+    /// rest) or `IRRADIANCE_FORMAT_RGBA16F` (uncompressed debug path), over
+    /// the metadata-derived stored-tile geometry above.
     pub irradiance_format: u32,
-    /// Raw compact atlas bytes in the encoding named by `irradiance_format`.
-    /// Tiles cover metadata-valid probes only, in x-fastest probe order.
+    /// Raw stored-atlas bytes in the encoding named by `irradiance_format`.
     pub compact_atlas: Vec<u8>,
     pub animation_descriptors: Vec<AnimationDescriptor>,
     pub slot_for_map_light: Vec<u32>,
 }
 
 impl OctahedralShVolumeSection {
-    pub const HEADER_SIZE: usize = 104;
+    pub const HEADER_SIZE: usize = 84;
 
     pub fn placeholder() -> Self {
         Self {
@@ -209,10 +198,6 @@ impl OctahedralShVolumeSection {
             tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
-            compact_atlas_dimensions: [0, 0],
-            compact_atlas_tiles_per_row: 0,
-            compact_atlas_tiles_per_layer: 0,
-            compact_atlas_layer_count: 0,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
             compact_atlas: Vec::new(),
             animation_descriptors: Vec::new(),
@@ -231,7 +216,7 @@ impl OctahedralShVolumeSection {
             .expect("OctahedralShVolumeSection must satisfy its wire contract")
     }
 
-    /// Encode only a canonical section whose compact payload fits the v9
+    /// Encode only a canonical section whose stored payload fits the v10
     /// `u32` byte-length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
         self.validate_wire_contract()?;
@@ -264,11 +249,6 @@ impl OctahedralShVolumeSection {
         buf.extend_from_slice(&self.atlas_tiles_per_row.to_le_bytes());
         buf.extend_from_slice(&self.layer_count.to_le_bytes());
         buf.extend_from_slice(&self.tiles_per_layer.to_le_bytes());
-        buf.extend_from_slice(&self.compact_atlas_dimensions[0].to_le_bytes());
-        buf.extend_from_slice(&self.compact_atlas_dimensions[1].to_le_bytes());
-        buf.extend_from_slice(&self.compact_atlas_tiles_per_row.to_le_bytes());
-        buf.extend_from_slice(&self.compact_atlas_tiles_per_layer.to_le_bytes());
-        buf.extend_from_slice(&self.compact_atlas_layer_count.to_le_bytes());
         buf.extend_from_slice(&self.irradiance_format.to_le_bytes());
         buf.extend_from_slice(&compact_atlas_len.to_le_bytes());
 
@@ -290,14 +270,15 @@ impl OctahedralShVolumeSection {
     fn validate_wire_contract(&self) -> crate::Result<()> {
         if self.probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v9",
+                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v10",
                 self.probe_stride,
             )));
         }
 
         validate_octahedral_tile_geometry(self.tile_dimension, self.tile_border)?;
-        validate_octahedral_grid_and_atlas(
-            self.grid_dimensions,
+        let stored_prefix = validate_probe_metadata(self.grid_dimensions, &self.probes)?;
+        validate_stored_atlas_geometry(
+            stored_prefix.total_stored_tiles,
             self.tile_dimension,
             self.atlas_dimensions,
             self.layer_count,
@@ -305,46 +286,18 @@ impl OctahedralShVolumeSection {
             self.atlas_tiles_per_row,
         )?;
 
-        let total_probes = checked_total_probe_count(self.grid_dimensions)?;
-        if self.probes.len() != total_probes {
-            return Err(invalid_data(format!(
-                "octahedral sh volume has {} probe metadata record(s), expected {total_probes} for grid_dimensions {:?}",
-                self.probes.len(),
-                self.grid_dimensions,
-            )));
-        }
-        if let Some((probe_index, density_level)) = self
-            .probes
-            .iter()
-            .enumerate()
-            .find(|(_, probe)| probe.density_level != 0)
-            .map(|(probe_index, probe)| (probe_index, probe.density_level))
-        {
-            return Err(invalid_data(format!(
-                "octahedral sh volume probe {probe_index} density_level {density_level} is reserved for adaptive density; v9 requires 0"
-            )));
-        }
-
         validate_irradiance_format(self.irradiance_format)?;
-        let valid_probe_count = valid_probe_count(&self.probes);
-        validate_compact_atlas_geometry(
-            valid_probe_count,
-            self.tile_dimension,
-            self.compact_atlas_dimensions,
-            self.compact_atlas_layer_count,
-            self.compact_atlas_tiles_per_layer,
-            self.compact_atlas_tiles_per_row,
-        )?;
         let expected_payload_len = expected_compact_atlas_len(
             self.irradiance_format,
-            self.compact_atlas_dimensions,
-            self.compact_atlas_layer_count,
+            self.atlas_dimensions,
+            self.layer_count,
         )?;
         if self.compact_atlas.len() != expected_payload_len {
             return Err(invalid_data(format!(
-                "octahedral sh volume compact_atlas length {}, expected {expected_payload_len} for irradiance_format {} over {valid_probe_count} metadata-valid probe(s)",
+                "octahedral sh volume compact_atlas length {}, expected {expected_payload_len} for irradiance_format {} over {} metadata-derived stored tile(s)",
                 self.compact_atlas.len(),
                 self.irradiance_format,
+                stored_prefix.total_stored_tiles,
             )));
         }
         compact_atlas_len_for_header(self.compact_atlas.len() as u64)?;
@@ -364,7 +317,7 @@ impl OctahedralShVolumeSection {
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "octahedral sh volume section version {version}, expected {SH_VOLUME_VERSION} — \
-                     recompile the .prl with the current `prl-build` for the v9 compact-atlas format"
+                     recompile the .prl with the current `prl-build` for the v10 stored-atlas format"
                 ),
             )));
         }
@@ -405,14 +358,6 @@ impl OctahedralShVolumeSection {
         o += 4;
         let tiles_per_layer = read_u32(data, o);
         o += 4;
-        let compact_atlas_dimensions = [read_u32(data, o), read_u32(data, o + 4)];
-        o += 8;
-        let compact_atlas_tiles_per_row = read_u32(data, o);
-        o += 4;
-        let compact_atlas_tiles_per_layer = read_u32(data, o);
-        o += 4;
-        let compact_atlas_layer_count = read_u32(data, o);
-        o += 4;
         let irradiance_format = read_u32(data, o);
         o += 4;
         let compact_atlas_len = read_u32(data, o) as usize;
@@ -421,22 +366,13 @@ impl OctahedralShVolumeSection {
 
         if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v9"
+                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v10"
             )));
         }
 
         validate_irradiance_format(irradiance_format)?;
 
         validate_octahedral_tile_geometry(tile_dimension, tile_border)?;
-        validate_octahedral_grid_and_atlas(
-            grid_dimensions,
-            tile_dimension,
-            atlas_dimensions,
-            layer_count,
-            tiles_per_layer,
-            atlas_tiles_per_row,
-        )?;
-
         let total_probes = (grid_dimensions[0] as usize)
             .checked_mul(grid_dimensions[1] as usize)
             .and_then(|n| n.checked_mul(grid_dimensions[2] as usize))
@@ -466,34 +402,21 @@ impl OctahedralShVolumeSection {
             o += probe_stride as usize;
         }
 
-        if let Some((probe_index, density_level)) = probes
-            .iter()
-            .enumerate()
-            .find(|(_, probe)| probe.density_level != 0)
-            .map(|(probe_index, probe)| (probe_index, probe.density_level))
-        {
-            return Err(invalid_data(format!(
-                "octahedral sh volume probe {probe_index} density_level {density_level} is reserved for adaptive density; v9 requires 0"
-            )));
-        }
-
-        let valid_probe_count = valid_probe_count(&probes);
-        validate_compact_atlas_geometry(
-            valid_probe_count,
+        let stored_prefix = validate_probe_metadata(grid_dimensions, &probes)?;
+        validate_stored_atlas_geometry(
+            stored_prefix.total_stored_tiles,
             tile_dimension,
-            compact_atlas_dimensions,
-            compact_atlas_layer_count,
-            compact_atlas_tiles_per_layer,
-            compact_atlas_tiles_per_row,
+            atlas_dimensions,
+            layer_count,
+            tiles_per_layer,
+            atlas_tiles_per_row,
         )?;
-        let expected_payload_len = expected_compact_atlas_len(
-            irradiance_format,
-            compact_atlas_dimensions,
-            compact_atlas_layer_count,
-        )?;
+        let expected_payload_len =
+            expected_compact_atlas_len(irradiance_format, atlas_dimensions, layer_count)?;
         if compact_atlas_len != expected_payload_len {
             return Err(invalid_data(format!(
-                "octahedral sh volume compact_atlas_len {compact_atlas_len}, expected {expected_payload_len} for irradiance_format {irradiance_format} over {valid_probe_count} metadata-valid probe(s)"
+                "octahedral sh volume compact_atlas_len {compact_atlas_len}, expected {expected_payload_len} for irradiance_format {irradiance_format} over {} metadata-derived stored tile(s)",
+                stored_prefix.total_stored_tiles,
             )));
         }
         let compact_atlas_end = o.checked_add(compact_atlas_len).ok_or_else(|| {
@@ -527,10 +450,6 @@ impl OctahedralShVolumeSection {
             tiles_per_layer,
             atlas_tiles_per_row,
             probes,
-            compact_atlas_dimensions,
-            compact_atlas_tiles_per_row,
-            compact_atlas_tiles_per_layer,
-            compact_atlas_layer_count,
             irradiance_format,
             compact_atlas,
             animation_descriptors,
@@ -560,76 +479,52 @@ fn validate_octahedral_tile_geometry(tile_dimension: u32, tile_border: u32) -> c
     Ok(())
 }
 
-fn validate_octahedral_grid_and_atlas(
-    grid_dimensions: [u32; 3],
+fn validate_grid_dimensions(grid_dimensions: [u32; 3]) -> crate::Result<()> {
+    let zero_axes = grid_dimensions.iter().filter(|&&d| d == 0).count();
+    if zero_axes > 0 && zero_axes != 3 {
+        return Err(invalid_data(format!(
+            "octahedral sh volume grid_dimensions {grid_dimensions:?} are malformed: empty grids must be [0, 0, 0]"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_stored_atlas_geometry(
+    stored_tile_count: u32,
     tile_dimension: u32,
     atlas_dimensions: [u32; 2],
     layer_count: u32,
     tiles_per_layer: u32,
     atlas_tiles_per_row: u32,
 ) -> crate::Result<()> {
-    let zero_axes = grid_dimensions.iter().filter(|&&d| d == 0).count();
-    if zero_axes > 0 {
-        if zero_axes != 3 {
-            return Err(invalid_data(format!(
-                "octahedral sh volume grid_dimensions {grid_dimensions:?} are malformed: empty grids must be [0, 0, 0]"
-            )));
-        }
-        if atlas_dimensions != [0, 0]
-            || layer_count != 0
-            || tiles_per_layer != 0
-            || atlas_tiles_per_row != 0
-        {
-            return Err(invalid_data(format!(
-                "octahedral sh volume empty grid must use atlas_dimensions [0, 0], layer_count 0, tiles_per_layer 0, and atlas_tiles_per_row 0, got atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}, tiles_per_layer {tiles_per_layer}, atlas_tiles_per_row {atlas_tiles_per_row}"
-            )));
-        }
-        return Ok(());
-    }
+    let layout = expected_stored_array_layout(stored_tile_count, tile_dimension, atlas_dimensions)
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "octahedral sh volume stored atlas geometry cannot be derived for {stored_tile_count} metadata-derived tile(s), tile_dimension {tile_dimension}, and atlas_dimensions {atlas_dimensions:?}"
+            ))
+        })?;
 
-    let layout = expected_array_layout(grid_dimensions, tile_dimension, atlas_dimensions).ok_or_else(|| {
-        invalid_data(format!(
-            "octahedral sh volume grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}, and atlas_dimensions {atlas_dimensions:?} do not describe a valid layer-aware atlas layout"
-        ))
-    })?;
     let expected_atlas_dimensions = [layout.atlas_width, layout.atlas_height];
-    if atlas_dimensions != expected_atlas_dimensions {
+    if atlas_dimensions != expected_atlas_dimensions
+        || layer_count != layout.layer_count
+        || tiles_per_layer != layout.tiles_per_layer
+        || atlas_tiles_per_row != layout.atlas_tiles_per_row
+    {
         return Err(invalid_data(format!(
-            "octahedral sh volume atlas_dimensions {atlas_dimensions:?}, expected {expected_atlas_dimensions:?} for grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}"
-        )));
-    }
-    if layer_count != layout.layer_count {
-        return Err(invalid_data(format!(
-            "octahedral sh volume layer_count {layer_count}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.layer_count
-        )));
-    }
-    if tiles_per_layer != layout.tiles_per_layer {
-        return Err(invalid_data(format!(
-            "octahedral sh volume tiles_per_layer {tiles_per_layer}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.tiles_per_layer
-        )));
-    }
-    if atlas_tiles_per_row != layout.atlas_tiles_per_row {
-        return Err(invalid_data(format!(
-            "octahedral sh volume atlas_tiles_per_row {atlas_tiles_per_row}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
-            layout.atlas_tiles_per_row
+            "octahedral sh volume stored atlas geometry {atlas_dimensions:?}, tiles_per_row {atlas_tiles_per_row}, tiles_per_layer {tiles_per_layer}, layer_count {layer_count}; expected dimensions {expected_atlas_dimensions:?}, tiles_per_row {}, tiles_per_layer {}, layer_count {} for {stored_tile_count} metadata-derived tile(s)",
+            layout.atlas_tiles_per_row, layout.tiles_per_layer, layout.layer_count,
         )));
     }
     Ok(())
 }
 
-fn expected_array_layout(
-    grid_dimensions: [u32; 3],
+fn expected_stored_array_layout(
+    stored_tile_count: u32,
     tile_dimension: u32,
     atlas_dimensions: [u32; 2],
 ) -> Option<crate::octahedral::IrradianceAtlasArrayLayout> {
     let max_dim = atlas_dimensions[0].max(atlas_dimensions[1]);
-    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, max_dim)
-}
-
-fn valid_probe_count(probes: &[OctahedralShProbe]) -> usize {
-    probes.iter().filter(|probe| probe.validity != 0).count()
+    irradiance_atlas_array_layout([stored_tile_count, 1, 1], tile_dimension, max_dim)
 }
 
 fn checked_total_probe_count(grid_dimensions: [u32; 3]) -> crate::Result<usize> {
@@ -643,14 +538,195 @@ fn checked_total_probe_count(grid_dimensions: [u32; 3]) -> crate::Result<usize> 
         })
 }
 
-fn expected_compact_array_layout(
-    valid_probe_count: usize,
-    tile_dimension: u32,
-    compact_atlas_dimensions: [u32; 2],
-) -> Option<crate::octahedral::IrradianceAtlasArrayLayout> {
-    let valid_probe_count = u32::try_from(valid_probe_count).ok()?;
-    let max_dim = compact_atlas_dimensions[0].max(compact_atlas_dimensions[1]);
-    irradiance_atlas_array_layout([valid_probe_count, 1, 1], tile_dimension, max_dim)
+fn validate_probe_metadata(
+    grid_dimensions: [u32; 3],
+    probes: &[OctahedralShProbe],
+) -> crate::Result<StoredBrickPrefixSum> {
+    validate_grid_dimensions(grid_dimensions)?;
+    let total_probes = checked_total_probe_count(grid_dimensions)?;
+    if probes.len() != total_probes {
+        return Err(invalid_data(format!(
+            "octahedral sh volume has {} probe metadata record(s), expected {total_probes} for grid_dimensions {:?}",
+            probes.len(),
+            grid_dimensions,
+        )));
+    }
+
+    let affinity_dimensions = grid_dimensions.map(|dimension| dimension.div_ceil(4));
+    let brick_count = affinity_dimensions
+        .iter()
+        .try_fold(1usize, |count, &dimension| {
+            count.checked_mul(dimension as usize)
+        })
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "octahedral sh volume affinity dimensions {affinity_dimensions:?} overflow"
+            ))
+        })?;
+    let mut brick_levels = Vec::with_capacity(brick_count);
+
+    for brick_z in 0..affinity_dimensions[2] as usize {
+        for brick_y in 0..affinity_dimensions[1] as usize {
+            for brick_x in 0..affinity_dimensions[0] as usize {
+                let brick_index = brick_x
+                    + brick_y * affinity_dimensions[0] as usize
+                    + brick_z * affinity_dimensions[0] as usize * affinity_dimensions[1] as usize;
+                let origin = [brick_x * 4, brick_y * 4, brick_z * 4];
+                let full_brick = origin[0] + 4 <= grid_dimensions[0] as usize
+                    && origin[1] + 4 <= grid_dimensions[1] as usize
+                    && origin[2] + 4 <= grid_dimensions[2] as usize;
+                let mut brick_level = None;
+                let mut has_valid_corner = false;
+
+                for local_z in 0..4usize {
+                    for local_y in 0..4usize {
+                        for local_x in 0..4usize {
+                            let probe_x = origin[0] + local_x;
+                            let probe_y = origin[1] + local_y;
+                            let probe_z = origin[2] + local_z;
+                            if probe_x >= grid_dimensions[0] as usize
+                                || probe_y >= grid_dimensions[1] as usize
+                                || probe_z >= grid_dimensions[2] as usize
+                            {
+                                continue;
+                            }
+                            let probe_index = probe_x
+                                + probe_y * grid_dimensions[0] as usize
+                                + probe_z
+                                    * grid_dimensions[0] as usize
+                                    * grid_dimensions[1] as usize;
+                            let probe = probes[probe_index];
+                            let level = Level::from_u8(probe.density_level).ok_or_else(|| {
+                                invalid_data(format!(
+                                    "octahedral sh volume probe {probe_index} density_level {} out of range: level must be 0..=2",
+                                    probe.density_level
+                                ))
+                            })?;
+                            if !full_brick && level != Level::L0 {
+                                return Err(invalid_data(format!(
+                                    "octahedral sh volume partial affinity brick {brick_index} density_level {} must be 0",
+                                    probe.density_level
+                                )));
+                            }
+                            if let Some(previous_level) = brick_level {
+                                if full_brick && level != previous_level {
+                                    return Err(invalid_data(format!(
+                                        "octahedral sh volume affinity brick {brick_index} has disagreeing density_level values: {} and {}",
+                                        previous_level.to_u8(),
+                                        level.to_u8(),
+                                    )));
+                                }
+                            } else {
+                                brick_level = Some(level);
+                            }
+
+                            let local = local_x + local_y * 4 + local_z * 16;
+                            if level == Level::L1
+                                && corner_locals().contains(&local)
+                                && probe.validity != 0
+                            {
+                                has_valid_corner = true;
+                            }
+                        }
+                    }
+                }
+
+                let level = brick_level.expect("non-empty affinity brick has at least one probe");
+                if level == Level::L1 && !has_valid_corner {
+                    return Err(invalid_data(format!(
+                        "octahedral sh volume affinity brick {brick_index} uses L1 without a valid corner probe"
+                    )));
+                }
+                brick_levels.push(level);
+            }
+        }
+    }
+
+    let probe_validity: Vec<bool> = probes.iter().map(|probe| probe.validity != 0).collect();
+    stored_brick_prefix_sum(grid_dimensions, &brick_levels, &probe_validity).ok_or_else(|| {
+        invalid_data(format!(
+            "octahedral sh volume stored-tile prefix sum over grid_dimensions {grid_dimensions:?} overflowed"
+        ))
+    })
+}
+
+/// Check the I2 storage ceiling against one parsed delta section's CSR shape.
+///
+/// The caller supplies a grid-matched delta section's `cell_levels` and
+/// `affinity_offsets`. Only cells with at least one CSR entry constrain the
+/// base stored level: `density_level <= cell_level`. This pure format-layer
+/// check is shared by the compiler and loader; it does not depend on a delta
+/// payload or renderer type.
+pub fn validate_storage_levels_against_delta(
+    grid_dimensions: [u32; 3],
+    probes: &[OctahedralShProbe],
+    cell_levels: &[u8],
+    affinity_offsets: &[u32],
+) -> crate::Result<()> {
+    let prefix = validate_probe_metadata(grid_dimensions, probes)?;
+    let cell_count = prefix.bricks.len();
+    if cell_levels.len() != cell_count {
+        return Err(invalid_data(format!(
+            "octahedral sh volume delta cell_levels length {}, expected {cell_count}",
+            cell_levels.len()
+        )));
+    }
+    if affinity_offsets.len() != cell_count + 1 {
+        return Err(invalid_data(format!(
+            "octahedral sh volume delta affinity_offsets length {}, expected {}",
+            affinity_offsets.len(),
+            cell_count + 1
+        )));
+    }
+    if affinity_offsets.first().copied() != Some(0) {
+        return Err(invalid_data(
+            "octahedral sh volume delta affinity_offsets[0] must be 0".into(),
+        ));
+    }
+    for (cell, offsets) in affinity_offsets.windows(2).enumerate() {
+        if offsets[0] > offsets[1] {
+            return Err(invalid_data(format!(
+                "octahedral sh volume delta affinity_offsets[{cell}] ({}) > affinity_offsets[{}] ({}): offsets must be non-decreasing",
+                offsets[0],
+                cell + 1,
+                offsets[1],
+            )));
+        }
+        let delta_level = Level::from_u8(cell_levels[cell]).ok_or_else(|| {
+            invalid_data(format!(
+                "octahedral sh volume delta cell_levels[{cell}] {} out of range: level must be 0..=2",
+                cell_levels[cell]
+            ))
+        })?;
+        if offsets[0] == offsets[1] {
+            continue;
+        }
+
+        let brick_x = cell % prefix.affinity_dimensions[0] as usize;
+        let brick_y = (cell / prefix.affinity_dimensions[0] as usize)
+            % prefix.affinity_dimensions[1] as usize;
+        let brick_z = cell
+            / (prefix.affinity_dimensions[0] as usize * prefix.affinity_dimensions[1] as usize);
+        let probe_index = brick_x * 4
+            + brick_y * 4 * grid_dimensions[0] as usize
+            + brick_z * 4 * grid_dimensions[0] as usize * grid_dimensions[1] as usize;
+        let storage_level = Level::from_u8(probes[probe_index].density_level)
+            .expect("metadata validation already checked every density level");
+        if storage_level.to_u8() > delta_level.to_u8() {
+            return Err(invalid_data(format!(
+                "octahedral sh volume affinity brick {cell} density_level {} exceeds delta cell_level {} with {} CSR entr{}",
+                storage_level.to_u8(),
+                delta_level.to_u8(),
+                offsets[1] - offsets[0],
+                if offsets[1] - offsets[0] == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
@@ -661,38 +737,6 @@ fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
              (expected {IRRADIANCE_FORMAT_BC6H} BC6H or {IRRADIANCE_FORMAT_RGBA16F} RGBA16F)"
         ))),
     }
-}
-
-fn validate_compact_atlas_geometry(
-    valid_probe_count: usize,
-    tile_dimension: u32,
-    compact_atlas_dimensions: [u32; 2],
-    compact_atlas_layer_count: u32,
-    compact_atlas_tiles_per_layer: u32,
-    compact_atlas_tiles_per_row: u32,
-) -> crate::Result<()> {
-    let layout = expected_compact_array_layout(
-        valid_probe_count,
-        tile_dimension,
-        compact_atlas_dimensions,
-    )
-    .ok_or_else(|| {
-        invalid_data(format!(
-            "octahedral sh volume compact_atlas geometry cannot be derived for {valid_probe_count} metadata-valid probe(s), tile_dimension {tile_dimension}, and compact_atlas_dimensions {compact_atlas_dimensions:?}"
-        ))
-    })?;
-    let expected_dimensions = [layout.atlas_width, layout.atlas_height];
-    if compact_atlas_dimensions != expected_dimensions
-        || compact_atlas_layer_count != layout.layer_count
-        || compact_atlas_tiles_per_layer != layout.tiles_per_layer
-        || compact_atlas_tiles_per_row != layout.atlas_tiles_per_row
-    {
-        return Err(invalid_data(format!(
-            "octahedral sh volume compact_atlas geometry {compact_atlas_dimensions:?}, tiles_per_row {compact_atlas_tiles_per_row}, tiles_per_layer {compact_atlas_tiles_per_layer}, layer_count {compact_atlas_layer_count}; expected dimensions {expected_dimensions:?}, tiles_per_row {}, tiles_per_layer {}, layer_count {} for {valid_probe_count} metadata-valid probe(s)",
-            layout.atlas_tiles_per_row, layout.tiles_per_layer, layout.layer_count,
-        )));
-    }
-    Ok(())
 }
 
 fn expected_compact_atlas_len(
@@ -712,7 +756,7 @@ fn expected_compact_atlas_len(
                 u64::from(compact_atlas_dimensions[1].div_ceil(4)),
                 16,
             ],
-            "octahedral sh volume compact BC6H atlas byte length overflows u64",
+            "octahedral sh volume stored BC6H atlas byte length overflows u64",
         ),
         IRRADIANCE_FORMAT_RGBA16F => checked_len_u64(
             &[
@@ -721,7 +765,7 @@ fn expected_compact_atlas_len(
                 height,
                 u64::from(OCTAHEDRAL_ATLAS_TEXEL_STRIDE),
             ],
-            "octahedral sh volume compact RGBA16F atlas byte length overflows u64",
+            "octahedral sh volume stored RGBA16F atlas byte length overflows u64",
         ),
         _ => Err(invalid_data(format!(
             "octahedral sh volume irradiance_format {irradiance_format} is not a known tag \
@@ -735,7 +779,7 @@ fn expected_compact_atlas_len(
 fn compact_atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "octahedral sh volume compact atlas byte length {len} exceeds the v9 u32 header maximum {}",
+            "octahedral sh volume stored atlas byte length {len} exceeds the v10 u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -918,8 +962,6 @@ mod tests {
         let total = (grid[0] * grid[1] * grid[2]) as usize;
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         let tile_border = DEFAULT_IRRADIANCE_TILE_BORDER;
-        let layout = irradiance_atlas_array_layout(grid, tile_dimension, max_dim).unwrap();
-        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
         let probes: Vec<_> = (0..total)
             .map(|i| OctahedralShProbe {
                 validity: (i % 2) as u8,
@@ -928,18 +970,21 @@ mod tests {
                 density_level: 0,
             })
             .collect();
-        let valid_probe_count = valid_probe_count(&probes);
-        let compact_layout = irradiance_atlas_array_layout(
-            [valid_probe_count as u32, 1, 1],
+        let affinity_dimensions = grid.map(|dimension| dimension.div_ceil(4));
+        let brick_count = affinity_dimensions.iter().product::<u32>() as usize;
+        let levels = vec![Level::L0; brick_count];
+        let validity: Vec<_> = probes.iter().map(|probe| probe.validity != 0).collect();
+        let prefix = stored_brick_prefix_sum(grid, &levels, &validity).unwrap();
+        let layout = irradiance_atlas_array_layout(
+            [prefix.total_stored_tiles, 1, 1],
             tile_dimension,
             max_dim,
         )
         .unwrap();
-        let compact_atlas_dimensions = [compact_layout.atlas_width, compact_layout.atlas_height];
         let compact_atlas_len = expected_compact_atlas_len(
             irradiance_format,
-            compact_atlas_dimensions,
-            compact_layout.layer_count,
+            [layout.atlas_width, layout.atlas_height],
+            layout.layer_count,
         )
         .unwrap();
         OctahedralShVolumeSection {
@@ -949,15 +994,11 @@ mod tests {
             probe_stride: OCTAHEDRAL_PROBE_STRIDE,
             tile_dimension,
             tile_border,
-            atlas_dimensions,
+            atlas_dimensions: [layout.atlas_width, layout.atlas_height],
             layer_count: layout.layer_count,
             tiles_per_layer: layout.tiles_per_layer,
             atlas_tiles_per_row: layout.atlas_tiles_per_row,
             probes,
-            compact_atlas_dimensions,
-            compact_atlas_tiles_per_row: compact_layout.atlas_tiles_per_row,
-            compact_atlas_tiles_per_layer: compact_layout.tiles_per_layer,
-            compact_atlas_layer_count: compact_layout.layer_count,
             irradiance_format,
             compact_atlas: (0..compact_atlas_len).map(|i| (i % 256) as u8).collect(),
             animation_descriptors: Vec::new(),
@@ -965,14 +1006,36 @@ mod tests {
         }
     }
 
+    fn repack_stored_geometry(section: &mut OctahedralShVolumeSection, max_dim: u32) {
+        let prefix = validate_probe_metadata(section.grid_dimensions, &section.probes).unwrap();
+        let layout = irradiance_atlas_array_layout(
+            [prefix.total_stored_tiles, 1, 1],
+            section.tile_dimension,
+            max_dim,
+        )
+        .unwrap();
+        section.atlas_dimensions = [layout.atlas_width, layout.atlas_height];
+        section.layer_count = layout.layer_count;
+        section.tiles_per_layer = layout.tiles_per_layer;
+        section.atlas_tiles_per_row = layout.atlas_tiles_per_row;
+        section.compact_atlas = vec![
+            0;
+            expected_compact_atlas_len(
+                section.irradiance_format,
+                section.atlas_dimensions,
+                section.layer_count,
+            )
+            .unwrap()
+        ];
+    }
+
     #[test]
-    fn octahedral_round_trip_preserves_dense_metadata_and_compact_bc6h_atlas() {
+    fn octahedral_round_trip_preserves_stored_metadata_and_bc6h_atlas() {
         let section = oct_section([2, 2, 1]);
         assert_eq!(section.layer_count, 1);
-        assert_eq!(section.compact_atlas_dimensions, [12, 6]);
-        assert_eq!(section.compact_atlas_layer_count, 1);
-        assert_eq!(section.compact_atlas_tiles_per_layer, 2);
-        assert_eq!(section.compact_atlas_tiles_per_row, 2);
+        assert_eq!(section.atlas_dimensions, [12, 6]);
+        assert_eq!(section.tiles_per_layer, 2);
+        assert_eq!(section.atlas_tiles_per_row, 2);
         let bytes = section.to_bytes();
         assert_eq!(
             &bytes[64..68],
@@ -985,33 +1048,10 @@ mod tests {
         );
         assert_eq!(
             &bytes[76..80],
-            section.compact_atlas_dimensions[0].to_le_bytes().as_slice()
-        );
-        assert_eq!(
-            &bytes[80..84],
-            section.compact_atlas_dimensions[1].to_le_bytes().as_slice()
-        );
-        assert_eq!(
-            &bytes[84..88],
-            section.compact_atlas_tiles_per_row.to_le_bytes().as_slice()
-        );
-        assert_eq!(
-            &bytes[88..92],
-            section
-                .compact_atlas_tiles_per_layer
-                .to_le_bytes()
-                .as_slice()
-        );
-        assert_eq!(
-            &bytes[92..96],
-            section.compact_atlas_layer_count.to_le_bytes().as_slice()
-        );
-        assert_eq!(
-            &bytes[96..100],
             IRRADIANCE_FORMAT_BC6H.to_le_bytes().as_slice()
         );
         assert_eq!(
-            &bytes[100..104],
+            &bytes[80..84],
             (section.compact_atlas.len() as u32)
                 .to_le_bytes()
                 .as_slice()
@@ -1026,16 +1066,12 @@ mod tests {
     }
 
     #[test]
-    fn octahedral_round_trip_preserves_multi_layer_compact_geometry() {
+    fn octahedral_round_trip_preserves_multi_layer_stored_geometry() {
         let section = oct_section_with_max_dim([20, 1, 1], 20);
-        assert_eq!(section.layer_count, 3);
+        assert_eq!(section.layer_count, 2);
         assert_eq!(section.tiles_per_layer, 9);
         assert_eq!(section.atlas_tiles_per_row, 3);
         assert_eq!(section.atlas_dimensions, [18, 18]);
-        assert_eq!(section.compact_atlas_layer_count, 2);
-        assert_eq!(section.compact_atlas_tiles_per_layer, 9);
-        assert_eq!(section.compact_atlas_tiles_per_row, 3);
-        assert_eq!(section.compact_atlas_dimensions, [18, 18]);
 
         let bytes = section.to_bytes();
         let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
@@ -1067,16 +1103,16 @@ mod tests {
     #[test]
     fn octahedral_round_trip_serializes_near_square_tiles_per_row() {
         let section = oct_section([3, 2, 4]);
-        assert_eq!(section.atlas_tiles_per_row, 5);
-        assert_eq!(section.atlas_dimensions, [30, 30]);
+        assert_eq!(section.atlas_tiles_per_row, 4);
+        assert_eq!(section.atlas_dimensions, [24, 18]);
         assert_eq!(section.layer_count, 1);
-        assert_eq!(section.tiles_per_layer, 25);
+        assert_eq!(section.tiles_per_layer, 12);
 
         let restored = OctahedralShVolumeSection::from_bytes(&section.to_bytes()).unwrap();
-        assert_eq!(restored.atlas_tiles_per_row, 5);
-        assert_eq!(restored.atlas_dimensions, [30, 30]);
+        assert_eq!(restored.atlas_tiles_per_row, 4);
+        assert_eq!(restored.atlas_dimensions, [24, 18]);
         assert_eq!(restored.layer_count, 1);
-        assert_eq!(restored.tiles_per_layer, 25);
+        assert_eq!(restored.tiles_per_layer, 12);
     }
 
     #[test]
@@ -1087,7 +1123,7 @@ mod tests {
             ..OctahedralShVolumeSection::HEADER_SIZE + OCTAHEDRAL_PROBE_STRIDE as usize];
 
         assert_eq!(metadata.len(), OCTAHEDRAL_PROBE_STRIDE as usize);
-        assert_eq!(metadata[5], 0, "v9 density_level must serialize as zero");
+        assert_eq!(metadata[5], 0, "fixture uses the L0 density level");
         assert_eq!(&metadata[6..8], &[0, 0]);
     }
 
@@ -1113,7 +1149,7 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("exceeds the v9 u32 header maximum"),
+            msg.contains("exceeds the v10 u32 header maximum"),
             "expected compact-atlas header-length error, got: {msg}",
         );
     }
@@ -1125,7 +1161,7 @@ mod tests {
         let err = compact_atlas_len_for_header(u64::from(u32::MAX) + 1).unwrap_err();
         assert!(
             err.to_string()
-                .contains("exceeds the v9 u32 header maximum")
+                .contains("exceeds the v10 u32 header maximum")
         );
     }
 
@@ -1148,7 +1184,7 @@ mod tests {
     fn octahedral_rejects_unknown_compact_atlas_format_tag() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        bytes[96..100].copy_from_slice(&7u32.to_le_bytes());
+        bytes[76..80].copy_from_slice(&7u32.to_le_bytes());
 
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
@@ -1159,17 +1195,123 @@ mod tests {
     }
 
     #[test]
-    fn octahedral_rejects_nonzero_density_level_reserved_for_adaptive_density() {
-        let section = oct_section([1, 1, 1]);
+    fn octahedral_rejects_out_of_range_density_level() {
+        let section = oct_section([4, 4, 4]);
         let mut bytes = section.to_bytes();
-        bytes[OctahedralShVolumeSection::HEADER_SIZE + 5] = 1;
+        bytes[OctahedralShVolumeSection::HEADER_SIZE + 5] = 3;
 
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("density_level") && msg.contains("reserved for adaptive density"),
-            "expected reserved-density-level error, got: {msg}",
+            msg.contains("density_level") && msg.contains("out of range"),
+            "expected out-of-range density-level error, got: {msg}",
         );
+    }
+
+    #[test]
+    fn octahedral_rejects_disagreeing_full_brick_density_levels() {
+        let section = oct_section([4, 4, 4]);
+        let mut bytes = section.to_bytes();
+        bytes[OctahedralShVolumeSection::HEADER_SIZE + 5] = Level::L1.to_u8();
+
+        let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("disagreeing density_level"),
+            "expected full-brick disagreement error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn octahedral_rejects_nonzero_level_on_partial_edge_brick() {
+        let section = oct_section([5, 4, 4]);
+        let mut bytes = section.to_bytes();
+        let partial_brick_first_probe = 4;
+        bytes[OctahedralShVolumeSection::HEADER_SIZE
+            + partial_brick_first_probe * OCTAHEDRAL_PROBE_STRIDE as usize
+            + 5] = Level::L2.to_u8();
+
+        let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("partial affinity brick")
+                && err.to_string().contains("must be 0"),
+            "expected partial-brick error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn octahedral_rejects_l1_brick_without_a_valid_corner() {
+        let section = oct_section([4, 4, 4]);
+        let mut bytes = section.to_bytes();
+        for local in 0..64 {
+            let record =
+                OctahedralShVolumeSection::HEADER_SIZE + local * OCTAHEDRAL_PROBE_STRIDE as usize;
+            bytes[record + 5] = Level::L1.to_u8();
+        }
+        for local in corner_locals() {
+            let record =
+                OctahedralShVolumeSection::HEADER_SIZE + local * OCTAHEDRAL_PROBE_STRIDE as usize;
+            bytes[record] = 0;
+        }
+        bytes[OctahedralShVolumeSection::HEADER_SIZE + OCTAHEDRAL_PROBE_STRIDE as usize] = 1;
+
+        let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("L1 without a valid corner"),
+            "expected L1-corner error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn octahedral_round_trips_l1_stored_geometry_from_metadata_prefix_sum() {
+        let mut section = oct_section([4, 4, 4]);
+        for probe in &mut section.probes {
+            probe.density_level = Level::L1.to_u8();
+        }
+        repack_stored_geometry(&mut section, 8192);
+
+        let prefix = validate_probe_metadata(section.grid_dimensions, &section.probes).unwrap();
+        assert_eq!(prefix.total_stored_tiles, 8);
+        assert_eq!(section.atlas_dimensions, [18, 18]);
+        assert_eq!(section.tiles_per_layer, 9);
+        assert_eq!(section.atlas_tiles_per_row, 3);
+        assert_eq!(
+            OctahedralShVolumeSection::from_bytes(&section.to_bytes()).unwrap(),
+            section
+        );
+    }
+
+    #[test]
+    fn storage_level_delta_validator_rejects_coarser_base_storage() {
+        let mut section = oct_section([8, 4, 4]);
+        for z in 0..4usize {
+            for y in 0..4usize {
+                for x in 4..8usize {
+                    let index = x + y * 8 + z * 8 * 4;
+                    section.probes[index].density_level = Level::L2.to_u8();
+                }
+            }
+        }
+
+        let err = validate_storage_levels_against_delta(
+            section.grid_dimensions,
+            &section.probes,
+            &[Level::L0.to_u8(), Level::L1.to_u8()],
+            &[0, 0, 1],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("density_level 2 exceeds delta cell_level 1"),
+            "expected I2 ceiling error, got: {err}",
+        );
+
+        validate_storage_levels_against_delta(
+            section.grid_dimensions,
+            &section.probes,
+            &[Level::L0.to_u8(), Level::L2.to_u8()],
+            &[0, 0, 1],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1178,27 +1320,27 @@ mod tests {
         let mut bytes = section.to_bytes();
         // The payload remains a BC6H-sized blob, but the known RGBA16F tag has
         // a different exact length identity for the same valid-probe count.
-        bytes[96..100].copy_from_slice(&IRRADIANCE_FORMAT_RGBA16F.to_le_bytes());
+        bytes[76..80].copy_from_slice(&IRRADIANCE_FORMAT_RGBA16F.to_le_bytes());
 
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("compact_atlas_len") && msg.contains("metadata-valid probe"),
+            msg.contains("compact_atlas_len") && msg.contains("metadata-derived stored tile"),
             "expected compact-payload-length error, got: {msg}",
         );
     }
 
     #[test]
-    fn octahedral_rejects_compact_geometry_mismatched_to_valid_probe_count() {
+    fn octahedral_rejects_stored_geometry_mismatched_to_metadata() {
         let section = oct_section([2, 2, 1]);
         let mut bytes = section.to_bytes();
-        bytes[84..88].copy_from_slice(&1u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
 
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("compact_atlas geometry") && msg.contains("metadata-valid probe"),
-            "expected compact-geometry error, got: {msg}",
+            msg.contains("stored atlas geometry") && msg.contains("metadata-derived tile"),
+            "expected stored-geometry error, got: {msg}",
         );
     }
 
@@ -1210,7 +1352,7 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("atlas_tiles_per_row"),
+            msg.contains("stored atlas geometry"),
             "expected tiles-per-row error, got: {msg}",
         );
     }
@@ -1235,7 +1377,7 @@ mod tests {
     // Regression: v9 accepted oversized probe strides and silently skipped
     // bytes that have no defined record semantics.
     #[test]
-    fn octahedral_rejects_probe_stride_larger_than_v9_record() {
+    fn octahedral_rejects_probe_stride_larger_than_v10_record() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
         bytes[40..44].copy_from_slice(&(OCTAHEDRAL_PROBE_STRIDE + 4).to_le_bytes());
@@ -1243,8 +1385,8 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v9"),
-            "expected exact v9 probe-stride error, got: {msg}",
+            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v10"),
+            "expected exact v10 probe-stride error, got: {msg}",
         );
     }
 
@@ -1257,7 +1399,7 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("atlas_dimensions"),
+            msg.contains("stored atlas geometry"),
             "expected atlas-dimensions error, got: {msg}",
         );
     }
@@ -1310,14 +1452,14 @@ mod tests {
     fn octahedral_rejects_previous_section_version() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&7u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&9u32.to_le_bytes());
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 7")
-                && msg.contains("expected 9")
+            msg.contains("version 9")
+                && msg.contains("expected 10")
                 && msg.contains("recompile")
-                && msg.contains("v9 compact-atlas format"),
+                && msg.contains("v10 stored-atlas format"),
             "expected version-mismatch error, got: {msg}",
         );
     }

@@ -126,7 +126,7 @@ struct AnimationDescriptor {
 // Depth moments are consumed by billboard's depth-aware indirect sampler. The
 // path deliberately skips backface rejection because sprites have no stable
 // geometric surface normal.
-@group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;
+@group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (binding 15) on the SHARED `ShVolumeResources` bind
 // group layout — declared here at group 3, the same group billboard binds
@@ -576,9 +576,9 @@ fn sample_sh_direct(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     );
 }
 
-// Normal-free direct scatter follows the same depth-aware, validity-weighted
-// 8-corner convention as SH. Section 47 alpha is the binary id-34 probe
-// validity mirror; no sprite normal is ever supplied or reconstructed.
+// Normal-free direct scatter follows the same depth-aware, word-validity-weighted
+// 8-corner convention as SH. Its own alpha remains radiance payload; no sprite
+// normal is ever supplied or reconstructed.
 fn sample_billboard_direct_scatter(world_pos: vec3<f32>) -> vec3<f32> {
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
@@ -594,7 +594,7 @@ fn sample_billboard_direct_scatter(world_pos: vec3<f32>) -> vec3<f32> {
         let corner = sh_corner_offset(c);
         let idx = sh_corner_index(gi, corner);
         let sample = textureLoad(billboard_direct_scatter, idx, 0);
-        let is_valid = sample.a >= 0.5;
+        let is_valid = sh_probe_indirection(idx).valid;
         let weight = sh_probe_weight(
             idx,
             corner,

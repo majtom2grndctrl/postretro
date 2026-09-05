@@ -711,6 +711,35 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         },
     };
 
+    // Worldspawn `_sh_density_fidelity` is the base-SH classifier's relative
+    // error multiplier. It deliberately follows `_lightmap_density`'s optional
+    // authoring posture: invalid map input warns and falls back to the compiler
+    // default, while an explicit CLI override remains a hard argument error.
+    let sh_density_fidelity: Option<f32> = match get_property(
+        &geo_map,
+        &worldspawn_id,
+        "_sh_density_fidelity",
+    ) {
+        None => None,
+        Some(raw) => match raw.trim().parse::<f32>() {
+            Ok(parsed) if parsed.is_finite() && parsed > 0.0 => Some(parsed),
+            Ok(parsed) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_sh_density_fidelity` value `{parsed}` is non-finite or \
+                     <= 0; falling back to default"
+                );
+                None
+            }
+            Err(error) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_sh_density_fidelity` value `{raw}` is not a valid \
+                     float ({error}); falling back to default"
+                );
+                None
+            }
+        },
+    };
+
     // Production coarsening is default-on for direct SH deltas. Only the
     // canonical literal `"0"` opts a map into the byte-identical uniform-L0
     // path; absent and all other values leave the default enabled.
@@ -1244,6 +1273,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         fog_pixel_scale,
         initial_gravity,
         lightmap_density,
+        sh_density_fidelity,
         nav_params,
         entity_shadow_params,
     })
@@ -5895,6 +5925,29 @@ mod tests {
             map_data.lightmap_density, None,
             "non-float `_lightmap_density` must warn and fall back to default",
         );
+    }
+
+    #[test]
+    fn parse_map_file_reads_sh_density_fidelity_from_worldspawn() {
+        let map_data = parse_worldspawn_with_kvp("\"_sh_density_fidelity\" \"0.5\"");
+        assert_eq!(map_data.sh_density_fidelity, Some(0.5));
+    }
+
+    #[test]
+    fn parse_map_file_sh_density_fidelity_absent_or_invalid_uses_default_path() {
+        assert_eq!(
+            parse_worldspawn_with_kvp("").sh_density_fidelity,
+            None,
+            "absence must defer to the compiler default"
+        );
+        for value in ["0", "-1", "nan", "not-a-number"] {
+            let map_data =
+                parse_worldspawn_with_kvp(&format!("\"_sh_density_fidelity\" \"{value}\""));
+            assert_eq!(
+                map_data.sh_density_fidelity, None,
+                "{value} must be discarded"
+            );
+        }
     }
 
     #[test]

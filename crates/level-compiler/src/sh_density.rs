@@ -100,8 +100,10 @@ pub(crate) fn uniform_l0_levels(grid_dimensions: [u32; 3]) -> Result<Vec<Level>,
 
 /// Compute the most-coarse representable base level for every brick. A base
 /// stored slot must never be coarser than any present grid-matched delta entry:
-/// id 27/41/45 deltas remain independent valid-corner CSR payloads in kept-rank
-/// order; compose reconstructs each and writes/adds it at the base stored slot.
+/// id 27/41/45 deltas remain independent valid-only CSR payloads in kept-rank
+/// order. L1 keeps valid corners only; L0 can include valid interior probes, and
+/// L2's representative can be any valid probe. Compose reconstructs each and
+/// writes/adds it at the corresponding base stored slot.
 /// Edge bricks are always L0 because neither sparse stored set represents a
 /// partial 4×4×4 lattice.
 pub(crate) fn storage_level_ceilings(

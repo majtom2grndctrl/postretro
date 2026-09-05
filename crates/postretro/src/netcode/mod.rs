@@ -89,6 +89,7 @@ pub(crate) use host_presentation::{
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
 };
+pub(crate) use projectile_presentation::GameplayProjectilePresentationSource;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{

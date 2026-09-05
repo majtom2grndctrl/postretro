@@ -7430,9 +7430,11 @@ impl App {
                 allocator,
                 replicable,
                 replication,
-                spawn.projectile,
-                &spawn.descriptor_class,
-                *tick,
+                netcode::GameplayProjectilePresentationSource {
+                    projectile_id: spawn.projectile,
+                    descriptor_class: &spawn.descriptor_class,
+                    spawn_tick: *tick,
+                },
             );
         }
     }

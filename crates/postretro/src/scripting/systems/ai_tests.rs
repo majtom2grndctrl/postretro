@@ -1553,7 +1553,8 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
                 .expect("player carries entity state")
                 .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
         },
-    );
+    )
+    .events;
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT, ENEMY_ATTACK_EVENT]);
     assert_eq!(enemy_state_name(&registry, first), TEST_ATTACK_STATE);
     assert_eq!(enemy_state_name(&registry, second), TEST_ATTACK_STATE);
@@ -7657,7 +7658,8 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         Some(&CollisionWorld::new()),
         &descriptors,
         |_| {},
-    );
+    )
+    .events;
     assert!(
         events.is_empty(),
         "the resolved weapon range gates the fire"
@@ -7673,7 +7675,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         .set_component(pawn, pawn_transform)
         .expect("test pawn remains live");
 
-    let events = run_ai_tick_with_navigation_and_impact(
+    let result = run_ai_tick_with_navigation_and_impact(
         &mut registry,
         &mut runtime,
         0.016,
@@ -7682,7 +7684,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         &descriptors,
         |_| {},
     );
-    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(result.events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(
         player_hp(&registry, pawn),
         100.0,
@@ -7693,6 +7695,14 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
         panic!("the resolved projectile attack must materialize exactly one projectile");
     };
     let projectile = *projectile;
+    assert_eq!(
+        result.projectile_spawns,
+        vec![crate::sim::EnemyProjectilePresentationSpawn {
+            projectile,
+            descriptor_class: "enemy.rifle".to_string(),
+        }],
+        "the AI stage surfaces the gameplay id with its resolved weapon class for the host mirror"
+    );
     let component = registry
         .get_component::<postretro_entities::components::projectile::ProjectileComponent>(
             projectile,
@@ -7794,7 +7804,8 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
         Some(&CollisionWorld::new()),
         &descriptors,
         |_| {},
-    );
+    )
+    .events;
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     let projectiles = projectile_ids(&registry);
     let [projectile] = projectiles.as_slice() else {

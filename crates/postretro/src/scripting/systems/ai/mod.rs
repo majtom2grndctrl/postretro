@@ -45,7 +45,7 @@ mod ai_tests;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, find_path};
-use crate::sim::spawn_projectile;
+use crate::sim::{EnemyProjectilePresentationSpawn, spawn_projectile};
 use crate::weapon::ProjectileLaunch;
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
@@ -310,8 +310,23 @@ pub(super) struct EnemyOutcome {
 /// the apply pass, after the immutable evaluator has released its registry
 /// borrow.
 enum AttackOutcome {
-    Contact { damage: f32 },
-    Projectile { launch: ProjectileLaunch },
+    Contact {
+        damage: f32,
+    },
+    Projectile {
+        launch: ProjectileLaunch,
+        /// The resolved weapon descriptor is the presentation class. Enemy
+        /// entities never stand in for a materialized wieldable descriptor.
+        descriptor_class: String,
+    },
+}
+
+/// Host-only output from the AI stage. Event addresses retain their existing
+/// post-tick dispatch path, while standalone enemy projectile ids carry the
+/// resolved weapon class to the listen-host presentation mirror.
+pub(crate) struct AiTickResult {
+    pub(crate) events: Vec<Cow<'static, str>>,
+    pub(crate) projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -424,6 +439,7 @@ pub(crate) fn run_ai_tick_with_navigation(
         &[],
         |_| {},
     )
+    .events
 }
 
 pub(crate) fn run_ai_tick_with_navigation_and_impact(
@@ -434,7 +450,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     collision_world: Option<&CollisionWorld>,
     descriptors: &[EntityTypeDescriptor],
     mut on_impact: impl FnMut(&mut EntityRegistry),
-) -> Vec<Cow<'static, str>> {
+) -> AiTickResult {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
     // Reconcile the bound-guard side-table with the registry's live brains
@@ -883,6 +899,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                                 credit_source,
                                 descriptor: resolved.projectile().clone(),
                             },
+                            descriptor_class: resolved.canonical_weapon_name().to_string(),
                         },
                     ))
                 } else {
@@ -967,6 +984,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     // Pass 3 (apply): write back brains, drive steering, apply damage, and
     // switch animation. Mutable borrow only; no iterator held.
     let mut events: Vec<Cow<'static, str>> = Vec::new();
+    let mut projectile_spawns = Vec::new();
     for mut outcome in outcomes {
         // Persist the brain (state + timers + stride counter) BEFORE the damage
         // chokepoint below, so an impact policy, death effect, or `on_impact`
@@ -1102,11 +1120,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         on_impact(registry);
                     }
                 }
-                AttackOutcome::Projectile { launch } => {
+                AttackOutcome::Projectile {
+                    launch,
+                    descriptor_class,
+                } => {
                     // Enemies have no materialized weapon entity. The projectile
                     // impact path uses this id only as engine-internal damage
                     // context provenance, never as a weapon lookup.
-                    let _ = spawn_projectile(registry, outcome.id, outcome.id, launch, None);
+                    if let Some(projectile) =
+                        spawn_projectile(registry, outcome.id, outcome.id, launch, None)
+                    {
+                        projectile_spawns.push(EnemyProjectilePresentationSpawn {
+                            projectile,
+                            descriptor_class,
+                        });
+                    }
                 }
             }
             events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
@@ -1155,5 +1183,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         }
     }
 
-    events
+    AiTickResult {
+        events,
+        projectile_spawns,
+    }
 }

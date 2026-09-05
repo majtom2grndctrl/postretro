@@ -161,16 +161,69 @@ impl HostProjectilePresentations {
         projectile_id: EntityId,
         spawn_tick: u32,
     ) {
-        if !replication.has_registered_clients() {
-            return;
-        }
         let Some((transform, descriptor_class)) =
             local_projectile_presentation_source(registry, projectile_id)
         else {
             return;
         };
+        self.mirror_gameplay_projectile_from_source(
+            registry,
+            allocator,
+            replicable,
+            replication,
+            projectile_id,
+            transform,
+            &descriptor_class,
+            spawn_tick,
+        );
+    }
+
+    /// Mirror a host-authoritative gameplay projectile whose descriptor class is
+    /// supplied by the producer. Enemy projectiles deliberately use the resolved
+    /// weapon name here: their `owner_weapon` is the enemy damage-provenance id,
+    /// not a descriptor-backed wieldable entity.
+    pub(crate) fn mirror_gameplay_projectile_with_descriptor_class(
+        &mut self,
+        registry: &mut EntityRegistry,
+        allocator: &mut NetworkIdAllocator,
+        replicable: &mut ReplicableSet,
+        replication: &ServerReplication,
+        projectile_id: EntityId,
+        descriptor_class: &str,
+        spawn_tick: u32,
+    ) {
+        let Some(transform) = gameplay_projectile_transform(registry, projectile_id) else {
+            return;
+        };
+        self.mirror_gameplay_projectile_from_source(
+            registry,
+            allocator,
+            replicable,
+            replication,
+            projectile_id,
+            transform,
+            descriptor_class,
+            spawn_tick,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mirror_gameplay_projectile_from_source(
+        &mut self,
+        registry: &mut EntityRegistry,
+        allocator: &mut NetworkIdAllocator,
+        replicable: &mut ReplicableSet,
+        replication: &ServerReplication,
+        projectile_id: EntityId,
+        transform: Transform,
+        descriptor_class: &str,
+        spawn_tick: u32,
+    ) {
+        if !replication.has_registered_clients() || descriptor_class.is_empty() {
+            return;
+        }
         let Some(id) =
-            spawn_presentation_entity(registry, transform, &descriptor_class, None, spawn_tick)
+            spawn_presentation_entity(registry, transform, descriptor_class, None, spawn_tick)
         else {
             return;
         };
@@ -399,7 +452,7 @@ fn local_projectile_presentation_source(
     registry: &EntityRegistry,
     projectile_id: EntityId,
 ) -> Option<(Transform, String)> {
-    let transform = *registry.get_component::<Transform>(projectile_id).ok()?;
+    let transform = gameplay_projectile_transform(registry, projectile_id)?;
     let projectile = registry
         .get_component::<ProjectileComponent>(projectile_id)
         .ok()?;
@@ -409,6 +462,19 @@ fn local_projectile_presentation_source(
         .canonical_name
         .clone();
     (!descriptor_class.is_empty()).then_some((transform, descriptor_class))
+}
+
+fn gameplay_projectile_transform(
+    registry: &EntityRegistry,
+    projectile_id: EntityId,
+) -> Option<Transform> {
+    registry
+        .get_component::<ProjectileComponent>(projectile_id)
+        .ok()?;
+    registry
+        .get_component::<Transform>(projectile_id)
+        .ok()
+        .copied()
 }
 
 fn advance_straight_line_visual(
@@ -827,6 +893,135 @@ mod tests {
         assert!(
             (observer_transform.rotation * Vec3::Z).distance(direction) <= 1.0e-6,
             "the replicated visual keeps the model aligned with the firing aim"
+        );
+    }
+
+    #[test]
+    fn enemy_gameplay_mirror_uses_the_resolved_weapon_class_not_enemy_provenance() {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                enemy,
+                DescriptorProvenance {
+                    canonical_name: "limitator".to_string(),
+                    owned_components: BTreeSet::new(),
+                    map_overrides: BTreeSet::new(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .expect("enemy accepts its authored provenance");
+        let source = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                source,
+                ProjectileComponent {
+                    direction: Vec3::NEG_Z.to_array(),
+                    speed: 4.0,
+                    radius: 0.1,
+                    remaining_range: 12.0,
+                    remaining_lifetime: 1.0,
+                    damage: 10.0,
+                    credit_source: "enemy.rifle".to_string(),
+                    owner_pawn: enemy,
+                    // Enemy projectiles preserve the enemy id for common impact
+                    // damage provenance; it must never choose the visual class.
+                    owner_weapon: enemy,
+                    spawned: true,
+                    predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
+                    impact_light: None,
+                },
+            )
+            .expect("gameplay projectile accepts the common component");
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut replication = ServerReplication::new();
+        replication.register_client(OBSERVING_CLIENT);
+        let mut presentations = HostProjectilePresentations::default();
+
+        presentations.mirror_gameplay_projectile_with_descriptor_class(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &replication,
+            source,
+            "enemy_rifle",
+            0,
+        );
+
+        let [visual] = presentations
+            .flights
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .as_slice()
+        else {
+            panic!("enemy gameplay projectile creates one presentation mirror");
+        };
+        let host_provenance = registry
+            .get_component::<DescriptorProvenance>(*visual)
+            .expect("presentation carries a descriptor class");
+        assert_eq!(host_provenance.canonical_name, "enemy_rifle");
+        assert_ne!(host_provenance.canonical_name, "limitator");
+
+        let snapshots = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
+        replication.ingest_tick(snapshots);
+        let sequence = replication.begin_batch();
+        let snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 1, sequence)
+            .expect("connected observer receives the mirror baseline")
+            .validate()
+            .expect("the existing snapshot layout accepts the mirror");
+        assert!(snapshot.records.iter().any(|record| {
+            matches!(
+                record,
+                postretro_net::wire::EntityRecord::FullBaseline {
+                    entity_class: Some(entity_class),
+                    ..
+                } if entity_class == "enemy_rifle"
+            )
+        }));
+
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let outcome = observer_replication.apply_snapshot(&mut observer_registry, &snapshot);
+        let [remote] = outcome.remote_entities.as_slice() else {
+            panic!("the existing Transform plus entity-class baseline creates one remote");
+        };
+        let mut weapon_descriptor = projectile_visual_descriptor();
+        weapon_descriptor.canonical_name = Some("enemy_rifle".to_string());
+        assert!(
+            super::super::remote_materialize::materialize_armed_remote_projectile(
+                remote,
+                &[weapon_descriptor],
+                &mut observer_registry,
+                0,
+            )
+        );
+        assert_eq!(
+            observer_registry
+                .get_component::<SpriteVisual>(remote.entity_id)
+                .expect("client materializes the weapon projectile visual")
+                .sprite,
+            "sprites/projectiles/remote-bolt.png"
+        );
+        assert_eq!(
+            observer_registry
+                .get_component::<DescriptorProvenance>(remote.entity_id)
+                .expect("remote mirror retains its class")
+                .canonical_name,
+            "enemy_rifle"
         );
     }
 

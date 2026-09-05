@@ -531,16 +531,16 @@ fn fire_hitscan(
                     pellet_rng.next_f32(),
                     pellet_rng.next_f32(),
                 );
-                let impact = match resolve_nearest_hit(
+                let impact = match resolve_nearest_hit(NearestHitQuery {
                     owner_pawn,
                     origin,
-                    pellet_direction,
+                    direction: pellet_direction,
                     collision_world,
                     registry,
                     hit_zone_store,
                     anim_time,
                     range,
-                ) {
+                }) {
                     Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
                     Some(NearestHit::World(world)) => WeaponImpact {
                         point: world.point,
@@ -745,16 +745,16 @@ fn resolve_client_hitscan(
                 // Only an entity hit produces a local hit record; a nearer world
                 // hit (or no hit) yields none — the client owns no world-impact
                 // record.
-                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(
+                if let Some(NearestHit::Entity(entity)) = resolve_nearest_hit(NearestHitQuery {
                     owner_pawn,
                     origin,
-                    pellet_direction,
+                    direction: pellet_direction,
                     collision_world,
                     registry,
                     hit_zone_store,
                     anim_time,
                     range,
-                ) {
+                }) {
                     hits.push(local_hit_record(entity));
                 }
             }
@@ -786,16 +786,16 @@ fn resolve_projectile_launch_pose(
     };
 
     let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
-    let convergence = resolve_nearest_hit(
+    let convergence = resolve_nearest_hit(NearestHitQuery {
         owner_pawn,
-        aim_origin,
-        aim_direction,
+        origin: aim_origin,
+        direction: aim_direction,
         collision_world,
         registry,
         hit_zone_store,
         anim_time,
         range,
-    )
+    })
     .map_or(aim_origin + aim_direction * range, |hit| match hit {
         NearestHit::World(hit) => hit.point,
         NearestHit::Entity(hit) => hit.point,
@@ -863,16 +863,28 @@ enum NearestHit {
 /// wall is never reached because its toi exceeds the wall's. Both the sim fire
 /// path (`fire_hitscan`) and the client prediction path (`resolve_client_hitscan`)
 /// resolve through here so the tie-break lives in one place.
-fn resolve_nearest_hit(
+struct NearestHitQuery<'a> {
     owner_pawn: Option<EntityId>,
     origin: Vec3,
     direction: Vec3,
-    collision_world: &CollisionWorld,
-    registry: &EntityRegistry,
-    hit_zone_store: &HitZoneStore,
+    collision_world: &'a CollisionWorld,
+    registry: &'a EntityRegistry,
+    hit_zone_store: &'a HitZoneStore,
     anim_time: f64,
     range: f32,
-) -> Option<NearestHit> {
+}
+
+fn resolve_nearest_hit(query: NearestHitQuery<'_>) -> Option<NearestHit> {
+    let NearestHitQuery {
+        owner_pawn,
+        origin,
+        direction,
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        range,
+    } = query;
     // World geometry hit — parry returns the nearest triangle intersection.
     let world_hit = cast_ray(
         collision_world,

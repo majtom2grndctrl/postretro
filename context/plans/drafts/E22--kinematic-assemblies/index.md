@@ -121,3 +121,12 @@ Within each spec, its own phase-1 thin slice rule applies (adapter → canonical
 - **`_tb_layer` handling** — spec 2 (treat as group, or defer).
 - **Non-light member kinds** (a `prop_mesh`, an emitter carried by a mover) — the foundation generalizes to member entities, but only the dynamic light is a spec-1 consumer; others are additive, named when a consumer appears.
 - **A real shared-GUID linked-group fixture** must be authored for spec 3 — none exists in-repo.
+- **Branch-uniform brush provenance** — spec 2 wires `brush_assembly` from the `func_group`
+  flatten only, so a grouped `switch`'s brushes (routed through their own walk branch) gain no
+  provenance and a leak on them names no group. Deferred, not a permanent boundary: for an
+  engine other people author maps in, a leak diagnostic that names the group for some
+  brush-entering branches but not others is an inconsistency a third-party mapper feels. The
+  spec that next touches the `switch` branch, or the `geometry-integrity` diagnostic (another
+  consumer of the same `brush_assembly` map), should feed provenance from that branch too. The
+  seam is cheap because `brush_assembly` is keyed by `BrushId`, not position. `trigger_volume`
+  is excluded — its brushes never enter `brush_volumes`.

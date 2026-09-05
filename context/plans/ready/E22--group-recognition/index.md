@@ -49,11 +49,16 @@ flattening into worldspawn with geometry byte-identical to today.
   The switch clamp identifies occluders by plane, not brush; geometry-integrity is an
   unbuilt draft (`research.md §5`). The `brush_assembly` map is available to a later
   pass; wiring those sites is not this spec. Only brace-owned `func_group` brushes gain a
-  `brush_assembly` entry: a grouped brush *entity* (`switch`, `trigger_volume`) routes its
-  brushes to the world or trigger set through its own walk branch, not the `func_group`
-  flatten, so an open edge on a grouped switch names no group — accepted; provenance here
-  is a brace-owned-brush aid, and AC 6's sibling association is entity recognition, not
-  brush provenance.
+  `brush_assembly` entry: a grouped brush *entity* (`switch`) routes its brushes to the
+  world through its own walk branch, not the `func_group` flatten, so an open edge on a
+  grouped switch names no group today. This is **deferred, not a permanent boundary**:
+  provenance should eventually be uniform across every branch that contributes world
+  geometry — a leak diagnostic that names the group for a brace-owned brush but goes silent
+  for a grouped switch is an inconsistency a third-party mapper feels, so the branch that
+  next touches `switch` (or the `geometry-integrity` diagnostic, another consumer of the
+  same map) should feed `brush_assembly` from that branch too. `trigger_volume` is out of
+  this entirely — its brushes never enter `brush_volumes`, so they do not participate in
+  watertightness. AC 6's sibling association is entity recognition, not brush provenance.
 - **New PRL section or FGD KVP.** Assemblies are compile-time only; brush provenance is a
   diagnostic aid, not emitted to PRL; grouped carry reuses spec 1's `CarriedLightLink`
   already carried in `KinematicGeometry` v5. No wire or FGD surface changes.
@@ -199,7 +204,7 @@ compiler-level assertion, none needs manual verification.
 | P8 | Empty marker present alongside a brace-owned group | the empty assembly bears no members and is pruned by nobody; the real group's `brush_assembly` still resolves | unit |
 | P9 | Sibling `_tb_group "<id>"` referencing an absent marker | the sibling associates to no assembly; no panic; a member light is left at its authored origin | unit |
 | P10 | One marker owning both brace-owned brushes and back-referencing siblings | the brace brushes gain provenance and the siblings associate to the one assembly | unit |
-| P11 | Grouped `switch` (a sibling brush entity) with an open edge | the open edge names no group (`brush_assembly` is `None`) — the boundary §Scope states | unit |
+| P11 | Grouped `switch` (a sibling brush entity) with an open edge | the open edge names no group (`brush_assembly` is `None`) — documents the current, deferred branch-uniformity gap §Scope names, not a guaranteed behavior; a later spec that feeds `brush_assembly` from the `switch` branch flips this | unit |
 | P12 | Group with an eligible `light_dynamic` and more than one mover | a warning names the group and lists the movers; the light stays unbound at its origin | unit |
 | P13 | Marker with an empty `_tb_name` and a non-empty `_tb_id` | watertightness names the group by its `_tb_id`-derived provenance | unit |
 

@@ -170,8 +170,14 @@ M.referenceEnemyEntity = defineEntity({
           },
           {
             to = "startle",
-            when = brain.timeSinceDamageMs:le(STARTLE_MS)["and"](
-              brain.timeSinceDamageMs:le(STARTLE_MS),
+            when = brain.damageSourceKnown["and"](
+              brain.damageSourceKnown,
+              brain.timeSinceDamageMs:le(STARTLE_MS)
+            )["and"](
+              brain.damageSourceKnown["and"](
+                brain.damageSourceKnown,
+                brain.timeSinceDamageMs:le(STARTLE_MS)
+              ),
               brain.damageBearing:gt(HALF_PI)["or"](
                 brain.damageBearing:gt(HALF_PI),
                 brain.damageBearing:lt(-HALF_PI)
@@ -190,10 +196,16 @@ M.referenceEnemyEntity = defineEntity({
           },
           {
             to = "investigate",
-            -- The distance sentinel is also `gt(ARRIVE)`, so recency proves
-            -- a damage seed actually supplied this memory.
-            when = brain.timeSinceDamageMs:le(ALERT_MS)["and"](
-              brain.timeSinceDamageMs:le(ALERT_MS),
+            -- Generic damage recency also resets for contextless reactions;
+            -- provenance proves this hit supplied the remembered position.
+            when = brain.damageSourceKnown["and"](
+              brain.damageSourceKnown,
+              brain.timeSinceDamageMs:le(ALERT_MS)
+            )["and"](
+              brain.damageSourceKnown["and"](
+                brain.damageSourceKnown,
+                brain.timeSinceDamageMs:le(ALERT_MS)
+              ),
               brain.distanceToLastKnown:gt(ARRIVE)
             ),
           },

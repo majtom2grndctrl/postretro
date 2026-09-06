@@ -472,6 +472,7 @@ pub fn apply_damage_with_context(
         // Bearing is meaningful only for this hit. A contextless hit must not
         // make an older directional stimulus look recent again.
         brain.damage_bearing = 0.0;
+        brain.damage_source_known = attacker_transform.is_some();
         if let Some(attacker_transform) = attacker_transform {
             brain.last_known_target_pos = Some(attacker_transform.position);
             if let Some(damaged_transform) = damaged_transform {

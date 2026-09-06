@@ -156,6 +156,40 @@ fn both_runtimes_reject_actions_on_move_to_last_known() {
     }
 }
 
+// Regression: independently valid move and offense selectors could combine a
+// position goal with an attack inside one composite activity.
+#[test]
+fn both_runtimes_reject_composite_position_goals_with_offense_actions() {
+    for (motion, js_patrol, lua_patrol) in [
+        ("moveToAnchor", "", ""),
+        ("moveToLastKnown", "", ""),
+        (
+            "patrol",
+            ", patrol: { points: [[0, 0]], mode: \"loop\" }",
+            ", patrol = { points = { { 0, 0 } }, mode = \"loop\" }",
+        ),
+    ] {
+        let js = js_error(&js_behavior(&format!(
+            r#", initial: "engage", activities: {{ engage: {{ animation: "walk", layers: {{ move: ["{motion}"], offense: [{{ action: {{ attack: "slam" }} }}] }} }} }}, transitions: {{}}{js_patrol}"#,
+        )));
+        let lua = lua_error(&lua_behavior(&format!(
+            r#", initial = "engage", activities = {{ engage = {{ animation = "walk", layers = {{ move = {{ "{motion}" }}, offense = {{ {{ action = {{ attack = "slam" }} }} }} }} }} }}, transitions = {{}}{lua_patrol}"#,
+        )));
+        for error in [&js, &lua] {
+            assert!(
+                error.contains("components.behavior.activities.engage.layers.move[0]"),
+                "{motion}: {error}"
+            );
+            assert!(
+                error.contains("components.behavior.activities.engage.layers.offense[0].action"),
+                "{motion}: {error}"
+            );
+            assert!(error.contains("position-goal"), "{motion}: {error}");
+            assert!(error.contains("non-engaged"), "{motion}: {error}");
+        }
+    }
+}
+
 #[test]
 fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
     let js = js_error(&js_behavior(

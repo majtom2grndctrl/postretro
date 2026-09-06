@@ -399,6 +399,15 @@ fn validate_activity(
                 patrol,
             )?;
         }
+        if let Some(position_goal_path) = first_position_goal_selector_path(activity, path)
+            && let Some(action_path) = first_resolvable_action_path(activity, path)
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{action_path}` must be omitted because `{position_goal_path}` is a position-goal verb; position-goal activities are non-engaged"
+                ),
+            });
+        }
         return Ok(());
     }
 
@@ -409,11 +418,7 @@ fn validate_activity(
     }
     if let Some(motion) = activity.motion {
         validate_motion(motion, &format!("{path}.motion"), patrol)?;
-        if matches!(
-            motion,
-            MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol
-        ) && activity.action.is_some()
-        {
+        if motion.is_position_goal() && activity.action.is_some() {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
                     "`{path}.action` must be omitted when `{path}.motion` is a position-goal verb; position-goal activities are non-engaged"
@@ -425,6 +430,61 @@ fn validate_activity(
         validate_action(action, &format!("{path}.action"), attacks)?;
     }
     Ok(())
+}
+
+fn first_position_goal_selector_path(
+    activity: &BehaviorActivityDescriptor,
+    path: &str,
+) -> Option<String> {
+    let BehaviorLayerDescriptor::Selector(entries) = activity.layers.get("move")? else {
+        return None;
+    };
+    entries
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| match entry {
+            BehaviorSelectorEntry::Motion(motion) if motion.is_position_goal() => {
+                Some(format!("{path}.layers.move[{index}]"))
+            }
+            BehaviorSelectorEntry::Row(row)
+                if row.motion.is_some_and(MotionVerb::is_position_goal) =>
+            {
+                Some(format!("{path}.layers.move[{index}].motion"))
+            }
+            BehaviorSelectorEntry::Motion(_) | BehaviorSelectorEntry::Row(_) => None,
+        })
+}
+
+fn first_resolvable_action_path(
+    activity: &BehaviorActivityDescriptor,
+    path: &str,
+) -> Option<String> {
+    if activity.action.is_some() {
+        return Some(format!("{path}.action"));
+    }
+
+    if let Some(BehaviorLayerDescriptor::Selector(entries)) = activity.layers.get("offense")
+        && let Some(index) = entries.iter().position(
+            |entry| matches!(entry, BehaviorSelectorEntry::Row(row) if row.action.is_some()),
+        )
+    {
+        return Some(format!("{path}.layers.offense[{index}].action"));
+    }
+
+    activity.layers.iter().find_map(|(name, layer)| {
+        let BehaviorLayerDescriptor::Graph(envelope) = layer else {
+            return None;
+        };
+        envelope
+            .activities
+            .iter()
+            .find_map(|(activity_name, child)| {
+                first_resolvable_action_path(
+                    child,
+                    &format!("{path}.layers.{name}.activities.{activity_name}"),
+                )
+            })
+    })
 }
 
 fn validate_layer(

@@ -84,12 +84,18 @@ export interface BrainInputs {
   readonly timeSinceTargetVisible: RuntimeGuardNode;
   /** XZ distance to the remembered last-known target position, or `1e9` with
    * no memory. A bare `gt`/`ge` reads true without memory, so pair an
-   * investigate-distance guard with a recent sight or damage fact (number). */
+   * investigate-distance guard with recent sight, or with both recent damage
+   * and `damageSourceKnown` (number). */
   readonly distanceToLastKnown: RuntimeGuardNode;
   /** Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the
    * attacker that landed its most recent damage. `0` is ahead and the two
-   * sides have opposite signs; gate it on recent damage (number). */
+   * sides have opposite signs; gate it on recent damage and
+   * `damageSourceKnown` (number). */
   readonly damageBearing: RuntimeGuardNode;
+  /** `true` when the most recent damaging hit supplied an attacker world
+   * position. Pair this with damage recency before treating shared memory or
+   * bearing as belonging to that hit (boolean). */
+  readonly damageSourceKnown: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -125,6 +131,7 @@ export const brain: BrainInputs = Object.freeze({
   timeSinceTargetVisible: input("@brain.timeSinceTargetVisible"),
   distanceToLastKnown: input("@brain.distanceToLastKnown"),
   damageBearing: input("@brain.damageBearing"),
+  damageSourceKnown: input("@brain.damageSourceKnown"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

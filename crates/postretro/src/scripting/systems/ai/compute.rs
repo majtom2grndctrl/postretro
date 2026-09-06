@@ -327,6 +327,7 @@ pub(super) fn evaluate(
                     time_since_target_visible: brain.time_since_target_visible,
                     distance_to_last_known,
                     damage_bearing: brain.damage_bearing,
+                    damage_source_known: brain.damage_source_known,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -355,6 +356,7 @@ pub(super) fn evaluate(
                     time_since_target_visible: brain.time_since_target_visible,
                     distance_to_last_known,
                     damage_bearing: brain.damage_bearing,
+                    damage_source_known: brain.damage_source_known,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -399,7 +401,8 @@ pub(super) fn evaluate(
         // selector currently resolves to `hold` and the committed leaf has no
         // action. A transition to a genuinely idle or position-goal path still
         // clears it here.
-        let retains_target = target.is_some() && engages_active(&brain);
+        let resolved_position_goal = motion.is_some_and(MotionVerb::is_position_goal);
+        let retains_target = target.is_some() && !resolved_position_goal && engages_active(&brain);
         brain.acquired_target = match target {
             Some(target) if retains_target => Some(target.entity),
             _ => None,
@@ -408,6 +411,7 @@ pub(super) fn evaluate(
         // Resolved engagement remains the facing policy for ordinary chase and
         // action paths. Committed actionless aim is handled separately below.
         let engaged = target.is_some()
+            && !resolved_position_goal
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);

@@ -3,11 +3,12 @@
 ## Goal
 
 Enemies act on what they remember, not only on what they currently see. A hit
-they can't source, and a target that slips out of sight, both leave a
-**last-known position** the enemy investigates. New authored brain facts —
-recency of damage, recency of sight, distance to the remembered spot, and the
-bearing a hit came from — let a behavior graph decide the reaction (engage,
-search, startle, flee), while a new `moveToLastKnown` motion verb steers there.
+from an attacker they cannot see, and a target that slips out of sight, both
+leave a **last-known position** the enemy investigates. New authored brain facts —
+recency of damage, recency of sight, distance to the remembered spot, the
+bearing a hit came from, and whether the latest hit supplied a spatial source
+— let a behavior graph decide the reaction (engage, search, startle, flee),
+while a new `moveToLastKnown` motion verb steers there.
 Fixes the "I shot him and he ignored me" gap without baking any aggression
 policy into the engine.
 
@@ -15,8 +16,9 @@ policy into the engine.
 
 ### In scope
 
-- Four appended `@brain.*` facts (read-only guard inputs): `timeSinceDamageMs`,
-  `timeSinceTargetVisible`, `distanceToLastKnown`, `damageBearing`.
+- Five appended `@brain.*` facts (read-only guard inputs): `timeSinceDamageMs`,
+  `timeSinceTargetVisible`, `distanceToLastKnown`, `damageBearing`, and
+  `damageSourceKnown`.
 - A `last-known target position` memory on `BrainComponent`, written from two
   sources: the live position of a **visible target** each tick, and the
   **attacker's position** at the moment of a hit.
@@ -24,11 +26,15 @@ policy into the engine.
   tick, reset at their trigger, sentinel ("never") until first triggered.
 - A `damageBearing` snapshot: the enemy-relative yaw a hit came from, captured
   at the damage chokepoint.
+- A latest-hit spatial-provenance bit: every damaging hit overwrites it, and it
+  is true only when that hit supplied an attacker world position. Contextless
+  damage still resets generic damage recency without making stale shared memory
+  or bearing spatially meaningful.
 - One new closed-vocabulary motion verb `moveToLastKnown`: a **non-engaged
   position goal** (holds no target, takes no combat slot, declares no action)
   that steers to the remembered spot and stands on arrival, holding when there
   is no memory.
-- SDK surface for all five additions (typedefs, committed fixtures, primitive
+- SDK surface for all six additions (typedefs, committed fixtures, primitive
   docs), in both QuickJS and Luau.
 - The reference enemy graph gains an `investigate` state, damage-driven and
   lost-sight transitions, and a directional startle, with its Luau twin kept
@@ -122,10 +128,10 @@ a graph reads them in different guards.
 
 ## Acceptance criteria
 
-- [ ] The four facts parse and validate identically in QuickJS and Luau; a guard
+- [ ] The five facts parse and validate identically in QuickJS and Luau; a guard
   referencing each binds without error, and an unknown `@brain.*` name still
   produces a pathed parse error in both runtimes. SDK typedef drift tests pass
-  with all four facts and the `moveToLastKnown` verb present in both committed
+  with all five facts and the `moveToLastKnown` verb present in both committed
   fixtures.
 - [ ] Archetypes that use none of the new facts or the new verb behave
   bit-for-bit as today: the full existing AI test suite passes unchanged (confirm
@@ -155,7 +161,13 @@ a graph reads them in different guards.
 - [ ] `damageBearing` is captured relative to the enemy's facing at hit time:
   a hit from dead ahead reads ≈ 0, from directly behind reads ≈ ±π, and hits
   from the enemy's two sides read opposite signs. The value is meaningful only
-  while `timeSinceDamageMs` is recent; the author gates it on recency.
+  while `timeSinceDamageMs` is recent and `damageSourceKnown` is true; the
+  author gates it on both. `damageSourceKnown` describes the latest damaging
+  hit, not historical memory: a hit with an attacker `Transform` reads true; a
+  contextless hit or an attacker without `Transform` reads false while still
+  resetting `timeSinceDamageMs`. The reference enemy conjoins it with damage
+  recency, so anonymous damage cannot investigate unrelated sight memory or
+  reuse bearing.
 - [ ] `moveToLastKnown` is non-engaged: a graph that declares an `action` on a
   `moveToLastKnown` activity is a parse error in both runtimes; an enemy in a
   `moveToLastKnown` activity retains no target and is assigned no combat slot;
@@ -290,10 +302,12 @@ union in the committed typedefs and fixtures. Consumes Task 2a's
 no target and gets no combat slot; steering resolves to `MoveTo` then `Clear` on
 arrival, and `Clear` (hold) with no memory.
 
-### Task 3: `damageBearing` fact
+### Task 3: `damageBearing` and damage-source facts
 
-Add `damage_bearing: f32` (serde default `0.0`) to `BrainComponent`, initialized
-in `from_graph`, with round-trip coverage. In `apply_damage_with_context`,
+Add `damage_bearing: f32` (serde default `0.0`) and
+`damage_source_known: bool` (serde default `false`) to `BrainComponent`,
+initialized in `from_graph`, with round-trip coverage. In
+`apply_damage_with_context`,
 when the damaged entity carries a `BrainComponent` and `context.attacker` has a
 `Transform`, compute the enemy-relative yaw from the enemy's facing
 (`Transform.rotation` on the damaged entity — the AI apply pass writes the
@@ -304,9 +318,13 @@ attacker along the enemy's `Transform.rotation * +Z`; recompute the yaw inline i
 `health.rs` — `facing.rs`'s helpers are `pub(super)` in the `postretro` binary
 crate and are not importable from `postretro-entities`. Convention:
 signed radians in `[-π, π]`, `0` = attacker dead ahead, `±π` = directly behind,
-sign distinguishes the two sides. Append `@brain.damageBearing` to
-`BRAIN_INPUTS` (`Number`) with const, validation twin, slot-index test,
-`BrainFacts` field, `refresh` projection, SDK typedef, committed fixtures. Test
+sign distinguishes the two sides. Every successful hit resets
+`damage_source_known` from whether that hit's attacker has a `Transform`; this
+keeps generic damage recency independent while preventing it from borrowing
+older shared memory or bearing. Append `@brain.damageBearing` (`Number`) and
+`@brain.damageSourceKnown` (`Bool`) to `BRAIN_INPUTS`, with consts, validation
+twin entries, slot-index tests, `BrainFacts` fields, `refresh` projections, SDK
+typedefs, and committed fixtures. Test
 by pinning observable geometry: hits from ahead/behind/left/right yield
 `≈0` / `≈±π` / opposite-signed values — pinning the convention without asserting
 a raw quaternion result.
@@ -317,9 +335,10 @@ Rewrite the reference enemy graph (`content/dev/scripts/reference-enemy.ts` and
 its byte-equal `reference-enemy.luau`) to exercise the whole feature: an
 `investigate` activity (`animation: "walk"`, `motion: "moveToLastKnown"`); a
 `patrol → investigate` transition on recent damage with an unreached memory
-(`timeSinceDamageMs.le(ALERT_MS).and(distanceToLastKnown.gt(ARRIVE))` — the
-recency conjunction is load-bearing; `distanceToLastKnown.gt` reads true with no
-memory, so it gates on an actually-seeded spot, per AC 3); an
+(`damageSourceKnown.and(timeSinceDamageMs.le(ALERT_MS)).and(distanceToLastKnown.gt(ARRIVE))`
+— the recency conjunction is load-bearing; `distanceToLastKnown.gt` reads true
+with no memory, and `damageSourceKnown` proves the latest hit actually seeded a spot);
+an
 `engage → investigate` transition on lost sight
 (`timeSinceTargetVisible.ge(SEARCH_AFTER_MS)`); `investigate → engage` on
 re-sight (`targetVisible`) and `investigate → patrol` on arrival
@@ -356,13 +375,15 @@ facts and the verb.
 | sight-recency fact | `BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT` | `"@brain.timeSinceTargetVisible"` | `brain.timeSinceTargetVisible` | n/a |
 | last-known distance fact | `BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT` | `"@brain.distanceToLastKnown"` | `brain.distanceToLastKnown` | n/a |
 | damage bearing fact | `BRAIN_DAMAGE_BEARING_INPUT` | `"@brain.damageBearing"` | `brain.damageBearing` | n/a |
+| latest-hit spatial provenance | `BRAIN_DAMAGE_SOURCE_KNOWN_INPUT` | `"@brain.damageSourceKnown"` | `brain.damageSourceKnown` | n/a |
 | investigate motion verb | `MotionVerb::MoveToLastKnown` | `"moveToLastKnown"` | `"moveToLastKnown"` | n/a |
 | last-known memory (brain) | `BrainComponent::last_known_target_pos: Option<Vec3>` | serde default `None` | — | n/a |
 | damage-recency timer (brain) | `BrainComponent::time_since_damage_ms: f32` | serde default = never-sentinel | — | n/a |
 | sight-recency timer (brain) | `BrainComponent::time_since_target_visible: f32` | serde default = never-sentinel | — | n/a |
 | damage bearing (brain) | `BrainComponent::damage_bearing: f32` | serde default `0.0` | — | n/a |
+| latest-hit spatial provenance (brain) | `BrainComponent::damage_source_known: bool` | serde default `false` | — | n/a |
 
-Fact names extend `BRAIN_INPUTS` at the tail in task order (slots 15–18). The
+Fact names extend `BRAIN_INPUTS` at the tail in task order (slots 15–19). The
 `Number` sentinel for the two timers and for `distanceToLastKnown` reuses the
 large-value convention of the existing `BRAIN_NO_TARGET_DISTANCE`.
 `distanceToLastKnown` therefore inherits that sentinel's `gt`/`ge` inversion trap
@@ -370,8 +391,11 @@ large-value convention of the existing `BRAIN_NO_TARGET_DISTANCE`.
 `gt(distanceToLastKnown, X)` reads true — it doubles as the no-memory test — so an
 "unreached spot" guard must conjoin a recency fact (`timeSinceDamageMs` /
 `timeSinceTargetVisible`) that is recent only when the memory was seeded, as the
-reference graph's `patrol → investigate` guard does. A recency reset with no
-seeded attacker (the `applyDamage` script path) does not create a spot.
+reference graph's `patrol → investigate` guard does. Damage-driven consumers
+also conjoin `damageSourceKnown`, because `timeSinceDamageMs` resets even when
+the latest hit has no attacker position. A recency reset with no seeded
+attacker (the `applyDamage` script path) does not create a spot or borrow older
+sight memory.
 
 ## Invariants
 
@@ -382,6 +406,7 @@ seeded attacker (the `applyDamage` script path) does not create a spot.
 | Timers: `never`-sentinel until first trigger, `0` at trigger, monotonic aging clamped at the sentinel | Task 1 (damage), Task 2a (sight); reset at chokepoint / visible-tick, aged in compute pass | spawn default must be the large-value `BRAIN_NO_TARGET_DISTANCE` sentinel (`foundation/brain.rs`), not `0.0`; catch-up ticks age per tick; long sessions must not overflow | AC 3, 4, 5 |
 | `moveToLastKnown` is non-engaged — no action, no target retention, no combat slot | Task 2b adds it to all four position-goal gates | a missed gate lets it declare an action or hold a target/slot | AC 8; validation-rejects-action test |
 | Last-known memory is dual-sourced; the compute-pass visible-cache is authoritative each tick a target is visible, the damage-seed applies only when unseen | Task 2a (visible-cache), Task 1/2a (damage-seed), Task 3 (bearing rides the same seed site) | out-of-tick damage (player weapon stage 8; frame-end `applyDamage` drain) is the only seed path that reaches a brain entity in v1 — enemies target only `PlayerMovement` holders (`targeting.rs` `target_offers`), so in-tick enemy melee never damages a brain entity and the apply-pass snapshot write-back poses no live race; a future spec allowing enemy-damaged brain entities must fold the chokepoint-owned fields past that write-back | AC 5, 6; Orderings table (`research.md`) |
+| Damage recency and source provenance describe the same latest hit | Task 3 overwrites provenance on every successful hit while every path resets recency | a contextless hit must clear provenance without erasing shared sight memory; otherwise its fresh recency can borrow an unrelated position or bearing | chokepoint regression tests; reference-graph transition tests |
 | The floor never makes an attacker a selectable target it could not otherwise perceive | whole spec (no `select_target`/`visible` change) | a future threat-ranking spec owns any widening | AC out-of-scope; no code path touches `select_target` |
 
 ## Script syntax examples
@@ -418,14 +443,16 @@ transitions: {
     {
       to: "startle",
       when: brain.timeSinceDamageMs.le(200).and(
-        brain.damageBearing.gt(HALF_PI).or(brain.damageBearing.lt(-HALF_PI)),
+        brain.damageSourceKnown.and(
+          brain.damageBearing.gt(HALF_PI).or(brain.damageBearing.lt(-HALF_PI)),
+        ),
       ),
     },
   ],
   patrol: [
     { to: "engage", when: brain.acquisitionDue.and(brain.targetDistance.le(DETECTION_RANGE)) },
     // shot but can't see the shooter → investigate where it came from
-    { to: "investigate", when: brain.timeSinceDamageMs.le(ALERT_MS).and(brain.distanceToLastKnown.gt(ARRIVE)) },
+    { to: "investigate", when: brain.damageSourceKnown.and(brain.timeSinceDamageMs.le(ALERT_MS)).and(brain.distanceToLastKnown.gt(ARRIVE)) },
   ],
   engage: [
     { to: "investigate", when: brain.timeSinceTargetVisible.ge(SEARCH_AFTER_MS) },

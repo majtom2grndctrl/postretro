@@ -44,9 +44,12 @@ local BrainSdk = {}
 --- before the first sighting, then zero while a selected target is visible and
 --- monotonically aged back to that sentinel), and `distanceToLastKnown`
 --- (number; XZ distance to the remembered spot or `1e9` without memory — pair
---- bare `gt`/`ge` guards with a recent sight or damage fact), and
+--- bare `gt`/`ge` guards with recent sight, or with both recent damage and
+--- `damageSourceKnown`), and
 --- `damageBearing` (number; signed XZ yaw from visual `+Z` toward the most
---- recent damage attacker, zero ahead and opposite signs on each side).
+--- recent damage attacker, zero ahead and opposite signs on each side), and
+--- `damageSourceKnown` (boolean; true only when the latest damaging hit
+--- supplied an attacker world position; pair it with damage recency).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -67,6 +70,7 @@ BrainSdk.brain = table.freeze({
   timeSinceTargetVisible = input("@brain.timeSinceTargetVisible"),
   distanceToLastKnown = input("@brain.distanceToLastKnown"),
   damageBearing = input("@brain.damageBearing"),
+  damageSourceKnown = input("@brain.damageSourceKnown"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

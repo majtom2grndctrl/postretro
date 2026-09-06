@@ -2813,11 +2813,14 @@ impl ApplicationHandler for App {
                                 self.client_declare_switch(slot);
                             }
                             self.client_predict_loaded_movers_tick(tick_dt);
-                            if let Some(client_tick) =
+                            if let Some(prediction_tick) =
                                 self.client_predict_movement_tick(&command, tick_dt)
                             {
+                                prediction_tick
+                                    .movement_events
+                                    .append_named_events(&mut pending_movement_events);
                                 sent_client_fire_commands.push(ClientFrameFireCommand {
-                                    client_tick,
+                                    client_tick: prediction_tick.client_tick,
                                     button: command.fire_button,
                                     elapsed_ms: (tick_index + 1) as f32 * tick_dt * 1000.0,
                                 });
@@ -7802,15 +7805,16 @@ impl App {
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
     /// to `crate::netcode`: sends one `ClientMessage::Input` for `command`, then
     /// advances the local pawn through the movement-only replay helper and writes the
-    /// predicted state back to the registry. Returns the sent `client_tick`; `None`
-    /// means this process was not a connected client at the call site. The
+    /// predicted state back to the registry. Returns the sent `client_tick` and its
+    /// forward-predicted movement events; `None` means this process was not a
+    /// connected client at the call site. The
     /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
     /// AI / weapons / death stay host-authoritative and arrive via snapshots.
     fn client_predict_movement_tick(
         &mut self,
         command: &sim::SimCommand,
         tick_dt: f32,
-    ) -> Option<u32> {
+    ) -> Option<netcode::ClientPredictionTickResult> {
         let aim_pitch = self.camera.pitch;
         let script_ctx = self
             .session

@@ -19,7 +19,7 @@ use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::dispatch_state_intent;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{MovementState, MovementStateKind, PlayerMovementComponent};
 
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, SLIDE_MAX_MS, dash_intent};
@@ -64,12 +64,60 @@ pub(crate) struct MovementInput {
     pub(crate) drop_pressed: bool,
 }
 
+/// One state edge applied by a movement tick. The endpoint types intentionally
+/// exclude live state payload so this list never enters component serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MovementStateEdge {
+    pub(crate) from: MovementStateKind,
+    pub(crate) to: MovementStateKind,
+}
+
 /// Events the movement tick emits for the same-frame dispatch layer to fire
 /// into the reaction registry.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MovementEvents {
     pub(crate) landed: bool,
     pub(crate) jumped: bool,
+    pub(crate) state_edges: Vec<MovementStateEdge>,
+}
+
+impl MovementEvents {
+    /// Append all script dispatch addresses in tick order. Landing and jump keep
+    /// their shipped ordering; each state edge emits its exit before its entry.
+    pub(crate) fn append_named_events(&self, addresses: &mut Vec<&'static str>) {
+        if self.landed {
+            addresses.push("landed");
+        }
+        if self.jumped {
+            addresses.push("jumped");
+        }
+        for edge in &self.state_edges {
+            if let Some(address) = state_exit_address(edge.from) {
+                addresses.push(address);
+            }
+            if let Some(address) = state_entry_address(edge.to) {
+                addresses.push(address);
+            }
+        }
+    }
+}
+
+const fn state_entry_address(state: MovementStateKind) -> Option<&'static str> {
+    match state {
+        MovementStateKind::Normal => None,
+        MovementStateKind::Dash => Some("dash_started"),
+        MovementStateKind::Crouch => Some("crouch_started"),
+        MovementStateKind::Slide => Some("slide_started"),
+    }
+}
+
+const fn state_exit_address(state: MovementStateKind) -> Option<&'static str> {
+    match state {
+        MovementStateKind::Normal => None,
+        MovementStateKind::Dash => Some("dash_ended"),
+        MovementStateKind::Crouch => Some("crouch_ended"),
+        MovementStateKind::Slide => Some("slide_ended"),
+    }
 }
 
 /// Contact/landing results returned by `integrate_collision` (the shared
@@ -155,6 +203,10 @@ pub(crate) fn tick(
     // transition to apply after the substrate resolves collision. The dispatch
     // resolves the component-vs-active-state borrow once and owns the per-state
     // live data, so a new state plugs in without widening this call.
+    // Dispatch temporarily leaves a `Normal` placeholder in the component while
+    // it borrows a state's live payload. Snapshot the real outgoing vocabulary
+    // member first so the tick owns the single authoritative edge record.
+    let state_before_dispatch = component.movement_state.kind();
     let transition = dispatch_state_intent(
         component,
         input,
@@ -222,7 +274,12 @@ pub(crate) fn tick(
     // grounded flag the intent used — the one-tick staleness is consistent with
     // how jump/air-jump already gate (no fresh ground probe).
     if let Some(next_state) = transition {
+        let state_after_dispatch = next_state.kind();
         component.movement_state = next_state;
+        events.state_edges.push(MovementStateEdge {
+            from: state_before_dispatch,
+            to: state_after_dispatch,
+        });
     }
 
     // Decrement the dash cooldown UNCONDITIONALLY each tick, outside the
@@ -5326,7 +5383,7 @@ mod tests {
 
         let bottom_before = capsule_bottom(&comp, pos);
         comp.velocity = Vec3::new(12.0, 0.0, 0.0);
-        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
         let MovementState::Sliding {
             boost, eye_current, ..
         } = comp.movement_state
@@ -5348,6 +5405,19 @@ mod tests {
             approx_eq(capsule_bottom(&comp, pos), bottom_before, 0.02),
             "slide entry must keep feet planted"
         );
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Normal,
+                to: MovementStateKind::Slide,
+            }],
+            "the tick records the one Normal -> Sliding edge it applied"
+        );
+        let sustained_events = run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(
+            sustained_events.state_edges.is_empty(),
+            "a sustained slide does not repeat its entry edge"
+        );
 
         let (mut below, mut below_pos) = settle_player(&desc);
         run_ticks(&mut below, &world, &mut below_pos, 8, &idle_input());
@@ -5356,6 +5426,36 @@ mod tests {
         assert!(
             is_crouching(&below),
             "below threshold falls through to crouching"
+        );
+    }
+
+    #[test]
+    fn movement_edge_addresses_emit_exit_before_entry() {
+        let events = MovementEvents {
+            landed: true,
+            jumped: true,
+            state_edges: vec![
+                MovementStateEdge {
+                    from: MovementStateKind::Slide,
+                    to: MovementStateKind::Crouch,
+                },
+                MovementStateEdge {
+                    from: MovementStateKind::Crouch,
+                    to: MovementStateKind::Normal,
+                },
+            ],
+        };
+        let mut addresses = Vec::new();
+        events.append_named_events(&mut addresses);
+        assert_eq!(
+            addresses,
+            vec![
+                "landed",
+                "jumped",
+                "slide_ended",
+                "crouch_started",
+                "crouch_ended",
+            ]
         );
     }
 
@@ -5382,6 +5482,14 @@ mod tests {
         let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump);
         assert!(events.jumped, "slide jump must never be swallowed");
         assert!(matches!(comp.movement_state, MovementState::Normal));
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Normal,
+            }],
+            "a clear-headroom slide jump records its Sliding -> Normal edge"
+        );
         assert!(
             horiz_speed(&comp) >= banked_speed - 0.2,
             "slide jump KEEP_ALL must retain banked horizontal speed"
@@ -5413,6 +5521,14 @@ mod tests {
         assert!(
             is_crouching(&comp),
             "blocked headroom keeps the jumping slide in the crouched state"
+        );
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Crouch,
+            }],
+            "a blocked-headroom slide jump records its Sliding -> Crouching edge"
         );
         assert!(
             approx_eq(
@@ -5616,7 +5732,7 @@ mod tests {
             0.35,
         );
 
-        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
 
         assert!(
             is_crouching(&comp),
@@ -5626,6 +5742,14 @@ mod tests {
             horiz_speed(&comp) <= desc.ground.speed.crouch + VEL_EPS,
             "natural exit should occur at the crouch-speed threshold, got {}",
             horiz_speed(&comp)
+        );
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Crouch,
+            }],
+            "one natural exit records the applied Sliding -> Crouching edge"
         );
     }
 
@@ -5658,10 +5782,18 @@ mod tests {
             "precondition: first tick must remain below the hard maximum"
         );
 
-        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
         assert!(
             is_crouching(&comp),
             "held crouch must remain Sliding until SLIDE_MAX_MS, then exit to Crouching"
+        );
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Crouch,
+            }],
+            "the maximum-duration guard records its Sliding -> Crouching edge"
         );
     }
 
@@ -5693,10 +5825,18 @@ mod tests {
         };
         assert!(approx_eq(comp.capsule.eye_height, eye_at_ledge, POS_EPS));
 
-        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        let events = run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
         let MovementState::Crouching { eye_current } = comp.movement_state else {
             panic!("an airborne slide must hand off to Crouching");
         };
+        assert_eq!(
+            events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Crouch,
+            }],
+            "an airborne slide handoff records its Sliding -> Crouching edge"
+        );
         assert!(
             approx_eq(eye_current, eye_at_ledge, POS_EPS)
                 && approx_eq(comp.capsule.eye_height, eye_at_ledge, POS_EPS),
@@ -5724,10 +5864,18 @@ mod tests {
             initial_eye,
         );
         let clear_bottom = capsule_bottom(&clear, clear_pos);
-        run_ticks(&mut clear, &open, &mut clear_pos, 1, &idle_input());
+        let clear_events = run_ticks(&mut clear, &open, &mut clear_pos, 1, &idle_input());
         assert!(
             matches!(clear.movement_state, MovementState::Normal),
             "released slide with clear headroom must stand"
+        );
+        assert_eq!(
+            clear_events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Normal,
+            }],
+            "a clear slide-cancel records its Sliding -> Normal edge"
         );
         assert!(
             approx_eq(clear.capsule.half_height, desc.capsule.half_height, POS_EPS)
@@ -5753,7 +5901,7 @@ mod tests {
         );
         let crouched_top = capsule_top(&blocked, blocked_pos);
         let blocked_world = floor_and_ceiling_world(crouched_top + 0.2);
-        run_ticks(
+        let blocked_events = run_ticks(
             &mut blocked,
             &blocked_world,
             &mut blocked_pos,
@@ -5763,6 +5911,14 @@ mod tests {
         let MovementState::Crouching { eye_current } = blocked.movement_state else {
             panic!("released slide with blocked headroom must remain crouched");
         };
+        assert_eq!(
+            blocked_events.state_edges,
+            vec![MovementStateEdge {
+                from: MovementStateKind::Slide,
+                to: MovementStateKind::Crouch,
+            }],
+            "a blocked slide-cancel records its Sliding -> Crouching edge"
+        );
         let crouch = desc.crouch.as_ref().expect("test descriptor has crouch");
         let alpha = 1.0 - (-crouch.transition_rate * DT).exp();
         let expected_eye = initial_eye + (crouch.eye_height - initial_eye) * alpha;

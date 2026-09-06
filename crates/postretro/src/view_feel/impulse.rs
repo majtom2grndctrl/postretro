@@ -28,22 +28,18 @@ impl ImpulseSpring {
     };
 }
 
-/// Consume ordered tick edges, age each tick's own displacement, then advance
-/// every in-flight spring once for this render frame. The final ceiling applies
-/// only to presented output, keeping the underlying linear integrators
-/// frame-rate independent.
+/// Advance the springs that existed before this render frame, then consume the
+/// ordered tick edges with each tick's explicit age. This keeps a fresh edge at
+/// its authored peak on its first presented frame instead of aging it by both
+/// the render delta and its backlog age. The final ceiling applies only to
+/// presented output, keeping the underlying linear integrators frame-rate
+/// independent.
 pub(super) fn evaluate(
     params: &ImpulseParams,
     edges: &[TimedMovementEdge],
     state: &mut ViewFeelState,
     frame_dt: f32,
 ) -> ImpulseChannels {
-    for timed in edges {
-        apply_edge(params, state, timed.edge.from, true, timed.age);
-        apply_edge(params, state, timed.edge.to, false, timed.age);
-    }
-
-    let mut summed = zero_channels();
     for (index, spring) in state.impulse_springs.iter_mut().enumerate() {
         let tension = state_tension(params, index);
         advance_critical(
@@ -52,6 +48,15 @@ pub(super) fn evaluate(
             tension,
             frame_dt,
         );
+    }
+
+    for timed in edges {
+        apply_edge(params, state, timed.edge.from, true, timed.age);
+        apply_edge(params, state, timed.edge.to, false, timed.age);
+    }
+
+    let mut summed = zero_channels();
+    for spring in &state.impulse_springs {
         add_assign(&mut summed, spring.position);
     }
     clamp_channels(summed, params.max)

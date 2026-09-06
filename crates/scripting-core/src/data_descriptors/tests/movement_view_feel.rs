@@ -108,8 +108,8 @@ fn js_and_lua_impulse_parse_sparse_state_rows_and_signed_channels() {
         .unwrap()
         .impulse
         .unwrap();
-    assert_eq!(js_impulse.tension, 12.0);
-    assert_eq!(js_impulse.states.slide.unwrap().enter.unwrap().pitch, -2.5);
+    assert!((js_impulse.tension - 12.0).abs() < f32::EPSILON);
+    assert!((js_impulse.states.slide.unwrap().enter.unwrap().pitch + 2.5).abs() < f32::EPSILON);
     assert!(js_impulse.states.dash.is_none());
 
     let lua = lua_movement_with_view_feel(
@@ -123,24 +123,55 @@ fn js_and_lua_impulse_parse_sparse_state_rows_and_signed_channels() {
         .unwrap()
         .impulse
         .unwrap();
-    assert_eq!(lua_impulse.states.slide.unwrap().enter.unwrap().roll, 1.5);
+    assert!((lua_impulse.states.slide.unwrap().enter.unwrap().roll - 1.5).abs() < f32::EPSILON);
 }
 
 #[test]
-fn impulse_rejects_missing_or_invalid_required_values_in_both_runtimes() {
-    let invalid_js = js_movement_with_view_feel(
-        r#"{ impulse: { tension: 0.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
-    );
-    let js_error = eval_js(&invalid_js, |ctx, v| {
-        entity_descriptor_from_js(ctx, v).unwrap_err()
-    });
-    assert!(js_error.to_string().contains("impulse.tension"));
-
-    let invalid_lua = lua_movement_with_view_feel(
-        r#"{ impulse = { tension = 1.0, max = { fov = -1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
-    );
-    let lua_error = eval_lua(&invalid_lua, |v| entity_descriptor_from_lua(v).unwrap_err());
-    assert!(lua_error.to_string().contains("impulse.max.fov"));
+fn impulse_rejects_invalid_values_with_js_luau_parity() {
+    for (js_body, lua_body, path) in [
+        (
+            r#"{ impulse: { tension: 0.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 0.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.tension",
+        ),
+        (
+            r#"{ impulse: { tension: NaN, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 0/0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.tension",
+        ),
+        (
+            r#"{ impulse: { tension: 1.0, max: { fov: -1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 1.0, max = { fov = -1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.max.fov",
+        ),
+        (
+            r#"{ impulse: { tension: 1.0, max: { fov: Infinity, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 1.0, max = { fov = math.huge, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.max.fov",
+        ),
+        (
+            r#"{ impulse: { tension: 1.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { slide: { enter: { fov: NaN, pitch: 0.0, roll: 0.0 } } } } }"#,
+            r#"{ impulse = { tension = 1.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { slide = { enter = { fov = 0/0, pitch = 0.0, roll = 0.0 } } } } }"#,
+            "impulse.states.slide.enter.fov",
+        ),
+        (
+            r#"{ impulse: { tension: 1.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { slide: { exit: { fov: 0.0, pitch: 0.0, roll: -Infinity } } } } }"#,
+            r#"{ impulse = { tension = 1.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { slide = { exit = { fov = 0.0, pitch = 0.0, roll = -math.huge } } } } }"#,
+            "impulse.states.slide.exit.roll",
+        ),
+    ] {
+        let js_error = eval_js(&js_movement_with_view_feel(js_body), |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        })
+        .to_string();
+        let lua_error = eval_lua(&lua_movement_with_view_feel(lua_body), |v| {
+            entity_descriptor_from_lua(v).unwrap_err()
+        })
+        .to_string();
+        for error in [&js_error, &lua_error] {
+            assert!(error.contains(path), "{error}");
+        }
+    }
 }
 
 // Full shapes parse and `groundedOnly` defaults apply (bob/tilt true, sway false).

@@ -729,7 +729,7 @@ export type SlideParams = {
   minDurationMs: number,
 }
 
---- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object disables that motion.
+--- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse` is independently optional; an absent sub-object disables that motion.
 export type ViewFeelParams = {
   --- Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.
   bob: BobParams?,

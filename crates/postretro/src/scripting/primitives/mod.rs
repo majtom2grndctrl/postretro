@@ -481,6 +481,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Steer toward the enemy's spawn anchor, then stand on arrival.",
         )
         .variant(
+            "moveToLastKnown",
+            "Steer toward the last known target position, then stand on arrival.",
+        )
+        .variant(
             "patrol",
             "Follow the graph's anchor-relative patrol points in order.",
         )
@@ -588,7 +592,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
         .field("attacks?", "BehaviorAttacks", "Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries. Omit for an attackless graph.")
-        .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.")
+        .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")
         .finish();
     registry

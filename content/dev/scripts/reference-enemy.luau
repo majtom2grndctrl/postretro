@@ -6,6 +6,11 @@ local M = {}
 M.REFERENCE_ENEMY_CLASSNAME = "reference_enemy"
 
 local DETECTION_RANGE = 16
+local ALERT_MS = 4000
+local SEARCH_AFTER_MS = 800
+local ARRIVE = 1
+local HALF_PI = math.pi / 2
+local STARTLE_MS = 200
 local JAB_RANGE = 2
 local SLAM_RANGE = 3.5
 local LEASH_RANGE = 100
@@ -46,6 +51,14 @@ M.referenceEnemyEntity = defineEntity({
           interrupt = "snap",
         },
         attack_slam = {
+          clip = "1H_Melee_Attack_Slice_Horizontal",
+          loop = false,
+          crossfadeMs = 80,
+          interrupt = "snap",
+        },
+        -- The reference model has no dedicated pain clip; this distinct state
+        -- still makes the authored startle observable to replication clients.
+        flinch = {
           clip = "1H_Melee_Attack_Slice_Horizontal",
           loop = false,
           crossfadeMs = 80,
@@ -130,12 +143,47 @@ M.referenceEnemyEntity = defineEntity({
             },
           },
         },
+        investigate = { animation = "walk", motion = "moveToLastKnown" },
+        startle = { animation = "flinch", motion = "hold" },
         retreat = { animation = "walk", motion = "moveToAnchor" },
       },
       transitions = {
         ["*"] = {
-          { to = "patrol", when = brain.hasTarget["not"](brain.hasTarget) },
-          { to = "patrol", when = brain.targetHostile["not"](brain.targetHostile) },
+          -- A missing target is not enough to stand down: recent damage can
+          -- still point at an unreached memory.
+          {
+            to = "patrol",
+            when = brain.hasTarget["not"](brain.hasTarget)["and"](
+              brain.hasTarget["not"](brain.hasTarget)["and"](
+                brain.hasTarget["not"](brain.hasTarget),
+                brain.timeSinceDamageMs:gt(ALERT_MS)
+              ),
+              brain.distanceToLastKnown:le(ARRIVE)
+            ),
+          },
+          {
+            to = "patrol",
+            when = brain.hasTarget["and"](
+              brain.hasTarget,
+              brain.targetHostile["not"](brain.targetHostile)
+            ),
+          },
+          {
+            to = "startle",
+            when = brain.damageSourceKnown["and"](
+              brain.damageSourceKnown,
+              brain.timeSinceDamageMs:le(STARTLE_MS)
+            )["and"](
+              brain.damageSourceKnown["and"](
+                brain.damageSourceKnown,
+                brain.timeSinceDamageMs:le(STARTLE_MS)
+              ),
+              brain.damageBearing:gt(HALF_PI)["or"](
+                brain.damageBearing:gt(HALF_PI),
+                brain.damageBearing:lt(-HALF_PI)
+              )
+            ),
+          },
         },
         idle = { { to = "patrol", when = runtime.constant(true) } },
         patrol = {
@@ -146,9 +194,35 @@ M.referenceEnemyEntity = defineEntity({
               brain.targetDistance:le(DETECTION_RANGE)
             ),
           },
+          {
+            to = "investigate",
+            -- Generic damage recency also resets for contextless reactions;
+            -- provenance proves this hit supplied the remembered position.
+            when = brain.damageSourceKnown["and"](
+              brain.damageSourceKnown,
+              brain.timeSinceDamageMs:le(ALERT_MS)
+            )["and"](
+              brain.damageSourceKnown["and"](
+                brain.damageSourceKnown,
+                brain.timeSinceDamageMs:le(ALERT_MS)
+              ),
+              brain.distanceToLastKnown:gt(ARRIVE)
+            ),
+          },
         },
         engage = {
           { to = "retreat", when = brain.distanceFromAnchor:gt(LEASH_RANGE) },
+          {
+            to = "investigate",
+            when = brain.timeSinceTargetVisible:ge(SEARCH_AFTER_MS),
+          },
+        },
+        investigate = {
+          { to = "engage", when = brain.targetVisible },
+          { to = "patrol", when = brain.distanceToLastKnown:le(ARRIVE) },
+        },
+        startle = {
+          { to = "patrol", when = brain.timeInActivityMs:ge(STARTLE_MS) },
         },
         retreat = {
           { to = "patrol", when = brain.distanceFromAnchor:le(RETURN_ARRIVAL_EPSILON) },

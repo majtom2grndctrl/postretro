@@ -130,6 +130,17 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// Later states (wall-run, vault) plug in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
+/// Payload-free identifier for the closed movement-state vocabulary. Render-rate
+/// presentation and reaction dispatch use this instead of carrying a state's
+/// timers, boost, or eye interpolation payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementStateKind {
+    Normal,
+    Dash,
+    Crouch,
+    Slide,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum MovementState {
     /// Baseline locomotion: gravity, jump/air-jump, ground acceleration,
@@ -168,6 +179,18 @@ pub enum MovementState {
         boost: Vec3,
         eye_current: f32,
     },
+}
+
+impl MovementState {
+    /// The payload-free member of the closed movement-state vocabulary.
+    pub const fn kind(&self) -> MovementStateKind {
+        match self {
+            Self::Normal => MovementStateKind::Normal,
+            Self::Dash { .. } => MovementStateKind::Dash,
+            Self::Crouching { .. } => MovementStateKind::Crouch,
+            Self::Sliding { .. } => MovementStateKind::Slide,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

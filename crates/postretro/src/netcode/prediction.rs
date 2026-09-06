@@ -290,6 +290,7 @@ impl ClientPrediction {
     /// Pure with respect to the registry: the caller owns reading `prev` and writing
     /// the result back; this never touches the registry, AI, weapons, death, or
     /// reactions.
+    #[cfg(test)]
     pub(crate) fn predict_tick(
         &mut self,
         command: InputCommand,
@@ -298,6 +299,22 @@ impl ClientPrediction {
         gravity: f32,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent)> {
+        self.predict_tick_with_events(command, prev, collision, gravity, dt)
+            .map(|(transform, movement, _)| (transform, movement))
+    }
+
+    /// The production forward-prediction form of [`Self::predict_tick`]. It
+    /// preserves the tick's movement events for the local frame drain; callers
+    /// performing reconciliation continue to use [`replay`] directly and discard
+    /// its events by construction.
+    pub(crate) fn predict_tick_with_events(
+        &mut self,
+        command: InputCommand,
+        prev: (Transform, PlayerMovementComponent),
+        collision: &impl MovementCollisionSource,
+        gravity: f32,
+        dt: f32,
+    ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
         // Inert until armed: before the local_player baseline, drive no pawn.
         self.armed?;
 
@@ -310,7 +327,7 @@ impl ClientPrediction {
         // burst. Task 5 reads this to special-case the larger visible correction a
         // dash produces during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
-        let (transform, movement, _events) = replay(
+        let (transform, movement, events) = replay(
             start_transform,
             start_movement,
             sim.movement,
@@ -337,7 +354,7 @@ impl ClientPrediction {
             included_dash,
         });
 
-        Some((transform, movement))
+        Some((transform, movement, events))
     }
 
     /// Prune every history entry whose `client_tick` is at or below `acked_tick`.
@@ -479,8 +496,8 @@ mod tests {
 
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
-        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams,
-        SpeedParams,
+        ForgivenessParams, GroundParams, MovementStateKind, NumberOrIr, PlayerMovementDescriptor,
+        SlideParams, SpeedParams,
     };
 
     const EPSILON: f32 = 1e-4;
@@ -790,9 +807,20 @@ mod tests {
         // A dash command advances movement state to Dash WITHOUT any weapon/AI/death
         // system running — there is no registry to run them against. The recorded
         // tick flags the dash, the Phase 3 instrumentation Task 5 reads.
-        let prev = (start_transform(), component());
-        let out = prediction.predict_tick(forward_command(0, true), prev, &world, GRAVITY, DT);
-        assert!(out.is_some());
+        let mut initial_movement = component();
+        initial_movement.set_grounded(true);
+        let prev = (start_transform(), initial_movement);
+        let (_, _, events) = prediction
+            .predict_tick_with_events(forward_command(0, true), prev, &world, GRAVITY, DT)
+            .expect("armed prediction advances the local pawn");
+        assert_eq!(
+            events.state_edges,
+            vec![crate::movement::MovementStateEdge {
+                from: MovementStateKind::Normal,
+                to: MovementStateKind::Dash,
+            }],
+            "forward prediction retains its local Dash entry edge"
+        );
         let entry = prediction.history().back().unwrap();
         assert!(
             entry.included_dash,

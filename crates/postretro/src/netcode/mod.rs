@@ -162,7 +162,7 @@ use postretro_net::wire::{
 };
 
 use crate::collision::{self, CollisionWorld};
-use crate::movement::MovementCollisionSource;
+use crate::movement::{MovementCollisionSource, MovementEvents};
 use crate::scripting_systems;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
@@ -1233,12 +1233,20 @@ pub(crate) struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
     pub(crate) tick_dt: f32,
 }
 
+/// One connected-client input send plus its local forward-prediction outcome.
+/// Reconciliation deliberately does not construct this type: replayed movement
+/// events must never re-fire local presentation or reaction effects.
+pub(crate) struct ClientPredictionTickResult {
+    pub(crate) client_tick: u32,
+    pub(crate) movement_events: MovementEvents,
+}
+
 pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
     registry: &mut EntityRegistry,
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
     context: ClientPredictionTickContext<'_, C>,
-) -> u32 {
+) -> ClientPredictionTickResult {
     let ClientPredictionTickContext {
         command,
         aim_pitch,
@@ -1256,7 +1264,10 @@ pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
 
     // 2. Before the local baseline arms prediction, drive no provisional pawn.
     let Some(armed) = prediction.armed() else {
-        return client_tick;
+        return ClientPredictionTickResult {
+            client_tick,
+            movement_events: MovementEvents::default(),
+        };
     };
 
     // 3. Read the armed pawn's current applied state (seeded from the authoritative
@@ -1267,15 +1278,23 @@ pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
         (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
-        _ => return client_tick,
+        _ => {
+            return ClientPredictionTickResult {
+                client_tick,
+                movement_events: MovementEvents::default(),
+            };
+        }
     };
 
     // 4. Advance the local pawn one predicted tick through the movement-only helper
     //    and record it in the history ring.
-    let Some((transform, movement)) =
-        prediction.predict_tick(input, prev, collision, gravity, tick_dt)
+    let Some((transform, movement, movement_events)) =
+        prediction.predict_tick_with_events(input, prev, collision, gravity, tick_dt)
     else {
-        return client_tick;
+        return ClientPredictionTickResult {
+            client_tick,
+            movement_events: MovementEvents::default(),
+        };
     };
 
     // 5. Stamp previous = current for the local pawn BEFORE writing the new predicted
@@ -1293,7 +1312,10 @@ pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
     //    authoritative snapshot.
     let _ = registry.set_component(armed.entity_id, transform);
     let _ = registry.set_component(armed.entity_id, movement);
-    client_tick
+    ClientPredictionTickResult {
+        client_tick,
+        movement_events,
+    }
 }
 
 /// The local-pawn presentation offset (M15 Phase 3 Task 5): the decaying correction

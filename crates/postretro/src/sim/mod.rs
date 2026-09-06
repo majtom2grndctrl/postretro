@@ -471,7 +471,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
 
     let combined_collision =
         CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states);
-    let mut movement = {
+    {
         let mut registry = registry.borrow_mut();
         host_movement::run_host_movement_tick(
             &mut registry,
@@ -481,13 +481,15 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             tick_dt,
         )
     };
-    movement.extend(run_movement_tick(
+    // Remote pawns are authoritatively simulated above, but their local-only
+    // presentation/reaction events must never enter the host's script registry.
+    let movement = run_movement_tick(
         &registry,
         &combined_collision,
         gravity,
         &command.movement,
         tick_dt,
-    ));
+    );
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
         .iter()
         .map(|remote| AuthoritativePlayer {
@@ -1472,7 +1474,20 @@ fn run_movement_tick(
 
     let pawn_inputs = [(id, input.clone())];
     let mut registry = registry.borrow_mut();
-    host_movement::run_host_movement_tick(&mut registry, collision, gravity, &pawn_inputs, tick_dt)
+    let events = host_movement::run_host_movement_tick(
+        &mut registry,
+        collision,
+        gravity,
+        &pawn_inputs,
+        tick_dt,
+    );
+    let mut addresses = Vec::new();
+    for (pawn, movement_events) in events {
+        if pawn == id {
+            movement_events.append_named_events(&mut addresses);
+        }
+    }
+    addresses
 }
 pub(crate) fn run_death_sweep(registry: &Rc<RefCell<EntityRegistry>>) -> Vec<String> {
     let report = {

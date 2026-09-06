@@ -1,7 +1,7 @@
 // Host-side multi-pawn movement seam (M15 Phase 3 Task 4). Advances an explicit
 // set of `(EntityId, MovementInput)` pairs through `movement::tick`, writing each
 // resulting `Transform` + `PlayerMovementComponent` back to the registry and
-// aggregating per-pawn movement events.
+// retaining per-pawn movement events for the caller to scope.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // This is the authoritative-host counterpart to `simulate_tick`'s single-pawn
@@ -16,16 +16,20 @@
 
 use glam::{Quat, Vec3};
 
-use crate::movement::{MovementCollisionSource, MovementInput, tick as movement_tick};
+use crate::movement::{
+    MovementCollisionSource, MovementEvents, MovementInput, tick as movement_tick,
+};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::PlayerMovementComponent;
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
-/// the resulting `Transform` plus movement component back, and returns the aggregated
-/// movement events (`"landed"` / `"jumped"`) across all pawns in input order. Reading
-/// all pawns before writing any keeps each pawn's input applied to its start-of-tick
-/// state, never to another pawn's mid-tick write.
+/// the resulting `Transform` plus movement component back, and returns one
+/// pawn-identified event record per successfully advanced pawn in input order. The
+/// caller owns event scope: host gameplay selects only its local pawn, while client
+/// prediction advances exactly one local pawn. Reading all pawns before writing any
+/// keeps each pawn's input applied to its start-of-tick state, never to another
+/// pawn's mid-tick write.
 ///
 /// Precondition: `pawn_inputs` must name each `EntityId` at most once. The seam pushes
 /// one snapshot per occurrence, so a duplicated id would double-apply its input and
@@ -44,7 +48,7 @@ pub(crate) fn run_host_movement_tick(
     gravity: f32,
     pawn_inputs: &[(EntityId, MovementInput)],
     tick_dt: f32,
-) -> Vec<&'static str> {
+) -> Vec<(EntityId, MovementEvents)> {
     // Snapshot every pawn's mutable movement state + position up front. Reading all
     // pawns before writing any keeps the tick's reads consistent (a pawn's input is
     // applied to its start-of-tick state, never to another pawn's mid-tick write) and
@@ -60,7 +64,7 @@ pub(crate) fn run_host_movement_tick(
         }
     }
 
-    let mut events_out: Vec<&'static str> = Vec::new();
+    let mut events_out = Vec::with_capacity(snapshots.len());
     for (id, mut component, position, input) in snapshots {
         let (new_pos, events) = movement_tick(
             &mut component,
@@ -85,12 +89,7 @@ pub(crate) fn run_host_movement_tick(
             let _ = registry.set_component(id, t);
         }
         let _ = registry.set_component(id, component);
-        if events.landed {
-            events_out.push("landed");
-        }
-        if events.jumped {
-            events_out.push("jumped");
-        }
+        events_out.push((id, events));
     }
 
     events_out
@@ -290,11 +289,11 @@ mod tests {
         );
     }
 
-    // Per-pawn movement events aggregate into one list. A jump command surfaces a
-    // "jumped" event from the seam (the same channel simulate_tick feeds
-    // TickEvents::movement).
+    // A jump command keeps its event paired with the pawn that produced it. The
+    // caller can therefore select its local pawn before mapping the event into the
+    // reaction-address list.
     #[test]
-    fn aggregates_per_pawn_movement_events() {
+    fn returns_events_with_the_pawn_that_produced_them() {
         let mut registry = EntityRegistry::new();
         let world = floor_world();
         // Give this descriptor a jump so a jump_pressed input produces a "jumped".
@@ -319,8 +318,10 @@ mod tests {
         };
         let events = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(id, jump)], DT);
         assert!(
-            events.contains(&"jumped"),
-            "a jump command aggregates a 'jumped' movement event; got {events:?}"
+            events
+                .iter()
+                .any(|(pawn, event)| *pawn == id && event.jumped),
+            "a jump command retains its pawn identity and event; got {events:?}"
         );
     }
 

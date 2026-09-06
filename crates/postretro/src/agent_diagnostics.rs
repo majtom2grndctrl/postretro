@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn agent_overlay_projection_maps_in_front_point_inside_viewport() {
         let render_camera =
-            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
         let screen = agent_overlay_world_to_screen(
             Vec3::new(0.0, 0.0, -2.0),
             render_camera.view_projection,
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn agent_overlay_projection_rejects_behind_camera_point() {
         let render_camera =
-            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
 
         assert_eq!(
             agent_overlay_world_to_screen(
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn agent_overlay_projection_rejects_offscreen_point() {
         let render_camera =
-            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+            crate::camera::RenderCamera::new(Vec3::ZERO, 4.0 / 3.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
 
         assert_eq!(
             agent_overlay_world_to_screen(

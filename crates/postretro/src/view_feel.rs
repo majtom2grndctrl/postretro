@@ -948,6 +948,64 @@ mod tests {
         assert!(aged_output.impulse_fov > 0.0 && aged_output.impulse_fov < first);
     }
 
+    // Regression: catch-up presentation aged every queued edge by the render
+    // delta twice.
+    #[test]
+    fn impulse_catch_up_matches_equivalent_separate_frame_progression() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(state(Some(channels(9.0, 0.0, 0.0)), None)),
+            crouch: Some(state(Some(channels(0.0, 7.0, 0.0)), None)),
+            slide: Some(state(Some(channels(0.0, 0.0, 5.0)), None)),
+        });
+        let tick_dt = 1.0 / 60.0;
+        let transitions = [
+            (MovementStateKind::Normal, MovementStateKind::Dash),
+            (MovementStateKind::Dash, MovementStateKind::Crouch),
+            (MovementStateKind::Crouch, MovementStateKind::Slide),
+        ];
+
+        let catch_up_edges = [
+            timed_edge(transitions[0].0, transitions[0].1, 2.0 * tick_dt),
+            timed_edge(transitions[1].0, transitions[1].1, tick_dt),
+            timed_edge(transitions[2].0, transitions[2].1, 0.0),
+        ];
+        let mut catch_up_state = ViewFeelState::default();
+        let catch_up = evaluate_with_edges(
+            &params,
+            0.0,
+            0.0,
+            true,
+            &catch_up_edges,
+            &mut catch_up_state,
+            3.0 * tick_dt,
+            1.0,
+        );
+
+        let mut separate_state = ViewFeelState::default();
+        let mut separate = ViewFeelOutput::ZERO;
+        for (from, to) in transitions {
+            separate = evaluate_with_edges(
+                &params,
+                0.0,
+                0.0,
+                true,
+                &[timed_edge(from, to, 0.0)],
+                &mut separate_state,
+                tick_dt,
+                1.0,
+            );
+        }
+
+        assert!(approx_eq(catch_up.impulse_fov, separate.impulse_fov));
+        assert!(approx_eq(catch_up.impulse_pitch, separate.impulse_pitch));
+        assert!(approx_eq(catch_up.impulse_roll, separate.impulse_roll));
+        assert!(
+            approx_eq(catch_up.impulse_roll, 5.0),
+            "the fresh final edge must present at its authored peak"
+        );
+    }
+
     #[test]
     fn impulse_clamps_presentation_but_scale_zero_keeps_integrating() {
         let mut params = impulse_params(ImpulseStates {

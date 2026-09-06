@@ -174,6 +174,23 @@ fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
 }
 
 #[test]
+fn both_runtimes_reject_unknown_brain_guards_with_authored_paths() {
+    let js = js_error(&js_behavior(
+        ", transitions: { idle: [{ when: { op: \"input\", name: \"@brain.notAnInput\" }, to: \"engage\" }] }",
+    ));
+    let lua = lua_error(&lua_behavior(
+        ", transitions = { idle = { { when = { op = \"input\", name = \"@brain.notAnInput\" }, to = \"engage\" } } }",
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("components.behavior.transitions.idle[0].when"),
+            "{error}"
+        );
+        assert!(error.contains("@brain.notAnInput"), "{error}");
+    }
+}
+
+#[test]
 fn both_runtimes_reject_scope_all_self_targets_with_paths() {
     let js = js_error(&js_behavior(
         ", transitions: { \"*\": [{ when: { op: \"const\", value: true }, to: \"*\" }] }",

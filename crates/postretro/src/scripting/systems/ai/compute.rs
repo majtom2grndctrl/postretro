@@ -57,6 +57,7 @@ use crate::weapon::ProjectileLaunch;
 use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, MotionVerb};
 
 /// Pass 2: evaluate each immutable enemy snapshot into an outcome.
+#[allow(clippy::too_many_arguments)] // orchestration keeps each compute-stage input explicit.
 pub(super) fn evaluate(
     registry: &postretro_entities::EntityRegistry,
     snapshots: Vec<super::EnemySnapshot>,

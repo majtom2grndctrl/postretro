@@ -469,6 +469,9 @@ pub fn apply_damage_with_context(
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
         brain.time_since_damage_ms = 0.0;
+        // Bearing is meaningful only for this hit. A contextless hit must not
+        // make an older directional stimulus look recent again.
+        brain.damage_bearing = 0.0;
         if let Some(attacker_transform) = attacker_transform {
             brain.last_known_target_pos = Some(attacker_transform.position);
             if let Some(damaged_transform) = damaged_transform {

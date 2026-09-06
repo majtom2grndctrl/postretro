@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn damage_chokepoint_leaves_memory_and_bearing_unchanged_without_an_attacker_transform() {
+    fn damage_chokepoint_preserves_memory_but_neutralizes_bearing_without_an_attacker_transform() {
         use crate::components::health::{
             DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
         };
@@ -1323,7 +1323,7 @@ mod tests {
             .get_component::<BrainComponent>(brain_entity)
             .expect("brain remains attached");
         assert_eq!(brain.last_known_target_pos, Some(remembered));
-        assert_eq!(brain.damage_bearing, 0.75);
+        assert_eq!(brain.damage_bearing, 0.0);
 
         let mut damage_context =
             DamageContext::new("test.no-transform-attacker", DamageProducer::InTick);
@@ -1347,8 +1347,70 @@ mod tests {
                 .get_component::<BrainComponent>(brain_entity)
                 .expect("brain remains attached")
                 .damage_bearing,
-            0.75,
-            "a missing attacker transform must not replace the last valid bearing"
+            0.0,
+            "a missing attacker transform must neutralize the stale bearing"
+        );
+    }
+
+    // Regression: a contextless hit made an older directional hit look recent.
+    #[test]
+    fn contextless_hit_cannot_reuse_the_previous_hits_damage_bearing() {
+        use crate::components::health::{
+            DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+        };
+        use crate::data_descriptors::HealthDescriptor;
+        use postretro_foundation::DamagePayload;
+
+        let mut registry = EntityRegistry::new();
+        let brain_entity = registry.spawn(Transform::default());
+        let side_attacker = registry.spawn(Transform {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(brain_entity, BrainComponent::from_graph(&authored_graph()))
+            .unwrap();
+        registry
+            .set_component(
+                brain_entity,
+                HealthComponent::from_descriptor(&HealthDescriptor {
+                    max: 100.0,
+                    hitbox: None,
+                    zone_multipliers: HashMap::new(),
+                }),
+            )
+            .unwrap();
+
+        let mut directional_context =
+            DamageContext::new("test.directional-hit", DamageProducer::InTick);
+        directional_context.attacker = Some(side_attacker);
+        assert!(apply_damage_with_context(
+            &mut registry,
+            brain_entity,
+            &DamagePayload { amount: 1.0 },
+            directional_context,
+        ));
+        let brain = registry
+            .get_component::<BrainComponent>(brain_entity)
+            .expect("brain remains attached");
+        assert!(
+            brain.damage_bearing.abs() > std::f32::consts::FRAC_PI_4,
+            "the first hit must establish a directional bearing"
+        );
+
+        assert!(apply_damage_with_context(
+            &mut registry,
+            brain_entity,
+            &DamagePayload { amount: 1.0 },
+            DamageContext::new("test.contextless-hit", DamageProducer::InTick),
+        ));
+        let brain = registry
+            .get_component::<BrainComponent>(brain_entity)
+            .expect("brain remains attached");
+        assert_eq!(brain.time_since_damage_ms, 0.0);
+        assert_eq!(
+            brain.damage_bearing, 0.0,
+            "the recent contextless hit must not reuse the former side bearing"
         );
     }
 

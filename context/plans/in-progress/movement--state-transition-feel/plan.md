@@ -1,6 +1,6 @@
 # movement--state-transition-feel — plan of record
 
-status: proposed
+status: approved
 read at: 04970869 (source base b53eeccb3)
 
 ## Corrections
@@ -12,12 +12,11 @@ read at: 04970869 (source base b53eeccb3)
 - A slide's `natural_exit` can reach `Crouching` on blocked headroom as well as the exits enumerated in the brief → cover every natural-exit branch in the edge-order matrix, not only the listed examples.
 - `ViewFeelState` has no followed-pawn identity and lifecycle only resets the existing flash/vignette/shake effects → Task 3 must invalidate impulse state on a followed-pawn change and descriptor hot reload, in addition to level install.
 
-## Review findings — owner decision required
+## Review findings — resolved
 
 The brief names tilt's fixed under-damped `0.8` damping ratio as the impulse spring model, but its acceptance requires monotonic decay. An under-damped spring necessarily overshoots for some impulses, so these contracts cannot both be proven.
 
-- **Keep the tilt feel:** retain `0.8` damping and replace the monotonic-decay AC with: "The impulse's decaying envelope reaches within a small tolerance of zero given enough frames; a higher tension reaches a fixed envelope fraction sooner than a lower one. Overshoot is permitted."
-- **Require monotonic recovery:** retain the current AC and use critical or over-damping for impulse springs, explicitly departing from the tilt damping precedent.
+- **Owner decision:** retain the current monotonic-decay acceptance criterion and use critical damping for impulse springs. This deliberately departs from tilt's fixed `0.8` under-damped ratio; the author-facing descriptor remains unchanged, and `tension` is an intuitive settle-speed control with no rebound.
 
 The catch-up AC also needs a fixture-qualified proof: signed, opposing impulses cannot be universally "strictly less" after aging. Proposed wording: "A frame draining a full catch-up backlog produces every event. For a positive, same-sign fixture, each edge's age attenuates the presented offset below an otherwise identical unaged batch; the separate-frame equivalence is proved independently."
 
@@ -38,7 +37,7 @@ The catch-up AC also needs a fixture-qualified proof: signed, opposing impulses 
 | Hot reload during a slide emits no exit and leaves no orphan impulse | refresh + impulse reset focused test | achievable as stated |
 | An authoritative state correction emits no edge; later locally-ticked exit can be unpaired | reconcile focused test | achievable as stated |
 | Consecutive tick edges survive one render frame | `view_feel::impulse_consecutive_edges_are_not_coalesced` | achievable as stated |
-| Catch-up backlog drains all events and age-attenuates its rendered impulse | `view_feel::impulse_backlog_edges_age_before_sum` | needs restatement; proposed wording in review findings |
+| Catch-up backlog drains all events and age-attenuates its rendered impulse | `view_feel::impulse_backlog_edges_age_before_sum` with a positive, same-sign fixture | achievable as stated |
 | Presented per-channel offset never exceeds authored `max` | `view_feel::impulse_output_is_clamped_per_channel` | achievable as stated |
 | Level load or pawn change clears any impulse | lifecycle/reset focused test | achievable as stated |
 | Present slide entry applies FOV/pitch/roll on its first render frame; absent entry is zero | `view_feel::slide_entry_impulse_is_optional` | achievable as stated |
@@ -46,7 +45,7 @@ The catch-up AC also needs a fixture-qualified proof: signed, opposing impulses 
 | Dash and crouch use the identical state-generic impulse mechanism | `view_feel::dash_and_crouch_impulses_use_state_keys` | achievable as stated |
 | Impulse affects only FOV, pitch and roll, never eye position | view-feel/camera composition test | achievable as stated |
 | State tension overrides the default and simultaneous state springs settle independently | `view_feel::impulse_state_tension_overrides_default` | achievable as stated |
-| Springs decay monotonically and a higher tension settles faster | `view_feel::impulse_spring_decay_is_monotonic` | needs owner decision; conflicts with the selected under-damped precedent |
+| Springs decay monotonically and a higher tension settles faster | `view_feel::impulse_spring_decay_is_monotonic` | achievable as stated |
 | Spring state is frame-rate independent and the ceiling is presentation-only | `view_feel::impulse_spring_is_frame_rate_independent` | achievable as stated |
 | A later edge adds to, rather than replaces, an in-flight spring | `view_feel::impulse_edges_accumulate` | achievable as stated |
 | Zero frame dt holds an idle integrator but still applies a pending displacement | `view_feel::impulse_zero_dt_applies_pending_edge` | achievable as stated |

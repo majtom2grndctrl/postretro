@@ -280,6 +280,45 @@ fn fluent_brain_guards_emit_identical_boolean_ir_in_both_runtimes() {
 }
 
 #[test]
+fn last_known_brain_facts_emit_identical_ir_in_both_runtimes() {
+    // Keep both new SDK helper leaves on the cross-runtime fixture path: the
+    // descriptor parsers consume only their canonical `@brain.*` input names.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { brain } from "postretro";
+        JSON.stringify(
+          brain.timeSinceTargetVisible
+            .ge(250)
+            .and(brain.distanceToLastKnown.gt(3)),
+        );
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local elapsed = brain.timeSinceTargetVisible:ge(250)
+        return elapsed["and"](elapsed, brain.distanceToLastKnown:gt(3))
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "last-known brain facts diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "op": "and",
+            "a": {
+                "op": "ge",
+                "a": { "op": "input", "name": "@brain.timeSinceTargetVisible" },
+                "b": { "op": "const", "value": 250 },
+            },
+            "b": {
+                "op": "gt",
+                "a": { "op": "input", "name": "@brain.distanceToLastKnown" },
+                "b": { "op": "const", "value": 3 },
+            },
+        }),
+        "last-known helpers must lower to canonical input leaves",
+    );
+}
+
+#[test]
 fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
     // These fixtures deliberately use the public UI authoring surfaces. The
     // TypeScript module imports the UI helpers before `scripts-build` strips

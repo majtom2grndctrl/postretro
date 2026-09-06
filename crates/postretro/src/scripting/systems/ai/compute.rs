@@ -246,6 +246,23 @@ pub(super) fn evaluate(
                 target.position,
             )
         });
+        // Sight memory is a host-only fact about the selected target's last
+        // visible position. The shared debounced verdict is authoritative: a
+        // visible target overwrites a damage seed from an earlier stage, while
+        // an unseen target leaves that seed intact for authored investigation.
+        if target_visible {
+            if let Some((_, _, target_position)) = selected_target {
+                brain.last_known_target_pos = Some(target_position);
+                brain.time_since_target_visible = 0.0;
+            }
+        } else {
+            brain.time_since_target_visible =
+                (brain.time_since_target_visible + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+        }
+        let distance_to_last_known = brain
+            .last_known_target_pos
+            .map(|position| crate::nav::distance_xz(snap.position, position))
+            .unwrap_or(BRAIN_NO_TARGET_DISTANCE);
         let target_hostile = selected_target
             .is_some_and(|(target, _, _)| entity_faction(registry, target) != enemy_faction);
         // Reachability is the nav floor's pathfinder verdict, cached on the
@@ -306,6 +323,8 @@ pub(super) fn evaluate(
                     target: selected_target,
                     attack_cooldown_ms: 0.0,
                     time_since_damage_ms: brain.time_since_damage_ms,
+                    time_since_target_visible: brain.time_since_target_visible,
+                    distance_to_last_known,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -331,6 +350,8 @@ pub(super) fn evaluate(
                     target: selected_target,
                     attack_cooldown_ms,
                     time_since_damage_ms: brain.time_since_damage_ms,
+                    time_since_target_visible: brain.time_since_target_visible,
+                    distance_to_last_known,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,

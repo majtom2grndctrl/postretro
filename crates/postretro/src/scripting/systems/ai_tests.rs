@@ -558,6 +558,8 @@ fn step_graph(
             target: Some((enemy, distance, Vec3::ZERO)),
             attack_cooldown_ms: 0.0,
             time_since_damage_ms: BRAIN_NO_TARGET_DISTANCE,
+            time_since_target_visible: BRAIN_NO_TARGET_DISTANCE,
+            distance_to_last_known: BRAIN_NO_TARGET_DISTANCE,
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,
@@ -4983,6 +4985,143 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
         BRAIN_NO_TARGET_DISTANCE,
         "once clamped, recency cannot increase past its never-hit sentinel"
     );
+}
+
+fn last_known_memory_graph() -> BehaviorGraphDescriptor {
+    test_behavior_graph!({
+        initial: "chase".to_string(),
+        activities: BTreeMap::from([(
+            "chase".to_string(),
+            authored_state("walk", MotionVerb::ChaseTarget, None),
+        )]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    })
+}
+
+#[test]
+fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_and_freezes_after_los_grace()
+ {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let first_position = Vec3::new(2.0, 0.0, 0.0);
+    let player = spawn_player(&mut registry, first_position);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&last_known_memory_graph()),
+        50.0,
+    );
+    let unseen_attacker_position = Vec3::new(-8.0, 0.0, 0.0);
+    let unseen_attacker = registry.spawn(Transform {
+        position: unseen_attacker_position,
+        ..Transform::default()
+    });
+    let mut damage_context = DamageContext::new("test.unseen-attacker", DamageProducer::InTick);
+    damage_context.attacker = Some(unseen_attacker);
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 1.0 },
+        damage_context,
+    ));
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy retains its brain")
+            .last_known_target_pos,
+        Some(unseen_attacker_position),
+        "damage seeds an unseen attacker's position before the next AI compute pass"
+    );
+
+    run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        DT,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(first_position),
+        "the visible selected-target cache overrides an earlier damage seed"
+    );
+    assert_eq!(brain.time_since_target_visible, 0.0);
+
+    let second_position = Vec3::new(3.0, 0.0, 0.0);
+    let mut transform = registry
+        .get_component::<Transform>(player)
+        .expect("player carries a transform")
+        .clone();
+    transform.position = second_position;
+    registry.set_component(player, transform).unwrap();
+    run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        DT,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(second_position),
+        "a visible selected target refreshes the remembered live position each tick"
+    );
+    assert_eq!(brain.time_since_target_visible, 0.0);
+
+    let wall = wall_world(1.5, -1.0, 2.0);
+    for _ in 0..=perception::LOS_GRACE_TICKS {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, DT, None, Some(&wall));
+    }
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(second_position),
+        "after the debounced verdict closes, memory freezes at the final visible position"
+    );
+    assert!((brain.time_since_target_visible - DT * 1000.0).abs() <= EPS);
+    assert!(
+        (distance_xz(
+            Vec3::ZERO,
+            brain.last_known_target_pos.expect("memory exists")
+        ) - 3.0)
+            .abs()
+            <= EPS,
+        "the remembered position remains the source of the last-known distance"
+    );
+}
+
+#[test]
+fn never_seen_brain_keeps_search_memory_and_timer_at_the_no_memory_sentinels() {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&last_known_memory_graph()),
+        50.0,
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(brain.last_known_target_pos, None);
+    assert_eq!(brain.time_since_target_visible, BRAIN_NO_TARGET_DISTANCE);
 }
 
 /// A three-state pursuit graph over the shared `enemy_mesh` animation names:

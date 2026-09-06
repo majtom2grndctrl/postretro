@@ -86,6 +86,18 @@ pub const BRAIN_TARGET_VISIBLE_INPUT: &str = "@brain.targetVisible";
 /// never been damaged reads [`BRAIN_NO_TARGET_DISTANCE`], then a landed hit
 /// resets it to `0.0`; the AI tick monotonically ages it back to that sentinel.
 pub const BRAIN_TIME_SINCE_DAMAGE_MS_INPUT: &str = "@brain.timeSinceDamageMs";
+/// Milliseconds since the selected target was last visible. A fresh brain that
+/// has never seen a target reads [`BRAIN_NO_TARGET_DISTANCE`]; a visible
+/// target resets it to `0.0`, and later AI ticks monotonically age it back to
+/// that sentinel.
+pub const BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT: &str = "@brain.timeSinceTargetVisible";
+/// XZ distance from this enemy to the remembered last-known target position,
+/// or [`BRAIN_NO_TARGET_DISTANCE`] while the brain has no remembered position.
+///
+/// Like [`BRAIN_TARGET_DISTANCE_INPUT`], a bare `gt`/`ge` guard reads true
+/// with no memory. Authors must pair an investigate-distance guard with a
+/// recent sight or damage fact.
+pub const BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT: &str = "@brain.distanceToLastKnown";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -117,7 +129,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 16] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 18] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -134,6 +146,8 @@ pub const BRAIN_INPUTS: [(&str, IrType); 16] = [
     (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
     (BRAIN_TARGET_VISIBLE_INPUT, IrType::Bool),
     (BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, IrType::Number),
+    (BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, IrType::Number),
+    (BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -307,6 +321,24 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[15],
             (BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn time_since_target_visible_appends_at_fixed_slot_sixteen() {
+        assert_eq!(
+            BRAIN_INPUTS[16],
+            (BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn distance_to_last_known_appends_at_fixed_slot_seventeen() {
+        assert_eq!(
+            BRAIN_INPUTS[17],
+            (BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

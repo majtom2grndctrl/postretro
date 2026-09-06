@@ -410,8 +410,8 @@ fn derive_texture_materials(
         .collect()
 }
 
-/// Build the static capture camera directly so the scene FOV is honored instead
-/// of using `RenderCamera::new`, whose projection always uses `camera::HFOV`.
+/// Build the static capture camera directly so the scene's independently
+/// authored FOV is honored rather than adding a transient presentation offset.
 fn capture_view_projection(camera: &CameraPose, width: u32, height: u32) -> Mat4 {
     let aspect = width as f32 / height as f32;
     let fov = camera.fov_deg.to_radians();

@@ -6,8 +6,7 @@ use thiserror::Error;
 
 /// Default horizontal field of view in degrees, matching `camera::HFOV`.
 pub(crate) const DEFAULT_FOV_DEG: f32 = 100.0;
-const MIN_FOV_DEG: f32 = 60.0;
-const MAX_FOV_DEG: f32 = 130.0;
+use crate::camera::{MAX_FOV_DEG, MIN_FOV_DEG};
 const MAX_ABS_PITCH_DEG: f32 = 89.0;
 const MAX_CAPTURE_DIMENSION: u32 = 8192;
 // Capture overrides are linear HDR radiance. Six stops above unit white

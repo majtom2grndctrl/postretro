@@ -5,6 +5,10 @@ use glam::{Mat4, Vec3};
 
 /// Horizontal field of view in radians (100 degrees).
 pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
+/// Shared horizontal-FOV presentation band, in degrees. Capture validates its
+/// authored scene FOV against the same public capability band.
+pub const MIN_FOV_DEG: f32 = 60.0;
+pub const MAX_FOV_DEG: f32 = 130.0;
 
 // The renderer's fog pass duplicates these values (`RENDERER_NEAR_CLIP` /
 // `RENDERER_FAR_CLIP` in the renderer crate) — keep both in sync.
@@ -42,6 +46,7 @@ impl RenderCamera {
         pitch: f32,
         roll: f32,
         eye_offset: Vec3,
+        fov_offset_degrees: f32,
     ) -> Self {
         let eye_position = effective_eye_position(position, eye_offset);
         let view = render_view_matrix(position, yaw, pitch, roll, eye_offset);
@@ -49,7 +54,15 @@ impl RenderCamera {
         // Clamp aspect to avoid degenerate projection (near-zero aspect produces
         // vfov near PI, which makes tan(vfov/2) explode).
         let safe_aspect = aspect.max(0.1);
-        let vfov = 2.0 * ((HFOV / 2.0).tan() / safe_aspect).atan();
+        // Preserve the prior projection bit-for-bit when no impulse is active:
+        // reusing HFOV avoids an otherwise harmless add/clamp rounding change.
+        let hfov = if fov_offset_degrees == 0.0 {
+            HFOV
+        } else {
+            (HFOV + fov_offset_degrees.to_radians())
+                .clamp(MIN_FOV_DEG.to_radians(), MAX_FOV_DEG.to_radians())
+        };
+        let vfov = 2.0 * ((hfov / 2.0).tan() / safe_aspect).atan();
         let projection = Mat4::perspective_rh(vfov, safe_aspect, NEAR, FAR);
 
         Self {
@@ -441,6 +454,7 @@ mod tests {
             0.0,
             0.0,
             Vec3::ZERO,
+            0.0,
         );
         for (i, val) in camera.view_projection.to_cols_array().iter().enumerate() {
             assert!(val.is_finite(), "view_proj[{i}] is not finite: {val}");
@@ -449,7 +463,7 @@ mod tests {
 
     #[test]
     fn render_camera_handles_zero_aspect_without_nan() {
-        let camera = RenderCamera::new(Vec3::ZERO, 0.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let camera = RenderCamera::new(Vec3::ZERO, 0.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
         for (i, val) in camera.view_projection.to_cols_array().iter().enumerate() {
             assert!(!val.is_nan(), "view_proj[{i}] with zero aspect is NaN");
         }
@@ -466,7 +480,7 @@ mod tests {
         let pitch: f32 = -0.3;
         let roll: f32 = 0.2;
 
-        let camera = RenderCamera::new(position, aspect, yaw, pitch, roll, offset);
+        let camera = RenderCamera::new(position, aspect, yaw, pitch, roll, offset, 0.0);
 
         let look_dir = Vec3::new(
             -yaw.sin() * pitch.cos(),
@@ -489,7 +503,7 @@ mod tests {
     #[test]
     fn render_camera_zero_offset_preserves_position_bits() {
         let position = Vec3::new(-0.0, 4.0, -5.0);
-        let camera = RenderCamera::new(position, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO);
+        let camera = RenderCamera::new(position, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
 
         for (actual, expected) in camera
             .eye_position
@@ -525,11 +539,48 @@ mod tests {
         let yaw = 0.4;
         let pitch = 0.1;
 
-        let a = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO);
-        let b = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO);
+        let a = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0);
+        let b = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0);
         assert_eq!(
             a.view_projection.to_cols_array(),
             b.view_projection.to_cols_array()
+        );
+    }
+
+    #[test]
+    fn zero_fov_offset_preserves_the_previous_projection_bits() {
+        let position = Vec3::new(2.0, 3.0, -4.0);
+        let aspect = 16.0 / 9.0;
+        let yaw = 0.4;
+        let pitch = -0.2;
+        let camera = RenderCamera::new(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0);
+        let old_vfov = 2.0 * ((HFOV / 2.0).tan() / aspect.max(0.1)).atan();
+        let expected = Mat4::perspective_rh(old_vfov, aspect.max(0.1), NEAR, FAR)
+            * render_view_matrix(position, yaw, pitch, 0.0, Vec3::ZERO);
+        assert_eq!(
+            camera.view_projection.to_cols_array(),
+            expected.to_cols_array()
+        );
+    }
+
+    #[test]
+    fn positive_fov_offset_widens_and_clamps_the_projection() {
+        let base = RenderCamera::new(Vec3::ZERO, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0);
+        let wide = RenderCamera::new(Vec3::ZERO, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO, 10.0);
+        let clamped = RenderCamera::new(Vec3::ZERO, 16.0 / 9.0, 0.0, 0.0, 0.0, Vec3::ZERO, 1_000.0);
+        let at_max = RenderCamera::new(
+            Vec3::ZERO,
+            16.0 / 9.0,
+            0.0,
+            0.0,
+            0.0,
+            Vec3::ZERO,
+            MAX_FOV_DEG - HFOV.to_degrees(),
+        );
+        assert!(wide.view_projection.x_axis.x.abs() < base.view_projection.x_axis.x.abs());
+        assert_eq!(
+            clamped.view_projection.to_cols_array(),
+            at_max.view_projection.to_cols_array()
         );
     }
 

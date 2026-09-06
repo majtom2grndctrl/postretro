@@ -3569,7 +3569,7 @@ impl ApplicationHandler for App {
                     .as_ref()
                     .map(|session| session.player_options.view_feel_scale)
                     .unwrap_or(1.0);
-                let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
+                let (vf_fov_offset, vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((pawn, params, velocity, is_grounded)) = view_feel_inputs {
                         if self.view_feel_followed_pawn != Some(pawn)
                             || self.view_feel_descriptor.as_ref() != Some(&params)
@@ -3596,14 +3596,16 @@ impl ApplicationHandler for App {
                             // options module; passed verbatim, not re-clamped.
                             view_feel_scale,
                         );
-                        view_feel::map_output_to_camera(&output, camera_right)
+                        let (roll, yaw, pitch, eye) =
+                            view_feel::map_output_to_camera(&output, camera_right);
+                        (output.impulse_fov, roll, yaw, pitch, eye)
                     } else {
                         self.view_feel_state = view_feel::ViewFeelState::default();
                         self.view_feel_followed_pawn = None;
                         self.view_feel_descriptor = None;
                         // Pass-through: no driving pawn, or it carries no
                         // `view_feel`. Identical-to-today render path.
-                        (0.0, 0.0, 0.0, Vec3::ZERO)
+                        (0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
                     };
 
                 let render_camera = camera::RenderCamera::new(
@@ -3613,6 +3615,7 @@ impl ApplicationHandler for App {
                     self.camera.pitch + vf_pitch_offset,
                     vf_roll,
                     vf_eye_offset,
+                    vf_fov_offset,
                 );
                 let view_proj = render_camera.view_projection;
                 // The render eye and matrix are assembled together.
@@ -9093,9 +9096,16 @@ mod tests {
             "view-facing render calculations must use the same carry-adjusted yaw"
         );
 
-        let raw_view =
-            camera::RenderCamera::new(Vec3::ZERO, 16.0 / 9.0, settled_yaw, 0.0, 0.0, Vec3::ZERO)
-                .view_projection;
+        let raw_view = camera::RenderCamera::new(
+            Vec3::ZERO,
+            16.0 / 9.0,
+            settled_yaw,
+            0.0,
+            0.0,
+            Vec3::ZERO,
+            0.0,
+        )
+        .view_projection;
         let carried_view = camera::RenderCamera::new(
             Vec3::ZERO,
             16.0 / 9.0,
@@ -9103,6 +9113,7 @@ mod tests {
             0.0,
             0.0,
             Vec3::ZERO,
+            0.0,
         )
         .view_projection;
         assert!(
@@ -11891,7 +11902,7 @@ mod tests {
         // cases, so any element-wise difference must come from the rotation.
         let aspect = camera.aspect();
         let baseline =
-            crate::camera::RenderCamera::new(Vec3::ZERO, aspect, 0.0, 0.0, 0.0, Vec3::ZERO)
+            crate::camera::RenderCamera::new(Vec3::ZERO, aspect, 0.0, 0.0, 0.0, Vec3::ZERO, 0.0)
                 .view_projection;
         let rotated = crate::camera::RenderCamera::new(
             Vec3::ZERO,
@@ -11900,6 +11911,7 @@ mod tests {
             camera.pitch,
             0.0,
             Vec3::ZERO,
+            0.0,
         )
         .view_projection;
 

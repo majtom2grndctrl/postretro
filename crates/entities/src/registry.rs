@@ -1953,6 +1953,7 @@ mod tests {
             drag: 0.3,
             size_curve: [0.2, 1.0, 0.5].into(),
             opacity_curve: [0.0, 1.0, 0.0].into(),
+            spin_rate: 1.25,
             emitter: Some(parent),
         };
         reg.set_component(id, value.clone()).unwrap();

@@ -117,6 +117,27 @@ export const playerEntity = defineEntity({
           maxAngle: 4,
           tension: 15,
         },
+        // Transition impulses are critically damped: each value gives a direct,
+        // non-bouncy contribution that returns monotonically to neutral. State
+        // overrides keep the fast dash sharp while letting the slide linger.
+        impulse: {
+          tension: 12,
+          max: { fov: 20, pitch: 8, roll: 6 },
+          states: {
+            dash: {
+              tension: 16,
+              enter: { fov: 12, pitch: -1, roll: 0 },
+            },
+            normal: {
+              enter: { fov: 0, pitch: 1, roll: 0 },
+            },
+            slide: {
+              tension: 9,
+              enter: { fov: 8, pitch: -2.5, roll: 1.5 },
+              exit: { fov: -2, pitch: 1.5, roll: 0 },
+            },
+          },
+        },
       },
     },
   },

@@ -74,6 +74,10 @@ export interface BrainInputs {
    * verdict the engine fire gate also reads, before its range, cooldown, and
    * facing requirements (boolean). */
   readonly targetVisible: RuntimeGuardNode;
+  /** Milliseconds since this enemy last took damage. A fresh never-hit brain
+   * reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically
+   * age it back to that sentinel (number). */
+  readonly timeSinceDamageMs: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -105,6 +109,7 @@ export const brain: BrainInputs = Object.freeze({
   targetReachable: input("@brain.targetReachable"),
   attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
   targetVisible: input("@brain.targetVisible"),
+  timeSinceDamageMs: input("@brain.timeSinceDamageMs"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

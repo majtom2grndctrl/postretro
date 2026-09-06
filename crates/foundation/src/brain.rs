@@ -82,6 +82,10 @@ pub const BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT: &str = "@brain.attacksFiredInAc
 /// This is the exact shared verdict the engine-floor fire gate reads; it is
 /// independent of the additional range, cooldown, and facing gates.
 pub const BRAIN_TARGET_VISIBLE_INPUT: &str = "@brain.targetVisible";
+/// Milliseconds since this enemy last took damage. A fresh brain that has
+/// never been damaged reads [`BRAIN_NO_TARGET_DISTANCE`], then a landed hit
+/// resets it to `0.0`; the AI tick monotonically ages it back to that sentinel.
+pub const BRAIN_TIME_SINCE_DAMAGE_MS_INPUT: &str = "@brain.timeSinceDamageMs";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -113,7 +117,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 15] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 16] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -129,6 +133,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 15] = [
     (BRAIN_TARGET_REACHABLE_INPUT, IrType::Bool),
     (BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, IrType::Number),
     (BRAIN_TARGET_VISIBLE_INPUT, IrType::Bool),
+    (BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -293,6 +298,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[14],
             (BRAIN_TARGET_VISIBLE_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn time_since_damage_appends_at_fixed_slot_fifteen() {
+        assert_eq!(
+            BRAIN_INPUTS[15],
+            (BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

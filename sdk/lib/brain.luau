@@ -38,7 +38,9 @@ local BrainSdk = {}
 --- `attacksFiredInActivity` (number; successful fires since the current
 --- activity entered, visible to guards on the next refresh), and
 --- `targetVisible` (boolean; the shared debounced static-world sightline
---- verdict, false with no target).
+--- verdict, false with no target), and `timeSinceDamageMs` (number; `1e9`
+--- before the first hit, then zero at a landed hit and monotonically aged back
+--- to that sentinel by AI ticks).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -55,6 +57,7 @@ BrainSdk.brain = table.freeze({
   targetReachable = input("@brain.targetReachable"),
   attacksFiredInActivity = input("@brain.attacksFiredInActivity"),
   targetVisible = input("@brain.targetVisible"),
+  timeSinceDamageMs = input("@brain.timeSinceDamageMs"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

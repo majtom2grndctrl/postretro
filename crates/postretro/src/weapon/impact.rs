@@ -151,6 +151,7 @@ fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3,
         drag: 4.0,
         size_curve: IMPACT_SIZE_CURVE.clone(),
         opacity_curve: IMPACT_OPACITY_CURVE.clone(),
+        spin_rate: 0.0,
         emitter: None,
     };
     let visual = SpriteVisual {

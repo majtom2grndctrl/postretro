@@ -1,6 +1,6 @@
 # movement--state-transition-feel — plan of record
 
-status: approved
+status: landed-with-gaps
 read at: 04970869 (source base b53eeccb3)
 
 ## Corrections
@@ -72,3 +72,30 @@ The catch-up AC also needs a fixture-qualified proof: signed, opposing impulses 
 | 3 | Add the optional `viewFeel.impulse` descriptor across foundation, JS, Luau, primitive registry, typedefs, SDK fixtures, and generated files. Implement one bounded linear spring per closed state key, age queued edges before summing, preserve zero-scale integration, and invalidate it on level install, followed-pawn identity change, and descriptor hot reload. Drain the frame's ordered edge list before view-feel evaluation, compose pitch/roll into the existing camera/viewmodel path, and prove all spring, scale, absence, and reset contracts. | done · e8461c63 · `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro --bin postretro view_feel::tests:: -- --nocapture`; `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-scripting-core movement_view_feel -- --nocapture`; `cargo run -p postretro --bin gen-script-types`; `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro --bin postretro scripting::typedef::tests::committed::committed_sdk_types_match_current_registry -- --nocapture` |
 | 4 | Add FOV impulse to `RenderCamera::new`: relocate the shared 60°–130° FOV band from capture, clamp the final FOV, keep zero-offset projection bit-identical, and leave the dedicated viewmodel projection untouched. Update camera/capture callers and tests for culling-compatible projection behavior. | done · a6026f9d · `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro --bin postretro camera::tests:: -- --nocapture`; `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo check -p postretro` |
 | 5 | Add dev impulse tuning and a manifest-registered reaction example, publish the complete reserved-address list, run scripts/type generation and focused integration checks, then perform the required in-engine visual trial at scales 1.0, 0.5, and 0.0. | code complete · 86e277d9 · `cargo build -p postretro-script-compiler --bin scripts-build`; `target/debug/scripts-build --in content/dev/scripts/player.ts --out /private/tmp/postretro-player-impulse-check.js`; `target/debug/scripts-build --in content/dev/scripts/stress-warren.ts --out /private/tmp/postretro-stress-warren-impulse-check.js` (manual visual trial pending) |
+
+## Landing report
+
+| Acceptance criterion | Proof | Result |
+|---|---|---|
+| Slide/dash/crouch addresses emit once and preserve exit-before-entry ordering | focused movement tests | pass |
+| Remote host/client movement events remain local and reconciliation stays silent | movement/prediction focused tests and source inspection | pass |
+| Slide exit plus entry sums in one presentation frame | `impulse_transition_edges_sum_exit_and_entry_in_one_frame` | pass |
+| Catch-up retains every edge, ages it once, and matches separate frames | `impulse_catch_up_matches_equivalent_separate_frame_progression` | pass |
+| Impulses are critically damped, capped only at presentation, and accessibility scaling preserves integration | `impulse_spring_is_monotonic_and_ages_backlog_edges`; `impulse_clamps_presentation_but_scale_zero_keeps_integrating` | pass |
+| Pitch/roll affect camera orientation but not eye position; FOV affects world projection only | view-feel/camera focused tests | pass |
+| FOV zero remains bit-identical and nonzero offsets clamp to the shared band | camera focused tests | pass |
+| JS/Luau descriptor validation, sparse closed-state keys, and generated SDK surface agree | parser parity, typedef snapshots, committed SDK test | pass |
+| All 21 reserved engine-fired addresses are documented; dev scripts compile | scripting-reference inspection; `scripts-build` checks | pass |
+| Hot-reload and followed-pawn reset have dedicated lifecycle regressions | source inspection only | gap — add lifecycle regression coverage |
+| Absent slide entry/exit, per-state tension override, and same-spring in-flight accumulation have dedicated regressions | source inspection / combined impulse tests | gap — add focused coverage |
+| Visual distinction, recovery rhythm, backlog comfort, and scales 1.0/0.5/0.0 | in-engine player trial | gap — unavailable from this non-interactive session |
+
+Preflight: `cargo fmt --check` ✓; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` ✓; `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` ✓. The full suite retains one unrelated existing dead-code warning in `postretro-level-compiler`.
+
+## Trial notes
+
+- sessions used: 1
+- tasks that needed rework after their first commit: 3
+- review-panel findings: 7 (6 repaired; 1 accurately recorded as an outstanding manual gap)
+- Decision premises found false: 0
+- Path claims corrected: 6

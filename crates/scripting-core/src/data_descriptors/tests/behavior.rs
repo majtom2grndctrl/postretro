@@ -139,6 +139,24 @@ fn both_runtimes_reject_inline_activity_transitions() {
 }
 
 #[test]
+fn both_runtimes_reject_actions_on_move_to_last_known() {
+    let js = js_error(&js_behavior(
+        ", initial: \"investigate\", activities: { investigate: { animation: \"walk\", motion: \"moveToLastKnown\", action: { attack: \"slam\" } } }, transitions: {}",
+    ));
+    let lua = lua_error(&lua_behavior(
+        ", initial = \"investigate\", activities = { investigate = { animation = \"walk\", motion = \"moveToLastKnown\", action = { attack = \"slam\" } } }, transitions = {}",
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("components.behavior.activities.investigate.action"),
+            "{error}"
+        );
+        assert!(error.contains("position-goal"), "{error}");
+        assert!(error.contains("non-engaged"), "{error}");
+    }
+}
+
+#[test]
 fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
     let js = js_error(&js_behavior(
         ", transitions: { idle: [{ when: { op: \"const\", value: true }, to: \"windup\" }] }",

@@ -20,6 +20,7 @@ use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
 use super::engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
 use super::facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
+use super::graph_eval::animation_for_path;
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -9091,6 +9092,7 @@ fn enemy_destination(registry: &EntityRegistry, enemy: EntityId) -> Option<Vec3>
 fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
     for (motion, patrol) in [
         (MotionVerb::MoveToAnchor, None),
+        (MotionVerb::MoveToLastKnown, None),
         (
             MotionVerb::Patrol,
             Some(PatrolDescriptor {
@@ -9115,6 +9117,21 @@ fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
             Some("locomotion")
         );
         assert_eq!(locomotion_animation(&graph), Some("locomotion"));
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert!(brain.enter_activity_at(
+            0,
+            graph_activity_index(&graph, "position").expect("position activity exists")
+        ));
+        assert_eq!(
+            animation_for_path(&brain, false),
+            Some("idle"),
+            "{motion:?} uses the initial rest clip at a standstill"
+        );
+        assert_eq!(
+            animation_for_path(&brain, true),
+            Some("locomotion"),
+            "{motion:?} uses its travel clip while moving"
+        );
     }
 }
 
@@ -9140,6 +9157,7 @@ fn a_composite_move_selector_supplies_the_shared_locomotion_animation() {
 fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
     for (motion, patrol) in [
         (MotionVerb::MoveToAnchor, None),
+        (MotionVerb::MoveToLastKnown, None),
         (
             MotionVerb::Patrol,
             Some(PatrolDescriptor {
@@ -9168,7 +9186,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         );
         assert!(matches!(
             graph.envelope.activities["position"].motion,
-            Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+            Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
         ));
         assert!(
             !engages_active(&BrainComponent::from_graph(&graph)),
@@ -9241,6 +9259,65 @@ fn move_to_anchor_clears_on_arrival_and_reissues_after_a_later_push() {
         Some(Vec3::ZERO),
         "a later external push past epsilon reissues the anchor goal"
     );
+}
+
+#[test]
+fn move_to_last_known_uses_memory_then_clears_on_arrival_or_without_memory() {
+    let graph = position_goal_graph(MotionVerb::MoveToLastKnown, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    agent_steering::set_destination(&mut registry, enemy, Vec3::new(9.0, 0.0, 0.0));
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "an absent last-known position clears a stale destination"
+    );
+    let goal = Vec3::new(3.0, 0.0, 0.0);
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has brain")
+        .clone();
+    brain.last_known_target_pos = Some(goal);
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(goal),
+        "a remembered position becomes the navigation destination"
+    );
+
+    set_enemy_position(
+        &mut registry,
+        enemy,
+        goal - Vec3::X * POSITION_GOAL_ARRIVAL_EPSILON,
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "arrival at the last-known position clears the destination"
+    );
+
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.acquired_target, None,
+        "position goals retain no target"
+    );
+    assert_eq!(
+        brain.combat_slot, None,
+        "position goals claim no combat slot"
+    );
+    assert_ne!(brain.acquired_target, Some(pawn));
 }
 
 #[test]

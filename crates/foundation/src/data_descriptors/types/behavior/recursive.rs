@@ -409,8 +409,10 @@ fn validate_activity(
     }
     if let Some(motion) = activity.motion {
         validate_motion(motion, &format!("{path}.motion"), patrol)?;
-        if matches!(motion, MotionVerb::MoveToAnchor | MotionVerb::Patrol)
-            && activity.action.is_some()
+        if matches!(
+            motion,
+            MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol
+        ) && activity.action.is_some()
         {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(

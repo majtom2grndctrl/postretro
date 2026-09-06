@@ -135,7 +135,7 @@ fn action_for_path_from_depth<'a>(
         if let Some(action) = activity.action.as_ref()
             && !matches!(
                 activity.motion,
-                Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+                Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
             )
         {
             return Some(action);
@@ -177,7 +177,7 @@ pub(super) fn engages_active(brain: &BrainComponent) -> bool {
 fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
     if matches!(
         activity.motion,
-        Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+        Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
     ) {
         return false;
     }
@@ -329,14 +329,17 @@ fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
     matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
         || matches!(
             activity.motion,
-            Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+            Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
         )
 }
 
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
     match motion {
         MotionVerb::ChaseTarget => SteeringIntent::Chase,
-        MotionVerb::MoveToAnchor | MotionVerb::Patrol | MotionVerb::Hold => SteeringIntent::Clear,
+        MotionVerb::MoveToAnchor
+        | MotionVerb::MoveToLastKnown
+        | MotionVerb::Patrol
+        | MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
     }
 }

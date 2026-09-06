@@ -1,0 +1,17 @@
+Model Information:
+* title: Cyberpunk Guns Asset Pack — rifle
+* source: https://ab8b.itch.io/cyberpunk-guns-asset-pack
+* author: ab8b (https://ab8b.itch.io)
+
+Model License:
+* license type: itch.io asset pack license
+* requirements: Free to use in personal and commercial projects.
+                Do not redistribute or resell the raw assets.
+                See asset pack page for full terms.
+
+Packaging notes (PostRetro):
+* Weapon model extracted from 12-cyberpunk-weapons.blend and converted to an
+  external glTF layout (model.gltf + model.bin + texture) by
+  tools/extract_cyberpunk_weapons.py for the engine's rigid model pipeline.
+* Geometry is evaluated in the source weapon armature's rest frame, keeping
+  the authored grip-relative origin and metre scale.

@@ -1,0 +1,150 @@
+{
+	"asset": {
+		"generator": "Khronos glTF Blender I/O v5.2.39",
+		"version": "2.0"
+	},
+	"scene": 0,
+	"scenes": [
+		{
+			"name": "Scene",
+			"nodes": [
+				1
+			]
+		}
+	],
+	"nodes": [
+		{
+			"name": "muzzle",
+			"translation": [
+				0,
+				0.3009999990463257,
+				-0.4390000104904175
+			],
+			"extras": {
+				"socket": "muzzle"
+			}
+		},
+		{
+			"children": [
+				0
+			],
+			"mesh": 0,
+			"name": "revolver.001"
+		}
+	],
+	"materials": [
+		{
+			"doubleSided": true,
+			"name": "Material.030",
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 0
+				},
+				"metallicFactor": 0
+			}
+		}
+	],
+	"meshes": [
+		{
+			"name": "Cube.026",
+			"primitives": [
+				{
+					"attributes": {
+						"POSITION": 0,
+						"NORMAL": 1,
+						"TEXCOORD_0": 2
+					},
+					"indices": 3,
+					"material": 0
+				}
+			]
+		}
+	],
+	"textures": [
+		{
+			"sampler": 0,
+			"source": 0
+		}
+	],
+	"images": [
+		{
+			"mimeType": "image/png",
+			"name": "revolver_texture",
+			"uri": "texture.png"
+		}
+	],
+	"accessors": [
+		{
+			"bufferView": 0,
+			"componentType": 5126,
+			"count": 287,
+			"max": [
+				0.052241209894418716,
+				0.33697256445884705,
+				0.12539730966091156
+			],
+			"min": [
+				-0.052150603383779526,
+				0.008990363217890263,
+				-0.4389832317829132
+			],
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 1,
+			"componentType": 5126,
+			"count": 287,
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 2,
+			"componentType": 5126,
+			"count": 287,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 3,
+			"componentType": 5123,
+			"count": 468,
+			"type": "SCALAR"
+		}
+	],
+	"bufferViews": [
+		{
+			"buffer": 0,
+			"byteLength": 3444,
+			"byteOffset": 0,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 3444,
+			"byteOffset": 3444,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 2296,
+			"byteOffset": 6888,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 936,
+			"byteOffset": 9184,
+			"target": 34963
+		}
+	],
+	"samplers": [
+		{
+			"magFilter": 9728,
+			"minFilter": 9984
+		}
+	],
+	"buffers": [
+		{
+			"byteLength": 10120,
+			"uri": "model.bin"
+		}
+	]
+}

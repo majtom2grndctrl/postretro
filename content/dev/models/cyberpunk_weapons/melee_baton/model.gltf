@@ -1,0 +1,136 @@
+{
+	"asset": {
+		"generator": "Khronos glTF Blender I/O v5.2.39",
+		"version": "2.0"
+	},
+	"scene": 0,
+	"scenes": [
+		{
+			"name": "Scene",
+			"nodes": [
+				0
+			]
+		}
+	],
+	"nodes": [
+		{
+			"mesh": 0,
+			"name": "meele weapon.001"
+		}
+	],
+	"materials": [
+		{
+			"doubleSided": true,
+			"name": "Material.016",
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 0
+				},
+				"metallicFactor": 0
+			}
+		}
+	],
+	"meshes": [
+		{
+			"name": "Cube.017",
+			"primitives": [
+				{
+					"attributes": {
+						"POSITION": 0,
+						"NORMAL": 1,
+						"TEXCOORD_0": 2
+					},
+					"indices": 3,
+					"material": 0
+				}
+			]
+		}
+	],
+	"textures": [
+		{
+			"sampler": 0,
+			"source": 0
+		}
+	],
+	"images": [
+		{
+			"mimeType": "image/png",
+			"name": "melee_baton_texture",
+			"uri": "texture.png"
+		}
+	],
+	"accessors": [
+		{
+			"bufferView": 0,
+			"componentType": 5126,
+			"count": 210,
+			"max": [
+				0.05659397691488266,
+				0.9896722435951233,
+				0.053555116057395935
+			],
+			"min": [
+				-0.05779777839779854,
+				0.04086308926343918,
+				-0.18626290559768677
+			],
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 1,
+			"componentType": 5126,
+			"count": 210,
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 2,
+			"componentType": 5126,
+			"count": 210,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 3,
+			"componentType": 5123,
+			"count": 384,
+			"type": "SCALAR"
+		}
+	],
+	"bufferViews": [
+		{
+			"buffer": 0,
+			"byteLength": 2520,
+			"byteOffset": 0,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 2520,
+			"byteOffset": 2520,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 1680,
+			"byteOffset": 5040,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 768,
+			"byteOffset": 6720,
+			"target": 34963
+		}
+	],
+	"samplers": [
+		{
+			"magFilter": 9728,
+			"minFilter": 9984
+		}
+	],
+	"buffers": [
+		{
+			"byteLength": 7488,
+			"uri": "model.bin"
+		}
+	]
+}

@@ -1,0 +1,149 @@
+{
+	"asset": {
+		"generator": "Khronos glTF Blender I/O v5.2.39",
+		"version": "2.0"
+	},
+	"scene": 0,
+	"scenes": [
+		{
+			"name": "Scene",
+			"nodes": [
+				1
+			]
+		}
+	],
+	"nodes": [
+		{
+			"name": "muzzle",
+			"translation": [
+				0,
+				0.4740000069141388,
+				-0.8420000076293945
+			],
+			"extras": {
+				"socket": "muzzle"
+			}
+		},
+		{
+			"children": [
+				0
+			],
+			"mesh": 0,
+			"name": "grenade launcher.001"
+		}
+	],
+	"materials": [
+		{
+			"name": "Material.008",
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 0
+				},
+				"metallicFactor": 0
+			}
+		}
+	],
+	"meshes": [
+		{
+			"name": "Cube.015",
+			"primitives": [
+				{
+					"attributes": {
+						"POSITION": 0,
+						"NORMAL": 1,
+						"TEXCOORD_0": 2
+					},
+					"indices": 3,
+					"material": 0
+				}
+			]
+		}
+	],
+	"textures": [
+		{
+			"sampler": 0,
+			"source": 0
+		}
+	],
+	"images": [
+		{
+			"mimeType": "image/png",
+			"name": "grenade_launcher_texture",
+			"uri": "texture.png"
+		}
+	],
+	"accessors": [
+		{
+			"bufferView": 0,
+			"componentType": 5126,
+			"count": 528,
+			"max": [
+				0.12830199301242828,
+				0.6896079182624817,
+				0.4365476667881012
+			],
+			"min": [
+				-0.29112452268600464,
+				0.05801066756248474,
+				-0.8420636057853699
+			],
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 1,
+			"componentType": 5126,
+			"count": 528,
+			"type": "VEC3"
+		},
+		{
+			"bufferView": 2,
+			"componentType": 5126,
+			"count": 528,
+			"type": "VEC2"
+		},
+		{
+			"bufferView": 3,
+			"componentType": 5123,
+			"count": 915,
+			"type": "SCALAR"
+		}
+	],
+	"bufferViews": [
+		{
+			"buffer": 0,
+			"byteLength": 6336,
+			"byteOffset": 0,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 6336,
+			"byteOffset": 6336,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 4224,
+			"byteOffset": 12672,
+			"target": 34962
+		},
+		{
+			"buffer": 0,
+			"byteLength": 1830,
+			"byteOffset": 16896,
+			"target": 34963
+		}
+	],
+	"samplers": [
+		{
+			"magFilter": 9728,
+			"minFilter": 9984
+		}
+	],
+	"buffers": [
+		{
+			"byteLength": 18728,
+			"uri": "model.bin"
+		}
+	]
+}

@@ -86,6 +86,9 @@ clip set stays with `E10--enemy-stagger`.
 ## Code grounding (verified against current tree)
 
 Line numbers are ephemeral; identifiers and file homes are the durable anchors.
+The `mod.rs` homes below are pre-split: Task 0 relocates the tick orchestrator's
+motion helpers into `ai/steering.rs`, the compute pass into `ai/compute.rs`, and
+the apply pass into `ai/apply.rs`, so later tasks land in those modules.
 
 **Fact table (append-only).** `crates/foundation/src/brain.rs` — `BRAIN_INPUTS:
 [(&str, IrType); 15]` (~:116). Prefix `BRAIN_INPUT_PREFIX = "@brain."`. Sentinel
@@ -176,5 +179,7 @@ directly; that is the value read at the chokepoint for the yaw snapshot.
 `ai/mod.rs` 1208 · `graph_eval.rs` 736 · `brain_programs.rs` 730 ·
 `brain_scope.rs` 811 (~540 tests) · `targeting.rs` 461 · `perception.rs` 305 ·
 `ai_tests.rs` 9270 (test file) · `impact_policy.rs` 3289 · `entities/health.rs`
-(chokepoint). `mod.rs` at 1208 is the one file this spec meaningfully extends;
-additions are additive and mirror existing patterns (Open Questions).
+(chokepoint). `mod.rs` at 1208 is the god-file risk Task 0 (Phase 0) resolves by
+splitting it into `ai/steering.rs`, `ai/compute.rs`, and `ai/apply.rs` before the
+feature extends the compute pass; the feature's additions are additive and mirror
+existing patterns.

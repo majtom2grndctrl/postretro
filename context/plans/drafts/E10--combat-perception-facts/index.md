@@ -33,6 +33,11 @@ policy into the engine.
 - The reference enemy graph gains an `investigate` state, damage-driven and
   lost-sight transitions, and a directional startle, with its Luau twin kept
   byte-equal.
+- A behavior-preserving split of the `ai/mod.rs` tick orchestrator into cohesive
+  sibling modules (`ai/steering.rs`, `ai/compute.rs`, `ai/apply.rs`), landed
+  first (Phase 0) so the feature's additions extend small modules rather than
+  growing the god file. No behavior change — verified by the existing AI suite
+  (AC 2).
 
 ### Out of scope
 
@@ -54,8 +59,6 @@ policy into the engine.
 - **Authored tuning of the sentinel/clamp constants.** The timers' "never"
   sentinel and clamp ceiling are engine constants in v1, upgradeable to a
   descriptor scalar later on the `NumberOrIr` precedent if a game needs it.
-- **Splitting `scripting/systems/ai/mod.rs`.** The 1208-line tick orchestrator
-  is extended in place; a split is off critical path (see Open Questions).
 
 ## Direction
 
@@ -184,6 +187,36 @@ a graph reads them in different guards.
 
 ## Tasks
 
+### Task 0: Split `ai/mod.rs` (behavior-preserving)
+
+Extract the tick orchestrator's cohesive units into sibling modules before the
+feature adds to it. `crates/postretro/src/scripting/systems/ai/mod.rs` is
+organized as three passes plus motion helpers; make that structure physical by
+moving code verbatim, preserving order — a block move, not a reconstruction:
+- `ai/steering.rs` — motion/steering resolution: `position_goal_steering` and the
+  patrol helpers (`patrol_steering`, `patrol_goal`, `advance_patrol_cursor`),
+  which resolve a brain's motion verb / patrol route to a `SteeringIntent`. Task
+  2b's `MoveToLastKnown` arm lands here.
+- `ai/compute.rs` — Pass 2: per-brain evaluation producing the `EnemyOutcome`
+  vector, in source order — targeting, per-tick timer aging, fact/memory
+  computes, scope refresh, then guard eval (aging and fact computes precede the
+  refresh, so the 1-tick-latency read is preserved). Task 1/2a/3 fact + memory
+  computes land here.
+- `ai/apply.rs` — Pass 3: registry mutation from the outcomes, in source order —
+  brain write-back, steering, facing, the damage chokepoint call, then animation.
+- `ai/mod.rs` — orchestrator: entry points (`run_ai_tick*`), the pass-interface
+  types (`EnemySnapshot`, `EnemyOutcome`, `AttackOutcome`, plus `AiTickResult`,
+  `AiTickInputs`, `AiRuntime`, `LocomotionIntent`), Pass 1 (snapshot), and the
+  driver that sequences the passes.
+The smaller per-pass helpers (`facing_direction`, `should_switch_animation`,
+`entity_faction`) move with the pass that consumes them. `EnemyOutcome` is
+already `pub(super)`; raise `EnemySnapshot` and `AttackOutcome` to `pub(super)`
+so the compute/apply modules share the pass interface. `SteeringIntent` stays in
+`ai/engine_floor.rs`, unchanged. No behavior change: guards, ordering, and
+outputs are identical. Verified by the full existing AI test suite passing
+unchanged (AC 2); no new test. Later phases land their additions in these
+modules (`ai/compute.rs`, `ai/steering.rs`).
+
 ### Task 1: Damage-recency fact (thin slice)
 
 Deliver `@brain.timeSinceDamageMs` end to end, crossing every seam this spec
@@ -203,7 +236,7 @@ are), so a transition tick never skips an increment. Append the fact to `BRAIN_I
 the tail as `Number` with its `BRAIN_*_INPUT` const and validation-twin entry,
 plus the slot-index test; add its `BrainFacts` field and `BrainScope::refresh`
 projection (`crates/postretro/src/scripting/systems/ai/brain_scope.rs`,
-`.../ai/mod.rs`). Add the SDK `BrainInputs` interface entry in the `sdk_lib`
+`.../ai/compute.rs`). Add the SDK `BrainInputs` interface entry in the `sdk_lib`
 templates and regenerate the committed `postretro.d.ts` / `.d.luau` and the test
 fixtures. Consumer: a unit test in `ai_tests.rs` with a hand-built graph whose
 guard reads `timeSinceDamageMs` — not the shipped reference enemy (that lands in
@@ -242,7 +275,7 @@ damage-seed when unseen, and the sentinel fallbacks.
 Add `MoveToLastKnown` to the `MotionVerb` enum and its `ALL` array (and the
 array length) in `crates/foundation/src/data_descriptors/types/behavior.rs`
 (serde `"moveToLastKnown"`). Resolve its destination in `position_goal_steering`
-(`.../ai/mod.rs`): `MoveTo(last_known_target_pos)` when set and beyond the
+(`.../ai/steering.rs`, post-split): `MoveTo(last_known_target_pos)` when set and beyond the
 arrival epsilon, else `Clear`; add the exhaustive arm to `steering_for` as well
 (it must land in the `Clear`/non-chase set there). Add `MoveToLastKnown` to all four
 non-engaged gates so it is treated exactly like `moveToAnchor`: the descriptor
@@ -297,12 +330,15 @@ the final acceptance criterion.
 
 ## Sequencing
 
-The additions concentrate in four shared files — the `BRAIN_INPUTS` table
-(`foundation/brain.rs`), the damage chokepoint (`entities/health.rs`), the
-compute pass (`ai/mod.rs`), and `brain_scope.rs` — so tasks append to them in
-series rather than racing. The chain is inherently layered (memory → facts →
-consumer), so this is sequential by nature, not an artificial ordering.
+After the Phase 0 split, the feature's additions concentrate in a few shared
+files — the `BRAIN_INPUTS` table (`foundation/brain.rs`), the damage chokepoint
+(`entities/health.rs`), the compute pass (`ai/compute.rs`), and `brain_scope.rs`
+— so tasks append to them in series rather than racing. The chain is inherently
+layered (split → memory → facts → consumer), so this is sequential by nature,
+not an artificial ordering.
 
+**Phase 0 (sequential):** Task 0 — behavior-preserving `ai/mod.rs` split; lands
+first so every later addition extends a small module. No behavior change (AC 2).
 **Phase 1 (sequential):** Task 1 — thin slice; falsifies the fact-table,
 refresh-projection, committed-SDK, and chokepoint→brain boundary before fan-out.
 **Phase 2 (sequential):** Task 2a — memory + search facts; then Task 2b —
@@ -409,8 +445,4 @@ which needs a one-tick engine-written flag.
 
 ## Open questions
 
-- **`ai/mod.rs` split (owner priority, non-blocking).** This spec extends the
-  tick orchestrator in place (Scope); the additions are localized and mirror
-  existing patterns (`distance_from_anchor`, `position_goal_steering`). Whether to
-  land a separate split of the memory-update block into a small `ai/` submodule
-  first is a sequencing call with no technical winner — the owner's to make.
+None.

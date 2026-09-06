@@ -561,6 +561,7 @@ fn step_graph(
             time_since_damage_ms: BRAIN_NO_TARGET_DISTANCE,
             time_since_target_visible: BRAIN_NO_TARGET_DISTANCE,
             distance_to_last_known: BRAIN_NO_TARGET_DISTANCE,
+            damage_bearing: 0.0,
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,

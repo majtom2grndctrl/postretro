@@ -319,6 +319,40 @@ fn last_known_brain_facts_emit_identical_ir_in_both_runtimes() {
 }
 
 #[test]
+fn damage_bearing_brain_fact_emits_identical_ir_in_both_runtimes() {
+    // The SDK helper is the only author-facing spelling of this host-only
+    // snapshot, so keep its canonical input name on the cross-runtime path.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { brain } from "postretro";
+        JSON.stringify(brain.damageBearing.between(-1.6, 1.6));
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        return brain.damageBearing:between(-1.6, 1.6)
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "damage-bearing brain fact diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "op": "and",
+            "a": {
+                "op": "ge",
+                "a": { "op": "input", "name": "@brain.damageBearing" },
+                "b": { "op": "const", "value": -1.6 },
+            },
+            "b": {
+                "op": "le",
+                "a": { "op": "input", "name": "@brain.damageBearing" },
+                "b": { "op": "const", "value": 1.6 },
+            },
+        }),
+        "damage-bearing helper must lower to the canonical input leaf",
+    );
+}
+
+#[test]
 fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
     // These fixtures deliberately use the public UI authoring surfaces. The
     // TypeScript module imports the UI helpers before `scripts-build` strips

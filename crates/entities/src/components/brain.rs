@@ -42,6 +42,11 @@ pub struct BrainComponent {
     /// every tick and damage resets it through the Health chokepoint.
     #[serde(default = "default_time_since_damage_ms")]
     pub time_since_damage_ms: f32,
+    /// Signed XZ yaw in radians from this brain's visual `+Z` forward toward
+    /// the attacker that landed its most recent damage. It is host-only
+    /// perception state; authors gate its neutral default on damage recency.
+    #[serde(default)]
+    pub damage_bearing: f32,
     /// World position of the most recent visible target or damage attacker.
     /// This host-only memory lets authored behavior choose how to investigate
     /// a stimulus without making its source a selectable target.
@@ -178,6 +183,7 @@ impl BrainComponent {
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         let mut brain = Self {
             time_since_damage_ms: default_time_since_damage_ms(),
+            damage_bearing: 0.0,
             last_known_target_pos: None,
             time_since_target_visible: default_time_since_target_visible(),
             home_anchor: Vec3::ZERO,
@@ -799,6 +805,7 @@ mod tests {
         assert_eq!(brain.home_anchor, Vec3::ZERO);
         assert_eq!(brain.last_known_target_pos, None);
         assert_eq!(brain.time_since_target_visible, BRAIN_NO_TARGET_DISTANCE);
+        assert_eq!(brain.damage_bearing, 0.0);
         assert!(
             brain.attack_cooldown_remaining_ms.is_empty(),
             "a fresh brain starts with every named attack ready"
@@ -920,6 +927,20 @@ mod tests {
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-damage-recency brain deserializes");
         assert_eq!(restored.time_since_damage_ms, BRAIN_NO_TARGET_DISTANCE);
+    }
+
+    #[test]
+    fn deserializing_a_pre_damage_bearing_brain_defaults_to_neutral() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("damage_bearing");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-damage-bearing brain deserializes");
+        assert_eq!(restored.damage_bearing, 0.0);
     }
 
     #[test]
@@ -1122,6 +1143,7 @@ mod tests {
         assert!(brain.enter_activity_at(0, graph_activity_index(&brain.graph, "charge").unwrap()));
         brain.time_in_activity_ms[0] = 320.0;
         brain.time_since_damage_ms = 125.0;
+        brain.damage_bearing = -std::f32::consts::FRAC_PI_2;
         brain.last_known_target_pos = Some(Vec3::new(4.0, 2.0, -8.0));
         brain.time_since_target_visible = 75.0;
 
@@ -1194,7 +1216,79 @@ mod tests {
     }
 
     #[test]
-    fn damage_chokepoint_leaves_memory_unchanged_when_the_attacker_has_no_transform() {
+    fn damage_chokepoint_captures_damage_bearing_for_cardinal_attacker_positions() {
+        use crate::components::health::{
+            DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+        };
+        use crate::data_descriptors::HealthDescriptor;
+        use postretro_foundation::DamagePayload;
+
+        fn bearing_after_hit(enemy_transform: Transform, attacker_position: Vec3) -> f32 {
+            let mut registry = EntityRegistry::new();
+            let enemy = registry.spawn(enemy_transform);
+            let attacker = registry.spawn(Transform {
+                position: attacker_position,
+                ..Transform::default()
+            });
+            registry
+                .set_component(enemy, BrainComponent::from_graph(&authored_graph()))
+                .expect("enemy is live");
+            registry
+                .set_component(
+                    enemy,
+                    HealthComponent::from_descriptor(&HealthDescriptor {
+                        max: 100.0,
+                        hitbox: None,
+                        zone_multipliers: HashMap::new(),
+                    }),
+                )
+                .expect("enemy is live");
+
+            let mut context = DamageContext::new("test.damage-bearing", DamageProducer::InTick);
+            context.attacker = Some(attacker);
+            assert!(apply_damage_with_context(
+                &mut registry,
+                enemy,
+                &DamagePayload { amount: 1.0 },
+                context,
+            ));
+            registry
+                .get_component::<BrainComponent>(enemy)
+                .expect("brain remains attached")
+                .damage_bearing
+        }
+
+        const EPSILON: f32 = 1.0e-5;
+        let enemy_transform = Transform {
+            rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            ..Transform::default()
+        };
+        let ahead = bearing_after_hit(enemy_transform, Vec3::new(10.0, 0.0, 0.0));
+        let behind = bearing_after_hit(enemy_transform, Vec3::new(-10.0, 0.0, 0.0));
+        let right = bearing_after_hit(enemy_transform, Vec3::new(0.0, 0.0, -10.0));
+        let left = bearing_after_hit(enemy_transform, Vec3::new(0.0, 0.0, 10.0));
+
+        assert!(ahead.abs() <= EPSILON, "ahead should read 0, got {ahead}");
+        assert!(
+            (behind.abs() - std::f32::consts::PI).abs() <= EPSILON,
+            "behind should read +/- pi, got {behind}"
+        );
+        assert!(
+            (right.abs() - std::f32::consts::FRAC_PI_2).abs() <= EPSILON,
+            "right should read a quarter turn, got {right}"
+        );
+        assert!(
+            (left.abs() - std::f32::consts::FRAC_PI_2).abs() <= EPSILON,
+            "left should read a quarter turn, got {left}"
+        );
+        assert!(
+            right * left < 0.0,
+            "the two sides must carry opposite signs: right={right}, left={left}"
+        );
+    }
+
+    #[test]
+    fn damage_chokepoint_leaves_memory_and_bearing_unchanged_without_an_attacker_transform() {
         use crate::components::health::{
             DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
         };
@@ -1215,8 +1309,21 @@ mod tests {
         let remembered = Vec3::new(1.0, 2.0, 3.0);
         let mut brain = BrainComponent::from_graph(&authored_graph());
         brain.last_known_target_pos = Some(remembered);
+        brain.damage_bearing = 0.75;
         registry.set_component(brain_entity, brain).unwrap();
         registry.set_component(brain_entity, health).unwrap();
+
+        assert!(apply_damage_with_context(
+            &mut registry,
+            brain_entity,
+            &DamagePayload { amount: 1.0 },
+            DamageContext::new("test.missing-attacker", DamageProducer::InTick),
+        ));
+        let brain = registry
+            .get_component::<BrainComponent>(brain_entity)
+            .expect("brain remains attached");
+        assert_eq!(brain.last_known_target_pos, Some(remembered));
+        assert_eq!(brain.damage_bearing, 0.75);
 
         let mut damage_context =
             DamageContext::new("test.no-transform-attacker", DamageProducer::InTick);
@@ -1234,6 +1341,14 @@ mod tests {
                 .last_known_target_pos,
             Some(remembered),
             "damage must not erase usable memory when the attacker has no world position"
+        );
+        assert_eq!(
+            registry
+                .get_component::<BrainComponent>(brain_entity)
+                .expect("brain remains attached")
+                .damage_bearing,
+            0.75,
+            "a missing attacker transform must not replace the last valid bearing"
         );
     }
 

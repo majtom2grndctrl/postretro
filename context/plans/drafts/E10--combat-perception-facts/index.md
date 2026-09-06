@@ -125,16 +125,22 @@ a graph reads them in different guards.
   with all four facts and the `moveToLastKnown` verb present in both committed
   fixtures.
 - [ ] Archetypes that use none of the new facts or the new verb behave
-  bit-for-bit as today: the full existing AI test suite passes unchanged.
+  bit-for-bit as today: the full existing AI test suite passes unchanged (confirm
+  no golden/digest snapshot pins the `BrainComponent` field set; appended
+  serde-defaulted fields are otherwise compatible).
 - [ ] A freshly spawned, never-damaged, never-having-seen-a-target enemy reads
   `timeSinceDamageMs` and `timeSinceTargetVisible` as the "never" sentinel (a
   guard `le(timeSinceDamageMs, W)` is false), and `distanceToLastKnown` as the
-  no-memory sentinel. No new-fact guard fires at spawn.
+  large no-memory sentinel — a bare `gt(distanceToLastKnown, X)` reads true with
+  no memory, so an investigate guard must conjoin a recency fact. No
+  recency-conjoined new-fact guard fires at spawn.
 - [ ] A hit on an enemy sets `timeSinceDamageMs` toward zero: on the AI tick
   after the hit it reads ≤ one tick's `dt_ms`, then climbs monotonically,
   clamped at the sentinel (it never wraps or grows unbounded over a long
   session). All three damage paths trigger it: player hitscan, another entity's
-  melee, and the `applyDamage` script reaction.
+  melee, and the `applyDamage` script reaction. In live v1 play enemy melee never
+  reaches a brain entity (dual-sourced-memory invariant), so the melee path is a
+  chokepoint-level guarantee, exercised by driving the chokepoint directly.
 - [ ] While a target is visible (`@brain.targetVisible` true, grace included),
   `timeSinceTargetVisible` reads 0 and `distanceToLastKnown` tracks the target's
   live position; after visibility is lost it climbs monotonically and
@@ -150,8 +156,10 @@ a graph reads them in different guards.
 - [ ] `moveToLastKnown` is non-engaged: a graph that declares an `action` on a
   `moveToLastKnown` activity is a parse error in both runtimes; an enemy in a
   `moveToLastKnown` activity retains no target and is assigned no combat slot;
-  with no last-known position it holds (steering cleared), playing its
-  locomotion animation.
+  with no last-known position it holds (steering cleared) and, being a locomotion
+  activity at a standstill, yields to the graph's rest (initial-state) animation
+  rather than its own travel cycle (the locomotion-at-standstill rule,
+  `entity_model.md` §7c).
 - [ ] `BrainScope::refresh` projects every `BRAIN_INPUTS` entry in table order
   after the additions; the slot-index and array-length coupling tests pass (a
   reorder or a missed projection fails to compile or fails a slot test).
@@ -163,8 +171,16 @@ a graph reads them in different guards.
   advances on the shot's origin and engages on re-sight; chasing a target that
   breaks line of sight, it searches the last-seen spot and stands down if
   nothing is there; a hit plays the authored directional startle. On a loopback
-  co-op session a searching/investigating host enemy shows the correct state via
-  the replicated animation state name, with no wire-format change.
+  co-op session the host enemy's memory and timers stay host-only (no wire-format
+  change); the only replicated presentation cue is the mesh animation state name,
+  so the client sees the enemy play its `walk` animation and move toward the
+  last-known spot via the replicated `Transform`, not the `investigate` state
+  itself — which shares the `walk` clip with patrol and chase and is therefore not
+  client-observable. The distinct `flinch` startle is observable, but a startle
+  beat shorter than one snapshot interval is not guaranteed to reach the client.
+  This criterion is a manual playtest/review sign-off, not a runnable assertion:
+  the felt behaviors are verified on the fixture and "no wire-format change" is a
+  review gate; the one automatable piece is the twin parser byte-equality test.
 
 ## Tasks
 
@@ -181,8 +197,9 @@ deserialization-defaults test and the `ComponentValue::Brain` round-trip.
 it to `0.0` when the damaged entity carries a `BrainComponent` (no-op
 otherwise), via the crate's clone-mutate-`set_component` idiom or
 `get_component_value_mut(id, ComponentKind::Brain)`. The AI compute pass ages it
-by `dt_ms` and clamps at the sentinel, beside the existing cooldown/activity
-aging. Append the fact to `BRAIN_INPUTS` (`crates/foundation/src/brain.rs`) at
+by `dt_ms` and clamps at the sentinel, aged unconditionally each tick like the
+named attack cooldowns (not gated on `entry_pending` the way the activity timers
+are), so a transition tick never skips an increment. Append the fact to `BRAIN_INPUTS` (`crates/foundation/src/brain.rs`) at
 the tail as `Number` with its `BRAIN_*_INPUT` const and validation-twin entry,
 plus the slot-index test; add its `BrainFacts` field and `BrainScope::refresh`
 projection (`crates/postretro/src/scripting/systems/ai/brain_scope.rs`,
@@ -207,8 +224,10 @@ target's world position is in hand: while visible, write
 `time_since_target_visible = 0.0`; otherwise age `time_since_target_visible` by
 `dt_ms` (clamped at the sentinel). Compute a `distance_to_last_known` from the
 enemy's own position snapshot and `last_known_target_pos`
-(`nav::distance_xz`), falling back to the no-memory sentinel when the memory is
-empty — mirroring how `distance_from_anchor` is computed. Append
+(`nav::distance_xz`), falling back to the large-value `BRAIN_NO_TARGET_DISTANCE`
+no-memory sentinel when the memory is empty (so `gt`/`ge` guards read the
+no-memory direction; see AC 3) — mirroring how `distance_from_anchor` is
+computed. Append
 `@brain.timeSinceTargetVisible` and `@brain.distanceToLastKnown` to
 `BRAIN_INPUTS` (both `Number`), with consts, validation-twin entries,
 slot-index tests, `BrainFacts` fields, `refresh` projections, SDK typedefs,
@@ -244,8 +263,13 @@ Add `damage_bearing: f32` (serde default `0.0`) to `BrainComponent`, initialized
 in `from_graph`, with round-trip coverage. In `apply_damage_with_context`,
 when the damaged entity carries a `BrainComponent` and `context.attacker` has a
 `Transform`, compute the enemy-relative yaw from the enemy's facing
-(`Transform.rotation` on the damaged entity — confirm `facing.rs` writes visual
-facing there) and the XZ direction to the attacker, and store it. Convention:
+(`Transform.rotation` on the damaged entity — the AI apply pass writes the
+enemy's visual facing to `Transform.rotation` via the `facing.rs` yaw helpers, and
+the renderer reads it directly) and the XZ direction to the attacker, and store it.
+Mesh forward is `+Z` (`MESH_FORWARD` in `ai/facing.rs`), so bearing 0 is the
+attacker along the enemy's `Transform.rotation * +Z`; recompute the yaw inline in
+`health.rs` — `facing.rs`'s helpers are `pub(super)` in the `postretro` binary
+crate and are not importable from `postretro-entities`. Convention:
 signed radians in `[-π, π]`, `0` = attacker dead ahead, `±π` = directly behind,
 sign distinguishes the two sides. Append `@brain.damageBearing` to
 `BRAIN_INPUTS` (`Number`) with const, validation twin, slot-index test,
@@ -260,14 +284,16 @@ Rewrite the reference enemy graph (`content/dev/scripts/reference-enemy.ts` and
 its byte-equal `reference-enemy.luau`) to exercise the whole feature: an
 `investigate` activity (`animation: "walk"`, `motion: "moveToLastKnown"`); a
 `patrol → investigate` transition on recent damage with an unreached memory
-(`timeSinceDamageMs.le(ALERT_MS).and(distanceToLastKnown.gt(ARRIVE))`); an
+(`timeSinceDamageMs.le(ALERT_MS).and(distanceToLastKnown.gt(ARRIVE))` — the
+recency conjunction is load-bearing; `distanceToLastKnown.gt` reads true with no
+memory, so it gates on an actually-seeded spot, per AC 3); an
 `engage → investigate` transition on lost sight
 (`timeSinceTargetVisible.ge(SEARCH_AFTER_MS)`); `investigate → engage` on
 re-sight (`targetVisible`) and `investigate → patrol` on arrival
 (`distanceToLastKnown.le(ARRIVE)`); and a directional startle beat gated on
 `timeSinceDamageMs` and `damageBearing`. Keep the twin parser test green.
-Verify on the movement-feel fixture per the final acceptance criterion, and
-confirm the replicated state name on a loopback co-op session.
+Verify on the movement-feel fixture and on a loopback co-op session, both per
+the final acceptance criterion.
 
 ## Sequencing
 
@@ -303,16 +329,23 @@ facts and the verb.
 Fact names extend `BRAIN_INPUTS` at the tail in task order (slots 15–18). The
 `Number` sentinel for the two timers and for `distanceToLastKnown` reuses the
 large-value convention of the existing `BRAIN_NO_TARGET_DISTANCE`.
+`distanceToLastKnown` therefore inherits that sentinel's `gt`/`ge` inversion trap
+(documented at `BRAIN_NO_TARGET_DISTANCE`): with no memory a bare
+`gt(distanceToLastKnown, X)` reads true — it doubles as the no-memory test — so an
+"unreached spot" guard must conjoin a recency fact (`timeSinceDamageMs` /
+`timeSinceTargetVisible`) that is recent only when the memory was seeded, as the
+reference graph's `patrol → investigate` guard does. A recency reset with no
+seeded attacker (the `applyDamage` script path) does not create a spot.
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | `BRAIN_INPUTS` is append-only; a name's index is its runtime read handle | Tasks 1, 2a, 3 append at the tail | any insert/reorder silently re-points every bound program | slot-index tests (`foundation/brain.rs`); AC "refresh projects every entry" |
-| `BrainScope::refresh` writes one value per `BRAIN_INPUTS` entry, in order | each fact task | array-length drift between table and refresh array | `refresh` `expected_fixed_value` compile tripwire; AC 8 |
-| Timers: `never`-sentinel until first trigger, `0` at trigger, monotonic aging clamped at the sentinel | Task 1 (damage), Task 2a (sight); reset at chokepoint / visible-tick, aged in compute pass | spawn default must be the sentinel not `0.0`; catch-up ticks age per tick; long sessions must not overflow | AC 3, 4, 5 |
-| `moveToLastKnown` is non-engaged — no action, no target retention, no combat slot | Task 2b adds it to all four position-goal gates | a missed gate lets it declare an action or hold a target/slot | AC 7; validation-rejects-action test |
-| Last-known memory is dual-sourced; the compute-pass visible-cache is authoritative each tick a target is visible, the damage-seed applies only when unseen | Task 2a (visible-cache), Task 1/2a (damage-seed), Task 3 (bearing rides the same seed site) | write ordering: compute is stage 5, damage lands stage 8 / AI-melee within the tick | AC 5, 6; Orderings table (`research.md`) |
+| `BrainScope::refresh` writes one value per `BRAIN_INPUTS` entry, in order | each fact task | array-length drift between table and refresh array | `refresh`'s fixed-array literal is a compile tripwire on length drift; `expected_fixed_value`'s no-`_` arm is a test-time panic on a missing case; AC 9 |
+| Timers: `never`-sentinel until first trigger, `0` at trigger, monotonic aging clamped at the sentinel | Task 1 (damage), Task 2a (sight); reset at chokepoint / visible-tick, aged in compute pass | spawn default must be the large-value `BRAIN_NO_TARGET_DISTANCE` sentinel (`foundation/brain.rs`), not `0.0`; catch-up ticks age per tick; long sessions must not overflow | AC 3, 4, 5 |
+| `moveToLastKnown` is non-engaged — no action, no target retention, no combat slot | Task 2b adds it to all four position-goal gates | a missed gate lets it declare an action or hold a target/slot | AC 8; validation-rejects-action test |
+| Last-known memory is dual-sourced; the compute-pass visible-cache is authoritative each tick a target is visible, the damage-seed applies only when unseen | Task 2a (visible-cache), Task 1/2a (damage-seed), Task 3 (bearing rides the same seed site) | out-of-tick damage (player weapon stage 8; frame-end `applyDamage` drain) is the only seed path that reaches a brain entity in v1 — enemies target only `PlayerMovement` holders (`targeting.rs` `target_offers`), so in-tick enemy melee never damages a brain entity and the apply-pass snapshot write-back poses no live race; a future spec allowing enemy-damaged brain entities must fold the chokepoint-owned fields past that write-back | AC 5, 6; Orderings table (`research.md`) |
 | The floor never makes an attacker a selectable target it could not otherwise perceive | whole spec (no `select_target`/`visible` change) | a future threat-ranking spec owns any widening | AC out-of-scope; no code path touches `select_target` |
 
 ## Script syntax examples
@@ -376,18 +409,8 @@ which needs a one-tick engine-written flag.
 
 ## Open questions
 
-- **Timer tuning surface.** The "never" sentinel and clamp ceiling are engine
-  constants in v1. A stealth-leaning game may want authored awareness windows
-  (how long a hit keeps an enemy alert); that promotes to a descriptor scalar
-  on the `NumberOrIr` precedent once a consumer asks. Not built now.
-- **`ai/mod.rs` size.** The tick orchestrator is 1208 lines and this spec adds
-  fact computes, memory caching, and a steering arm to it. The additions are
-  localized and mirror existing patterns (`distance_from_anchor`,
-  `position_goal_steering`), so a split is not bundled here — but the memory-
-  update block is a candidate to factor into a small `ai/` submodule. Owner call
-  whether to split first.
-- **Startle vs. stagger overlap.** `damageBearing` ships here; the reference
-  enemy's `startle` beat is a minimal demonstration. A full directional-pain
-  interrupt set (which clip per quadrant, commitment window, re-stagger cooldown)
-  belongs to `E10--enemy-stagger`. Confirm the two specs' boundary at that
-  spec's revival: this one owns the *fact*, that one owns the *interrupt*.
+- **`ai/mod.rs` split (owner priority, non-blocking).** This spec extends the
+  tick orchestrator in place (Scope); the additions are localized and mirror
+  existing patterns (`distance_from_anchor`, `position_goal_steering`). Whether to
+  land a separate split of the memory-update block into a small `ai/` submodule
+  first is a sequencing call with no technical winner — the owner's to make.

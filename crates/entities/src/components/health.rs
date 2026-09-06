@@ -10,7 +10,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
-use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_foundation::{DamagePayload, IrType, IrValue};
 
 /// Maximum number of exact contributor source ids retained per target before
@@ -461,10 +461,19 @@ pub fn apply_damage_with_context(
     // contact attacks, and script reactions share identical recency behavior.
     // A Health-only entity has no brain to update, which is intentionally a
     // no-op rather than a modelling error.
+    let attacker_position = context.attacker.and_then(|attacker| {
+        registry
+            .get_component::<Transform>(attacker)
+            .ok()
+            .map(|transform| transform.position)
+    });
     if let Ok(ComponentValue::Brain(brain)) =
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
         brain.time_since_damage_ms = 0.0;
+        if let Some(position) = attacker_position {
+            brain.last_known_target_pos = Some(position);
+        }
     }
     registry.push_impact_dispatch(ImpactDispatch {
         amount: payload.amount,

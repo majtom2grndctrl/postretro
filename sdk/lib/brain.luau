@@ -40,7 +40,11 @@ local BrainSdk = {}
 --- `targetVisible` (boolean; the shared debounced static-world sightline
 --- verdict, false with no target), and `timeSinceDamageMs` (number; `1e9`
 --- before the first hit, then zero at a landed hit and monotonically aged back
---- to that sentinel by AI ticks).
+--- to that sentinel by AI ticks), and `timeSinceTargetVisible` (number; `1e9`
+--- before the first sighting, then zero while a selected target is visible and
+--- monotonically aged back to that sentinel), and `distanceToLastKnown`
+--- (number; XZ distance to the remembered spot or `1e9` without memory — pair
+--- bare `gt`/`ge` guards with a recent sight or damage fact).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -58,6 +62,8 @@ BrainSdk.brain = table.freeze({
   attacksFiredInActivity = input("@brain.attacksFiredInActivity"),
   targetVisible = input("@brain.targetVisible"),
   timeSinceDamageMs = input("@brain.timeSinceDamageMs"),
+  timeSinceTargetVisible = input("@brain.timeSinceTargetVisible"),
+  distanceToLastKnown = input("@brain.distanceToLastKnown"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

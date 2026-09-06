@@ -2270,6 +2270,10 @@ export type BrainInputs = {
   targetVisible: RuntimeGuardNode,
   --- Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
   timeSinceDamageMs: RuntimeGuardNode,
+  --- Milliseconds since the selected target was last visible. A fresh never-seen brain reads `1e9`; a visible target resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
+  timeSinceTargetVisible: RuntimeGuardNode,
+  --- XZ distance to the remembered last-known target position, or `1e9` with no memory. A bare `gt`/`ge` reads true without memory, so pair an investigate-distance guard with a recent sight or damage fact (number).
+  distanceToLastKnown: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

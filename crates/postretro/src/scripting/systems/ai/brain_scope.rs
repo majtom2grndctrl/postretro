@@ -43,6 +43,13 @@ pub(crate) struct BrainFacts {
     /// Milliseconds since this enemy last took damage. A fresh never-hit brain
     /// retains the shared sentinel rather than reading as a recent hit.
     pub time_since_damage_ms: f32,
+    /// Milliseconds since the selected target was last visible. A fresh
+    /// never-seen brain retains the shared sentinel rather than reading as a
+    /// recent sighting.
+    pub time_since_target_visible: f32,
+    /// XZ distance from this enemy to the remembered last-known target
+    /// position, or the shared sentinel while the brain has no memory.
+    pub distance_to_last_known: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
     pub acquisition_due: bool,
     /// XZ distance from the enemy's current position to its spawn-time home
@@ -197,6 +204,8 @@ impl BrainScope {
             IrValue::Number(facts.attacks_fired_in_activity as f32),
             IrValue::Bool(facts.target_visible),
             IrValue::Number(facts.time_since_damage_ms),
+            IrValue::Number(facts.time_since_target_visible),
+            IrValue::Number(facts.distance_to_last_known),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -280,12 +289,13 @@ mod tests {
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
         BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
-        BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT,
-        BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT,
-        BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
-        BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-        BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
-        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
+        BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
+        BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
+        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+        BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
+        BindError, BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind,
+        bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -357,6 +367,8 @@ mod tests {
             target: Some((target, 7.5, glam::Vec3::ZERO)),
             attack_cooldown_ms: 400.0,
             time_since_damage_ms: 250.0,
+            time_since_target_visible: 375.0,
+            distance_to_last_known: 22.5,
             acquisition_due: true,
             distance_from_anchor: 12.5,
             target_hostile: true,
@@ -486,6 +498,10 @@ mod tests {
             }
             BRAIN_TARGET_VISIBLE_INPUT => IrValue::Bool(facts.target_visible),
             BRAIN_TIME_SINCE_DAMAGE_MS_INPUT => IrValue::Number(facts.time_since_damage_ms),
+            BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT => {
+                IrValue::Number(facts.time_since_target_visible)
+            }
+            BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT => IrValue::Number(facts.distance_to_last_known),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"
@@ -659,6 +675,37 @@ mod tests {
         )
         .expect("range guard binds");
         assert_eq!(eval_value(&in_range, &scope), IrValue::Bool(false));
+    }
+
+    #[test]
+    fn refresh_projects_search_fallbacks_when_the_brain_has_no_memory() {
+        let (registry, enemy, target) = seeded_registry();
+        let mut scope = BrainScope::for_validation();
+        let time_since_target_visible = bind_read(BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, &scope);
+        let distance_to_last_known = bind_read(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, &scope);
+
+        scope.refresh(
+            &registry,
+            enemy,
+            BrainFacts {
+                target: None,
+                target_hostile: false,
+                target_reachable: false,
+                target_visible: false,
+                time_since_target_visible: BRAIN_NO_TARGET_DISTANCE,
+                distance_to_last_known: BRAIN_NO_TARGET_DISTANCE,
+                ..engaged_facts(target)
+            },
+        );
+
+        assert_number(
+            eval_value(&time_since_target_visible, &scope),
+            BRAIN_NO_TARGET_DISTANCE,
+        );
+        assert_number(
+            eval_value(&distance_to_last_known, &scope),
+            BRAIN_NO_TARGET_DISTANCE,
+        );
     }
 
     #[test]

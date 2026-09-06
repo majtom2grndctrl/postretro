@@ -78,6 +78,14 @@ export interface BrainInputs {
    * reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically
    * age it back to that sentinel (number). */
   readonly timeSinceDamageMs: RuntimeGuardNode;
+  /** Milliseconds since the selected target was last visible. A fresh
+   * never-seen brain reads `1e9`; a visible target resets it to zero and later
+   * AI ticks monotonically age it back to that sentinel (number). */
+  readonly timeSinceTargetVisible: RuntimeGuardNode;
+  /** XZ distance to the remembered last-known target position, or `1e9` with
+   * no memory. A bare `gt`/`ge` reads true without memory, so pair an
+   * investigate-distance guard with a recent sight or damage fact (number). */
+  readonly distanceToLastKnown: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -110,6 +118,8 @@ export const brain: BrainInputs = Object.freeze({
   attacksFiredInActivity: input("@brain.attacksFiredInActivity"),
   targetVisible: input("@brain.targetVisible"),
   timeSinceDamageMs: input("@brain.timeSinceDamageMs"),
+  timeSinceTargetVisible: input("@brain.timeSinceTargetVisible"),
+  distanceToLastKnown: input("@brain.distanceToLastKnown"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

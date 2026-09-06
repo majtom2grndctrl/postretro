@@ -9,6 +9,17 @@ read at: 04970869 (source base b53eeccb3)
 - `view_feel.rs` is now 1,065 lines (mostly its co-located tests), while `main.rs` is 13,056 lines → split the evaluator by its existing bob/tilt/sway responsibility seam before adding impulse behavior. The render call site itself is a narrow coordinator around state already owned by `App`; no self-contained extraction seam exists there without moving unrelated render-loop dependencies.
 - `sim::host_movement::run_host_movement_tick` still collapses all pawns into `Vec<&'static str>` → change it to return pawn-identified `MovementEvents`, then have each caller select its own local pawn before mapping state edges and landing/jump flags to addresses.
 - `MIN_FOV_DEG`/`MAX_FOV_DEG` remain private to `capture::scene`, and capture bypasses `RenderCamera::new` because it always uses `HFOV` → relocate the common FOV band beside `HFOV`, keep capture's independent scene FOV, and update its now-stale comment.
+- A slide's `natural_exit` can reach `Crouching` on blocked headroom as well as the exits enumerated in the brief → cover every natural-exit branch in the edge-order matrix, not only the listed examples.
+- `ViewFeelState` has no followed-pawn identity and lifecycle only resets the existing flash/vignette/shake effects → Task 3 must invalidate impulse state on a followed-pawn change and descriptor hot reload, in addition to level install.
+
+## Review findings — owner decision required
+
+The brief names tilt's fixed under-damped `0.8` damping ratio as the impulse spring model, but its acceptance requires monotonic decay. An under-damped spring necessarily overshoots for some impulses, so these contracts cannot both be proven.
+
+- **Keep the tilt feel:** retain `0.8` damping and replace the monotonic-decay AC with: "The impulse's decaying envelope reaches within a small tolerance of zero given enough frames; a higher tension reaches a fixed envelope fraction sooner than a lower one. Overshoot is permitted."
+- **Require monotonic recovery:** retain the current AC and use critical or over-damping for impulse springs, explicitly departing from the tilt damping precedent.
+
+The catch-up AC also needs a fixture-qualified proof: signed, opposing impulses cannot be universally "strictly less" after aging. Proposed wording: "A frame draining a full catch-up backlog produces every event. For a positive, same-sign fixture, each edge's age attenuates the presented offset below an otherwise identical unaged batch; the separate-frame equivalence is proved independently."
 
 ## Delegated answers
 
@@ -27,7 +38,7 @@ read at: 04970869 (source base b53eeccb3)
 | Hot reload during a slide emits no exit and leaves no orphan impulse | refresh + impulse reset focused test | achievable as stated |
 | An authoritative state correction emits no edge; later locally-ticked exit can be unpaired | reconcile focused test | achievable as stated |
 | Consecutive tick edges survive one render frame | `view_feel::impulse_consecutive_edges_are_not_coalesced` | achievable as stated |
-| Catch-up backlog drains all events and age-attenuates its rendered impulse | `view_feel::impulse_backlog_edges_age_before_sum` | achievable as stated |
+| Catch-up backlog drains all events and age-attenuates its rendered impulse | `view_feel::impulse_backlog_edges_age_before_sum` | needs restatement; proposed wording in review findings |
 | Presented per-channel offset never exceeds authored `max` | `view_feel::impulse_output_is_clamped_per_channel` | achievable as stated |
 | Level load or pawn change clears any impulse | lifecycle/reset focused test | achievable as stated |
 | Present slide entry applies FOV/pitch/roll on its first render frame; absent entry is zero | `view_feel::slide_entry_impulse_is_optional` | achievable as stated |
@@ -35,7 +46,7 @@ read at: 04970869 (source base b53eeccb3)
 | Dash and crouch use the identical state-generic impulse mechanism | `view_feel::dash_and_crouch_impulses_use_state_keys` | achievable as stated |
 | Impulse affects only FOV, pitch and roll, never eye position | view-feel/camera composition test | achievable as stated |
 | State tension overrides the default and simultaneous state springs settle independently | `view_feel::impulse_state_tension_overrides_default` | achievable as stated |
-| Springs decay monotonically and a higher tension settles faster | `view_feel::impulse_spring_decay_is_monotonic` | achievable as stated |
+| Springs decay monotonically and a higher tension settles faster | `view_feel::impulse_spring_decay_is_monotonic` | needs owner decision; conflicts with the selected under-damped precedent |
 | Spring state is frame-rate independent and the ceiling is presentation-only | `view_feel::impulse_spring_is_frame_rate_independent` | achievable as stated |
 | A later edge adds to, rather than replaces, an in-flight spring | `view_feel::impulse_edges_accumulate` | achievable as stated |
 | Zero frame dt holds an idle integrator but still applies a pending displacement | `view_feel::impulse_zero_dt_applies_pending_edge` | achievable as stated |
@@ -57,8 +68,8 @@ read at: 04970869 (source base b53eeccb3)
 
 | # | Task | Status |
 |---|---|---|
-| 1 | Add a payload-free movement-state discriminant and ordered per-tick edge list at the tick transition write; extend `MovementEvents`, preserve landing/jump behavior, return pawn-identified events from the host seam, and map only the local pawn's events to reaction addresses. Thread forward-prediction events into the same local drain while keeping reconciliation replay silent. Prove every slide exit, same-tick exit/entry ordering, dash/crouch edges, guest filtering, correction/hot-reload silence, and no wire/digest changes. | |
+| 1 | Add a payload-free movement-state discriminant and ordered per-tick edge list at the tick transition write; extend `MovementEvents`, preserve landing/jump behavior, return pawn-identified events from the host seam, and map only the local pawn's events to reaction addresses. Thread forward-prediction events into the same local drain while keeping reconciliation replay silent. Prove every natural slide-exit branch, same-tick exit/entry ordering, dash/crouch edges, guest filtering, correction/hot-reload silence, and no wire/digest changes. | |
 | 2 | Split `view_feel.rs` behavior-preservingly into evaluator-owned modules (shared state/output and bob, tilt, sway calculations); retain its public-in-crate API and establish focused parity tests before adding impulses. | |
-| 3 | Add the optional `viewFeel.impulse` descriptor across foundation, JS, Luau, primitive registry, typedefs, SDK fixtures, and generated files. Implement one bounded linear spring per closed state key, age queued edges before summing, preserve zero-scale integration, and reset it with other level-install presentation state. Drain the frame's ordered edge list before view-feel evaluation, compose pitch/roll into the existing camera/viewmodel path, and prove all spring, scale, absence, and reset contracts. | |
+| 3 | Add the optional `viewFeel.impulse` descriptor across foundation, JS, Luau, primitive registry, typedefs, SDK fixtures, and generated files. Implement one bounded linear spring per closed state key, age queued edges before summing, preserve zero-scale integration, and invalidate it on level install, followed-pawn identity change, and descriptor hot reload. Drain the frame's ordered edge list before view-feel evaluation, compose pitch/roll into the existing camera/viewmodel path, and prove all spring, scale, absence, and reset contracts. | |
 | 4 | Add FOV impulse to `RenderCamera::new`: relocate the shared 60°–130° FOV band from capture, clamp the final FOV, keep zero-offset projection bit-identical, and leave the dedicated viewmodel projection untouched. Update camera/capture callers and tests for culling-compatible projection behavior. | |
 | 5 | Add dev impulse tuning and a manifest-registered reaction example, publish the complete reserved-address list, run scripts/type generation and focused integration checks, then perform the required in-engine visual trial at scales 1.0, 0.5, and 0.0. | |

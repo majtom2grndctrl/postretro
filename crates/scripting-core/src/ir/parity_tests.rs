@@ -319,36 +319,43 @@ fn last_known_brain_facts_emit_identical_ir_in_both_runtimes() {
 }
 
 #[test]
-fn damage_bearing_brain_fact_emits_identical_ir_in_both_runtimes() {
-    // The SDK helper is the only author-facing spelling of this host-only
-    // snapshot, so keep its canonical input name on the cross-runtime path.
+fn spatial_damage_brain_facts_emit_identical_ir_in_both_runtimes() {
+    // These SDK helpers are the author-facing spelling of a sourced hit, so
+    // keep both canonical input names on the cross-runtime path.
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { brain } from "postretro";
-        JSON.stringify(brain.damageBearing.between(-1.6, 1.6));
+        JSON.stringify(
+          brain.damageSourceKnown.and(brain.damageBearing.between(-1.6, 1.6)),
+        );
     "#;
     const LUAU_FIXTURE: &str = r#"
-        return brain.damageBearing:between(-1.6, 1.6)
+        local bearing = brain.damageBearing:between(-1.6, 1.6)
+        return brain.damageSourceKnown["and"](brain.damageSourceKnown, bearing)
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
     let luau = luau_fixture_value(LUAU_FIXTURE);
-    assert_eq!(typescript, luau, "damage-bearing brain fact diverged");
+    assert_eq!(typescript, luau, "spatial damage brain facts diverged");
     assert_eq!(
         typescript,
         serde_json::json!({
             "op": "and",
-            "a": {
-                "op": "ge",
-                "a": { "op": "input", "name": "@brain.damageBearing" },
-                "b": { "op": "const", "value": -1.6 },
-            },
+            "a": { "op": "input", "name": "@brain.damageSourceKnown" },
             "b": {
-                "op": "le",
-                "a": { "op": "input", "name": "@brain.damageBearing" },
-                "b": { "op": "const", "value": 1.6 },
+                "op": "and",
+                "a": {
+                    "op": "ge",
+                    "a": { "op": "input", "name": "@brain.damageBearing" },
+                    "b": { "op": "const", "value": -1.6 },
+                },
+                "b": {
+                    "op": "le",
+                    "a": { "op": "input", "name": "@brain.damageBearing" },
+                    "b": { "op": "const", "value": 1.6 },
+                },
             },
         }),
-        "damage-bearing helper must lower to the canonical input leaf",
+        "spatial damage helpers must lower to canonical input leaves",
     );
 }
 

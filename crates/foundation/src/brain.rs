@@ -96,13 +96,19 @@ pub const BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT: &str = "@brain.timeSinceTargetV
 ///
 /// Like [`BRAIN_TARGET_DISTANCE_INPUT`], a bare `gt`/`ge` guard reads true
 /// with no memory. Authors must pair an investigate-distance guard with a
-/// recent sight or damage fact.
+/// recent sight fact, or with both recent damage and
+/// [`BRAIN_DAMAGE_SOURCE_KNOWN_INPUT`].
 pub const BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT: &str = "@brain.distanceToLastKnown";
 /// Signed XZ yaw in radians from this enemy's visual forward (`+Z`) toward the
 /// attacker that landed its most recent damage. `0.0` is dead ahead and the
 /// two sides have opposite signs; authors gate this host-only fact on recent
-/// [`BRAIN_TIME_SINCE_DAMAGE_MS_INPUT`] rather than treating it as history.
+/// [`BRAIN_TIME_SINCE_DAMAGE_MS_INPUT`] plus
+/// [`BRAIN_DAMAGE_SOURCE_KNOWN_INPUT`] rather than treating it as history.
 pub const BRAIN_DAMAGE_BEARING_INPUT: &str = "@brain.damageBearing";
+/// Whether the most recent damaging hit supplied an attacker world position.
+/// Authors conjoin this with [`BRAIN_TIME_SINCE_DAMAGE_MS_INPUT`] before using
+/// damage recency to interpret shared last-known-position memory or bearing.
+pub const BRAIN_DAMAGE_SOURCE_KNOWN_INPUT: &str = "@brain.damageSourceKnown";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -134,7 +140,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 19] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 20] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -154,6 +160,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 19] = [
     (BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, IrType::Number),
     (BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, IrType::Number),
     (BRAIN_DAMAGE_BEARING_INPUT, IrType::Number),
+    (BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -354,6 +361,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[18],
             (BRAIN_DAMAGE_BEARING_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn damage_source_known_appends_at_fixed_slot_nineteen() {
+        assert_eq!(
+            BRAIN_INPUTS[19],
+            (BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, IrType::Bool),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

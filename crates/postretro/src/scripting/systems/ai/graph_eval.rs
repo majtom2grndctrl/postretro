@@ -121,6 +121,9 @@ pub(super) fn action_for_path<'a>(
     scope: &mut BrainScope,
     brain: &'a BrainComponent,
 ) -> Option<&'a ActionVerb> {
+    if motion_for_path(bound, scope, brain).is_some_and(MotionVerb::is_position_goal) {
+        return None;
+    }
     action_for_path_from_depth(bound, scope, brain, 0)
 }
 
@@ -133,10 +136,7 @@ fn action_for_path_from_depth<'a>(
     for depth in (start_depth.min(brain.active_depth())..brain.active_depth()).rev() {
         let (_, activity) = brain.activity_at_depth(depth)?;
         if let Some(action) = activity.action.as_ref()
-            && !matches!(
-                activity.motion,
-                Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
-            )
+            && !activity.motion.is_some_and(MotionVerb::is_position_goal)
         {
             return Some(action);
         }
@@ -175,10 +175,7 @@ pub(super) fn engages_active(brain: &BrainComponent) -> bool {
 /// target on the next tick. A `move`/`offense` selector that can chase or attack
 /// is therefore an engaged activity. Other selector names are not AI consumers.
 fn activity_can_engage(activity: &BehaviorActivityDescriptor) -> bool {
-    if matches!(
-        activity.motion,
-        Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
-    ) {
+    if activity.motion.is_some_and(MotionVerb::is_position_goal) {
         return false;
     }
 
@@ -327,10 +324,7 @@ pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option
 
 fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
     matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
-        || matches!(
-            activity.motion,
-            Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
-        )
+        || activity.motion.is_some_and(MotionVerb::is_position_goal)
 }
 
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {

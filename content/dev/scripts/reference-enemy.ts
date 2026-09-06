@@ -184,11 +184,13 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           },
           {
             to: "startle",
-            when: brain.timeSinceDamageMs.le(STARTLE_MS).and(
-              brain.damageBearing
-                .gt(HALF_PI)
-                .or(brain.damageBearing.lt(-HALF_PI)),
-            ),
+            when: brain.damageSourceKnown
+              .and(brain.timeSinceDamageMs.le(STARTLE_MS))
+              .and(
+                brain.damageBearing
+                  .gt(HALF_PI)
+                  .or(brain.damageBearing.lt(-HALF_PI)),
+              ),
           },
         ],
         idle: [{ to: "patrol", when: runtime.constant(true) }],
@@ -201,10 +203,10 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           },
           {
             to: "investigate",
-            // The distance sentinel is also `gt(ARRIVE)`, so recency proves
-            // a damage seed actually supplied this memory.
-            when: brain.timeSinceDamageMs
-              .le(ALERT_MS)
+            // Generic damage recency also resets for contextless reactions;
+            // provenance proves this hit supplied the remembered position.
+            when: brain.damageSourceKnown
+              .and(brain.timeSinceDamageMs.le(ALERT_MS))
               .and(brain.distanceToLastKnown.gt(ARRIVE)),
           },
         ],

@@ -6,13 +6,19 @@ need.
 
 ## Lifecycle — a hit becomes a graph reaction
 
-Damage lands after the AI compute pass within a tick, so the graph reads the
-memory one tick later. This mirrors how attack cooldowns are aged in compute and
-consumed the next tick.
+Damage reaches a brain entity only out of the AI tick in v1, so the graph reads
+the memory one tick later — mirroring how attack cooldowns are aged in compute
+and consumed the next tick. The reachable seed paths are the player weapon
+(stage 8, after the stage-5 compute) and the frame-end `applyDamage` drain. Enemy
+in-tick melee also routes through the chokepoint, but enemies target only
+`PlayerMovement` holders (`targeting.rs` `target_offers`), so it never damages a
+brain-bearing entity in v1; a future spec that lets enemies damage brain entities
+must make the chokepoint-owned brain fields survive the apply-pass per-enemy
+snapshot write-back, which today folds only `locomotion_moving`.
 
 ```mermaid
 sequenceDiagram
-    participant W as Weapon/AI-melee (stage 8 / AI apply)
+    participant W as Player weapon / applyDamage drain (stage 8 / frame-end)
     participant CK as apply_damage_with_context (entities/health.rs)
     participant B as BrainComponent
     participant AI as AI compute pass (stage 5, next tick)
@@ -32,9 +38,11 @@ sequenceDiagram
 ```
 
 Stage numbers are `entity_model.md` §5: AI brain tick is stage 5; weapon reload
-and fire tick is stage 8. Enemy melee applies within the AI tick; the
-`applyDamage` script reaction resolves at the frame-end drain. All three route
-through `apply_damage_with_context`.
+and fire tick is stage 8. The two paths that seed a brain entity — the player
+weapon and the frame-end `applyDamage` drain — both route through
+`apply_damage_with_context`. Enemy melee routes through the same chokepoint but
+targets only `PlayerMovement` holders in v1, so it never seeds a brain (see the
+Lifecycle intro).
 
 ## Orderings
 
@@ -46,7 +54,7 @@ through `apply_damage_with_context`.
 | Catch-up: N fixed ticks one frame | each tick ages timers by its own `dt_ms` | Aging is per-tick, not per-frame; recency stays wall-consistent. |
 | Duration/timer authored at 0-ish window | `timeSinceDamageMs.le(0)` | Effectively never true after the reset tick ages it; author picks a real window. Spec's constants illustrate. |
 | Long session | timer aged unbounded | Clamp at the sentinel prevents overflow / wrap; a clamped timer still reads "long ago." |
-| `moveToLastKnown` with empty memory | `last_known_target_pos == None` | Steering `Clear` (hold); `distanceToLastKnown` = sentinel; no crash, enemy stands and plays locomotion anim. |
+| `moveToLastKnown` with empty memory | `last_known_target_pos == None` | Steering `Clear` (hold); `distanceToLastKnown` = sentinel; no crash, enemy stands and yields to the graph's rest (initial-state) animation. |
 | Lost target then hit by a new attacker | target dropped, `last_known` seeded from attacker | `distanceToLastKnown` jumps to the attacker's spot; `investigate` re-triggers. |
 | Reached the spot, then re-shot from same origin | walked to spot ⇒ `distanceToLastKnown ≈ 0`; new hit re-seeds ≈ current position | No re-investigate loop (distance stays small); if the shooter is now in sight, `targetVisible` → engage resolves it. |
 
@@ -89,8 +97,9 @@ length bump + slot test + validation-twin entry.
 **Live scope.** `crates/postretro/src/scripting/systems/ai/brain_scope.rs` —
 `struct BrainScope { fixed: [IrValue; 15], … }`; `BrainFacts` struct
 (`distance_from_anchor: f32` is the mirror for `distance_to_last_known`);
-`refresh` writes all fixed slots in `BRAIN_INPUTS` order; `expected_fixed_value`
-test has a no-`_` match arm (compile tripwire on a new slot).
+`refresh` writes all fixed slots in `BRAIN_INPUTS` order (the fixed-array literal
+is the compile tripwire on length drift); `expected_fixed_value`
+test has a no-`_` match arm that panics at test time on a missing case.
 
 **Compute pass.** `crates/postretro/src/scripting/systems/ai/mod.rs` — entry
 `run_ai_tick_with_navigation_and_impact(registry, runtime, tick_dt, inputs,
@@ -158,8 +167,9 @@ scripting-core twin parser test. Already uses `motion: "moveToAnchor"` and
 `distanceFromAnchor` guards — the natural fixture to extend.
 
 **Facing source for `damageBearing`.** `crates/postretro/src/scripting/systems/
-ai/facing.rs` — confirm the enemy's visual facing lands on `Transform.rotation`
-(the value read at the chokepoint) before relying on it for the yaw snapshot.
+ai/facing.rs` — the AI apply pass writes the enemy's visual facing to
+`Transform.rotation` via the `facing.rs` yaw helpers, and the renderer reads it
+directly; that is the value read at the chokepoint for the yaw snapshot.
 
 ## Source sizes (split-before-extend gauge)
 

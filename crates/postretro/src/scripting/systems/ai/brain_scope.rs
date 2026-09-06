@@ -40,6 +40,9 @@ pub(crate) struct BrainFacts {
     pub target: Option<(EntityId, f32, glam::Vec3)>,
     /// Milliseconds remaining on the attack cooldown.
     pub attack_cooldown_ms: f32,
+    /// Milliseconds since this enemy last took damage. A fresh never-hit brain
+    /// retains the shared sentinel rather than reading as a recent hit.
+    pub time_since_damage_ms: f32,
     /// `true` on the think-stride ticks where acquisition is re-evaluated.
     pub acquisition_due: bool,
     /// XZ distance from the enemy's current position to its spawn-time home
@@ -193,6 +196,7 @@ impl BrainScope {
             // `select_transition` before any guard at a level evaluates.
             IrValue::Number(facts.attacks_fired_in_activity as f32),
             IrValue::Bool(facts.target_visible),
+            IrValue::Number(facts.time_since_damage_ms),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -279,9 +283,9 @@ mod tests {
         BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT,
         BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT,
         BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
-        BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BindError,
-        BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard,
-        eval_value,
+        BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+        BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
+        CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -352,6 +356,7 @@ mod tests {
         BrainFacts {
             target: Some((target, 7.5, glam::Vec3::ZERO)),
             attack_cooldown_ms: 400.0,
+            time_since_damage_ms: 250.0,
             acquisition_due: true,
             distance_from_anchor: 12.5,
             target_hostile: true,
@@ -480,6 +485,7 @@ mod tests {
                 IrValue::Number(facts.attacks_fired_in_activity as f32)
             }
             BRAIN_TARGET_VISIBLE_INPUT => IrValue::Bool(facts.target_visible),
+            BRAIN_TIME_SINCE_DAMAGE_MS_INPUT => IrValue::Number(facts.time_since_damage_ms),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

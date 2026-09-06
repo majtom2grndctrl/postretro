@@ -27,6 +27,7 @@ use crate::data_descriptors::{
     BehaviorLayerDescriptor, MAX_BEHAVIOR_NESTING_DEPTH,
 };
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
+use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 
 use super::mesh::MeshComponent;
 
@@ -35,6 +36,12 @@ use super::mesh::MeshComponent;
 /// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrainComponent {
+    /// Milliseconds since this entity last took positive finite damage. A fresh
+    /// brain has never been damaged, so it starts at the same far/clamp
+    /// sentinel used for an absent target distance. The AI tick advances this
+    /// every tick and damage resets it through the Health chokepoint.
+    #[serde(default = "default_time_since_damage_ms")]
+    pub time_since_damage_ms: f32,
     /// The world position at which this brain spawned. Host-only simulation
     /// state: authored guards read the enemy's XZ distance from it, while
     /// clients never evaluate guards. Old serialized brains predate this
@@ -160,6 +167,7 @@ impl BrainComponent {
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         let mut brain = Self {
+            time_since_damage_ms: default_time_since_damage_ms(),
             home_anchor: Vec3::ZERO,
             patrol_cursor: 0,
             patrol_direction: 1,
@@ -504,6 +512,10 @@ where
 
 const fn default_aggro_armed() -> bool {
     true
+}
+
+const fn default_time_since_damage_ms() -> f32 {
+    BRAIN_NO_TARGET_DISTANCE
 }
 
 const fn default_home_anchor() -> Vec3 {
@@ -878,6 +890,20 @@ mod tests {
         assert_eq!(restored.home_anchor, Vec3::ZERO);
     }
 
+    #[test]
+    fn deserializing_a_pre_damage_recency_brain_defaults_to_the_never_hit_sentinel() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("time_since_damage_ms");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-damage-recency brain deserializes");
+        assert_eq!(restored.time_since_damage_ms, BRAIN_NO_TARGET_DISTANCE);
+    }
+
     // Regression: pre-multi-attack brains stored one numeric cooldown, which
     // failed deserialization after the field became a named map.
     #[test]
@@ -1058,6 +1084,7 @@ mod tests {
         let mut brain = BrainComponent::from_graph(&authored_graph());
         assert!(brain.enter_activity_at(0, graph_activity_index(&brain.graph, "charge").unwrap()));
         brain.time_in_activity_ms[0] = 320.0;
+        brain.time_since_damage_ms = 125.0;
 
         let value = ComponentValue::Brain(brain.clone());
         let json = serde_json::to_value(&value).unwrap();
@@ -1067,6 +1094,58 @@ mod tests {
         assert_eq!(back, brain);
         assert_eq!(back.state_name(), Some("charge"));
         assert_eq!(*back.graph, authored_graph());
+    }
+
+    #[test]
+    fn damage_chokepoint_resets_brain_damage_recency_and_ignores_health_only_entities() {
+        use crate::components::health::{
+            DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+        };
+        use crate::data_descriptors::HealthDescriptor;
+        use postretro_foundation::DamagePayload;
+
+        let health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+        let mut registry = EntityRegistry::new();
+        let brain_entity = registry.spawn(Transform::default());
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.time_since_damage_ms = 500.0;
+        registry.set_component(brain_entity, brain).unwrap();
+        registry
+            .set_component(brain_entity, health.clone())
+            .unwrap();
+
+        assert!(apply_damage_with_context(
+            &mut registry,
+            brain_entity,
+            &DamagePayload { amount: 1.0 },
+            DamageContext::new("test.damage-recency", DamageProducer::InTick),
+        ));
+        assert_eq!(
+            registry
+                .get_component::<BrainComponent>(brain_entity)
+                .expect("brain remains attached")
+                .time_since_damage_ms,
+            0.0,
+        );
+
+        let health_only_entity = registry.spawn(Transform::default());
+        registry.set_component(health_only_entity, health).unwrap();
+        assert!(apply_damage_with_context(
+            &mut registry,
+            health_only_entity,
+            &DamagePayload { amount: 1.0 },
+            DamageContext::new("test.health-only", DamageProducer::InTick),
+        ));
+        assert!(
+            registry
+                .get_component::<BrainComponent>(health_only_entity)
+                .is_err(),
+            "health-only damage remains a no-op for absent brains"
+        );
     }
 
     #[test]

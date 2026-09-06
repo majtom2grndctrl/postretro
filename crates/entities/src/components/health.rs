@@ -10,7 +10,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
-use crate::registry::{EntityId, EntityRegistry};
+use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{DamagePayload, IrType, IrValue};
 
 /// Maximum number of exact contributor source ids retained per target before
@@ -457,6 +457,15 @@ pub fn apply_damage_with_context(
     // `set_component` only fails on a stale id, which `get_component` already
     // ruled out above.
     let _ = registry.set_component(id, updated);
+    // Damage perception belongs at the one health chokepoint so hitscan,
+    // contact attacks, and script reactions share identical recency behavior.
+    // A Health-only entity has no brain to update, which is intentionally a
+    // no-op rather than a modelling error.
+    if let Ok(ComponentValue::Brain(brain)) =
+        registry.get_component_value_mut(id, ComponentKind::Brain)
+    {
+        brain.time_since_damage_ms = 0.0;
+    }
     registry.push_impact_dispatch(ImpactDispatch {
         amount: payload.amount,
         health_before,

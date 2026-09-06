@@ -54,7 +54,7 @@ use super::{AttackOutcome, EnemyOutcome};
 use crate::agent_steering;
 use crate::nav::find_path;
 use crate::weapon::ProjectileLaunch;
-use postretro_foundation::{ActionVerb, MotionVerb};
+use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, MotionVerb};
 
 /// Pass 2: evaluate each immutable enemy snapshot into an outcome.
 pub(super) fn evaluate(
@@ -194,6 +194,10 @@ pub(super) fn evaluate(
         for remaining_ms in brain.attack_cooldown_remaining_ms.values_mut() {
             *remaining_ms = (*remaining_ms - dt_ms).max(0.0);
         }
+        // Damage recency advances even while an activity entry is pending or
+        // aggro is closed, matching the unconditional named-cooldown clock.
+        brain.time_since_damage_ms =
+            (brain.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
         // An entry edge observes a freshly zeroed activity clock. Once it has
         // been consumed, subsequent ticks advance the active clocks before
         // evaluating their transition rows. A transition later in this pass
@@ -301,6 +305,7 @@ pub(super) fn evaluate(
                 BrainFacts {
                     target: selected_target,
                     attack_cooldown_ms: 0.0,
+                    time_since_damage_ms: brain.time_since_damage_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,
@@ -325,6 +330,7 @@ pub(super) fn evaluate(
                 BrainFacts {
                     target: selected_target,
                     attack_cooldown_ms,
+                    time_since_damage_ms: brain.time_since_damage_ms,
                     acquisition_due: evaluate_acquisition,
                     distance_from_anchor,
                     target_hostile,

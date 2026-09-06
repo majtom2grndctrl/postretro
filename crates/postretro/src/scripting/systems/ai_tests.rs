@@ -38,9 +38,10 @@ use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-    BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
-    BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
-    BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
+    BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_NO_TARGET_DISTANCE,
+    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT,
+    BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+    BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
     BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
     BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
     FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
@@ -556,6 +557,7 @@ fn step_graph(
         BrainFacts {
             target: Some((enemy, distance, Vec3::ZERO)),
             attack_cooldown_ms: 0.0,
+            time_since_damage_ms: BRAIN_NO_TARGET_DISTANCE,
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,
@@ -4824,6 +4826,163 @@ fn edge(to: &str, when: IrNode) -> GuardedRow {
         to: to.to_string(),
         when,
     }
+}
+
+/// Minimal authored graph for the damage-recency fact. It intentionally does
+/// not reuse the shipped reference enemy: this proves a hand-authored guard
+/// can observe the new input without coupling its behavior to target policy.
+fn damage_recency_graph() -> BehaviorGraphDescriptor {
+    test_behavior_graph!({
+        initial: "rest".to_string(),
+        activities: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+            (
+                "recent_damage".to_string(),
+                authored_state("death", MotionVerb::Hold, None),
+            ),
+        ]),
+        transitions: BTreeMap::from([(
+            "rest".to_string(),
+            vec![edge(
+                "recent_damage",
+                IrNode::Le {
+                    a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(100.0),
+                    }),
+                },
+            )],
+        )]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    })
+}
+
+#[test]
+fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&damage_recency_graph()),
+        50.0,
+    );
+
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "a fresh brain has never taken damage rather than reading as a recent hit"
+    );
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "the never-hit sentinel stays clamped on ordinary AI ticks"
+    );
+
+    // The player-hitscan apply arm reaches the same chokepoint after resolving
+    // a concrete entity impact. The weapon id is only attribution here; the
+    // `WeaponImpact` is the fully resolved hitscan result this stage consumes.
+    let hitscan_weapon = registry.spawn(Transform::default());
+    crate::sim::apply_authorized_weapon_impact_damage(
+        &mut registry,
+        hitscan_weapon,
+        None,
+        &crate::weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(enemy),
+            zone: None,
+            outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload { amount: 1.0 }),
+        },
+        "test.player-hitscan".to_string(),
+        1.0,
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        0.0,
+        "a player hitscan resets recency through the weapon impact path"
+    );
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_hitscan = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_hitscan - DT * 1000.0).abs() <= EPS);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "recent_damage",
+        "the hand-authored guard sees the first post-hit AI snapshot"
+    );
+
+    // Entity contact/melee already invokes the chokepoint directly.
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 1.0 },
+        DamageContext::new("test.entity-melee", DamageProducer::InTick),
+    ));
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_melee = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_melee - DT * 1000.0).abs() <= EPS);
+
+    // The `applyDamage` reaction is the app-drain arm and must retain the same
+    // reset semantics even though its later impact-policy treatment differs.
+    crate::health::reactions::dispatch(
+        &mut registry,
+        &[enemy],
+        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+    )
+    .expect("applyDamage reaction succeeds for a health-bearing enemy");
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_script = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_script - DT * 1000.0).abs() <= EPS);
+
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .clone();
+    brain.time_since_damage_ms = BRAIN_NO_TARGET_DISTANCE - 1.0;
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let clamped = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert_eq!(clamped, BRAIN_NO_TARGET_DISTANCE);
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "once clamped, recency cannot increase past its never-hit sentinel"
+    );
 }
 
 /// A three-state pursuit graph over the shared `enemy_mesh` animation names:

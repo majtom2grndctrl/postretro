@@ -1,4 +1,8 @@
-import { defineEntity } from "postretro";
+import { defineEntity, defineWeaponPlacement } from "postretro";
+
+const pistolPlacement =  defineWeaponPlacement({
+  positionFromCenter: { right: 0.25, up: -0.3, forward: 0.5 },
+})
 
 export const referencePistolEntity = defineEntity({
   canonicalName: "reference_pistol",
@@ -9,8 +13,12 @@ export const referencePistolEntity = defineEntity({
       fireRateMs: 180.0,
       fireMode: "semi",
       resolution: "hitscan",
-      thirdPersonModel: "models/smg/model.gltf",
-      viewmodel: "models/smg/model.gltf",
+      thirdPersonModel: "models/cyberpunk_weapons/pistol/model.gltf",
+      viewmodel: "models/cyberpunk_weapons/pistol/model.gltf",
+      placement: pistolPlacement,
+      // Authored from the viewmodel's rigid `muzzle` socket. Hitscan ignores
+      // it today; retaining it keeps this model ready for projectile tuning.
+      muzzleOffset: [0.0, 0.225, -0.574],
       resource: {
         kind: "ammo",
         type: "bullets.light",
@@ -22,7 +30,7 @@ export const referencePistolEntity = defineEntity({
     },
     // The dev pistol doubles as a visible world item for the E16 fixture and
     // gives the default player loadout a recoverable drop path.
-    mesh: { model: "models/smg/model.gltf" },
+    mesh: { model: "models/cyberpunk_weapons/pistol/model.gltf" },
     touchable: { mode: "auto", radius: 1.0 },
   },
 });

@@ -1,6 +1,7 @@
 import { defineEntity } from "postretro";
 
-const FIXTURE_MODEL = "models/smg/model.gltf";
+const SMG_MODEL = "models/cyberpunk_weapons/smg/model.gltf";
+const SHOTGUN_MODEL = "models/cyberpunk_weapons/shotgun/model.gltf";
 
 export const wieldableFixtureAutoEntity = defineEntity({
   canonicalName: "wieldable_fixture_auto",
@@ -11,8 +12,10 @@ export const wieldableFixtureAutoEntity = defineEntity({
       fireRateMs: 240.0,
       fireMode: "semi",
       resolution: "hitscan",
-      thirdPersonModel: FIXTURE_MODEL,
-      viewmodel: FIXTURE_MODEL,
+      thirdPersonModel: SMG_MODEL,
+      viewmodel: SMG_MODEL,
+      // Authored from the SMG viewmodel's rigid `muzzle` socket.
+      muzzleOffset: [0.0, 0.274, -0.567],
       resource: {
         kind: "ammo",
         type: "bullets.fixture_auto",
@@ -22,7 +25,7 @@ export const wieldableFixtureAutoEntity = defineEntity({
         reloadStyle: "magazine",
       },
     },
-    mesh: { model: FIXTURE_MODEL },
+    mesh: { model: SMG_MODEL },
     touchable: { mode: "auto", radius: 1.0 },
   },
 });
@@ -36,8 +39,10 @@ export const wieldableFixturePressEntity = defineEntity({
       fireRateMs: 600.0,
       fireMode: "semi",
       resolution: "hitscan",
-      thirdPersonModel: FIXTURE_MODEL,
-      viewmodel: FIXTURE_MODEL,
+      thirdPersonModel: SHOTGUN_MODEL,
+      viewmodel: SHOTGUN_MODEL,
+      // Authored from the shotgun viewmodel's rigid `muzzle` socket.
+      muzzleOffset: [0.0, 0.34, -1.137],
       resource: {
         kind: "ammo",
         type: "shells.fixture_press",
@@ -47,7 +52,7 @@ export const wieldableFixturePressEntity = defineEntity({
         reloadStyle: "perShell",
       },
     },
-    mesh: { model: FIXTURE_MODEL },
+    mesh: { model: SHOTGUN_MODEL },
     touchable: { mode: "press", radius: 1.0 },
   },
 });

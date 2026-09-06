@@ -20,6 +20,7 @@ use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
 use super::engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
 use super::facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
+use super::graph_eval::animation_for_path;
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -38,14 +39,17 @@ use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-    BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
-    BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_REACHABLE_INPUT,
-    BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
-    BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
-    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
-    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
-    WeaponDescriptor, bind,
+    BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+    BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_NO_TARGET_DISTANCE,
+    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT,
+    BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+    BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
+    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow, BindingScope,
+    BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, FireMode,
+    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
+    ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+    bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
@@ -556,6 +560,11 @@ fn step_graph(
         BrainFacts {
             target: Some((enemy, distance, Vec3::ZERO)),
             attack_cooldown_ms: 0.0,
+            time_since_damage_ms: BRAIN_NO_TARGET_DISTANCE,
+            time_since_target_visible: BRAIN_NO_TARGET_DISTANCE,
+            distance_to_last_known: BRAIN_NO_TARGET_DISTANCE,
+            damage_bearing: 0.0,
+            damage_source_known: false,
             acquisition_due,
             distance_from_anchor: 0.0,
             target_hostile: true,
@@ -4826,6 +4835,360 @@ fn edge(to: &str, when: IrNode) -> GuardedRow {
     }
 }
 
+/// Minimal authored graph for the damage-recency fact. It intentionally does
+/// not reuse the shipped reference enemy: this proves a hand-authored guard
+/// can observe the new input without coupling its behavior to target policy.
+fn damage_recency_graph() -> BehaviorGraphDescriptor {
+    test_behavior_graph!({
+        initial: "rest".to_string(),
+        activities: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None),
+            ),
+            (
+                "recent_damage".to_string(),
+                authored_state("death", MotionVerb::Hold, None),
+            ),
+        ]),
+        transitions: BTreeMap::from([(
+            "rest".to_string(),
+            vec![edge(
+                "recent_damage",
+                IrNode::Le {
+                    a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(100.0),
+                    }),
+                },
+            )],
+        )]),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    })
+}
+
+#[test]
+fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&damage_recency_graph()),
+        50.0,
+    );
+
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "a fresh brain has never taken damage rather than reading as a recent hit"
+    );
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "the never-hit sentinel stays clamped on ordinary AI ticks"
+    );
+
+    // The player-hitscan apply arm reaches the same chokepoint after resolving
+    // a concrete entity impact. The weapon id is only attribution here; the
+    // `WeaponImpact` is the fully resolved hitscan result this stage consumes.
+    let hitscan_weapon = registry.spawn(Transform::default());
+    crate::sim::apply_authorized_weapon_impact_damage(
+        &mut registry,
+        hitscan_weapon,
+        None,
+        &crate::weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(enemy),
+            zone: None,
+            outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload { amount: 1.0 }),
+        },
+        "test.player-hitscan".to_string(),
+        1.0,
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        0.0,
+        "a player hitscan resets recency through the weapon impact path"
+    );
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_hitscan = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_hitscan - DT * 1000.0).abs() <= EPS);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "recent_damage",
+        "the hand-authored guard sees the first post-hit AI snapshot"
+    );
+
+    // Entity contact/melee already invokes the chokepoint directly.
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 1.0 },
+        DamageContext::new("test.entity-melee", DamageProducer::InTick),
+    ));
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_melee = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_melee - DT * 1000.0).abs() <= EPS);
+
+    // The `applyDamage` reaction is the app-drain arm and must retain the same
+    // reset semantics even though its later impact-policy treatment differs.
+    crate::health::reactions::dispatch(
+        &mut registry,
+        &[enemy],
+        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+    )
+    .expect("applyDamage reaction succeeds for a health-bearing enemy");
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let after_script = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert!((after_script - DT * 1000.0).abs() <= EPS);
+
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .clone();
+    brain.time_since_damage_ms = BRAIN_NO_TARGET_DISTANCE - 1.0;
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let clamped = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has a brain")
+        .time_since_damage_ms;
+    assert_eq!(clamped, BRAIN_NO_TARGET_DISTANCE);
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy has a brain")
+            .time_since_damage_ms,
+        BRAIN_NO_TARGET_DISTANCE,
+        "once clamped, recency cannot increase past its never-hit sentinel"
+    );
+}
+
+// Regression: an earlier-applied enemy's contact hit was overwritten when the
+// victim's pre-hit brain snapshot was published later in the same apply pass.
+#[test]
+fn same_tick_contact_damage_survives_a_later_brain_outcome_publish() {
+    const DT: f32 = 0.016;
+    let attacker_position = Vec3::ZERO;
+    let victim_position = Vec3::X;
+    let mut registry = EntityRegistry::new();
+    let attacker = spawn_enemy(
+        &mut registry,
+        attacker_position,
+        BrainComponent::from_graph(&standing_attack_graph()),
+        50.0,
+    );
+    let victim = spawn_enemy(
+        &mut registry,
+        victim_position,
+        BrainComponent::from_graph(&damage_recency_graph()),
+        50.0,
+    );
+    // `movement` and `behavior` are independent descriptor components, so this
+    // is a valid targetable brain-bearing entity, with the required Transform.
+    registry
+        .set_component(
+            victim,
+            PlayerMovementComponent::from_descriptor(&player_movement_descriptor()),
+        )
+        .unwrap();
+    registry
+        .entity_state_mut(victim)
+        .expect("spawned victim carries entity state")
+        .set(FACTION_STATE_FIELD, 0.0);
+
+    let mut runtime = AiRuntime::new();
+    let events = run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert!((player_hp(&registry, victim) - 42.0).abs() <= EPS);
+
+    let damaged = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("contact victim retains its brain");
+    assert!(damaged.time_since_damage_ms.abs() <= EPS);
+    assert!(damaged.damage_source_known);
+    assert_eq!(damaged.last_known_target_pos, Some(attacker_position));
+    assert!(
+        (damaged.damage_bearing.abs() - std::f32::consts::PI).abs() <= EPS,
+        "the latest hit keeps its attacker-relative bearing"
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let next_tick = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("contact victim retains its brain on the next tick");
+    assert!((next_tick.time_since_damage_ms - DT * 1000.0).abs() <= EPS);
+    assert!(next_tick.damage_source_known);
+    assert_eq!(next_tick.last_known_target_pos, Some(attacker_position));
+    assert_eq!(enemy_state_name(&registry, victim), "recent_damage");
+    assert_eq!(enemy_acquired_target(&registry, attacker), Some(victim));
+}
+
+fn last_known_memory_graph() -> BehaviorGraphDescriptor {
+    test_behavior_graph!({
+        initial: "chase".to_string(),
+        activities: BTreeMap::from([(
+            "chase".to_string(),
+            authored_state("walk", MotionVerb::ChaseTarget, None),
+        )]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    })
+}
+
+#[test]
+fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_and_freezes_after_los_grace()
+ {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let first_position = Vec3::new(2.0, 0.0, 0.0);
+    let player = spawn_player(&mut registry, first_position);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&last_known_memory_graph()),
+        50.0,
+    );
+    let unseen_attacker_position = Vec3::new(-8.0, 0.0, 0.0);
+    let unseen_attacker = registry.spawn(Transform {
+        position: unseen_attacker_position,
+        ..Transform::default()
+    });
+    let mut damage_context = DamageContext::new("test.unseen-attacker", DamageProducer::InTick);
+    damage_context.attacker = Some(unseen_attacker);
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 1.0 },
+        damage_context,
+    ));
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("enemy retains its brain")
+            .last_known_target_pos,
+        Some(unseen_attacker_position),
+        "damage seeds an unseen attacker's position before the next AI compute pass"
+    );
+
+    run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        DT,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(first_position),
+        "the visible selected-target cache overrides an earlier damage seed"
+    );
+    assert_eq!(brain.time_since_target_visible, 0.0);
+
+    let second_position = Vec3::new(3.0, 0.0, 0.0);
+    let mut transform = registry
+        .get_component::<Transform>(player)
+        .expect("player carries a transform")
+        .clone();
+    transform.position = second_position;
+    registry.set_component(player, transform).unwrap();
+    run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        DT,
+        None,
+        Some(&CollisionWorld::new()),
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(second_position),
+        "a visible selected target refreshes the remembered live position each tick"
+    );
+    assert_eq!(brain.time_since_target_visible, 0.0);
+
+    let wall = wall_world(1.5, -1.0, 2.0);
+    for _ in 0..=perception::LOS_GRACE_TICKS {
+        run_ai_tick_with_navigation(&mut registry, &mut runtime, DT, None, Some(&wall));
+    }
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(
+        brain.last_known_target_pos,
+        Some(second_position),
+        "after the debounced verdict closes, memory freezes at the final visible position"
+    );
+    assert!((brain.time_since_target_visible - DT * 1000.0).abs() <= EPS);
+    assert!(
+        (distance_xz(
+            Vec3::ZERO,
+            brain.last_known_target_pos.expect("memory exists")
+        ) - 3.0)
+            .abs()
+            <= EPS,
+        "the remembered position remains the source of the last-known distance"
+    );
+}
+
+#[test]
+fn never_seen_brain_keeps_search_memory_and_timer_at_the_no_memory_sentinels() {
+    const DT: f32 = 0.016;
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&last_known_memory_graph()),
+        50.0,
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy retains its brain");
+    assert_eq!(brain.last_known_target_pos, None);
+    assert_eq!(brain.time_since_target_visible, BRAIN_NO_TARGET_DISTANCE);
+}
+
 /// A three-state pursuit graph over the shared `enemy_mesh` animation names:
 /// `rest` (stand still) → `charge` (travel) → `strike` (contact damage), with
 /// `strike` announcing its entry.
@@ -6264,6 +6627,11 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
 /// the Luau oracle below keep this executable fixture honest.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const DETECTION_RANGE: f32 = 16.0;
+    const ALERT_MS: f32 = 4000.0;
+    const SEARCH_AFTER_MS: f32 = 800.0;
+    const ARRIVE: f32 = 1.0;
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+    const STARTLE_MS: f32 = 200.0;
     const JAB_RANGE: f32 = 2.0;
     const SLAM_RANGE: f32 = 3.5;
     const LEASH_RANGE: f32 = 100.0;
@@ -6387,6 +6755,14 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     },
                 ),
                 (
+                    "investigate".to_string(),
+                    authored_state("walk", MotionVerb::MoveToLastKnown, None),
+                ),
+                (
+                    "startle".to_string(),
+                    authored_state("flinch", MotionVerb::Hold, None),
+                ),
+                (
                     "retreat".to_string(),
                     authored_state("walk", MotionVerb::MoveToAnchor, None),
                 ),
@@ -6397,14 +6773,61 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     vec![
                         edge(
                             "patrol",
-                            IrNode::Not {
-                                x: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                            IrNode::And {
+                                a: Box::new(IrNode::And {
+                                    a: Box::new(IrNode::Not {
+                                        x: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                                    }),
+                                    b: Box::new(IrNode::Gt {
+                                        a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(ALERT_MS),
+                                        }),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Le {
+                                    a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(ARRIVE),
+                                    }),
+                                }),
                             },
                         ),
                         edge(
                             "patrol",
-                            IrNode::Not {
-                                x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                            IrNode::And {
+                                a: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                                b: Box::new(IrNode::Not {
+                                    x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                                }),
+                            },
+                        ),
+                        edge(
+                            "startle",
+                            IrNode::And {
+                                a: Box::new(IrNode::And {
+                                    a: Box::new(brain_input(BRAIN_DAMAGE_SOURCE_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Le {
+                                        a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(STARTLE_MS),
+                                        }),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Or {
+                                    a: Box::new(IrNode::Gt {
+                                        a: Box::new(brain_input(BRAIN_DAMAGE_BEARING_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(HALF_PI),
+                                        }),
+                                    }),
+                                    b: Box::new(IrNode::Lt {
+                                        a: Box::new(brain_input(BRAIN_DAMAGE_BEARING_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(-HALF_PI),
+                                        }),
+                                    }),
+                                }),
                             },
                         ),
                     ],
@@ -6420,17 +6843,77 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 ),
                 (
                     "patrol".to_string(),
-                    vec![edge(
-                        "engage",
-                        IrNode::And {
-                            a: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
-                            b: Box::new(target_within(DETECTION_RANGE)),
-                        },
-                    )],
+                    vec![
+                        edge(
+                            "engage",
+                            IrNode::And {
+                                a: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
+                                b: Box::new(target_within(DETECTION_RANGE)),
+                            },
+                        ),
+                        edge(
+                            "investigate",
+                            IrNode::And {
+                                a: Box::new(IrNode::And {
+                                    a: Box::new(brain_input(BRAIN_DAMAGE_SOURCE_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Le {
+                                        a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(ALERT_MS),
+                                        }),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Gt {
+                                    a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(ARRIVE),
+                                    }),
+                                }),
+                            },
+                        ),
+                    ],
                 ),
                 (
                     "engage".to_string(),
-                    vec![edge("retreat", anchor_beyond(LEASH_RANGE))],
+                    vec![
+                        edge("retreat", anchor_beyond(LEASH_RANGE)),
+                        edge(
+                            "investigate",
+                            IrNode::Ge {
+                                a: Box::new(brain_input(BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT)),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(SEARCH_AFTER_MS),
+                                }),
+                            },
+                        ),
+                    ],
+                ),
+                (
+                    "investigate".to_string(),
+                    vec![
+                        edge("engage", brain_input(BRAIN_TARGET_VISIBLE_INPUT)),
+                        edge(
+                            "patrol",
+                            IrNode::Le {
+                                a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(ARRIVE),
+                                }),
+                            },
+                        ),
+                    ],
+                ),
+                (
+                    "startle".to_string(),
+                    vec![edge(
+                        "patrol",
+                        IrNode::Ge {
+                            a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(STARTLE_MS),
+                            }),
+                        },
+                    )],
                 ),
                 (
                     "retreat".to_string(),
@@ -6546,6 +7029,316 @@ fn the_reference_oracle_matches_the_shipped_authored_graph() {
         reference_behavior_graph(),
         shipped_reference_behavior_graph(),
         "the Rust oracle has drifted from `content/dev/scripts/reference-enemy.luau`",
+    );
+}
+
+/// Evaluate one transition against the shipped reference graph's expanded
+/// perception-fact surface. This keeps the graph assertions below at the
+/// authoring seam: the real binding and graph evaluator run, but a full AI
+/// tick is unnecessary for fixed fact snapshots.
+#[allow(clippy::too_many_arguments)]
+fn step_reference_enemy_graph(
+    current: &str,
+    target_distance: Option<f32>,
+    time_since_damage_ms: f32,
+    damage_source_known: bool,
+    time_since_target_visible: f32,
+    distance_to_last_known: f32,
+    damage_bearing: f32,
+    target_visible: bool,
+    time_in_activity_ms: f32,
+) -> String {
+    let graph = reference_behavior_graph();
+    let mut registry = EntityRegistry::new();
+    let enemy = registry.spawn(Transform::default());
+    registry
+        .set_component(enemy, BrainComponent::from_graph(&graph))
+        .expect("fresh enemy is live");
+
+    let mut programs = BrainPrograms::new();
+    let mut warned = HashSet::new();
+    programs.sync(&registry, &[], 0, &mut warned);
+    assert!(warned.is_empty(), "the reference graph binds every fact");
+    programs.scope_mut().refresh(
+        &registry,
+        enemy,
+        BrainFacts {
+            target: target_distance.map(|distance| (enemy, distance, Vec3::ZERO)),
+            attack_cooldown_ms: 0.0,
+            time_since_damage_ms,
+            damage_source_known,
+            time_since_target_visible,
+            distance_to_last_known,
+            damage_bearing,
+            acquisition_due: true,
+            distance_from_anchor: 0.0,
+            target_hostile: true,
+            target_reachable: true,
+            target_visible,
+            attacks_fired_in_activity: 0,
+        },
+    );
+
+    let mut brain = BrainComponent::from_graph(&graph);
+    assert!(brain.enter_activity_at(
+        0,
+        graph_activity_index(&graph, current).expect("reference state is declared"),
+    ));
+    brain.time_in_activity_ms[0] = time_in_activity_ms;
+    let _ = programs.with_entry_scope(enemy, |bound, scope| {
+        select_transition_path(bound, scope, &mut brain)
+    });
+    brain
+        .activity_at_depth(0)
+        .expect("reference graph keeps a root activity")
+        .0
+        .to_string()
+}
+
+#[test]
+fn reference_enemy_investigates_only_recent_unreached_damage_memory() {
+    const ALERT_MS: f32 = 4000.0;
+    const ARRIVE: f32 = 1.0;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            ALERT_MS,
+            true,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "recent damage with an unreached remembered position starts a search"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            BRAIN_NO_TARGET_DISTANCE,
+            BRAIN_NO_TARGET_DISTANCE,
+            0.0,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "the no-memory distance sentinel alone cannot start investigation"
+    );
+    // Regression: contextless applyDamage reset recency and sent patrol toward
+    // an unrelated position retained from an earlier sighting.
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            0.0,
+            false,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 10.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "recent contextless damage cannot investigate stale spatial memory"
+    );
+}
+
+// Regression: contextless applyDamage paired fresh damage recency with an
+// unrelated last-seen position and trapped the reference enemy in investigate.
+#[test]
+fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
+    const DT: f32 = 0.016;
+
+    let graph = reference_behavior_graph();
+    let mut brain = BrainComponent::from_graph(&graph);
+    assert!(brain.enter_activity_at(
+        0,
+        graph_activity_index(&graph, "patrol").expect("patrol is declared"),
+    ));
+    let stale_sight_memory = Vec3::new(12.0, 0.0, 0.0);
+    brain.last_known_target_pos = Some(stale_sight_memory);
+    brain.damage_source_known = true;
+
+    let mut registry = EntityRegistry::new();
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 70.0);
+    crate::health::reactions::dispatch(
+        &mut registry,
+        &[enemy],
+        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+    )
+    .expect("applyDamage reaction succeeds for a health-bearing enemy");
+
+    let damaged_brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(damaged_brain.time_since_damage_ms, 0.0);
+    assert!(!damaged_brain.damage_source_known);
+    assert_eq!(
+        damaged_brain.last_known_target_pos,
+        Some(stale_sight_memory)
+    );
+
+    let mut sourced_brain = BrainComponent::from_graph(&graph);
+    assert!(sourced_brain.enter_activity_at(
+        0,
+        graph_activity_index(&graph, "patrol").expect("patrol is declared"),
+    ));
+    let sourced_enemy = spawn_enemy(
+        &mut registry,
+        Vec3::new(20.0, 0.0, 0.0),
+        sourced_brain,
+        70.0,
+    );
+    let attacker = registry.spawn(Transform {
+        position: Vec3::new(20.0, 0.0, 12.0),
+        ..Transform::default()
+    });
+    let mut context = DamageContext::new("test.spatial-hit", DamageProducer::InTick);
+    context.attacker = Some(attacker);
+    assert!(apply_damage_with_context(
+        &mut registry,
+        sourced_enemy,
+        &DamagePayload { amount: 1.0 },
+        context,
+    ));
+
+    let mut runtime = AiRuntime::new();
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "patrol",
+        "anonymous damage cannot drive investigation of unrelated sight memory"
+    );
+    assert_eq!(
+        enemy_state_name(&registry, sourced_enemy),
+        "investigate",
+        "fresh spatially sourced damage drives investigation of its seeded position"
+    );
+}
+
+#[test]
+fn reference_enemy_searches_after_lost_sight_then_reengages_or_gives_up() {
+    const SEARCH_AFTER_MS: f32 = 800.0;
+    const ARRIVE: f32 = 1.0;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "engage",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            SEARCH_AFTER_MS,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "lost sight beyond the authored search delay switches from engagement to investigation"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "investigate",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            0.0,
+            ARRIVE + 1.0,
+            0.0,
+            true,
+            0.0,
+        ),
+        "engage",
+        "re-sighting a retained target immediately resumes engagement"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "investigate",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            SEARCH_AFTER_MS,
+            ARRIVE,
+            0.0,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "arriving at an empty remembered position ends the search"
+    );
+}
+
+#[test]
+fn reference_enemy_startles_only_for_recent_side_or_rear_damage() {
+    const STARTLE_MS: f32 = 200.0;
+    const ARRIVE: f32 = 1.0;
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            STARTLE_MS,
+            true,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            HALF_PI + 0.1,
+            false,
+            0.0,
+        ),
+        "startle",
+        "a recent side or rear hit enters the distinct startle beat"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            STARTLE_MS,
+            true,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "front damage keeps the ordinary recent-memory investigation path"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "startle",
+            None,
+            STARTLE_MS + 1.0,
+            true,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            HALF_PI + 0.1,
+            false,
+            STARTLE_MS,
+        ),
+        "patrol",
+        "the startle activity exits after its authored short commitment window"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            0.0,
+            false,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            HALF_PI + 0.1,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "contextless damage cannot reuse an older directional bearing"
     );
 }
 
@@ -8793,6 +9586,7 @@ fn enemy_destination(registry: &EntityRegistry, enemy: EntityId) -> Option<Vec3>
 fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
     for (motion, patrol) in [
         (MotionVerb::MoveToAnchor, None),
+        (MotionVerb::MoveToLastKnown, None),
         (
             MotionVerb::Patrol,
             Some(PatrolDescriptor {
@@ -8817,6 +9611,21 @@ fn position_goal_modes_are_locomotion_states_when_they_take_no_action() {
             Some("locomotion")
         );
         assert_eq!(locomotion_animation(&graph), Some("locomotion"));
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert!(brain.enter_activity_at(
+            0,
+            graph_activity_index(&graph, "position").expect("position activity exists")
+        ));
+        assert_eq!(
+            animation_for_path(&brain, false),
+            Some("idle"),
+            "{motion:?} uses the initial rest clip at a standstill"
+        );
+        assert_eq!(
+            animation_for_path(&brain, true),
+            Some("locomotion"),
+            "{motion:?} uses its travel clip while moving"
+        );
     }
 }
 
@@ -8842,6 +9651,7 @@ fn a_composite_move_selector_supplies_the_shared_locomotion_animation() {
 fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
     for (motion, patrol) in [
         (MotionVerb::MoveToAnchor, None),
+        (MotionVerb::MoveToLastKnown, None),
         (
             MotionVerb::Patrol,
             Some(PatrolDescriptor {
@@ -8870,7 +9680,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         );
         assert!(matches!(
             graph.envelope.activities["position"].motion,
-            Some(MotionVerb::MoveToAnchor | MotionVerb::Patrol)
+            Some(MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol)
         ));
         assert!(
             !engages_active(&BrainComponent::from_graph(&graph)),
@@ -8889,6 +9699,107 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         chase.envelope.activities["position"].action,
         Some(ActionVerb::Attack(ref name)) if name == "attack"
     ));
+}
+
+// Regression: a composite move selector could resolve `moveToLastKnown` while
+// an independent offense selector retained the target, claimed a slot, and fired.
+#[test]
+fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
+    let graph = test_behavior_graph!({
+        initial: "composite".to_string(),
+        activities: BTreeMap::from([(
+            "composite".to_string(),
+            BehaviorActivityDescriptor {
+                animation: Some("locomotion".to_string()),
+                motion: None,
+                action: None,
+                on_enter: None,
+                layers: BTreeMap::from([
+                    (
+                        "move".to_string(),
+                        BehaviorLayerDescriptor::Selector(vec![
+                            BehaviorSelectorEntry::Motion(MotionVerb::MoveToLastKnown),
+                        ]),
+                    ),
+                    (
+                        "offense".to_string(),
+                        BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
+                            BehaviorSelectorRow {
+                                when: None,
+                                motion: None,
+                                action: Some(ActionVerb::Attack("attack".to_string())),
+                            },
+                        )]),
+                    ),
+                ]),
+            },
+        )]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        patrol: None,
+        attacks: BTreeMap::from([(
+            "attack".to_string(),
+            AttackParams {
+                weapon: None,
+                damage: Some(TEST_ATTACK_DAMAGE),
+                max_range: Some(TEST_ATTACK_RANGE),
+                cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
+                engagement_radius: None,
+                standoff_distance: None,
+            },
+        )]),
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    let floor = OpenFloor::new();
+    let collision_world = floor.collision_world();
+    let nav_graph = floor.nav_graph();
+    let enemy_position = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    let player_position = enemy_position + Vec3::X;
+
+    let mut registry = EntityRegistry::new();
+    let mut brain = BrainComponent::from_graph(&graph);
+    brain.last_known_target_pos = Some(enemy_position + Vec3::Z * 5.0);
+    let enemy = spawn_enemy(&mut registry, enemy_position, brain, 50.0);
+    let player = spawn_player(&mut registry, player_position);
+    let mut runtime = AiRuntime::new();
+
+    let events = run_ai_tick_with_navigation(
+        &mut registry,
+        &mut runtime,
+        STEER_DT,
+        Some(&nav_graph),
+        Some(&collision_world),
+    );
+
+    assert!(
+        events.is_empty(),
+        "a position goal cannot fire the composite offense selector"
+    );
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(player)
+            .expect("player keeps health")
+            .current,
+        100.0,
+        "the suppressed action cannot damage the selected pawn"
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps brain");
+    assert_eq!(
+        brain.acquired_target, None,
+        "the resolved position goal cannot retain the transient target"
+    );
+    assert_eq!(
+        brain.combat_slot, None,
+        "the resolved position goal cannot claim a combat slot"
+    );
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(player_position),
+        "visible-target memory remains the position-goal destination"
+    );
 }
 
 #[test]
@@ -8943,6 +9854,65 @@ fn move_to_anchor_clears_on_arrival_and_reissues_after_a_later_push() {
         Some(Vec3::ZERO),
         "a later external push past epsilon reissues the anchor goal"
     );
+}
+
+#[test]
+fn move_to_last_known_uses_memory_then_clears_on_arrival_or_without_memory() {
+    let graph = position_goal_graph(MotionVerb::MoveToLastKnown, None);
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "position"),
+        50.0,
+    );
+    agent_steering::set_destination(&mut registry, enemy, Vec3::new(9.0, 0.0, 0.0));
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "an absent last-known position clears a stale destination"
+    );
+    let goal = Vec3::new(3.0, 0.0, 0.0);
+    let mut brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy has brain")
+        .clone();
+    brain.last_known_target_pos = Some(goal);
+    registry.set_component(enemy, brain).unwrap();
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        Some(goal),
+        "a remembered position becomes the navigation destination"
+    );
+
+    set_enemy_position(
+        &mut registry,
+        enemy,
+        goal - Vec3::X * POSITION_GOAL_ARRIVAL_EPSILON,
+    );
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_destination(&registry, enemy),
+        None,
+        "arrival at the last-known position clears the destination"
+    );
+
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    let brain = registry.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.acquired_target, None,
+        "position goals retain no target"
+    );
+    assert_eq!(
+        brain.combat_slot, None,
+        "position goals claim no combat slot"
+    );
+    assert_ne!(brain.acquired_target, Some(pawn));
 }
 
 #[test]

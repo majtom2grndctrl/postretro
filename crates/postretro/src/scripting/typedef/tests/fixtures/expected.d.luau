@@ -490,12 +490,14 @@ export type HealthDescriptor = {
   zoneMultipliers: { [string]: number }?,
 }
 
---- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`.
+--- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`.
 export type MotionVerb =
   --- Steer toward the selected target's combat slot.
   "chaseTarget"
   --- Steer toward the enemy's spawn anchor, then stand on arrival.
   | "moveToAnchor"
+  --- Steer toward the last known target position, then stand on arrival.
+  | "moveToLastKnown"
   --- Follow the graph's anchor-relative patrol points in order.
   | "patrol"
   --- Clear the navigation destination and stand still.
@@ -595,7 +597,7 @@ export type BehaviorGraphDescriptor = {
   patrol: PatrolDescriptor?,
   --- Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph.
   attacks: { [string]: AttackParams }?,
-  --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0.
+  --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
   --- Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.
   engagementRadius: number?,
@@ -2268,6 +2270,18 @@ export type BrainInputs = {
   attacksFiredInActivity: RuntimeGuardNode,
   --- `true` when the selected target is clear on the enemy's shared, debounced static-world sightline; false with no target. This is the LOS verdict the engine fire gate also reads, before its range, cooldown, and facing requirements (boolean).
   targetVisible: RuntimeGuardNode,
+  --- Milliseconds since this enemy last took damage. A fresh never-hit brain reads `1e9`; a landed hit resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
+  timeSinceDamageMs: RuntimeGuardNode,
+  --- Milliseconds since the selected target was last visible. A fresh never-seen brain reads `1e9`; a visible target resets it to zero and later AI ticks monotonically age it back to that sentinel (number).
+  timeSinceTargetVisible: RuntimeGuardNode,
+  --- XZ distance to the remembered last-known target position, or `1e9` with no memory. A bare `gt`/`ge` reads true without memory, so pair an investigate-distance guard with recent sight, or with both recent damage and `damageSourceKnown` (number).
+  distanceToLastKnown: RuntimeGuardNode,
+  --- Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs; gate it on recent damage and `damageSourceKnown` (number).
+  damageBearing: RuntimeGuardNode,
+  --- `true` when the most recent damaging hit supplied an attacker world
+  --- position. Pair this with damage recency before treating shared memory or
+  --- bearing as belonging to that hit (boolean).
+  damageSourceKnown: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.

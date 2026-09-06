@@ -221,7 +221,8 @@ fn fluent_brain_guards_emit_identical_boolean_ir_in_both_runtimes() {
           brain.targetDistance
             .between(1, 2)
             .and(brain.targetHostile)
-            .or(state("stunned").eq(1).not()),
+            .or(state("stunned").eq(1).not())
+            .and(brain.timeSinceDamageMs.le(100)),
         );
     "#;
     const LUAU_FIXTURE: &str = r#"
@@ -229,7 +230,8 @@ fn fluent_brain_guards_emit_identical_boolean_ir_in_both_runtimes() {
         local hostile = ranged["and"](ranged, brain.targetHostile)
         local stunned = state("stunned"):eq(1)
         local notStunned = stunned["not"](stunned)
-        return hostile["or"](hostile, notStunned)
+        local combined = hostile["or"](hostile, notStunned)
+        return combined["and"](combined, brain.timeSinceDamageMs:le(100))
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
@@ -238,34 +240,122 @@ fn fluent_brain_guards_emit_identical_boolean_ir_in_both_runtimes() {
     assert_eq!(
         typescript,
         serde_json::json!({
-            "op": "or",
+            "op": "and",
             "a": {
-                "op": "and",
+                "op": "or",
                 "a": {
                     "op": "and",
                     "a": {
-                        "op": "ge",
-                        "a": { "op": "input", "name": "@brain.targetDistance" },
+                        "op": "and",
+                        "a": {
+                            "op": "ge",
+                            "a": { "op": "input", "name": "@brain.targetDistance" },
+                            "b": { "op": "const", "value": 1 },
+                        },
+                        "b": {
+                            "op": "le",
+                            "a": { "op": "input", "name": "@brain.targetDistance" },
+                            "b": { "op": "const", "value": 2 },
+                        },
+                    },
+                    "b": { "op": "input", "name": "@brain.targetHostile" },
+                },
+                "b": {
+                    "op": "not",
+                    "x": {
+                        "op": "eq",
+                        "a": { "op": "input", "name": "@state.stunned" },
                         "b": { "op": "const", "value": 1 },
                     },
-                    "b": {
-                        "op": "le",
-                        "a": { "op": "input", "name": "@brain.targetDistance" },
-                        "b": { "op": "const", "value": 2 },
-                    },
                 },
-                "b": { "op": "input", "name": "@brain.targetHostile" },
             },
             "b": {
-                "op": "not",
-                "x": {
-                    "op": "eq",
-                    "a": { "op": "input", "name": "@state.stunned" },
-                    "b": { "op": "const", "value": 1 },
-                },
+                "op": "le",
+                "a": { "op": "input", "name": "@brain.timeSinceDamageMs" },
+                "b": { "op": "const", "value": 100 },
             },
         }),
         "fluent guards must lower to the closed opcode wire form",
+    );
+}
+
+#[test]
+fn last_known_brain_facts_emit_identical_ir_in_both_runtimes() {
+    // Keep both new SDK helper leaves on the cross-runtime fixture path: the
+    // descriptor parsers consume only their canonical `@brain.*` input names.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { brain } from "postretro";
+        JSON.stringify(
+          brain.timeSinceTargetVisible
+            .ge(250)
+            .and(brain.distanceToLastKnown.gt(3)),
+        );
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local elapsed = brain.timeSinceTargetVisible:ge(250)
+        return elapsed["and"](elapsed, brain.distanceToLastKnown:gt(3))
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "last-known brain facts diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "op": "and",
+            "a": {
+                "op": "ge",
+                "a": { "op": "input", "name": "@brain.timeSinceTargetVisible" },
+                "b": { "op": "const", "value": 250 },
+            },
+            "b": {
+                "op": "gt",
+                "a": { "op": "input", "name": "@brain.distanceToLastKnown" },
+                "b": { "op": "const", "value": 3 },
+            },
+        }),
+        "last-known helpers must lower to canonical input leaves",
+    );
+}
+
+#[test]
+fn spatial_damage_brain_facts_emit_identical_ir_in_both_runtimes() {
+    // These SDK helpers are the author-facing spelling of a sourced hit, so
+    // keep both canonical input names on the cross-runtime path.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { brain } from "postretro";
+        JSON.stringify(
+          brain.damageSourceKnown.and(brain.damageBearing.between(-1.6, 1.6)),
+        );
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local bearing = brain.damageBearing:between(-1.6, 1.6)
+        return brain.damageSourceKnown["and"](brain.damageSourceKnown, bearing)
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "spatial damage brain facts diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "op": "and",
+            "a": { "op": "input", "name": "@brain.damageSourceKnown" },
+            "b": {
+                "op": "and",
+                "a": {
+                    "op": "ge",
+                    "a": { "op": "input", "name": "@brain.damageBearing" },
+                    "b": { "op": "const", "value": -1.6 },
+                },
+                "b": {
+                    "op": "le",
+                    "a": { "op": "input", "name": "@brain.damageBearing" },
+                    "b": { "op": "const", "value": 1.6 },
+                },
+            },
+        }),
+        "spatial damage helpers must lower to canonical input leaves",
     );
 }
 

@@ -139,6 +139,106 @@ fn both_runtimes_reject_inline_activity_transitions() {
 }
 
 #[test]
+fn both_runtimes_reject_actions_on_move_to_last_known() {
+    let js = js_error(&js_behavior(
+        ", initial: \"investigate\", activities: { investigate: { animation: \"walk\", motion: \"moveToLastKnown\", action: { attack: \"slam\" } } }, transitions: {}",
+    ));
+    let lua = lua_error(&lua_behavior(
+        ", initial = \"investigate\", activities = { investigate = { animation = \"walk\", motion = \"moveToLastKnown\", action = { attack = \"slam\" } } }, transitions = {}",
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("components.behavior.activities.investigate.action"),
+            "{error}"
+        );
+        assert!(error.contains("position-goal"), "{error}");
+        assert!(error.contains("non-engaged"), "{error}");
+    }
+}
+
+// Regression: independently valid move and offense selectors could combine a
+// position goal with an attack inside one composite activity.
+#[test]
+fn both_runtimes_reject_composite_position_goals_with_offense_actions() {
+    for (motion, js_patrol, lua_patrol) in [
+        ("moveToAnchor", "", ""),
+        ("moveToLastKnown", "", ""),
+        (
+            "patrol",
+            ", patrol: { points: [[0, 0]], mode: \"loop\" }",
+            ", patrol = { points = { { 0, 0 } }, mode = \"loop\" }",
+        ),
+    ] {
+        let js = js_error(&js_behavior(&format!(
+            r#", initial: "engage", activities: {{ engage: {{ animation: "walk", layers: {{ move: ["{motion}"], offense: [{{ action: {{ attack: "slam" }} }}] }} }} }}, transitions: {{}}{js_patrol}"#,
+        )));
+        let lua = lua_error(&lua_behavior(&format!(
+            r#", initial = "engage", activities = {{ engage = {{ animation = "walk", layers = {{ move = {{ "{motion}" }}, offense = {{ {{ action = {{ attack = "slam" }} }} }} }} }} }}, transitions = {{}}{lua_patrol}"#,
+        )));
+        for error in [&js, &lua] {
+            assert!(
+                error.contains("components.behavior.activities.engage.layers.move[0]"),
+                "{motion}: {error}"
+            );
+            assert!(
+                error.contains("components.behavior.activities.engage.layers.offense[0].action"),
+                "{motion}: {error}"
+            );
+            assert!(error.contains("position-goal"), "{motion}: {error}");
+            assert!(error.contains("non-engaged"), "{motion}: {error}");
+        }
+    }
+}
+
+// Regression: a parent offense selector could combine with a position goal
+// supplied by its nested graph descendant.
+#[test]
+fn both_runtimes_reject_nested_graph_position_goals_with_parent_actions() {
+    let js = js_error(&js_behavior(
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { offense: [{ action: { attack: "slam" } }], phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" } }, transitions: {} } } } }, transitions: {}"#,
+    ));
+    let lua = lua_error(&lua_behavior(
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { offense = { { action = { attack = "slam" } } }, phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" } }, transitions = {} } } } }, transitions = {}"#,
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains(
+                "components.behavior.activities.engage.layers.phase.activities.investigate.motion"
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("components.behavior.activities.engage.layers.offense[0].action"),
+            "{error}"
+        );
+        assert!(error.contains("position-goal"), "{error}");
+        assert!(error.contains("non-engaged"), "{error}");
+    }
+}
+
+// Regression: nested graph activities are mutually exclusive, so an
+// investigate position goal and an attack sibling must not be merged into one
+// impossible active path.
+#[test]
+fn both_runtimes_allow_mutually_exclusive_nested_position_goal_and_action() {
+    let js = js_behavior(
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" }, attack: { animation: "slam", action: { attack: "slam" } } }, transitions: { investigate: [{ when: { op: "input", name: "@brain.hasTarget" }, to: "attack" }] } } } } }, transitions: {}"#,
+    );
+    let lua = lua_behavior(
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" }, attack = { animation = "slam", action = { attack = "slam" } } }, transitions = { investigate = { { when = { op = "input", name = "@brain.hasTarget" }, to = "attack" } } } } } } }, transitions = {}"#,
+    );
+
+    assert!(
+        eval_js(&js, |ctx, value| entity_descriptor_from_js(ctx, value)).is_ok(),
+        "QuickJS must retain mutually exclusive nested activities"
+    );
+    assert!(
+        eval_lua(&lua, entity_descriptor_from_lua).is_ok(),
+        "Luau must retain mutually exclusive nested activities"
+    );
+}
+
+#[test]
 fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
     let js = js_error(&js_behavior(
         ", transitions: { idle: [{ when: { op: \"const\", value: true }, to: \"windup\" }] }",
@@ -152,6 +252,23 @@ fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
             "{error}"
         );
         assert!(error.contains("windup"), "{error}");
+    }
+}
+
+#[test]
+fn both_runtimes_reject_unknown_brain_guards_with_authored_paths() {
+    let js = js_error(&js_behavior(
+        ", transitions: { idle: [{ when: { op: \"input\", name: \"@brain.notAnInput\" }, to: \"engage\" }] }",
+    ));
+    let lua = lua_error(&lua_behavior(
+        ", transitions = { idle = { { when = { op = \"input\", name = \"@brain.notAnInput\" }, to = \"engage\" } } }",
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains("components.behavior.transitions.idle[0].when"),
+            "{error}"
+        );
+        assert!(error.contains("@brain.notAnInput"), "{error}");
     }
 }
 

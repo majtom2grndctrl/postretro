@@ -10,7 +10,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
-use crate::registry::{EntityId, EntityRegistry};
+use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_foundation::{DamagePayload, IrType, IrValue};
 
 /// Maximum number of exact contributor source ids retained per target before
@@ -457,6 +457,50 @@ pub fn apply_damage_with_context(
     // `set_component` only fails on a stale id, which `get_component` already
     // ruled out above.
     let _ = registry.set_component(id, updated);
+    // Damage perception belongs at the one health chokepoint so hitscan,
+    // contact attacks, and script reactions share identical recency behavior.
+    // A Health-only entity has no brain to update, which is intentionally a
+    // no-op rather than a modelling error.
+    let attacker_transform = context
+        .attacker
+        .and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
+    let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
+    if let Ok(ComponentValue::Brain(brain)) =
+        registry.get_component_value_mut(id, ComponentKind::Brain)
+    {
+        brain.time_since_damage_ms = 0.0;
+        // Bearing is meaningful only for this hit. A contextless hit must not
+        // make an older directional stimulus look recent again.
+        brain.damage_bearing = 0.0;
+        brain.damage_source_known = attacker_transform.is_some();
+        if let Some(attacker_transform) = attacker_transform {
+            brain.last_known_target_pos = Some(attacker_transform.position);
+            if let Some(damaged_transform) = damaged_transform {
+                let forward = damaged_transform.rotation * Vec3::Z;
+                let toward_attacker = attacker_transform.position - damaged_transform.position;
+                let forward_xz_len_sq = forward.x * forward.x + forward.z * forward.z;
+                let attacker_xz_len_sq =
+                    toward_attacker.x * toward_attacker.x + toward_attacker.z * toward_attacker.z;
+                if forward_xz_len_sq.is_finite()
+                    && attacker_xz_len_sq.is_finite()
+                    && forward_xz_len_sq > 1.0e-8
+                    && attacker_xz_len_sq > 1.0e-8
+                {
+                    let forward_inverse_length = forward_xz_len_sq.sqrt().recip();
+                    let attacker_inverse_length = attacker_xz_len_sq.sqrt().recip();
+                    let forward_x = forward.x * forward_inverse_length;
+                    let forward_z = forward.z * forward_inverse_length;
+                    let attacker_x = toward_attacker.x * attacker_inverse_length;
+                    let attacker_z = toward_attacker.z * attacker_inverse_length;
+                    let dot = forward_x * attacker_x + forward_z * attacker_z;
+                    let signed_cross = forward_z * attacker_x - forward_x * attacker_z;
+                    brain.damage_bearing = signed_cross
+                        .atan2(dot)
+                        .clamp(-std::f32::consts::PI, std::f32::consts::PI);
+                }
+            }
+        }
+    }
     registry.push_impact_dispatch(ImpactDispatch {
         amount: payload.amount,
         health_before,

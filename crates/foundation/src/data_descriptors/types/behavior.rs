@@ -14,19 +14,30 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub enum MotionVerb {
     ChaseTarget,
     MoveToAnchor,
+    MoveToLastKnown,
     Patrol,
     Hold,
     Freeze,
 }
 
 impl MotionVerb {
-    pub const ALL: [MotionVerb; 5] = [
+    pub const ALL: [MotionVerb; 6] = [
         MotionVerb::ChaseTarget,
         MotionVerb::MoveToAnchor,
+        MotionVerb::MoveToLastKnown,
         MotionVerb::Patrol,
         MotionVerb::Hold,
         MotionVerb::Freeze,
     ];
+
+    /// Fixed-world-position motion is non-engaged even when selected from a
+    /// composite activity alongside independently-authored layers.
+    pub const fn is_position_goal(self) -> bool {
+        matches!(
+            self,
+            MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol
+        )
+    }
 }
 
 /// What an activity does besides moving. An attack name resolves against the

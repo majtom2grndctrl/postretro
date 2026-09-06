@@ -1,4 +1,9 @@
-import { defineEntity } from "postretro";
+import { defineEntity, defineWeaponPlacement } from "postretro";
+
+const shotgunPlacement =  defineWeaponPlacement({
+  positionFromCenter: { right: 0.3, up: -0.45, forward: 0.5 },
+})
+
 
 export const referenceShotgunEntity = defineEntity({
   canonicalName: "reference_shotgun",
@@ -12,8 +17,11 @@ export const referenceShotgunEntity = defineEntity({
       fireRateMs: 700.0,
       fireMode: "semi",
       resolution: "hitscan",
-      thirdPersonModel: "models/smg/model.gltf",
-      viewmodel: "models/smg/model.gltf",
+      thirdPersonModel: "models/cyberpunk_weapons/shotgun/model.gltf",
+      viewmodel: "models/cyberpunk_weapons/shotgun/model.gltf",
+      placement: shotgunPlacement,
+      // Authored from the viewmodel's rigid `muzzle` socket.
+      muzzleOffset: [0.0, 0.34, -1.137],
       resource: {
         kind: "ammo",
         type: "shells.buck",
@@ -25,7 +33,7 @@ export const referenceShotgunEntity = defineEntity({
     },
     // A press-mode drop makes the fixture exercise deliberate re-acquisition
     // as well as the pistol's automatic enter-edge path.
-    mesh: { model: "models/smg/model.gltf" },
+    mesh: { model: "models/cyberpunk_weapons/shotgun/model.gltf" },
     touchable: { mode: "press", radius: 1.0 },
   },
 });

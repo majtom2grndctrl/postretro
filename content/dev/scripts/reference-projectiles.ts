@@ -1,9 +1,21 @@
-import { defineEntity } from "postretro";
+import { defineEntity, defineWeaponPlacement } from "postretro";
 
-const WORLD_PICKUP_MODEL = "models/smg/model.gltf";
+const PLASMA_RIFLE_MODEL = "models/cyberpunk_weapons/rpg/model.gltf";
+const ROCKET_LAUNCHER_MODEL = "models/cyberpunk_weapons/sci_fi_weapon/model.gltf";
 
-// Reference projectile weapons use the existing SMG dev model for pickups and
-// stay in the default dev loadout so every map can exercise both body variants.
+const plasmaRiflePlacement = defineWeaponPlacement({
+  positionFromCenter: { right: 0.42, up: -0.6, forward: 0.98 },
+  rotation: { yaw: -8, pitch: 1, roll: -5 },
+});
+
+const rocketLauncherPlacement = defineWeaponPlacement({
+  positionFromCenter: { right: 0.4, up: -0.45, forward: 0.75 },
+  rotation: { yaw: -4, pitch: 1, roll: -2 },
+});
+
+// Reference projectile weapons use their matching Cyberpunk Guns models for
+// pickups and stay in the default dev loadout so every map can exercise both
+// body variants.
 // Their body and trail values are presentation only; collision and damage use
 // the descriptor's speed, radius, lifetime, and range.
 export const referencePlasmaBoltEntity = defineEntity({
@@ -15,6 +27,10 @@ export const referencePlasmaBoltEntity = defineEntity({
       fireRateMs: 130.0,
       fireMode: "auto",
       resolution: "projectile",
+      thirdPersonModel: PLASMA_RIFLE_MODEL,
+      viewmodel: PLASMA_RIFLE_MODEL,
+      placement: plasmaRiflePlacement,
+      muzzleOffset: [0.0, 0.372, -0.984],
       projectile: {
         speed: 40.0,
         radius: 0.5,
@@ -25,7 +41,7 @@ export const referencePlasmaBoltEntity = defineEntity({
             sprite: "plasma_bolt",
             size: 1.5,
             // tint: [0.2, 0.7, 1.0],
-            emissive: 1.0,
+            emissive: 0.85,
             frameDurationMs: 60.0,
           },
           light: {
@@ -36,7 +52,7 @@ export const referencePlasmaBoltEntity = defineEntity({
           // A brief static blue-white contact pop.
           impactLight: {
             color: [0.55, 0.85, 1.0],
-            intensity: 0.75,
+            intensity: 0.85,
             radius: 20.0,
             fadeMs: 180.0,
           },
@@ -44,7 +60,7 @@ export const referencePlasmaBoltEntity = defineEntity({
       },
       creditSource: "player.reference-plasma:primary",
     },
-    mesh: { model: WORLD_PICKUP_MODEL },
+    mesh: { model: PLASMA_RIFLE_MODEL },
     touchable: { mode: "auto", radius: 1.0 },
   },
 });
@@ -58,14 +74,18 @@ export const referenceRocketEntity = defineEntity({
       fireRateMs: 750.0,
       fireMode: "semi",
       resolution: "projectile",
+      thirdPersonModel: ROCKET_LAUNCHER_MODEL,
+      viewmodel: ROCKET_LAUNCHER_MODEL,
+      placement: rocketLauncherPlacement,
+      muzzleOffset: [0.0, -0.05, -0.834],
       projectile: {
         speed: 30.0,
         radius: 0.25,
         lifetimeMs: 4000.0,
         visual: {
-          // The existing SMG dev model is the model-body fixture;
+          // The rocket-launcher model is the model-body fixture;
           // the trailing smoke makes the separate body + trail forms obvious.
-          body: { kind: "model", model: WORLD_PICKUP_MODEL },
+          body: { kind: "model", model: ROCKET_LAUNCHER_MODEL },
           light: {
             color: [1.0, 0.65, 0.25],
             intensity: 1.5,
@@ -81,21 +101,21 @@ export const referenceRocketEntity = defineEntity({
           trail: {
             sprite: "smoke_puff/smoke_puff_00.png",
             rate: 60.0,
-            lifetime: 6.0,
-            spread: 1.0,
+            lifetime: 1.75,
+            spread: 1.75,
             velocity: [0.8, 0.4, 0.2],
             buoyancy: 0.03,
             drag: 1.0,
             sizeOverLifetime: [0.33, 1.5, 2.5],
             opacityOverLifetime: [0.9, 0.3, 0.0],
             color: [0.9, 0.9, 0.9],
-            spinRate: -0.5,
+            spinRate: -1.5,
           },
         },
       },
       creditSource: "player.reference-rocket:primary",
     },
-    mesh: { model: WORLD_PICKUP_MODEL },
+    mesh: { model: ROCKET_LAUNCHER_MODEL },
     touchable: { mode: "press", radius: 1.0 },
   },
 });

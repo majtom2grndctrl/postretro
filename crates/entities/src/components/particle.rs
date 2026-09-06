@@ -12,13 +12,12 @@ use crate::registry::EntityId;
 /// ([`LifetimeCurve`]) rather than deep-cloned, so spawning a particle and
 /// snapshotting it each tick only bump a refcount. Curves are immutable once
 /// authored (a reaction that changes one installs a fresh `Arc`), so a particle
-/// survives unchanged after its emitter despawns; `emitter` is a back-reference
-/// to the parent emitter entity whose **only** runtime role is spin-rate lookup
-/// in the sim tick — it is **not** consulted for render-collect culling. Each
-/// billboard is culled by the runtime cell of *its own* world position (see
-/// `scripting/systems/particle_render.rs`). When the emitter has despawned the
-/// back-reference is stale, and the orphaned particle is culled or drawn by its
-/// own cell exactly like any other particle.
+/// survives unchanged after its emitter despawns. `spin_rate` is copied from
+/// the emitter at spawn and refreshed while that emitter remains live, so an
+/// orphan continues rotating at its last known rate. `emitter` is only that
+/// optional live-refresh back-reference; it is **not** consulted for
+/// render-collect culling. Each billboard is culled by the runtime cell of
+/// *its own* world position (see `scripting/systems/particle_render.rs`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParticleState {
     pub velocity: [f32; 3],
@@ -28,6 +27,8 @@ pub struct ParticleState {
     pub drag: f32,
     pub size_curve: LifetimeCurve,
     pub opacity_curve: LifetimeCurve,
+    #[serde(default)]
+    pub spin_rate: f32,
     pub emitter: Option<EntityId>,
 }
 
@@ -45,6 +46,7 @@ mod tests {
             drag: 0.3,
             size_curve: [0.2, 1.0, 0.5].into(),
             opacity_curve: [0.0, 1.0, 0.0].into(),
+            spin_rate: 1.25,
             emitter: Some(EntityId::from_raw(0x0001_0002)),
         };
         let json = serde_json::to_string(&value).unwrap();
@@ -62,6 +64,7 @@ mod tests {
             drag: 0.0,
             size_curve: [1.0].into(),
             opacity_curve: [1.0].into(),
+            spin_rate: 0.0,
             emitter: None,
         };
         let json = serde_json::to_string(&value).unwrap();

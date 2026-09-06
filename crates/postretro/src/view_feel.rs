@@ -3,42 +3,19 @@
 // scalar outputs onto its camera basis at the render-assembly site in `main.rs`.
 // See: context/lib/movement.md
 
-use std::f32::consts::TAU;
-
 use glam::Vec3;
 
-use postretro_foundation::{BobParams, SwayParams, TiltParams, ViewFeelParams};
+use postretro_foundation::ViewFeelParams;
 
-/// Speed band (m/s) above `speed_threshold` over which bob eases in from 0 to
-/// full amplitude. Exposed so the bob acceptance test references this band
-/// rather than guessing the saturation speed. A small band keeps the onset
-/// feeling responsive without a hard pop at the threshold.
-pub(crate) const BOB_EASE_IN_BAND: f32 = 1.0;
+#[cfg(test)]
+use postretro_foundation::{BobParams, SwayParams, TiltParams};
 
-/// Fixed spring damping ratio for strafe tilt. Slightly under-damped so the
-/// roll leads and overshoots its target a touch before settling — the
-/// "lead and settle" feel (D3). NOT author-exposed; `tension` is the only
-/// authored spring knob (it sets the natural frequency).
-const TILT_DAMPING_RATIO: f32 = 0.8;
+mod bob;
+mod sway;
+mod tilt;
 
-/// Per-axis incommensurate frequency multipliers for ambient sway. Each axis
-/// sums these sines at fixed irrational multiples of the authored base
-/// frequency so the motion never visibly repeats (the alternative to Perlin
-/// noise). The ratios are engine constants, not authored fields. Chosen near
-/// irrational (√2, √3, golden-ratio neighbours) to avoid commensurate beats.
-///
-/// Decorrelation-ratio contract (applies to all three arrays): these literal
-/// values are the contract — they sit near √2/√3/φ neighbours but are NOT
-/// approximations of those constants. Do not replace them with
-/// `f32::consts::SQRT_2` or similar; the stdlib constants would change the
-/// value and reintroduce a commensurate beat. `approx_constant` is suppressed
-/// on each array that actually trips the lint for exactly this reason.
-#[allow(clippy::approx_constant)]
-const SWAY_YAW_RATIOS: [f32; 3] = [1.0, 1.414_213_6, 2.236_068];
-#[allow(clippy::approx_constant)]
-const SWAY_PITCH_RATIOS: [f32; 3] = [1.103_516_6, 1.732_050_8, 2.645_751_3];
-#[allow(clippy::approx_constant)]
-const SWAY_ROLL_RATIOS: [f32; 3] = [0.870_551, 1.618_034, 2.094_395_2];
+#[cfg(test)]
+pub(crate) use bob::BOB_EASE_IN_BAND;
 
 /// Engine-owned integrator state for the view-feel evaluator. Read AND updated
 /// by [`evaluate`] each frame. Deliberately NOT on `PlayerMovementComponent`
@@ -132,19 +109,19 @@ pub(crate) fn evaluate(
     global_scale: f32,
 ) -> ViewFeelOutput {
     let (bob_vertical, bob_lateral) = match &params.bob {
-        Some(bob) => evaluate_bob(bob, horizontal_speed, is_grounded, state, frame_dt),
+        Some(bob) => bob::evaluate(bob, horizontal_speed, is_grounded, state, frame_dt),
         None => (0.0, 0.0),
     };
 
     let tilt_roll = match &params.tilt {
-        Some(tilt) => evaluate_tilt(tilt, lateral_velocity, is_grounded, state, frame_dt),
+        Some(tilt) => tilt::evaluate(tilt, lateral_velocity, is_grounded, state, frame_dt),
         // No tilt spring: hold the roll at rest so a later-enabled tilt does not
         // inherit stale velocity. (`None` means the motion is absent entirely.)
         None => 0.0,
     };
 
     let (sway_yaw, sway_pitch, sway_roll) = match &params.sway {
-        Some(sway) => evaluate_sway(sway, horizontal_speed, is_grounded, state, frame_dt),
+        Some(sway) => sway::evaluate(sway, horizontal_speed, is_grounded, state, frame_dt),
         None => (0.0, 0.0, 0.0),
     };
 
@@ -209,192 +186,6 @@ pub(crate) fn map_output_to_camera(
     let pitch_offset = output.sway_pitch.to_radians();
     let eye_offset = Vec3::Y * output.bob_vertical + camera_right * output.bob_lateral;
     (roll, yaw_offset, pitch_offset, eye_offset)
-}
-
-/// Head bob: a distance-phased oscillator that self-gates below a speed
-/// threshold. Returns `(vertical, lateral)` offsets in metres (pre-scale).
-fn evaluate_bob(
-    bob: &BobParams,
-    horizontal_speed: f32,
-    is_grounded: bool,
-    state: &mut ViewFeelState,
-    frame_dt: f32,
-) -> (f32, f32) {
-    // Airborne gating (D8): when grounded-only and off the floor, bob HOLDS its
-    // phase (does not advance) and outputs zero, so it resumes in-cycle on
-    // landing rather than snapping.
-    if bob.grounded_only && !is_grounded {
-        return (0.0, 0.0);
-    }
-
-    // Self-gate at or below the speed threshold: no advance, no output. The
-    // phase is held so the cycle resumes coherently when motion picks up.
-    if horizontal_speed <= bob.speed_threshold {
-        return (0.0, 0.0);
-    }
-
-    // Advance each phase by distance travelled this frame. Frequencies are
-    // cycles per metre, so a full cycle elapses per `1/frequency` metres.
-    let distance = horizontal_speed * frame_dt;
-    state.bob_vertical_phase =
-        (state.bob_vertical_phase + distance * bob.vertical_frequency * TAU).rem_euclid(TAU);
-    state.bob_lateral_phase =
-        (state.bob_lateral_phase + distance * bob.lateral_frequency * TAU).rem_euclid(TAU);
-
-    // Ease in from 0 at the threshold to 1 over BOB_EASE_IN_BAND m/s above it,
-    // so amplitude ramps in rather than popping on at the gate.
-    let ease = ((horizontal_speed - bob.speed_threshold) / BOB_EASE_IN_BAND).clamp(0.0, 1.0);
-
-    let vertical = state.bob_vertical_phase.sin() * bob.vertical_amplitude * ease;
-    let lateral = state.bob_lateral_phase.sin() * bob.lateral_amplitude * ease;
-    (vertical, lateral)
-}
-
-/// Strafe tilt: a slightly under-damped spring settling the roll toward a
-/// velocity-derived target. Returns the roll angle in degrees (pre-scale) and
-/// advances the spring in the integrator with a frame-rate-independent step.
-fn evaluate_tilt(
-    tilt: &TiltParams,
-    lateral_velocity: f32,
-    is_grounded: bool,
-    state: &mut ViewFeelState,
-    frame_dt: f32,
-) -> f32 {
-    // Target roll tracks the signed lateral velocity, clamped at +/- max_angle
-    // once lateral speed reaches speed_reference. Sign carried by the input.
-    // Airborne (D8, grounded-only): the target becomes level (zero) while the
-    // spring KEEPS stepping — the roll settles out rather than freezing.
-    let target = if tilt.grounded_only && !is_grounded {
-        0.0
-    } else {
-        let normalized = (lateral_velocity / tilt.speed_reference).clamp(-1.0, 1.0);
-        tilt.max_angle * normalized
-    };
-
-    advance_spring(
-        &mut state.tilt_roll,
-        &mut state.tilt_roll_velocity,
-        target,
-        tilt.tension,
-        frame_dt,
-    );
-    state.tilt_roll
-}
-
-/// Ambient sway: summed incommensurate sines per axis (yaw, pitch, roll), each
-/// scaled by an effective amplitude that grows with speed. Returns
-/// `(yaw, pitch, roll)` in degrees (pre-scale) and advances the sway clock.
-fn evaluate_sway(
-    sway: &SwayParams,
-    horizontal_speed: f32,
-    is_grounded: bool,
-    state: &mut ViewFeelState,
-    frame_dt: f32,
-) -> (f32, f32, f32) {
-    // Airborne gating (D8): grounded-only sway contributes zero off the floor.
-    // The early return leaves sway_clock untouched — the clock advances only
-    // past this gate — so the sway phase resumes coherently when grounding
-    // is restored (no clock jump).
-    if sway.grounded_only && !is_grounded {
-        return (0.0, 0.0, 0.0);
-    }
-
-    state.sway_clock += frame_dt;
-
-    // Effective amplitude is nonzero at rest (when amplitude > 0) and grows with
-    // speed when speed_scale > 0; constant in speed when speed_scale == 0.
-    let effective_amplitude = sway.amplitude * (1.0 + sway.speed_scale * horizontal_speed);
-
-    let base_omega = TAU * sway.frequency;
-    let phase = base_omega * state.sway_clock;
-
-    let yaw = summed_sines(phase, &SWAY_YAW_RATIOS) * effective_amplitude;
-    let pitch = summed_sines(phase, &SWAY_PITCH_RATIOS) * effective_amplitude;
-    let roll = summed_sines(phase, &SWAY_ROLL_RATIOS) * effective_amplitude;
-    (yaw, pitch, roll)
-}
-
-/// Sum a fixed set of sines at the given frequency ratios, normalized by the
-/// sine count so the result stays within `[-1, 1]` regardless of how many sines
-/// are summed. This bounds each sway axis by its effective amplitude.
-fn summed_sines(base_phase: f32, ratios: &[f32]) -> f32 {
-    let sum: f32 = ratios.iter().map(|ratio| (base_phase * ratio).sin()).sum();
-    sum / ratios.len() as f32
-}
-
-/// Advance a damped harmonic oscillator one step toward `target` using an
-/// analytic (closed-form) solution of the spring ODE over `dt`. Closed-form is
-/// frame-rate independent — stepping to a fixed wall-clock time in many small
-/// steps or a few large ones converges to the same state — unlike naive
-/// explicit Euler, which depends on step size and can diverge at large `dt`.
-///
-/// The spring is parameterized by its undamped natural frequency `omega`
-/// (the authored `tension`) and the fixed [`TILT_DAMPING_RATIO`] `zeta`. For the
-/// slightly-under-damped case (`zeta < 1`) the homogeneous solution is a
-/// decaying sinusoid; we solve it directly for position and velocity.
-fn advance_spring(position: &mut f32, velocity: &mut f32, target: f32, omega: f32, dt: f32) {
-    // A zero-length step leaves the spring untouched (frame_dt == 0 contract).
-    if dt <= 0.0 || omega <= 0.0 {
-        return;
-    }
-
-    let zeta = TILT_DAMPING_RATIO;
-    // Work in displacement from the target; the target is treated as constant
-    // over the step (it is recomputed each frame from current velocity).
-    let x0 = *position - target;
-    let v0 = *velocity;
-
-    let exp = (-zeta * omega * dt).exp();
-
-    // Under-damped (zeta < 1): decaying oscillation. TILT_DAMPING_RATIO is fixed
-    // below 1, so this is the operative branch; the critical/over-damped arms
-    // are kept for correctness should the ratio ever change.
-    if zeta < 1.0 {
-        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
-        let (sin_d, cos_d) = (omega_d * dt).sin_cos();
-        // x(t) = e^{-zeta*omega*t} [ x0 cos(wd t) + (v0 + zeta*omega*x0)/wd sin(wd t) ]
-        let c2 = (v0 + zeta * omega * x0) / omega_d;
-        *position = exp * (x0 * cos_d + c2 * sin_d) + target;
-        *velocity = analytic_underdamped_velocity(x0, v0, zeta, omega, omega_d, dt);
-    } else if (zeta - 1.0).abs() < f32::EPSILON {
-        // Critically damped: x(t) = e^{-omega t} (x0 + (v0 + omega x0) t).
-        let new_x = exp * (x0 + (v0 + omega * x0) * dt);
-        let new_v = exp * (v0 - omega * (v0 + omega * x0) * dt);
-        *position = new_x + target;
-        *velocity = new_v;
-    } else {
-        // Over-damped: two real roots.
-        let root = omega * (zeta * zeta - 1.0).sqrt();
-        let r1 = -zeta * omega + root;
-        let r2 = -zeta * omega - root;
-        let c1 = (v0 - r2 * x0) / (r1 - r2);
-        let c2 = x0 - c1;
-        let e1 = (r1 * dt).exp();
-        let e2 = (r2 * dt).exp();
-        *position = c1 * e1 + c2 * e2 + target;
-        *velocity = c1 * r1 * e1 + c2 * r2 * e2;
-    }
-}
-
-/// Exact velocity of the under-damped homogeneous solution at time `dt`.
-/// Split out so the position/velocity expressions stay legible.
-fn analytic_underdamped_velocity(
-    x0: f32,
-    v0: f32,
-    zeta: f32,
-    omega: f32,
-    omega_d: f32,
-    dt: f32,
-) -> f32 {
-    let exp = (-zeta * omega * dt).exp();
-    let (sin_d, cos_d) = (omega_d * dt).sin_cos();
-    let c2 = (v0 + zeta * omega * x0) / omega_d;
-    // x(t) = exp * (x0 cos + c2 sin)
-    // v(t) = exp' * (...) + exp * (...)'
-    //      = -zeta*omega*exp*(x0 cos + c2 sin)
-    //        + exp*(-x0 omega_d sin + c2 omega_d cos)
-    -zeta * omega * exp * (x0 * cos_d + c2 * sin_d)
-        + exp * (-x0 * omega_d * sin_d + c2 * omega_d * cos_d)
 }
 
 #[cfg(test)]

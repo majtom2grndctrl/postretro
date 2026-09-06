@@ -405,6 +405,26 @@ Weapon reload outcomes can fire the reaction event names `reload_started`,
 with `reload_completed` or `reload_cancelled`, except when its pawn is lost as
 a step expires: the loop silently returns to idle with neither terminal event.
 
+### Reserved engine-fired reaction addresses
+
+The engine owns the following 21 bare addresses. A mod may register one or more
+reactions at any of them, but should not use one as a private address: the
+engine may fire it whenever the listed gameplay event occurs. All other
+mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
+
+| Source | Reserved addresses |
+|---|---|
+| Level lifecycle | `levelLoad` |
+| Weapon fire | `activate`, `dry_fire`, `impact`, `spawned` |
+| Weapon reload | `reload_started`, `reload_shell_loaded`, `reload_completed`, `reload_cancelled`, `reload_blocked_full`, `reload_blocked_empty` |
+| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended` |
+| Enemy AI | `enemyAttack` |
+
+Movement addresses fire only for the local player pawn. A state change emits
+the old state's exit address before the new state's entry address, so a
+`slide_ended` reaction always precedes the next state's entry reaction. The
+`landed` and `jumped` addresses retain their normal movement-tick ordering.
+
 ---
 
 ## Runtime values

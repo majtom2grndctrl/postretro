@@ -2891,6 +2891,7 @@ mod tests {
             bob: None,
             tilt: None,
             sway: None,
+            impulse: None,
         });
         let descriptors = [local_descriptor.clone()];
         let mut registry = EntityRegistry::new();

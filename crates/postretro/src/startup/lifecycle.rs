@@ -755,6 +755,9 @@ impl App {
         mut world: postretro_level_loader::LevelWorld,
         prm_cache_root: PathBuf,
     ) {
+        self.view_feel_state = crate::view_feel::ViewFeelState::default();
+        self.view_feel_followed_pawn = None;
+        self.view_feel_descriptor = None;
         self.retain_active_level_tags_for_install();
         let join_seed = {
             let session = self
@@ -2210,6 +2213,8 @@ mod tests {
             nav_stick_tracker: input::StickNavTracker::new(),
             frame_timing: FrameTiming::new(initial_state),
             view_feel_state: view_feel::ViewFeelState::default(),
+            view_feel_followed_pawn: None,
+            view_feel_descriptor: None,
             diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
             capture_portal_walk_next_frame: false,
             scratch_cells: Vec::new(),

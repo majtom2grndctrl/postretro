@@ -719,6 +719,13 @@ pub(crate) struct App {
     /// fixed-tick `InterpolableState` (movement.md D5). Inert until a pawn
     /// carries `view_feel`. See: context/lib/movement.md
     view_feel_state: view_feel::ViewFeelState,
+    /// Pawn currently owning the app-level view-feel integrator. A change
+    /// clears transient state so a prior pawn's impulse never rides along.
+    view_feel_followed_pawn: Option<postretro_entities::EntityId>,
+    /// Last descriptor used by the render integrator. A hot-reloaded change
+    /// invalidates any transient state rather than carrying an old kick into
+    /// the replacement tuning.
+    view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
     /// Parallel to `input_system`; same key events, debug actions only.
     /// See: context/lib/input.md §7
@@ -2604,6 +2611,7 @@ impl ApplicationHandler for App {
                 // Weapon and reload events share one stream so catch-up ticks stay ordered.
                 // See: context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_movement_edges: Vec<view_feel::TimedMovementEdge> = Vec::new();
                 let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
                 let mut pending_weapon_script_events = Vec::new();
                 // These edges are populated only by the authoritative simulation
@@ -2819,6 +2827,17 @@ impl ApplicationHandler for App {
                                 prediction_tick
                                     .movement_events
                                     .append_named_events(&mut pending_movement_events);
+                                pending_movement_edges.extend(
+                                    prediction_tick
+                                        .movement_events
+                                        .state_edges
+                                        .iter()
+                                        .copied()
+                                        .map(|edge| view_feel::TimedMovementEdge {
+                                            edge,
+                                            age: (ticks - tick_index - 1) as f32 * tick_dt,
+                                        }),
+                                );
                                 sent_client_fire_commands.push(ClientFrameFireCommand {
                                     client_tick: prediction_tick.client_tick,
                                     button: command.fire_button,
@@ -3031,6 +3050,12 @@ impl ApplicationHandler for App {
                         }
                         self.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
                         pending_movement_events.extend(tick_events.movement);
+                        pending_movement_edges.extend(tick_events.movement_edges.into_iter().map(
+                            |edge| view_feel::TimedMovementEdge {
+                                edge,
+                                age: (ticks - tick_index - 1) as f32 * tick_dt,
+                            },
+                        ));
                         pending_ai_events.extend(tick_events.ai);
                         append_tick_weapon_script_events(
                             &mut pending_weapon_script_events,
@@ -3527,7 +3552,12 @@ impl ApplicationHandler for App {
                             .ok()
                             .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
-                                    (params.clone(), component.velocity, component.is_grounded())
+                                    (
+                                        id,
+                                        params.clone(),
+                                        component.velocity,
+                                        component.is_grounded(),
+                                    )
                                 })
                             })
                     })
@@ -3540,14 +3570,22 @@ impl ApplicationHandler for App {
                     .map(|session| session.player_options.view_feel_scale)
                     .unwrap_or(1.0);
                 let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
-                    if let Some((params, velocity, is_grounded)) = view_feel_inputs {
+                    if let Some((pawn, params, velocity, is_grounded)) = view_feel_inputs {
+                        if self.view_feel_followed_pawn != Some(pawn)
+                            || self.view_feel_descriptor.as_ref() != Some(&params)
+                        {
+                            self.view_feel_state = view_feel::ViewFeelState::default();
+                            self.view_feel_followed_pawn = Some(pawn);
+                            self.view_feel_descriptor = Some(params.clone());
+                        }
                         let (horizontal_speed, lateral_velocity) =
                             view_feel::view_feel_inputs(velocity, camera_right);
-                        let output = view_feel::evaluate(
+                        let output = view_feel::evaluate_with_edges(
                             &params,
                             horizontal_speed,
                             lateral_velocity,
                             is_grounded,
+                            &pending_movement_edges,
                             &mut self.view_feel_state,
                             // Zero-frame_dt guard: the evaluator leaves the
                             // integrator untouched at `frame_dt == 0` (Task 2
@@ -3560,6 +3598,9 @@ impl ApplicationHandler for App {
                         );
                         view_feel::map_output_to_camera(&output, camera_right)
                     } else {
+                        self.view_feel_state = view_feel::ViewFeelState::default();
+                        self.view_feel_followed_pawn = None;
+                        self.view_feel_descriptor = None;
                         // Pass-through: no driving pawn, or it carries no
                         // `view_feel`. Identical-to-today render path.
                         (0.0, 0.0, 0.0, Vec3::ZERO)

@@ -318,6 +318,52 @@ pub struct ViewFeelParams {
     pub tilt: Option<TiltParams>,
     /// Optional ambient-sway tuning. Absent ⇒ no ambient sway.
     pub sway: Option<SwayParams>,
+    /// Optional state-transition impulse tuning. Absent ⇒ state edges produce
+    /// no camera displacement while script reaction addresses remain available.
+    pub impulse: Option<ImpulseParams>,
+}
+
+/// Render-rate state-transition impulse tuning. A present block requires a
+/// positive default spring `tension`, a per-channel output `max`, and the
+/// sparse per-state tuning table. Each state can override its settle rate and
+/// independently author entry/exit displacements in signed degrees.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpulseParams {
+    /// Default critically-damped settle rate in 1/sec. Must be finite > 0.
+    pub tension: f32,
+    /// Per-channel absolute ceiling applied only to the summed presentation
+    /// output. Each field must be finite ≥ 0.
+    pub max: ImpulseChannels,
+    /// Sparse state-keyed impulse definitions for the closed movement vocabulary.
+    pub states: ImpulseStates,
+}
+
+/// Signed displacement in descriptor degrees. Used both by `max` (where each
+/// value is validated non-negative) and by state entry/exit kicks (where signed
+/// and zero values are valid).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ImpulseChannels {
+    pub fov: f32,
+    pub pitch: f32,
+    pub roll: f32,
+}
+
+/// Sparse tuning for each payload-free movement state key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpulseStates {
+    pub normal: Option<ImpulseStateParams>,
+    pub dash: Option<ImpulseStateParams>,
+    pub crouch: Option<ImpulseStateParams>,
+    pub slide: Option<ImpulseStateParams>,
+}
+
+/// One state may override the character's default settle rate and author entry
+/// and/or exit displacement. All optional fields preserve sparse inheritance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpulseStateParams {
+    pub tension: Option<f32>,
+    pub enter: Option<ImpulseChannels>,
+    pub exit: Option<ImpulseChannels>,
 }
 
 /// Head-bob tuning. When present on `viewFeel`, all fields are required and

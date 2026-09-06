@@ -356,6 +356,7 @@ fn spawn_one(
         drag: component.drag,
         size_curve: component.size_over_lifetime.clone(),
         opacity_curve: component.opacity_over_lifetime.clone(),
+        spin_rate: component.spin_rate,
         emitter: Some(parent),
     };
     let visual = SpriteVisual {
@@ -566,6 +567,7 @@ mod tests {
                         drag: 0.0,
                         size_curve: [1.0].into(),
                         opacity_curve: [1.0].into(),
+                        spin_rate: 0.0,
                         emitter: Some(id),
                     },
                 )
@@ -605,6 +607,7 @@ mod tests {
                         drag: 0.0,
                         size_curve: [1.0].into(),
                         opacity_curve: [1.0].into(),
+                        spin_rate: 0.0,
                         emitter: Some(id),
                     },
                 )
@@ -700,10 +703,11 @@ mod tests {
     }
 
     #[test]
-    fn spawned_particles_carry_emitter_back_reference() {
+    fn spawned_particles_latch_emitter_reference_and_spin_rate() {
         let mut registry = EntityRegistry::new();
         let mut comp = base_component(0.0);
         comp.burst = Some(3);
+        comp.spin_rate = 1.25;
         let id = spawn_emitter(&mut registry, comp);
         let mut bridge = EmitterBridge::new();
         update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
@@ -712,6 +716,7 @@ mod tests {
         for (_pid, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
             if let ComponentValue::ParticleState(p) = value {
                 assert_eq!(p.emitter, Some(id));
+                assert_eq!(p.spin_rate, 1.25);
                 found += 1;
             }
         }

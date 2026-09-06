@@ -259,6 +259,7 @@ mod tests {
                 drag: 0.0,
                 size_curve: [1.0].into(),
                 opacity_curve: [1.0].into(),
+                spin_rate: 0.0,
                 emitter: None,
             }),
             ComponentKind::SpriteVisual => ComponentValue::SpriteVisual(SpriteVisual {

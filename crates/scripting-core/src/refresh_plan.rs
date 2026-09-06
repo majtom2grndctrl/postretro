@@ -1406,6 +1406,7 @@ mod tests {
             drag: 0.1,
             size_curve: [1.0, 0.5].into(),
             opacity_curve: [1.0, 0.0].into(),
+            spin_rate: 0.0,
             emitter: Some(emitter_id),
         };
         registry

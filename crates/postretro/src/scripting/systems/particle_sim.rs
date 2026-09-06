@@ -92,15 +92,14 @@ pub(crate) fn tick(
         let size = eval_curve(&state.size_curve, t);
         let opacity = eval_curve(&state.opacity_curve, t);
 
-        // Spin: read live emitter spin_rate every tick (so reactions and
-        // tweens take effect immediately). Orphaned particles tick at 0.
-        let spin_rate = match state.emitter {
-            Some(parent) => match registry.get_component::<BillboardEmitterComponent>(parent) {
-                Ok(emitter) => emitter.spin_rate,
-                Err(_) => 0.0,
-            },
-            None => 0.0,
-        };
+        // A live emitter refreshes its particles so reactions and tween
+        // samples take effect immediately. The particle owns the most recent
+        // rate, so it continues to rotate after the emitter is gone.
+        if let Some(parent) = state.emitter
+            && let Ok(emitter) = registry.get_component::<BillboardEmitterComponent>(parent)
+        {
+            state.spin_rate = emitter.spin_rate;
+        }
 
         // Update the visual. Read-modify-write keeps any future fields the sim
         // does not own (sprite, tint) intact.
@@ -110,7 +109,7 @@ pub(crate) fn tick(
         };
         visual.size = size;
         visual.opacity = opacity;
-        visual.rotation += spin_rate * delta;
+        visual.rotation += state.spin_rate * delta;
 
         // Update Transform.position.
         let mut transform = *registry
@@ -206,6 +205,7 @@ mod tests {
                     drag,
                     size_curve: size_curve.into(),
                     opacity_curve: opacity_curve.into(),
+                    spin_rate: 0.0,
                     emitter,
                 },
             )
@@ -380,7 +380,47 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_particle_retains_rotation_without_panicking() {
+    fn live_emitter_spin_rate_changes_refresh_existing_particle_rotation() {
+        let mut reg = EntityRegistry::new();
+        let emitter_id = reg.spawn(Transform::default());
+        let mut emitter = default_emitter_component();
+        emitter.spin_rate = 1.0;
+        reg.set_component(emitter_id, emitter).unwrap();
+        let id = spawn_particle(
+            &mut reg,
+            [0.0, 0.0, 0.0],
+            10.0,
+            0.0,
+            0.0,
+            vec![1.0],
+            vec![1.0],
+            Some(emitter_id),
+        );
+
+        tick(&mut reg, 0.25, TEST_GRAVITY);
+        let mut emitter = reg
+            .get_component::<BillboardEmitterComponent>(emitter_id)
+            .unwrap()
+            .clone();
+        // The emitter bridge writes each spin-animation sample to this field;
+        // the particle sim must use the changed value on its next tick.
+        emitter.spin_rate = 3.0;
+        reg.set_component(emitter_id, emitter).unwrap();
+        tick(&mut reg, 0.25, TEST_GRAVITY);
+
+        let rotation = reg.get_component::<SpriteVisual>(id).unwrap().rotation;
+        assert!(
+            (rotation - 1.0).abs() < 1e-6,
+            "live emitter rate change must affect rotation; got {rotation}"
+        );
+        assert!(
+            (reg.get_component::<ParticleState>(id).unwrap().spin_rate - 3.0).abs() < 1e-6,
+            "particle must retain the emitter's latest rate"
+        );
+    }
+
+    #[test]
+    fn orphaned_particle_keeps_last_spin_rate_until_its_lifetime_expires() {
         let mut reg = EntityRegistry::new();
         let emitter_id = reg.spawn(Transform::default());
         let mut emitter = default_emitter_component();
@@ -389,7 +429,7 @@ mod tests {
         let id = spawn_particle(
             &mut reg,
             [0.0, 0.0, 0.0],
-            10.0,
+            0.4,
             0.0,
             0.0,
             vec![1.0],
@@ -405,13 +445,21 @@ mod tests {
         // Despawn the parent emitter — particle is now orphaned.
         reg.despawn(emitter_id).unwrap();
 
-        // Further ticks must not panic and rotation must not advance.
-        tick(&mut reg, 0.1, TEST_GRAVITY);
+        // The particle owns the sampled rate, so it continues rotating after
+        // the emitter is gone.
         tick(&mut reg, 0.1, TEST_GRAVITY);
         let rotation_after = reg.get_component::<SpriteVisual>(id).unwrap().rotation;
         assert!(
-            (rotation_after - rotation_before).abs() < 1e-6,
-            "orphaned particle rotation should not advance; before {rotation_before}, after {rotation_after}"
+            (rotation_after - rotation_before - std::f32::consts::TAU * 0.1).abs() < 1e-6,
+            "orphaned particle should keep rotating; before {rotation_before}, after {rotation_after}"
+        );
+
+        // Orphaning changes neither the particle's own lifetime nor its
+        // despawn rule.
+        tick(&mut reg, 0.2, TEST_GRAVITY);
+        assert!(
+            !reg.exists(id),
+            "orphaned particle must despawn at its own lifetime"
         );
     }
 

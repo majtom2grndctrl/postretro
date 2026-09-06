@@ -451,15 +451,17 @@ placement in the prop or socket. Placement is the base position; render-rate vie
 sway/bob is a separate overlay composed on top (owned by movement), excluded from
 authority.
 
-**Fire origin composes on placement (decided, not yet built).** The authoritative
-projectile origin is the weapon's model-local muzzle composed through the authored
-placement — eye ∘ placement ∘ muzzle_local, steady placement, no view-feel. The muzzle
-point is per-weapon content like a hit zone, replicated beside placement in the tuning
-payload; a connected client predicts from that host value, never from the client-local
-viewmodel mesh (the host holds no remote viewmodel). The spawned projectile origin equals
-the validated fire origin — they never diverge. The observer's third-person muzzle, posed
-by the avatar socket rather than placement, is a separate presentation vantage, deferred.
-Today projectiles still spawn at the camera eye.
+**Fire origin composes on placement.** When a projectile weapon supplies a
+model-local `muzzleOffset`, its authoritative origin is the weapon's muzzle
+composed through the authored placement — eye ∘ placement ∘ muzzle_local,
+steady placement, no view-feel. The muzzle point is per-weapon content like a
+hit zone, replicated beside placement in the tuning payload; a connected client
+predicts from that host value, never from the client-local viewmodel mesh (the
+host holds no remote viewmodel). The spawned projectile origin equals the
+validated fire origin — they never diverge — and its direction converges on the
+crosshair target. An omitted offset preserves the historical camera-eye origin.
+The observer's third-person muzzle, posed by the avatar socket rather than
+placement, is a separate presentation vantage, deferred.
 
 ## Combat authority: FIRE vs HIT
 

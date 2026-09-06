@@ -190,6 +190,54 @@ fn both_runtimes_reject_composite_position_goals_with_offense_actions() {
     }
 }
 
+// Regression: a parent offense selector could combine with a position goal
+// supplied by its nested graph descendant.
+#[test]
+fn both_runtimes_reject_nested_graph_position_goals_with_parent_actions() {
+    let js = js_error(&js_behavior(
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { offense: [{ action: { attack: "slam" } }], phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" } }, transitions: {} } } } }, transitions: {}"#,
+    ));
+    let lua = lua_error(&lua_behavior(
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { offense = { { action = { attack = "slam" } } }, phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" } }, transitions = {} } } } }, transitions = {}"#,
+    ));
+    for error in [&js, &lua] {
+        assert!(
+            error.contains(
+                "components.behavior.activities.engage.layers.phase.activities.investigate.motion"
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("components.behavior.activities.engage.layers.offense[0].action"),
+            "{error}"
+        );
+        assert!(error.contains("position-goal"), "{error}");
+        assert!(error.contains("non-engaged"), "{error}");
+    }
+}
+
+// Regression: nested graph activities are mutually exclusive, so an
+// investigate position goal and an attack sibling must not be merged into one
+// impossible active path.
+#[test]
+fn both_runtimes_allow_mutually_exclusive_nested_position_goal_and_action() {
+    let js = js_behavior(
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" }, attack: { animation: "slam", action: { attack: "slam" } } }, transitions: { investigate: [{ when: { op: "input", name: "@brain.hasTarget" }, to: "attack" }] } } } } }, transitions: {}"#,
+    );
+    let lua = lua_behavior(
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" }, attack = { animation = "slam", action = { attack = "slam" } } }, transitions = { investigate = { { when = { op = "input", name = "@brain.hasTarget" }, to = "attack" } } } } } } }, transitions = {}"#,
+    );
+
+    assert!(
+        eval_js(&js, |ctx, value| entity_descriptor_from_js(ctx, value)).is_ok(),
+        "QuickJS must retain mutually exclusive nested activities"
+    );
+    assert!(
+        eval_lua(&lua, entity_descriptor_from_lua).is_ok(),
+        "Luau must retain mutually exclusive nested activities"
+    );
+}
+
 #[test]
 fn both_runtimes_reject_cross_level_and_unknown_targets_with_paths() {
     let js = js_error(&js_behavior(

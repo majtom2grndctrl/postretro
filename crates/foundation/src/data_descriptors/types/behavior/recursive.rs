@@ -268,13 +268,21 @@ impl BehaviorGraphDescriptor {
     }
 }
 
+/// The position-goal and action verbs an activity can contribute while that
+/// activity is selected. Paths stay authored-path precise so a parent layer
+/// can explain exactly which concurrent verb made the graph invalid.
+struct ActivePathVerbs {
+    position_goal_path: Option<String>,
+    action_path: Option<String>,
+}
+
 fn validate_envelope(
     envelope: &mut BehaviorGraphEnvelope,
     path: &str,
     depth: usize,
     attacks: &BTreeMap<String, AttackParams>,
     patrol: Option<&PatrolDescriptor>,
-) -> Result<(), DescriptorError> {
+) -> Result<Vec<ActivePathVerbs>, DescriptorError> {
     if depth > MAX_BEHAVIOR_NESTING_DEPTH {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
@@ -334,16 +342,19 @@ fn validate_envelope(
         }
     }
 
-    for (name, activity) in &mut envelope.activities {
-        validate_activity(
-            activity,
-            &format!("{path}.activities.{name}"),
-            depth,
-            attacks,
-            patrol,
-        )?;
-    }
-    Ok(())
+    envelope
+        .activities
+        .iter_mut()
+        .map(|(name, activity)| {
+            validate_activity(
+                activity,
+                &format!("{path}.activities.{name}"),
+                depth,
+                attacks,
+                patrol,
+            )
+        })
+        .collect()
 }
 
 fn validate_activity(
@@ -352,7 +363,7 @@ fn validate_activity(
     depth: usize,
     attacks: &BTreeMap<String, AttackParams>,
     patrol: Option<&PatrolDescriptor>,
-) -> Result<(), DescriptorError> {
+) -> Result<ActivePathVerbs, DescriptorError> {
     if !activity.layers.is_empty() {
         if activity.motion.is_some() {
             return Err(DescriptorError::InvalidShape {
@@ -389,26 +400,54 @@ fn validate_activity(
                 ),
             });
         }
+        let mut nested_paths = Vec::new();
         for (name, layer) in &mut activity.layers {
-            validate_layer(
+            if let Some(paths) = validate_layer(
                 layer,
                 &format!("{path}.layers.{name}"),
                 name,
                 depth,
                 attacks,
                 patrol,
+            )? {
+                nested_paths = paths;
+            }
+        }
+
+        let position_goal_path = first_local_position_goal_path(activity, path);
+        let action_path = first_local_action_path(activity, path);
+        reject_concurrent_position_goal_and_action(
+            position_goal_path.as_deref(),
+            action_path.as_deref(),
+        )?;
+
+        // Selector layers are always active with this composite. A nested graph
+        // supplies only one of its activities, though, so compare the local
+        // layers with each possible child path rather than merging sibling
+        // activities into one impossible simultaneous state.
+        for child in &nested_paths {
+            reject_concurrent_position_goal_and_action(
+                position_goal_path.as_deref(),
+                child.action_path.as_deref(),
+            )?;
+            reject_concurrent_position_goal_and_action(
+                child.position_goal_path.as_deref(),
+                action_path.as_deref(),
             )?;
         }
-        if let Some(position_goal_path) = first_position_goal_selector_path(activity, path)
-            && let Some(action_path) = first_resolvable_action_path(activity, path)
-        {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`{action_path}` must be omitted because `{position_goal_path}` is a position-goal verb; position-goal activities are non-engaged"
-                ),
-            });
-        }
-        return Ok(());
+
+        return Ok(ActivePathVerbs {
+            position_goal_path: position_goal_path.or_else(|| {
+                nested_paths
+                    .iter()
+                    .find_map(|path| path.position_goal_path.clone())
+            }),
+            action_path: action_path.or_else(|| {
+                nested_paths
+                    .iter()
+                    .find_map(|path| path.action_path.clone())
+            }),
+        });
     }
 
     if activity.animation.as_ref().is_none_or(String::is_empty) {
@@ -429,36 +468,61 @@ fn validate_activity(
     if let Some(action) = activity.action.as_ref() {
         validate_action(action, &format!("{path}.action"), attacks)?;
     }
+    Ok(ActivePathVerbs {
+        position_goal_path: activity
+            .motion
+            .is_some_and(MotionVerb::is_position_goal)
+            .then(|| format!("{path}.motion")),
+        action_path: activity.action.as_ref().map(|_| format!("{path}.action")),
+    })
+}
+
+fn reject_concurrent_position_goal_and_action(
+    position_goal_path: Option<&str>,
+    action_path: Option<&str>,
+) -> Result<(), DescriptorError> {
+    if let (Some(position_goal_path), Some(action_path)) = (position_goal_path, action_path) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{action_path}` must be omitted because `{position_goal_path}` is a position-goal verb; position-goal activities are non-engaged"
+            ),
+        });
+    }
     Ok(())
 }
 
-fn first_position_goal_selector_path(
+fn first_local_position_goal_path(
     activity: &BehaviorActivityDescriptor,
     path: &str,
 ) -> Option<String> {
-    let BehaviorLayerDescriptor::Selector(entries) = activity.layers.get("move")? else {
-        return None;
-    };
-    entries
-        .iter()
-        .enumerate()
-        .find_map(|(index, entry)| match entry {
-            BehaviorSelectorEntry::Motion(motion) if motion.is_position_goal() => {
-                Some(format!("{path}.layers.move[{index}]"))
-            }
-            BehaviorSelectorEntry::Row(row)
-                if row.motion.is_some_and(MotionVerb::is_position_goal) =>
-            {
-                Some(format!("{path}.layers.move[{index}].motion"))
-            }
-            BehaviorSelectorEntry::Motion(_) | BehaviorSelectorEntry::Row(_) => None,
-        })
+    if activity.motion.is_some_and(MotionVerb::is_position_goal) {
+        return Some(format!("{path}.motion"));
+    }
+
+    if let Some(BehaviorLayerDescriptor::Selector(entries)) = activity.layers.get("move")
+        && let Some(position_goal_path) =
+            entries
+                .iter()
+                .enumerate()
+                .find_map(|(index, entry)| match entry {
+                    BehaviorSelectorEntry::Motion(motion) if motion.is_position_goal() => {
+                        Some(format!("{path}.layers.move[{index}]"))
+                    }
+                    BehaviorSelectorEntry::Row(row)
+                        if row.motion.is_some_and(MotionVerb::is_position_goal) =>
+                    {
+                        Some(format!("{path}.layers.move[{index}].motion"))
+                    }
+                    BehaviorSelectorEntry::Motion(_) | BehaviorSelectorEntry::Row(_) => None,
+                })
+    {
+        return Some(position_goal_path);
+    }
+
+    None
 }
 
-fn first_resolvable_action_path(
-    activity: &BehaviorActivityDescriptor,
-    path: &str,
-) -> Option<String> {
+fn first_local_action_path(activity: &BehaviorActivityDescriptor, path: &str) -> Option<String> {
     if activity.action.is_some() {
         return Some(format!("{path}.action"));
     }
@@ -471,20 +535,7 @@ fn first_resolvable_action_path(
         return Some(format!("{path}.layers.offense[{index}].action"));
     }
 
-    activity.layers.iter().find_map(|(name, layer)| {
-        let BehaviorLayerDescriptor::Graph(envelope) = layer else {
-            return None;
-        };
-        envelope
-            .activities
-            .iter()
-            .find_map(|(activity_name, child)| {
-                first_resolvable_action_path(
-                    child,
-                    &format!("{path}.layers.{name}.activities.{activity_name}"),
-                )
-            })
-    })
+    None
 }
 
 fn validate_layer(
@@ -494,7 +545,7 @@ fn validate_layer(
     depth: usize,
     attacks: &BTreeMap<String, AttackParams>,
     patrol: Option<&PatrolDescriptor>,
-) -> Result<(), DescriptorError> {
+) -> Result<Option<Vec<ActivePathVerbs>>, DescriptorError> {
     match layer {
         BehaviorLayerDescriptor::Graph(envelope) => {
             if layer_name == "move" {
@@ -502,16 +553,17 @@ fn validate_layer(
                     reason: format!("`{path}` must be a move selector list, not a nested graph"),
                 });
             }
-            validate_envelope(envelope, path, depth + 1, attacks, patrol)
+            validate_envelope(envelope, path, depth + 1, attacks, patrol).map(Some)
         }
         BehaviorLayerDescriptor::Selector(entries) => {
             if layer_name == "move" {
-                validate_move_selector(entries, path, patrol)
+                validate_move_selector(entries, path, patrol)?;
             } else if layer_name == "offense" {
-                validate_offense_selector(entries, path, attacks)
+                validate_offense_selector(entries, path, attacks)?;
             } else {
-                validate_unconsumed_selector(entries, path, attacks, patrol)
+                validate_unconsumed_selector(entries, path, attacks, patrol)?;
             }
+            Ok(None)
         }
     }
 }

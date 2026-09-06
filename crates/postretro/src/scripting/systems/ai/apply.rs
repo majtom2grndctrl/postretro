@@ -31,15 +31,16 @@ pub(super) fn apply_outcomes(
 ) -> super::AiTickResult {
     let mut events: Vec<Cow<'static, str>> = Vec::new();
     let mut projectile_spawns = Vec::new();
-    for mut outcome in outcomes {
-        // Persist the brain (state + timers + stride counter) BEFORE the damage
-        // chokepoint below, so an impact policy, death effect, or `on_impact`
-        // callback reacting to this enemy's attack reads the state it is now in
-        // rather than last tick's. That ordering is why this write stays and the
-        // locomotion latch is folded in by re-reading at the end of the loop
-        // instead of writing this snapshot back a second time.
-        let _ = registry.set_component(outcome.id, outcome.brain.clone());
 
+    // Publish the complete compute-pass snapshot for every brain before any
+    // outcome can run damage or callbacks. A contact attack may mutate a later
+    // outcome's brain through the damage chokepoint; publishing that later
+    // snapshot after the hit would restore its stale pre-hit perception state.
+    for outcome in &outcomes {
+        let _ = registry.set_component(outcome.id, outcome.brain.clone());
+    }
+
+    for mut outcome in outcomes {
         // The entered state's authored entry event. Raised before this tick's
         // action so a reaction reads the state the brain is now IN.
         if let Some(address) = outcome.on_enter.take() {

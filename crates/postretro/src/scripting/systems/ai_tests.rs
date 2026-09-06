@@ -4992,6 +4992,66 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
     );
 }
 
+// Regression: an earlier-applied enemy's contact hit was overwritten when the
+// victim's pre-hit brain snapshot was published later in the same apply pass.
+#[test]
+fn same_tick_contact_damage_survives_a_later_brain_outcome_publish() {
+    const DT: f32 = 0.016;
+    let attacker_position = Vec3::ZERO;
+    let victim_position = Vec3::X;
+    let mut registry = EntityRegistry::new();
+    let attacker = spawn_enemy(
+        &mut registry,
+        attacker_position,
+        BrainComponent::from_graph(&standing_attack_graph()),
+        50.0,
+    );
+    let victim = spawn_enemy(
+        &mut registry,
+        victim_position,
+        BrainComponent::from_graph(&damage_recency_graph()),
+        50.0,
+    );
+    // `movement` and `behavior` are independent descriptor components, so this
+    // is a valid targetable brain-bearing entity, with the required Transform.
+    registry
+        .set_component(
+            victim,
+            PlayerMovementComponent::from_descriptor(&player_movement_descriptor()),
+        )
+        .unwrap();
+    registry
+        .entity_state_mut(victim)
+        .expect("spawned victim carries entity state")
+        .set(FACTION_STATE_FIELD, 0.0);
+
+    let mut runtime = AiRuntime::new();
+    let events = run_ai_tick(&mut registry, &mut runtime, DT);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert!((player_hp(&registry, victim) - 42.0).abs() <= EPS);
+
+    let damaged = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("contact victim retains its brain");
+    assert!(damaged.time_since_damage_ms.abs() <= EPS);
+    assert!(damaged.damage_source_known);
+    assert_eq!(damaged.last_known_target_pos, Some(attacker_position));
+    assert!(
+        (damaged.damage_bearing.abs() - std::f32::consts::PI).abs() <= EPS,
+        "the latest hit keeps its attacker-relative bearing"
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+    let next_tick = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("contact victim retains its brain on the next tick");
+    assert!((next_tick.time_since_damage_ms - DT * 1000.0).abs() <= EPS);
+    assert!(next_tick.damage_source_known);
+    assert_eq!(next_tick.last_known_target_pos, Some(attacker_position));
+    assert_eq!(enemy_state_name(&registry, victim), "recent_damage");
+    assert_eq!(enemy_acquired_target(&registry, attacker), Some(victim));
+}
+
 fn last_known_memory_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "chase".to_string(),

@@ -249,8 +249,8 @@ pub(super) fn evaluate(
         });
         // Sight memory is a host-only fact about the selected target's last
         // visible position. The shared debounced verdict is authoritative: a
-        // visible target overwrites a damage seed from an earlier stage, while
-        // an unseen target leaves that seed intact for authored investigation.
+        // visible target refreshes this cache, overwriting the prior-tick damage
+        // seed. An unseen target preserves that seed for authored investigation.
         if target_visible {
             if let Some((_, _, target_position)) = selected_target {
                 brain.last_known_target_pos = Some(target_position);

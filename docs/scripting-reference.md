@@ -767,6 +767,7 @@ an action or no action. A nested offense graph has its own active activity path.
 |----------|-----------|
 | `"chaseTarget"` | Steer toward the target's assigned combat slot. With no target this degrades to a stand-down (there is nothing to move relative to). |
 | `"moveToAnchor"` | Steer toward this brain's spawn-time home anchor, then stand when it arrives. The anchor is host-only brain state; placing the entity authors its home. |
+| `"moveToLastKnown"` | Steer toward the remembered last-known target position, then stand when it arrives. With no remembered position, clear the destination. |
 | `"patrol"` | Steer through the graph-wide anchor-relative route, advancing its persistent cursor in `"loop"` or `"pingPong"` order. |
 | `"hold"` | Stand still by **clearing** the navigation destination. |
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
@@ -776,11 +777,13 @@ stops the agent: it clears the destination, so the agent settles in place.
 `freeze` writes nothing, so an agent already walking somewhere keeps walking
 there.
 
-`moveToAnchor` and `patrol` are **position goals**, not engagement. They cannot
-declare an `action`; validation rejects that combination. They drop a
-retained target, take no combat slot, and face only their travel direction; an
-arrived or blocked position goal does not turn to face a nearby pawn. Arrival is
-not latched: `moveToAnchor` clears its destination while it is within the
+`moveToAnchor`, `moveToLastKnown`, and `patrol` are **position goals**, not
+engagement. An active behavior path that resolves one of them cannot also
+declare an `action` or resolve an action-producing layer; validation rejects
+that coexistence. They drop a retained target, take no combat slot, and face
+only their travel direction; an arrived or blocked position goal does not turn
+to face a nearby pawn. Arrival is not latched: `moveToAnchor` clears its
+destination while it is within the
 engine's `POSITION_GOAL_ARRIVAL_EPSILON` (currently 0.5 m), then issues the
 anchor goal again if something pushes it back out. If an authored transition
 leaves a position-goal state on arrival, its distance threshold must be **at
@@ -854,6 +857,11 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetHostile` | `@brain.targetHostile` | `boolean` | Whether the selected target is hostile; `false` with no target. Use this durable authored fact to stand down a retained target that turns friendly. |
 | `brain.targetReachable` | `@brain.targetReachable` | `boolean` | Cached verdict from the nav floor's `find_path` for the selected target; `false` with no target or on maps without a navmesh. It reports the pathfinder's current ability, not ground-truth reachability: freestanding-wall wraparounds have a known false-negative limitation. |
 | `brain.attacksFiredInActivity` | `@brain.attacksFiredInActivity` | `number` | Successful action fires since the activity whose rows are being evaluated was entered. Scope-relative. A fire becomes visible to guards on the next tick. |
+| `brain.timeSinceDamageMs` | `@brain.timeSinceDamageMs` | `number` | Milliseconds since this enemy last took damage. A never-hit brain reads the `1e9` no-memory sentinel; a landed hit resets it to `0`, then later AI ticks age it back to that sentinel. |
+| `brain.timeSinceTargetVisible` | `@brain.timeSinceTargetVisible` | `number` | Milliseconds since the selected target was last visible. A never-seen brain reads the `1e9` no-memory sentinel; a visible target resets it to `0`, then later AI ticks age it back to that sentinel. |
+| `brain.distanceToLastKnown` | `@brain.distanceToLastKnown` | `number` | XZ distance in metres to the remembered last-known target position, or the `1e9` no-memory sentinel. A bare `gt`/`ge` is true with no memory, so pair an investigate-distance guard with recent sight, or with both recent damage and `damageSourceKnown`. |
+| `brain.damageBearing` | `@brain.damageBearing` | `number` | Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs. Meaningful only when damage is recent **and** `damageSourceKnown` is true. |
+| `brain.damageSourceKnown` | `@brain.damageSourceKnown` | `boolean` | Whether the most recent damaging hit supplied an attacker world position. Pair it with damage recency before treating shared last-known-position memory or bearing as belonging to that hit. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;

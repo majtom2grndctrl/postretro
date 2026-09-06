@@ -990,6 +990,8 @@
     readonly timeSinceTargetVisible: RuntimeGuardNode;
     /** XZ distance to the remembered last-known target position, or `1e9` with no memory. A bare `gt`/`ge` reads true without memory, so pair an investigate-distance guard with a recent sight or damage fact (number). */
     readonly distanceToLastKnown: RuntimeGuardNode;
+    /** Signed XZ yaw in radians from this enemy's visual `+Z` forward toward the attacker that landed its most recent damage. `0` is ahead and the two sides have opposite signs; gate it on recent damage (number). */
+    readonly damageBearing: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

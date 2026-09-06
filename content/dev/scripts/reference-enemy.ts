@@ -11,6 +11,11 @@ import type { EntityTypeDescriptor } from "postretro";
 export const REFERENCE_ENEMY_CLASSNAME = "reference_enemy";
 
 const DETECTION_RANGE = 16;
+const ALERT_MS = 4000;
+const SEARCH_AFTER_MS = 800;
+const ARRIVE = 1;
+const HALF_PI = Math.PI / 2;
+const STARTLE_MS = 200;
 const JAB_RANGE = 2;
 const SLAM_RANGE = 3.5;
 const LEASH_RANGE = 100;
@@ -63,6 +68,14 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           interrupt: "snap",
         },
         attack_slam: {
+          clip: "1H_Melee_Attack_Slice_Horizontal",
+          loop: false,
+          crossfadeMs: 80,
+          interrupt: "snap",
+        },
+        // The reference model has no dedicated pain clip; this distinct state
+        // still makes the authored startle observable to replication clients.
+        flinch: {
           clip: "1H_Melee_Attack_Slice_Horizontal",
           loop: false,
           crossfadeMs: 80,
@@ -150,12 +163,33 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
             },
           },
         },
+        investigate: { animation: "walk", motion: "moveToLastKnown" },
+        startle: { animation: "flinch", motion: "hold" },
         retreat: { animation: "walk", motion: "moveToAnchor" },
       },
       transitions: {
         "*": [
-          { to: "patrol", when: brain.hasTarget.not() },
-          { to: "patrol", when: brain.targetHostile.not() },
+          // A missing target is not enough to stand down: recent damage can
+          // still point at an unreached memory.
+          {
+            to: "patrol",
+            when: brain.hasTarget
+              .not()
+              .and(brain.timeSinceDamageMs.gt(ALERT_MS))
+              .and(brain.distanceToLastKnown.le(ARRIVE)),
+          },
+          {
+            to: "patrol",
+            when: brain.hasTarget.and(brain.targetHostile.not()),
+          },
+          {
+            to: "startle",
+            when: brain.timeSinceDamageMs.le(STARTLE_MS).and(
+              brain.damageBearing
+                .gt(HALF_PI)
+                .or(brain.damageBearing.lt(-HALF_PI)),
+            ),
+          },
         ],
         idle: [{ to: "patrol", when: runtime.constant(true) }],
         patrol: [
@@ -165,9 +199,28 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               brain.targetDistance.le(DETECTION_RANGE),
             ),
           },
+          {
+            to: "investigate",
+            // The distance sentinel is also `gt(ARRIVE)`, so recency proves
+            // a damage seed actually supplied this memory.
+            when: brain.timeSinceDamageMs
+              .le(ALERT_MS)
+              .and(brain.distanceToLastKnown.gt(ARRIVE)),
+          },
         ],
         engage: [
           { to: "retreat", when: brain.distanceFromAnchor.gt(LEASH_RANGE) },
+          {
+            to: "investigate",
+            when: brain.timeSinceTargetVisible.ge(SEARCH_AFTER_MS),
+          },
+        ],
+        investigate: [
+          { to: "engage", when: brain.targetVisible },
+          { to: "patrol", when: brain.distanceToLastKnown.le(ARRIVE) },
+        ],
+        startle: [
+          { to: "patrol", when: brain.timeInActivityMs.ge(STARTLE_MS) },
         ],
         retreat: [
           { to: "patrol", when: brain.distanceFromAnchor.le(RETURN_ARRIVAL_EPSILON) },

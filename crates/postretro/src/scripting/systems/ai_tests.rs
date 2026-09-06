@@ -39,15 +39,17 @@ use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-    BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_NO_TARGET_DISTANCE,
+    BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+    BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_NO_TARGET_DISTANCE,
     BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HOSTILE_INPUT,
-    BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-    BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BakedIr, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
-    BehaviorGraphEnvelope, BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow,
-    BindingScope, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
-    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
-    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
-    WeaponDescriptor, bind,
+    BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+    BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
+    BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow, BindingScope,
+    BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, FireMode,
+    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
+    ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode, WeaponDescriptor,
+    bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
@@ -6564,6 +6566,11 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
 /// the Luau oracle below keep this executable fixture honest.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const DETECTION_RANGE: f32 = 16.0;
+    const ALERT_MS: f32 = 4000.0;
+    const SEARCH_AFTER_MS: f32 = 800.0;
+    const ARRIVE: f32 = 1.0;
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+    const STARTLE_MS: f32 = 200.0;
     const JAB_RANGE: f32 = 2.0;
     const SLAM_RANGE: f32 = 3.5;
     const LEASH_RANGE: f32 = 100.0;
@@ -6687,6 +6694,14 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     },
                 ),
                 (
+                    "investigate".to_string(),
+                    authored_state("walk", MotionVerb::MoveToLastKnown, None),
+                ),
+                (
+                    "startle".to_string(),
+                    authored_state("flinch", MotionVerb::Hold, None),
+                ),
+                (
                     "retreat".to_string(),
                     authored_state("walk", MotionVerb::MoveToAnchor, None),
                 ),
@@ -6697,14 +6712,58 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     vec![
                         edge(
                             "patrol",
-                            IrNode::Not {
-                                x: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                            IrNode::And {
+                                a: Box::new(IrNode::And {
+                                    a: Box::new(IrNode::Not {
+                                        x: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                                    }),
+                                    b: Box::new(IrNode::Gt {
+                                        a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(ALERT_MS),
+                                        }),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Le {
+                                    a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(ARRIVE),
+                                    }),
+                                }),
                             },
                         ),
                         edge(
                             "patrol",
-                            IrNode::Not {
-                                x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                            IrNode::And {
+                                a: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                                b: Box::new(IrNode::Not {
+                                    x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                                }),
+                            },
+                        ),
+                        edge(
+                            "startle",
+                            IrNode::And {
+                                a: Box::new(IrNode::Le {
+                                    a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(STARTLE_MS),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Or {
+                                    a: Box::new(IrNode::Gt {
+                                        a: Box::new(brain_input(BRAIN_DAMAGE_BEARING_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(HALF_PI),
+                                        }),
+                                    }),
+                                    b: Box::new(IrNode::Lt {
+                                        a: Box::new(brain_input(BRAIN_DAMAGE_BEARING_INPUT)),
+                                        b: Box::new(IrNode::Const {
+                                            value: IrValue::Number(-HALF_PI),
+                                        }),
+                                    }),
+                                }),
                             },
                         ),
                     ],
@@ -6720,17 +6779,74 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 ),
                 (
                     "patrol".to_string(),
-                    vec![edge(
-                        "engage",
-                        IrNode::And {
-                            a: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
-                            b: Box::new(target_within(DETECTION_RANGE)),
-                        },
-                    )],
+                    vec![
+                        edge(
+                            "engage",
+                            IrNode::And {
+                                a: Box::new(brain_input(BRAIN_ACQUISITION_DUE_INPUT)),
+                                b: Box::new(target_within(DETECTION_RANGE)),
+                            },
+                        ),
+                        edge(
+                            "investigate",
+                            IrNode::And {
+                                a: Box::new(IrNode::Le {
+                                    a: Box::new(brain_input(BRAIN_TIME_SINCE_DAMAGE_MS_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(ALERT_MS),
+                                    }),
+                                }),
+                                b: Box::new(IrNode::Gt {
+                                    a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                    b: Box::new(IrNode::Const {
+                                        value: IrValue::Number(ARRIVE),
+                                    }),
+                                }),
+                            },
+                        ),
+                    ],
                 ),
                 (
                     "engage".to_string(),
-                    vec![edge("retreat", anchor_beyond(LEASH_RANGE))],
+                    vec![
+                        edge("retreat", anchor_beyond(LEASH_RANGE)),
+                        edge(
+                            "investigate",
+                            IrNode::Ge {
+                                a: Box::new(brain_input(BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT)),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(SEARCH_AFTER_MS),
+                                }),
+                            },
+                        ),
+                    ],
+                ),
+                (
+                    "investigate".to_string(),
+                    vec![
+                        edge("engage", brain_input(BRAIN_TARGET_VISIBLE_INPUT)),
+                        edge(
+                            "patrol",
+                            IrNode::Le {
+                                a: Box::new(brain_input(BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT)),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(ARRIVE),
+                                }),
+                            },
+                        ),
+                    ],
+                ),
+                (
+                    "startle".to_string(),
+                    vec![edge(
+                        "patrol",
+                        IrNode::Ge {
+                            a: Box::new(brain_input(BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(STARTLE_MS),
+                            }),
+                        },
+                    )],
                 ),
                 (
                     "retreat".to_string(),
@@ -6846,6 +6962,201 @@ fn the_reference_oracle_matches_the_shipped_authored_graph() {
         reference_behavior_graph(),
         shipped_reference_behavior_graph(),
         "the Rust oracle has drifted from `content/dev/scripts/reference-enemy.luau`",
+    );
+}
+
+/// Evaluate one transition against the shipped reference graph's expanded
+/// perception-fact surface. This keeps the graph assertions below at the
+/// authoring seam: the real binding and graph evaluator run, but a full AI
+/// tick is unnecessary for fixed fact snapshots.
+#[allow(clippy::too_many_arguments)]
+fn step_reference_enemy_graph(
+    current: &str,
+    target_distance: Option<f32>,
+    time_since_damage_ms: f32,
+    time_since_target_visible: f32,
+    distance_to_last_known: f32,
+    damage_bearing: f32,
+    target_visible: bool,
+    time_in_activity_ms: f32,
+) -> String {
+    let graph = reference_behavior_graph();
+    let mut registry = EntityRegistry::new();
+    let enemy = registry.spawn(Transform::default());
+    registry
+        .set_component(enemy, BrainComponent::from_graph(&graph))
+        .expect("fresh enemy is live");
+
+    let mut programs = BrainPrograms::new();
+    let mut warned = HashSet::new();
+    programs.sync(&registry, &[], 0, &mut warned);
+    assert!(warned.is_empty(), "the reference graph binds every fact");
+    programs.scope_mut().refresh(
+        &registry,
+        enemy,
+        BrainFacts {
+            target: target_distance.map(|distance| (enemy, distance, Vec3::ZERO)),
+            attack_cooldown_ms: 0.0,
+            time_since_damage_ms,
+            time_since_target_visible,
+            distance_to_last_known,
+            damage_bearing,
+            acquisition_due: true,
+            distance_from_anchor: 0.0,
+            target_hostile: true,
+            target_reachable: true,
+            target_visible,
+            attacks_fired_in_activity: 0,
+        },
+    );
+
+    let mut brain = BrainComponent::from_graph(&graph);
+    assert!(brain.enter_activity_at(
+        0,
+        graph_activity_index(&graph, current).expect("reference state is declared"),
+    ));
+    brain.time_in_activity_ms[0] = time_in_activity_ms;
+    let _ = programs.with_entry_scope(enemy, |bound, scope| {
+        select_transition_path(bound, scope, &mut brain)
+    });
+    brain
+        .activity_at_depth(0)
+        .expect("reference graph keeps a root activity")
+        .0
+        .to_string()
+}
+
+#[test]
+fn reference_enemy_investigates_only_recent_unreached_damage_memory() {
+    const ALERT_MS: f32 = 4000.0;
+    const ARRIVE: f32 = 1.0;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            ALERT_MS,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "recent damage with an unreached remembered position starts a search"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            BRAIN_NO_TARGET_DISTANCE,
+            BRAIN_NO_TARGET_DISTANCE,
+            BRAIN_NO_TARGET_DISTANCE,
+            0.0,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "the no-memory distance sentinel alone cannot start investigation"
+    );
+}
+
+#[test]
+fn reference_enemy_searches_after_lost_sight_then_reengages_or_gives_up() {
+    const SEARCH_AFTER_MS: f32 = 800.0;
+    const ARRIVE: f32 = 1.0;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "engage",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            SEARCH_AFTER_MS,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "lost sight beyond the authored search delay switches from engagement to investigation"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "investigate",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            0.0,
+            ARRIVE + 1.0,
+            0.0,
+            true,
+            0.0,
+        ),
+        "engage",
+        "re-sighting a retained target immediately resumes engagement"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "investigate",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            SEARCH_AFTER_MS,
+            ARRIVE,
+            0.0,
+            false,
+            0.0,
+        ),
+        "patrol",
+        "arriving at an empty remembered position ends the search"
+    );
+}
+
+#[test]
+fn reference_enemy_startles_only_for_recent_side_or_rear_damage() {
+    const STARTLE_MS: f32 = 200.0;
+    const ARRIVE: f32 = 1.0;
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            STARTLE_MS,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            HALF_PI + 0.1,
+            false,
+            0.0,
+        ),
+        "startle",
+        "a recent side or rear hit enters the distinct startle beat"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "patrol",
+            None,
+            STARTLE_MS,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            0.0,
+            false,
+            0.0,
+        ),
+        "investigate",
+        "front damage keeps the ordinary recent-memory investigation path"
+    );
+    assert_eq!(
+        step_reference_enemy_graph(
+            "startle",
+            None,
+            STARTLE_MS + 1.0,
+            BRAIN_NO_TARGET_DISTANCE,
+            ARRIVE + 1.0,
+            HALF_PI + 0.1,
+            false,
+            STARTLE_MS,
+        ),
+        "patrol",
+        "the startle activity exits after its authored short commitment window"
     );
 }
 

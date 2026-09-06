@@ -491,12 +491,14 @@ declare module "postretro" {
     zoneMultipliers?: { readonly [tag: string]: number };
   };
 
-  /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `patrol`, `hold`, `freeze`. */
+  /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`. */
   export type MotionVerb =
     /** Steer toward the selected target's combat slot. */
     | "chaseTarget"
     /** Steer toward the enemy's spawn anchor, then stand on arrival. */
     | "moveToAnchor"
+    /** Steer toward the last known target position, then stand on arrival. */
+    | "moveToLastKnown"
     /** Follow the graph's anchor-relative patrol points in order. */
     | "patrol"
     /** Clear the navigation destination and stand still. */
@@ -596,7 +598,7 @@ declare module "postretro" {
     patrol?: PatrolDescriptor;
     /** Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph. */
     attacks?: { readonly [attack: string]: AttackParams };
-    /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, and `patrol`. Must be finite and > 0. */
+    /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0. */
     moveSpeed: number;
     /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;

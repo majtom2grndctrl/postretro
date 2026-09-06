@@ -22,6 +22,16 @@ pub(super) fn position_goal_steering(
                 SteeringIntent::MoveTo(brain.home_anchor)
             }
         }
+        MotionVerb::MoveToLastKnown => {
+            let Some(goal) = brain.last_known_target_pos else {
+                return SteeringIntent::Clear;
+            };
+            if crate::nav::distance_xz(position, goal) <= POSITION_GOAL_ARRIVAL_EPSILON {
+                SteeringIntent::Clear
+            } else {
+                SteeringIntent::MoveTo(goal)
+            }
+        }
         MotionVerb::Patrol => patrol_steering(brain, position),
         // This resolver owns only motion modes with per-brain position goals.
         // Every other mode remains the pure graph evaluator's responsibility.

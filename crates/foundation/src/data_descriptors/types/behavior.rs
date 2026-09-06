@@ -14,15 +14,17 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub enum MotionVerb {
     ChaseTarget,
     MoveToAnchor,
+    MoveToLastKnown,
     Patrol,
     Hold,
     Freeze,
 }
 
 impl MotionVerb {
-    pub const ALL: [MotionVerb; 5] = [
+    pub const ALL: [MotionVerb; 6] = [
         MotionVerb::ChaseTarget,
         MotionVerb::MoveToAnchor,
+        MotionVerb::MoveToLastKnown,
         MotionVerb::Patrol,
         MotionVerb::Hold,
         MotionVerb::Freeze,

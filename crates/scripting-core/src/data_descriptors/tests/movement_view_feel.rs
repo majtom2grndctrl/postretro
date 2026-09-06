@@ -95,6 +95,54 @@ fn lua_movement_view_feel_present_empty_disables_each_motion() {
     assert!(vf.sway.is_none());
 }
 
+#[test]
+fn js_and_lua_impulse_parse_sparse_state_rows_and_signed_channels() {
+    let js = js_movement_with_view_feel(
+        r#"{ impulse: { tension: 12.0, max: { fov: 20.0, pitch: 8.0, roll: 6.0 }, states: { slide: { tension: 9.0, enter: { fov: 8.0, pitch: -2.5, roll: 1.5 }, exit: { fov: -2.0, pitch: 1.5, roll: 0.0 } } } } }"#,
+    );
+    let js_descriptor = eval_js(&js, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let js_impulse = js_descriptor
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+    assert_eq!(js_impulse.tension, 12.0);
+    assert_eq!(js_impulse.states.slide.unwrap().enter.unwrap().pitch, -2.5);
+    assert!(js_impulse.states.dash.is_none());
+
+    let lua = lua_movement_with_view_feel(
+        r#"{ impulse = { tension = 12.0, max = { fov = 20.0, pitch = 8.0, roll = 6.0 }, states = { slide = { enter = { fov = 8.0, pitch = -2.5, roll = 1.5 } } } } }"#,
+    );
+    let lua_descriptor = eval_lua(&lua, |v| entity_descriptor_from_lua(v).unwrap());
+    let lua_impulse = lua_descriptor
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+    assert_eq!(lua_impulse.states.slide.unwrap().enter.unwrap().roll, 1.5);
+}
+
+#[test]
+fn impulse_rejects_missing_or_invalid_required_values_in_both_runtimes() {
+    let invalid_js = js_movement_with_view_feel(
+        r#"{ impulse: { tension: 0.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+    );
+    let js_error = eval_js(&invalid_js, |ctx, v| {
+        entity_descriptor_from_js(ctx, v).unwrap_err()
+    });
+    assert!(js_error.to_string().contains("impulse.tension"));
+
+    let invalid_lua = lua_movement_with_view_feel(
+        r#"{ impulse = { tension = 1.0, max = { fov = -1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+    );
+    let lua_error = eval_lua(&invalid_lua, |v| entity_descriptor_from_lua(v).unwrap_err());
+    assert!(lua_error.to_string().contains("impulse.max.fov"));
+}
+
 // Full shapes parse and `groundedOnly` defaults apply (bob/tilt true, sway false).
 
 #[test]

@@ -219,6 +219,7 @@ mod tests {
                 bob: None,
                 tilt: None,
                 sway: None,
+                impulse: None,
             }),
         }
     }

@@ -265,7 +265,135 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
     } else {
         None
     };
-    Ok(ViewFeelParams { bob, tilt, sway })
+    let impulse = if obj.contains_key("impulse").map_err(js_err)? {
+        let raw: JsValue = obj.get("impulse").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let impulse_obj =
+                Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                    reason: "`movement.viewFeel.impulse` must be an object".to_string(),
+                })?;
+            Some(impulse_params_from_js(&impulse_obj)?)
+        }
+    } else {
+        None
+    };
+    Ok(ViewFeelParams {
+        bob,
+        tilt,
+        sway,
+        impulse,
+    })
+}
+
+pub fn impulse_params_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseParams, DescriptorError> {
+    let tension = validate_positive_finite(
+        get_required_f32_js(obj, "tension")?,
+        "movement.viewFeel.impulse.tension",
+    )?;
+    let max: Object = get_required_object_js(obj, "max")?;
+    let states: Object = get_required_object_js(obj, "states")?;
+    Ok(ImpulseParams {
+        tension,
+        max: impulse_max_from_js(&max)?,
+        states: impulse_states_from_js(&states)?,
+    })
+}
+
+fn impulse_max_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseChannels, DescriptorError> {
+    Ok(ImpulseChannels {
+        fov: validate_non_negative_finite(
+            get_required_f32_js(obj, "fov")?,
+            "movement.viewFeel.impulse.max.fov",
+        )?,
+        pitch: validate_non_negative_finite(
+            get_required_f32_js(obj, "pitch")?,
+            "movement.viewFeel.impulse.max.pitch",
+        )?,
+        roll: validate_non_negative_finite(
+            get_required_f32_js(obj, "roll")?,
+            "movement.viewFeel.impulse.max.roll",
+        )?,
+    })
+}
+
+fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, DescriptorError> {
+    Ok(ImpulseStates {
+        normal: optional_impulse_state_from_js(obj, "normal")?,
+        dash: optional_impulse_state_from_js(obj, "dash")?,
+        crouch: optional_impulse_state_from_js(obj, "crouch")?,
+        slide: optional_impulse_state_from_js(obj, "slide")?,
+    })
+}
+
+fn optional_impulse_state_from_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<ImpulseStateParams>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let state = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`movement.viewFeel.impulse.states.{field}` must be an object"),
+    })?;
+    let tension = match get_optional_f32_js(&state, "tension")? {
+        Some(value) => Some(validate_positive_finite(
+            value,
+            &format!("movement.viewFeel.impulse.states.{field}.tension"),
+        )?),
+        None => None,
+    };
+    Ok(Some(ImpulseStateParams {
+        tension,
+        enter: optional_impulse_channels_from_js(&state, "enter", field)?,
+        exit: optional_impulse_channels_from_js(&state, "exit", field)?,
+    }))
+}
+
+fn optional_impulse_channels_from_js<'js>(
+    state: &Object<'js>,
+    field: &'static str,
+    state_name: &'static str,
+) -> Result<Option<ImpulseChannels>, DescriptorError> {
+    if !state.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = state.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let channels = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!(
+            "`movement.viewFeel.impulse.states.{state_name}.{field}` must be an object"
+        ),
+    })?;
+    let path =
+        |channel: &str| format!("movement.viewFeel.impulse.states.{state_name}.{field}.{channel}");
+    Ok(Some(ImpulseChannels {
+        fov: validate_in_range_finite(
+            get_required_f32_js(&channels, "fov")?,
+            f32::MIN,
+            f32::MAX,
+            &path("fov"),
+        )?,
+        pitch: validate_in_range_finite(
+            get_required_f32_js(&channels, "pitch")?,
+            f32::MIN,
+            f32::MAX,
+            &path("pitch"),
+        )?,
+        roll: validate_in_range_finite(
+            get_required_f32_js(&channels, "roll")?,
+            f32::MIN,
+            f32::MAX,
+            &path("roll"),
+        )?,
+    }))
 }
 
 pub fn bob_params_from_js<'js>(obj: &Object<'js>) -> Result<BobParams, DescriptorError> {

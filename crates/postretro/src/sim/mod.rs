@@ -272,6 +272,10 @@ pub(crate) struct TriggerTickContext<'a> {
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct TickEvents {
     pub(crate) movement: Vec<&'static str>,
+    /// Ordered local-pawn state edges for render-rate view-feel presentation.
+    /// This is frame-local, never serialized, and deliberately separate from
+    /// the script-address drain above.
+    pub(crate) movement_edges: Vec<crate::movement::MovementStateEdge>,
     /// AI events raised this tick: the static enemy-attack address plus each
     /// entered graph state's authored `on_enter`, which is owned.
     pub(crate) ai: Vec<Cow<'static, str>>,
@@ -740,7 +744,8 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     repointed_pawns.dedup();
 
     TickEvents {
-        movement,
+        movement: movement.addresses,
+        movement_edges: movement.state_edges,
         ai,
         weapon,
         #[cfg(test)]
@@ -1457,19 +1462,27 @@ pub(crate) mod predict_reconcile;
 /// netcode path bypasses this entirely and calls the seam directly with EVERY
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
+struct LocalMovementTickEvents {
+    addresses: Vec<&'static str>,
+    state_edges: Vec<crate::movement::MovementStateEdge>,
+}
+
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision: &impl crate::movement::MovementCollisionSource,
     gravity: f32,
     input: &MovementInput,
     tick_dt: f32,
-) -> Vec<&'static str> {
+) -> LocalMovementTickEvents {
     let local = {
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
     };
     let Some(id) = local else {
-        return Vec::new();
+        return LocalMovementTickEvents {
+            addresses: Vec::new(),
+            state_edges: Vec::new(),
+        };
     };
 
     let pawn_inputs = [(id, input.clone())];
@@ -1482,12 +1495,17 @@ fn run_movement_tick(
         tick_dt,
     );
     let mut addresses = Vec::new();
+    let mut state_edges = Vec::new();
     for (pawn, movement_events) in events {
         if pawn == id {
             movement_events.append_named_events(&mut addresses);
+            state_edges = movement_events.state_edges;
         }
     }
-    addresses
+    LocalMovementTickEvents {
+        addresses,
+        state_edges,
+    }
 }
 pub(crate) fn run_death_sweep(registry: &Rc<RefCell<EntityRegistry>>) -> Vec<String> {
     let report = {

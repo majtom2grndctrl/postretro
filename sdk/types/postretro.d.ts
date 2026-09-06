@@ -622,7 +622,7 @@ declare module "postretro" {
     crouch?: CrouchParams;
     /** Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required. */
     slide?: SlideParams;
-    /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway). A render-only camera effect. When omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional. */
+    /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional. Stuck-stop deadzone enable flag. When true (default), the slide loop zeroes horizontal velocity and rolls back XZ position when contradictory wall normals (≥60° apart) are seen within the same tick AND net horizontal displacement is below `stuckStopThreshold`. Suppresses orbital jitter in interior corners. Default true. */
     stuckStopEnabled?: boolean;
@@ -738,6 +738,8 @@ declare module "postretro" {
     tilt?: TiltParams;
     /** Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`. */
     sway?: SwayParams;
+    /** Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse. */
+    impulse?: ImpulseParams;
   };
 
   /** Distance-phased head-bob tuning. Vertical and lateral motion have independent cadences. All fields are required except `groundedOnly`, which defaults to true. */
@@ -778,6 +780,48 @@ declare module "postretro" {
     speedScale: number;
     /** Whether sway applies only while grounded. Optional; defaults to false. */
     groundedOnly?: boolean;
+  };
+
+  /** State-transition camera impulse tuning. One critically-damped spring is maintained per state key; `tension` is the default settle rate in 1/sec, and `max` clamps only the summed presented output. */
+  export type ImpulseParams = {
+    /** Default critical-spring settle rate in 1/sec. Must be finite and > 0; larger values settle sooner without rebound. */
+    tension: number;
+    /** Absolute per-channel ceiling on the summed presented offset. Every field must be finite and ≥ 0. */
+    max: ImpulseChannels;
+    /** Sparse state-keyed entry/exit displacement definitions. */
+    states: ImpulseStates;
+  };
+
+  /** Signed camera displacement in degrees. Entry and exit channels accept finite signed values; `ImpulseParams.max` uses the same shape but requires non-negative values. */
+  export type ImpulseChannels = {
+    /** Horizontal field-of-view displacement in degrees. */
+    fov: number;
+    /** Camera pitch displacement in degrees. */
+    pitch: number;
+    /** Camera roll displacement in degrees. */
+    roll: number;
+  };
+
+  /** Sparse impulse rows for the closed movement state vocabulary. */
+  export type ImpulseStates = {
+    /** Optional normal-state row. */
+    normal?: ImpulseStateParams;
+    /** Optional dash-state row. */
+    dash?: ImpulseStateParams;
+    /** Optional crouch-state row. */
+    crouch?: ImpulseStateParams;
+    /** Optional slide-state row. */
+    slide?: ImpulseStateParams;
+  };
+
+  /** Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum. */
+  export type ImpulseStateParams = {
+    /** Optional state-specific settle rate in 1/sec. Must be finite and > 0 when present. */
+    tension?: number;
+    /** Optional signed displacement when this state is entered. */
+    enter?: ImpulseChannels;
+    /** Optional signed displacement when this state is exited. */
+    exit?: ImpulseChannels;
   };
 
   /** Input-forgiveness tuning (coyote time + jump buffering). Optional on `PlayerMovementDescriptor` — when the whole `forgiveness` object is omitted, the documented engine defaults apply. When present, each field is itself optional and falls back to its engine default; an explicit 0 disables that grace independently. Both windows are in milliseconds. */

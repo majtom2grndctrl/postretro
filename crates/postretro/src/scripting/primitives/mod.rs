@@ -625,7 +625,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "viewFeel?",
             "ViewFeelParams",
-            "Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway). A render-only camera effect. When omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway` is independently optional.",
+            "Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.",
         )
         .field(
             "stuckStopEnabled?",
@@ -714,6 +714,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("bob?", "BobParams", "Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("tilt?", "TiltParams", "Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("sway?", "SwayParams", "Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`.")
+        .field("impulse?", "ImpulseParams", "Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse.")
         .finish();
     registry
         .register_type("BobParams")
@@ -740,6 +741,43 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("frequency", "f32", "Sway oscillation frequency in Hz. Must be finite > 0.")
         .field("speedScale", "f32", "Additional sway multiplier per metre/sec of horizontal speed. Must be finite and ≥ 0; 0 makes sway independent of movement speed.")
         .field("groundedOnly?", "bool", "Whether sway applies only while grounded. Optional; defaults to false.")
+        .finish();
+    registry
+        .register_type("ImpulseParams")
+        .doc("State-transition camera impulse tuning. One critically-damped spring is maintained per state key; `tension` is the default settle rate in 1/sec, and `max` clamps only the summed presented output.")
+        .field("tension", "f32", "Default critical-spring settle rate in 1/sec. Must be finite and > 0; larger values settle sooner without rebound.")
+        .field("max", "ImpulseChannels", "Absolute per-channel ceiling on the summed presented offset. Every field must be finite and ≥ 0.")
+        .field("states", "ImpulseStates", "Sparse state-keyed entry/exit displacement definitions.")
+        .finish();
+    registry
+        .register_type("ImpulseChannels")
+        .doc("Signed camera displacement in degrees. Entry and exit channels accept finite signed values; `ImpulseParams.max` uses the same shape but requires non-negative values.")
+        .field("fov", "f32", "Horizontal field-of-view displacement in degrees.")
+        .field("pitch", "f32", "Camera pitch displacement in degrees.")
+        .field("roll", "f32", "Camera roll displacement in degrees.")
+        .finish();
+    registry
+        .register_type("ImpulseStates")
+        .doc("Sparse impulse rows for the closed movement state vocabulary.")
+        .field(
+            "normal?",
+            "ImpulseStateParams",
+            "Optional normal-state row.",
+        )
+        .field("dash?", "ImpulseStateParams", "Optional dash-state row.")
+        .field(
+            "crouch?",
+            "ImpulseStateParams",
+            "Optional crouch-state row.",
+        )
+        .field("slide?", "ImpulseStateParams", "Optional slide-state row.")
+        .finish();
+    registry
+        .register_type("ImpulseStateParams")
+        .doc("Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum.")
+        .field("tension?", "f32", "Optional state-specific settle rate in 1/sec. Must be finite and > 0 when present.")
+        .field("enter?", "ImpulseChannels", "Optional signed displacement when this state is entered.")
+        .field("exit?", "ImpulseChannels", "Optional signed displacement when this state is exited.")
         .finish();
     registry
         .register_type("ForgivenessParams")

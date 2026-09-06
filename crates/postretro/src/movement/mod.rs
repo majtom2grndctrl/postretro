@@ -396,6 +396,7 @@ mod tests {
                 speed_scale: 0.2,
                 grounded_only: false,
             }),
+            impulse: None,
         };
         desc.view_feel = Some(view_feel.clone());
         let comp = PlayerMovementComponent::from_descriptor(&desc);

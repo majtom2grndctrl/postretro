@@ -240,7 +240,119 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         Some(t) => Some(sway_params_from_lua(&t)?),
         None => None,
     };
-    Ok(ViewFeelParams { bob, tilt, sway })
+    let impulse = match read_optional_subtable_lua(table, "impulse", "movement.viewFeel.impulse")? {
+        Some(t) => Some(impulse_params_from_lua(&t)?),
+        None => None,
+    };
+    Ok(ViewFeelParams {
+        bob,
+        tilt,
+        sway,
+        impulse,
+    })
+}
+
+pub fn impulse_params_from_lua(table: &Table) -> Result<ImpulseParams, DescriptorError> {
+    let tension = validate_positive_finite(
+        get_required_f32_lua(table, "tension")?,
+        "movement.viewFeel.impulse.tension",
+    )?;
+    let max = get_required_table_lua(table, "max")?;
+    let states = get_required_table_lua(table, "states")?;
+    Ok(ImpulseParams {
+        tension,
+        max: impulse_max_from_lua(&max)?,
+        states: impulse_states_from_lua(&states)?,
+    })
+}
+
+fn impulse_max_from_lua(table: &Table) -> Result<ImpulseChannels, DescriptorError> {
+    Ok(ImpulseChannels {
+        fov: validate_non_negative_finite(
+            get_required_f32_lua(table, "fov")?,
+            "movement.viewFeel.impulse.max.fov",
+        )?,
+        pitch: validate_non_negative_finite(
+            get_required_f32_lua(table, "pitch")?,
+            "movement.viewFeel.impulse.max.pitch",
+        )?,
+        roll: validate_non_negative_finite(
+            get_required_f32_lua(table, "roll")?,
+            "movement.viewFeel.impulse.max.roll",
+        )?,
+    })
+}
+
+fn impulse_states_from_lua(table: &Table) -> Result<ImpulseStates, DescriptorError> {
+    Ok(ImpulseStates {
+        normal: optional_impulse_state_from_lua(table, "normal")?,
+        dash: optional_impulse_state_from_lua(table, "dash")?,
+        crouch: optional_impulse_state_from_lua(table, "crouch")?,
+        slide: optional_impulse_state_from_lua(table, "slide")?,
+    })
+}
+
+fn optional_impulse_state_from_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<ImpulseStateParams>, DescriptorError> {
+    let Some(state) = read_optional_subtable_lua(
+        table,
+        field,
+        &format!("movement.viewFeel.impulse.states.{field}"),
+    )?
+    else {
+        return Ok(None);
+    };
+    let tension = match get_optional_f32_lua(&state, "tension")? {
+        Some(value) => Some(validate_positive_finite(
+            value,
+            &format!("movement.viewFeel.impulse.states.{field}.tension"),
+        )?),
+        None => None,
+    };
+    Ok(Some(ImpulseStateParams {
+        tension,
+        enter: optional_impulse_channels_from_lua(&state, "enter", field)?,
+        exit: optional_impulse_channels_from_lua(&state, "exit", field)?,
+    }))
+}
+
+fn optional_impulse_channels_from_lua(
+    state: &Table,
+    field: &'static str,
+    state_name: &'static str,
+) -> Result<Option<ImpulseChannels>, DescriptorError> {
+    let Some(channels) = read_optional_subtable_lua(
+        state,
+        field,
+        &format!("movement.viewFeel.impulse.states.{state_name}.{field}"),
+    )?
+    else {
+        return Ok(None);
+    };
+    let path =
+        |channel: &str| format!("movement.viewFeel.impulse.states.{state_name}.{field}.{channel}");
+    Ok(Some(ImpulseChannels {
+        fov: validate_in_range_finite(
+            get_required_f32_lua(&channels, "fov")?,
+            f32::MIN,
+            f32::MAX,
+            &path("fov"),
+        )?,
+        pitch: validate_in_range_finite(
+            get_required_f32_lua(&channels, "pitch")?,
+            f32::MIN,
+            f32::MAX,
+            &path("pitch"),
+        )?,
+        roll: validate_in_range_finite(
+            get_required_f32_lua(&channels, "roll")?,
+            f32::MIN,
+            f32::MAX,
+            &path("roll"),
+        )?,
+    }))
 }
 
 /// Read an optional sub-table from a Luau table: absent/nil → `None`, a table →

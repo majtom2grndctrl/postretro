@@ -5,12 +5,18 @@
 
 use glam::Vec3;
 
-use postretro_foundation::ViewFeelParams;
+use postretro_foundation::{ImpulseChannels, ViewFeelParams};
+
+use crate::movement::MovementStateEdge;
 
 #[cfg(test)]
-use postretro_foundation::{BobParams, SwayParams, TiltParams};
+use postretro_foundation::{
+    BobParams, ImpulseParams, ImpulseStateParams, ImpulseStates, MovementStateKind, SwayParams,
+    TiltParams,
+};
 
 mod bob;
+mod impulse;
 mod sway;
 mod tilt;
 
@@ -37,6 +43,9 @@ pub(crate) struct ViewFeelState {
     pub(crate) bob_lateral_phase: f32,
     /// Ambient-sway clock (seconds). Advanced by frame time only.
     pub(crate) sway_clock: f32,
+    /// One critically-damped transient spring per closed movement-state key.
+    /// The state remains app-owned and presentation-only, never replicated.
+    impulse_springs: [impulse::ImpulseSpring; 4],
 }
 
 impl Default for ViewFeelState {
@@ -47,6 +56,7 @@ impl Default for ViewFeelState {
             bob_vertical_phase: 0.0,
             bob_lateral_phase: 0.0,
             sway_clock: 0.0,
+            impulse_springs: [impulse::ImpulseSpring::ZERO; 4],
         }
     }
 }
@@ -68,6 +78,13 @@ pub(crate) struct ViewFeelOutput {
     pub(crate) sway_roll: f32,
     pub(crate) sway_yaw: f32,
     pub(crate) sway_pitch: f32,
+    /// State-transition FOV displacement in degrees. Camera projection owns
+    /// the final clamp/application; this output remains presentation-only.
+    pub(crate) impulse_fov: f32,
+    /// State-transition pitch displacement in degrees.
+    pub(crate) impulse_pitch: f32,
+    /// State-transition roll displacement in degrees.
+    pub(crate) impulse_roll: f32,
 }
 
 impl ViewFeelOutput {
@@ -80,7 +97,19 @@ impl ViewFeelOutput {
         sway_roll: 0.0,
         sway_yaw: 0.0,
         sway_pitch: 0.0,
+        impulse_fov: 0.0,
+        impulse_pitch: 0.0,
+        impulse_roll: 0.0,
     };
+}
+
+/// A tick-produced movement edge annotated with how long ago its fixed tick
+/// ended in the current render frame. Catch-up frames preserve every edge and
+/// age it before it joins its state spring.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TimedMovementEdge {
+    pub(crate) edge: MovementStateEdge,
+    pub(crate) age: f32,
 }
 
 /// Compute one frame of view-feel motion and advance the integrator state.
@@ -99,11 +128,37 @@ impl ViewFeelOutput {
 ///
 /// Absent sub-objects (`None` on [`ViewFeelParams`]) contribute zero for that
 /// motion; the others are unaffected.
+#[cfg(test)]
 pub(crate) fn evaluate(
     params: &ViewFeelParams,
     horizontal_speed: f32,
     lateral_velocity: f32,
     is_grounded: bool,
+    state: &mut ViewFeelState,
+    frame_dt: f32,
+    global_scale: f32,
+) -> ViewFeelOutput {
+    evaluate_with_edges(
+        params,
+        horizontal_speed,
+        lateral_velocity,
+        is_grounded,
+        &[],
+        state,
+        frame_dt,
+        global_scale,
+    )
+}
+
+/// As [`evaluate`], additionally consuming the frame's ordered local movement
+/// edges for state-transition impulse presentation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_with_edges(
+    params: &ViewFeelParams,
+    horizontal_speed: f32,
+    lateral_velocity: f32,
+    is_grounded: bool,
+    movement_edges: &[TimedMovementEdge],
     state: &mut ViewFeelState,
     frame_dt: f32,
     global_scale: f32,
@@ -125,6 +180,20 @@ pub(crate) fn evaluate(
         None => (0.0, 0.0, 0.0),
     };
 
+    let impulse = match &params.impulse {
+        Some(impulse) => impulse::evaluate(impulse, movement_edges, state, frame_dt),
+        None => {
+            // A descriptor that removes impulse must not leave a prior
+            // presentation displacement in flight.
+            state.impulse_springs = [impulse::ImpulseSpring::ZERO; 4];
+            ImpulseChannels {
+                fov: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+            }
+        }
+    };
+
     let output = ViewFeelOutput {
         bob_vertical: bob_vertical * global_scale,
         bob_lateral: bob_lateral * global_scale,
@@ -132,6 +201,9 @@ pub(crate) fn evaluate(
         sway_roll: sway_roll * global_scale,
         sway_yaw: sway_yaw * global_scale,
         sway_pitch: sway_pitch * global_scale,
+        impulse_fov: impulse.fov * global_scale,
+        impulse_pitch: impulse.pitch * global_scale,
+        impulse_roll: impulse.roll * global_scale,
     };
 
     // Short-circuit is placed AFTER the sub-evaluators intentionally: the
@@ -181,9 +253,9 @@ pub(crate) fn map_output_to_camera(
     output: &ViewFeelOutput,
     camera_right: Vec3,
 ) -> (f32, f32, f32, Vec3) {
-    let roll = (output.tilt_roll + output.sway_roll).to_radians();
+    let roll = (output.tilt_roll + output.sway_roll + output.impulse_roll).to_radians();
     let yaw_offset = output.sway_yaw.to_radians();
-    let pitch_offset = output.sway_pitch.to_radians();
+    let pitch_offset = (output.sway_pitch + output.impulse_pitch).to_radians();
     let eye_offset = Vec3::Y * output.bob_vertical + camera_right * output.bob_lateral;
     (roll, yaw_offset, pitch_offset, eye_offset)
 }
@@ -238,6 +310,7 @@ mod tests {
             bob: Some(b),
             tilt: None,
             sway: None,
+            impulse: None,
         }
     }
 
@@ -246,6 +319,7 @@ mod tests {
             bob: None,
             tilt: Some(t),
             sway: None,
+            impulse: None,
         }
     }
 
@@ -254,6 +328,43 @@ mod tests {
             bob: None,
             tilt: None,
             sway: Some(s),
+            impulse: None,
+        }
+    }
+
+    fn impulse_params(states: ImpulseStates) -> ViewFeelParams {
+        ViewFeelParams {
+            bob: None,
+            tilt: None,
+            sway: None,
+            impulse: Some(ImpulseParams {
+                tension: 12.0,
+                max: ImpulseChannels {
+                    fov: 30.0,
+                    pitch: 20.0,
+                    roll: 20.0,
+                },
+                states,
+            }),
+        }
+    }
+
+    fn channels(fov: f32, pitch: f32, roll: f32) -> ImpulseChannels {
+        ImpulseChannels { fov, pitch, roll }
+    }
+
+    fn state(enter: Option<ImpulseChannels>, exit: Option<ImpulseChannels>) -> ImpulseStateParams {
+        ImpulseStateParams {
+            tension: None,
+            enter,
+            exit,
+        }
+    }
+
+    fn timed_edge(from: MovementStateKind, to: MovementStateKind, age: f32) -> TimedMovementEdge {
+        TimedMovementEdge {
+            edge: MovementStateEdge { from, to },
+            age,
         }
     }
 
@@ -635,6 +746,7 @@ mod tests {
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
+            impulse: None,
         };
         let mut state = ViewFeelState::default();
         // Even with strong velocity, scale = 0 zeroes everything.
@@ -655,6 +767,7 @@ mod tests {
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
+            impulse: None,
         };
 
         let sample = |scale: f32| -> ViewFeelOutput {
@@ -680,6 +793,7 @@ mod tests {
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
+            impulse: None,
         };
         // Advance to a non-trivial state first.
         let mut state = ViewFeelState::default();
@@ -709,6 +823,7 @@ mod tests {
             bob: None,
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
+            impulse: None,
         };
         let mut state = ViewFeelState::default();
         let out = run_frames(&params, 5.0, 4.0, true, &mut state, 1.0 / 120.0, 1.0, 300);
@@ -725,6 +840,7 @@ mod tests {
             bob: Some(bob(false)),
             tilt: None,
             sway: Some(sway(0.5, false)),
+            impulse: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -747,6 +863,7 @@ mod tests {
             bob: Some(bob(false)),
             tilt: Some(tilt(15.0, false)),
             sway: None,
+            impulse: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -761,6 +878,132 @@ mod tests {
         assert!(approx_eq(state.sway_clock, 0.0), "sway clock untouched");
         assert!(bob_peak > 0.0, "bob still active");
         assert!(out.tilt_roll.abs() > 0.0, "tilt still active");
+    }
+
+    // --- State-transition impulses ----------------------------------------
+
+    #[test]
+    fn impulse_transition_edges_sum_exit_and_entry_in_one_frame() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: None,
+            crouch: Some(state(Some(channels(3.0, 2.0, 1.0)), None)),
+            slide: Some(state(None, Some(channels(-4.0, 5.0, -2.0)))),
+        });
+        let mut state = ViewFeelState::default();
+        let output = evaluate_with_edges(
+            &params,
+            0.0,
+            0.0,
+            true,
+            &[timed_edge(
+                MovementStateKind::Slide,
+                MovementStateKind::Crouch,
+                0.0,
+            )],
+            &mut state,
+            0.0,
+            1.0,
+        );
+        assert!(approx_eq(output.impulse_fov, -1.0));
+        assert!(approx_eq(output.impulse_pitch, 7.0));
+        assert!(approx_eq(output.impulse_roll, -1.0));
+    }
+
+    #[test]
+    fn impulse_spring_is_monotonic_and_ages_backlog_edges() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(state(Some(channels(10.0, 0.0, 0.0)), None)),
+            crouch: None,
+            slide: None,
+        });
+        let edge = timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0);
+        let mut fresh = ViewFeelState::default();
+        let first =
+            evaluate_with_edges(&params, 0.0, 0.0, true, &[edge], &mut fresh, 0.0, 1.0).impulse_fov;
+        let mut prior = first;
+        for _ in 0..120 {
+            let next =
+                evaluate_with_edges(&params, 0.0, 0.0, true, &[], &mut fresh, 1.0 / 120.0, 1.0)
+                    .impulse_fov;
+            assert!(
+                next >= 0.0 && next <= prior + EPSILON,
+                "critical damping must not rebound"
+            );
+            prior = next;
+        }
+
+        let mut aged = ViewFeelState::default();
+        let aged_output = evaluate_with_edges(
+            &params,
+            0.0,
+            0.0,
+            true,
+            &[TimedMovementEdge { age: 0.1, ..edge }],
+            &mut aged,
+            0.0,
+            1.0,
+        );
+        assert!(aged_output.impulse_fov > 0.0 && aged_output.impulse_fov < first);
+    }
+
+    #[test]
+    fn impulse_clamps_presentation_but_scale_zero_keeps_integrating() {
+        let mut params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(state(Some(channels(20.0, 0.0, 0.0)), None)),
+            crouch: Some(state(Some(channels(20.0, 0.0, 0.0)), None)),
+            slide: None,
+        });
+        params.impulse.as_mut().unwrap().max.fov = 5.0;
+        let edges = [
+            timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0),
+            timed_edge(MovementStateKind::Normal, MovementStateKind::Crouch, 0.0),
+        ];
+        let mut state = ViewFeelState::default();
+        let muted = evaluate_with_edges(&params, 0.0, 0.0, true, &edges, &mut state, 0.0, 0.0);
+        assert!(approx_eq(muted.impulse_fov, 0.0));
+        let restored = evaluate_with_edges(&params, 0.0, 0.0, true, &[], &mut state, 0.1, 1.0);
+        assert!(restored.impulse_fov > 0.0 && restored.impulse_fov <= 5.0);
+        assert!(
+            state
+                .impulse_springs
+                .iter()
+                .any(|spring| spring.position.fov > 5.0)
+        );
+    }
+
+    #[test]
+    fn impulse_pitch_and_roll_map_without_moving_the_eye_and_reset_when_removed() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(state(Some(channels(0.0, 3.0, -4.0)), None)),
+            crouch: None,
+            slide: None,
+        });
+        let edge = timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0);
+        let mut state = ViewFeelState::default();
+        let output = evaluate_with_edges(&params, 0.0, 0.0, true, &[edge], &mut state, 0.0, 1.0);
+        let (roll, _, pitch, eye) = map_output_to_camera(&output, Vec3::X);
+        assert!(approx_eq(roll, (-4.0_f32).to_radians()));
+        assert!(approx_eq(pitch, 3.0_f32.to_radians()));
+        assert_eq!(eye, Vec3::ZERO);
+
+        let no_impulse = ViewFeelParams {
+            bob: None,
+            tilt: None,
+            sway: None,
+            impulse: None,
+        };
+        let cleared = evaluate_with_edges(&no_impulse, 0.0, 0.0, true, &[], &mut state, 0.0, 1.0);
+        assert!(approx_eq(cleared.impulse_fov, 0.0));
+        assert!(
+            state
+                .impulse_springs
+                .iter()
+                .all(|spring| *spring == impulse::ImpulseSpring::ZERO)
+        );
     }
 
     // --- Camera-basis helpers ----------------------------------------------

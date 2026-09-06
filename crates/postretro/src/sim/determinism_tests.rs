@@ -3412,7 +3412,7 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events,
+        events.addresses,
         vec!["jumped"],
         "only the marked local pawn may emit movement outcomes"
     );
@@ -3477,7 +3477,7 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events,
+        events.addresses,
         vec!["jumped"],
         "no-marker fallback applies the local command to one deterministic pawn"
     );
@@ -3539,7 +3539,7 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
 
     assert_eq!(
-        events,
+        events.addresses,
         vec!["jumped"],
         "invalid marker fallback applies the local command to one deterministic pawn"
     );

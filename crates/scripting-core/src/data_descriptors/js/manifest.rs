@@ -1081,21 +1081,28 @@ pub fn drain_factions_js<'js>(
 }
 
 /// Drain strict directional sentiment entries after faction names have been
-/// validated. The returned registry owns the resolved index matrix, so no
-/// named lookup reaches the AI candidate hot path.
+/// validated. The returned registry owns the resolved index matrix, while the
+/// descriptors stay on the normalized manifest carrier for SDK-shape parity;
+/// no named lookup reaches the AI candidate hot path.
 pub fn drain_faction_sentiments_js<'js>(
     obj: &Object<'js>,
     factions: crate::data_registry::FactionRegistry,
     scope: &str,
-) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+) -> Result<
+    (
+        crate::data_registry::FactionRegistry,
+        Vec<crate::data_registry::FactionSentimentDescriptor>,
+    ),
+    DescriptorError,
+> {
     use crate::data_registry::FactionSentimentDescriptor;
 
     if !obj.contains_key("sentiment").map_err(js_err)? {
-        return Ok(factions);
+        return Ok((factions, Vec::new()));
     }
     let raw: JsValue = obj.get("sentiment").map_err(js_err)?;
     if raw.is_null() || raw.is_undefined() {
-        return Ok(factions);
+        return Ok((factions, Vec::new()));
     }
     let Some(array) = raw.as_array() else {
         return Err(DescriptorError::InvalidShape {
@@ -1124,11 +1131,13 @@ pub fn drain_faction_sentiments_js<'js>(
             tolerance,
         });
     }
-    factions
-        .with_sentiments(entries)
-        .map_err(|reason| DescriptorError::InvalidShape {
-            reason: format!("{scope}: `sentiment` invalid: {reason}"),
-        })
+    let factions =
+        factions
+            .with_sentiments(&entries)
+            .map_err(|reason| DescriptorError::InvalidShape {
+                reason: format!("{scope}: `sentiment` invalid: {reason}"),
+            })?;
+    Ok((factions, entries))
 }
 
 /// Drain mod-global reaction definitions from a QuickJS manifest object.

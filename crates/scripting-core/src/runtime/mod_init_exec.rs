@@ -182,12 +182,12 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
-        let factions = match drain_faction_sentiments_js(
+        let (factions, sentiment) = match drain_faction_sentiments_js(
             &obj,
             factions,
             "default mod manifest export",
         ) {
-            Ok(factions) => factions,
+            Ok(result) => result,
             Err(error) => {
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!(
@@ -468,6 +468,7 @@ pub(super) fn run_mod_init_quickjs(
             default_weapon_placement,
             entities,
             factions,
+            sentiment,
             entity_faction_names,
             ui_trees,
             presentation_templates,
@@ -566,12 +567,14 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
-    let factions = drain_faction_sentiments_lua(&table, factions, "returned mod manifest")
-        .map_err(|error| ScriptError::InvalidArgument {
-            reason: format!(
-                "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {error}"
-            ),
-        })?;
+    let (factions, sentiment) =
+        drain_faction_sentiments_lua(&table, factions, "returned mod manifest").map_err(
+            |error| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {error}"
+                ),
+            },
+        )?;
 
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
     // → InvalidArgument. Each element parses via the shared descriptor reader
@@ -772,6 +775,7 @@ pub(super) fn run_mod_init_luau(
         default_weapon_placement,
         entities,
         factions,
+        sentiment,
         entity_faction_names,
         ui_trees,
         presentation_templates,
@@ -955,13 +959,13 @@ mod tests {
             .expect("QuickJS subsystem should initialize");
         let js = run_mod_init_quickjs(
             &quickjs,
-            "globalThis.__postretroModManifest = { name: 'Factions', id: 'factions', version: '1', factions: [{ name: 'cabal' }, { name: 'resistance' }], entities: [{ canonicalName: 'cabal_grunt', components: { faction: 'cabal' } }, { canonicalName: 'resistance_guard', components: { faction: 'resistance' } }] };",
+            "globalThis.__postretroModManifest = { name: 'Factions', id: 'factions', version: '1', factions: [{ name: 'cabal' }, { name: 'resistance' }], sentiment: [{ fromFaction: 'cabal', toFaction: 'resistance', sentiment: -0.75, tolerance: 0.25 }], entities: [{ canonicalName: 'cabal_grunt', components: { faction: 'cabal' } }, { canonicalName: 'resistance_guard', components: { faction: 'resistance' } }] };",
             "factions.js",
         )
         .expect("QuickJS faction manifest should parse");
         let luau = run_mod_init_luau(
             &[],
-            "return { name = 'Factions', id = 'factions', version = '1', factions = {{ name = 'cabal' }, { name = 'resistance' }}, entities = {{ canonicalName = 'cabal_grunt', components = { faction = 'cabal' } }, { canonicalName = 'resistance_guard', components = { faction = 'resistance' } }} }",
+            "return { name = 'Factions', id = 'factions', version = '1', factions = {{ name = 'cabal' }, { name = 'resistance' }}, sentiment = {{ fromFaction = 'cabal', toFaction = 'resistance', sentiment = -0.75, tolerance = 0.25 }}, entities = {{ canonicalName = 'cabal_grunt', components = { faction = 'cabal' } }, { canonicalName = 'resistance_guard', components = { faction = 'resistance' } }} }",
             "factions.luau",
             Path::new("."),
         )
@@ -970,6 +974,12 @@ mod tests {
         for manifest in [&js, &luau] {
             assert_eq!(manifest.factions.index_for_name("cabal"), Some(2.0));
             assert_eq!(manifest.factions.index_for_name("resistance"), Some(3.0));
+            assert_eq!(manifest.sentiment.len(), 1);
+            assert_eq!(manifest.sentiment[0].from_faction, "cabal");
+            assert_eq!(manifest.sentiment[0].to_faction, "resistance");
+            assert_eq!(manifest.sentiment[0].sentiment, -0.75);
+            assert_eq!(manifest.sentiment[0].tolerance, 0.25);
+            assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
             assert_eq!(
                 manifest.entity_faction_names,
                 vec![Some("cabal".to_string()), Some("resistance".to_string())],

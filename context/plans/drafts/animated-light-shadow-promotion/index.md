@@ -68,16 +68,43 @@ promoted-depth-cache, weight ramp, budget constants) unchanged where possible.
    `DirectShVolume` delta. Every animated baked light already carries a section-45 delta,
    so any of them is a candidate. Eligibility is decided at runtime by the same gates
    static promotion uses at runtime — receiver-in-influence + portal-reachable + budget —
-   plus the same dim/short-range/decorative heuristic thresholds, evaluated on the light's
-   **authored (peak)** intensity, not its instantaneous strobe value. This must hold for the
-   per-frame suppression gate, not only the ranker: `visible_lights` feeds `gate_passed`,
-   which drives the `w` promote/demote ramp, and today its brightness term is the
-   instantaneous `effective_brightness` keyed on dynamic `level_lights` — a baked animated
-   light is absent there and defaults to `1.0`, i.e. exempt from instantaneous suppression
-   only by index-space accident. Pin the gate brightness for animated candidates to the
-   constant authored peak, so a strobe whose dark trough exceeds `STICKY_SECONDS` does not
-   pump `w` and re-fade the self-shadow each cycle (the no-pop crossfade criterion). The "selection
-   index" for the weight buffer is simply the `AnimatedBakedLights` index.
+   plus the same dim/short-range/decorative heuristic thresholds. The brightness the
+   heuristic reads for an animated candidate is a **forward-lookahead window max** of its
+   brightness curve over `[t_now, t_now + PROMOTE_SECONDS]` (the window length equals the
+   `w` ramp time), not the instantaneous strobe value. This must hold for the per-frame
+   suppression gate, not only the ranker: `visible_lights` feeds `gate_passed`, which
+   drives the `w` promote/demote ramp, and today its brightness term is the instantaneous
+   `effective_brightness` keyed on dynamic `level_lights` — a baked animated light is
+   absent there and defaults to `1.0`, i.e. exempt from suppression only by index-space
+   accident, so the driver must be fed a real value for animated candidates. Supply the
+   window max: the bridge already holds each animated light's authored brightness curve (an
+   `Option<Vec<f32>>` on `LightComponent.animation`) and the CPU Catmull-Rom sampler
+   (`sample_brightness_at` / `sample_brightness_at_open`) it uses for dynamic-tier
+   `effective_brightness`, so computing the window max reuses that sampler and curve — a bounded
+   loop, no new evaluator. Producing and delivering the value is the new plumbing Task 1 owns:
+   the bridge's `effective_brightness` is built only for `is_dynamic` lights, so a baked animated
+   light has no entry there, and animated candidates instead need a per-candidate value fed to
+   the gate through a distinct keyed channel (Task 1). The `PROMOTE_SECONDS` window length is
+   shared from the renderer crate, where it is defined. The lookahead is what makes the crossfade lag-free: the
+   gate opens `PROMOTE_SECONDS` before the curve would cross the threshold, exactly the time
+   `w` needs to reach 1, so the self-shadow is already full-strength when the light is
+   bright. The no-pop criterion does not depend on holding `w` fixed: the receiver term
+   `(1−w)·scale_j(t)·delta + w·scale_j(t)·runtime` carries the shared brightness `scale_j(t)`
+   in both arms (Decision 2), so at low brightness the term is ≈0 for *any* `w` and a `w`
+   change is invisible; a `w` change is visible only at high brightness, where the lookahead
+   guarantees `w=1`. A light therefore releases its slot during a dark stretch longer than
+   the window plus `STICKY_SECONDS` plus `DEMOTE_SECONDS` — the gate fails through
+   `STICKY_SECONDS`, then `w` ramps to 0 over `DEMOTE_SECONDS`, and only at `w=0` is the slot
+   released — invisibly, since `scale_j(t)` ≈ 0 throughout the dark, and reclaims it before the
+   next peak whenever the shared pool has a free slot, so a mostly-dark slow pulse no longer holds
+   a slot it is not using. The window `[t_now, t_now + PROMOTE_SECONDS]` is real-time; map it into the curve's `[0, 1)`
+   domain as `PROMOTE_SECONDS / period_s` and sample it with the light's own mode
+   (`sample_brightness_at` closed-loop, `sample_brightness_at_open` endpoint-clamped), so a window
+   spanning at least one full period sees the whole curve and its max saturates to
+   `max(brightness)`. At a degenerate period (`period_s ≤ 0`) the runtime freezes `scale_j(t)` at
+   `brightness[0]` (the sampler at cycle 0), so the gate reads `brightness[0]` — exactly the value
+   the light renders — neither over- nor under-promoting it. The "selection index" for the weight buffer is simply
+   the `AnimatedBakedLights` index.
 
 2. **The subtraction seam is v1's additive delta, scaled down.** v1 Pass B writes
    `Σ_anim(scale_j(t) × delta_j)`. For a promoted animated light at weight `w`, Pass B
@@ -109,17 +136,19 @@ promoted-depth-cache, weight ramp, budget constants) unchanged where possible.
 
 5. **Crossfade lifecycle reuses static promotion's ramp.** Same `PROMOTE_SECONDS` /
    `DEMOTE_SECONDS` / `STICKY_SECONDS` / `EVICTION_MARGIN`. When a receiver leaves the
-   influence or the budget evicts, `w` ramps to 0 and the light reverts fully to the
-   section-45 delta — no pop, no self-shadow, identical to v1.
+   influence, the budget evicts, or the window-max brightness gate stays closed past the release
+   boundary (Decision 1, P6b), `w` ramps to 0 and the light reverts fully to the section-45
+   delta — no pop, no self-shadow, identical to v1.
 
 6. **Pool contention: animated candidates share the budget.** Promoting animated lights is
    the deliberate budget-sharing the v1 contract reserved for designed promotion. Animated
    candidates compete in the existing `MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE` pool against
-   dynamic and static-promoted lights: all tiers are gated on stable **authored-peak**
-   intensity (Decision 1) and ranked on the one shared `slot_score`. A bright scripted strobe
-   can therefore win a slot from a gameplay light — accepted for this plan. The gate/ranker
-   seam is shaped so a reserved-dynamic-slots split or a per-map worldspawn KVP drops in later
-   without re-deriving the candidate set, if a set-piece ever starves combat lighting.
+   dynamic and static-promoted lights, ranked on the one shared `slot_score` (which carries
+   no intensity term); an animated candidate's brightness enters only its membership gate, as
+   the window max of Decision 1. A bright scripted strobe can therefore win a slot from a
+   gameplay light — accepted for this plan. The gate/ranker seam is shaped so a
+   reserved-dynamic-slots split or a per-map worldspawn KVP drops in later without re-deriving
+   the candidate set, if a set-piece ever starves combat lighting.
 
 7. **The forward record is bridge-emitted for every animated baked light; promotion sets `w`.**
    `pack_forward_animation_descriptor` needs the `LightComponent` and its `anim_samples`
@@ -131,24 +160,35 @@ promoted-depth-cache, weight ramp, budget constants) unchanged where possible.
    keeps all forward-record packing in one place (the bridge), leaving the renderer's role
    identical to how it already patches dynamic-light slots. Cost: one tail slot per animated
    baked light per frame, `w=0` when unpromoted (a zero-contribution multiply; Pass B applies
-   the full `(1−w)=1` delta, byte-identical to v1). The count of animated baked lights is
-   small, so the cost is bounded; packing the descriptor in the renderer at promotion time
-   (no idle slots) is a strict optimization of this same seam if a map's animated-light count
-   ever pressures the `lights` buffer.
+   the full `(1−w)=1` delta, byte-identical to v1). The reserved forward tail lives in the `lights` storage buffer, which is runtime-sized, so it
+   needs no fixed cap. The per-animated-light `(1−w)` weights, however, ride the binding-26
+   uniform (boundary inventory), and a WGSL uniform cannot be runtime-sized: it is a fixed-length
+   array bounded by a named cap `MAX_ANIMATED_BAKED_LIGHTS`. A map whose animated-baked-light
+   count exceeds the cap leaves the surplus lights unpromotable — Pass B applies their full
+   `(1−w)=1` delta (v1 behavior). Packing the descriptor in the renderer at promotion time (no
+   idle slots) is a strict optimization of this same seam if a map's animated-light count ever
+   pressures the `lights` buffer.
 
 ## Acceptance criteria
 
-- [ ] `[golden]` A mover inside a promoted animated light's cone casts a self-shadow that
-      tracks the animated brightness/color; off the pool it shows the v1 flat baked delta.
-- [ ] `[unit]` A promoted animated light is counted exactly once: Pass B applies
-      `(1−w)` to its delta and the dynamic loop applies `w` to its runtime term, summing to
-      the unpromoted radiance at any `w` (energy-conservation test at the CPU scale seam).
-- [ ] `[golden]` Crossfade shows no brightness pop across promote (`w: 0→1`), evict, and
-      demote (`w: 1→0`); at `w=0` the frame is identical to v1 (delta only).
-- [ ] `[unit]` An animated candidate's promotion eligibility is gated on its authored (peak)
-      intensity, not its instantaneous strobe value — a strobing light does not thrash in and
-      out of the pool frame-to-frame (the shared ranker `slot_score` carries no intensity
-      term; the gate holds `w` across a dark trough shorter than `STICKY_SECONDS`).
+- [ ] `[golden]` A mover inside a promoted animated light's cone casts a self-shadow whose
+      brightness/color matches the light's curve value at the captured instant (a forced-`w`
+      differential still); off the pool it shows the v1 flat baked delta.
+- [ ] `[unit]` A promoted animated light is counted exactly once at the CPU scale seam: the
+      Pass B `(1−w)` compose weight and the forward `w` color multiplier are written from a single
+      `state.weight`, so `(1−w) + w == 1` at every `w`; the shared-`scale_j(t)` half of the
+      exactness — the identical curve sample in both arms — completes the count-once guarantee.
+      (The visual sum-to-v1 radiance is a forced-`w` stills golden, not a CPU value: `scale_j(t)` is
+      GPU-sampled and never appears CPU-side.)
+- [ ] `[golden]` Forced-`w` stills capture the no-pop guarantee the single-instant harness
+      cannot capture as a runtime ramp: at `w=0` the frame is byte-identical to v1 (delta only),
+      and across forced `w` values a lit (non-self-shadowed) receiver texel holds constant radiance
+      while self-shadowed texels darken with rising `w`.
+- [ ] `[unit]` An animated candidate's promotion eligibility is gated on the forward-lookahead
+      window max of its brightness curve (Decision 1), not its instantaneous strobe value — a
+      strobe whose dark trough is shorter than the lookahead window plus `STICKY_SECONDS` does
+      not thrash in and out of the pool frame-to-frame, and its `w` holds across the trough
+      (the shared ranker `slot_score` carries no intensity term).
 - [ ] `[unit]` Budget is respected: with more eligible animated + dynamic + static-promoted
       lights than slots, only the top `MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE` promote; the
       rest keep the v1 baked delta.
@@ -156,8 +196,10 @@ promoted-depth-cache, weight ramp, budget constants) unchanged where possible.
       is rendered once on assignment and only entity occluders re-render per frame —
       verifiable via `POSTRETRO_GPU_TIMING` (no per-frame world-depth pass appears).
 - [ ] `[golden]` + `[review]` Fixture: the spawner-test alarm light, promoted when the
-      closet door enters its cone, casts a moving door self-shadow that reddens with the
-      alarm curve; world surfaces are unchanged.
+      closet door enters its cone, casts a door self-shadow that reddens with the alarm curve —
+      captured as forced-`w` promoted stills at the door's rest pose (the single-instant harness
+      draws no motion), differential against the off-pool flat delta; world surfaces are unchanged
+      (`[review]` grep gate: world stays `lm_anim`).
 - [ ] `[unit]` A promoted animated light that carries a direction curve is injected with
       its cone at the authored rest direction: the forward record evaluates no direction
       curve, so the promoted runtime cone does not sweep — the frozen-cone invariant that
@@ -174,12 +216,35 @@ candidates. The runtime candidate set (`shadow_candidate_lights`) is built at in
 compile-time `EntityShadowLights` section — an animated baked light is neither, so it
 never reaches the driver today. Add a third candidate source in that builder: every
 animated baked light carrying a section-45 delta, tagged with its `AnimatedBakedLights`
-index (the runtime-only eligibility of Design decision 1). Then gate those candidates in
-the driver — receiver-in-influence + portal-reachable + peak-intensity/range/decorative
-heuristics. Gate their eligibility on **authored peak** intensity, not the instantaneous strobe value,
-by feeding that stable value into the driver's brightness-suppression check (the
-`effective_brightness` threshold in `update_dynamic_light_slots`), so a strobe does not
-thrash a candidate in and out of eligibility frame-to-frame. Ranking itself stays on the
+index (the runtime-only eligibility of Design decision 1). Thread the `AnimatedBakedLights`
+roster and each light's `MapLight` record (fixed position, falloff range, rest direction — the
+fields `candidate_slot_score` and the reachability gate read) into the builder alongside the
+existing `is_dynamic` and `EntityShadowLights` sources; these baked lights appear in neither
+existing source, so the builder takes an explicit new input for them. There is no ready-made
+roster: assemble it from the animated baked lights (those carrying a section-45 delta), tagging
+each with its `AnimatedBakedLights` index — the value Pass B's `affinity_lights` entries already
+carry into `animated_light_scale` as `light_index` (which also indexes
+`animation_descriptor_indices`). That one index keys the candidate tag, the `(1−w)` weight array
+(Task 2), and the depth-cache selection index; do not conflate it with `MapLight.animated_slot`
+or a descriptor-table position, or the weight buffer mis-keys silently. Then gate those candidates in
+the driver — receiver-in-influence + portal-reachable + brightness/range/decorative
+heuristics. Gate their eligibility on the forward-lookahead window max of the brightness
+curve over `[t_now, t_now + PROMOTE_SECONDS]` — the window length equals the `w` ramp time,
+mapped into the curve's `[0, 1)` domain as `PROMOTE_SECONDS / period_s` and sampled with the
+light's own mode (`sample_brightness_at` closed-loop, `sample_brightness_at_open`
+endpoint-clamped); at `period_s ≤ 0` read `brightness[0]` (Decision 1) — not the instantaneous
+strobe value, by feeding that value into the
+driver as a second brightness input keyed by `AnimatedBakedLights` index — a new
+`update_dynamic_light_slots` parameter, NOT the existing `effective_brightness`, which is keyed
+on the dynamic-tier `level_lights` array where a baked animated light has no entry and the
+per-candidate suppression check defaults it to `1.0` (always exempt). The per-candidate loop
+reads this keyed window-max array for animated candidates and `effective_brightness` for dynamic
+candidates. Compute the window max in the bridge from the light's CPU-resident `brightness` curve
+via the existing `sample_brightness_at` / `sample_brightness_at_open` sampler (`PROMOTE_SECONDS`
+is today a private function-local const in the renderer's ramp code — hoist it to a crate-public
+location the bridge can import), so a strobe does not thrash a
+candidate in and out of eligibility frame-to-frame and the lookahead lets `w` reach full
+strength before the light is bright. Ranking itself stays on the
 existing `assign_slots_with_hysteresis` score (`slot_score`, range/distance) — leave that
 shared formula untouched; it carries no intensity term and must not gain one, or dynamic
 and static-promoted ranking drift with it. Candidacy shares the existing `MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE` budget
@@ -188,19 +253,27 @@ with dynamic and static-promoted lights, gated and ranked as one pool (Decision 
 ### Task 2: Runtime — inject the promoted animated light + `(1−w)` compose factor
 
 The bridge emits a **forward** animation descriptor (`pack_forward_animation_descriptor`)
-carrying the brightness/color curve with the cone held at the authored rest direction, into a
+carrying the brightness/color curve with the cone held at the authored rest direction — the
+injected `GpuLight`'s direction is the rest cone and the forward descriptor packs no direction
+curve, so a direction-animated light does not sweep; unit-test the injected `GpuLight` direction
+against rest for a direction-curve light, delivering the frozen-cone acceptance criterion — into a
 reserved `lights`-buffer tail slot for every animated baked light each frame; the renderer's
 `update_dynamic_light_slots` assigns the pool shadow slot and sets `w`, premultiplying the
-`GpuLight` color by `w` (Decision 7). Unpromoted lights sit at `w=0`, contributing nothing. Add a per-animated-light `(1−w)` promotion weight, one per `AnimatedBakedLights` index
-(the boundary inventory pins how Pass B receives it without a new storage buffer), and extend
-v1's Pass B to multiply each animated light's delta add by `(1−w)`. The dynamic loop's shadow attenuation reuses the spot/cube pool sampling. The `(1−w)`/`w` split is energy-exact by construction, with no CPU brightness plumbing: the
+`GpuLight` color by `w` (Decision 7). Unpromoted lights sit at `w=0`, contributing nothing. Add a per-animated-light `(1−w)` promotion weight, one per `AnimatedBakedLights` index,
+delivered through the existing binding-26 uniform (Pass B is at its 8-storage-buffer maximum, so
+no new storage buffer): the `(1−w)` array absorbs v1's `debug_override` uniform — replace
+`animated_light_scale`'s single `debug_weight` scalar with `weight_array[light_index]`, and keep
+the `enabled`/`light_index` single-light isolation fields as a dev-tools overlay composing on top
+of the always-applied `(1−w)`. Extend v1's Pass B to multiply each animated light's delta add by
+`(1−w)`. The dynamic loop's shadow attenuation reuses the spot/cube pool sampling. The `(1−w)`/`w` split is energy-exact by construction, with no CPU brightness plumbing: the
 forward record's runtime radiance and v1's Pass B delta scale both GPU-sample the same
 `anim_samples` curve through the same `curve_eval.wgsl` helper (`sample_curve_catmull_rom` /
 `sample_color_catmull_rom`), so `scale_j(t)` is one value in both terms. The CPU
-`effective_brightness` scalar is the shadow-slot eligibility signal (Decision 1), produced
-only for dynamic-tier lights; it is not the radiance source and feeds neither term — do not
-route radiance through it, and do not lean on `single-source-animated-light-brightness`,
-which moves only the forward path to a CPU scalar and would break this equality.
+eligibility scalars — `effective_brightness` for dynamic-tier lights, the separate keyed
+window-max channel for animated candidates (Decision 1, Task 1) — are shadow-slot eligibility
+signals only; neither is the radiance source and neither feeds either term — do not route
+radiance through them, and do not lean on `single-source-animated-light-brightness`, which
+moves only the forward path to a CPU scalar and would break this equality.
 
 ### Task 3: Runtime — depth-cache reuse
 
@@ -210,15 +283,18 @@ redraw only entity occluders per frame. No direction-dependent path split — th
 freeze (Task 2) is what keeps the cached world depth valid every frame. When the depth
 cache has no free layer for a promoted record, the drop path (mirroring
 `apply_promoted_cache_layers`) removes that record for the frame; it MUST also zero the
-animated `(1−w)` promotion-weight buffer at that light's `AnimatedBakedLights` index in the
-same pass. Otherwise Pass B keeps fading the delta by `(1−w)` with no runtime term to
+animated `(1−w)` promotion-weight buffer — a buffer distinct from the static
+`promoted_static_weights` that `apply_promoted_cache_layers` already zeroes by its
+`EntityShadowLights` selection index — at that light's `AnimatedBakedLights` index in the same
+pass. Otherwise Pass B keeps fading the delta by `(1−w)` with no runtime term to
 replace it — an energy deficit on the receiver for that frame.
 
 ### Task 4: Fixture + docs
 
 Extend the `animated-direct-sh-dynamic-receivers` fixture: promote the alarm light when the
-closet door enters its cone, add a golden asserting the moving door self-shadow reddens with
-the curve. Update `rendering_pipeline.md` §4 (the promotion paragraph now covers animated
+closet door enters its cone, add a golden asserting the door self-shadow reddens with the curve —
+captured as forced-`w` promoted stills at the door's rest pose (the single-instant harness draws
+no motion), differential against the off-pool flat delta. Update `rendering_pipeline.md` §4 (the promotion paragraph now covers animated
 lights; the receiver matrix's animated column gains a promoted tier) and the FGD comment.
 Document the shared-budget contention policy (Decision 6); a reserved-slot or worldspawn-KVP
 variant, if a later plan adds one, is documented then.
@@ -244,28 +320,60 @@ Test-writable orderings this spec asserts and must state (ids provisional):
 - **P4 (Task 3):** an assignment-frame slot renders its world depth before the forward samples it.
 - **P5 (Task 2):** at `w==0` the reserved forward tail record contributes nothing (`color×0`)
   and Pass B applies the full `(1−w)=1` delta; frame is byte-identical to v1.
-- **P6 (Task 1):** a slow strobe (dark trough > `STICKY_SECONDS`) holds `w` — gate brightness
-  is authored peak, not instantaneous.
+- **P6 (Task 1):** a strobe whose dark trough is shorter than the lookahead window (Decision 1)
+  plus `STICKY_SECONDS` holds `w` — gate brightness is the window max, not the instantaneous
+  sample, so the window sees the next peak and `w` does not re-fade each cycle.
+- **P6b (Task 1):** a pulse dark for longer than the lookahead window plus `STICKY_SECONDS` plus
+  `DEMOTE_SECONDS` releases its slot during the dark and — when the shared pool has a free slot
+  (Decision 6) — reclaims it within `PROMOTE_SECONDS` of the next peak. On gate-fail `w` holds
+  through `STICKY_SECONDS`, then ramps to 0 over `DEMOTE_SECONDS`; only at `w=0` is the record
+  dropped and the cache layer freed, so a dark stretch merely longer than the window plus
+  `STICKY_SECONDS` starts the ramp but reclaims the slot before `w=0` and releases nothing. A
+  released light drops out of the incumbent set, so its next-peak reclaim competes for a free or
+  evictable slot and is not guaranteed under the shared budget; when it loses it stays on the baked
+  delta (`w=0`). Because brightness `scale_j(t)` ≈ 0 whenever `w` changes here, the receiver term is
+  unchanged either way (no visible pop) — the tightening that a mostly-dark slow pulse no longer
+  holds an unused slot.
 - **P7 (Task 1/3):** a level unload / receiver despawn resets the animated weight-state, the
   `(1−w)` buffer, and the cache layer — no stuck `w`, no leaked layer.
 - **P8 (Task 1):** the ranker holds for N eligible animated lights at every N including 0 and
-  N>cap, with a deterministic equal-peak tie-break.
-- **P9 (Task 1):** the peak-intensity ranker input is well-defined at degenerate periods
-  (`period_s ≤ 0`).
+  N>`MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE`, with a deterministic tie-break on equal `slot_score`
+  (ascending candidate index, per `assign_slots_with_hysteresis`).
+- **P9 (Task 1):** at a degenerate period (`period_s ≤ 0`) the gate reads `brightness[0]` — the
+  frozen value the runtime renders — so a frozen-dark light is not promoted and a frozen-bright one
+  is promoted and held, gate matching render with no over- or under-promotion (Decision 1).
+- **P10 (Task 1):** a released animated slot (dark stretch past the window plus `STICKY_SECONDS`
+  plus `DEMOTE_SECONDS`) is won by a higher-scored dynamic or static-promoted light during the
+  dark; at the next peak the animated light finds no free slot, stays at `w=0` (baked delta), and
+  casts no self-shadow that peak — no pop, since the delta is the `w=0` state — reclaiming only on a
+  later peak once a slot frees.
+- **P11 (Task 1):** a degenerate-period (`period_s ≤ 0`) animated light gates on `brightness[0]`
+  (P9): with `brightness[0]` below `BRIGHTNESS_SUPPRESSION_THRESHOLD` it is not promoted (no slot
+  held for a light that renders ≈0); with `brightness[0]` above it, it promotes and holds a slot at
+  constant `w`, like a static promoted light.
+- **P12 (Task 1):** a bright peak narrower than one frame interval — the CPU window-max scans the
+  sample curve and promotes (`w` ramps up), while the GPU `scale_j(t)` sampled at frame times may
+  stay at the trough, so the receiver renders no self-shadow that cycle and `w` releases after the
+  following dark per P6b; the gate-scans-curve vs render-samples-at-frame-times asymmetry is benign
+  (no pop, `scale_j(t)` ≈ 0 while `w` moves).
+- **P13 (Task 2):** N animated candidates cross the gate in one tick (every N including 0,
+  N>`MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE`, and N>`MAX_ANIMATED_BAKED_LIGHTS`): each light whose
+  `AnimatedBakedLights` index is below `MAX_ANIMATED_BAKED_LIGHTS` has its `(1−w)` buffer entry and
+  forward `color×w` written from its own `state.weight` keyed on that index, with no `w` bleed
+  across lights and the per-light writes staying index-parallel under batching (extends P1 to the
+  batch); a light whose index reaches `MAX_ANIMATED_BAKED_LIGHTS` gets no `(1−w)` entry and stays on
+  the full `(1−w)=1` delta (Decision 7).
 
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | WGSL | FGD KVP |
 |---|---|---|---|---|
 | Animated promotion record | `PromotedStaticLightRecord` populated for an animated candidate — `weight`, `slot`, `pool_kind`, plus the `global_light_index`/`selection_index` the depth-cache `CacheKey` keys on — with its `AnimatedBakedLights` index as the selection index | n/a | n/a | n/a |
-| Promotion weight (compose) | per-animated-light `(1−w)` weight, one per `AnimatedBakedLights` index | n/a | Pass B `animated_light_scale` weight factor — generalizes the existing `debug_override.weight` multiply; Pass B already binds its 8-storage-buffer maximum, so deliver the per-light weights without adding a storage buffer (the binding-26 uniform slot already carries this weight) | n/a |
+| Promotion weight (compose) | per-animated-light `(1−w)` weight, one per `AnimatedBakedLights` index, capped at `MAX_ANIMATED_BAKED_LIGHTS` | n/a | Pass B `animated_light_scale` weight factor — generalizes v1's single-light dev-tools `debug_override.weight` uniform (binding 26) into an always-applied per-light `(1−w)` array; Pass B already binds its 8-storage-buffer maximum, so the weights ride the binding-26 uniform as a fixed-length array (a WGSL uniform cannot be runtime-sized) rather than a new storage buffer | n/a |
 | Runtime record | `pack_forward_animation_descriptor` (brightness/color, rest cone) + `GpuLight` (color × `w`, pool slot) — bridge-emitted for every animated baked light, `w=0` unpromoted; renderer assigns slot + `w` (Decision 7) | n/a | dynamic-direct `lights` loop | n/a |
-| Budget | shared `MAX_PROMOTED_SPOT` / `MAX_PROMOTED_CUBE`, all tiers gated on authored-peak and ranked on `slot_score` (Decision 6) | n/a | n/a | reserved-slot / KVP variant (future) |
+| Budget | shared `MAX_PROMOTED_SPOT` / `MAX_PROMOTED_CUBE`, all tiers ranked on `slot_score` (no intensity term); animated candidates gated on the window-max brightness of Decision 1 (Decision 6) | n/a | n/a | reserved-slot / KVP variant (future) |
 
 ## Open questions
 
-- **Gating a strobe fairly (refinement, non-blocking).** Decision 6 gates eligibility on the
-  authored peak, which avoids frame-thrash but lets a light authored bright-but-usually-dark
-  (a slow pulse) stay eligible for a slot it rarely uses. A short-window *max* of the curve,
-  rather than the authored peak, would tighten this; it is a drop-in change to the same gate
-  input and can wait for a measured case.
+None. (The gate brightness signal is specified in Decision 1: a forward-lookahead window max
+of the brightness curve.)

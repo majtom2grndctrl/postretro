@@ -2398,6 +2398,108 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     assert_eq!(brain.retaliation_acquired_target, Some(attacker));
 }
 
+// Regression: lethal ready remote damage landed before AI, but the unlatched
+// zero-HP brain still emitted one contact attack before the later death sweep.
+#[test]
+fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ATTACK_STATE),
+        50.0,
+    );
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut runtime = AiRuntime::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let no_edges = HashMap::new();
+
+    let events = crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &SimCommand {
+            movement: MovementInput {
+                wish_dir: Vec2::ZERO,
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+                use_pressed: false,
+                drop_pressed: false,
+            },
+            fire_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            reload: false,
+            firing_slot: 0,
+            select_slot: None,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        0.016,
+        &mut touch_system,
+        &[],
+        0,
+        &FactionRegistry::default(),
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |registry, on_impact| {
+            apply_damage_with_context(
+                registry,
+                enemy,
+                &DamagePayload { amount: 50.0 },
+                DamageContext {
+                    source_id: "test.remote.lethal".to_string(),
+                    attacker: Some(pawn),
+                    weapon: None,
+                    zone: None,
+                    producer: DamageProducer::InTick,
+                },
+            );
+            on_impact(registry);
+        },
+        |_| {},
+    );
+
+    assert!(
+        events.ai.is_empty(),
+        "the depleted brain emits no AI outcome"
+    );
+    assert!(events.enemy_projectile_spawns.is_empty());
+    assert_eq!(player_hp(&registry.borrow(), pawn), 100.0);
+    let registry = registry.borrow();
+    let health = registry.get_component::<HealthComponent>(enemy).unwrap();
+    assert_eq!(health.current, 0.0);
+    assert!(
+        health.death_handled,
+        "the later death sweep still owns the latch"
+    );
+}
+
 #[test]
 fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
     let mut graph = tuning();
@@ -3754,12 +3856,12 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: a queued positive-health recovery gives a zero-HP brain an
-// explicit nonterminal downed state; bare zero HP remains active.
+// Acceptance: zero HP quiesces a brain while preserving its nonterminal,
+// explicitly recoverable lifecycle.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn zero_hp_brain_remains_active_without_despawn() {
+fn zero_hp_brain_is_quiescent_without_despawn() {
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -3774,13 +3876,9 @@ fn zero_hp_brain_remains_active_without_despawn() {
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
     assert!(reg.exists(enemy), "zero HP alone must not remove the brain");
-    assert_eq!(
-        enemy_state_name(&reg, enemy),
-        TEST_ATTACK_STATE,
-        "zero HP must not force the terminal death state",
-    );
-    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
-    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    assert!(events.is_empty(), "a depleted brain must not emit outcomes");
+    assert_eq!(player_hp(&reg, pawn), 100.0);
 }
 
 #[test]

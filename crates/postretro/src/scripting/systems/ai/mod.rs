@@ -15,10 +15,11 @@
 // engine floor (stride, target selection, hysteresis, combat slots, the aggro
 // gate) sits UPSTREAM of guard evaluation and is not authorable.
 //
-// Exactly ONE thing suppresses guard evaluation: a closed aggro gate, which
-// stands the brain down to its graph's `initial` state with steering cleared and
-// reads neither targeting nor guards. Everything else — including having no
-// target at all — evaluates the whole guard set as usual, with the no-target
+// For each admitted live brain, exactly one authored-state condition suppresses
+// guard evaluation: a closed aggro gate. It stands the brain down to its graph's
+// `initial` state with steering cleared and reads neither targeting nor guards.
+// Everything else — including having no target at all — evaluates the whole
+// guard set, with the no-target
 // facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel)
 // projected into the scope. That is what lets a sealed-closet enemy that gets
 // shot flinch on an authored interrupt while it has nobody to chase.
@@ -55,6 +56,7 @@ use engine_floor::SteeringIntent;
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
     EntityRegistry, FactionRegistry, Transform,
@@ -395,15 +397,17 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
             if registry
-                .get_component::<DeferredEffectComponent>(id)
-                .is_ok_and(|effects| {
-                    effects.inert
-                        || effects
-                            .pending
-                            .iter()
-                            .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-                })
-                || crate::impact_effects::is_downed_for_recovery(registry, id)
+                .get_component::<HealthComponent>(id)
+                .is_ok_and(crate::scripting_systems::health::is_depleted)
+                || registry
+                    .get_component::<DeferredEffectComponent>(id)
+                    .is_ok_and(|effects| {
+                        effects.inert
+                            || effects
+                                .pending
+                                .iter()
+                                .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+                    })
             {
                 return None;
             }

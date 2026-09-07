@@ -620,11 +620,12 @@ tick time. Each row below rejects the descriptor with a descriptive
 
 Attach a `behavior` block to an entity descriptor to give it an enemy brain. The
 block is a **hierarchical behavior statechart**. Every graph uses one envelope:
-`{ initial, activities, transitions }`. The root adds graph-wide policy
-(`moveSpeed`, `attacks`, `candidateFilter`, `patrol`, and `engagementRadius`);
-a nested graph layer uses the envelope alone. The engine owns target selection,
-steering, combat spacing, damage, animation switching, and determinism. The
-graph owns its activities and guarded routes.
+`{ initial, activities, transitions }`. The root adds graph-wide policy listed
+in [The block](#the-block): `moveSpeed`, `attacks`, `candidateFilter`,
+`retaliation`, `patrol`, and `engagementRadius`. A nested graph layer uses the
+envelope alone. The engine owns target selection, steering, combat spacing,
+damage, animation switching, and determinism. The graph owns its activities and
+guarded routes.
 
 `activities` is a name → activity map. A leaf supplies an animation and may use
 `motion` or `action` sugar. A composite supplies `layers`, which run alongside
@@ -733,6 +734,7 @@ defineEntity({
 | `activities` | `{ [name]: Activity }` | Non-empty named activities. Raw JSON with duplicate keys is rejected. TypeScript reports duplicate object-literal keys (`ts1117`); JavaScript and Luau maps retain the last value before the descriptor bridge. |
 | `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
+| `retaliation` | `{ windowMs?, damageWeight?, recencyWeight? }` (optional) | Scalar tuning for the engine-owned retaliation preference, not authored ranking logic. `windowMs` defaults to `1500` ms, `damageWeight` to `1`, and `recencyWeight` to `0.001`; all are finite and non-negative. A zero or sub-tick `windowMs` disables retaliation accrual. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
 | `attacks` | `{ [name]: AttackParams }` (optional) | Named attack vocabulary. An activity action must name an entry here. Each `AttackParams` entry is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |

@@ -45,8 +45,8 @@ pub(crate) struct CandidateFacts {
 pub(crate) struct CandidateRefreshContext<'a> {
     registry: &'a EntityRegistry,
     factions: &'a FactionRegistry,
-    evaluating_enemy: Option<EntityId>,
     evaluating_faction: f32,
+    archetype_tolerance: Option<f32>,
     recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
 }
 
@@ -58,11 +58,17 @@ impl<'a> CandidateRefreshContext<'a> {
         evaluating_faction: f32,
         recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
     ) -> Self {
+        let archetype_tolerance = evaluating_enemy.and_then(|enemy| {
+            registry
+                .get_component::<EntityStateComponent>(enemy)
+                .ok()
+                .and_then(|state| state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD))
+        });
         Self {
             registry,
             factions,
-            evaluating_enemy,
             evaluating_faction,
+            archetype_tolerance,
             recent_attackers,
         }
     }
@@ -101,14 +107,8 @@ impl CandidateScope {
             .registry
             .get_component::<EntityStateComponent>(candidate)
             .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
-        let archetype_tolerance = context.evaluating_enemy.and_then(|enemy| {
-            context
-                .registry
-                .get_component::<EntityStateComponent>(enemy)
-                .ok()
-                .and_then(|state| state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD))
-        });
-        let tolerance = archetype_tolerance
+        let tolerance = context
+            .archetype_tolerance
             .or_else(|| {
                 context
                     .factions

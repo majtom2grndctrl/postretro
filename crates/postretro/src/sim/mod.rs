@@ -754,7 +754,13 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     // AI and weapon stages can both launch after the flight pass. Consume the
     // launch tick's grace without moving those projectiles; next tick's
     // pre-AI flight pass advances them exactly once.
-    projectile_stage::finish_spawn_tick(&mut registry.borrow_mut());
+    projectile_stage::finish_spawn_tick(
+        &mut registry.borrow_mut(),
+        enemy_projectile_spawns
+            .iter()
+            .map(|spawn| spawn.projectile)
+            .chain(local_result.projectile_spawns.iter().copied()),
+    );
     let death = run_death_sweep(&registry);
 
     let mut repointed_pawns = touch_events.repointed_pawns;

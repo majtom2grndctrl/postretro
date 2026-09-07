@@ -17,8 +17,8 @@ sequenceDiagram
     HC->>Brain: seed time_since_damage_ms=0, damage_bearing, last_known_target_pos
     HC->>Brain: NEW — push ledger entry (A, damage, now)
     Note over Tick: next authoritative AI tick
-    Tick->>Brain: age time_since_damage_ms toward sentinel; age/expire ledger
-    Tick->>Sel: target_offers (pool incl. enemies) → candidates
+    Tick->>Sel: target_offers → ranked set: sentiment-hostile candidates<br/>plus over-tolerance ledger attackers (incl. same-faction peers)
+    Note over Brain,Sel: ledger + time_since_damage_ms aged in phase so the candidate<br/>recency fact agrees with @brain.timeSinceDamageMs (AC6)
     loop per offered candidate C
         Sel->>Brain: CandidateScope::refresh(C) reads faction, ledger, tolerance
         Note over Sel: facts (for guards): sentiment, damageDealtToMe,<br/>timeSinceDamageFromCandidate, tolerance
@@ -29,7 +29,7 @@ sequenceDiagram
     Tick->>Brain: acquired_target = A (retained; bypasses hostility filter)
 ```
 
-The `offers.nearest` pure-distance min is computed inside `target_offers` **before** this fold and is never touched by priority — it prices the think-stride (Invariant: stride price stays pure distance).
+The `offers.nearest` min is the pure nearest-sentiment-hostile distance, computed inside `target_offers` **before** this fold; it excludes over-tolerance-admitted neutral attackers and is never touched by priority — it prices the think-stride (Invariant: stride price stays pure nearest-hostile distance).
 
 ## Retaliation state (per brain, informal)
 
@@ -39,11 +39,14 @@ stateDiagram-v2
     Default --> Retaliating: engine retaliation term prefers attacker\n(accrued damage > tolerance)
     Retaliating --> Retaliating: fresh damage keeps ledger hot
     Retaliating --> Default: authored guard stands down\n(@brain.targetDied / @brain.targetVisible)
-    Retaliating --> Default: closer/higher-priority challenger\nunseats via hysteresis
+    Retaliating --> Default: target lost or aggro de-engages\n(mark clears with acquired_target)
+    Retaliating --> Retaliating: new over-tolerance challenger\nout-ranks held by > margin (anti-thrash)
     note right of Retaliating
-      Ledger decay alone does NOT drop
-      the retained attacker (retention holds).
-      Stand-down is authored, not engine.
+      Ledger decay alone does NOT drop the retained
+      attacker, even with a nearer hostile present
+      (the retaliation-acquired mark holds it).
+      A merely-nearer non-provoking candidate cannot
+      unseat it; stand-down is authored, not engine.
     end note
 ```
 
@@ -69,8 +72,8 @@ stateDiagram-v2
 - Refresh currently takes only `(registry, candidate, distance)`. Facts needing the evaluating enemy's context (sentiment, ledger, tolerance) require **widening refresh + the single `select_target` call site** — flagged.
 - Brain scope: `BRAIN_INPUTS: [(&str, IrType); 20]` (append-only, per-slot pinning tests) — `crates/foundation/src/brain.rs`. `BrainScope::refresh` positional array must match order.
 - Adding a fact: const + append to `*_INPUTS` (bump length) + slot-pinning test; append positional value in `refresh`; compute in `compute.rs` (brain) / `refresh` (candidate); SDK leaf (`sdk/lib/brain.ts` + `.luau`); static typedef template block (`crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` + `.luau`) then regenerate; drift guard `committed_sdk_types_match_current_registry`.
-- `candidateFilter` registered doc: "It can only narrow that offer set; it does not rank candidates or drop a retained target" — `crates/postretro/src/scripting/primitives/mod.rs`. `candidatePriority` is the ranking counterpart this spec adds.
-- Author example today: `candidateFilter: candidate.died.not().and(candidate.distance.le(50))` — `content/dev/start-script.js`.
+- `candidateFilter` registered doc: "It can only narrow that offer set; it does not rank candidates or drop a retained target" — `crates/postretro/src/scripting/primitives/mod.rs`. The ranking-side change this spec makes is the engine-owned retaliation term (Task 6), not an authored ranking expression; an authored `candidatePriority` counterpart was considered and rejected (see `index.md` Alternatives rejected).
+- Author example today: `candidateFilter: candidate.died.not().and(candidate.distance.le(50))` — `sdk/behaviors/reference/entities.ts` (the pose-fixture enemy). The dev mod composes reference entity modules through `content/dev/start-script.ts` (compiled to `start-script.js` at build).
 
 ### Combat-perception facts (already merged; ledger extends them)
 - Brain fields: `time_since_damage_ms`, `damage_bearing`, `last_known_target_pos`, `damage_source_known` — `crates/entities/src/components/brain.rs`. Seeded in `apply_damage_with_context` (`crates/entities/src/components/health.rs`) from `DamageContext.attacker: Option<EntityId>`; aged toward sentinel each AI tick in `compute.rs`.

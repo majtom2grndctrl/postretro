@@ -1650,10 +1650,13 @@ mod tests {
             assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
             assert(root.Text == nil, "root module must not expose UI factories")
             assert(root.showDialog == nil, "root module must not expose UI reactions")
+            local stagedFaction = root.defineFaction("staged")
+            assert(stagedFaction.name == "staged", "root defineFaction must build a faction descriptor")
             return {
                 name = "VirtualDeps",
                 id = "virtual-deps",
                 version = "1",
+                factions = { stagedFaction },
                 entities = { helper.descriptor },
             }
             "#,
@@ -1670,6 +1673,7 @@ mod tests {
             dir.join("start-script.luau").canonicalize().unwrap(),
         ];
         assert_eq!(manifest.name, "VirtualDeps");
+        assert_eq!(manifest.factions.index_for_name("staged"), Some(2.0));
         assert_eq!(manifest.entities.len(), 1);
         assert_eq!(
             manifest.entities[0].canonical_name.as_deref(),

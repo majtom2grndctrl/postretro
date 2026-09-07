@@ -640,9 +640,10 @@ inside a nested graph it applies while its composite is active. Its rows target
 activities in that same graph. The retired `states`, inline per-state
 `transitions`, and top-level `interrupts` forms are invalid.
 
-**Currently, the offer set is player pawns.** Fresh acquisition offers only
-hostile pawns. `candidateFilter` can narrow that offer set but never ranks it or
-drops an already retained target.
+Fresh acquisition offers player pawns and brain-bearing peers. Hostile candidates
+are eligible normally; a recent attacker that exceeds its retaliation tolerance
+can also be eligible even when neutral or allied. `candidateFilter` can narrow
+the engine offer but never ranks it or drops an already retained target.
 
 Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
 dash fields, bound against a brain-fact namespace instead of the movement one.
@@ -736,6 +737,22 @@ defineEntity({
 | `attacks` | `{ [name]: AttackParams }` (optional) | Named attack vocabulary. An activity action must name an entry here. Each `AttackParams` entry is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
+
+### `candidate.*` inputs
+
+`candidateFilter` reads one offered candidate at a time. Import `candidate` from
+`"postretro"`; these facts are not available to transition guards.
+
+| `candidate` property | `read` name | Type | Meaning |
+|----------------------|-------------|------|---------|
+| `candidate.distance` | `@candidate.distance` | `number` | XZ distance from the evaluating enemy. |
+| `candidate.health` | `@candidate.health` | `number` | Current hit points, or `0` when absent. |
+| `candidate.maxHealth` | `@candidate.maxHealth` | `number` | Maximum hit points, or `0` when absent. |
+| `candidate.died` | `@candidate.died` | `boolean` | Whether the death sweep has handled the candidate. |
+| `candidate.sentiment` | `@candidate.sentiment` | `number` | Directional sentiment toward the candidate: negative hostile, zero neutral, positive allied. |
+| `candidate.damageDealtToMe` | `@candidate.damageDealtToMe` | `number` | Accumulated positive damage this candidate has dealt to this enemy, or `0` when absent from its attacker ledger. |
+| `candidate.timeSinceDamageFromCandidate` | `@candidate.timeSinceDamageFromCandidate` | `number` | Milliseconds since this candidate last damaged this enemy, or `1e9` when it has not. |
+| `candidate.tolerance` | `@candidate.tolerance` | `number` | Resolved retaliation tolerance: archetype override, then directional faction relationship, else `f32::MAX`. |
 
 An activity is either a leaf or a composite:
 
@@ -897,9 +914,39 @@ Reading any other name is a load error.
 
 ### Faction and hostility
 
-Fresh target acquisition filters player pawns by hostility; the nearest hostile
-offer determines its think-stride cadence, so a nearby friendly cannot make a
-farther hostile scan more often. It never re-checks a target already retained.
+Declare stable faction names in `defineMod({ factions: [...] })`, assign a brain
+archetype with `components.faction`, and declare directed relationships with
+`sentiment(fromFaction, toFaction, { sentiment, tolerance })`. Negative
+sentiment is hostile, zero neutral, and positive allied. Relationships are
+directional: declare both rows when each faction's view differs. `components.tolerance`
+overrides the directed-pair tolerance for that archetype. Unlisted pairs retain
+the compatibility rule: different factions are hostile and matching factions are
+neutral.
+
+```typescript
+defineMod({
+  // ...
+  factions: [defineFaction("cabal"), defineFaction("resistance")],
+  sentiment: [
+    sentiment("cabal", "resistance", { sentiment: -1, tolerance: 12 }),
+    sentiment("resistance", "cabal", { sentiment: 0, tolerance: 4 }),
+  ],
+});
+
+defineEntity({
+  canonicalName: "cabal_grunt",
+  components: { faction: "cabal", tolerance: 8 /* ... */ },
+});
+```
+
+Fresh acquisition considers player pawns and brain-bearing peers. The nearest
+sentiment-hostile offer determines think-stride cadence, so a nearby friendly
+cannot make a farther hostile scan more often. The engine owns retaliation:
+recent accumulated damage above the resolved tolerance can admit and rank an
+otherwise non-hostile attacker ahead of distance candidates. Its freshness,
+ranking, and retention hysteresis are engine tuning, not authorable expressions.
+`candidateFilter` remains a boolean narrowing predicate; it cannot rank or
+replace retaliation policy. Acquisition never re-checks a retained target.
 Retention is graph policy: put ordered root-scope `"*"` rows over
 `brain.targetHostile` beside the ordinary lost-target route:
 
@@ -917,14 +964,10 @@ for an untargeted *or* friendly target, while `brain.targetDied` is false
 untargeted; keeping the explicit `hasTarget` row first makes the policy legible,
 and targeting the active untargeted state prevents an idle/patrol oscillation.
 
-`@state.faction` is an **interim opaque numeric identity token**, not the
-permanent author-facing allegiance model. The current floor treats differing
-identities as hostile; enemies begin at identity `1` and a player with no field
-reads as `0`. Author durable behavior through `brain.targetHostile` (and future
-candidate-hostility facts), not equality tests on the numeric field. Named
-alliances, neutrality, and diplomacy belong to the planned Faction & relationship
-model and can replace that storage beneath the fact without changing your
-retention guards.
+`@state.faction` is engine-owned resolved storage, not an authoring surface.
+Use named `components.faction` declarations and `sentiment(...)` rows for
+relationships. Write retention guards through `brain.targetHostile`, rather
+than testing a numeric faction value.
 
 ### The no-target trap
 

@@ -965,11 +965,11 @@ mod tests {
         .expect("QuickJS faction manifest should parse");
         let luau = run_mod_init_luau(
             &[],
-            "return { name = 'Factions', id = 'factions', version = '1', factions = {{ name = 'cabal' }, { name = 'resistance' }}, sentiment = {{ fromFaction = 'cabal', toFaction = 'resistance', sentiment = -0.75, tolerance = 0.25 }}, entities = {{ canonicalName = 'cabal_grunt', components = { faction = 'cabal' } }, { canonicalName = 'resistance_guard', components = { faction = 'resistance' } }} }",
+            "return defineMod({ name = 'Factions', id = 'factions', version = '1', factions = { defineFaction('cabal'), defineFaction('resistance') }, sentiment = { sentiment('cabal', 'resistance', { sentiment = -0.75, tolerance = 0.25 }) }, entities = {{ canonicalName = 'cabal_grunt', components = { faction = 'cabal' } }, { canonicalName = 'resistance_guard', components = { faction = 'resistance' } }} })",
             "factions.luau",
             Path::new("."),
         )
-        .expect("Luau faction manifest should parse");
+        .expect("Luau faction SDK helpers should build a valid manifest");
 
         for manifest in [&js, &luau] {
             assert_eq!(manifest.factions.index_for_name("cabal"), Some(2.0));

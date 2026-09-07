@@ -537,10 +537,12 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("blockDuringReload: boolean?")
             && luau.contains("defaultWeaponPlacement: WeaponPlacementDescriptor?")
             && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest")
+            && luau.contains("declare function defineFaction(name: string): FactionDescriptor")
             && luau.contains(
                 "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
             )
             && luau.contains("defineMod: typeof(defineMod),")
+            && luau.contains("defineFaction: typeof(defineFaction),")
             && luau.contains("defineMapCatalog: typeof(defineMapCatalog),")
             && luau.contains(
                 "declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor"

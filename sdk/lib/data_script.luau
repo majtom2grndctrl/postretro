@@ -1047,6 +1047,13 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
   return manifest
 end
 
+--- Pure builder for a stable named faction declaration. Include the result in
+--- `defineMod({ factions = { ... } })`; archetypes refer to the name through
+--- `components.faction`.
+function DataScriptSdk.defineFaction(name: string): FactionDescriptor
+  return { name = name }
+end
+
 --- Build one directed faction relationship for `sentiment` in the returned
 --- mod manifest. Negative sentiment is hostile, zero neutral, and positive
 --- allied; the engine validates both faction names at manifest drain.

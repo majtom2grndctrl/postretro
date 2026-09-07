@@ -1834,6 +1834,10 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
+--- Pure builder for a stable named faction declaration. Include the result in
+--- `defineMod({ factions = { ... } })`; archetypes refer to its name through
+--- `components.faction`.
+declare function defineFaction(name: string): FactionDescriptor
 --- Build one directed relationship for `sentiment` in the returned mod
 --- manifest. Negative sentiment is hostile, zero neutral, positive allied.
 declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number }): FactionSentimentDescriptor
@@ -2539,6 +2543,8 @@ export type PostretroModule = {
   defineEntity: typeof(defineEntity),
   --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
+  --- Pure builder for a stable named faction declaration.
+  defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.

@@ -7,10 +7,10 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
@@ -25,8 +25,12 @@ use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
+use crate::kinematic_mover::MoverTickStateTable;
+use crate::movement::MovementInput;
 use crate::nav::{NavGraph, distance_xz, find_path};
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::sim::touch::TouchSystem;
+use crate::sim::{PostMovementCommand, SimCommand};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -34,6 +38,7 @@ use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{
@@ -59,6 +64,7 @@ use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
 };
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -2048,6 +2054,170 @@ fn faction_crossfire_reference_content_reprioritizes_holds_and_stands_down() {
         enemy_retaliation_acquired_target(&registry, victim),
         Some(attacker_b)
     );
+}
+
+// Regression: authoritative projectile flight ran after the complete AI pass,
+// so its attacker-ledger write could not affect target selection until a later
+// simulation tick.
+#[test]
+fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick() {
+    const DT: f32 = 0.016;
+    const DAMAGE: f32 = 8.0;
+
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker = spawn_enemy(
+        &mut registry,
+        Vec3::new(10.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    for entity in [victim, attacker] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(player),
+        "the nearer hostile player is retained before the projectile lands",
+    );
+
+    let mut victim_health = registry
+        .get_component::<HealthComponent>(victim)
+        .expect("crossfire victim carries health")
+        .clone();
+    victim_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.5, 1.0, 0.5),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(victim, victim_health)
+        .expect("crossfire victim remains live");
+
+    let projectile = registry.spawn(Transform {
+        position: Vec3::new(1.25, 0.5, 0.0),
+        ..Transform::default()
+    });
+    registry
+        .set_component(
+            projectile,
+            ProjectileComponent {
+                direction: Vec3::NEG_X.to_array(),
+                speed: 100.0,
+                radius: 0.0,
+                remaining_range: 10.0,
+                remaining_lifetime: 1.0,
+                damage: DAMAGE,
+                credit_source: "test.crossfire.projectile".to_string(),
+                owner_pawn: attacker,
+                owner_weapon: attacker,
+                spawned: false,
+                predicted_shot_id: None,
+                elapsed_flight_age: 0.0,
+                flipbook_active: false,
+                impact_light: None,
+            },
+        )
+        .expect("active crossfire projectile attaches");
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        fire_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        reload: false,
+        firing_slot: 0,
+        select_slot: None,
+        use_pressed: false,
+        drop_pressed: false,
+    };
+    let no_edges = HashMap::new();
+    let events = crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &command,
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        DT,
+        &mut touch_system,
+        &[],
+        0,
+        &factions,
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |_| {},
+    );
+
+    assert_eq!(events.local_projectile_contacts.len(), 1);
+    assert_eq!(events.local_projectile_contacts[0].projectile, projectile);
+    let registry = registry.borrow();
+    assert!(
+        !registry.exists(projectile),
+        "the impacting projectile retires"
+    );
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(victim)
+            .expect("victim survives the focused hit")
+            .current,
+        100.0 - DAMAGE,
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("victim keeps its brain after the tick");
+    let ledger = brain
+        .recent_attacker(attacker)
+        .expect("projectile impact records its owning peer");
+    assert!((ledger.accumulated_damage - DAMAGE).abs() <= EPS);
+    assert!((ledger.time_since_damage_ms - DT * 1_000.0).abs() <= EPS);
+    assert_eq!(
+        brain.acquired_target,
+        Some(attacker),
+        "same-tick AI selection observes the projectile-seeded ledger",
+    );
+    assert_eq!(brain.retaliation_acquired_target, Some(attacker));
 }
 
 #[test]

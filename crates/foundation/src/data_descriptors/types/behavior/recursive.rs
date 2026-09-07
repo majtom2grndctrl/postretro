@@ -94,6 +94,10 @@ pub struct BehaviorGraphDescriptor {
     pub envelope: BehaviorGraphEnvelope,
     #[serde(default)]
     pub candidate_filter: Option<IrNode>,
+    /// Engine-owned target-retaliation tuning. Authors choose scalar feel
+    /// parameters here; they never provide a ranking expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retaliation: Option<RetaliationDescriptor>,
     #[serde(default)]
     pub patrol: Option<PatrolDescriptor>,
     #[serde(default)]
@@ -101,6 +105,48 @@ pub struct BehaviorGraphDescriptor {
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     pub move_speed: f32,
+}
+
+/// Scalar tuning for the engine-owned retaliation preference. The candidate
+/// threshold and rank formula remain engine code; this descriptor exposes only
+/// the authored feel axes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetaliationDescriptor {
+    /// How long a damager remains eligible to accrue retaliation preference.
+    /// A zero or sub-tick window explicitly disables the term.
+    #[serde(default = "default_retaliation_window_ms")]
+    pub window_ms: f32,
+    /// Multiplier applied to recent accumulated damage when ranking two
+    /// over-tolerance provokers.
+    #[serde(default = "default_retaliation_damage_weight")]
+    pub damage_weight: f32,
+    /// Per-millisecond penalty applied to the age of a provoking hit when
+    /// ranking two over-tolerance provokers.
+    #[serde(default = "default_retaliation_recency_weight")]
+    pub recency_weight: f32,
+}
+
+impl Default for RetaliationDescriptor {
+    fn default() -> Self {
+        Self {
+            window_ms: default_retaliation_window_ms(),
+            damage_weight: default_retaliation_damage_weight(),
+            recency_weight: default_retaliation_recency_weight(),
+        }
+    }
+}
+
+fn default_retaliation_window_ms() -> f32 {
+    1_500.0
+}
+
+fn default_retaliation_damage_weight() -> f32 {
+    1.0
+}
+
+fn default_retaliation_recency_weight() -> f32 {
+    0.001
 }
 
 /// `flatten` and `deny_unknown_fields` cannot be combined in serde. Use a
@@ -115,6 +161,8 @@ struct RawBehaviorGraphDescriptor {
     transitions: BTreeMap<String, Vec<GuardedRow>>,
     #[serde(default)]
     candidate_filter: Option<IrNode>,
+    #[serde(default)]
+    retaliation: Option<RetaliationDescriptor>,
     #[serde(default)]
     patrol: Option<PatrolDescriptor>,
     #[serde(default)]
@@ -137,6 +185,7 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
                 transitions: raw.transitions,
             },
             candidate_filter: raw.candidate_filter,
+            retaliation: raw.retaliation,
             patrol: raw.patrol,
             attacks: raw.attacks,
             engagement_radius: raw.engagement_radius,
@@ -196,6 +245,13 @@ impl BehaviorGraphDescriptor {
             .unwrap_or(Self::DEFAULT_ENGAGEMENT_RADIUS)
     }
 
+    /// Resolve omitted tuning to the compatibility defaults. The default
+    /// tolerance is `f32::MAX`, so these values leave unauthored graphs on the
+    /// pre-retaliation distance ranking path.
+    pub fn retaliation(&self) -> RetaliationDescriptor {
+        self.retaliation.unwrap_or_default()
+    }
+
     /// Root attack data stays authoritative even when an action appears under
     /// a nested graph layer.
     pub fn engagement_radius_for_action(&self, action: Option<&ActionVerb>) -> f32 {
@@ -228,6 +284,11 @@ impl BehaviorGraphDescriptor {
         validate_positive("moveSpeed", self.move_speed)?;
         if let Some(radius) = self.engagement_radius {
             validate_positive("engagementRadius", radius)?;
+        }
+        if let Some(retaliation) = self.retaliation {
+            validate_non_negative("retaliation.windowMs", retaliation.window_ms)?;
+            validate_non_negative("retaliation.damageWeight", retaliation.damage_weight)?;
+            validate_non_negative("retaliation.recencyWeight", retaliation.recency_weight)?;
         }
         validate_attacks(&self.attacks)?;
         validate_patrol(self.patrol.as_ref())?;
@@ -819,6 +880,17 @@ fn validate_positive(field: &str, value: f32) -> Result<(), DescriptorError> {
     Ok(())
 }
 
+fn validate_non_negative(field: &str, value: f32) -> Result<(), DescriptorError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.behavior.{field}` must be a finite value >= 0.0, got {value}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Activities declared in this envelope but not referenced by its `initial` or
 /// by any incoming row. This is advisory, not a structural parse error.
 pub(crate) fn unreachable_activities(envelope: &BehaviorGraphEnvelope) -> Vec<String> {
@@ -849,6 +921,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: BTreeMap::from([(
                 "slam".to_string(),
@@ -879,6 +952,50 @@ mod tests {
             explicit_standoff.standoff_distance_for_action(Some(&action)),
             1.5
         );
+    }
+
+    #[test]
+    fn retaliation_descriptor_defaults_and_validates_finite_non_negative_scalars() {
+        let mut graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "activities": { "idle": { "animation": "idle" } },
+            "transitions": {},
+            "moveSpeed": 3.0,
+            "retaliation": {
+                "windowMs": 750.0,
+                "damageWeight": 2.0,
+                "recencyWeight": 0.25
+            }
+        }))
+        .expect("retaliation block deserializes");
+        assert_eq!(
+            graph.retaliation(),
+            RetaliationDescriptor {
+                window_ms: 750.0,
+                damage_weight: 2.0,
+                recency_weight: 0.25,
+            }
+        );
+
+        graph.retaliation = Some(RetaliationDescriptor {
+            window_ms: -1.0,
+            ..RetaliationDescriptor::default()
+        });
+        let error = graph.validate().expect_err("negative window rejects");
+        assert!(
+            error.to_string().contains("retaliation.windowMs"),
+            "{error}"
+        );
+
+        let defaults: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "activities": { "idle": { "animation": "idle" } },
+            "transitions": {},
+            "moveSpeed": 3.0
+        }))
+        .expect("omitted retaliation block retains defaults");
+        assert_eq!(defaults.retaliation, None);
+        assert_eq!(defaults.retaliation(), RetaliationDescriptor::default());
     }
 
     #[test]

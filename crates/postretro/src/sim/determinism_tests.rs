@@ -1426,6 +1426,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
             transitions: BTreeMap::new(),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),

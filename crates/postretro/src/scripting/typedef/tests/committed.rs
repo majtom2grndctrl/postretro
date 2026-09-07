@@ -163,6 +163,8 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
         for needle in [
             "BehaviorGraphDescriptor",
             "candidateFilter",
+            "RetaliationDescriptor",
+            "retaliation",
             "PatrolDescriptor",
             "PatrolMode",
             "moveToAnchor",

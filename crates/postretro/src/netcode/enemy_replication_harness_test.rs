@@ -163,6 +163,7 @@ fn brain() -> BrainComponent {
             transitions: Default::default(),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: Default::default(),
         engagement_radius: None,
@@ -369,6 +370,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
             )]),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: std::collections::BTreeMap::from([(
             "attack".to_string(),

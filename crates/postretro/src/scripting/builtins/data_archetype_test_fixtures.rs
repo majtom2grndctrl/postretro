@@ -140,6 +140,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
             )]),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "claw".to_string(),

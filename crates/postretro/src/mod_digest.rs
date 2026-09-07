@@ -355,6 +355,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: Default::default(),
             engagement_radius: None,

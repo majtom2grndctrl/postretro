@@ -56,10 +56,8 @@ use engine_floor::SteeringIntent;
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
-    EntityRegistry, FactionRegistry, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry, Transform,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::TargetPawn;
@@ -396,19 +394,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // A terminal impact effect or queued despawn leaves the id live
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
-            if registry
-                .get_component::<HealthComponent>(id)
-                .is_ok_and(crate::scripting_systems::health::is_depleted)
-                || registry
-                    .get_component::<DeferredEffectComponent>(id)
-                    .is_ok_and(|effects| {
-                        effects.inert
-                            || effects
-                                .pending
-                                .iter()
-                                .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-                    })
-            {
+            if crate::scripting_systems::health::is_quiescent(registry, id) {
                 return None;
             }
             let ComponentValue::Brain(brain) = value else {

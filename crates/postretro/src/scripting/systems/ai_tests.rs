@@ -2500,6 +2500,84 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
     );
 }
 
+// Regression: a later brain's precomputed projectile outcome still fired after
+// an earlier brain lethally damaged it in the same AI apply batch.
+#[test]
+fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
+    let mut contact_graph = standing_attack_graph();
+    contact_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(25.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let second = spawn_enemy(
+        &mut registry,
+        Vec3::X,
+        authored_brain(&projectile_graph, "strike"),
+        25.0,
+    );
+    registry
+        .entity_state_mut(first)
+        .expect("first actor remains live")
+        .set(
+            FACTION_STATE_FIELD,
+            postretro_entities::PLAYER_FACTION_INDEX,
+        );
+    set_enemy_yaw(&mut registry, second, -std::f32::consts::FRAC_PI_2);
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(
+        result.events,
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)],
+        "only the first actor's contact attack raises an event",
+    );
+    assert!(
+        result.projectile_spawns.is_empty(),
+        "the lethally hit second actor must not publish a projectile spawn",
+    );
+    assert!(
+        projectile_ids(&registry).is_empty(),
+        "the lethally hit second actor must not materialize a projectile",
+    );
+    assert_eq!(player_hp(&registry, first), 50.0);
+    let second_health = registry
+        .get_component::<HealthComponent>(second)
+        .expect("zero HP alone keeps the second actor live");
+    assert_eq!(second_health.current, 0.0);
+    assert!(
+        !second_health.death_handled,
+        "the later death sweep still owns the death latch",
+    );
+}
+
 #[test]
 fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
     let mut graph = tuning();

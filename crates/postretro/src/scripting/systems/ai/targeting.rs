@@ -51,9 +51,11 @@ pub(super) fn target_candidate(
     entity: EntityId,
     from: Vec3,
 ) -> Option<TargetCandidate> {
-    registry
+    let is_pawn = registry
         .get_component::<PlayerMovementComponent>(entity)
-        .ok()?;
+        .is_ok()
+        || registry.get_component::<BrainComponent>(entity).is_ok();
+    is_pawn.then_some(())?;
     let position = registry.get_component::<Transform>(entity).ok()?.position;
     Some(TargetCandidate {
         target: TargetPawn { entity, position },
@@ -68,12 +70,21 @@ pub(super) fn target_offers(
     registry: &EntityRegistry,
     from: Vec3,
     enemy_faction: f32,
+    evaluating_enemy: Option<EntityId>,
     exclude: Option<EntityId>,
 ) -> TargetOffers {
     let mut nearest = None;
     let mut candidates = Vec::new();
-    for (entity, _) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-        if exclude == Some(entity) {
+    let movement_holders = registry.iter_with_kind(ComponentKind::PlayerMovement);
+    let brain_only_holders = registry
+        .iter_with_kind(ComponentKind::Brain)
+        .filter(|(entity, _)| {
+            registry
+                .get_component::<PlayerMovementComponent>(*entity)
+                .is_err()
+        });
+    for (entity, _) in movement_holders.chain(brain_only_holders) {
+        if evaluating_enemy == Some(entity) || exclude == Some(entity) {
             continue;
         }
         let Some(candidate) = target_candidate(registry, entity, from) else {
@@ -187,7 +198,12 @@ pub(super) fn select_target(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
     use super::*;
+    use postretro_entities::data_descriptors::{
+        BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    };
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
@@ -240,6 +256,38 @@ mod tests {
         entity
     }
 
+    fn brain(registry: &mut EntityRegistry, x: f32) -> EntityId {
+        let entity = registry.spawn(Transform {
+            position: Vec3::new(x, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let graph = BehaviorGraphDescriptor {
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        animation: None,
+                        motion: None,
+                        action: None,
+                        on_enter: None,
+                        layers: BTreeMap::new(),
+                    },
+                )]),
+                transitions: BTreeMap::new(),
+            },
+            candidate_filter: None,
+            patrol: None,
+            attacks: BTreeMap::new(),
+            engagement_radius: None,
+            move_speed: 0.0,
+        };
+        registry
+            .set_component(entity, BrainComponent::from_graph(&graph))
+            .expect("fresh enemy is live");
+        entity
+    }
+
     fn select_target_for_test(
         registry: &EntityRegistry,
         from: Vec3,
@@ -249,7 +297,7 @@ mod tests {
         candidate_scope: &mut CandidateScope,
     ) -> (Option<TargetCandidate>, Option<TargetPawn>) {
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-        let offers = target_offers(registry, from, enemy_faction, retained_target);
+        let offers = target_offers(registry, from, enemy_faction, None, retained_target);
         let mut candidate_perception = |target: TargetPawn| {
             Some(RawTargetPerception {
                 target: target.entity,
@@ -271,10 +319,65 @@ mod tests {
     }
 
     #[test]
+    fn brain_holders_are_walked_but_default_faction_peers_remain_non_hostile() {
+        let mut registry = EntityRegistry::new();
+        let evaluating_enemy = brain(&mut registry, 0.0);
+        let peer = brain(&mut registry, 4.0);
+        let inert_prop = registry.spawn(Transform {
+            position: Vec3::new(2.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                inert_prop,
+                HealthComponent {
+                    max: 10.0,
+                    current: 10.0,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: HashMap::new(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("fresh prop is live");
+
+        assert!(target_candidate(&registry, peer, Vec3::ZERO).is_some());
+        assert!(target_candidate(&registry, inert_prop, Vec3::ZERO).is_none());
+
+        registry
+            .entity_state_mut(peer)
+            .expect("fresh peer has entity state")
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+        let hostile_offers =
+            target_offers(&registry, Vec3::ZERO, 0.0, Some(evaluating_enemy), None);
+        assert_eq!(
+            hostile_offers
+                .candidates
+                .iter()
+                .map(|candidate| candidate.target.entity)
+                .collect::<Vec<_>>(),
+            vec![peer],
+            "the brain-bearing peer is included while the evaluating enemy and inert prop are not",
+        );
+
+        registry
+            .entity_state_mut(peer)
+            .expect("fresh peer has entity state")
+            .set(super::super::FACTION_STATE_FIELD, 0.0);
+        let default_faction_offers =
+            target_offers(&registry, Vec3::ZERO, 0.0, Some(evaluating_enemy), None);
+        assert!(
+            default_faction_offers.candidates.is_empty(),
+            "same-default-faction brain peers are walked but remain non-hostile",
+        );
+    }
+
+    #[test]
     fn fresh_selection_carries_the_candidate_los_result_but_retention_does_not() {
         let mut registry = EntityRegistry::new();
         let pawn = pawn(&mut registry, 4.0);
-        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None);
+        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None, None);
         let expected = RawTargetPerception {
             target: pawn,
             visible: true,
@@ -301,7 +404,7 @@ mod tests {
         assert_eq!(selected.fresh_perception, Some(expected));
 
         let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
-        let empty_offers = target_offers(&registry, Vec3::ZERO, 1.0, Some(pawn));
+        let empty_offers = target_offers(&registry, Vec3::ZERO, 1.0, None, Some(pawn));
         let retained_selection = select_target(
             Some(retained),
             &empty_offers,
@@ -323,7 +426,7 @@ mod tests {
         let challenger = pawn(&mut registry, 2.0);
         let retained =
             target_candidate(&registry, retained_entity, Vec3::ZERO).expect("retained target");
-        let offers = target_offers(&registry, Vec3::ZERO, 1.0, Some(retained_entity));
+        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None, Some(retained_entity));
         let mut candidate_perception = |target: TargetPawn| {
             Some(RawTargetPerception {
                 target: target.entity,

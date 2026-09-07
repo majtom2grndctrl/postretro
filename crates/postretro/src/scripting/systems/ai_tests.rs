@@ -1189,7 +1189,7 @@ fn select_target_for_test(
     candidate_scope: &mut CandidateScope,
 ) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-    let offers = target_offers(registry, from, enemy_faction, retained_target);
+    let offers = target_offers(registry, from, enemy_faction, None, retained_target);
     let nearest = offers.nearest;
     let mut candidate_perception = |target: TargetPawn| {
         Some(perception::RawTargetPerception {

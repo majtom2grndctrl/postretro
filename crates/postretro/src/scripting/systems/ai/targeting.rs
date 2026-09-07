@@ -18,7 +18,7 @@ use postretro_entities::{
 };
 use postretro_foundation::{BoundProgram, IrValue, RetaliationDescriptor, eval_value};
 
-use super::candidate_scope::{CandidateFacts, CandidateScope};
+use super::candidate_scope::{CandidateFacts, CandidateRefreshContext, CandidateScope};
 
 #[cfg(test)]
 const EMPTY_RECENT_ATTACKERS: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] =
@@ -267,18 +267,18 @@ pub(super) fn select_target_with_attacker_ledger(
         retaliation: Option<RetaliationRank>,
     }
 
+    let refresh_context = CandidateRefreshContext::new(
+        registry,
+        factions,
+        evaluating_enemy,
+        evaluating_faction,
+        recent_attackers,
+    );
     let mut nearest_distance_eligible: Option<EligibleCandidate> = None;
     let mut preferred_eligible: Option<EligibleCandidate> = None;
     for candidate in offers.candidates.iter().copied() {
-        let facts = candidate_scope.refresh(
-            registry,
-            factions,
-            evaluating_enemy,
-            evaluating_faction,
-            recent_attackers,
-            candidate.target.entity,
-            candidate.distance,
-        );
+        let facts =
+            candidate_scope.refresh(refresh_context, candidate.target.entity, candidate.distance);
         let retaliation_preference =
             retaliation_preference(facts, candidate.distance, retaliation, tick_ms);
         let hostile = facts.sentiment < 0.0;
@@ -340,15 +340,8 @@ pub(super) fn select_target_with_attacker_ledger(
         .is_some_and(|retained| retaliation_acquired_target == Some(retained.target.entity));
     if let Some(retained) = retained {
         if retained_is_retaliation {
-            let held_facts = candidate_scope.refresh(
-                registry,
-                factions,
-                evaluating_enemy,
-                evaluating_faction,
-                recent_attackers,
-                retained.target.entity,
-                retained.distance,
-            );
+            let held_facts =
+                candidate_scope.refresh(refresh_context, retained.target.entity, retained.distance);
             let held_rank = RetaliationRank::from_facts(held_facts, retained.distance, retaliation);
             if let Some(challenger) = preferred_eligible
                 .filter(|candidate| candidate.retaliation.is_some())

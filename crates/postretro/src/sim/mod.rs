@@ -637,6 +637,17 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
+    // Advance projectiles after this tick's movement settles but before AI
+    // snapshots its facts. An impact therefore reaches the Health chokepoint
+    // and attacker ledger in time for same-tick retaliation selection.
+    let local_projectile_contacts = projectile_stage::advance(
+        &registry,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut on_impact,
+    );
     let ai_result = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
@@ -730,14 +741,10 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
-    let local_projectile_contacts = projectile_stage::advance(
-        &registry,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        tick_dt,
-        &mut on_impact,
-    );
+    // AI and weapon stages can both launch after the flight pass. Consume the
+    // launch tick's grace without moving those projectiles; next tick's
+    // pre-AI flight pass advances them exactly once.
+    projectile_stage::finish_spawn_tick(&mut registry.borrow_mut());
     let death = run_death_sweep(&registry);
 
     let mut repointed_pawns = touch_events.repointed_pawns;

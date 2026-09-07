@@ -41,8 +41,8 @@ pub struct FactionDescriptor {
 }
 
 /// One authored directional relationship entry. Names exist only at manifest
-/// drain time; [`FactionRegistry`] resolves them into its compact index matrix
-/// before the AI tick can read the relationship.
+/// drain time; [`FactionRegistry`] resolves them into sparse index-pair
+/// overrides before the AI tick can read the relationship.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactionSentimentDescriptor {
     pub from_faction: String,
@@ -60,6 +60,13 @@ pub struct FactionRelationship {
     pub tolerance: Option<f32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FactionRelationshipOverride {
+    from: usize,
+    to: usize,
+    relationship: FactionRelationship,
+}
+
 /// The absent faction carried by player pawns.
 pub const PLAYER_FACTION_INDEX: f32 = 0.0;
 /// The compatibility faction used by brain-bearing archetypes without an
@@ -75,11 +82,10 @@ const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FactionRegistry {
     descriptors: Vec<FactionDescriptor>,
-    /// Full directed matrix over player, default-enemy, and authored faction
-    /// indices. `None` means the compatibility relationship: same-faction is
-    /// neutral and different factions are hostile. This keeps candidate-scan
-    /// lookup to indexed reads with no name allocation or collection.
-    relationships: Vec<Option<FactionRelationship>>,
+    /// Sorted authored overrides keyed by `(from, to)` numeric indices.
+    /// Candidate-scan lookup is allocation-free; absent pairs use the
+    /// compatibility relationship without reserving an N x N matrix.
+    relationship_overrides: Vec<FactionRelationshipOverride>,
 }
 
 impl FactionRegistry {
@@ -99,17 +105,16 @@ impl FactionRegistry {
         if descriptors.len() > MAX_EXACT_FACTION_INDEX - FIRST_AUTHORED_FACTION_INDEX as usize + 1 {
             return Err("too many authored factions for f32 index storage".to_string());
         }
-        let faction_count = descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
         Ok(Self {
             descriptors,
-            relationships: vec![None; faction_count.saturating_mul(faction_count)],
+            relationship_overrides: Vec::new(),
         })
     }
 
     /// Resolve strict manifest-authored directional relationships into the
-    /// fixed faction-index matrix. Both endpoint names must name declared
-    /// factions; player and default-enemy compatibility rows remain seeded by
-    /// the unlisted-pair fallback.
+    /// sparse faction-index overrides. Both endpoint names must name declared
+    /// factions; player and default-enemy compatibility rows use the unlisted
+    /// pair fallback.
     pub fn with_sentiments(
         mut self,
         sentiments: impl AsRef<[FactionSentimentDescriptor]>,
@@ -139,19 +144,32 @@ impl FactionRegistry {
                     entry.to_faction
                 )
             })?;
-            let index = self
-                .matrix_index(from, to)
-                .expect("declared faction indices fit the relationship matrix");
-            if self.relationships[index].is_some() {
-                return Err(format!(
-                    "duplicate sentiment entry from `{}` to `{}`",
-                    entry.from_faction, entry.to_faction
-                ));
+            let pair = (
+                faction_index(from).expect("declared faction index is exact"),
+                faction_index(to).expect("declared faction index is exact"),
+            );
+            match self
+                .relationship_overrides
+                .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+            {
+                Ok(_) => {
+                    return Err(format!(
+                        "duplicate sentiment entry from `{}` to `{}`",
+                        entry.from_faction, entry.to_faction
+                    ));
+                }
+                Err(index) => self.relationship_overrides.insert(
+                    index,
+                    FactionRelationshipOverride {
+                        from: pair.0,
+                        to: pair.1,
+                        relationship: FactionRelationship {
+                            sentiment: entry.sentiment,
+                            tolerance: Some(entry.tolerance),
+                        },
+                    },
+                ),
             }
-            self.relationships[index] = Some(FactionRelationship {
-                sentiment: entry.sentiment,
-                tolerance: Some(entry.tolerance),
-            });
         }
         Ok(self)
     }
@@ -175,27 +193,30 @@ impl FactionRegistry {
         self.relationship(from, to).sentiment
     }
 
-    /// Pair tolerance only when the authored relationship declared one. Task 5
-    /// resolves the fallback default; Task 3 wires this value without giving it
-    /// gameplay meaning yet.
+    /// Pair tolerance only when the authored relationship declared one.
     pub fn tolerance(&self, from: f32, to: f32) -> Option<f32> {
         self.relationship(from, to).tolerance
     }
 
     pub fn relationship(&self, from: f32, to: f32) -> FactionRelationship {
-        self.matrix_index(from, to)
-            .and_then(|index| self.relationships.get(index).copied().flatten())
+        self.resolved_pair(from, to)
+            .and_then(|pair| {
+                self.relationship_overrides
+                    .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+                    .ok()
+            })
+            .map(|index| self.relationship_overrides[index].relationship)
             .unwrap_or(FactionRelationship {
                 sentiment: if from == to { 0.0 } else { -1.0 },
                 tolerance: None,
             })
     }
 
-    fn matrix_index(&self, from: f32, to: f32) -> Option<usize> {
+    fn resolved_pair(&self, from: f32, to: f32) -> Option<(usize, usize)> {
         let from = faction_index(from)?;
         let to = faction_index(to)?;
-        let dimension = self.descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
-        (from < dimension && to < dimension).then_some(from * dimension + to)
+        let faction_count = self.descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
+        (from < faction_count && to < faction_count).then_some((from, to))
     }
 }
 
@@ -489,9 +510,10 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
-    /// Replace the complete committed faction snapshot. Manifest validation
-    /// constructs this registry before it reaches the drain, so this operation
-    /// is an infallible atomic replacement beside entity descriptors.
+    /// Replace the complete committed faction snapshot. Startup accepts any
+    /// validated declaration order. Staged reload verifies that the name-to-index
+    /// mapping is unchanged before calling this, while still allowing authored
+    /// relationship overrides to refresh.
     pub fn replace_factions(&mut self, factions: FactionRegistry) {
         self.factions = factions;
     }
@@ -1065,6 +1087,38 @@ mod tests {
     }
 
     #[test]
+    fn faction_registry_allocates_only_authored_sparse_relationship_overrides() {
+        let descriptors = (0..128)
+            .map(|index| FactionDescriptor {
+                name: format!("faction-{index}"),
+            })
+            .collect();
+        let factions = FactionRegistry::from_descriptors(descriptors)
+            .expect("many distinct faction declarations are valid");
+
+        assert!(
+            factions.relationship_overrides.is_empty(),
+            "declaring factions must not eagerly allocate an N x N relationship matrix"
+        );
+
+        let factions = factions
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "faction-127".to_string(),
+                to_faction: "faction-0".to_string(),
+                sentiment: 0.5,
+                tolerance: 3.0,
+            }])
+            .expect("one sparse relationship override resolves");
+        assert_eq!(factions.relationship_overrides.len(), 1);
+        assert!((factions.sentiment(129.0, 2.0) - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(
+            factions.sentiment(2.0, 129.0),
+            -1.0,
+            "the reverse directed pair remains on the compatibility default"
+        );
+    }
+
+    #[test]
     fn faction_registry_rejects_duplicate_or_unknown_sentiment_pairs() {
         let factions = FactionRegistry::from_descriptors(vec![FactionDescriptor {
             name: "cabal".to_string(),
@@ -1080,6 +1134,17 @@ mod tests {
             }])
             .expect_err("unknown endpoint rejects the manifest");
         assert!(unknown.contains("undeclared from faction `missing`"));
+
+        let unknown = factions
+            .clone()
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "missing".to_string(),
+                sentiment: -1.0,
+                tolerance: 1.0,
+            }])
+            .expect_err("unknown destination rejects the manifest");
+        assert!(unknown.contains("undeclared to faction `missing`"));
 
         let duplicate = factions
             .with_sentiments(vec![

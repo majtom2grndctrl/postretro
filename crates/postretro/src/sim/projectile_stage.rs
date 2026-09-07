@@ -132,6 +132,35 @@ pub(crate) fn advance(
     contacts
 }
 
+/// Close the fire tick for projectiles created after [`advance`] ran.
+///
+/// Authoritative projectile flight resolves before AI so impact damage can
+/// inform that tick's target selection. AI and weapon fire run later and may
+/// create projectiles, so they cannot consume their spawn grace through the
+/// flight pass itself. Clear only that one-tick marker here: new projectiles
+/// stay at their launch transform and begin moving on the next fixed tick.
+pub(crate) fn finish_spawn_tick(registry: &mut EntityRegistry) {
+    let spawned: Vec<(EntityId, ProjectileComponent)> = registry
+        .iter_with_kind(ComponentKind::Projectile)
+        .filter_map(|(id, value)| {
+            let ComponentValue::Projectile(component) = value else {
+                return None;
+            };
+            component.spawned.then(|| {
+                let mut component = component.clone();
+                component.spawned = false;
+                (id, component)
+            })
+        })
+        .collect();
+
+    for (id, component) in spawned {
+        if registry.exists(id) {
+            let _ = registry.set_component(id, component);
+        }
+    }
+}
+
 /// Advance only locally-predicted connected-client projectiles. Their collision
 /// result is a declaration, never a local Health mutation. Standalone gameplay
 /// projectiles carry no prediction authority, while every `Some(shot_id)` is
@@ -515,6 +544,42 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
         advance(registry, &world, &zones, 0.0, dt, &mut ignore_impact);
+    }
+
+    #[test]
+    fn finish_spawn_tick_consumes_grace_without_moving_the_projectile() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 5.0, 0.0, 5.0);
+
+        finish_spawn_tick(&mut registry.borrow_mut());
+
+        {
+            let registry = registry.borrow();
+            assert_eq!(
+                registry
+                    .get_component::<Transform>(projectile)
+                    .expect("projectile keeps its launch transform")
+                    .position,
+                Vec3::ZERO,
+            );
+            assert!(
+                !registry
+                    .get_component::<ProjectileComponent>(projectile)
+                    .expect("projectile keeps flight state")
+                    .spawned,
+                "the fire-tick grace closes after all projectile producers",
+            );
+        }
+
+        advance_once(&registry, 1.0);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<Transform>(projectile)
+                .expect("projectile begins flight on the next tick")
+                .position,
+            Vec3::NEG_Z,
+        );
     }
 
     fn impact_light() -> ProjectileImpactLight {

@@ -342,8 +342,10 @@ impl ScriptRuntime {
     ///
     /// Latest successful results replace the descriptor registry snapshot,
     /// update the active dependency classifier, and apply the precomputed live
-    /// refresh plan while the entity registry is mutably owned. Stale or
-    /// failed results preserve the previous committed snapshot.
+    /// refresh plan while the entity registry is mutably owned. Faction names
+    /// and order stay fixed so live numeric indices never change identity;
+    /// relationship overrides may still refresh. Stale, incompatible, or failed
+    /// results preserve the previous committed snapshot.
     pub fn commit_staged_manifest_result(
         &mut self,
         result: &StagedManifestBuildResult,
@@ -457,6 +459,23 @@ impl ScriptRuntime {
                     };
                 }
             };
+
+            let faction_indices_stay_stable = {
+                let data_registry = ctx.data_registry.borrow();
+                data_registry.factions.descriptors() == next_factions.descriptors()
+            };
+            if !faction_indices_stay_stable {
+                let reason = "staged faction registry change rejected: faction declarations must keep the committed names and order for the live session; restart the session to apply faction additions, removals, or reordering"
+                    .to_string();
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
+            }
 
             if let Err(reason) = super::types::resolve_entity_faction_indices(
                 &next_factions,
@@ -786,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn staged_commit_replaces_factions_and_resolves_entity_storage_indices() {
+    fn staged_commit_keeps_faction_indices_stable_and_resolves_entity_storage_indices() {
         let mod_root = temp_mod_root("faction_commit");
         fs::write(
             mod_root.join("start-script.js"),
@@ -796,6 +815,9 @@ mod tests {
                     id: "factions",
                     version: "1",
                     factions: [{ name: "cabal" }, { name: "resistance" }],
+                    sentiment: [
+                        { fromFaction: "cabal", toFaction: "resistance", sentiment: 0.25, tolerance: 4 },
+                    ],
                     entities: [
                         { canonicalName: "cabal_grunt", components: { faction: "cabal" } },
                         { canonicalName: "resistance_guard", components: { faction: "resistance" } },
@@ -811,6 +833,17 @@ mod tests {
         );
 
         let ctx = ScriptCtx::new();
+        ctx.data_registry.borrow_mut().replace_factions(
+            crate::data_registry::FactionRegistry::from_descriptors(vec![
+                crate::data_registry::FactionDescriptor {
+                    name: "cabal".to_string(),
+                },
+                crate::data_registry::FactionDescriptor {
+                    name: "resistance".to_string(),
+                },
+            ])
+            .expect("startup faction snapshot is valid"),
+        );
         let primitive_registry = PrimitiveRegistry::new();
         let mut runtime =
             ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
@@ -829,8 +862,75 @@ mod tests {
         let registry = ctx.data_registry.borrow();
         assert_eq!(registry.factions.index_for_name("cabal"), Some(2.0));
         assert_eq!(registry.factions.index_for_name("resistance"), Some(3.0));
+        assert!((registry.factions.sentiment(2.0, 3.0) - 0.25).abs() <= f32::EPSILON);
         assert_eq!(registry.entities[0].faction, Some(2.0));
         assert_eq!(registry.entities[1].faction, Some(3.0));
+
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
+    }
+
+    #[test]
+    fn staged_commit_rejects_reordered_factions_before_live_registry_mutation() {
+        let mod_root = temp_mod_root("faction_reorder");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "Factions",
+                    id: "factions",
+                    version: "1",
+                    factions: [{ name: "resistance" }, { name: "cabal" }],
+                    entities: [
+                        { canonicalName: "cabal_grunt", components: { faction: "cabal" } },
+                    ],
+                };
+            "#,
+        )
+        .expect("reordered staged faction manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(matches!(result.status, StagedManifestBuildStatus::Built(_)));
+
+        let ctx = ScriptCtx::new();
+        let committed_factions = crate::data_registry::FactionRegistry::from_descriptors(vec![
+            crate::data_registry::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            crate::data_registry::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("startup faction snapshot is valid");
+        let mut committed_descriptor = descriptor("cabal_grunt", None, None);
+        committed_descriptor.faction = Some(2.0);
+        {
+            let mut data_registry = ctx.data_registry.borrow_mut();
+            data_registry.replace_factions(committed_factions);
+            data_registry.replace_entity_types(vec![committed_descriptor.clone()]);
+        }
+
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        let outcome = runtime.commit_staged_manifest_result(
+            &result,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = outcome else {
+            panic!("reordered faction declarations must reject the staged commit");
+        };
+        assert!(reason.contains("keep the committed names and order"));
+
+        let data_registry = ctx.data_registry.borrow();
+        assert_eq!(data_registry.factions.index_for_name("cabal"), Some(2.0));
+        assert_eq!(
+            data_registry.factions.index_for_name("resistance"),
+            Some(3.0)
+        );
+        assert_eq!(data_registry.entities, vec![committed_descriptor]);
 
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }

@@ -1986,6 +1986,10 @@ declare module "postretro" {
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    readonly damageDealtToMe: RuntimeGuardNode;
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
   }
 
   /** Pre-wrapped leaves for graph candidate eligibility. */

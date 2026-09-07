@@ -469,6 +469,13 @@ pub fn apply_damage_with_context(
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
         brain.time_since_damage_ms = 0.0;
+        // A concrete attacker is valuable even when it lacks a transform: the
+        // per-candidate ledger is identity-based, while bearing/last-known
+        // position below deliberately require spatial provenance. Contextless
+        // damage still resets generic recency but creates no ledger entry.
+        if let Some(attacker) = context.attacker {
+            brain.record_attacker_damage(attacker, payload.amount);
+        }
         // Bearing is meaningful only for this hit. A contextless hit must not
         // make an older directional stimulus look recent again.
         brain.damage_bearing = 0.0;

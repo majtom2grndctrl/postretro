@@ -22,14 +22,28 @@ pub const CANDIDATE_DIED_INPUT: &str = "@candidate.died";
 /// allied. This is append-only slot 4; bound candidate programs retain index
 /// handles rather than names at runtime.
 pub const CANDIDATE_SENTIMENT_INPUT: &str = "@candidate.sentiment";
+/// Accumulated positive damage the offered candidate has dealt to the
+/// evaluating enemy, or zero when it is absent from that enemy's bounded
+/// attacker ledger. This is append-only slot 5.
+pub const CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT: &str = "@candidate.damageDealtToMe";
+/// Milliseconds since the offered candidate last damaged the evaluating enemy,
+/// or the shared brain no-hit sentinel when it is absent from that enemy's
+/// bounded attacker ledger. This is append-only slot 6.
+pub const CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT: &str =
+    "@candidate.timeSinceDamageFromCandidate";
 
 /// Fixed candidate facts in runtime read-handle order. Append, never reorder.
-pub const CANDIDATE_INPUTS: [(&str, IrType); 5] = [
+pub const CANDIDATE_INPUTS: [(&str, IrType); 7] = [
     (CANDIDATE_DISTANCE_INPUT, IrType::Number),
     (CANDIDATE_HEALTH_INPUT, IrType::Number),
     (CANDIDATE_MAX_HEALTH_INPUT, IrType::Number),
     (CANDIDATE_DIED_INPUT, IrType::Bool),
     (CANDIDATE_SENTIMENT_INPUT, IrType::Number),
+    (CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, IrType::Number),
+    (
+        CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+        IrType::Number,
+    ),
 ];
 
 /// A fixed candidate fact's runtime slot and projected type.
@@ -116,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_input_slots_keep_the_existing_handles_and_append_sentiment() {
+    fn candidate_input_slots_keep_existing_handles_and_append_damage_facts() {
         assert_eq!(
             CANDIDATE_INPUTS[0],
             (CANDIDATE_DISTANCE_INPUT, IrType::Number)
@@ -139,6 +153,29 @@ mod tests {
                 .unwrap()
                 .index,
             4
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[5],
+            (CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)
+                .unwrap()
+                .index,
+            5
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[6],
+            (
+                CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+                IrType::Number
+            )
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT)
+                .unwrap()
+                .index,
+            6
         );
     }
 

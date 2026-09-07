@@ -111,6 +111,12 @@ export interface CandidateInputs {
   /** Directional sentiment from the evaluating faction toward this candidate:
    * negative hostile, zero neutral, positive allied (number). */
   readonly sentiment: RuntimeGuardNode;
+  /** Accumulated positive damage this candidate has dealt to the evaluating
+   * enemy, or zero when it has not damaged that enemy (number). */
+  readonly damageDealtToMe: RuntimeGuardNode;
+  /** Milliseconds since this candidate last damaged the evaluating enemy, or
+   * `1e9` when it has not damaged that enemy (number). */
+  readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
 }
 
 /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -144,6 +150,8 @@ export const candidate: CandidateInputs = Object.freeze({
   maxHealth: input("@candidate.maxHealth"),
   died: input("@candidate.died"),
   sentiment: input("@candidate.sentiment"),
+  damageDealtToMe: input("@candidate.damageDealtToMe"),
+  timeSinceDamageFromCandidate: input("@candidate.timeSinceDamageFromCandidate"),
 });
 
 /** Read a per-entity state field as a guard input: `state("staggered")` is the

@@ -31,6 +31,21 @@ use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 
 use super::mesh::MeshComponent;
 
+/// Maximum number of distinct damagers remembered by one brain. Entries age to
+/// the shared damage-recency sentinel and remain until this bounded ledger must
+/// make room for another attacker.
+pub const RECENT_ATTACKER_LEDGER_CAPACITY: usize = 8;
+
+/// One per-attacker damage record retained on a brain. This is simulation data,
+/// not an authored relationship: the health chokepoint writes it and candidate
+/// scope projects it for the exact offered entity.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RecentAttacker {
+    pub attacker: EntityId,
+    pub accumulated_damage: f32,
+    pub time_since_damage_ms: f32,
+}
+
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
 /// sits in. Seeded at spawn in the graph's `initial` state with every timer at
 /// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
@@ -53,6 +68,12 @@ pub struct BrainComponent {
     /// cannot make older sight memory or bearing look spatially sourced.
     #[serde(default)]
     pub damage_source_known: bool,
+    /// Bounded history of distinct entities that have damaged this brain. The
+    /// entries use the same saturating recency clock as `time_since_damage_ms`;
+    /// expiration never removes one, only capacity eviction does. Old serialized
+    /// brains predate this field and begin with no remembered attackers.
+    #[serde(default = "default_recent_attackers")]
+    pub recent_attackers: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
     /// World position of the most recent visible target or damage attacker.
     /// This host-only memory lets authored behavior choose how to investigate
     /// a stimulus without making its source a selectable target.
@@ -191,6 +212,7 @@ impl BrainComponent {
             time_since_damage_ms: default_time_since_damage_ms(),
             damage_bearing: 0.0,
             damage_source_known: false,
+            recent_attackers: default_recent_attackers(),
             last_known_target_pos: None,
             time_since_target_visible: default_time_since_target_visible(),
             home_anchor: Vec3::ZERO,
@@ -283,6 +305,74 @@ impl BrainComponent {
         for timer in self.time_in_activity_ms[..active_depth].iter_mut() {
             *timer += dt_ms;
         }
+    }
+
+    /// Record positive finite damage from one concrete attacker. Repeated hits
+    /// retain the attacker, accumulate its damage, and reset that attacker's
+    /// recency. At capacity, preserve the more recent and more damaging entries
+    /// first; a final entity-id tie keeps replacement deterministic.
+    pub fn record_attacker_damage(&mut self, attacker: EntityId, damage: f32) {
+        if !damage.is_finite() || damage <= 0.0 {
+            return;
+        }
+
+        if let Some(entry) = self
+            .recent_attackers
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.attacker == attacker)
+        {
+            entry.accumulated_damage = (entry.accumulated_damage.max(0.0) + damage).min(f32::MAX);
+            entry.time_since_damage_ms = 0.0;
+            return;
+        }
+
+        let record = RecentAttacker {
+            attacker,
+            accumulated_damage: damage,
+            time_since_damage_ms: 0.0,
+        };
+        if let Some(empty) = self
+            .recent_attackers
+            .iter_mut()
+            .find(|entry| entry.is_none())
+        {
+            *empty = Some(record);
+            return;
+        }
+
+        let mut eviction_index = 0;
+        for index in 1..RECENT_ATTACKER_LEDGER_CAPACITY {
+            let candidate = self.recent_attackers[index]
+                .expect("a full recent-attacker ledger contains every slot");
+            let current = self.recent_attackers[eviction_index]
+                .expect("a full recent-attacker ledger contains every slot");
+            if evicts_before(candidate, current) {
+                eviction_index = index;
+            }
+        }
+        self.recent_attackers[eviction_index] = Some(record);
+    }
+
+    /// Advance every retained attacker on the exact same saturating clock as
+    /// `time_since_damage_ms`. Call this once upstream of candidate selection:
+    /// candidate scope reads the ledger before the brain fact's established
+    /// downstream aging site, so moving it there would introduce a one-tick
+    /// skew between the two facts.
+    pub fn age_recent_attackers(&mut self, dt_ms: f32) {
+        for entry in self.recent_attackers.iter_mut().flatten() {
+            entry.time_since_damage_ms =
+                (entry.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+        }
+    }
+
+    /// Lookup used by the allocation-free candidate refresh path.
+    pub fn recent_attacker(&self, attacker: EntityId) -> Option<RecentAttacker> {
+        self.recent_attackers
+            .iter()
+            .flatten()
+            .copied()
+            .find(|entry| entry.attacker == attacker)
     }
 
     /// Record one successful edge-triggered attack fire for every active
@@ -485,6 +575,27 @@ impl BrainComponent {
     }
 }
 
+/// Whether `candidate` should be evicted before `current`. Older damage is
+/// less valuable; equal-age entries retain higher accumulated damage; only a
+/// complete tie reaches the stable entity-id decision.
+fn evicts_before(candidate: RecentAttacker, current: RecentAttacker) -> bool {
+    match candidate
+        .time_since_damage_ms
+        .total_cmp(&current.time_since_damage_ms)
+    {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match candidate
+            .accumulated_damage
+            .total_cmp(&current.accumulated_damage)
+        {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => candidate.attacker < current.attacker,
+        },
+    }
+}
+
 fn nested_graph(activity: &BehaviorActivityDescriptor) -> Option<&BehaviorGraphEnvelope> {
     activity.layers.values().find_map(|layer| match layer {
         BehaviorLayerDescriptor::Graph(envelope) => Some(envelope),
@@ -541,6 +652,10 @@ const fn default_aggro_armed() -> bool {
 
 const fn default_time_since_damage_ms() -> f32 {
     BRAIN_NO_TARGET_DISTANCE
+}
+
+const fn default_recent_attackers() -> [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] {
+    [None; RECENT_ATTACKER_LEDGER_CAPACITY]
 }
 
 const fn default_time_since_target_visible() -> f32 {
@@ -910,6 +1025,89 @@ mod tests {
     }
 
     #[test]
+    fn recent_attacker_ledger_accumulates_ages_and_evicts_by_recency_then_damage() {
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        let repeated = EntityId::from_raw(1);
+        brain.record_attacker_damage(repeated, 2.0);
+        brain.age_recent_attackers(25.0);
+        brain.record_attacker_damage(repeated, 3.0);
+        let repeated_record = brain
+            .recent_attacker(repeated)
+            .expect("attacker is retained");
+        assert_eq!(repeated_record.accumulated_damage, 5.0);
+        assert_eq!(repeated_record.time_since_damage_ms, 0.0);
+
+        for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
+            brain.recent_attackers[index] = Some(RecentAttacker {
+                attacker: EntityId::from_raw((index + 10) as u32),
+                accumulated_damage: 10.0,
+                time_since_damage_ms: 50.0,
+            });
+        }
+        brain.recent_attackers[0] = Some(RecentAttacker {
+            attacker: EntityId::from_raw(2),
+            accumulated_damage: 1.0,
+            time_since_damage_ms: 100.0,
+        });
+        brain.recent_attackers[1] = Some(RecentAttacker {
+            attacker: EntityId::from_raw(3),
+            accumulated_damage: 9.0,
+            time_since_damage_ms: 100.0,
+        });
+        let newcomer = EntityId::from_raw(99);
+        brain.record_attacker_damage(newcomer, 4.0);
+
+        assert!(brain.recent_attacker(EntityId::from_raw(2)).is_none());
+        assert_eq!(
+            brain
+                .recent_attacker(EntityId::from_raw(3))
+                .expect("higher-damage equal-age record is retained")
+                .accumulated_damage,
+            9.0
+        );
+        assert_eq!(
+            brain
+                .recent_attacker(newcomer)
+                .expect("new attacker replaces the eviction candidate")
+                .time_since_damage_ms,
+            0.0
+        );
+
+        for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
+            brain.recent_attackers[index] = Some(RecentAttacker {
+                attacker: EntityId::from_raw((index + 20) as u32),
+                accumulated_damage: 1.0,
+                time_since_damage_ms: 100.0,
+            });
+        }
+        brain.record_attacker_damage(EntityId::from_raw(99), 1.0);
+        assert!(
+            brain.recent_attacker(EntityId::from_raw(20)).is_none(),
+            "an otherwise complete eviction tie resolves by entity id"
+        );
+
+        let saturated = brain
+            .recent_attackers
+            .iter_mut()
+            .flatten()
+            .next()
+            .expect("ledger remains populated");
+        saturated.time_since_damage_ms = BRAIN_NO_TARGET_DISTANCE - 1.0;
+        brain.age_recent_attackers(16.0);
+        assert_eq!(
+            brain
+                .recent_attackers
+                .iter()
+                .flatten()
+                .next()
+                .expect("ledger retains saturated entry")
+                .time_since_damage_ms,
+            BRAIN_NO_TARGET_DISTANCE,
+            "recency saturates but never removes a retained attacker"
+        );
+    }
+
+    #[test]
     fn deserializing_a_pre_anchor_brain_defaults_to_the_origin() {
         let brain = BrainComponent::from_graph(&authored_graph());
         let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
@@ -963,6 +1161,20 @@ mod tests {
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-damage-source brain deserializes");
         assert!(!restored.damage_source_known);
+    }
+
+    #[test]
+    fn deserializing_a_pre_attacker_ledger_brain_defaults_to_no_attackers() {
+        let brain = BrainComponent::from_graph(&authored_graph());
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("recent_attackers");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-attacker-ledger brain deserializes");
+        assert!(restored.recent_attackers.iter().all(Option::is_none));
     }
 
     #[test]
@@ -1349,6 +1561,10 @@ mod tests {
         assert_eq!(brain.last_known_target_pos, Some(remembered));
         assert_eq!(brain.damage_bearing, 0.0);
         assert!(!brain.damage_source_known);
+        assert!(
+            brain.recent_attackers.iter().all(Option::is_none),
+            "contextless damage updates generic recency but has no attacker identity to retain"
+        );
 
         let mut damage_context =
             DamageContext::new("test.no-transform-attacker", DamageProducer::InTick);
@@ -1382,6 +1598,13 @@ mod tests {
                 .damage_source_known,
             "an attacker without a transform is not a spatial source"
         );
+        let retained = registry
+            .get_component::<BrainComponent>(brain_entity)
+            .expect("brain remains attached")
+            .recent_attacker(attacker_without_transform)
+            .expect("identity-based ledger retains a non-spatial attacker");
+        assert_eq!(retained.accumulated_damage, 1.0);
+        assert_eq!(retained.time_since_damage_ms, 0.0);
     }
 
     // Regression: a contextless hit made an older directional hit look recent.

@@ -511,6 +511,7 @@ mod tests {
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(canonical_name.to_string()),
             inventory: None,
             light: None,

@@ -1348,6 +1348,7 @@ mod tests {
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: inventory_weapon.map(|name| InventoryDescriptor {
                 loadout: vec![name.to_string()],

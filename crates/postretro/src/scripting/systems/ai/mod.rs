@@ -90,6 +90,14 @@ const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 /// floor. Guards consume the durable `@brain.targetHostile` fact instead of
 /// binding directly to this storage detail.
 pub(crate) const FACTION_STATE_FIELD: &str = "faction";
+/// Optional per-archetype retaliation tolerance. This engine-owned storage is
+/// intentionally not an authored guard vocabulary; candidate guards consume
+/// only the resolved `@candidate.tolerance` fact.
+pub(crate) const ARCHETYPE_TOLERANCE_STATE_FIELD: &str = "archetype_tolerance";
+/// Compatibility tolerance for a relationship without authored pair or
+/// archetype data. No finite normal damage total can exceed it, so retaliation
+/// remains inert until content deliberately lowers a tolerance.
+pub(crate) const DEFAULT_RETALIATION_TOLERANCE: f32 = f32::MAX;
 /// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
 /// the emergent state field absent and therefore read as faction zero.
 #[cfg(test)]

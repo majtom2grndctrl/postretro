@@ -285,6 +285,7 @@ mod tests {
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("fixture-entity".to_string()),
             inventory: None,
             light: None,

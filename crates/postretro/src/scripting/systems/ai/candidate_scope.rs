@@ -11,10 +11,10 @@ use postretro_foundation::{
 #[cfg(test)]
 use postretro_foundation::{
     CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_SENTIMENT_INPUT,
-    CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+    CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CANDIDATE_TOLERANCE_INPUT,
 };
 
-use super::FACTION_STATE_FIELD;
+use super::{ARCHETYPE_TOLERANCE_STATE_FIELD, DEFAULT_RETALIATION_TOLERANCE, FACTION_STATE_FIELD};
 
 /// Read handle for a fixed candidate fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +43,7 @@ impl CandidateScope {
         &mut self,
         registry: &EntityRegistry,
         factions: &FactionRegistry,
+        evaluating_enemy: Option<EntityId>,
         evaluating_faction: f32,
         recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
         candidate: EntityId,
@@ -52,6 +53,15 @@ impl CandidateScope {
         let candidate_faction = registry
             .get_component::<EntityStateComponent>(candidate)
             .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
+        let archetype_tolerance = evaluating_enemy.and_then(|enemy| {
+            registry
+                .get_component::<EntityStateComponent>(enemy)
+                .ok()
+                .and_then(|state| state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD))
+        });
+        let tolerance = archetype_tolerance
+            .or_else(|| factions.tolerance(evaluating_faction, candidate_faction))
+            .unwrap_or(DEFAULT_RETALIATION_TOLERANCE);
         let attacker_record = recent_attackers
             .iter()
             .flatten()
@@ -67,6 +77,7 @@ impl CandidateScope {
                 attacker_record
                     .map_or(BRAIN_NO_TARGET_DISTANCE, |entry| entry.time_since_damage_ms),
             ),
+            IrValue::Number(tolerance),
         ];
     }
 }
@@ -135,6 +146,7 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
+            None,
             1.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             candidate,
@@ -164,6 +176,7 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
+            None,
             1.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             candidate,
@@ -216,6 +229,7 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
+            None,
             2.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             candidate,
@@ -230,6 +244,7 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
+            None,
             3.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             candidate,
@@ -243,12 +258,85 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
+            None,
             3.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             candidate,
             1.0,
         );
         assert_eq!(scope.read(&handle), IrValue::Number(0.0));
+    }
+
+    #[test]
+    fn refresh_resolves_archetype_tolerance_then_pair_then_max_default() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 12.0,
+        }])
+        .expect("directed pair resolves");
+        let mut registry = EntityRegistry::new();
+        let override_enemy = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(override_enemy)
+            .expect("every entity has state")
+            .set(ARCHETYPE_TOLERANCE_STATE_FIELD, 3.5);
+        let pair_enemy = registry.spawn(Transform::default());
+        let paired_candidate = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(paired_candidate)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let unpaired_candidate = registry.spawn(Transform::default());
+        let mut scope = CandidateScope::for_validation();
+        let tolerance = scope
+            .resolve_input(CANDIDATE_TOLERANCE_INPUT)
+            .expect("tolerance input resolves at slot 7")
+            .handle;
+        let empty_ledger = [None; RECENT_ATTACKER_LEDGER_CAPACITY];
+
+        scope.refresh(
+            &registry,
+            &factions,
+            Some(override_enemy),
+            2.0,
+            &empty_ledger,
+            paired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), 3.5);
+
+        scope.refresh(
+            &registry,
+            &factions,
+            Some(pair_enemy),
+            2.0,
+            &empty_ledger,
+            paired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), 12.0);
+
+        scope.refresh(
+            &registry,
+            &factions,
+            Some(pair_enemy),
+            2.0,
+            &empty_ledger,
+            unpaired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), DEFAULT_RETALIATION_TOLERANCE);
     }
 
     #[test]
@@ -279,15 +367,15 @@ mod tests {
             .expect("recency input resolves")
             .handle;
 
-        scope.refresh(&registry, &factions, 1.0, &ledger, first, 4.0);
+        scope.refresh(&registry, &factions, None, 1.0, &ledger, first, 4.0);
         assert_eq!(scope.read(&damage), IrValue::Number(7.5));
         assert_eq!(scope.read(&recency), IrValue::Number(32.0));
 
-        scope.refresh(&registry, &factions, 1.0, &ledger, second, 8.0);
+        scope.refresh(&registry, &factions, None, 1.0, &ledger, second, 8.0);
         assert_eq!(scope.read(&damage), IrValue::Number(3.0));
         assert_eq!(scope.read(&recency), IrValue::Number(64.0));
 
-        scope.refresh(&registry, &factions, 1.0, &ledger, non_attacker, 12.0);
+        scope.refresh(&registry, &factions, None, 1.0, &ledger, non_attacker, 12.0);
         assert_eq!(scope.read(&damage), IrValue::Number(0.0));
         assert_eq!(
             scope.read(&recency),
@@ -325,11 +413,35 @@ mod tests {
             &scope,
         )
         .expect("candidate filter binds");
-        let factions = FactionRegistry::default();
+        registry
+            .entity_state_mut(first)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 2.0);
+        registry
+            .entity_state_mut(second)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 6.0,
+        }])
+        .expect("directed pair resolves");
         scope.refresh(
             &registry,
             &factions,
-            1.0,
+            Some(first),
+            2.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             first,
             5.0,
@@ -340,7 +452,8 @@ mod tests {
         scope.refresh(
             &registry,
             &factions,
-            1.0,
+            Some(first),
+            2.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
             second,
             8.0,
@@ -352,5 +465,16 @@ mod tests {
             "candidate refresh + eval allocates"
         );
         assert_eq!(value, IrValue::Bool(true));
+    }
+
+    fn assert_number(value: IrValue, expected: f32) {
+        let IrValue::Number(actual) = value else {
+            panic!("expected number {expected}, got {value:?}");
+        };
+        assert!(
+            (actual - expected).abs() <= f32::EPSILON,
+            "expected {expected} ± {}, got {actual}",
+            f32::EPSILON
+        );
     }
 }

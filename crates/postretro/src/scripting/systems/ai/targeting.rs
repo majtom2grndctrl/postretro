@@ -170,6 +170,7 @@ pub(super) fn select_target(
         offers,
         registry,
         factions,
+        None,
         evaluating_faction,
         candidate_filter,
         candidate_scope,
@@ -188,6 +189,7 @@ pub(super) fn select_target_with_attacker_ledger(
     offers: &TargetOffers,
     registry: &EntityRegistry,
     factions: &FactionRegistry,
+    evaluating_enemy: Option<EntityId>,
     evaluating_faction: f32,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
@@ -205,6 +207,7 @@ pub(super) fn select_target_with_attacker_ledger(
                 candidate_scope.refresh(
                     registry,
                     factions,
+                    evaluating_enemy,
                     evaluating_faction,
                     recent_attackers,
                     candidate.target.entity,

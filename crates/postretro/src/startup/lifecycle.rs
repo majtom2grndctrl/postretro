@@ -2297,6 +2297,7 @@ mod tests {
     fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,

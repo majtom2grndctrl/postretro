@@ -2692,6 +2692,7 @@ mod tests {
         };
         let descriptor = EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("live_ion_rifle".to_string()),
             inventory: None,
             light: None,
@@ -3268,6 +3269,7 @@ mod tests {
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("reference_pistol".to_string()),
             inventory: None,
             light: None,
@@ -4829,6 +4831,7 @@ mod tests {
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("player".to_string()),
             inventory: None,
             light: None,

@@ -29,8 +29,9 @@ pub use brain::{
 pub use candidate::{
     CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT,
     CANDIDATE_HEALTH_INPUT, CANDIDATE_INPUT_PREFIX, CANDIDATE_INPUTS, CANDIDATE_MAX_HEALTH_INPUT,
-    CANDIDATE_SENTIMENT_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CandidateInputRef,
-    CandidateValidationScope, bind_candidate_filter, resolve_candidate_input,
+    CANDIDATE_SENTIMENT_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+    CANDIDATE_TOLERANCE_INPUT, CandidateInputRef, CandidateValidationScope, bind_candidate_filter,
+    resolve_candidate_input,
 };
 pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams};

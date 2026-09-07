@@ -83,6 +83,7 @@ BrainSdk.candidate = table.freeze({
   sentiment = input("@candidate.sentiment"),
   damageDealtToMe = input("@candidate.damageDealtToMe"),
   timeSinceDamageFromCandidate = input("@candidate.timeSinceDamageFromCandidate"),
+  tolerance = input("@candidate.tolerance"),
 })
 
 --- Read a per-entity state field as a guard input: `state("staggered")` is the

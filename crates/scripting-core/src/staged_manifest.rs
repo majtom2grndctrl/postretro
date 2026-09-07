@@ -1311,6 +1311,49 @@ mod tests {
     }
 
     #[test]
+    fn staged_manifest_carries_archetype_tolerance_in_both_runtimes() {
+        for (runtime, entry, source) in [
+            (
+                "QuickJS",
+                "start-script.js",
+                r#"
+                    globalThis.__postretroModManifest = {
+                        name: "Tolerance", id: "tolerance", version: "1",
+                        entities: [{ canonicalName: "low_tolerance_grunt", components: { tolerance: 2.5 } }],
+                    };
+                "#,
+            ),
+            (
+                "Luau",
+                "start-script.luau",
+                r#"
+                    return {
+                        name = "Tolerance", id = "tolerance", version = "1",
+                        entities = {{ canonicalName = "low_tolerance_grunt", components = { tolerance = 2.5 } }},
+                    }
+                "#,
+            ),
+        ] {
+            let dir = temp_mod_root(&format!("archetype_tolerance_{runtime}"));
+            fs::write(dir.join(entry), source).expect("tolerance fixture should be written");
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!(
+                    "expected {runtime} tolerance manifest to build: {:?}",
+                    result.diagnostics
+                );
+            };
+            let tolerance = manifest.entities[0]
+                .tolerance
+                .expect("archetype tolerance survives manifest parsing");
+            assert!(
+                (tolerance - 2.5).abs() <= f32::EPSILON,
+                "expected 2.5, got {tolerance}"
+            );
+        }
+    }
+
+    #[test]
     fn staged_manifest_rejects_undeclared_sentiment_factions_in_both_runtimes() {
         for (runtime, entry, source) in [
             (

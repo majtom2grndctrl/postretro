@@ -31,9 +31,12 @@ pub const CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT: &str = "@candidate.damageDealtToMe
 /// bounded attacker ledger. This is append-only slot 6.
 pub const CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT: &str =
     "@candidate.timeSinceDamageFromCandidate";
+/// Retaliation tolerance resolved from the evaluating enemy's archetype
+/// override or directional faction relationship. This is append-only slot 7.
+pub const CANDIDATE_TOLERANCE_INPUT: &str = "@candidate.tolerance";
 
 /// Fixed candidate facts in runtime read-handle order. Append, never reorder.
-pub const CANDIDATE_INPUTS: [(&str, IrType); 7] = [
+pub const CANDIDATE_INPUTS: [(&str, IrType); 8] = [
     (CANDIDATE_DISTANCE_INPUT, IrType::Number),
     (CANDIDATE_HEALTH_INPUT, IrType::Number),
     (CANDIDATE_MAX_HEALTH_INPUT, IrType::Number),
@@ -44,6 +47,7 @@ pub const CANDIDATE_INPUTS: [(&str, IrType); 7] = [
         CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
         IrType::Number,
     ),
+    (CANDIDATE_TOLERANCE_INPUT, IrType::Number),
 ];
 
 /// A fixed candidate fact's runtime slot and projected type.
@@ -130,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_input_slots_keep_existing_handles_and_append_damage_facts() {
+    fn candidate_input_slots_keep_existing_handles_and_append_relationship_facts() {
         assert_eq!(
             CANDIDATE_INPUTS[0],
             (CANDIDATE_DISTANCE_INPUT, IrType::Number)
@@ -176,6 +180,16 @@ mod tests {
                 .unwrap()
                 .index,
             6
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[7],
+            (CANDIDATE_TOLERANCE_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_TOLERANCE_INPUT)
+                .unwrap()
+                .index,
+            7
         );
     }
 

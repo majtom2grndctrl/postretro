@@ -175,6 +175,43 @@ fn projectile_presentation_asset_paths(
     Some((body, trail))
 }
 
+/// Faction and archetype-tolerance values are seeded into per-entity state when
+/// a brain materializes. There is no runtime membership-change path, so a staged
+/// descriptor commit cannot change those seeds while a matching brain is live.
+#[cfg(debug_assertions)]
+fn validate_live_brain_faction_seed_compatibility(
+    old_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
+    next_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
+    registry: &crate::registry::EntityRegistry,
+) -> Result<(), String> {
+    for (entity, _) in registry.iter_with_kind(crate::registry::ComponentKind::Brain) {
+        let Ok(provenance) =
+            registry.get_component::<crate::provenance::DescriptorProvenance>(entity)
+        else {
+            continue;
+        };
+        let name = provenance.canonical_name.as_str();
+        let old = old_descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name));
+        let next = next_descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name));
+
+        match (old, next) {
+            (Some(old), Some(next))
+                if old.faction == next.faction && old.tolerance == next.tolerance => {}
+            (None, None) => {}
+            _ => {
+                return Err(format!(
+                    "staged descriptor change rejected for live brain `{name}` (entity {entity}): components.faction and components.tolerance are fixed until the live entity is gone; restart or reload the level to apply membership or archetype-tolerance changes"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl ScriptRuntime {
     /// Construction is side-effect-free with respect to the working tree.
     ///
@@ -497,6 +534,21 @@ impl ScriptRuntime {
             // the registry replace observe the same deduped snapshot.
             let mut next_descriptors =
                 crate::data_registry::DataRegistry::dedup_entity_type_snapshot(next_descriptors);
+            let old_descriptors = ctx.data_registry.borrow().entities.clone();
+            if let Err(reason) = validate_live_brain_faction_seed_compatibility(
+                &old_descriptors,
+                &next_descriptors,
+                &ctx.registry.borrow(),
+            ) {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
+            }
             let next_global_reactions =
                 crate::reaction_dispatch::validate_scoped_sequence_primitives(
                     next_global_reactions,
@@ -554,7 +606,6 @@ impl ScriptRuntime {
                 }
             };
 
-            let old_descriptors = ctx.data_registry.borrow().entities.clone();
             let incoming_descriptors = next_descriptors.clone();
             if defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
                 // Preserve the unmodified, latest snapshot. A subsequent staged
@@ -773,11 +824,12 @@ mod tests {
     use postretro_test_log_capture::LogCapture;
 
     use super::*;
+    use crate::components::brain::BrainComponent;
     use crate::components::health::HealthComponent;
     use crate::data_descriptors::{
-        EntityTypeDescriptor, FireMode, HealthDescriptor, InventoryDescriptor, MeshDescriptor,
-        ProjectileBodyVisual, ProjectileDescriptor, ProjectileTrailVisual, ProjectileVisual,
-        ResolutionMode, WeaponDescriptor,
+        BehaviorGraphDescriptor, EntityTypeDescriptor, FireMode, HealthDescriptor,
+        InventoryDescriptor, MeshDescriptor, ProjectileBodyVisual, ProjectileDescriptor,
+        ProjectileTrailVisual, ProjectileVisual, ResolutionMode, WeaponDescriptor,
     };
     use crate::provenance::{DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath};
     use crate::registry::{ComponentKind, Transform};
@@ -931,6 +983,128 @@ mod tests {
             Some(3.0)
         );
         assert_eq!(data_registry.entities, vec![committed_descriptor]);
+
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
+    }
+
+    #[test]
+    fn staged_commit_rejects_live_brain_faction_and_tolerance_reseed_before_mutation() {
+        // Regression: staged descriptors and relationships could commit while a
+        // live brain retained the old descriptor-seeded faction and tolerance.
+        let mod_root = temp_mod_root("live_brain_faction_seed");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "Factions",
+                    id: "factions",
+                    version: "1",
+                    factions: [{ name: "cabal" }, { name: "resistance" }],
+                    sentiment: [
+                        { fromFaction: "cabal", toFaction: "resistance", sentiment: 0.75, tolerance: 1 },
+                    ],
+                    entities: [{
+                        canonicalName: "cabal_grunt",
+                        components: {
+                            faction: "resistance",
+                            tolerance: 2,
+                            behavior: {
+                                initial: "idle",
+                                moveSpeed: 1,
+                                activities: { idle: { animation: "idle", motion: "hold" } },
+                                transitions: {},
+                            },
+                        },
+                    }],
+                };
+            "#,
+        )
+        .expect("staged faction manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        let StagedManifestBuildStatus::Built(manifest) = &result.status else {
+            panic!("live-brain fixture must build before commit: {result:?}");
+        };
+
+        let mut committed_descriptor = manifest.entities[0].clone();
+        committed_descriptor.faction = Some(2.0);
+        committed_descriptor.tolerance = Some(8.0);
+        let graph: BehaviorGraphDescriptor = committed_descriptor
+            .behavior
+            .clone()
+            .expect("fixture descriptor carries a brain graph");
+        let committed_factions = crate::data_registry::FactionRegistry::from_descriptors(vec![
+            crate::data_registry::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            crate::data_registry::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("startup faction snapshot is valid")
+        .with_sentiments([crate::data_registry::FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -0.5,
+            tolerance: 6.0,
+        }])
+        .expect("startup relationship snapshot is valid");
+
+        let ctx = ScriptCtx::new();
+        {
+            let mut data_registry = ctx.data_registry.borrow_mut();
+            data_registry.replace_factions(committed_factions);
+            data_registry.replace_entity_types(vec![committed_descriptor.clone()]);
+        }
+        let live_brain = {
+            let mut registry = ctx.registry.borrow_mut();
+            let entity = registry.spawn(Transform::default());
+            registry
+                .set_component(entity, BrainComponent::from_graph(&graph))
+                .unwrap();
+            registry
+                .set_component(
+                    entity,
+                    DescriptorProvenance {
+                        canonical_name: "cabal_grunt".to_string(),
+                        owned_components: BTreeSet::new(),
+                        map_overrides: BTreeSet::new(),
+                        spawn_path: DescriptorSpawnPath::MapPlacement,
+                    },
+                )
+                .unwrap();
+            let state = registry.entity_state_mut(entity).unwrap();
+            state.set("faction", 2.0);
+            state.set("archetype_tolerance", 8.0);
+            entity
+        };
+
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        let outcome = runtime.commit_staged_manifest_result(
+            &result,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = outcome else {
+            panic!("changing live brain faction seeds must reject the staged commit");
+        };
+        assert!(reason.contains("fixed until the live entity is gone"));
+
+        let data_registry = ctx.data_registry.borrow();
+        assert_eq!(data_registry.entities, vec![committed_descriptor]);
+        assert!((data_registry.factions.sentiment(2.0, 3.0) - -0.5).abs() <= f32::EPSILON);
+        assert_eq!(data_registry.factions.tolerance(2.0, 3.0), Some(6.0));
+        drop(data_registry);
+        let registry = ctx.registry.borrow();
+        let state = registry
+            .get_component::<crate::components::entity_state::EntityStateComponent>(live_brain)
+            .unwrap();
+        assert!((state.get("faction") - 2.0).abs() <= f32::EPSILON);
+        assert_eq!(state.get_opt("archetype_tolerance"), Some(8.0));
 
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }

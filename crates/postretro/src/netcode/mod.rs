@@ -1869,9 +1869,49 @@ pub(crate) fn host_flush_pending_hit_declarations(
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
 ) -> bool {
+    let ready = host_take_ready_hit_declarations(
+        command_queues,
+        open_shots,
+        pending_hit_declarations,
+        current_tick,
+    );
+    host_ingest_ready_hit_declarations(
+        server,
+        registry,
+        collision_world,
+        allocator,
+        owners,
+        open_shots,
+        ready,
+        &mut on_impact,
+        &mut on_projectile_contact,
+    )
+}
+
+pub(crate) fn host_take_ready_hit_declarations(
+    command_queues: &HostCommandQueues,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    current_tick: u32,
+) -> Vec<PendingHitDeclaration> {
     open_shots.prune_stale(current_tick);
+    pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_ingest_ready_hit_declarations(
+    server: &mut NetServer,
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    ready: Vec<PendingHitDeclaration>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_projectile_contact: impl FnMut(ShotId, Vec3),
+) -> bool {
     let mut accepted_any_hit = false;
-    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick) {
+    for pending in ready {
         let result = ingest_hit_declaration(
             HostHitIngestContext {
                 registry: &mut *registry,
@@ -2057,7 +2097,7 @@ fn valid_projectile_contact_point(shot: &AuthorizedShot, record: &wire::HitRecor
 }
 
 /// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
-/// same ingester through [`host_flush_pending_hit_declarations`]; this keeps tests from
+/// same ingester through [`host_ingest_ready_hit_declarations`]; this keeps tests from
 /// duplicating its authorization and damage rules just to observe the result.
 #[cfg(test)]
 pub(crate) fn ingest_hit_declaration_for_test(
@@ -3799,9 +3839,13 @@ mod tests {
         pending.push(7, declaration.clone());
 
         assert!(
-            pending
-                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
-                .is_empty(),
+            host_take_ready_hit_declarations(
+                &HostCommandQueues::new(),
+                &mut fixture.open_shots,
+                &mut pending,
+                100,
+            )
+            .is_empty(),
             "before FIRE authorization the declaration remains queued"
         );
         fixture.open_shots.record(
@@ -3815,7 +3859,12 @@ mod tests {
             ),
             7,
         );
-        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100);
+        let ready = host_take_ready_hit_declarations(
+            &HostCommandQueues::new(),
+            &mut fixture.open_shots,
+            &mut pending,
+            100,
+        );
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].client_id, 7);
 

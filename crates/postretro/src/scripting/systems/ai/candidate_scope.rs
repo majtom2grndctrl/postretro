@@ -30,6 +30,11 @@ pub(crate) struct CandidateFacts {
     pub(crate) accumulated_damage: f32,
     pub(crate) time_since_damage_ms: f32,
     pub(crate) tolerance: f32,
+    /// Distinguishes a real zero-damage ledger entry from the public
+    /// zero/sentinel defaults projected for a candidate that never attacked.
+    /// Engine retaliation admission requires provenance; authored candidate
+    /// facts deliberately keep their established defaults.
+    pub(crate) has_attacker_record: bool,
 }
 
 /// Stable evaluator inputs shared by every candidate in one acquisition scan.
@@ -136,6 +141,7 @@ impl CandidateScope {
             accumulated_damage,
             time_since_damage_ms,
             tolerance,
+            has_attacker_record: attacker_record.is_some(),
         }
     }
 }

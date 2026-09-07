@@ -404,6 +404,7 @@ pub(crate) fn simulate_tick(
         &touch_edges,
         &touch_edges,
         trigger_context,
+        |_, _| {},
         on_impact,
     )
 }
@@ -437,14 +438,15 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
+    mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
-    // (AI, local weapon fire, and host remote-hit ingest after simulate_tick),
-    // so every newly queued effect keeps its full authored delay until the
-    // next fixed tick, including in headless simulation.
+    // (ready remote-hit ingest, AI, and local weapon fire), so every newly
+    // queued effect keeps its full authored delay until the next fixed tick,
+    // including in headless simulation.
     {
         let mut registry = registry.borrow_mut();
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
@@ -637,6 +639,14 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
+    // Remote declarations already authorized at this tick's input boundary
+    // land beside authoritative projectile impacts, after deferred-effect aging
+    // but before AI snapshots combat perception. A declaration waiting on this
+    // tick's FIRE authorization remains queued for App's post-sim drain.
+    {
+        let mut registry = registry.borrow_mut();
+        ingest_ready_remote_hits(&mut registry, &mut on_impact);
+    }
     // Advance projectiles after this tick's movement settles but before AI
     // snapshots its facts. An impact therefore reaches the Health chokepoint
     // and attacker ledger in time for same-tick retaliation selection.
@@ -2116,6 +2126,7 @@ mod tests {
             &edges,
             &edges,
             None,
+            |_, _| {},
             |_| {},
         );
 
@@ -2244,6 +2255,7 @@ mod tests {
                 auto_close_timers: None,
                 use_edges: &use_edges,
             }),
+            |_, _| {},
             |_| {},
         );
 

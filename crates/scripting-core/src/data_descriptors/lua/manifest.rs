@@ -908,8 +908,8 @@ pub fn drain_factions_lua(
 }
 
 /// Luau twin of [`drain_faction_sentiments_js`]. It validates names while
-/// draining, commits the registry's resolved faction-index matrix, and keeps
-/// the source descriptors on the normalized manifest carrier.
+/// draining, commits sorted sparse `(from, to)` faction-index overrides, and
+/// keeps the source descriptors on the normalized manifest carrier.
 pub fn drain_faction_sentiments_lua(
     table: &Table,
     factions: crate::data_registry::FactionRegistry,

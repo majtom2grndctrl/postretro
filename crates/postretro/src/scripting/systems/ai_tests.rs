@@ -14,7 +14,7 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
-use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
+use postretro_net::wire::{ComponentPayload, HitDeclaration, HitRecord, WireMeshAnimationState};
 
 use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
@@ -28,6 +28,11 @@ use crate::impact_policy::ImpactPolicyRuntime;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::netcode::{
+    AuthorizedShot, HostCommandQueues, MovementOwners, NetworkIdAllocator, OpenAuthorizedShots,
+    PendingHitDeclarations, ShotId, host_take_ready_hit_declarations,
+    ingest_hit_declaration_for_test,
+};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{PostMovementCommand, SimCommand};
@@ -2187,6 +2192,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         &no_edges,
         &no_edges,
         None,
+        |_, _| {},
         |_| {},
     );
 
@@ -2217,6 +2223,178 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         Some(attacker),
         "same-tick AI selection observes the projectile-seeded ledger",
     );
+    assert_eq!(brain.retaliation_acquired_target, Some(attacker));
+}
+
+// Regression: an already-ready remote HIT was drained after the whole sim,
+// leaving its attacker-ledger write invisible to that tick's AI selection.
+#[test]
+fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() {
+    const DT: f32 = 0.016;
+    const DAMAGE: f32 = 8.0;
+
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker = spawn_enemy(
+        &mut registry,
+        Vec3::new(10.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    registry
+        .set_component(
+            attacker,
+            PlayerMovementComponent::from_descriptor(&player_movement_descriptor()),
+        )
+        .expect("remote attacker carries the host-authoritative eye component");
+    for entity in [victim, attacker] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+
+    let weapon = registry.spawn(Transform::default());
+    let mut allocator = NetworkIdAllocator::new();
+    let attacker_net = allocator.stamp(attacker);
+    let victim_net = allocator.stamp(victim);
+    let shot_id = ShotId::from_parts(attacker_net, 11);
+    let mut owners = MovementOwners::new();
+    owners.set(attacker, 7);
+    let mut open_shots = OpenAuthorizedShots::new();
+    open_shots.record(
+        AuthorizedShot {
+            shot_id,
+            pawn: attacker,
+            weapon,
+            fire_tick: 10,
+            damage: DAMAGE,
+            range: 20.0,
+            pellet_count: 1,
+            credit_source: "test.crossfire.remote".to_string(),
+            is_projectile: false,
+            fire_origin: Vec3::new(10.0, 0.5, 0.0),
+            timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+        },
+        7,
+    );
+    let declaration = HitDeclaration {
+        shot_id: shot_id.raw(),
+        records: vec![HitRecord {
+            target: victim_net.0,
+            point: Vec3::new(0.0, 0.5, 0.0).to_array(),
+            zone: None,
+        }],
+    };
+    let mut pending_hits = PendingHitDeclarations::new();
+    pending_hits.push(7, declaration);
+    let mut ready_hits = host_take_ready_hit_declarations(
+        &HostCommandQueues::new(),
+        &mut open_shots,
+        &mut pending_hits,
+        11,
+    );
+    assert_eq!(
+        ready_hits.len(),
+        1,
+        "the pre-command boundary freezes the previously authorized declaration",
+    );
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let no_edges = HashMap::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        fire_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        reload: false,
+        firing_slot: 0,
+        select_slot: None,
+        use_pressed: false,
+        drop_pressed: false,
+    };
+    crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &command,
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        DT,
+        &mut touch_system,
+        &[],
+        0,
+        &factions,
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |registry, _| {
+            let pending = ready_hits
+                .pop()
+                .expect("the frozen pre-command hit is ingested once");
+            let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+                registry,
+                &world,
+                &allocator,
+                &owners,
+                &mut open_shots,
+                pending.client_id,
+                &pending.declaration,
+            );
+            assert!(fire_accepted && hit_accepted);
+        },
+        |_| {},
+    );
+
+    let registry = registry.borrow();
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(victim)
+            .expect("remote-hit victim remains live")
+            .current,
+        100.0 - DAMAGE,
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("remote-hit victim keeps its brain");
+    assert_eq!(brain.acquired_target, Some(attacker));
     assert_eq!(brain.retaliation_acquired_target, Some(attacker));
 }
 

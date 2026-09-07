@@ -123,6 +123,7 @@ pub(super) fn evaluate(
                         registry,
                         snap.position,
                         enemy_faction,
+                        Some(snap.id),
                         Some(retained.target.entity),
                     );
                     let enemy_eye =
@@ -151,7 +152,8 @@ pub(super) fn evaluate(
                 };
                 (target, evaluate_acquisition)
             } else {
-                let offers = target_offers(registry, snap.position, enemy_faction, None);
+                let offers =
+                    target_offers(registry, snap.position, enemy_faction, Some(snap.id), None);
                 let evaluate_acquisition =
                     acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
                 let (candidate_filter, candidate_scope) =

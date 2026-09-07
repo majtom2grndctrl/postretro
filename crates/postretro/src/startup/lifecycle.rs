@@ -2296,6 +2296,7 @@ mod tests {
 
     fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,
@@ -3556,6 +3557,8 @@ mod tests {
                 switching: Default::default(),
                 default_weapon_placement: None,
                 entities: Vec::new(),
+                factions: Default::default(),
+                entity_faction_names: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),

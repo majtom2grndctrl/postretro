@@ -273,6 +273,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("touchable?", "Option<TouchableDescriptor>", "Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
+        .field("faction?", "Option<String>", "Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state.")
         .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.")
         .finish();
     registry

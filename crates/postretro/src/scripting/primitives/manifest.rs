@@ -62,6 +62,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("FactionDescriptor")
+        .doc("A stable named faction declared in `ModManifest.factions`. The engine assigns authored declarations indices from 2 upward; player absence remains index 0 and the built-in default enemy faction remains index 1.")
+        .field("name", "String", "Stable non-empty faction name. Entity archetypes refer to this name through `components.faction`.")
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -99,6 +104,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "entities?",
             "Vec<EntityTypeDescriptor>",
             "Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.",
+        )
+        .field(
+            "factions?",
+            "Vec<FactionDescriptor>",
+            "Engine-global named faction declarations. Optional; survive level unload and resolve optional archetype `components.faction` names during manifest commit.",
         )
         .field(
             "uiTrees?",
@@ -171,7 +181,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::slot_table::StoreDeclarationSet;
+    use postretro_entities::{FactionRegistry, slot_table::StoreDeclarationSet};
     use postretro_scripting_core::data_descriptors::{
         ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
         SwitchingDescriptor,
@@ -206,6 +216,8 @@ mod tests {
             switching: SwitchingDescriptor::default(),
             default_weapon_placement: None,
             entities: Vec::new(),
+            factions: FactionRegistry::default(),
+            entity_faction_names: Vec::new(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
             presentation_overlays: Vec::<PresentationOverlay>::new(),
@@ -229,6 +241,7 @@ mod tests {
             "switching",
             "defaultWeaponPlacement",
             "entities",
+            "factions",
             "uiTrees",
             "presentationTemplates",
             "presentationOverlays",

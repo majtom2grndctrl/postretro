@@ -17,9 +17,10 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::scripting_systems::ai::{ENEMY_DEFAULT_FACTION, FACTION_STATE_FIELD};
+use crate::scripting_systems::ai::FACTION_STATE_FIELD;
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
+use postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
@@ -683,7 +684,10 @@ pub(crate) fn attach_descriptor_components(
         registry
             .entity_state_mut(id)
             .expect("newly spawned descriptor entity carries entity state")
-            .set(FACTION_STATE_FIELD, ENEMY_DEFAULT_FACTION);
+            .set(
+                FACTION_STATE_FIELD,
+                descriptor.faction.unwrap_or(DEFAULT_ENEMY_FACTION_INDEX),
+            );
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, move_speed);
@@ -1066,6 +1070,7 @@ mod tests {
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: Some(LightDescriptor {
@@ -1287,6 +1292,7 @@ mod tests {
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("target_dummy".to_string()),
             inventory: None,
             light: None,
@@ -1718,6 +1724,7 @@ mod tests {
         // without a redundant prefix.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1763,6 +1770,7 @@ mod tests {
         // consumption. Only `initial_velocity` writes to the field.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1805,6 +1813,7 @@ mod tests {
         // `initial_rate` overrides the descriptor's `rate` default at spawn.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1844,6 +1853,7 @@ mod tests {
     fn emitter_initial_burst_kvp_overrides_u32_field() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("burstfire".to_string()),
             inventory: None,
             light: None,
@@ -1885,6 +1895,7 @@ mod tests {
         // but leave the descriptor's value untouched. No crash.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("smolder".to_string()),
             inventory: None,
             light: None,
@@ -1945,6 +1956,7 @@ mod tests {
 
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("billboard_emitter".to_string()),
             inventory: None,
             light: Some(LightDescriptor {
@@ -2013,6 +2025,7 @@ mod tests {
         // captured here).
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: None,
             inventory: None,
             light: Some(LightDescriptor {
@@ -2130,6 +2143,7 @@ mod tests {
     /// for spawn-point tests that only care about transform / tags / KVPs.
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2145,6 +2159,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2195,6 +2210,7 @@ mod tests {
 
     fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(classname.to_string()),
             inventory: Some(postretro_entities::InventoryDescriptor {
                 loadout: loadout.iter().map(|name| (*name).to_string()).collect(),
@@ -2321,6 +2337,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2472,6 +2489,25 @@ mod tests {
         assert_eq!(
             reg.get_component::<Transform>(local).unwrap().position,
             origin
+        );
+    }
+
+    #[test]
+    fn player_spawn_keeps_the_absent_faction_state() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![player_with_movement("player")];
+
+        spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+
+        let local = reg
+            .local_player_pawn()
+            .expect("player spawn should mark the selected local pawn");
+        assert_eq!(
+            reg.entity_state_mut(local)
+                .expect("player pawn carries entity state")
+                .get(FACTION_STATE_FIELD),
+            postretro_entities::PLAYER_FACTION_INDEX,
+            "player pawn does not receive the default-enemy fallback"
         );
     }
 
@@ -3315,9 +3351,59 @@ mod tests {
             reg.entity_state_mut(id)
                 .expect("behavior enemy carries entity state")
                 .get(FACTION_STATE_FIELD),
-            ENEMY_DEFAULT_FACTION,
+            DEFAULT_ENEMY_FACTION_INDEX,
             "host descriptor assembly seeds the transparent default enemy faction"
         );
+    }
+
+    #[test]
+    fn behavior_descriptor_spawn_uses_each_pre_resolved_faction_index() {
+        let factions = postretro_entities::FactionRegistry::from_descriptors(vec![
+            postretro_entities::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            postretro_entities::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("named factions are valid");
+        let mut cabal = behavior_enemy_descriptor("cabal_grunt");
+        cabal.faction = factions.index_for_name("cabal");
+        let mut resistance = behavior_enemy_descriptor("resistance_guard");
+        resistance.faction = factions.index_for_name("resistance");
+
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &[
+                placement("cabal_grunt", &[]),
+                placement("resistance_guard", &[]),
+            ],
+            &[cabal, resistance],
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+
+        let ids = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        let mut stored_factions = std::collections::BTreeMap::new();
+        for id in ids {
+            let canonical_name = reg
+                .get_component::<DescriptorProvenance>(id)
+                .expect("behavior enemy records descriptor provenance")
+                .canonical_name
+                .clone();
+            let faction = reg
+                .entity_state_mut(id)
+                .expect("behavior enemy carries entity state")
+                .get(FACTION_STATE_FIELD);
+            stored_factions.insert(canonical_name, faction);
+        }
+
+        assert_eq!(stored_factions.get("cabal_grunt"), Some(&2.0));
+        assert_eq!(stored_factions.get("resistance_guard"), Some(&3.0));
     }
 
     #[test]

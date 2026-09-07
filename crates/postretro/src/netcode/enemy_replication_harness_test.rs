@@ -303,6 +303,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        faction: None,
         canonical_name: Some(class.to_string()),
         inventory: None,
         light: None,
@@ -415,6 +416,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        faction: None,
         canonical_name: Some(class.to_string()),
         inventory: None,
         light: None,

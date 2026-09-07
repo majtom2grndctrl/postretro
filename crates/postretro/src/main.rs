@@ -9447,6 +9447,7 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(canonical_name.to_owned()),
             inventory: None,
             light: None,
@@ -12022,6 +12023,8 @@ mod tests {
                     switching: Default::default(),
                     default_weapon_placement: None,
                     entities: Vec::new(),
+                    factions: Default::default(),
+                    entity_faction_names: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
@@ -12817,6 +12820,7 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("remote_enemy".to_string()),
             inventory: None,
             light: None,

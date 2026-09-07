@@ -16,6 +16,10 @@ pub fn entity_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
     value: JsValue<'js>,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
+    // Validate the named faction here too so direct descriptor parsing has the
+    // same wire-shape contract as the mod-manifest path. Manifest parsing
+    // retains the returned name and resolves it at commit.
+    let _ = entity_faction_name_from_js(value.clone())?;
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "entity entry must be an object".to_string(),
     })?;
@@ -175,6 +179,7 @@ pub fn entity_descriptor_from_js<'js>(
     }
 
     let descriptor = EntityTypeDescriptor {
+        faction: None,
         canonical_name,
         inventory,
         light,
@@ -187,6 +192,41 @@ pub fn entity_descriptor_from_js<'js>(
         behavior,
     };
     Ok(descriptor)
+}
+
+/// Read the optional named faction from an entity descriptor without resolving
+/// it. Resolution needs the complete manifest faction registry and therefore
+/// happens only at the atomic manifest commit.
+pub fn entity_faction_name_from_js<'js>(
+    value: JsValue<'js>,
+) -> Result<Option<String>, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "entity entry must be an object".to_string(),
+    })?;
+    if !obj.contains_key("components").map_err(js_err)? {
+        return Ok(None);
+    }
+    let components: JsValue = obj.get("components").map_err(js_err)?;
+    if components.is_null() || components.is_undefined() {
+        return Ok(None);
+    }
+    let components = Object::from_value(components).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`components` must be an object".to_string(),
+    })?;
+    if !components.contains_key("faction").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = components.get("faction").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let name = String::from_js_value_required(raw, "components.faction")?;
+    if name.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.faction` must be a non-empty string when supplied".to_string(),
+        });
+    }
+    Ok(Some(name))
 }
 
 /// `Object::contains_key` follows the JavaScript prototype chain. The migration

@@ -368,7 +368,9 @@ impl ScriptRuntime {
             self.log_staged_manifest_diagnostics(result);
 
             let (
-                next_descriptors,
+                mut next_descriptors,
+                next_factions,
+                next_entity_faction_names,
                 next_maps,
                 next_default_weapon_placement,
                 next_global_reactions,
@@ -399,6 +401,8 @@ impl ScriptRuntime {
                     };
                     (
                         manifest.entities.clone(),
+                        manifest.factions.clone(),
+                        manifest.entity_faction_names.clone(),
                         manifest.maps.clone(),
                         manifest.default_weapon_placement.clone(),
                         manifest.reactions.clone(),
@@ -429,6 +433,8 @@ impl ScriptRuntime {
                     };
                     (
                         Vec::new(),
+                        crate::data_registry::FactionRegistry::default(),
+                        Vec::new(),
                         Vec::new(),
                         None,
                         Vec::new(),
@@ -451,6 +457,21 @@ impl ScriptRuntime {
                     };
                 }
             };
+
+            if let Err(reason) = super::types::resolve_entity_faction_indices(
+                &next_factions,
+                &mut next_descriptors,
+                &next_entity_faction_names,
+            ) {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
+            }
 
             // Dedup once up front (last-write-wins, matching startup's upsert)
             // so the warning fires a single time and both the refresh plan and
@@ -595,6 +616,7 @@ impl ScriptRuntime {
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
                 data_registry.replace_entity_types(next_descriptors);
+                data_registry.replace_factions(next_factions);
                 data_registry.replace_maps(next_maps);
                 data_registry.set_default_weapon_placement(next_default_weapon_placement);
                 data_registry.replace_global_reactions(next_global_reactions);
@@ -761,6 +783,56 @@ mod tests {
             !ScriptRuntimeConfig::default().skip_identity_enforcement,
             "the shipping runtime must not silently bypass durable identity enforcement"
         );
+    }
+
+    #[test]
+    fn staged_commit_replaces_factions_and_resolves_entity_storage_indices() {
+        let mod_root = temp_mod_root("faction_commit");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "Factions",
+                    id: "factions",
+                    version: "1",
+                    factions: [{ name: "cabal" }, { name: "resistance" }],
+                    entities: [
+                        { canonicalName: "cabal_grunt", components: { faction: "cabal" } },
+                        { canonicalName: "resistance_guard", components: { faction: "resistance" } },
+                    ],
+                };
+            "#,
+        )
+        .expect("staged faction manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(
+            matches!(result.status, StagedManifestBuildStatus::Built(_)),
+            "faction manifest must build before commit: {result:?}",
+        );
+
+        let ctx = ScriptCtx::new();
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(
+                &result,
+                &ctx,
+                &SequencedPrimitiveRegistry::new(),
+            ),
+            StagedManifestCommitOutcome::Committed { generation: 1, .. }
+        ));
+
+        let registry = ctx.data_registry.borrow();
+        assert_eq!(registry.factions.index_for_name("cabal"), Some(2.0));
+        assert_eq!(registry.factions.index_for_name("resistance"), Some(3.0));
+        assert_eq!(registry.entities[0].faction, Some(2.0));
+        assert_eq!(registry.entities[1].faction, Some(3.0));
+
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 
     fn write_durable_store_manifest(mod_root: &PathBuf, namespace: &str) {
@@ -1275,6 +1347,7 @@ mod tests {
         inventory_weapon: Option<&str>,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(name.to_string()),
             inventory: inventory_weapon.map(|name| InventoryDescriptor {
                 loadout: vec![name.to_string()],

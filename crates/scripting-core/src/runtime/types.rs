@@ -16,7 +16,7 @@ use crate::data_descriptors::{
     PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
     TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
-use crate::data_registry::{ScopedCrossing, ScopedReaction};
+use crate::data_registry::{FactionRegistry, ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
 use crate::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use crate::quickjs::{QuickJsConfig, QuickJsSubsystem};
@@ -89,6 +89,14 @@ pub struct ModManifestResult {
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.
     pub entities: Vec<EntityTypeDescriptor>,
+    /// Validated manifest faction names. This is engine-global content; its
+    /// manifest-order indices are resolved onto `entities` only when the
+    /// manifest atomically drains into `DataRegistry`.
+    pub factions: FactionRegistry,
+    /// Parallel source names for the optional `components.faction` entry on
+    /// each descriptor. Private runtime plumbing keeps named authoring out of
+    /// `EntityTypeDescriptor`, whose `faction` field is resolved f32 storage.
+    pub entity_faction_names: Vec<Option<String>>,
     /// UI trees registered via the mod manifest's `uiTrees` field (each a name +
     /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
@@ -135,6 +143,46 @@ pub struct ModManifestResult {
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub store_declarations: StoreDeclarationSet,
+}
+
+impl ModManifestResult {
+    /// Resolve the validated faction names onto their descriptor scalar slots
+    /// immediately before the manifest drains into the durable registry.
+    pub fn resolve_entity_faction_indices(&mut self) -> Result<(), String> {
+        resolve_entity_faction_indices(
+            &self.factions,
+            &mut self.entities,
+            &self.entity_faction_names,
+        )
+    }
+}
+
+/// Resolve the source names retained beside a manifest descriptor snapshot.
+/// Kept free of the full manifest so staged hot reload can use the same commit
+/// step after crossing its worker-thread boundary.
+pub fn resolve_entity_faction_indices(
+    factions: &FactionRegistry,
+    entities: &mut [EntityTypeDescriptor],
+    entity_faction_names: &[Option<String>],
+) -> Result<(), String> {
+    if entities.len() != entity_faction_names.len() {
+        return Err(format!(
+            "entity faction assignment count {} does not match descriptor count {}",
+            entity_faction_names.len(),
+            entities.len(),
+        ));
+    }
+    for (index, (descriptor, faction_name)) in
+        entities.iter_mut().zip(entity_faction_names).enumerate()
+    {
+        descriptor.faction = match faction_name {
+            Some(name) => Some(factions.index_for_name(name).ok_or_else(|| {
+                format!("entities[{index}].components.faction `{name}` is undeclared")
+            })?),
+            None => None,
+        };
+    }
+    Ok(())
 }
 
 /// Aggregated reload signal returned by
@@ -437,4 +485,66 @@ pub(crate) fn validate_mod_manifest_version(value: &str) -> Result<(), String> {
         return Err("`version` must be non-empty".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_registry::FactionDescriptor;
+
+    fn entity_descriptor(name: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            faction: None,
+            canonical_name: Some(name.to_string()),
+            inventory: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            touchable: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        }
+    }
+
+    #[test]
+    fn resolved_faction_indices_keep_builtin_slots_and_manifest_order() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid faction declarations");
+        let mut entities = vec![
+            entity_descriptor("cabal_grunt"),
+            entity_descriptor("resistance_guard"),
+        ];
+
+        resolve_entity_faction_indices(
+            &factions,
+            &mut entities,
+            &[Some("cabal".to_string()), Some("resistance".to_string())],
+        )
+        .expect("declared faction names resolve");
+
+        assert_eq!(entities[0].faction, Some(2.0));
+        assert_eq!(entities[1].faction, Some(3.0));
+    }
+
+    #[test]
+    fn faction_resolution_rejects_an_undeclared_name() {
+        let mut entities = vec![entity_descriptor("unknown_grunt")];
+        let error = resolve_entity_faction_indices(
+            &FactionRegistry::default(),
+            &mut entities,
+            &[Some("missing".to_string())],
+        )
+        .expect_err("undeclared faction names must not reach descriptor storage");
+
+        assert!(error.contains("undeclared"));
+    }
 }

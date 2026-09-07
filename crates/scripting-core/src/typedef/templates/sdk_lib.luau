@@ -668,7 +668,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -878,6 +878,7 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
+  factions: {FactionDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

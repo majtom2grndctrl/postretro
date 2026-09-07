@@ -314,6 +314,7 @@ mod tests {
 
     fn pawn_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("player".to_string()),
             inventory: None,
             light: None,
@@ -334,6 +335,7 @@ mod tests {
         reserve: u32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(canonical_name.to_string()),
             inventory: None,
             light: None,

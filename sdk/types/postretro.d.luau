@@ -220,6 +220,8 @@ export type EntityTypeComponents = {
   mesh: MeshDescriptor?,
   --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
   health: HealthDescriptor?,
+  --- Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state.
+  faction: string?,
   --- Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.
   behavior: BehaviorGraphDescriptor?,
 }
@@ -922,6 +924,12 @@ export type SwitchingDescriptor = {
   blockDuringReload: boolean,
 }
 
+--- A stable named faction declared in `ModManifest.factions`. The engine assigns authored declarations indices from 2 upward; player absence remains index 0 and the built-in default enemy faction remains index 1.
+export type FactionDescriptor = {
+  --- Stable non-empty faction name. Entity archetypes refer to this name through `components.faction`.
+  name: string,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -940,6 +948,8 @@ export type ModManifest = {
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed.
   entities: {EntityTypeDescriptor}?,
+  --- Engine-global named faction declarations. Optional; survive level unload and resolve optional archetype `components.faction` names during manifest commit.
+  factions: {FactionDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -1792,7 +1802,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -1868,6 +1878,7 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
+  factions: {FactionDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

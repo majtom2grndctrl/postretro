@@ -72,6 +72,10 @@ pub const PLAYER_FACTION_INDEX: f32 = 0.0;
 /// The compatibility faction used by brain-bearing archetypes without an
 /// authored faction declaration.
 pub const DEFAULT_ENEMY_FACTION_INDEX: f32 = 1.0;
+/// Compatibility sentiment for an unlisted same-faction pair.
+pub const SAME_FACTION_DEFAULT_SENTIMENT: f32 = 0.0;
+/// Compatibility sentiment for an unlisted cross-faction pair.
+pub const CROSS_FACTION_DEFAULT_SENTIMENT: f32 = -1.0;
 const FIRST_AUTHORED_FACTION_INDEX: f32 = 2.0;
 const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
 
@@ -186,6 +190,17 @@ impl FactionRegistry {
         &self.descriptors
     }
 
+    /// Authored sparse relationship overrides in ascending `(from, to)` index
+    /// order. Compatibility consumers canonicalize these against the unlisted
+    /// pair fallback instead of expanding the registry into an N x N matrix.
+    pub fn authored_relationships(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (usize, usize, FactionRelationship)> + '_ {
+        self.relationship_overrides
+            .iter()
+            .map(|override_| (override_.from, override_.to, override_.relationship))
+    }
+
     /// Sentiment from the evaluating faction toward a candidate faction.
     /// Unlisted rows preserve the prior faction-inequality behavior exactly:
     /// equal indices are neutral, different indices are hostile.
@@ -207,7 +222,11 @@ impl FactionRegistry {
             })
             .map(|index| self.relationship_overrides[index].relationship)
             .unwrap_or(FactionRelationship {
-                sentiment: if from == to { 0.0 } else { -1.0 },
+                sentiment: if from == to {
+                    SAME_FACTION_DEFAULT_SENTIMENT
+                } else {
+                    CROSS_FACTION_DEFAULT_SENTIMENT
+                },
                 tolerance: None,
             })
     }

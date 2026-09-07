@@ -74,7 +74,7 @@ Level-load entities are created once when the level is parsed. Runtime entities 
 
 ### Update
 
-All entities update each fixed-timestep game logic tick. See section 5 for update order and model.
+All entities participate in applicable fixed-timestep game logic stages each tick. Once damage settles, a zero-HP enemy is excluded from AI and steering but may still participate in other applicable stages. See section 5 for update order and model.
 
 ### Destruction
 

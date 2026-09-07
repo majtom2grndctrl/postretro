@@ -5,12 +5,14 @@
 //! declarations, reactions, and events stay outside this digest by design.
 
 use postretro_entities::{
-    CrossingCondition, CrossingDescriptor, DataRegistry, FactionDescriptor, FactionRegistry,
-    FactionRelationship, ScopedCrossing, TriggerEventDescriptor, TriggerPoolArm,
-    TriggerPoolDescriptor,
+    CROSS_FACTION_DEFAULT_SENTIMENT, CrossingCondition, CrossingDescriptor,
+    DEFAULT_ENEMY_FACTION_INDEX, DataRegistry, FactionDescriptor, FactionRegistry,
+    FactionRelationship, PLAYER_FACTION_INDEX, SAME_FACTION_DEFAULT_SENTIMENT, ScopedCrossing,
+    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
 };
 
 use crate::content_hash::{hash_f32, hash_f64, hash_ir_node, hash_len, hash_str, hash_u32};
+use crate::scripting_systems::ai::DEFAULT_RETALIATION_TOLERANCE;
 
 /// Produce a deterministic digest over factions and the mod-global trigger lanes.
 ///
@@ -25,7 +27,7 @@ pub(crate) fn mod_compatibility_digest(
     trigger_pools: &[TriggerPoolDescriptor],
     crossings: &[ScopedCrossing],
 ) -> [u8; 32] {
-    const MOD_DIGEST_EPOCH: u32 = 2;
+    const MOD_DIGEST_EPOCH: u32 = 3;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-mod-compatibility");
@@ -48,22 +50,38 @@ pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) ->
 }
 
 fn hash_faction_registry(hasher: &mut blake3::Hasher, factions: &FactionRegistry) {
+    // Bind the compatibility identities and fallback rule separately from
+    // authored content. Their values are fixed runtime semantics, not entries
+    // in the authored declaration list.
+    hash_str(hasher, "player-faction-index");
+    hash_faction_scalar(hasher, PLAYER_FACTION_INDEX);
+    hash_str(hasher, "default-enemy-faction-index");
+    hash_faction_scalar(hasher, DEFAULT_ENEMY_FACTION_INDEX);
+    hash_str(hasher, "same-faction-default-sentiment");
+    hash_faction_scalar(hasher, SAME_FACTION_DEFAULT_SENTIMENT);
+    hash_str(hasher, "cross-faction-default-sentiment");
+    hash_faction_scalar(hasher, CROSS_FACTION_DEFAULT_SENTIMENT);
+    hash_str(hasher, "default-retaliation-tolerance");
+    hash_faction_scalar(hasher, DEFAULT_RETALIATION_TOLERANCE);
+
     let descriptors = factions.descriptors();
     hash_len(hasher, descriptors.len());
-    for descriptor in descriptors {
+    for (offset, descriptor) in descriptors.iter().enumerate() {
+        hash_len(hasher, offset + 2);
         hash_faction_descriptor(hasher, descriptor);
     }
 
-    // Indices 0 and 1 are the built-in player and default-enemy factions;
-    // authored declarations follow in manifest order. Hash the resolved matrix
-    // so sparse overrides and the equal/different fallback relationships are
-    // both bound without exposing the registry's internal storage.
-    let resolved_faction_count = descriptors.len() + 2;
-    hash_len(hasher, resolved_faction_count);
-    for from in 0..resolved_faction_count {
-        for to in 0..resolved_faction_count {
-            hash_faction_relationship(hasher, factions.relationship(from as f32, to as f32));
-        }
+    let mut overrides: Vec<_> = factions
+        .authored_relationships()
+        .filter_map(canonical_faction_override)
+        .collect();
+    overrides.sort_unstable_by_key(|(from, to, _, _)| (*from, *to));
+    hash_len(hasher, overrides.len());
+    for (from, to, sentiment, tolerance) in overrides {
+        hash_len(hasher, from);
+        hash_len(hasher, to);
+        hash_faction_scalar(hasher, sentiment);
+        hash_faction_scalar(hasher, tolerance);
     }
 }
 
@@ -72,21 +90,36 @@ fn hash_faction_descriptor(hasher: &mut blake3::Hasher, descriptor: &FactionDesc
     hash_str(hasher, name);
 }
 
-fn hash_faction_relationship(hasher: &mut blake3::Hasher, relationship: FactionRelationship) {
+fn canonical_faction_override(
+    (from, to, relationship): (usize, usize, FactionRelationship),
+) -> Option<(usize, usize, f32, f32)> {
     let FactionRelationship {
         sentiment,
         tolerance,
     } = relationship;
-    hash_f32(hasher, sentiment);
-    match tolerance {
-        Some(tolerance) => {
-            hasher.update(&[1]);
-            hash_f32(hasher, tolerance);
-        }
-        None => {
-            hasher.update(&[0]);
-        }
+    let sentiment = canonical_faction_scalar(sentiment);
+    let tolerance = canonical_faction_scalar(tolerance.unwrap_or(DEFAULT_RETALIATION_TOLERANCE));
+    let default_sentiment = if from == to {
+        SAME_FACTION_DEFAULT_SENTIMENT
+    } else {
+        CROSS_FACTION_DEFAULT_SENTIMENT
+    };
+    if sentiment == default_sentiment && tolerance == DEFAULT_RETALIATION_TOLERANCE {
+        None
+    } else {
+        Some((from, to, sentiment, tolerance))
     }
+}
+
+fn canonical_faction_scalar(value: f32) -> f32 {
+    if value == 0.0 {
+        return 0.0;
+    }
+    value
+}
+
+fn hash_faction_scalar(hasher: &mut blake3::Hasher, value: f32) {
+    hash_f32(hasher, canonical_faction_scalar(value));
 }
 
 fn hash_lane<T>(
@@ -223,7 +256,7 @@ mod tests {
 
     const BLESS_ENV: &str = "POSTRETRO_BLESS_COMPATIBILITY_FIXTURES";
     const FIXTURE_DIGEST_HEX: &str =
-        "c5f20f38952796e3c357f40076f807936a41e6a76c6b32a15ba3ed1c8e1703d4";
+        "7ffa9f51839dd1c4d9e541441c85b46c0758a8c0d548715be6fa70fa731937cb";
 
     fn events() -> Vec<TriggerEventDescriptor> {
         vec![
@@ -545,6 +578,120 @@ mod tests {
         let mut changed = baseline;
         changed.factions = factions(["resistance", "cabal"], -1.0, 0.25);
         assert_ne!(expected, manifest_digest(&changed));
+    }
+
+    fn faction_registry(
+        names: &[&str],
+        relationships: &[(&str, &str, f32, f32)],
+    ) -> FactionRegistry {
+        FactionRegistry::from_descriptors(
+            names
+                .iter()
+                .map(|name| FactionDescriptor {
+                    name: (*name).to_string(),
+                })
+                .collect(),
+        )
+        .and_then(|registry| {
+            registry.with_sentiments(
+                relationships
+                    .iter()
+                    .map(
+                        |(from, to, sentiment, tolerance)| FactionSentimentDescriptor {
+                            from_faction: (*from).to_string(),
+                            to_faction: (*to).to_string(),
+                            sentiment: *sentiment,
+                            tolerance: *tolerance,
+                        },
+                    )
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .expect("valid faction digest fixture")
+    }
+
+    #[test]
+    fn digest_constructs_from_large_sparse_faction_registry() {
+        // Regression: hashing the resolved N x N relationship matrix made a
+        // valid large sparse registry impractical to digest during startup.
+        let descriptors = (0..16_384)
+            .map(|index| FactionDescriptor {
+                name: format!("faction-{index}"),
+            })
+            .collect();
+        let baseline = FactionRegistry::from_descriptors(descriptors)
+            .expect("large faction registry remains within exact f32 indices");
+        let changed = baseline
+            .clone()
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "faction-16383".to_string(),
+                to_faction: "faction-0".to_string(),
+                sentiment: 0.5,
+                tolerance: 2.0,
+            }])
+            .expect("one sparse override resolves");
+
+        assert_ne!(
+            mod_compatibility_digest(&baseline, &[], &[], &[]),
+            mod_compatibility_digest(&changed, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_canonicalizes_sparse_relationship_declaration_order() {
+        let first = faction_registry(
+            &["cabal", "resistance", "wild"],
+            &[
+                ("cabal", "resistance", -0.75, 4.0),
+                ("wild", "cabal", 0.25, 8.0),
+            ],
+        );
+        let reversed = faction_registry(
+            &["cabal", "resistance", "wild"],
+            &[
+                ("wild", "cabal", 0.25, 8.0),
+                ("cabal", "resistance", -0.75, 4.0),
+            ],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&first, &[], &[], &[]),
+            mod_compatibility_digest(&reversed, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_treats_signed_zero_relationship_scalars_as_equivalent() {
+        let positive = faction_registry(
+            &["cabal", "resistance"],
+            &[("cabal", "resistance", 0.0, 0.0)],
+        );
+        let negative = faction_registry(
+            &["cabal", "resistance"],
+            &[("cabal", "resistance", -0.0, -0.0)],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&positive, &[], &[], &[]),
+            mod_compatibility_digest(&negative, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_omits_explicit_semantic_default_relationships() {
+        let omitted = faction_registry(&["cabal", "resistance"], &[]);
+        let explicit = faction_registry(
+            &["cabal", "resistance"],
+            &[
+                ("cabal", "cabal", 0.0, f32::MAX),
+                ("cabal", "resistance", -1.0, f32::MAX),
+            ],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&omitted, &[], &[], &[]),
+            mod_compatibility_digest(&explicit, &[], &[], &[]),
+        );
     }
 
     #[test]

@@ -41,6 +41,13 @@ pub(super) fn apply_outcomes(
     }
 
     for mut outcome in outcomes {
+        // Earlier outcomes can synchronously damage or terminally inactivate a
+        // later actor. Keep every compute snapshot published above, but do not
+        // let that actor's stale outcome produce any observable work.
+        if crate::scripting_systems::health::is_quiescent(registry, outcome.id) {
+            continue;
+        }
+
         // The entered state's authored entry event. Raised before this tick's
         // action so a reaction reads the state the brain is now IN.
         if let Some(address) = outcome.on_enter.take() {

@@ -17,6 +17,7 @@ use postretro_entities::components::health::{
     PendingKillCredit,
 };
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::{DeferredEffectComponent, DeferredEffectKind};
 
 /// Event name fired once when the player pawn's HP reaches zero. Latched by
 /// `HealthComponent::death_handled` so a persisting zero-HP pawn never re-fires.
@@ -26,6 +27,24 @@ pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 /// sweep. A missing Health component is not depleted.
 pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
     health.current <= 0.0 || !health.current.is_finite()
+}
+
+/// Shared pre-sweep gate for simulation systems that must stop an entity as
+/// soon as it is depleted or committed to removal. Health is optional: an
+/// entity without it remains active unless its deferred lifecycle is terminal.
+pub(crate) fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry
+        .get_component::<HealthComponent>(entity)
+        .is_ok_and(is_depleted)
+        || registry
+            .get_component::<DeferredEffectComponent>(entity)
+            .is_ok_and(|effects| {
+                effects.inert
+                    || effects
+                        .pending
+                        .iter()
+                        .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+            })
 }
 
 /// What one death sweep observed, returned to the caller because the sweep

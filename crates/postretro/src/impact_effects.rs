@@ -8,8 +8,7 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{
-    DeferredEffectComponent, DeferredEffectKind, EntityId, EntityRegistry,
-    MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
+    DeferredEffectKind, EntityId, EntityRegistry, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
 
 use crate::scripting_systems::health::ContributorLedgerSnapshot;
@@ -161,32 +160,6 @@ pub(crate) fn play_animation(
     state: &str,
 ) -> SwitchResult {
     switch_animation_state(registry, target, state)
-}
-
-/// Whether a zero-HP entity is waiting for an authored positive-health recovery.
-///
-/// This is the nonterminal "downed" lifecycle: it keeps the entity present and
-/// targetable, but AI and steering must hold still until the queued recovery
-/// writes health back above zero. A bare zero-HP entity remains active; only an
-/// explicit deferred recovery opts into this behavior.
-pub(crate) fn is_downed_for_recovery(registry: &EntityRegistry, target: EntityId) -> bool {
-    let Ok(health) = registry.get_component::<HealthComponent>(target) else {
-        return false;
-    };
-    if health.current > 0.0 {
-        return false;
-    }
-
-    registry
-        .get_component::<DeferredEffectComponent>(target)
-        .is_ok_and(|effects| {
-            effects.pending.iter().any(|effect| {
-                effect.kind == DeferredEffectKind::SetHealth
-                    && effect
-                        .value
-                        .is_some_and(|value| value.is_finite() && value > 0.0)
-            })
-        })
 }
 
 /// Restore a downed brain's baseline presentation when its delayed health
@@ -356,9 +329,9 @@ fn tick_micros(tick_dt: f32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::Transform;
     use postretro_entities::components::health::ContributorLedgerRecord;
     use postretro_entities::data_descriptors::HealthDescriptor;
+    use postretro_entities::{DeferredEffectComponent, Transform};
 
     fn health_target(registry: &mut EntityRegistry, max: f32) -> EntityId {
         let target = registry.spawn(Transform::default());

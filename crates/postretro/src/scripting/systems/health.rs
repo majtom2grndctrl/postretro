@@ -22,6 +22,12 @@ use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, Enti
 /// `HealthComponent::death_handled` so a persisting zero-HP pawn never re-fires.
 pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 
+/// One health predicate shared by the pre-sweep simulation gates and the death
+/// sweep. A missing Health component is not depleted.
+pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
+    health.current <= 0.0 || !health.current.is_finite()
+}
+
 /// What one death sweep observed, returned to the caller because the sweep
 /// cannot reach the event-dispatch path itself. Non-player kill credit stays on
 /// `HealthComponent` until a deferred removal actually succeeds; only the
@@ -87,7 +93,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         // The guard defends against a future direct write that could: a negative
         // OR a NaN `current` (`NaN <= 0.0` is false, which would otherwise leave a
         // corrupt entity immortal).
-        if health.current <= 0.0 || !health.current.is_finite() {
+        if is_depleted(health) {
             dead.push(id);
         }
     }

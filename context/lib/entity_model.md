@@ -128,7 +128,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 3 | Trigger tick | Host evaluates touch-entry and use-overlap triggers after player movement; commands mutate mover phase for the next mover tick |
 | 4 | Touchable tick | Host evaluates player-item touch overlap after triggers and before AI |
 | 5 | Authoritative projectile flight | Advances existing gameplay projectiles after movement settles. Impacts route through the Health chokepoint before AI reads damage and attacker facts. |
-| 6 | AI brain tick | Selects targets, evaluates each enemy's behavior graph, and applies the selected state's motion and action after player movement and projectile impacts settle (§7c) |
+| 6 | AI brain tick | Excludes zero-HP brains, then selects targets, evaluates each admitted enemy's behavior graph, and applies the selected state's motion and action after player movement and projectile impacts settle (§7c) |
 | 7 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
 | 8 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
 | 9 | Weapon reload and fire tick | Advances reloads and transfers completed reloads from pawn reserves before consuming resolved fire and aim data; firing may spawn impact effects and apply damage |
@@ -230,7 +230,7 @@ Invariants the evaluator upholds:
 - **The think stride is cost machinery and shares no data path with authored relevance rules.** Its distance is the raw retained target distance without a new scan, or the raw nearest hostile candidate the engine offers when none is retained. Engine-owned hostility defines that offered set; authored candidacy and guards never filter or clamp its distance. Deriving it from the authored-filtered value inverts the stride — an absent distance reads as due every tick, so the far-band enemy the stride exists to make cheap becomes the one that scans most.
 - **Bound guard programs are derived data.** They live in the evaluator, never on the component, so they are never serialized and never affect component equality. They rebuild from the retained graph whenever the entity is seen.
 - **Animation is subordinate to graph state.** An unknown animation name warns once at spawn and keeps the prior animation at tick time; it never aborts the tick. A state that pursues without acting is a locomotion state: its animation is a travel cycle, so it yields to the graph's initial-state animation at a standstill. That makes the initial state's animation the graph's rest pose, and authors should pick it accordingly.
-- **Death is not a graph transition.** The death sweep latches a zero-HP enemy and the AI tick skips it from then on; an authored impact policy owns the death animation and the despawn delay.
+- **Death is not a graph transition.** AI and steering exclude a zero-HP enemy as soon as damage settles. The later death sweep owns the death latch and frozen credit; an authored impact policy owns the death animation and despawn delay.
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 

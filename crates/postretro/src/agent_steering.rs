@@ -18,6 +18,7 @@ use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_entities::{DeferredEffectComponent, DeferredEffectKind};
 
@@ -331,15 +332,17 @@ pub(crate) fn tick(
         .iter_with_kind(ComponentKind::Agent)
         .filter_map(|(id, value)| {
             if registry
-                .get_component::<DeferredEffectComponent>(id)
-                .is_ok_and(|effects| {
-                    effects.inert
-                        || effects
-                            .pending
-                            .iter()
-                            .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-                })
-                || crate::impact_effects::is_downed_for_recovery(registry, id)
+                .get_component::<HealthComponent>(id)
+                .is_ok_and(crate::scripting_systems::health::is_depleted)
+                || registry
+                    .get_component::<DeferredEffectComponent>(id)
+                    .is_ok_and(|effects| {
+                        effects.inert
+                            || effects
+                                .pending
+                                .iter()
+                                .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+                    })
             {
                 return None;
             }

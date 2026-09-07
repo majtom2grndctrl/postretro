@@ -139,23 +139,16 @@ pub(crate) fn advance(
 /// create projectiles, so they cannot consume their spawn grace through the
 /// flight pass itself. Clear only that one-tick marker here: new projectiles
 /// stay at their launch transform and begin moving on the next fixed tick.
-pub(crate) fn finish_spawn_tick(registry: &mut EntityRegistry) {
-    let spawned: Vec<(EntityId, ProjectileComponent)> = registry
-        .iter_with_kind(ComponentKind::Projectile)
-        .filter_map(|(id, value)| {
-            let ComponentValue::Projectile(component) = value else {
-                return None;
-            };
-            component.spawned.then(|| {
-                let mut component = component.clone();
-                component.spawned = false;
-                (id, component)
-            })
-        })
-        .collect();
-
-    for (id, component) in spawned {
-        if registry.exists(id) {
+pub(crate) fn finish_spawn_tick(
+    registry: &mut EntityRegistry,
+    projectiles: impl IntoIterator<Item = EntityId>,
+) {
+    for id in projectiles {
+        let Ok(mut component) = registry.get_component::<ProjectileComponent>(id).cloned() else {
+            continue;
+        };
+        if component.spawned {
+            component.spawned = false;
             let _ = registry.set_component(id, component);
         }
     }
@@ -547,11 +540,12 @@ mod tests {
     }
 
     #[test]
-    fn finish_spawn_tick_consumes_grace_without_moving_the_projectile() {
+    fn finish_spawn_tick_consumes_only_known_launch_grace_without_moving() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let projectile = spawn_projectile(&mut registry.borrow_mut(), 5.0, 0.0, 5.0);
+        let unrelated = spawn_projectile(&mut registry.borrow_mut(), 5.0, 0.0, 5.0);
 
-        finish_spawn_tick(&mut registry.borrow_mut());
+        finish_spawn_tick(&mut registry.borrow_mut(), [projectile]);
 
         {
             let registry = registry.borrow();
@@ -568,6 +562,13 @@ mod tests {
                     .expect("projectile keeps flight state")
                     .spawned,
                 "the fire-tick grace closes after all projectile producers",
+            );
+            assert!(
+                registry
+                    .get_component::<ProjectileComponent>(unrelated)
+                    .expect("unreported projectile remains untouched")
+                    .spawned,
+                "finalization must not scan or rewrite the projectile column",
             );
         }
 

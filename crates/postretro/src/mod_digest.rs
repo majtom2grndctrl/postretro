@@ -83,7 +83,9 @@ fn hash_faction_relationship(hasher: &mut blake3::Hasher, relationship: FactionR
             hasher.update(&[1]);
             hash_f32(hasher, tolerance);
         }
-        None => hasher.update(&[0]),
+        None => {
+            hasher.update(&[0]);
+        }
     }
 }
 
@@ -689,18 +691,8 @@ mod tests {
         }));
 
         assert_eq!(
-            mod_compatibility_digest(
-                &FactionRegistry::default(),
-                &[],
-                &[],
-                &[first],
-            ),
-            mod_compatibility_digest(
-                &FactionRegistry::default(),
-                &[],
-                &[],
-                &[equal],
-            )
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[first],),
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[equal],)
         );
         assert_ne!(
             mod_compatibility_digest(
@@ -717,12 +709,7 @@ mod tests {
                     }),
                 }))]
             ),
-            mod_compatibility_digest(
-                &FactionRegistry::default(),
-                &[],
-                &[],
-                &[different],
-            )
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[different],)
         );
     }
 

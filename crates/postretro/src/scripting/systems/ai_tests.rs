@@ -2578,6 +2578,254 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
     );
 }
 
+// Regression: two contact attackers committed their fire state during compute,
+// so the later one still raised an attack against a target the first had killed.
+#[test]
+fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
+    let mut killing_graph = standing_attack_graph();
+    killing_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(100.0);
+    let later_graph = standing_attack_graph();
+
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&killing_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&later_graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(player_hp(&registry, target), 0.0);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(first)
+            .expect("first actor keeps its brain")
+            .activity_attack_count(0),
+        Some(1),
+    );
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+// Regression: a projectile proposal against a target killed earlier in the
+// apply batch still spawned, raised an event, and consumed its fire latch.
+#[test]
+fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
+    let mut killing_graph = standing_attack_graph();
+    killing_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(100.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let _first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&killing_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&projectile_graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(player_hp(&registry, target), 0.0);
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+fn immediate_recovery_impact_policy() -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "same_batch_recovery".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("sameBatchRecovery".to_string()),
+        policy: vec![serde_json::json!({
+            "primitive": "setHealth",
+            "target": "@impact.target",
+            "args": {
+                "value": { "op": "const", "value": 25.0 },
+            },
+        })],
+    }
+}
+
+// Regression: synchronous impact-policy recovery made a lethally hit actor
+// look live again before its pre-lethal projectile outcome was applied.
+#[test]
+fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
+    let mut contact_graph = standing_attack_graph();
+    contact_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(25.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let recovered = spawn_enemy(
+        &mut registry,
+        Vec3::X,
+        authored_brain(&projectile_graph, "strike"),
+        25.0,
+    );
+    registry
+        .entity_state_mut(first)
+        .expect("first actor remains live")
+        .set(
+            FACTION_STATE_FIELD,
+            postretro_entities::PLAYER_FACTION_INDEX,
+        );
+    registry
+        .set_tags(recovered, vec!["sameBatchRecovery".to_string()])
+        .expect("recoverable actor remains live");
+    set_enemy_yaw(&mut registry, recovered, -std::f32::consts::FRAC_PI_2);
+
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![immediate_recovery_impact_policy()]);
+    let mut runtime = AiRuntime::new();
+    let first_tick = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| policies.evaluate_pending_in_registry(registry),
+    );
+
+    assert_eq!(first_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert!(first_tick.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let health = registry
+        .get_component::<HealthComponent>(recovered)
+        .expect("policy recovery keeps the actor live");
+    assert_eq!(health.current, 25.0);
+    assert!(
+        !health.death_handled,
+        "AI invalidation must not take ownership from the death sweep",
+    );
+    let recovered_brain = registry
+        .get_component::<BrainComponent>(recovered)
+        .expect("recovered actor keeps its brain");
+    assert_eq!(recovered_brain.activity_attack_count(0), Some(0));
+    assert!(
+        recovered_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none(),
+    );
+
+    let next_tick = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| policies.evaluate_pending_in_registry(registry),
+    );
+
+    assert_eq!(next_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(next_tick.projectile_spawns.len(), 1);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(recovered)
+            .expect("fresh evaluation commits recovered actor fire state")
+            .activity_attack_count(0),
+        Some(1),
+    );
+}
+
 #[test]
 fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
     let mut graph = tuning();

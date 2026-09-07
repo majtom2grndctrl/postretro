@@ -92,6 +92,36 @@ pub struct FactionRegistry {
     relationship_overrides: Vec<FactionRelationshipOverride>,
 }
 
+/// Borrowed faction content used by compatibility hashing.
+///
+/// Construction and iteration exhaustively bind the registry's private state,
+/// so a new behavior field requires an explicit compatibility decision.
+pub struct FactionCompatibilitySnapshot<'a> {
+    descriptors: &'a [FactionDescriptor],
+    relationship_overrides: &'a [FactionRelationshipOverride],
+}
+
+impl<'a> FactionCompatibilitySnapshot<'a> {
+    pub fn descriptors(&self) -> &'a [FactionDescriptor] {
+        self.descriptors
+    }
+
+    /// Authored sparse relationship overrides in ascending `(from, to)` order.
+    pub fn relationships(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (usize, usize, FactionRelationship)> + 'a {
+        let relationship_overrides = self.relationship_overrides;
+        relationship_overrides.iter().map(|relationship_override| {
+            let FactionRelationshipOverride {
+                from,
+                to,
+                relationship,
+            } = relationship_override;
+            (*from, *to, *relationship)
+        })
+    }
+}
+
 impl FactionRegistry {
     pub fn from_descriptors(descriptors: Vec<FactionDescriptor>) -> Result<Self, String> {
         let mut names = HashSet::with_capacity(descriptors.len());
@@ -190,15 +220,16 @@ impl FactionRegistry {
         &self.descriptors
     }
 
-    /// Authored sparse relationship overrides in ascending `(from, to)` index
-    /// order. Compatibility consumers canonicalize these against the unlisted
-    /// pair fallback instead of expanding the registry into an N x N matrix.
-    pub fn authored_relationships(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (usize, usize, FactionRelationship)> + '_ {
-        self.relationship_overrides
-            .iter()
-            .map(|override_| (override_.from, override_.to, override_.relationship))
+    /// Authoritative borrowed content for peer compatibility hashing.
+    pub fn compatibility_snapshot(&self) -> FactionCompatibilitySnapshot<'_> {
+        let Self {
+            descriptors,
+            relationship_overrides,
+        } = self;
+        FactionCompatibilitySnapshot {
+            descriptors,
+            relationship_overrides,
+        }
     }
 
     /// Sentiment from the evaluating faction toward a candidate faction.
@@ -1063,6 +1094,68 @@ mod tests {
         assert_eq!(DEFAULT_ENEMY_FACTION_INDEX, 1.0);
         assert_eq!(factions.index_for_name("cabal"), Some(2.0));
         assert_eq!(factions.index_for_name("resistance"), Some(3.0));
+    }
+
+    #[test]
+    fn faction_compatibility_snapshot_preserves_authored_and_pair_order() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+            FactionDescriptor {
+                name: "wild".to_string(),
+            },
+        ])
+        .expect("valid faction declarations")
+        .with_sentiments([
+            FactionSentimentDescriptor {
+                from_faction: "wild".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.25,
+                tolerance: 8.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -0.75,
+                tolerance: 4.0,
+            },
+        ])
+        .expect("declared endpoint names resolve");
+
+        let snapshot = factions.compatibility_snapshot();
+        assert_eq!(
+            snapshot
+                .descriptors()
+                .iter()
+                .map(|descriptor| descriptor.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cabal", "resistance", "wild"],
+        );
+        assert_eq!(
+            snapshot.relationships().collect::<Vec<_>>(),
+            vec![
+                (
+                    2,
+                    3,
+                    FactionRelationship {
+                        sentiment: -0.75,
+                        tolerance: Some(4.0),
+                    },
+                ),
+                (
+                    4,
+                    2,
+                    FactionRelationship {
+                        sentiment: 0.25,
+                        tolerance: Some(8.0),
+                    },
+                ),
+            ],
+        );
     }
 
     #[test]

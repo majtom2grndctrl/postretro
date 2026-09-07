@@ -8,7 +8,9 @@ use super::engine_floor::{is_meaningfully_closer, think_stride_for_distance};
 use super::perception::RawTargetPerception;
 use crate::nav::distance_xz;
 use postretro_entities::ComponentKind;
-use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::brain::{
+    BrainComponent, RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker,
+};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
@@ -17,6 +19,10 @@ use postretro_entities::{
 use postretro_foundation::{BoundProgram, IrValue, eval_value};
 
 use super::candidate_scope::CandidateScope;
+
+#[cfg(test)]
+const EMPTY_RECENT_ATTACKERS: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] =
+    [None; RECENT_ATTACKER_LEDGER_CAPACITY];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TargetPawn {
@@ -148,6 +154,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 /// engine-floor LOS both narrow fresh eligibility, while `offers.nearest` stays
 /// untouched for stride pricing. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
+#[cfg(test)]
 pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
@@ -156,6 +163,35 @@ pub(super) fn select_target(
     evaluating_faction: f32,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
+    candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
+) -> Option<TargetSelection> {
+    select_target_with_attacker_ledger(
+        retained,
+        offers,
+        registry,
+        factions,
+        evaluating_faction,
+        candidate_filter,
+        candidate_scope,
+        &EMPTY_RECENT_ATTACKERS,
+        candidate_perception,
+    )
+}
+
+/// As [`select_target`], with the evaluating brain's immutable, already-aged
+/// attacker ledger available to the per-candidate scope. The compatibility
+/// wrapper above keeps focused target-ranking tests independent of ledger
+/// setup; live AI evaluation always uses this entry point.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn select_target_with_attacker_ledger(
+    retained: Option<TargetCandidate>,
+    offers: &TargetOffers,
+    registry: &EntityRegistry,
+    factions: &FactionRegistry,
+    evaluating_faction: f32,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
+    recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
     candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
 ) -> Option<TargetSelection> {
     let nearest_eligible = offers
@@ -170,6 +206,7 @@ pub(super) fn select_target(
                     registry,
                     factions,
                     evaluating_faction,
+                    recent_attackers,
                     candidate.target.entity,
                     candidate.distance,
                 );

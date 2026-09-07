@@ -1,13 +1,17 @@
 // Live binding scope for per-offered-candidate behavior predicates.
 // See: context/lib/scripting.md §11
 
+use postretro_entities::components::brain::{RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
-#[cfg(test)]
-use postretro_foundation::CANDIDATE_SENTIMENT_INPUT;
 use postretro_foundation::{
-    BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue, ResolvedInput, ResolvedOutput,
-    resolve_candidate_input,
+    BRAIN_NO_TARGET_DISTANCE, BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue,
+    ResolvedInput, ResolvedOutput, resolve_candidate_input,
+};
+#[cfg(test)]
+use postretro_foundation::{
+    CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_SENTIMENT_INPUT,
+    CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
 };
 
 use super::FACTION_STATE_FIELD;
@@ -40,6 +44,7 @@ impl CandidateScope {
         registry: &EntityRegistry,
         factions: &FactionRegistry,
         evaluating_faction: f32,
+        recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
         candidate: EntityId,
         distance: f32,
     ) {
@@ -47,12 +52,21 @@ impl CandidateScope {
         let candidate_faction = registry
             .get_component::<EntityStateComponent>(candidate)
             .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
+        let attacker_record = recent_attackers
+            .iter()
+            .flatten()
+            .find(|entry| entry.attacker == candidate);
         self.fixed = [
             IrValue::Number(distance),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
             IrValue::Bool(health.is_some_and(|health| health.death_handled)),
             IrValue::Number(factions.sentiment(evaluating_faction, candidate_faction)),
+            IrValue::Number(attacker_record.map_or(0.0, |entry| entry.accumulated_damage)),
+            IrValue::Number(
+                attacker_record
+                    .map_or(BRAIN_NO_TARGET_DISTANCE, |entry| entry.time_since_damage_ms),
+            ),
         ];
     }
 }
@@ -118,7 +132,14 @@ mod tests {
             .expect("candidate is live");
         let mut scope = CandidateScope::for_validation();
         let factions = FactionRegistry::default();
-        scope.refresh(&registry, &factions, 1.0, candidate, 5.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            1.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            candidate,
+            5.0,
+        );
         for (name, expected) in [
             (CANDIDATE_DISTANCE_INPUT, IrValue::Number(5.0)),
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(7.0)),
@@ -140,7 +161,14 @@ mod tests {
         });
         let mut scope = CandidateScope::for_validation();
         let factions = FactionRegistry::default();
-        scope.refresh(&registry, &factions, 1.0, candidate, 1.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            1.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            candidate,
+            1.0,
+        );
         for (name, expected) in [
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(0.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(0.0)),
@@ -185,21 +213,87 @@ mod tests {
             .set(FACTION_STATE_FIELD, 3.0);
         let mut scope = CandidateScope::for_validation();
 
-        scope.refresh(&registry, &factions, 2.0, candidate, 1.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            2.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            candidate,
+            1.0,
+        );
         let handle = scope
             .resolve_input(CANDIDATE_SENTIMENT_INPUT)
             .expect("sentiment input resolves")
             .handle;
         assert_eq!(scope.read(&handle), IrValue::Number(-1.0));
 
-        scope.refresh(&registry, &factions, 3.0, candidate, 1.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            3.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            candidate,
+            1.0,
+        );
         assert_eq!(scope.read(&handle), IrValue::Number(0.0));
         registry
             .entity_state_mut(candidate)
             .expect("candidate remains live")
             .set(FACTION_STATE_FIELD, 2.0);
-        scope.refresh(&registry, &factions, 3.0, candidate, 1.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            3.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            candidate,
+            1.0,
+        );
         assert_eq!(scope.read(&handle), IrValue::Number(0.0));
+    }
+
+    #[test]
+    fn refresh_projects_each_attackers_damage_and_recency_without_stale_values() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        let non_attacker = registry.spawn(Transform::default());
+        let mut ledger = [None; RECENT_ATTACKER_LEDGER_CAPACITY];
+        ledger[0] = Some(RecentAttacker {
+            attacker: first,
+            accumulated_damage: 7.5,
+            time_since_damage_ms: 32.0,
+        });
+        ledger[1] = Some(RecentAttacker {
+            attacker: second,
+            accumulated_damage: 3.0,
+            time_since_damage_ms: 64.0,
+        });
+        let factions = FactionRegistry::default();
+        let mut scope = CandidateScope::for_validation();
+        let damage = scope
+            .resolve_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)
+            .expect("damage input resolves")
+            .handle;
+        let recency = scope
+            .resolve_input(CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT)
+            .expect("recency input resolves")
+            .handle;
+
+        scope.refresh(&registry, &factions, 1.0, &ledger, first, 4.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(7.5));
+        assert_eq!(scope.read(&recency), IrValue::Number(32.0));
+
+        scope.refresh(&registry, &factions, 1.0, &ledger, second, 8.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(3.0));
+        assert_eq!(scope.read(&recency), IrValue::Number(64.0));
+
+        scope.refresh(&registry, &factions, 1.0, &ledger, non_attacker, 12.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(0.0));
+        assert_eq!(
+            scope.read(&recency),
+            IrValue::Number(BRAIN_NO_TARGET_DISTANCE),
+            "a non-attacker must not inherit the preceding candidate's ledger facts"
+        );
     }
 
     #[test]
@@ -232,11 +326,25 @@ mod tests {
         )
         .expect("candidate filter binds");
         let factions = FactionRegistry::default();
-        scope.refresh(&registry, &factions, 1.0, first, 5.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            1.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            first,
+            5.0,
+        );
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, &factions, 1.0, second, 8.0);
+        scope.refresh(
+            &registry,
+            &factions,
+            1.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            second,
+            8.0,
+        );
         let value = eval_value(&program, &scope);
         assert_eq!(
             snapshot.allocs_since(),

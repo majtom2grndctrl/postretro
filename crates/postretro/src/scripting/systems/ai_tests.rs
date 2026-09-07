@@ -49,10 +49,11 @@ use postretro_foundation::{
     BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
     BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
     BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow, BindingScope,
-    BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, FireMode,
-    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode, WeaponDescriptor,
-    bind,
+    BoundProgram, CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_DIED_INPUT,
+    CANDIDATE_DISTANCE_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CURRENT_IR_VERSION,
+    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
+    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
+    WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
@@ -5124,6 +5125,72 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
         BRAIN_NO_TARGET_DISTANCE,
         "once clamped, recency cannot increase past its never-hit sentinel"
     );
+}
+
+#[test]
+fn candidate_damage_recency_matches_the_brain_fact_on_the_same_ai_tick() {
+    const DT: f32 = 0.016;
+    let mut graph = damage_recency_graph();
+    graph.envelope.transitions.clear();
+    graph
+        .envelope
+        .activities
+        .get_mut("rest")
+        .expect("fixture declares rest")
+        .motion = Some(MotionVerb::ChaseTarget);
+    // This predicate admits the attacker only when candidate refresh has seen
+    // the post-tick recency age. If the ledger aged at the old downstream brain
+    // fact site, it would still read zero here and the target would be rejected.
+    graph.candidate_filter = Some(IrNode::And {
+        a: Box::new(IrNode::Ge {
+            a: Box::new(brain_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(7.0),
+            }),
+        }),
+        b: Box::new(IrNode::Ge {
+            a: Box::new(brain_input(
+                CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+            )),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(DT * 1000.0),
+            }),
+        }),
+    });
+
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let attacker = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let mut context = DamageContext::new("test.attacker-ledger", DamageProducer::InTick);
+    context.attacker = Some(attacker);
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 7.0 },
+        context,
+    ));
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(brain.acquired_target, Some(attacker));
+    let attacker_record = brain
+        .recent_attacker(attacker)
+        .expect("attacker is retained");
+    assert_eq!(brain.time_since_damage_ms, DT * 1000.0);
+    assert_eq!(
+        attacker_record.time_since_damage_ms,
+        brain.time_since_damage_ms
+    );
+    assert_eq!(attacker_record.accumulated_damage, 7.0);
 }
 
 // Regression: an earlier-applied enemy's contact hit was overwritten when the

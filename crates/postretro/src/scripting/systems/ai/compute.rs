@@ -47,8 +47,8 @@ use super::graph_eval::{
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
-    TargetSelection, acquisition_due, is_hostile, select_target, selected_target_alive,
-    target_candidate, target_distance, target_offers,
+    TargetSelection, acquisition_due, is_hostile, select_target_with_attacker_ledger,
+    selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome};
 use crate::agent_steering;
@@ -92,6 +92,11 @@ pub(super) fn evaluate(
             }
             graph_reseated |= brain.reseat_to_initial();
         }
+        // Candidate refresh runs during selection below, before the established
+        // brain damage-fact aging site. Advance the paired attacker ledger here
+        // exactly once so `@candidate.timeSinceDamageFromCandidate` sees the
+        // same post-tick age that `@brain.timeSinceDamageMs` later publishes.
+        brain.age_recent_attackers(dt_ms);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -138,7 +143,7 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target(
+                    select_target_with_attacker_ledger(
                         Some(retained),
                         &offers,
                         registry,
@@ -146,6 +151,7 @@ pub(super) fn evaluate(
                         enemy_faction,
                         candidate_filter,
                         candidate_scope,
+                        &brain.recent_attackers,
                         &mut candidate_perception,
                     )
                 } else {
@@ -184,7 +190,7 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target(
+                    select_target_with_attacker_ledger(
                         None,
                         &offers,
                         registry,
@@ -192,6 +198,7 @@ pub(super) fn evaluate(
                         enemy_faction,
                         candidate_filter,
                         candidate_scope,
+                        &brain.recent_attackers,
                         &mut candidate_perception,
                     )
                 });

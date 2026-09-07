@@ -13,7 +13,7 @@ You cannot assign the same texture asset to two entities that want different dra
 
 `resolve_sprite_collection_draw_contract` requires all four to be byte-identical across every consumer of one path. Any mismatch returns `Err`; the install loop logs a warning and `continue`s, skipping registration of the **whole** collection. At runtime the now-unregistered sprite falls through `resolve_fallback` to the first-registered collection — rendering the wrong sprite. That is the rocket-trail-shows-plasma bug. `lifetime` happened to fire first, but a shared texture differing only in `emissive` or spec would collide identically.
 
-Observed symptom: rocket trail (`smoke_puff/smoke_puff_00.png`, lifetime 6.0) and enemy-rifle trail (same sprite, lifetime 0.45) collided; `smoke_puff` was skipped and the rocket trail rendered the plasma sprite (the default collection).
+Observed symptom: rocket trail (`smoke_puff/smoke_puff_00.png`, lifetime 1.75) and enemy-rifle trail (same sprite, lifetime 0.45) collided; `smoke_puff` was skipped and the rocket trail rendered the plasma sprite (the default collection).
 
 ## Field classification
 
@@ -54,4 +54,4 @@ For a **single-frame** collection `frame_count == 1`, so `frame_idx` is always 0
 
 ## Workaround already shipped
 
-`content/dev/scripts/enemy-rifle.ts`: the enemy-rifle trail was repointed from `smoke_puff` to `smoke_puff_isotropic` so the two no longer collide. Content-side only; this note is the durable engine follow-up.
+`content/dev/scripts/enemy-rifle.ts`: the enemy-rifle trail was dropped wholesale — its `smoke_puff/smoke_puff_00.png` trail block (lifetime 0.45) was deleted — so the two no longer collide. Content-side only; this note is the durable engine follow-up.

@@ -50,7 +50,7 @@ use super::targeting::{
     TargetSelection, acquisition_due, is_hostile, select_target_with_attacker_ledger,
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
-use super::{AttackOutcome, EnemyOutcome};
+use super::{AttackOutcome, EnemyOutcome, PendingAttack};
 use crate::agent_steering;
 use crate::nav::find_path;
 use crate::weapon::ProjectileLaunch;
@@ -495,7 +495,6 @@ pub(super) fn evaluate(
         // an already-dead but still-present pawn and prevents damaging a
         // different co-op pawn than the one this enemy chose.
         let entered = brain.take_entry_pending();
-        let mut attacked = false;
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
@@ -564,12 +563,14 @@ pub(super) fn evaluate(
                 })
                 .flatten()
         {
-            attacked = true;
-            attack_outcome = Some(outcome);
-            brain
-                .attack_cooldown_remaining_ms
-                .insert(attack_name, cooldown_ms);
-            brain.record_successful_attack_fire();
+            // This is only an immutable fire proposal. A target can become
+            // dead or disappear while an earlier outcome applies, so the
+            // mutable cooldown/count commit belongs beside the effect in apply.
+            attack_outcome = Some(PendingAttack {
+                attack_name,
+                cooldown_ms,
+                effect: outcome,
+            });
         }
 
         let state_changed = graph_reseated || transitioned || entered.is_some();
@@ -599,7 +600,6 @@ pub(super) fn evaluate(
             prior_acquired_target,
             graph_reseated,
             state_changed,
-            attacked,
             attack: attack_outcome,
             prior_standoff_distance,
             standoff_distance,

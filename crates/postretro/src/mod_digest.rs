@@ -64,20 +64,23 @@ fn hash_faction_registry(hasher: &mut blake3::Hasher, factions: &FactionRegistry
     hash_str(hasher, "default-retaliation-tolerance");
     hash_faction_scalar(hasher, DEFAULT_RETALIATION_TOLERANCE);
 
-    let descriptors = factions.descriptors();
+    let compatibility = factions.compatibility_snapshot();
+    let descriptors = compatibility.descriptors();
     hash_len(hasher, descriptors.len());
     for (offset, descriptor) in descriptors.iter().enumerate() {
         hash_len(hasher, offset + 2);
         hash_faction_descriptor(hasher, descriptor);
     }
 
-    let mut overrides: Vec<_> = factions
-        .authored_relationships()
+    let override_count = compatibility
+        .relationships()
         .filter_map(canonical_faction_override)
-        .collect();
-    overrides.sort_unstable_by_key(|(from, to, _, _)| (*from, *to));
-    hash_len(hasher, overrides.len());
-    for (from, to, sentiment, tolerance) in overrides {
+        .count();
+    hash_len(hasher, override_count);
+    for (from, to, sentiment, tolerance) in compatibility
+        .relationships()
+        .filter_map(canonical_faction_override)
+    {
         hash_len(hasher, from);
         hash_len(hasher, to);
         hash_faction_scalar(hasher, sentiment);

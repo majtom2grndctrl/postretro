@@ -29,9 +29,10 @@ pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, Trigger
 pub use ctx::ScriptCtx;
 pub use data_descriptors::*;
 pub use data_registry::{
-    CROSS_FACTION_DEFAULT_SENTIMENT, DEFAULT_ENEMY_FACTION_INDEX, DataRegistry, FactionDescriptor,
-    FactionRegistry, FactionRelationship, FactionSentimentDescriptor, PLAYER_FACTION_INDEX,
-    SAME_FACTION_DEFAULT_SENTIMENT, ScopedCrossing, ScopedReaction,
+    CROSS_FACTION_DEFAULT_SENTIMENT, DEFAULT_ENEMY_FACTION_INDEX, DataRegistry,
+    FactionCompatibilitySnapshot, FactionDescriptor, FactionRegistry, FactionRelationship,
+    FactionSentimentDescriptor, PLAYER_FACTION_INDEX, SAME_FACTION_DEFAULT_SENTIMENT,
+    ScopedCrossing, ScopedReaction,
 };
 pub use engine_state_catalog::*;
 pub use postretro_foundation::{

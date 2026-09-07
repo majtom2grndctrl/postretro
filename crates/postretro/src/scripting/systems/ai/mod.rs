@@ -175,12 +175,10 @@ pub(super) struct EnemyOutcome {
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
-    /// `true` when an attack fired this tick (event raised; projectile contact
-    /// damage arrives in a later simulation stage).
-    attacked: bool,
-    /// Fire-time resolution already selected at the one fire-latch seam. The
-    /// apply pass never re-derives an action from a potentially changed path.
-    attack: Option<AttackOutcome>,
+    /// Immutable fire resolution selected by compute. The mutable cooldown and
+    /// activity-count commit waits for apply to revalidate the target against
+    /// earlier outcomes in the same batch.
+    attack: Option<PendingAttack>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(super) prior_standoff_distance: f32,
@@ -194,6 +192,12 @@ pub(super) struct EnemyOutcome {
 /// their direct-damage path; weapon attacks carry the launch materialized by
 /// the apply pass, after the immutable evaluator has released its registry
 /// borrow.
+pub(super) struct PendingAttack {
+    attack_name: String,
+    cooldown_ms: f32,
+    effect: AttackOutcome,
+}
+
 pub(super) enum AttackOutcome {
     Contact {
         damage: f32,

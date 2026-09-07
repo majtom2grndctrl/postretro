@@ -194,8 +194,10 @@ defineEntity({
 ## `components.health`
 
 Attach a `health` block to an entity descriptor to give it hit points. An entity
-with health can take damage through the engine's single damage chokepoint and is
-removed by the death sweep once its HP reaches zero.
+with health can take damage through the engine's single damage chokepoint.
+Depleted or non-finite health immediately stops its AI and steering. The later
+death sweep latches player death and non-player kill credit; authored lifecycle
+policy controls non-player removal.
 
 ```typescript
 defineEntity({
@@ -1231,10 +1233,10 @@ outer `"*"` row so it cannot repeatedly select `flinch`.
 `defineReaction` examples above, e.g. the hallway-light wave and `flicker`
 reaction).
 
-Note what is *not* here: death is not a graph transition. The engine's death
-sweep latches a zero-HP enemy and stops evaluating its graph; playing a death
-clip and despawning belong to an impact policy, and the behavior block carries no
-despawn field.
+Note what is *not* here: death is not a graph transition. Depleted or non-finite
+health immediately stops AI and steering; the later death sweep latches player
+death and non-player kill credit. Playing a death clip and despawning belong to
+an impact policy, and the behavior block carries no despawn field.
 
 ---
 

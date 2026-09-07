@@ -53,7 +53,7 @@ use postretro_foundation::{
     CANDIDATE_DISTANCE_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CURRENT_IR_VERSION,
     FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
     PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
-    WeaponDescriptor, bind,
+    RetaliationDescriptor, WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
@@ -446,6 +446,84 @@ fn set_hp(reg: &mut EntityRegistry, id: EntityId, current: f32) {
     let mut h = reg.get_component::<HealthComponent>(id).unwrap().clone();
     h.current = current;
     reg.set_component(id, h).unwrap();
+}
+
+#[test]
+fn target_perception_preserves_player_eye_and_aims_brain_peers_from_their_geometry() {
+    let graph = tuning();
+    let mut registry = EntityRegistry::new();
+
+    let player_position = Vec3::new(5.0, 2.0, -3.0);
+    let player = spawn_player(&mut registry, player_position);
+
+    let hitbox_position = Vec3::new(10.0, 4.0, 2.0);
+    let hitbox_peer = spawn_enemy(
+        &mut registry,
+        hitbox_position,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let hitbox = Hitbox {
+        half_extents: Vec3::new(0.6, 1.3, 0.8),
+        offset: Vec3::new(0.2, 0.4, -0.3),
+    };
+    set_enemy_hitbox(&mut registry, hitbox_peer, hitbox);
+
+    let agent_position = Vec3::new(-7.0, 1.0, 6.0);
+    let agent_peer = spawn_enemy(
+        &mut registry,
+        agent_position,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    assert!(
+        registry
+            .get_component::<PlayerMovementComponent>(agent_peer)
+            .is_err(),
+        "a peer candidate must not need a PlayerMovement shim"
+    );
+
+    let cases = [
+        (
+            TargetPawn {
+                entity: player,
+                position: player_position,
+            },
+            player_position + Vec3::Y * 0.5,
+            "player capsule eye",
+        ),
+        (
+            TargetPawn {
+                entity: hitbox_peer,
+                position: hitbox_position,
+            },
+            hitbox_position + hitbox.offset + Vec3::Y * hitbox.half_extents.y,
+            "brain peer authored hitbox",
+        ),
+        (
+            TargetPawn {
+                entity: agent_peer,
+                position: agent_position,
+            },
+            agent_position + Vec3::Y * (perception::EYE_FACTOR * 1.8),
+            "brain peer nav-agent geometry",
+        ),
+    ];
+
+    for (target, expected_aim, label) in cases {
+        assert_eq!(
+            perception::target_aim(&registry, target),
+            Some(expected_aim),
+            "{label} must derive the canonical target aim point",
+        );
+        let raw = perception::raw_target_perception(&registry, Vec3::ZERO, target, None)
+            .expect("every targetable pawn case supplies an aim point");
+        assert!(
+            raw.visible,
+            "no collision world preserves clear sight for {label}"
+        );
+        assert_eq!(raw.target_aim, expected_aim, "{label} reaches fresh LOS");
+    }
 }
 
 fn enemy_animation(reg: &EntityRegistry, enemy: EntityId) -> String {
@@ -1660,6 +1738,315 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
         enemy_state_name(&registry, enemy),
         TEST_IDLE_STATE,
         "the retained target's durable fact must use the reverse directional relation"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: faction crossfire retaliation
+//
+// This is a full AI-tick fixture, not a duplicate of targeting's rank model:
+// hits reach the Health chokepoint, CandidateScope resolves authored faction
+// and tolerance state, and the compute/apply passes persist the selected target
+// and its retaliation latch across ticks.
+// ---------------------------------------------------------------------------
+
+const CROSSFIRE_RAIDER_FACTION: f32 = 2.0;
+const CROSSFIRE_SENTINEL_FACTION: f32 = 3.0;
+const CROSSFIRE_LOW_TOLERANCE: f32 = 4.0;
+
+fn crossfire_factions() -> FactionRegistry {
+    FactionRegistry::from_descriptors(vec![
+        FactionDescriptor {
+            name: "crossfire.raiders".to_string(),
+        },
+        FactionDescriptor {
+            name: "crossfire.sentinels".to_string(),
+        },
+    ])
+    .expect("crossfire factions are valid")
+    .with_sentiments(vec![
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.raiders".to_string(),
+            to_faction: "crossfire.raiders".to_string(),
+            sentiment: 0.0,
+            tolerance: CROSSFIRE_LOW_TOLERANCE,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.raiders".to_string(),
+            to_faction: "crossfire.sentinels".to_string(),
+            sentiment: -1.0,
+            tolerance: CROSSFIRE_LOW_TOLERANCE,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.sentinels".to_string(),
+            to_faction: "crossfire.raiders".to_string(),
+            sentiment: -1.0,
+            tolerance: f32::MAX,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.sentinels".to_string(),
+            to_faction: "crossfire.sentinels".to_string(),
+            sentiment: 0.0,
+            tolerance: f32::MAX,
+        },
+    ])
+    .expect("crossfire relationships resolve")
+}
+
+/// The behavior block shared by the dev-mod crossfire controls. The wildcard
+/// is authored policy, not an engine-side retaliation exit: it is the only
+/// reason the retained retaliation target stands down in this fixture.
+fn crossfire_reference_graph() -> BehaviorGraphDescriptor {
+    let mut graph = tuning();
+    graph.candidate_filter = None;
+    graph.retaliation = Some(RetaliationDescriptor {
+        window_ms: 1_500.0,
+        damage_weight: 1.0,
+        recency_weight: 0.001,
+    });
+    graph.envelope.transitions.insert(
+        "*".to_string(),
+        vec![
+            edge(
+                TEST_IDLE_STATE,
+                IrNode::Or {
+                    a: Box::new(brain_input(BRAIN_TARGET_DIED_INPUT)),
+                    b: Box::new(IrNode::Not {
+                        x: Box::new(brain_input(BRAIN_TARGET_VISIBLE_INPUT)),
+                    }),
+                },
+            ),
+            edge(TEST_IDLE_STATE, target_lost()),
+        ],
+    );
+    graph
+}
+
+fn set_crossfire_faction(registry: &mut EntityRegistry, entity: EntityId, faction: f32) {
+    registry
+        .entity_state_mut(entity)
+        .expect("crossfire fixture entity is live")
+        .set(FACTION_STATE_FIELD, faction);
+}
+
+fn set_crossfire_tolerance(registry: &mut EntityRegistry, entity: EntityId, tolerance: f32) {
+    registry
+        .entity_state_mut(entity)
+        .expect("crossfire fixture enemy is live")
+        .set(ARCHETYPE_TOLERANCE_STATE_FIELD, tolerance);
+}
+
+fn damage_crossfire_enemy(
+    registry: &mut EntityRegistry,
+    victim: EntityId,
+    attacker: EntityId,
+    amount: f32,
+) {
+    let mut context = DamageContext::new("test.crossfire", DamageProducer::InTick);
+    context.attacker = Some(attacker);
+    assert!(apply_damage_with_context(
+        registry,
+        victim,
+        &DamagePayload { amount },
+        context,
+    ));
+}
+
+fn run_crossfire_tick(
+    registry: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    factions: &FactionRegistry,
+    dt: f32,
+) {
+    run_ai_tick_with_navigation_and_impact(
+        registry,
+        runtime,
+        dt,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions,
+        },
+        |_| {},
+    );
+}
+
+#[test]
+fn faction_crossfire_reference_content_reprioritizes_holds_and_stands_down() {
+    const DT: f32 = 0.016;
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+
+    // A low-tolerance raider starts engaged with the nearer player, then turns
+    // to either an over-tolerance neutral peer or hostile cross-faction peer.
+    for (attacker_faction, label) in [
+        (CROSSFIRE_RAIDER_FACTION, "same-faction"),
+        (CROSSFIRE_SENTINEL_FACTION, "cross-faction"),
+    ] {
+        let mut registry = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+        let victim = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        let attacker = spawn_enemy(
+            &mut registry,
+            Vec3::new(10.0, 0.0, 0.0),
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        set_crossfire_faction(&mut registry, victim, CROSSFIRE_RAIDER_FACTION);
+        set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+        set_crossfire_faction(&mut registry, attacker, attacker_faction);
+
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(player),
+            "{label} fixture must begin engaged with the nearer player",
+        );
+
+        damage_crossfire_enemy(&mut registry, victim, attacker, 8.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(attacker),
+            "an over-tolerance {label} attacker must beat the nearer player",
+        );
+        assert_eq!(
+            enemy_retaliation_acquired_target(&registry, victim),
+            Some(attacker),
+            "the engine must mark the distant retaliation acquisition",
+        );
+
+        // The ledger no longer contributes once its age has passed the authored
+        // window. The nearer player still cannot reclaim a latch-held attacker.
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, 1.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, 1.0);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(attacker),
+            "ledger decay alone cannot drop a retaliation-held {label} attacker",
+        );
+        assert_eq!(
+            enemy_retaliation_acquired_target(&registry, victim),
+            Some(attacker)
+        );
+
+        // The transient exit is the authored targetDied/targetVisible guard,
+        // not a special-case in retaliation ownership.
+        let mut health = registry
+            .get_component::<HealthComponent>(attacker)
+            .expect("attacker carries health")
+            .clone();
+        health.current = 0.0;
+        health.death_handled = true;
+        registry.set_component(attacker, health).unwrap();
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            None,
+            "the authored targetDied guard stands the retaliator down",
+        );
+        assert_eq!(enemy_retaliation_acquired_target(&registry, victim), None);
+    }
+
+    // The stoic control sees the same distance and hit but uses the authored
+    // finite f32 maximum tolerance, so normal nearest-hostile retention wins.
+    for (attacker_faction, label) in [
+        (CROSSFIRE_SENTINEL_FACTION, "same-faction"),
+        (CROSSFIRE_RAIDER_FACTION, "cross-faction"),
+    ] {
+        let mut registry = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+        let victim = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        let attacker = spawn_enemy(
+            &mut registry,
+            Vec3::new(10.0, 0.0, 0.0),
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        set_crossfire_faction(&mut registry, victim, CROSSFIRE_SENTINEL_FACTION);
+        set_crossfire_tolerance(&mut registry, victim, f32::MAX);
+        set_crossfire_faction(&mut registry, attacker, attacker_faction);
+
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+        damage_crossfire_enemy(&mut registry, victim, attacker, 8.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(player),
+            "max-tolerance {label} control must keep the nearer player target",
+        );
+        assert_eq!(enemy_retaliation_acquired_target(&registry, victim), None);
+    }
+
+    // Two same-faction peers are both neutral until their ledger damage is
+    // over tolerance. Their deliberately small score leapfrog proves a marked
+    // target does not thrash; only the later large improvement transfers it.
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker_a = spawn_enemy(
+        &mut registry,
+        Vec3::new(8.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker_b = spawn_enemy(
+        &mut registry,
+        Vec3::new(9.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    for entity in [victim, attacker_a, attacker_b] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+    damage_crossfire_enemy(&mut registry, victim, attacker_a, 10.0);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(attacker_a));
+
+    // The newer B hit is still within the strict one-point transfer margin.
+    damage_crossfire_enemy(&mut registry, victim, attacker_b, 10.5);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(attacker_a),
+        "a within-margin peer leapfrog must not thrash the retaliation latch",
+    );
+
+    damage_crossfire_enemy(&mut registry, victim, attacker_b, 1.0);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(attacker_b),
+        "a challenger transfers only after its retaliation score clears the margin",
+    );
+    assert_eq!(
+        enemy_retaliation_acquired_target(&registry, victim),
+        Some(attacker_b)
     );
 }
 

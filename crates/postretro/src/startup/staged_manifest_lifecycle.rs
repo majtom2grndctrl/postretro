@@ -11,6 +11,29 @@ use postretro_scripting_core::staged_manifest::{
 
 use crate::App;
 
+fn invalidate_refreshed_view_feel_impulses(
+    outcome: &StagedManifestCommitOutcome,
+    followed_pawn: Option<postretro_entities::EntityId>,
+    state: &mut crate::view_feel::ViewFeelState,
+) -> bool {
+    let Some(followed_pawn) = followed_pawn else {
+        return false;
+    };
+    let StagedManifestCommitOutcome::Committed {
+        changed_movement_entities,
+        ..
+    } = outcome
+    else {
+        return false;
+    };
+    if !changed_movement_entities.contains(&followed_pawn) {
+        return false;
+    }
+
+    state.clear_impulses();
+    true
+}
+
 fn clear_replaced_presentation_overlay_state(
     pool: &mut crate::presentation_pool::PresentationPool,
     client_facts: &mut crate::netcode::ClientOverlayFactState,
@@ -104,6 +127,11 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
+            invalidate_refreshed_view_feel_impulses(
+                &outcome,
+                self.view_feel_followed_pawn,
+                &mut self.view_feel_state,
+            );
             let committed = match &outcome {
                 StagedManifestCommitOutcome::Committed { .. } => true,
                 StagedManifestCommitOutcome::DiscardedStale { .. }
@@ -251,6 +279,11 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::movement::MovementStateEdge;
+    use postretro_foundation::{
+        BobParams, ImpulseChannels, ImpulseParams, ImpulseStateParams, ImpulseStates,
+        MovementStateKind, SwayParams, TiltParams, ViewFeelParams,
+    };
     use postretro_scripting_core::runtime::{ModBloomProfile, ModBloomResolution};
     use postretro_scripting_core::staged_manifest::StagedManifest;
     use std::path::PathBuf;
@@ -319,6 +352,7 @@ mod tests {
             descriptor_count: 0,
             applied_actions: 0,
             dropped_missing_targets: 0,
+            changed_movement_entities: Vec::new(),
         }
     }
 
@@ -337,6 +371,208 @@ mod tests {
             },
             StagedManifestCommitOutcome::ReleaseNoop,
         ]
+    }
+
+    fn lifecycle_view_feel(impulse_tension: f32) -> ViewFeelParams {
+        ViewFeelParams {
+            bob: Some(BobParams {
+                vertical_frequency: 1.0,
+                lateral_frequency: 0.5,
+                vertical_amplitude: 0.08,
+                lateral_amplitude: 0.04,
+                speed_threshold: 0.0,
+                grounded_only: true,
+            }),
+            tilt: Some(TiltParams {
+                max_angle: 8.0,
+                speed_reference: 4.0,
+                tension: 10.0,
+                grounded_only: true,
+            }),
+            sway: Some(SwayParams {
+                amplitude: 1.0,
+                frequency: 0.8,
+                speed_scale: 0.1,
+                grounded_only: false,
+            }),
+            impulse: Some(ImpulseParams {
+                tension: impulse_tension,
+                max: ImpulseChannels {
+                    fov: 20.0,
+                    pitch: 20.0,
+                    roll: 20.0,
+                },
+                states: ImpulseStates {
+                    normal: None,
+                    dash: Some(ImpulseStateParams {
+                        tension: None,
+                        enter: Some(ImpulseChannels {
+                            fov: 8.0,
+                            pitch: -2.0,
+                            roll: 1.0,
+                        }),
+                        exit: None,
+                    }),
+                    crouch: None,
+                    slide: None,
+                },
+            }),
+        }
+    }
+
+    fn approx_eq(left: f32, right: f32) -> bool {
+        (left - right).abs() <= 1.0e-5
+    }
+
+    // Regression: movement refresh either kept an old kick or reset unrelated view feel.
+    #[test]
+    fn followed_pawn_movement_refresh_clears_only_view_feel_impulses() {
+        let followed = postretro_entities::EntityId::from_raw(4);
+        let remote = postretro_entities::EntityId::from_raw(8);
+        let before = lifecycle_view_feel(12.0);
+        let mut after = before.clone();
+        after.impulse.as_mut().unwrap().tension = 24.0;
+        let edge = crate::view_feel::TimedMovementEdge {
+            edge: MovementStateEdge {
+                from: MovementStateKind::Normal,
+                to: MovementStateKind::Dash,
+            },
+            age: 0.0,
+        };
+        let mut state = crate::view_feel::ViewFeelState::default();
+        let mut cached_pawn = None;
+        let mut cached_descriptor = None;
+        crate::sync_view_feel_driver(
+            &mut state,
+            &mut cached_pawn,
+            &mut cached_descriptor,
+            Some((followed, &before)),
+        );
+        let kicked = crate::view_feel::evaluate_with_edges(
+            &before,
+            5.0,
+            3.0,
+            true,
+            &[edge],
+            &mut state,
+            0.05,
+            1.0,
+        );
+        assert!(kicked.impulse_fov > 0.0);
+        assert!(kicked.impulse_pitch < 0.0);
+        assert!(kicked.impulse_roll > 0.0);
+        assert!(!approx_eq(kicked.bob_vertical, 0.0));
+        assert!(!approx_eq(kicked.bob_lateral, 0.0));
+        assert!(!approx_eq(kicked.tilt_roll, 0.0));
+        assert!(
+            !approx_eq(kicked.sway_yaw, 0.0)
+                || !approx_eq(kicked.sway_pitch, 0.0)
+                || !approx_eq(kicked.sway_roll, 0.0)
+        );
+        let continuous_state = state;
+
+        let remote_outcome = StagedManifestCommitOutcome::Committed {
+            generation: GENERATION,
+            descriptor_count: 1,
+            applied_actions: 1,
+            dropped_missing_targets: 0,
+            changed_movement_entities: vec![remote],
+        };
+        assert!(!invalidate_refreshed_view_feel_impulses(
+            &remote_outcome,
+            Some(followed),
+            &mut state,
+        ));
+        let after_remote = crate::view_feel::evaluate_with_edges(
+            &before,
+            5.0,
+            3.0,
+            true,
+            &[],
+            &mut state,
+            0.0,
+            1.0,
+        );
+        assert!(approx_eq(after_remote.impulse_fov, kicked.impulse_fov));
+        assert!(approx_eq(after_remote.impulse_pitch, kicked.impulse_pitch));
+        assert!(approx_eq(after_remote.impulse_roll, kicked.impulse_roll));
+
+        let followed_outcome = StagedManifestCommitOutcome::Committed {
+            generation: GENERATION,
+            descriptor_count: 1,
+            applied_actions: 1,
+            dropped_missing_targets: 0,
+            changed_movement_entities: vec![followed],
+        };
+        assert!(invalidate_refreshed_view_feel_impulses(
+            &followed_outcome,
+            Some(followed),
+            &mut state,
+        ));
+        crate::sync_view_feel_driver(
+            &mut state,
+            &mut cached_pawn,
+            &mut cached_descriptor,
+            Some((followed, &after)),
+        );
+        let cleared = crate::view_feel::evaluate_with_edges(
+            &after,
+            5.0,
+            3.0,
+            true,
+            &[],
+            &mut state,
+            0.0,
+            1.0,
+        );
+        assert!(approx_eq(cleared.impulse_fov, 0.0));
+        assert!(approx_eq(cleared.impulse_pitch, 0.0));
+        assert!(approx_eq(cleared.impulse_roll, 0.0));
+        assert!(approx_eq(cleared.bob_vertical, kicked.bob_vertical));
+        assert!(approx_eq(cleared.bob_lateral, kicked.bob_lateral));
+        assert!(approx_eq(cleared.tilt_roll, kicked.tilt_roll));
+        assert!(approx_eq(cleared.sway_yaw, kicked.sway_yaw));
+        assert!(approx_eq(cleared.sway_pitch, kicked.sway_pitch));
+        assert!(approx_eq(cleared.sway_roll, kicked.sway_roll));
+        assert!(approx_eq(
+            state.bob_vertical_phase,
+            continuous_state.bob_vertical_phase
+        ));
+        assert!(approx_eq(
+            state.bob_lateral_phase,
+            continuous_state.bob_lateral_phase
+        ));
+        assert!(approx_eq(state.tilt_roll, continuous_state.tilt_roll));
+        assert!(approx_eq(
+            state.tilt_roll_velocity,
+            continuous_state.tilt_roll_velocity
+        ));
+        assert!(approx_eq(state.sway_clock, continuous_state.sway_clock));
+        assert_eq!(cached_pawn, Some(followed));
+        assert_eq!(cached_descriptor.as_ref(), Some(&after));
+
+        crate::sync_view_feel_driver(
+            &mut state,
+            &mut cached_pawn,
+            &mut cached_descriptor,
+            Some((remote, &after)),
+        );
+        assert_eq!(state, crate::view_feel::ViewFeelState::default());
+
+        let _ = crate::view_feel::evaluate_with_edges(
+            &after,
+            5.0,
+            3.0,
+            true,
+            &[edge],
+            &mut state,
+            0.05,
+            1.0,
+        );
+        crate::sync_view_feel_driver(&mut state, &mut cached_pawn, &mut cached_descriptor, None);
+        assert_eq!(state, crate::view_feel::ViewFeelState::default());
+        assert_eq!(cached_pawn, None);
+        assert_eq!(cached_descriptor, None);
     }
 
     #[test]

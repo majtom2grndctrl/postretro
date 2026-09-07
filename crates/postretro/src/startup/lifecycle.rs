@@ -3589,6 +3589,7 @@ mod tests {
             descriptor_count: 0,
             applied_actions: 0,
             dropped_missing_targets: 0,
+            changed_movement_entities: Vec::new(),
         };
 
         app.commit_staged_ui_manifest(&staged, &committed);
@@ -3609,6 +3610,7 @@ mod tests {
             descriptor_count: 0,
             applied_actions: 0,
             dropped_missing_targets: 0,
+            changed_movement_entities: Vec::new(),
         };
 
         app.commit_staged_ui_manifest(&omitted, &omitted_committed);

@@ -783,15 +783,15 @@ export type SwayParams = {
 
 --- State-transition camera impulse tuning. One critically-damped spring is maintained per state key; `tension` is the default settle rate in 1/sec, and `max` clamps only the summed presented output.
 export type ImpulseParams = {
-  --- Default critical-spring settle rate in 1/sec. Must be finite and > 0; larger values settle sooner without rebound.
+  --- Default critical-spring settle rate in 1/sec. Must be finite in [0.1, 240]; larger values settle sooner without rebound.
   tension: number,
-  --- Absolute per-channel ceiling on the summed presented offset. Every field must be finite and ≥ 0.
+  --- Absolute per-channel ceiling on the summed presented offset. Every field must be finite in [0, 180].
   max: ImpulseChannels,
   --- Sparse state-keyed entry/exit displacement definitions.
   states: ImpulseStates,
 }
 
---- Signed camera displacement in degrees. Entry and exit channels accept finite signed values; `ImpulseParams.max` uses the same shape but requires non-negative values.
+--- Signed camera displacement in degrees. Entry and exit channels must be finite in [-180, 180]; `ImpulseParams.max` uses the same shape with a [0, 180] range.
 export type ImpulseChannels = {
   --- Horizontal field-of-view displacement in degrees.
   fov: number,
@@ -801,7 +801,7 @@ export type ImpulseChannels = {
   roll: number,
 }
 
---- Sparse impulse rows for the closed movement state vocabulary.
+--- Sparse impulse rows for the closed movement state vocabulary. Only JavaScript own properties and Luau direct table entries define rows. Unknown or non-string entries among those are rejected; prototype and `__index` rows are ignored.
 export type ImpulseStates = {
   --- Optional normal-state row.
   normal: ImpulseStateParams?,
@@ -815,7 +815,7 @@ export type ImpulseStates = {
 
 --- Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum.
 export type ImpulseStateParams = {
-  --- Optional state-specific settle rate in 1/sec. Must be finite and > 0 when present.
+  --- Optional state-specific settle rate in 1/sec. Must be finite in [0.1, 240] when present.
   tension: number?,
   --- Optional signed displacement when this state is entered.
   enter: ImpulseChannels?,

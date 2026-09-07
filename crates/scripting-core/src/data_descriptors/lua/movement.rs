@@ -192,8 +192,11 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
-    // `viewFeel` is optional: absence disables view feel. Mirrors the JS path —
-    // two-level present-then-all-required across `bob`/`tilt`/`sway`.
+    // `viewFeel` is optional: absence disables view feel. `bob`/`tilt`/`sway`
+    // and `impulse` are independently optional. An absent legacy motion block
+    // disables that motion; a present one requires all tuning fields except the
+    // optional `groundedOnly` gate. `impulse` validates its own nested state and
+    // channel shape.
     let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
         let raw: LuaValue = table.get("viewFeel").map_err(lua_err)?;
         match raw {
@@ -253,8 +256,10 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
 }
 
 pub fn impulse_params_from_lua(table: &Table) -> Result<ImpulseParams, DescriptorError> {
-    let tension = validate_positive_finite(
+    let tension = validate_in_range_finite(
         get_required_f32_lua(table, "tension")?,
+        ImpulseParams::MIN_TENSION,
+        ImpulseParams::MAX_TENSION,
         "movement.viewFeel.impulse.tension",
     )?;
     let max = get_required_table_lua(table, "max")?;
@@ -268,22 +273,29 @@ pub fn impulse_params_from_lua(table: &Table) -> Result<ImpulseParams, Descripto
 
 fn impulse_max_from_lua(table: &Table) -> Result<ImpulseChannels, DescriptorError> {
     Ok(ImpulseChannels {
-        fov: validate_non_negative_finite(
+        fov: validate_in_range_finite(
             get_required_f32_lua(table, "fov")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.fov",
         )?,
-        pitch: validate_non_negative_finite(
+        pitch: validate_in_range_finite(
             get_required_f32_lua(table, "pitch")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.pitch",
         )?,
-        roll: validate_non_negative_finite(
+        roll: validate_in_range_finite(
             get_required_f32_lua(table, "roll")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.roll",
         )?,
     })
 }
 
 fn impulse_states_from_lua(table: &Table) -> Result<ImpulseStates, DescriptorError> {
+    validate_impulse_state_keys_lua(table)?;
     Ok(ImpulseStates {
         normal: optional_impulse_state_from_lua(table, "normal")?,
         dash: optional_impulse_state_from_lua(table, "dash")?,
@@ -292,21 +304,52 @@ fn impulse_states_from_lua(table: &Table) -> Result<ImpulseStates, DescriptorErr
     })
 }
 
+fn validate_impulse_state_keys_lua(table: &Table) -> Result<(), DescriptorError> {
+    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        let LuaValue::String(key) = key else {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.viewFeel.impulse.states` keys must be strings, got {}",
+                    key.type_name()
+                ),
+            });
+        };
+        let key = key.to_str().map_err(lua_err)?.to_string();
+        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn optional_impulse_state_from_lua(
     table: &Table,
     field: &'static str,
 ) -> Result<Option<ImpulseStateParams>, DescriptorError> {
-    let Some(state) = read_optional_subtable_lua(
-        table,
-        field,
-        &format!("movement.viewFeel.impulse.states.{field}"),
-    )?
-    else {
-        return Ok(None);
+    // State rows are authored descriptor content only when stored directly on
+    // the table. `raw_get` keeps metatable `__index` rows out of the contract.
+    let state = match table.raw_get::<LuaValue>(field).map_err(lua_err)? {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::Table(state) => state,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.viewFeel.impulse.states.{field}` must be a table, got {}",
+                    other.type_name()
+                ),
+            });
+        }
     };
     let tension = match get_optional_f32_lua(&state, "tension")? {
-        Some(value) => Some(validate_positive_finite(
+        Some(value) => Some(validate_in_range_finite(
             value,
+            ImpulseParams::MIN_TENSION,
+            ImpulseParams::MAX_TENSION,
             &format!("movement.viewFeel.impulse.states.{field}.tension"),
         )?),
         None => None,
@@ -336,20 +379,20 @@ fn optional_impulse_channels_from_lua(
     Ok(Some(ImpulseChannels {
         fov: validate_in_range_finite(
             get_required_f32_lua(&channels, "fov")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("fov"),
         )?,
         pitch: validate_in_range_finite(
             get_required_f32_lua(&channels, "pitch")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("pitch"),
         )?,
         roll: validate_in_range_finite(
             get_required_f32_lua(&channels, "roll")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("roll"),
         )?,
     }))

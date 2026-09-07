@@ -745,20 +745,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("ImpulseParams")
         .doc("State-transition camera impulse tuning. One critically-damped spring is maintained per state key; `tension` is the default settle rate in 1/sec, and `max` clamps only the summed presented output.")
-        .field("tension", "f32", "Default critical-spring settle rate in 1/sec. Must be finite and > 0; larger values settle sooner without rebound.")
-        .field("max", "ImpulseChannels", "Absolute per-channel ceiling on the summed presented offset. Every field must be finite and ≥ 0.")
+        .field("tension", "f32", "Default critical-spring settle rate in 1/sec. Must be finite in [0.1, 240]; larger values settle sooner without rebound.")
+        .field("max", "ImpulseChannels", "Absolute per-channel ceiling on the summed presented offset. Every field must be finite in [0, 180].")
         .field("states", "ImpulseStates", "Sparse state-keyed entry/exit displacement definitions.")
         .finish();
     registry
         .register_type("ImpulseChannels")
-        .doc("Signed camera displacement in degrees. Entry and exit channels accept finite signed values; `ImpulseParams.max` uses the same shape but requires non-negative values.")
+        .doc("Signed camera displacement in degrees. Entry and exit channels must be finite in [-180, 180]; `ImpulseParams.max` uses the same shape with a [0, 180] range.")
         .field("fov", "f32", "Horizontal field-of-view displacement in degrees.")
         .field("pitch", "f32", "Camera pitch displacement in degrees.")
         .field("roll", "f32", "Camera roll displacement in degrees.")
         .finish();
     registry
         .register_type("ImpulseStates")
-        .doc("Sparse impulse rows for the closed movement state vocabulary.")
+        .doc("Sparse impulse rows for the closed movement state vocabulary. Only JavaScript own properties and Luau direct table entries define rows. Unknown or non-string entries among those are rejected; prototype and `__index` rows are ignored.")
         .field(
             "normal?",
             "ImpulseStateParams",
@@ -775,7 +775,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("ImpulseStateParams")
         .doc("Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum.")
-        .field("tension?", "f32", "Optional state-specific settle rate in 1/sec. Must be finite and > 0 when present.")
+        .field("tension?", "f32", "Optional state-specific settle rate in 1/sec. Must be finite in [0.1, 240] when present.")
         .field("enter?", "ImpulseChannels", "Optional signed displacement when this state is entered.")
         .field("exit?", "ImpulseChannels", "Optional signed displacement when this state is exited.")
         .finish();

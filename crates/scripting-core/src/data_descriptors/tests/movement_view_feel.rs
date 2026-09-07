@@ -1,4 +1,4 @@
-// Tests: view-feel (bob/tilt/sway) parsing.
+// Tests: view-feel bob, tilt, sway, and transition-impulse parsing/validation.
 
 use super::super::*;
 use super::common::*;
@@ -127,6 +127,129 @@ fn js_and_lua_impulse_parse_sparse_state_rows_and_signed_channels() {
 }
 
 #[test]
+fn impulse_accepts_documented_numeric_boundaries_with_js_luau_parity() {
+    let js = js_movement_with_view_feel(
+        r#"{ impulse: { tension: 0.1, max: { fov: 180.0, pitch: 0.0, roll: 180.0 }, states: { slide: { tension: 240.0, enter: { fov: -180.0, pitch: 180.0, roll: 0.0 } } } } }"#,
+    );
+    let js_descriptor = eval_js(&js, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let js_impulse = js_descriptor
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+    let lua = lua_movement_with_view_feel(
+        r#"{ impulse = { tension = 0.1, max = { fov = 180.0, pitch = 0.0, roll = 180.0 }, states = { slide = { tension = 240.0, enter = { fov = -180.0, pitch = 180.0, roll = 0.0 } } } } }"#,
+    );
+    let lua_descriptor = eval_lua(&lua, |v| entity_descriptor_from_lua(v).unwrap());
+    let lua_impulse = lua_descriptor
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+
+    for impulse in [&js_impulse, &lua_impulse] {
+        assert!((impulse.tension - ImpulseParams::MIN_TENSION).abs() < f32::EPSILON);
+        assert!((impulse.max.fov - ImpulseParams::MAX_CHANNEL_MAGNITUDE).abs() < f32::EPSILON);
+        assert!(impulse.max.pitch.abs() < f32::EPSILON);
+        assert!((impulse.max.roll - ImpulseParams::MAX_CHANNEL_MAGNITUDE).abs() < f32::EPSILON);
+
+        let slide = impulse.states.slide.as_ref().unwrap();
+        assert!((slide.tension.unwrap() - ImpulseParams::MAX_TENSION).abs() < f32::EPSILON);
+        let enter = slide.enter.as_ref().unwrap();
+        assert!((enter.fov + ImpulseParams::MAX_CHANNEL_MAGNITUDE).abs() < f32::EPSILON);
+        assert!((enter.pitch - ImpulseParams::MAX_CHANNEL_MAGNITUDE).abs() < f32::EPSILON);
+        assert!(enter.roll.abs() < f32::EPSILON);
+    }
+}
+
+// Regression: closed impulse-state maps silently ignored misspelled and non-string keys.
+#[test]
+fn impulse_rejects_unknown_and_non_string_state_keys_with_js_luau_parity() {
+    let unknown_js = eval_js(
+        &js_movement_with_view_feel(
+            r#"{ impulse: { tension: 12.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { wallRun: {} } } }"#,
+        ),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+    );
+    let unknown_lua = eval_lua(
+        &lua_movement_with_view_feel(
+            r#"{ impulse = { tension = 12.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { wallRun = {} } } }"#,
+        ),
+        |v| entity_descriptor_from_lua(v).unwrap_err(),
+    );
+    for error in [&unknown_js, &unknown_lua] {
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape, got {error:?}");
+        };
+        assert!(
+            reason.contains("movement.viewFeel.impulse.states.wallRun"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("not a supported movement state"),
+            "{reason}"
+        );
+    }
+
+    let non_string_js = eval_js(
+        &js_movement_with_view_feel(
+            r#"{ impulse: { tension: 12.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { [Symbol("state")]: {} } } }"#,
+        ),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+    );
+    let non_string_lua = eval_lua(
+        &lua_movement_with_view_feel(
+            r#"{ impulse = { tension = 12.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { [1] = {} } } }"#,
+        ),
+        |v| entity_descriptor_from_lua(v).unwrap_err(),
+    );
+    for error in [&non_string_js, &non_string_lua] {
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape, got {error:?}");
+        };
+        assert!(
+            reason.contains("movement.viewFeel.impulse.states"),
+            "{reason}"
+        );
+        assert!(reason.contains("keys must be strings"), "{reason}");
+    }
+}
+
+// Regression: inherited state rows bypassed own-key validation and affected descriptors.
+#[test]
+fn impulse_ignores_inherited_state_rows_with_js_luau_parity() {
+    let js = js_movement_with_view_feel(
+        r#"{ impulse: { tension: 12.0, max: { fov: 20.0, pitch: 8.0, roll: 6.0 }, states: Object.assign(Object.create({ wallRun: {}, slide: { enter: { fov: 8.0, pitch: -2.5, roll: 1.5 } } }), { crouch: { enter: { fov: 2.0, pitch: 1.0, roll: 0.0 } } }) } }"#,
+    );
+    let js_impulse = eval_js(&js, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap())
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+    assert!(js_impulse.states.crouch.is_some());
+    assert!(js_impulse.states.slide.is_none());
+
+    let lua = lua_movement_with_view_feel(
+        r#"{ impulse = { tension = 12.0, max = { fov = 20.0, pitch = 8.0, roll = 6.0 }, states = setmetatable({ crouch = { enter = { fov = 2.0, pitch = 1.0, roll = 0.0 } } }, { __index = { wallRun = {}, slide = { enter = { fov = 8.0, pitch = -2.5, roll = 1.5 } } } }) } }"#,
+    );
+    let lua_impulse = eval_lua(&lua, |v| entity_descriptor_from_lua(v).unwrap())
+        .movement
+        .unwrap()
+        .view_feel
+        .unwrap()
+        .impulse
+        .unwrap();
+    assert!(lua_impulse.states.crouch.is_some());
+    assert!(lua_impulse.states.slide.is_none());
+}
+
+#[test]
 fn impulse_rejects_invalid_values_with_js_luau_parity() {
     for (js_body, lua_body, path) in [
         (
@@ -158,6 +281,26 @@ fn impulse_rejects_invalid_values_with_js_luau_parity() {
             r#"{ impulse: { tension: 1.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { slide: { exit: { fov: 0.0, pitch: 0.0, roll: -Infinity } } } } }"#,
             r#"{ impulse = { tension = 1.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { slide = { exit = { fov = 0.0, pitch = 0.0, roll = -math.huge } } } } }"#,
             "impulse.states.slide.exit.roll",
+        ),
+        (
+            r#"{ impulse: { tension: 0.09, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 0.09, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.tension",
+        ),
+        (
+            r#"{ impulse: { tension: 12.0, max: { fov: 180.01, pitch: 1.0, roll: 1.0 }, states: {} } }"#,
+            r#"{ impulse = { tension = 12.0, max = { fov = 180.01, pitch = 1.0, roll = 1.0 }, states = {} } }"#,
+            "impulse.max.fov",
+        ),
+        (
+            r#"{ impulse: { tension: 12.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { slide: { tension: 240.01 } } } }"#,
+            r#"{ impulse = { tension = 12.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { slide = { tension = 240.01 } } } }"#,
+            "impulse.states.slide.tension",
+        ),
+        (
+            r#"{ impulse: { tension: 12.0, max: { fov: 1.0, pitch: 1.0, roll: 1.0 }, states: { slide: { enter: { fov: -180.01, pitch: 0.0, roll: 0.0 } } } } }"#,
+            r#"{ impulse = { tension = 12.0, max = { fov = 1.0, pitch = 1.0, roll = 1.0 }, states = { slide = { enter = { fov = -180.01, pitch = 0.0, roll = 0.0 } } } } }"#,
+            "impulse.states.slide.enter.fov",
         ),
     ] {
         let js_error = eval_js(&js_movement_with_view_feel(js_body), |ctx, v| {

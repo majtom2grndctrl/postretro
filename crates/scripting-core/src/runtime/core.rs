@@ -635,6 +635,7 @@ impl ScriptRuntime {
                 descriptor_count: ctx.data_registry.borrow().entities.len(),
                 applied_actions: apply_summary.applied_actions,
                 dropped_missing_targets: apply_summary.dropped_missing_targets,
+                changed_movement_entities: apply_summary.changed_movement_entities,
             };
         }
         #[cfg(not(debug_assertions))]

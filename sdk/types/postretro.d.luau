@@ -222,6 +222,8 @@ export type EntityTypeComponents = {
   health: HealthDescriptor?,
   --- Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state.
   faction: string?,
+  --- Optional finite retaliation tolerance for this brain-bearing archetype. Candidate guards read only the resolved `candidate.tolerance` relationship fact, never engine-owned state storage.
+  tolerance: number?,
   --- Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.
   behavior: BehaviorGraphDescriptor?,
 }
@@ -2376,6 +2378,8 @@ export type CandidateInputs = {
   damageDealtToMe: RuntimeGuardNode,
   --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number).
   timeSinceDamageFromCandidate: RuntimeGuardNode,
+  --- Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number).
+  tolerance: RuntimeGuardNode,
 }
 
 --- Pre-wrapped leaves for graph candidate eligibility.

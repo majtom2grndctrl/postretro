@@ -809,6 +809,7 @@ mod tests {
     fn weapon_descriptor(name: &str, damage: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,
@@ -843,6 +844,7 @@ mod tests {
     fn light_descriptor(name: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: Some(LightDescriptor {
@@ -882,6 +884,7 @@ mod tests {
     fn emitter_descriptor(name: &str, sprite: &str, rate: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,
@@ -908,6 +911,7 @@ mod tests {
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,
@@ -991,6 +995,7 @@ mod tests {
         use crate::data_descriptors::HealthDescriptor;
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,
@@ -1686,6 +1691,7 @@ mod tests {
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(name.to_string()),
             inventory: None,
             light: None,

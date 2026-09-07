@@ -143,6 +143,33 @@ fn entity_descriptor_without_components_field_deserializes() {
 }
 
 #[test]
+fn entity_archetype_tolerance_has_js_luau_parity_and_rejects_non_finite_values() {
+    let js = eval_js(r#"({ components: { tolerance: 2.5 } })"#, |ctx, value| {
+        entity_descriptor_from_js(ctx, value).expect("QuickJS tolerance parses")
+    });
+    let lua = eval_lua(r#"return { components = { tolerance = 2.5 } }"#, |value| {
+        entity_descriptor_from_lua(value).expect("Luau tolerance parses")
+    });
+    assert_eq!(js.tolerance, lua.tolerance);
+    assert!((js.tolerance.expect("tolerance is retained") - 2.5).abs() <= f32::EPSILON);
+
+    let js_error = eval_js(
+        r#"({ components: { tolerance: Infinity } })"#,
+        entity_descriptor_from_js,
+    )
+    .expect_err("non-finite QuickJS tolerance rejects")
+    .to_string();
+    let lua_error = eval_lua(
+        r#"return { components = { tolerance = math.huge } }"#,
+        entity_descriptor_from_lua,
+    )
+    .expect_err("non-finite Luau tolerance rejects")
+    .to_string();
+    assert!(js_error.contains("components.tolerance"), "{js_error}");
+    assert!(lua_error.contains("components.tolerance"), "{lua_error}");
+}
+
+#[test]
 fn touchable_descriptor_has_js_luau_parity_for_defaults_and_radius_validation() {
     let js = eval_js(
         r#"({ components: { touchable: { mode: "press" } } })"#,

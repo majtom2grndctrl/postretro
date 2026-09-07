@@ -9449,6 +9449,7 @@ mod tests {
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(canonical_name.to_owned()),
             inventory: None,
             light: None,
@@ -12822,6 +12823,7 @@ mod tests {
 
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("remote_enemy".to_string()),
             inventory: None,
             light: None,

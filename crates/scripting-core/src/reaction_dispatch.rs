@@ -1000,6 +1000,7 @@ mod tests {
         let mut data = DataRegistry::new();
         data.upsert_entity_type(EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("grunt".to_string()),
             inventory: None,
             light: None,
@@ -1017,6 +1018,7 @@ mod tests {
             resolved,
             Some(&EntityTypeDescriptor {
                 faction: None,
+                tolerance: None,
                 canonical_name: Some("grunt".to_string()),
                 inventory: None,
                 light: None,

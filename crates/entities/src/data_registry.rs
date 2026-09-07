@@ -604,6 +604,7 @@ mod tests {
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("grunt".to_string()),
             inventory: None,
             light: None,

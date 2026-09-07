@@ -19,7 +19,13 @@ pub struct EntityStateComponent {
 impl EntityStateComponent {
     /// Read a field, using the IR's total numeric default for an unset name.
     pub fn get(&self, name: &str) -> f32 {
-        self.values.get(name).copied().unwrap_or(0.0)
+        self.get_opt(name).unwrap_or(0.0)
+    }
+
+    /// Read a field while preserving whether it was ever written. Engine-owned
+    /// optional state uses this when zero is a meaningful authored value.
+    pub fn get_opt(&self, name: &str) -> Option<f32> {
+        self.values.get(name).copied()
     }
 
     /// Write a field, creating it when this is the first write for `name`.
@@ -44,8 +50,10 @@ mod tests {
     fn absent_field_reads_as_zero_and_first_write_creates_it() {
         let mut state = EntityStateComponent::default();
         assert_number_approx_eq(state.get("hits"), 0.0);
+        assert_eq!(state.get_opt("hits"), None);
 
         state.set("hits", 3.0);
         assert_number_approx_eq(state.get("hits"), 3.0);
+        assert_eq!(state.get_opt("hits"), Some(3.0));
     }
 }

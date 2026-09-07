@@ -2207,6 +2207,7 @@ mod tests {
         let id = registry.spawn(Transform::default());
         let descriptor = EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("remote-holder".to_string()),
             inventory: None,
             light: None,

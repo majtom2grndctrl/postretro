@@ -70,6 +70,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
 
     EntityTypeDescriptor {
         faction: None,
+        tolerance: None,
         canonical_name: Some(classname.to_string()),
         inventory: None,
         light: None,

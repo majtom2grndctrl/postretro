@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::scripting_systems::ai::FACTION_STATE_FIELD;
+use crate::scripting_systems::ai::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
@@ -681,13 +681,16 @@ pub(crate) fn attach_descriptor_components(
             brain.home_anchor = home_anchor;
             let _ = registry.set_component(id, brain);
         }
-        registry
+        let state = registry
             .entity_state_mut(id)
-            .expect("newly spawned descriptor entity carries entity state")
-            .set(
-                FACTION_STATE_FIELD,
-                descriptor.faction.unwrap_or(DEFAULT_ENEMY_FACTION_INDEX),
-            );
+            .expect("newly spawned descriptor entity carries entity state");
+        state.set(
+            FACTION_STATE_FIELD,
+            descriptor.faction.unwrap_or(DEFAULT_ENEMY_FACTION_INDEX),
+        );
+        if let Some(tolerance) = descriptor.tolerance {
+            state.set(ARCHETYPE_TOLERANCE_STATE_FIELD, tolerance);
+        }
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, move_speed);
@@ -1071,6 +1074,7 @@ mod tests {
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: Some(LightDescriptor {
@@ -1293,6 +1297,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("target_dummy".to_string()),
             inventory: None,
             light: None,
@@ -1725,6 +1730,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1771,6 +1777,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1814,6 +1821,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("campfire".to_string()),
             inventory: None,
             light: None,
@@ -1854,6 +1862,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("burstfire".to_string()),
             inventory: None,
             light: None,
@@ -1896,6 +1905,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("smolder".to_string()),
             inventory: None,
             light: None,
@@ -1957,6 +1967,7 @@ mod tests {
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("billboard_emitter".to_string()),
             inventory: None,
             light: Some(LightDescriptor {
@@ -2026,6 +2037,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: None,
             inventory: None,
             light: Some(LightDescriptor {
@@ -2144,6 +2156,7 @@ mod tests {
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2160,6 +2173,7 @@ mod tests {
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2211,6 +2225,7 @@ mod tests {
     fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: Some(postretro_entities::InventoryDescriptor {
                 loadout: loadout.iter().map(|name| (*name).to_string()).collect(),
@@ -2338,6 +2353,7 @@ mod tests {
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -2493,7 +2509,7 @@ mod tests {
     }
 
     #[test]
-    fn player_spawn_keeps_the_absent_faction_state() {
+    fn player_spawn_keeps_engine_relationship_state_absent() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![player_with_movement("player")];
 
@@ -2502,12 +2518,18 @@ mod tests {
         let local = reg
             .local_player_pawn()
             .expect("player spawn should mark the selected local pawn");
+        let state = reg
+            .entity_state_mut(local)
+            .expect("player pawn carries entity state");
         assert_eq!(
-            reg.entity_state_mut(local)
-                .expect("player pawn carries entity state")
-                .get(FACTION_STATE_FIELD),
+            state.get(FACTION_STATE_FIELD),
             postretro_entities::PLAYER_FACTION_INDEX,
             "player pawn does not receive the default-enemy fallback"
+        );
+        assert_eq!(
+            state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD),
+            None,
+            "player pawns never inherit a brain archetype tolerance"
         );
     }
 
@@ -3347,12 +3369,46 @@ mod tests {
                 .position,
             "host brain anchors to its spawn transform rather than descriptor data"
         );
+        let state = reg
+            .entity_state_mut(id)
+            .expect("behavior enemy carries entity state");
         assert_eq!(
-            reg.entity_state_mut(id)
-                .expect("behavior enemy carries entity state")
-                .get(FACTION_STATE_FIELD),
+            state.get(FACTION_STATE_FIELD),
             DEFAULT_ENEMY_FACTION_INDEX,
             "host descriptor assembly seeds the transparent default enemy faction"
+        );
+        assert_eq!(
+            state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD),
+            None,
+            "an absent descriptor tolerance remains absent for pair fallback"
+        );
+    }
+
+    #[test]
+    fn behavior_descriptor_spawn_seeds_optional_archetype_tolerance() {
+        let mut descriptor = behavior_enemy_descriptor("low_tolerance_grunt");
+        descriptor.tolerance = Some(2.5);
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &[placement("low_tolerance_grunt", &[])],
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("behavior descriptor materializes a Brain");
+        let tolerance = reg
+            .entity_state_mut(id)
+            .expect("behavior enemy carries entity state")
+            .get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD)
+            .expect("authored tolerance is seeded");
+        assert!(
+            (tolerance - 2.5).abs() <= f32::EPSILON,
+            "expected 2.5, got {tolerance}"
         );
     }
 

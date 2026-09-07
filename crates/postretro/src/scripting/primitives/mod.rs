@@ -274,6 +274,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("faction?", "Option<String>", "Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state.")
+        .field("tolerance?", "Option<f32>", "Optional finite retaliation tolerance for this brain-bearing archetype. Candidate guards read only the resolved `candidate.tolerance` relationship fact, never engine-owned state storage.")
         .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.")
         .finish();
     registry

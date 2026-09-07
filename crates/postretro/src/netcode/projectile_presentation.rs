@@ -711,6 +711,7 @@ mod tests {
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
             faction: None,
+            tolerance: None,
             canonical_name: Some("test_remote_projectile".to_string()),
             inventory: None,
             light: None,

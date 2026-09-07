@@ -312,6 +312,10 @@ pub struct EntityTypeDescriptor {
     /// script-authored numeric value: manifest drain resolves an optional named
     /// `components.faction` declaration before this descriptor reaches spawn.
     pub faction: Option<f32>,
+    /// Optional finite retaliation tolerance for brain-bearing entity
+    /// seeds. It remains engine-owned entity state at runtime; authored guards
+    /// read the resolved candidate fact rather than this storage value.
+    pub tolerance: Option<f32>,
     pub canonical_name: Option<String>,
     pub inventory: Option<InventoryDescriptor>,
     pub light: Option<LightDescriptor>,

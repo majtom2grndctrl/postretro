@@ -117,6 +117,10 @@ export interface CandidateInputs {
   /** Milliseconds since this candidate last damaged the evaluating enemy, or
    * `1e9` when it has not damaged that enemy (number). */
   readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
+  /** Retaliation tolerance resolved from this enemy's archetype override, then
+   * its directed faction pair toward this candidate, or `f32::MAX` when
+   * unauthored (number). */
+  readonly tolerance: RuntimeGuardNode;
 }
 
 /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -152,6 +156,7 @@ export const candidate: CandidateInputs = Object.freeze({
   sentiment: input("@candidate.sentiment"),
   damageDealtToMe: input("@candidate.damageDealtToMe"),
   timeSinceDamageFromCandidate: input("@candidate.timeSinceDamageFromCandidate"),
+  tolerance: input("@candidate.tolerance"),
 });
 
 /** Read a per-entity state field as a guard input: `state("staggered")` is the

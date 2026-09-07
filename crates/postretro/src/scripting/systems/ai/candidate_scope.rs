@@ -20,6 +20,18 @@ use super::{ARCHETYPE_TOLERANCE_STATE_FIELD, DEFAULT_RETALIATION_TOLERANCE, FACT
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CandidateInputHandle(usize);
 
+/// Engine-facing subset of one refreshed candidate scope. Keeping these values
+/// beside the fixed IR inputs lets targeting make its engine-owned offer and
+/// ranking decisions from the exact same ledger/tolerance resolution authored
+/// guards observe, without a second divergent lookup.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CandidateFacts {
+    pub(crate) sentiment: f32,
+    pub(crate) accumulated_damage: f32,
+    pub(crate) time_since_damage_ms: f32,
+    pub(crate) tolerance: f32,
+}
+
 /// One reusable snapshot, refreshed for every candidate during an acquisition
 /// scan. The array is fixed at the source table's length: refresh writes slots
 /// by index and cannot allocate.
@@ -48,7 +60,7 @@ impl CandidateScope {
         recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
         candidate: EntityId,
         distance: f32,
-    ) {
+    ) -> CandidateFacts {
         let health = registry.get_component::<HealthComponent>(candidate).ok();
         let candidate_faction = registry
             .get_component::<EntityStateComponent>(candidate)
@@ -62,23 +74,30 @@ impl CandidateScope {
         let tolerance = archetype_tolerance
             .or_else(|| factions.tolerance(evaluating_faction, candidate_faction))
             .unwrap_or(DEFAULT_RETALIATION_TOLERANCE);
+        let sentiment = factions.sentiment(evaluating_faction, candidate_faction);
         let attacker_record = recent_attackers
             .iter()
             .flatten()
             .find(|entry| entry.attacker == candidate);
+        let accumulated_damage = attacker_record.map_or(0.0, |entry| entry.accumulated_damage);
+        let time_since_damage_ms =
+            attacker_record.map_or(BRAIN_NO_TARGET_DISTANCE, |entry| entry.time_since_damage_ms);
         self.fixed = [
             IrValue::Number(distance),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
             IrValue::Bool(health.is_some_and(|health| health.death_handled)),
-            IrValue::Number(factions.sentiment(evaluating_faction, candidate_faction)),
-            IrValue::Number(attacker_record.map_or(0.0, |entry| entry.accumulated_damage)),
-            IrValue::Number(
-                attacker_record
-                    .map_or(BRAIN_NO_TARGET_DISTANCE, |entry| entry.time_since_damage_ms),
-            ),
+            IrValue::Number(sentiment),
+            IrValue::Number(accumulated_damage),
+            IrValue::Number(time_since_damage_ms),
             IrValue::Number(tolerance),
         ];
+        CandidateFacts {
+            sentiment,
+            accumulated_damage,
+            time_since_damage_ms,
+            tolerance,
+        }
     }
 }
 

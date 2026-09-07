@@ -134,6 +134,12 @@ pub struct BrainComponent {
     /// target. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
+    /// Target whose retention was acquired by the engine-owned retaliation
+    /// preference rather than ordinary pure-distance ranking. It is keyed to
+    /// the retained target and cleared with every ordinary target-loss path;
+    /// authors cannot write or observe this engine retention detail directly.
+    #[serde(default)]
+    pub retaliation_acquired_target: Option<EntityId>,
     /// Last accepted combat-position slot around the acquired target. Retained
     /// on the brain so AI can apply slot hysteresis across ticks without
     /// coupling that state to path-following movement.
@@ -224,6 +230,7 @@ impl BrainComponent {
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,
+            retaliation_acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
             graph: Arc::new(graph.clone()),
@@ -874,6 +881,7 @@ mod tests {
                 )]),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: std::collections::BTreeMap::from([(
                 "claw".to_string(),
@@ -1175,6 +1183,21 @@ mod tests {
         let restored: BrainComponent =
             serde_json::from_value(serialized).expect("pre-attacker-ledger brain deserializes");
         assert!(restored.recent_attackers.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn deserializing_a_pre_retaliation_latch_brain_defaults_to_no_mark() {
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.retaliation_acquired_target = Some(EntityId::from_raw(42));
+        let mut serialized = serde_json::to_value(&brain).expect("brain serializes");
+        serialized
+            .as_object_mut()
+            .expect("brain serializes as an object")
+            .remove("retaliation_acquired_target");
+
+        let restored: BrainComponent =
+            serde_json::from_value(serialized).expect("pre-retaliation brain deserializes");
+        assert_eq!(restored.retaliation_acquired_target, None);
     }
 
     #[test]

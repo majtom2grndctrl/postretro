@@ -153,12 +153,18 @@ pub(super) fn evaluate(
                         candidate_filter,
                         candidate_scope,
                         &brain.recent_attackers,
+                        brain.retaliation_acquired_target,
+                        brain.graph.retaliation(),
+                        dt_ms,
                         &mut candidate_perception,
                     )
                 } else {
                     Some(TargetSelection {
                         target: retained.target,
                         fresh_perception: None,
+                        retaliation_acquired_target: brain
+                            .retaliation_acquired_target
+                            .filter(|target| *target == retained.target.entity),
                     })
                 };
                 (target, evaluate_acquisition)
@@ -201,6 +207,9 @@ pub(super) fn evaluate(
                         candidate_filter,
                         candidate_scope,
                         &brain.recent_attackers,
+                        brain.retaliation_acquired_target,
+                        brain.graph.retaliation(),
+                        dt_ms,
                         &mut candidate_perception,
                     )
                 });
@@ -429,6 +438,15 @@ pub(super) fn evaluate(
         let retains_target = target.is_some() && !resolved_position_goal && engages_active(&brain);
         brain.acquired_target = match target {
             Some(target) if retains_target => Some(target.entity),
+            _ => None,
+        };
+        brain.retaliation_acquired_target = match target_selection {
+            Some(selection)
+                if retains_target
+                    && selection.retaliation_acquired_target == Some(selection.target.entity) =>
+            {
+                Some(selection.target.entity)
+            }
             _ => None,
         };
 

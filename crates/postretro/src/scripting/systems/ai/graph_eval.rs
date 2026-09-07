@@ -497,6 +497,7 @@ mod statechart_tests {
                     .unwrap_or_default(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: BTreeMap::from([(
                 "slam".to_string(),

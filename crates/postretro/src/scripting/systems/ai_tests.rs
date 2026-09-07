@@ -83,6 +83,7 @@ macro_rules! test_behavior_graph {
         activities: $activities:expr,
         transitions: $transitions:expr,
         candidate_filter: $candidate_filter:expr,
+        retaliation: None,
         patrol: $patrol:expr,
         attacks: $attacks:expr,
         engagement_radius: $engagement_radius:expr,
@@ -95,6 +96,7 @@ macro_rules! test_behavior_graph {
                 transitions: $transitions,
             },
             candidate_filter: $candidate_filter,
+            retaliation: None,
             patrol: $patrol,
             attacks: $attacks,
             engagement_radius: $engagement_radius,
@@ -177,6 +179,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
             ),
         ]),
         candidate_filter: Some(candidate_is_alive_within(aggro_range)),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -478,6 +481,12 @@ fn enemy_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<Entity
         .acquired_target
 }
 
+fn enemy_retaliation_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<EntityId> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .retaliation_acquired_target
+}
+
 fn set_enemy_aggro_armed(reg: &mut EntityRegistry, enemy: EntityId, aggro_armed: bool) {
     let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
     brain.aggro_armed = aggro_armed;
@@ -619,6 +628,7 @@ fn reachability_graph() -> BehaviorGraphDescriptor {
             vec![edge("hold", target_is_unreachable())],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -637,6 +647,7 @@ fn reachability_cache_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -1795,6 +1806,12 @@ fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it()
         "detection must set a destination",
     );
 
+    // The ordinary clear path owns an already-latched retaliation target too;
+    // it must not survive an authored stand-down as stale engine state.
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.retaliation_acquired_target = Some(pawn);
+    reg.set_component(enemy, brain).unwrap();
+
     // Player exceeds the graph's authored aggro range (10 > 8): the interrupt
     // must clear the destination.
     let mut t = *reg.get_component::<Transform>(pawn).unwrap();
@@ -1806,6 +1823,11 @@ fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it()
         enemy_acquired_target(&reg, enemy),
         None,
         "the authored stand-down clears the retained target identity",
+    );
+    assert_eq!(
+        enemy_retaliation_acquired_target(&reg, enemy),
+        None,
+        "the authored stand-down also clears the engine retaliation latch",
     );
     assert!(
         !agent_steering::path_state(&reg, enemy)
@@ -2457,6 +2479,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
             )],
         )]),
         candidate_filter: Some(candidate_is_alive_within(TEST_AGGRO_RANGE)),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -4999,6 +5022,7 @@ fn damage_recency_graph() -> BehaviorGraphDescriptor {
             )],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5262,6 +5286,7 @@ fn last_known_memory_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5436,6 +5461,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -5605,6 +5631,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
         candidate_filter: Some(IrNode::Const {
             value: IrValue::Bool(false),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5717,6 +5744,7 @@ fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target
                 value: IrValue::Number(30.0),
             }),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5876,6 +5904,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
                 value: IrValue::Bool(true),
             }),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6081,6 +6110,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -6264,6 +6294,7 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6337,6 +6368,7 @@ fn interrupt_graph(wildcard_rows: Vec<GuardedRow>) -> BehaviorGraphDescriptor {
             ("*".to_string(), wildcard_rows),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6552,6 +6584,7 @@ fn petrifying_graph() -> BehaviorGraphDescriptor {
             )],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6773,6 +6806,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
             mode: PatrolMode::PingPong,
@@ -7123,6 +7157,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ]),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
             mode: PatrolMode::PingPong,
@@ -7930,6 +7965,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([
             (
@@ -8390,6 +8426,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -8566,6 +8603,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "shoot".to_string(),
@@ -9221,6 +9259,7 @@ fn occluded_fresh_offer_prices_stride_but_is_not_acquired() {
             vec![edge("due", brain_input(BRAIN_ACQUISITION_DUE_INPUT))],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -9306,6 +9345,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -9673,6 +9713,7 @@ fn position_goal_graph(
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: patrol,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -9767,6 +9808,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [3.0, 0.0]],
             mode: PatrolMode::PingPong,
@@ -9948,6 +9990,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),

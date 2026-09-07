@@ -587,6 +587,16 @@ export type BehaviorGraphEnvelope = {
   transitions: { [string]: {GuardedRow} },
 }
 
+--- Scalar tuning for the engine-owned retaliation preference. It exposes no authored ranking expression: the engine applies its fixed threshold, score, and retention rule.
+export type RetaliationDescriptor = {
+  --- Optional recent-damage window in milliseconds. Must be finite and >= 0; zero or a duration shorter than one AI tick explicitly disables retaliation accrual. Defaults to 1500.
+  windowMs: number?,
+  --- Optional finite non-negative multiplier for accumulated damage in the engine retaliation score. Defaults to 1.
+  damageWeight: number?,
+  --- Optional finite non-negative per-millisecond age penalty in the engine retaliation score. Defaults to 0.001.
+  recencyWeight: number?,
+}
+
 --- Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.
 export type BehaviorGraphDescriptor = {
   --- Root initial activity. It is also forced when the aggro gate closes.
@@ -597,6 +607,8 @@ export type BehaviorGraphDescriptor = {
   transitions: { [string]: {GuardedRow} },
   --- Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.
   candidateFilter: RuntimeValue?,
+  --- Optional scalar tuning for the engine-owned retaliation preference. The block cannot author ranking logic; omitted values use compatibility defaults and the default tolerance keeps the term inert.
+  retaliation: RetaliationDescriptor?,
   --- Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion.
   patrol: PatrolDescriptor?,
   --- Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph.

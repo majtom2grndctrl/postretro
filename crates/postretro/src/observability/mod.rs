@@ -342,6 +342,7 @@ mod tests {
                         transitions: Default::default(),
                     },
                     candidate_filter: None,
+                    retaliation: None,
                     patrol: None,
                     attacks: std::collections::BTreeMap::from([(
                         "attack".to_string(),

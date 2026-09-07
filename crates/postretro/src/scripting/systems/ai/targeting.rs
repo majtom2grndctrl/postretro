@@ -16,9 +16,9 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
     EntityId, EntityRegistry, EntityStateComponent, FactionRegistry, Transform,
 };
-use postretro_foundation::{BoundProgram, IrValue, eval_value};
+use postretro_foundation::{BoundProgram, IrValue, RetaliationDescriptor, eval_value};
 
-use super::candidate_scope::CandidateScope;
+use super::candidate_scope::{CandidateFacts, CandidateScope};
 
 #[cfg(test)]
 const EMPTY_RECENT_ATTACKERS: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] =
@@ -43,15 +43,73 @@ pub(super) struct TargetCandidate {
 pub(super) struct TargetSelection {
     pub(super) target: TargetPawn,
     pub(super) fresh_perception: Option<RawTargetPerception>,
+    /// The target whose current retention is owned by the engine retaliation
+    /// term. `None` leaves ordinary pure-distance retention untouched.
+    pub(super) retaliation_acquired_target: Option<EntityId>,
 }
 
-/// The raw hostile offer set from one registry walk. `nearest` prices the
-/// acquisition stride; `candidates` is retained so a due tick can apply
-/// eligibility without walking the registry a second time.
+/// All raw pawn candidates from one registry walk. `nearest` alone contains
+/// the pure nearest sentiment-hostile candidate and prices acquisition stride;
+/// `candidates` is retained so a due tick can apply candidacy and the narrow
+/// over-tolerance admission without walking the registry a second time.
 #[derive(Debug)]
 pub(super) struct TargetOffers {
     pub(super) nearest: Option<TargetCandidate>,
     candidates: Vec<TargetCandidate>,
+}
+
+/// A stable engine-owned retaliation preference. Its scalar score lets content
+/// tune damage versus recency, while deterministic damage and distance
+/// tiebreaks keep equal scores from depending on registry iteration order.
+#[derive(Clone, Copy, Debug)]
+struct RetaliationRank {
+    score: f32,
+    accumulated_damage: f32,
+    distance: f32,
+}
+
+impl RetaliationRank {
+    fn from_facts(facts: CandidateFacts, distance: f32, tuning: RetaliationDescriptor) -> Self {
+        Self {
+            score: facts.accumulated_damage * tuning.damage_weight
+                - facts.time_since_damage_ms * tuning.recency_weight,
+            accumulated_damage: facts.accumulated_damage,
+            distance,
+        }
+    }
+
+    fn is_preferred_to(self, other: Self) -> bool {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.accumulated_damage.total_cmp(&other.accumulated_damage))
+            .then_with(|| other.distance.total_cmp(&self.distance))
+            .is_gt()
+    }
+
+    fn exceeds_margin_over(self, held: Self) -> bool {
+        self.score > held.score + RETALIATION_PREFERENCE_MARGIN
+    }
+}
+
+/// A challenger must improve this engine-owned retaliation score strictly by
+/// one whole preference point before it transfers a retained retaliation mark.
+/// The fixed margin blocks two similar provokers from leapfrogging every tick.
+const RETALIATION_PREFERENCE_MARGIN: f32 = 1.0;
+
+/// Return the rank only when a candidate is presently eligible for retaliation.
+/// `window_ms <= 0` and sub-tick windows short-circuit before the age check so
+/// a same-tick age of zero can never accidentally activate the term.
+fn retaliation_preference(
+    facts: CandidateFacts,
+    distance: f32,
+    tuning: RetaliationDescriptor,
+    tick_ms: f32,
+) -> Option<RetaliationRank> {
+    (tuning.window_ms > 0.0
+        && tuning.window_ms >= tick_ms
+        && facts.time_since_damage_ms <= tuning.window_ms
+        && facts.accumulated_damage > facts.tolerance)
+        .then(|| RetaliationRank::from_facts(facts, distance, tuning))
 }
 
 pub(super) fn target_candidate(
@@ -71,9 +129,9 @@ pub(super) fn target_candidate(
     })
 }
 
-/// Collect hostile candidates without applying either authored or engine-floor
-/// eligibility. The raw nearest hostile offer is the think-stride price, so it
-/// must remain independent of candidacy and LOS.
+/// Collect all targetable pawns without applying authored or engine-floor
+/// eligibility. Only the raw nearest hostile candidate prices the think stride,
+/// so a later retaliation admission can never alter that cost input.
 pub(super) fn target_offers(
     registry: &EntityRegistry,
     factions: &FactionRegistry,
@@ -99,20 +157,20 @@ pub(super) fn target_offers(
         let Some(candidate) = target_candidate(registry, entity, from) else {
             continue;
         };
-        // Hostility defines the engine's offered set for fresh acquisition. A
-        // friendly pawn therefore prices neither selection nor its think stride.
+        // Hostility alone contributes to the pure-distance stride price. The
+        // non-hostile pawn remains in the raw scan so selection can admit it
+        // only if its one refreshed candidate scope proves over tolerance.
         // Retained lookup stays above this scan and deliberately never re-gates
         // its target on hostility.
         let candidate_faction = registry
             .get_component::<EntityStateComponent>(candidate.target.entity)
             .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD));
         let hostile = is_hostile(factions, enemy_faction, candidate_faction);
-        if !hostile {
-            continue;
-        }
-        if nearest.is_none_or(|current: TargetCandidate| {
-            candidate.distance.total_cmp(&current.distance).is_lt()
-        }) {
+        if hostile
+            && nearest.is_none_or(|current: TargetCandidate| {
+                candidate.distance.total_cmp(&current.distance).is_lt()
+            })
+        {
             nearest = Some(candidate);
         }
         candidates.push(candidate);
@@ -175,6 +233,9 @@ pub(super) fn select_target(
         candidate_filter,
         candidate_scope,
         &EMPTY_RECENT_ATTACKERS,
+        None,
+        RetaliationDescriptor::default(),
+        1_000.0 / 60.0,
         candidate_perception,
     )
 }
@@ -194,64 +255,151 @@ pub(super) fn select_target_with_attacker_ledger(
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
     recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+    retaliation_acquired_target: Option<EntityId>,
+    retaliation: RetaliationDescriptor,
+    tick_ms: f32,
     candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
 ) -> Option<TargetSelection> {
-    let nearest_eligible = offers
-        .candidates
-        .iter()
-        .copied()
-        .fold(None, |eligible, candidate| {
-            // Both predicates apply only to fresh candidacy. Keep this after
-            // the raw offer calculation so LOS never reprices the stride.
-            let filter_allows = candidate_filter.is_none_or(|filter| {
-                candidate_scope.refresh(
-                    registry,
-                    factions,
-                    evaluating_enemy,
-                    evaluating_faction,
-                    recent_attackers,
-                    candidate.target.entity,
-                    candidate.distance,
-                );
-                eval_value(filter, candidate_scope) == IrValue::Bool(true)
-            });
-            let fresh_perception = filter_allows
-                .then(|| candidate_perception(candidate.target))
-                .flatten()
-                .filter(|perception| perception.visible);
-            match fresh_perception {
-                Some(fresh_perception)
-                    if eligible.is_none_or(
-                        |(current, _): (TargetCandidate, RawTargetPerception)| {
-                            candidate.distance.total_cmp(&current.distance).is_lt()
-                        },
-                    ) =>
-                {
-                    Some((candidate, fresh_perception))
-                }
-                _ => eligible,
-            }
-        });
+    #[derive(Clone, Copy)]
+    struct EligibleCandidate {
+        candidate: TargetCandidate,
+        perception: RawTargetPerception,
+        retaliation: Option<RetaliationRank>,
+    }
 
-    match (retained, nearest_eligible) {
-        (Some(retained), Some((nearest, fresh_perception)))
-            if is_meaningfully_closer(nearest.distance, retained.distance) =>
-        {
-            Some(TargetSelection {
-                target: nearest.target,
-                fresh_perception: Some(fresh_perception),
-            })
+    let mut nearest_distance_eligible: Option<EligibleCandidate> = None;
+    let mut preferred_eligible: Option<EligibleCandidate> = None;
+    for candidate in offers.candidates.iter().copied() {
+        let facts = candidate_scope.refresh(
+            registry,
+            factions,
+            evaluating_enemy,
+            evaluating_faction,
+            recent_attackers,
+            candidate.target.entity,
+            candidate.distance,
+        );
+        let retaliation_preference =
+            retaliation_preference(facts, candidate.distance, retaliation, tick_ms);
+        let hostile = facts.sentiment < 0.0;
+        // This is the only non-hostile admission path. Candidate guards remain
+        // narrowing-only and are deliberately not evaluated for an engine
+        // candidate that did not first pass the offer floor.
+        if !hostile && retaliation_preference.is_none() {
+            continue;
         }
-        (Some(retained), _) => Some(TargetSelection {
+        let filter_allows = candidate_filter
+            .is_none_or(|filter| eval_value(filter, candidate_scope) == IrValue::Bool(true));
+        let Some(perception) = filter_allows
+            .then(|| candidate_perception(candidate.target))
+            .flatten()
+            .filter(|perception| perception.visible)
+        else {
+            continue;
+        };
+        let eligible = EligibleCandidate {
+            candidate,
+            perception,
+            retaliation: retaliation_preference,
+        };
+        if hostile
+            && nearest_distance_eligible.is_none_or(|current| {
+                candidate
+                    .distance
+                    .total_cmp(&current.candidate.distance)
+                    .is_lt()
+            })
+        {
+            nearest_distance_eligible = Some(eligible);
+        }
+        if preferred_eligible.is_none_or(|current| {
+            match (eligible.retaliation, current.retaliation) {
+                (Some(candidate_rank), Some(current_rank)) => {
+                    candidate_rank.is_preferred_to(current_rank)
+                }
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => candidate
+                    .distance
+                    .total_cmp(&current.candidate.distance)
+                    .is_lt(),
+            }
+        }) {
+            preferred_eligible = Some(eligible);
+        }
+    }
+
+    let selection_for =
+        |eligible: EligibleCandidate, retaliation_acquired_target| TargetSelection {
+            target: eligible.candidate.target,
+            fresh_perception: Some(eligible.perception),
+            retaliation_acquired_target,
+        };
+
+    let retained_is_retaliation = retained
+        .is_some_and(|retained| retaliation_acquired_target == Some(retained.target.entity));
+    if let Some(retained) = retained {
+        if retained_is_retaliation {
+            let held_facts = candidate_scope.refresh(
+                registry,
+                factions,
+                evaluating_enemy,
+                evaluating_faction,
+                recent_attackers,
+                retained.target.entity,
+                retained.distance,
+            );
+            let held_rank = RetaliationRank::from_facts(held_facts, retained.distance, retaliation);
+            if let Some(challenger) = preferred_eligible
+                .filter(|candidate| candidate.retaliation.is_some())
+                .filter(|candidate| {
+                    candidate
+                        .retaliation
+                        .expect("filtered retaliation candidate")
+                        .exceeds_margin_over(held_rank)
+                })
+            {
+                return Some(selection_for(
+                    challenger,
+                    Some(challenger.candidate.target.entity),
+                ));
+            }
+            return Some(TargetSelection {
+                target: retained.target,
+                fresh_perception: None,
+                retaliation_acquired_target: Some(retained.target.entity),
+            });
+        }
+
+        if let Some(preferred) = preferred_eligible {
+            if preferred.retaliation.is_some()
+                || (preferred.retaliation.is_none()
+                    && is_meaningfully_closer(preferred.candidate.distance, retained.distance))
+            {
+                let retaliation_acquired_target = preferred
+                    .retaliation
+                    .map(|_| preferred.candidate.target.entity);
+                return Some(selection_for(preferred, retaliation_acquired_target));
+            }
+        }
+        return Some(TargetSelection {
             target: retained.target,
             fresh_perception: None,
-        }),
-        (None, Some((nearest, fresh_perception))) => Some(TargetSelection {
-            target: nearest.target,
-            fresh_perception: Some(fresh_perception),
-        }),
-        (None, None) => None,
+            retaliation_acquired_target: None,
+        });
     }
+
+    preferred_eligible.map(|preferred| {
+        // A fresh retaliation winner needs the latch only when the term changed
+        // what pure hostile distance ranking would have selected. A nearest
+        // hostile attacker already chosen by distance retains ordinary behavior.
+        let retaliation_acquired_target = preferred.retaliation.and_then(|_| {
+            (nearest_distance_eligible.map(|candidate| candidate.candidate.target.entity)
+                != Some(preferred.candidate.target.entity))
+            .then_some(preferred.candidate.target.entity)
+        });
+        selection_for(preferred, retaliation_acquired_target)
+    })
 }
 
 #[cfg(test)]
@@ -335,6 +483,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: BTreeMap::new(),
             engagement_radius: None,
@@ -384,6 +533,85 @@ mod tests {
         )
         .map(|selection| selection.target);
         (offers.nearest, selected)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_with_retaliation_for_test(
+        registry: &EntityRegistry,
+        factions: &FactionRegistry,
+        evaluating_enemy: EntityId,
+        enemy_faction: f32,
+        retained_target: Option<EntityId>,
+        recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+        retaliation_acquired_target: Option<EntityId>,
+        retaliation: RetaliationDescriptor,
+        tick_ms: f32,
+    ) -> (Option<TargetCandidate>, Option<TargetSelection>) {
+        let retained =
+            retained_target.and_then(|entity| target_candidate(registry, entity, Vec3::ZERO));
+        let offers = target_offers(
+            registry,
+            factions,
+            Vec3::ZERO,
+            enemy_faction,
+            Some(evaluating_enemy),
+            retained_target,
+        );
+        let nearest = offers.nearest;
+        let mut candidate_perception = |target: TargetPawn| {
+            Some(RawTargetPerception {
+                target: target.entity,
+                visible: true,
+                enemy_eye: Vec3::ZERO,
+                target_aim: target.position,
+            })
+        };
+        let selection = select_target_with_attacker_ledger(
+            retained,
+            &offers,
+            registry,
+            factions,
+            Some(evaluating_enemy),
+            enemy_faction,
+            None,
+            &mut CandidateScope::for_validation(),
+            recent_attackers,
+            retaliation_acquired_target,
+            retaliation,
+            tick_ms,
+            &mut candidate_perception,
+        );
+        (nearest, selection)
+    }
+
+    fn ledger_for(
+        attacker: EntityId,
+        accumulated_damage: f32,
+        time_since_damage_ms: f32,
+    ) -> [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] {
+        let mut ledger = EMPTY_RECENT_ATTACKERS;
+        ledger[0] = Some(RecentAttacker {
+            attacker,
+            accumulated_damage,
+            time_since_damage_ms,
+        });
+        ledger
+    }
+
+    fn retaliation_fixture() -> (EntityRegistry, EntityId, EntityId, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let enemy = brain(&mut registry, 0.0);
+        let player = pawn(&mut registry, 2.0);
+        registry
+            .entity_state_mut(player)
+            .expect("player has state")
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+        let attacker = brain(&mut registry, 10.0);
+        registry
+            .entity_state_mut(enemy)
+            .expect("enemy has state")
+            .set(super::super::ARCHETYPE_TOLERANCE_STATE_FIELD, 5.0);
+        (registry, enemy, player, attacker)
     }
 
     #[test]
@@ -448,9 +676,18 @@ mod tests {
             Some(evaluating_enemy),
             None,
         );
+        assert_eq!(
+            default_faction_offers
+                .candidates
+                .iter()
+                .map(|candidate| candidate.target.entity)
+                .collect::<Vec<_>>(),
+            vec![peer],
+            "same-default-faction brain peers stay available only for the narrow retaliation scan",
+        );
         assert!(
-            default_faction_offers.candidates.is_empty(),
-            "same-default-faction brain peers are walked but remain non-hostile",
+            default_faction_offers.nearest.is_none(),
+            "a same-default-faction peer remains absent from the pure hostile stride price",
         );
     }
 
@@ -510,9 +747,18 @@ mod tests {
             .expect("pawn remains live")
             .set(super::super::FACTION_STATE_FIELD, 2.0);
         let resistance_offers = target_offers(&registry, &factions, Vec3::ZERO, 3.0, None, None);
+        assert_eq!(
+            resistance_offers
+                .candidates
+                .iter()
+                .map(|candidate| candidate.target.entity)
+                .collect::<Vec<_>>(),
+            vec![resistance],
+            "neutral candidates remain available only for the narrow retaliation scan"
+        );
         assert!(
-            resistance_offers.candidates.is_empty(),
-            "resistance's neutral sentiment toward cabal does not offer it"
+            resistance_offers.nearest.is_none(),
+            "neutral sentiment cannot price the pure hostile stride"
         );
         assert_eq!(
             target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None)
@@ -730,5 +976,226 @@ mod tests {
             Some(retained),
             "retention deliberately bypasses the fresh-acquisition hostility filter"
         );
+    }
+
+    #[test]
+    fn over_tolerance_same_and_cross_faction_attackers_beat_nearer_hostile_without_pricing_stride()
+    {
+        for attacker_faction in [0.0, 2.0] {
+            let (mut registry, enemy, player, attacker) = retaliation_fixture();
+            registry
+                .entity_state_mut(attacker)
+                .expect("attacker has state")
+                .set(super::super::FACTION_STATE_FIELD, attacker_faction);
+            let factions = FactionRegistry::default();
+            let ledger = ledger_for(attacker, 6.0, 0.0);
+            let (nearest, selected) = select_with_retaliation_for_test(
+                &registry,
+                &factions,
+                enemy,
+                0.0,
+                None,
+                &ledger,
+                None,
+                RetaliationDescriptor::default(),
+                16.0,
+            );
+
+            assert_eq!(
+                nearest.map(|candidate| candidate.target.entity),
+                Some(player),
+                "the far retaliation attacker must never price offers.nearest"
+            );
+            let selected = selected.expect("over-tolerance attacker is offered");
+            assert_eq!(selected.target.entity, attacker);
+            assert_eq!(selected.retaliation_acquired_target, Some(attacker));
+        }
+    }
+
+    #[test]
+    fn max_default_tolerance_keeps_pure_distance_selection() {
+        let (registry, enemy, _player, attacker) = retaliation_fixture();
+        let factions = FactionRegistry::default();
+        let ledger = ledger_for(attacker, 50.0, 0.0);
+        let selected = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            None,
+            &ledger,
+            None,
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("near hostile player is selected");
+        assert_eq!(selected.target.entity, attacker, "fixture lowers tolerance");
+
+        let mut max_tolerance_registry = EntityRegistry::new();
+        let max_enemy = brain(&mut max_tolerance_registry, 0.0);
+        let max_player = pawn(&mut max_tolerance_registry, 2.0);
+        max_tolerance_registry
+            .entity_state_mut(max_player)
+            .expect("player has state")
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+        let max_attacker = brain(&mut max_tolerance_registry, 10.0);
+        let max_ledger = ledger_for(max_attacker, 50.0, 0.0);
+        let selected = select_with_retaliation_for_test(
+            &max_tolerance_registry,
+            &factions,
+            max_enemy,
+            0.0,
+            None,
+            &max_ledger,
+            None,
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("near hostile player is selected");
+        assert_eq!(selected.target.entity, max_player);
+        assert_eq!(selected.retaliation_acquired_target, None);
+    }
+
+    #[test]
+    fn retaliation_latch_holds_after_decay_and_transfers_only_past_margin() {
+        let (mut registry, enemy, player, attacker_a) = retaliation_fixture();
+        let attacker_b = brain(&mut registry, 12.0);
+        let factions = FactionRegistry::default();
+        let mut ledger = ledger_for(attacker_a, 10.0, 0.0);
+        ledger[1] = Some(RecentAttacker {
+            attacker: attacker_b,
+            accumulated_damage: 10.0,
+            time_since_damage_ms: 0.0,
+        });
+        let initial = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            None,
+            &ledger,
+            None,
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("first attacker wins deterministic tie by distance");
+        assert_eq!(initial.target.entity, attacker_a);
+        assert_eq!(initial.retaliation_acquired_target, Some(attacker_a));
+
+        ledger[1]
+            .as_mut()
+            .expect("attacker b ledger entry")
+            .accumulated_damage = 11.0;
+        let held_at_margin = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            Some(attacker_a),
+            &ledger,
+            Some(attacker_a),
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("an exactly-one-point challenger does not transfer the latch");
+        assert_eq!(held_at_margin.target.entity, attacker_a);
+        assert_eq!(held_at_margin.retaliation_acquired_target, Some(attacker_a));
+
+        ledger[1]
+            .as_mut()
+            .expect("attacker b ledger entry")
+            .accumulated_damage = 12.1;
+        let transferred = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            Some(attacker_a),
+            &ledger,
+            Some(attacker_a),
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("strong enough challenger transfers latch");
+        assert_eq!(transferred.target.entity, attacker_b);
+        assert_eq!(transferred.retaliation_acquired_target, Some(attacker_b));
+
+        let decayed_ledger = ledger_for(attacker_a, 10.0, 2_000.0);
+        let held_after_decay = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            Some(attacker_a),
+            &decayed_ledger,
+            Some(attacker_a),
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("retaliation latch persists while its ledger entry decays");
+        assert_eq!(held_after_decay.target.entity, attacker_a);
+        assert_eq!(
+            held_after_decay.retaliation_acquired_target,
+            Some(attacker_a),
+            "ledger decay and the nearer player do not clear the latch",
+        );
+        assert_ne!(held_after_decay.target.entity, player);
+    }
+
+    #[test]
+    fn zero_or_sub_tick_retaliation_window_is_explicitly_inert() {
+        for window_ms in [0.0, 15.9] {
+            let (registry, enemy, player, attacker) = retaliation_fixture();
+            let factions = FactionRegistry::default();
+            let selected = select_with_retaliation_for_test(
+                &registry,
+                &factions,
+                enemy,
+                0.0,
+                None,
+                &ledger_for(attacker, 50.0, 0.0),
+                None,
+                RetaliationDescriptor {
+                    window_ms,
+                    ..RetaliationDescriptor::default()
+                },
+                16.0,
+            )
+            .1
+            .expect("near hostile player is selected");
+            assert_eq!(
+                selected.target.entity, player,
+                "window {window_ms} must disable retaliation"
+            );
+            assert_eq!(selected.retaliation_acquired_target, None);
+        }
+    }
+
+    #[test]
+    fn stale_retaliation_mark_clears_when_retained_target_despawns() {
+        let (mut registry, enemy, player, attacker) = retaliation_fixture();
+        registry.despawn(attacker).expect("attacker despawns");
+        let factions = FactionRegistry::default();
+        let selected = select_with_retaliation_for_test(
+            &registry,
+            &factions,
+            enemy,
+            0.0,
+            None,
+            &EMPTY_RECENT_ATTACKERS,
+            Some(attacker),
+            RetaliationDescriptor::default(),
+            16.0,
+        )
+        .1
+        .expect("fresh scan selects player");
+        assert_eq!(selected.target.entity, player);
+        assert_eq!(selected.retaliation_acquired_target, None);
     }
 }

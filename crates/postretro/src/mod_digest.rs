@@ -253,6 +253,7 @@ mod tests {
             default_weapon_placement: None,
             entities: vec![entity_descriptor()],
             factions: FactionRegistry::default(),
+            sentiment: Vec::new(),
             entity_faction_names: vec![None],
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),

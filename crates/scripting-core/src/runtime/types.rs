@@ -16,7 +16,9 @@ use crate::data_descriptors::{
     PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
     TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
-use crate::data_registry::{FactionRegistry, ScopedCrossing, ScopedReaction};
+use crate::data_registry::{
+    FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
+};
 pub use crate::foundation_pods::ModMapEntry;
 use crate::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use crate::quickjs::{QuickJsConfig, QuickJsSubsystem};
@@ -93,6 +95,12 @@ pub struct ModManifestResult {
     /// manifest-order indices are resolved onto `entities` only when the
     /// manifest atomically drains into `DataRegistry`.
     pub factions: FactionRegistry,
+    /// Authored directional faction relationships from the manifest's
+    /// `sentiment` field. The parser validates these names and resolves their
+    /// values into [`Self::factions`] before returning this manifest; retaining
+    /// the source descriptors keeps the normalized result's public field
+    /// inventory aligned with the manifest SDK surface.
+    pub sentiment: Vec<FactionSentimentDescriptor>,
     /// Parallel source names for the optional `components.faction` entry on
     /// each descriptor. Private runtime plumbing keeps named authoring out of
     /// `EntityTypeDescriptor`, whose `faction` field is resolved f32 storage.

@@ -908,18 +908,25 @@ pub fn drain_factions_lua(
 }
 
 /// Luau twin of [`drain_faction_sentiments_js`]. It validates names while
-/// draining and commits only the registry's resolved faction-index matrix.
+/// draining, commits the registry's resolved faction-index matrix, and keeps
+/// the source descriptors on the normalized manifest carrier.
 pub fn drain_faction_sentiments_lua(
     table: &Table,
     factions: crate::data_registry::FactionRegistry,
     scope: &str,
-) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+) -> Result<
+    (
+        crate::data_registry::FactionRegistry,
+        Vec<crate::data_registry::FactionSentimentDescriptor>,
+    ),
+    DescriptorError,
+> {
     use crate::data_registry::FactionSentimentDescriptor;
 
     let raw: LuaValue = table.get("sentiment").map_err(lua_err)?;
     let LuaValue::Table(array) = raw else {
         if matches!(raw, LuaValue::Nil) {
-            return Ok(factions);
+            return Ok((factions, Vec::new()));
         }
         return Err(DescriptorError::InvalidShape {
             reason: format!("{scope}: `sentiment` must be an array"),
@@ -946,11 +953,13 @@ pub fn drain_faction_sentiments_lua(
             tolerance,
         });
     }
-    factions
-        .with_sentiments(entries)
-        .map_err(|reason| DescriptorError::InvalidShape {
-            reason: format!("{scope}: `sentiment` invalid: {reason}"),
-        })
+    let factions =
+        factions
+            .with_sentiments(&entries)
+            .map_err(|reason| DescriptorError::InvalidShape {
+                reason: format!("{scope}: `sentiment` invalid: {reason}"),
+            })?;
+    Ok((factions, entries))
 }
 
 /// Drain mod-global reaction definitions from a Luau manifest table. Mirrors

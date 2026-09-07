@@ -3559,6 +3559,7 @@ mod tests {
                 default_weapon_placement: None,
                 entities: Vec::new(),
                 factions: Default::default(),
+                sentiment: Vec::new(),
                 entity_faction_names: Vec::new(),
                 maps: Vec::new(),
                 reactions: Vec::new(),

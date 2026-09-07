@@ -335,6 +335,7 @@ fn run_staged_manifest_build(
         default_weapon_placement: manifest.default_weapon_placement,
         entities: manifest.entities,
         factions: manifest.factions,
+        sentiment: manifest.sentiment,
         entity_faction_names: manifest.entity_faction_names,
         maps: manifest.maps,
         reactions: manifest.reactions,
@@ -482,12 +483,14 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
-    let factions = drain_faction_sentiments_js(&obj, factions, "default mod manifest export")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!(
-                "mod-init: `{source_path}` default mod manifest export `sentiment` invalid: {e}"
-            ),
-        })?;
+    let (factions, sentiment) =
+        drain_faction_sentiments_js(&obj, factions, "default mod manifest export").map_err(
+            |e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `sentiment` invalid: {e}"
+                ),
+            },
+        )?;
     let (entities, entity_faction_names) = match obj.contains_key("entities") {
         Ok(false) => (Vec::new(), Vec::new()),
         Ok(true) => match obj.get::<_, JsArray>("entities") {
@@ -679,6 +682,7 @@ fn manifest_from_js_value<'js>(
         default_weapon_placement,
         entities,
         factions,
+        sentiment,
         entity_faction_names,
         ui_trees,
         presentation_templates,
@@ -778,11 +782,13 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
-    let factions = drain_faction_sentiments_lua(&table, factions, "returned mod manifest")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!(
-                "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {e}"
-            ),
+    let (factions, sentiment) =
+        drain_faction_sentiments_lua(&table, factions, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {e}"
+                ),
+            }
         })?;
     let (entities, entity_faction_names) = if table.contains_key("entities").map_err(|e| {
         ScriptError::InvalidArgument {
@@ -977,6 +983,7 @@ fn run_staged_mod_init_luau(
         default_weapon_placement,
         entities,
         factions,
+        sentiment,
         entity_faction_names,
         ui_trees,
         presentation_templates,
@@ -1302,6 +1309,11 @@ mod tests {
 
             assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
             assert_eq!(manifest.factions.tolerance(2.0, 3.0), Some(0.25));
+            assert_eq!(manifest.sentiment.len(), 1);
+            assert_eq!(manifest.sentiment[0].from_faction, "cabal");
+            assert_eq!(manifest.sentiment[0].to_faction, "resistance");
+            assert_eq!(manifest.sentiment[0].sentiment, -0.75);
+            assert_eq!(manifest.sentiment[0].tolerance, 0.25);
             assert_eq!(
                 manifest.factions.sentiment(3.0, 2.0),
                 -1.0,

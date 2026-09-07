@@ -112,9 +112,9 @@ impl FactionRegistry {
     /// the unlisted-pair fallback.
     pub fn with_sentiments(
         mut self,
-        sentiments: Vec<FactionSentimentDescriptor>,
+        sentiments: impl AsRef<[FactionSentimentDescriptor]>,
     ) -> Result<Self, String> {
-        for entry in sentiments {
+        for entry in sentiments.as_ref() {
             if !entry.sentiment.is_finite() {
                 return Err(format!(
                     "sentiment from `{}` to `{}` must be finite",

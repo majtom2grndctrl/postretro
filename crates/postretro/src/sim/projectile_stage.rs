@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
-use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
@@ -108,12 +107,10 @@ pub(crate) fn advance(
                 weapon::spawn_projectile_impact_light(registry, impact.point, config);
             }
 
-            let target_is_live = impact.target.is_none_or(|target| {
-                registry
-                    .get_component::<HealthComponent>(target)
-                    .is_ok_and(|health| health.current.is_finite() && health.current > 0.0)
+            let target_is_damage_eligible = impact.target.is_none_or(|target| {
+                crate::scripting_systems::health::is_damage_target_eligible(registry, target)
             });
-            if target_is_live && let ActivationOutcome::Hit(payload) = &impact.outcome {
+            if target_is_damage_eligible && let ActivationOutcome::Hit(payload) = &impact.outcome {
                 let attacker = registry
                     .exists(component.owner_pawn)
                     .then_some(component.owner_pawn);
@@ -468,7 +465,7 @@ mod tests {
     use postretro_entities::components::deferred_effect::{
         DeferredEffectComponent, DeferredEffectKind,
     };
-    use postretro_entities::components::health::Hitbox;
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::light::LightComponent;
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
@@ -1085,6 +1082,42 @@ mod tests {
         assert!(health.current.abs() <= f32::EPSILON);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(!registry.borrow().exists(projectile));
+    }
+
+    // Regression: a queued despawn left a positive-HP target registry-live, so
+    // a later projectile from the same flight batch damaged and dispatched it.
+    #[test]
+    fn projectile_batch_skips_later_impact_after_target_commits_to_despawn() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let first = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let later = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+
+        advance_once(&registry, 1.0);
+        let world = CollisionWorld::default();
+        let zones = HitZoneStore::new();
+        let mut policy_fires = 0;
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut |registry| {
+            policy_fires += 1;
+            crate::impact_effects::despawn(registry, target, Some(1000.0));
+        });
+
+        let registry = registry.borrow();
+        let health = registry
+            .get_component::<HealthComponent>(target)
+            .expect("queued despawn keeps the target live");
+        assert!((health.current - 15.0).abs() <= f32::EPSILON);
+        assert_eq!(health.contributor_ledger.total_recorded_hits(), 1);
+        assert_eq!(policy_fires, 1);
+        assert!(
+            crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+        );
+        assert!(!registry.exists(first));
+        assert!(!registry.exists(later));
     }
 
     #[test]

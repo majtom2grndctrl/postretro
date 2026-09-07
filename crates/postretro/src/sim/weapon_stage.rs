@@ -4531,6 +4531,51 @@ mod tests {
         assert!(!registry.borrow().exists(target));
     }
 
+    // Regression: a delayed despawn policy left the target live in the
+    // registry, allowing every later pellet to damage and dispatch it again.
+    #[test]
+    fn local_pellet_policy_stops_after_target_commits_to_queued_despawn() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, target) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_local_pellet_weapon(&mut registry, "weapon.test.pellet");
+            let target = spawn_pellet_target(&mut registry);
+            (pawn, target)
+        };
+        let mut policy_fires = 0;
+        let mut policy = |registry: &mut EntityRegistry| {
+            policy_fires += 1;
+            crate::impact_effects::despawn(registry, target, Some(1000.0));
+        };
+
+        let result = run_local_weapon_command(
+            &registry,
+            Some(pawn),
+            false,
+            None,
+            &fire_command(true, true),
+            false,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut policy,
+        );
+
+        assert_eq!(result.weapon_events, vec!["activate", "impact"]);
+        assert_eq!(result.weapon_impact_points.len(), 8);
+        assert_eq!(policy_fires, 1);
+        let registry = registry.borrow();
+        let health = registry
+            .get_component::<HealthComponent>(target)
+            .expect("queued despawn keeps the target live");
+        assert!((health.current - 90.0).abs() <= f32::EPSILON);
+        assert_eq!(health.contributor_ledger.total_recorded_hits(), 1);
+        assert!(
+            crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+        );
+    }
+
     #[test]
     fn local_pellet_policy_settles_before_a_despawned_shooter_can_fire_later_policies() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));

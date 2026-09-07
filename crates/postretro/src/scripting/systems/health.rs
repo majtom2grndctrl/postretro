@@ -29,6 +29,33 @@ pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
     health.current <= 0.0 || !health.current.is_finite()
 }
 
+/// Whether deferred lifecycle state has committed this entity to removal.
+/// The registry id remains live until the frame-end pass, so consumers must
+/// inspect this state before applying a precomputed target outcome.
+pub(crate) fn is_terminally_committed_to_removal(
+    registry: &EntityRegistry,
+    entity: EntityId,
+) -> bool {
+    registry
+        .get_component::<DeferredEffectComponent>(entity)
+        .is_ok_and(|effects| {
+            effects.inert
+                || effects
+                    .pending
+                    .iter()
+                    .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+        })
+}
+
+/// A damage target must carry positive finite health and have no terminal
+/// lifecycle commitment. Healthless presentation targets remain ineligible.
+pub(crate) fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry
+        .get_component::<HealthComponent>(entity)
+        .is_ok_and(|health| !is_depleted(health))
+        && !is_terminally_committed_to_removal(registry, entity)
+}
+
 /// Shared pre-sweep gate for simulation systems that must stop an entity as
 /// soon as it is depleted or committed to removal. Health is optional: an
 /// entity without it remains active unless its deferred lifecycle is terminal.
@@ -36,15 +63,7 @@ pub(crate) fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool 
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(is_depleted)
-        || registry
-            .get_component::<DeferredEffectComponent>(entity)
-            .is_ok_and(|effects| {
-                effects.inert
-                    || effects
-                        .pending
-                        .iter()
-                        .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-            })
+        || is_terminally_committed_to_removal(registry, entity)
 }
 
 /// What one death sweep observed, returned to the caller because the sweep

@@ -522,14 +522,18 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
 
         if let Some(target) = impact.target {
-            // Match the host's per-record liveness check. A policy run for an
-            // earlier pellet may have despawned either endpoint, in which case
-            // the cast still gets its FX but no damage or later policy fire.
+            // Match the host's per-record target check. A policy run for an
+            // earlier pellet may have removed the shooter or committed the
+            // target to removal; the cast keeps its FX but does no later damage
+            // or policy work.
             if !pawn.is_some_and(|pawn| registry.exists(pawn)) {
                 continue;
             }
             if !registry.exists(target)
                 || registry.get_component::<HealthComponent>(target).is_err()
+                || crate::scripting_systems::health::is_terminally_committed_to_removal(
+                    &registry, target,
+                )
             {
                 continue;
             }

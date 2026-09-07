@@ -11,6 +11,7 @@ use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::{
     BrainComponent, RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker,
 };
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
@@ -216,10 +217,7 @@ pub(super) fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> 
 }
 
 pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId) -> bool {
-    registry
-        .get_component::<HealthComponent>(target)
-        .map(|health| health.current > 0.0 && health.current.is_finite())
-        .unwrap_or(false)
+    crate::scripting_systems::health::is_damage_target_eligible(registry, target)
 }
 
 /// Choose from a raw offer set on an acquisition tick. Authored candidacy and

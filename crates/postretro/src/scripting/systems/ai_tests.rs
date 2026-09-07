@@ -2703,6 +2703,155 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
     );
 }
 
+fn queued_despawn_impact_policy() -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "same_batch_terminal_despawn".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("sameBatchTerminalDespawn".to_string()),
+        policy: vec![serde_json::json!({
+            "primitive": "despawn",
+            "target": "@impact.target",
+            "args": { "afterMs": 1000.0 },
+        })],
+    }
+}
+
+// Regression: a positive-HP target with a queued despawn remained registry-live,
+// so a later precomputed contact outcome damaged it and fired policy again.
+#[test]
+fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy() {
+    let graph = standing_attack_graph();
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    registry
+        .set_tags(target, vec!["sameBatchTerminalDespawn".to_string()])
+        .expect("policy target remains live");
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![queued_despawn_impact_policy()]);
+    let mut policy_fires = 0;
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| {
+            policy_fires += 1;
+            policies.evaluate_pending_in_registry(registry);
+        },
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(policy_fires, 1);
+    assert_eq!(player_hp(&registry, target), 92.0);
+    assert!(
+        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(first)
+            .expect("first actor keeps its brain")
+            .activity_attack_count(0),
+        Some(1),
+    );
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+// Regression: a queued despawn did not invalidate a later precomputed AI
+// projectile outcome against the still-positive-health target.
+#[test]
+fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_policy() {
+    let contact_graph = standing_attack_graph();
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let _first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&projectile_graph, "strike"),
+        50.0,
+    );
+    registry
+        .set_tags(target, vec!["sameBatchTerminalDespawn".to_string()])
+        .expect("policy target remains live");
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![queued_despawn_impact_policy()]);
+    let mut policy_fires = 0;
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| {
+            policy_fires += 1;
+            policies.evaluate_pending_in_registry(registry);
+        },
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(policy_fires, 1);
+    assert_eq!(player_hp(&registry, target), 92.0);
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
 fn immediate_recovery_impact_policy() -> ImpactEventDescriptor {
     ImpactEventDescriptor {
         id: "same_batch_recovery".to_string(),

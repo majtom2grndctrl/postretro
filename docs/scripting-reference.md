@@ -943,8 +943,10 @@ Fresh acquisition considers player pawns and brain-bearing peers. The nearest
 sentiment-hostile offer determines think-stride cadence, so a nearby friendly
 cannot make a farther hostile scan more often. The engine owns retaliation:
 recent accumulated damage above the resolved tolerance can admit and rank an
-otherwise non-hostile attacker ahead of distance candidates. Its freshness,
-ranking, and retention hysteresis are engine tuning, not authorable expressions.
+otherwise non-hostile attacker ahead of distance candidates. The engine owns the
+formula and retention policy; authors may tune the shipped `windowMs`,
+`damageWeight`, and `recencyWeight` scalars, but cannot replace the ranking with
+expressions.
 `candidateFilter` remains a boolean narrowing predicate; it cannot rank or
 replace retaliation policy. Acquisition never re-checks a retained target.
 Retention is graph policy: put ordered root-scope `"*"` rows over

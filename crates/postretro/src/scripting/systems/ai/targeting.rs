@@ -48,14 +48,14 @@ pub(super) struct TargetSelection {
     pub(super) retaliation_acquired_target: Option<EntityId>,
 }
 
-/// All raw pawn candidates from one registry walk. `nearest` alone contains
-/// the pure nearest sentiment-hostile candidate and prices acquisition stride;
-/// `candidates` is retained so a due tick can apply candidacy and the narrow
-/// over-tolerance admission without walking the registry a second time.
-#[derive(Debug)]
+/// Pure nearest sentiment-hostile candidate plus the stack-only scan context
+/// needed to replay raw candidates on a due acquisition tick. The replay keeps
+/// the hot path allocation-free; only `nearest` prices acquisition stride.
+#[derive(Debug, Clone, Copy)]
 pub(super) struct TargetOffers {
     pub(super) nearest: Option<TargetCandidate>,
-    candidates: Vec<TargetCandidate>,
+    from: Vec3,
+    exclude: Option<EntityId>,
 }
 
 /// A stable engine-owned retaliation preference. Its scalar score lets content
@@ -107,6 +107,7 @@ fn retaliation_preference(
 ) -> Option<RetaliationRank> {
     (tuning.window_ms > 0.0
         && tuning.window_ms >= tick_ms
+        && facts.has_attacker_record
         && facts.time_since_damage_ms <= tuning.window_ms
         && facts.accumulated_damage > facts.tolerance)
         .then(|| RetaliationRank::from_facts(facts, distance, tuning))
@@ -129,9 +130,37 @@ pub(super) fn target_candidate(
     })
 }
 
-/// Collect all targetable pawns without applying authored or engine-floor
-/// eligibility. Only the raw nearest hostile candidate prices the think stride,
-/// so a later retaliation admission can never alter that cost input.
+/// Iterate targetable pawns without applying authored or engine-floor
+/// eligibility. Player-movement holders come first, followed by brain-only
+/// holders, matching the established deterministic scan order.
+fn target_candidates(
+    registry: &EntityRegistry,
+    from: Vec3,
+    evaluating_enemy: Option<EntityId>,
+    exclude: Option<EntityId>,
+) -> impl Iterator<Item = TargetCandidate> + '_ {
+    let movement_holders = registry.iter_with_kind(ComponentKind::PlayerMovement);
+    let brain_only_holders =
+        registry
+            .iter_with_kind(ComponentKind::Brain)
+            .filter(move |(entity, _)| {
+                registry
+                    .get_component::<PlayerMovementComponent>(*entity)
+                    .is_err()
+            });
+    movement_holders
+        .chain(brain_only_holders)
+        .filter_map(move |(entity, _)| {
+            if evaluating_enemy == Some(entity) || exclude == Some(entity) {
+                return None;
+            }
+            target_candidate(registry, entity, from)
+        })
+}
+
+/// Find the pure nearest hostile target without retaining a heap-backed copy
+/// of the candidate set. A due selection replays [`target_candidates`], so a
+/// later retaliation admission can never alter this stride-price input.
 pub(super) fn target_offers(
     registry: &EntityRegistry,
     factions: &FactionRegistry,
@@ -141,22 +170,7 @@ pub(super) fn target_offers(
     exclude: Option<EntityId>,
 ) -> TargetOffers {
     let mut nearest = None;
-    let mut candidates = Vec::new();
-    let movement_holders = registry.iter_with_kind(ComponentKind::PlayerMovement);
-    let brain_only_holders = registry
-        .iter_with_kind(ComponentKind::Brain)
-        .filter(|(entity, _)| {
-            registry
-                .get_component::<PlayerMovementComponent>(*entity)
-                .is_err()
-        });
-    for (entity, _) in movement_holders.chain(brain_only_holders) {
-        if evaluating_enemy == Some(entity) || exclude == Some(entity) {
-            continue;
-        }
-        let Some(candidate) = target_candidate(registry, entity, from) else {
-            continue;
-        };
+    for candidate in target_candidates(registry, from, evaluating_enemy, exclude) {
         // Hostility alone contributes to the pure-distance stride price. The
         // non-hostile pawn remains in the raw scan so selection can admit it
         // only if its one refreshed candidate scope proves over tolerance.
@@ -173,11 +187,11 @@ pub(super) fn target_offers(
         {
             nearest = Some(candidate);
         }
-        candidates.push(candidate);
     }
     TargetOffers {
         nearest,
-        candidates,
+        from,
+        exclude,
     }
 }
 
@@ -276,7 +290,7 @@ pub(super) fn select_target_with_attacker_ledger(
     );
     let mut nearest_distance_eligible: Option<EligibleCandidate> = None;
     let mut preferred_eligible: Option<EligibleCandidate> = None;
-    for candidate in offers.candidates.iter().copied() {
+    for candidate in target_candidates(registry, offers.from, evaluating_enemy, offers.exclude) {
         let facts =
             candidate_scope.refresh(refresh_context, candidate.target.entity, candidate.distance);
         let retaliation_preference =
@@ -400,11 +414,13 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use super::*;
+    use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::data_descriptors::{
         BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
     };
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BRAIN_NO_TARGET_DISTANCE, CapsuleParams, FallParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
     };
 
     fn movement() -> PlayerMovementComponent {
@@ -648,13 +664,18 @@ mod tests {
             None,
         );
         assert_eq!(
-            hostile_offers
-                .candidates
-                .iter()
+            target_candidates(&registry, Vec3::ZERO, Some(evaluating_enemy), None,)
                 .map(|candidate| candidate.target.entity)
                 .collect::<Vec<_>>(),
             vec![peer],
             "the brain-bearing peer is included while the evaluating enemy and inert prop are not",
+        );
+        assert_eq!(
+            hostile_offers
+                .nearest
+                .map(|candidate| candidate.target.entity),
+            Some(peer),
+            "the cross-faction peer prices the hostile stride",
         );
 
         registry
@@ -670,9 +691,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            default_faction_offers
-                .candidates
-                .iter()
+            target_candidates(&registry, Vec3::ZERO, Some(evaluating_enemy), None,)
                 .map(|candidate| candidate.target.entity)
                 .collect::<Vec<_>>(),
             vec![peer],
@@ -728,11 +747,9 @@ mod tests {
         let cabal_offers = target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None);
         assert_eq!(
             cabal_offers
-                .candidates
-                .iter()
-                .map(|candidate| candidate.target.entity)
-                .collect::<Vec<_>>(),
-            vec![resistance],
+                .nearest
+                .map(|candidate| candidate.target.entity),
+            Some(resistance),
             "cabal's negative sentiment toward resistance offers it"
         );
         registry
@@ -741,9 +758,7 @@ mod tests {
             .set(super::super::FACTION_STATE_FIELD, 2.0);
         let resistance_offers = target_offers(&registry, &factions, Vec3::ZERO, 3.0, None, None);
         assert_eq!(
-            resistance_offers
-                .candidates
-                .iter()
+            target_candidates(&registry, Vec3::ZERO, None, None)
                 .map(|candidate| candidate.target.entity)
                 .collect::<Vec<_>>(),
             vec![resistance],
@@ -755,9 +770,9 @@ mod tests {
         );
         assert_eq!(
             target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None)
-                .candidates
-                .len(),
-            1,
+                .nearest
+                .map(|candidate| candidate.target.entity),
+            Some(resistance),
             "an authored same-faction negative sentiment overrides the neutral default"
         );
         assert!(
@@ -1003,6 +1018,141 @@ mod tests {
             assert_eq!(selected.target.entity, attacker);
             assert_eq!(selected.retaliation_acquired_target, Some(attacker));
         }
+    }
+
+    // Regression: a legal negative tolerance plus the missing-attacker
+    // zero/sentinel fact defaults admitted neutral pawns that never dealt damage.
+    #[test]
+    fn negative_tolerance_requires_an_actual_attacker_record_for_retaliation_admission() {
+        let (mut registry, enemy, player, non_attacker) = retaliation_fixture();
+        registry
+            .entity_state_mut(enemy)
+            .expect("enemy has state")
+            .set(super::super::ARCHETYPE_TOLERANCE_STATE_FIELD, -1.0);
+        registry
+            .set_component(
+                non_attacker,
+                Transform {
+                    position: Vec3::X,
+                    ..Transform::default()
+                },
+            )
+            .expect("non-attacker remains live");
+
+        let selected = select_with_retaliation_for_test(
+            &registry,
+            &FactionRegistry::default(),
+            enemy,
+            0.0,
+            None,
+            &EMPTY_RECENT_ATTACKERS,
+            None,
+            RetaliationDescriptor {
+                window_ms: BRAIN_NO_TARGET_DISTANCE,
+                recency_weight: 0.0,
+                ..RetaliationDescriptor::default()
+            },
+            16.0,
+        )
+        .1
+        .expect("the hostile player remains eligible");
+
+        assert_eq!(selected.target.entity, player);
+        assert_eq!(selected.retaliation_acquired_target, None);
+
+        let selected = select_with_retaliation_for_test(
+            &registry,
+            &FactionRegistry::default(),
+            enemy,
+            0.0,
+            None,
+            &ledger_for(non_attacker, 0.25, 0.0),
+            None,
+            RetaliationDescriptor {
+                window_ms: BRAIN_NO_TARGET_DISTANCE,
+                recency_weight: 0.0,
+                ..RetaliationDescriptor::default()
+            },
+            16.0,
+        )
+        .1
+        .expect("a real low-damage attacker clears the authored negative tolerance");
+        assert_eq!(selected.target.entity, non_attacker);
+        assert_eq!(selected.retaliation_acquired_target, Some(non_attacker));
+    }
+
+    #[test]
+    fn complete_due_acquisition_scan_performs_zero_heap_allocations() {
+        let mut registry = EntityRegistry::new();
+        let enemy = brain(&mut registry, 0.0);
+        let player = pawn(&mut registry, 2.0);
+        registry
+            .entity_state_mut(player)
+            .expect("player has state")
+            .set(super::super::FACTION_STATE_FIELD, 1.0);
+        let peer = brain(&mut registry, 4.0);
+        let factions = FactionRegistry::default();
+        let mut candidate_scope = CandidateScope::for_validation();
+        let mut candidate_perception = |target: TargetPawn| {
+            Some(RawTargetPerception {
+                target: target.entity,
+                visible: true,
+                enemy_eye: Vec3::ZERO,
+                target_aim: target.position,
+            })
+        };
+
+        // Warm the exact path before measuring so the probe covers one normal
+        // due scan rather than one-time test/TLS initialization.
+        let warm_offers = target_offers(&registry, &factions, Vec3::ZERO, 0.0, Some(enemy), None);
+        let _ = select_target_with_attacker_ledger(
+            None,
+            &warm_offers,
+            &registry,
+            &factions,
+            Some(enemy),
+            0.0,
+            None,
+            &mut candidate_scope,
+            &EMPTY_RECENT_ATTACKERS,
+            None,
+            RetaliationDescriptor::default(),
+            16.0,
+            &mut candidate_perception,
+        );
+
+        let snapshot = AllocSnapshot::arm();
+        let offers = target_offers(&registry, &factions, Vec3::ZERO, 0.0, Some(enemy), None);
+        let selected = select_target_with_attacker_ledger(
+            None,
+            &offers,
+            &registry,
+            &factions,
+            Some(enemy),
+            0.0,
+            None,
+            &mut candidate_scope,
+            &EMPTY_RECENT_ATTACKERS,
+            None,
+            RetaliationDescriptor::default(),
+            16.0,
+            &mut candidate_perception,
+        );
+        let allocations = snapshot.allocs_since();
+
+        assert_eq!(
+            offers.nearest.map(|candidate| candidate.target.entity),
+            Some(player)
+        );
+        assert_eq!(
+            selected.map(|selection| selection.target.entity),
+            Some(player)
+        );
+        assert_ne!(
+            peer, player,
+            "fixture includes a brain-only peer in the replay"
+        );
+        assert_eq!(allocations, 0, "a due target-acquisition scan allocated");
     }
 
     #[test]

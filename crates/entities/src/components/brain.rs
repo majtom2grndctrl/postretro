@@ -818,6 +818,7 @@ fn validate_envelope_animation_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ComponentKind;
     use crate::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation, MeshComponent};
     use crate::registry::Transform;
     use std::collections::HashMap;
@@ -1042,8 +1043,8 @@ mod tests {
         let repeated_record = brain
             .recent_attacker(repeated)
             .expect("attacker is retained");
-        assert_eq!(repeated_record.accumulated_damage, 5.0);
-        assert_eq!(repeated_record.time_since_damage_ms, 0.0);
+        assert!((repeated_record.accumulated_damage - 5.0).abs() <= f32::EPSILON);
+        assert!(repeated_record.time_since_damage_ms.abs() <= f32::EPSILON);
 
         for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
             brain.recent_attackers[index] = Some(RecentAttacker {
@@ -1066,19 +1067,22 @@ mod tests {
         brain.record_attacker_damage(newcomer, 4.0);
 
         assert!(brain.recent_attacker(EntityId::from_raw(2)).is_none());
-        assert_eq!(
-            brain
+        assert!(
+            (brain
                 .recent_attacker(EntityId::from_raw(3))
                 .expect("higher-damage equal-age record is retained")
-                .accumulated_damage,
-            9.0
+                .accumulated_damage
+                - 9.0)
+                .abs()
+                <= f32::EPSILON
         );
-        assert_eq!(
+        assert!(
             brain
                 .recent_attacker(newcomer)
                 .expect("new attacker replaces the eviction candidate")
-                .time_since_damage_ms,
-            0.0
+                .time_since_damage_ms
+                .abs()
+                <= f32::EPSILON
         );
 
         for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
@@ -1102,15 +1106,17 @@ mod tests {
             .expect("ledger remains populated");
         saturated.time_since_damage_ms = BRAIN_NO_TARGET_DISTANCE - 1.0;
         brain.age_recent_attackers(16.0);
-        assert_eq!(
-            brain
+        assert!(
+            (brain
                 .recent_attackers
                 .iter()
                 .flatten()
                 .next()
                 .expect("ledger retains saturated entry")
-                .time_since_damage_ms,
-            BRAIN_NO_TARGET_DISTANCE,
+                .time_since_damage_ms
+                - BRAIN_NO_TARGET_DISTANCE)
+                .abs()
+                <= f32::EPSILON,
             "recency saturates but never removes a retained attacker"
         );
     }
@@ -1472,6 +1478,89 @@ mod tests {
                 .is_err(),
             "health-only damage remains a no-op for absent brains"
         );
+    }
+
+    #[test]
+    fn post_mortem_damage_does_not_revise_brain_attacker_memory() {
+        use crate::components::health::{
+            DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+        };
+        use crate::data_descriptors::HealthDescriptor;
+        use crate::registry::ComponentValue;
+        use postretro_foundation::DamagePayload;
+
+        let mut registry = EntityRegistry::new();
+        let target = registry.spawn(Transform::default());
+        let lethal_attacker = registry.spawn(Transform {
+            position: Vec3::new(4.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let corpse_attacker = registry.spawn(Transform {
+            position: Vec3::new(-4.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(target, BrainComponent::from_graph(&authored_graph()))
+            .unwrap();
+        registry
+            .set_component(
+                target,
+                HealthComponent::from_descriptor(&HealthDescriptor {
+                    max: 10.0,
+                    hitbox: None,
+                    zone_multipliers: HashMap::new(),
+                }),
+            )
+            .unwrap();
+
+        let mut lethal_context = DamageContext::new("test.lethal", DamageProducer::InTick);
+        lethal_context.attacker = Some(lethal_attacker);
+        assert!(apply_damage_with_context(
+            &mut registry,
+            target,
+            &DamagePayload { amount: 10.0 },
+            lethal_context,
+        ));
+
+        let elapsed_after_lethal_ms = 125.0;
+        let ComponentValue::Brain(brain) = registry
+            .get_component_value_mut(target, ComponentKind::Brain)
+            .expect("brain remains attached")
+        else {
+            panic!("expected brain component");
+        };
+        brain.time_since_damage_ms = elapsed_after_lethal_ms;
+        brain.age_recent_attackers(elapsed_after_lethal_ms);
+
+        let mut corpse_context = DamageContext::new("test.corpse-hit", DamageProducer::InTick);
+        corpse_context.attacker = Some(corpse_attacker);
+        assert!(apply_damage_with_context(
+            &mut registry,
+            target,
+            &DamagePayload { amount: 5.0 },
+            corpse_context,
+        ));
+
+        let brain = registry
+            .get_component::<BrainComponent>(target)
+            .expect("brain remains attached");
+        assert!(
+            (brain.time_since_damage_ms - elapsed_after_lethal_ms).abs() <= f32::EPSILON,
+            "post-mortem damage must not reset generic damage recency",
+        );
+        let lethal_record = brain
+            .recent_attacker(lethal_attacker)
+            .expect("the lethal hit remains the frozen attacker record");
+        assert!((lethal_record.accumulated_damage - 10.0).abs() <= f32::EPSILON);
+        assert!(
+            (lethal_record.time_since_damage_ms - elapsed_after_lethal_ms).abs() <= f32::EPSILON,
+            "post-mortem damage must not reset the lethal attacker's clock",
+        );
+        assert!(
+            brain.recent_attacker(corpse_attacker).is_none(),
+            "post-mortem damage must not add an attacker or reset its clock",
+        );
+        assert_eq!(brain.last_known_target_pos, Some(Vec3::new(4.0, 0.0, 0.0)));
     }
 
     #[test]

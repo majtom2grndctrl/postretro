@@ -1,5 +1,5 @@
 // Data-script registries: active level definitions plus engine-global entity,
-// map, reaction, crossing, trigger-event, and trigger-pool snapshots used by
+// faction, map, reaction, crossing, trigger-event, and trigger-pool snapshots used by
 // startup and staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
@@ -52,8 +52,8 @@ pub struct FactionSentimentDescriptor {
 }
 
 /// A directional relationship resolved from the faction registry. `tolerance`
-/// remains optional so the later retaliation consumer can distinguish an
-/// authored pair override from its own compatibility default.
+/// is present only for an authored pair override; AI resolves absent values
+/// through its entity and compatibility tolerance rules.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FactionRelationship {
     pub sentiment: f32,
@@ -1073,7 +1073,7 @@ mod tests {
         ])
         .expect("declared endpoint names resolve");
 
-        assert_eq!(factions.sentiment(2.0, 3.0), -0.75);
+        assert!((factions.sentiment(2.0, 3.0) - -0.75).abs() <= f32::EPSILON);
         assert_eq!(factions.sentiment(3.0, 2.0), 0.0);
         assert_eq!(factions.tolerance(2.0, 3.0), Some(4.0));
         assert_eq!(factions.tolerance(3.0, 2.0), Some(9.0));

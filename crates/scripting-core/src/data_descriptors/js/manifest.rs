@@ -1081,7 +1081,8 @@ pub fn drain_factions_js<'js>(
 }
 
 /// Drain strict directional sentiment entries after faction names have been
-/// validated. The returned registry owns the resolved index matrix, while the
+/// validated. The returned registry owns sorted sparse `(from, to)` index-pair
+/// overrides, while the
 /// descriptors stay on the normalized manifest carrier for SDK-shape parity;
 /// no named lookup reaches the AI candidate hot path.
 pub fn drain_faction_sentiments_js<'js>(

@@ -491,9 +491,9 @@ pub(super) fn evaluate(
         // connect from across the room.
         // An unresolved action name configures no range and no damage, so it
         // never attacks.
-        // Gating on the selected target's Health stops attack/event spam against
-        // an already-dead but still-present pawn and prevents damaging a
-        // different co-op pawn than the one this enemy chose.
+        // Gating on the selected target's damage eligibility stops attack/event
+        // spam against an already-dead or removal-committed pawn and prevents
+        // damaging a different co-op pawn than the one this enemy chose.
         let entered = brain.take_entry_pending();
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)

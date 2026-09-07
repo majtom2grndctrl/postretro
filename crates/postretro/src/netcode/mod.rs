@@ -2135,13 +2135,17 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
+    if crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target) {
+        return false;
+    }
     let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
         return false;
     };
-    // Deferred direct-impact projectiles share the local projectile liveness
-    // contract: once a target is down, their sole impact is spent without a
-    // second application. Hitscan/pellet declarations retain the common impact
-    // dispatch semantics used by authored zero-HP/downed policies.
+    // Every resolution rejects a target already committed to removal above.
+    // Deferred direct-impact projectiles additionally share the local
+    // projectile liveness contract: once a target is down, their sole impact
+    // is spent without a second application. Hitscan/pellet declarations retain
+    // the common impact dispatch semantics used by authored zero-HP policies.
     if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
         return false;
     }
@@ -4071,6 +4075,64 @@ mod tests {
 
         assert!(result.hit_accepted);
         assert_eq!(health_seen_by_consumer, [90.0, 80.0]);
+    }
+
+    // Regression: a remote pellet policy could queue target despawn, but the
+    // next record still damaged and dispatched the registry-live target.
+    #[test]
+    fn hit_declaration_skips_later_pellet_after_target_commits_to_despawn() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.pellet_count = 2;
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+        ]);
+        let target = fixture.target;
+        let mut policy_fires = 0;
+
+        let result = ingest_hit_declaration(
+            HostHitIngestContext {
+                registry: &mut fixture.registry,
+                collision_world: &fixture.collision_world,
+                allocator: &fixture.allocator,
+                owners: &fixture.owners,
+                open_shots: &mut fixture.open_shots,
+            },
+            7,
+            &declaration,
+            |registry| {
+                policy_fires += 1;
+                crate::impact_effects::despawn(registry, target, Some(1000.0));
+            },
+        );
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(policy_fires, 1);
+        assert!((fixture.target_health().current - 90.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            fixture
+                .target_health()
+                .contributor_ledger
+                .total_recorded_hits(),
+            1
+        );
+        assert!(
+            crate::scripting_systems::health::is_terminally_committed_to_removal(
+                &fixture.registry,
+                target,
+            )
+        );
     }
 
     #[test]

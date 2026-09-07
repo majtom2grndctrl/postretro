@@ -1045,6 +1045,41 @@ pub fn drain_maps_js<'js>(
     Ok(out)
 }
 
+/// Drain the strict manifest faction collection. Unlike optional presentation
+/// fields, malformed faction content rejects the manifest: entity faction names
+/// must resolve against one stable, all-or-nothing declaration set.
+pub fn drain_factions_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+    use crate::data_registry::{FactionDescriptor, FactionRegistry};
+
+    if !obj.contains_key("factions").map_err(js_err)? {
+        return Ok(FactionRegistry::default());
+    }
+    let raw: JsValue = obj.get("factions").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(FactionRegistry::default());
+    }
+    let Some(array) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factions` must be an array"),
+        });
+    };
+    let mut descriptors = Vec::with_capacity(array.len());
+    for index in 0..array.len() {
+        let value: JsValue = array.get(index).map_err(js_err)?;
+        let entry = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factions[{index}]` must be an object"),
+        })?;
+        let name = get_required_string_js(&entry, "name")?;
+        descriptors.push(FactionDescriptor { name });
+    }
+    FactionRegistry::from_descriptors(descriptors).map_err(|reason| DescriptorError::InvalidShape {
+        reason: format!("{scope}: `factions` invalid: {reason}"),
+    })
+}
+
 /// Drain mod-global reaction definitions from a QuickJS manifest object.
 /// Missing/null `reactions` normalizes to empty; present entries use the same
 /// descriptor parser as level-local reactions plus an optional `levels` scope.

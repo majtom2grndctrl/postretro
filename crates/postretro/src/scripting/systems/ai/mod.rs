@@ -92,7 +92,8 @@ const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 pub(crate) const FACTION_STATE_FIELD: &str = "faction";
 /// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
 /// the emergent state field absent and therefore read as faction zero.
-pub(crate) const ENEMY_DEFAULT_FACTION: f32 = 1.0;
+#[cfg(test)]
+pub(crate) const ENEMY_DEFAULT_FACTION: f32 = postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
 
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and a locomotion state plays its

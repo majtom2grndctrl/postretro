@@ -8229,6 +8229,7 @@ fn projectile_weapon_descriptor(
     cooldown_ms: f32,
 ) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        faction: None,
         canonical_name: Some(canonical_name.to_string()),
         inventory: None,
         light: None,

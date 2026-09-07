@@ -33,10 +33,67 @@ pub struct ScopedCrossing {
 pub type ScopedTriggerEvent = TriggerEventDescriptor;
 pub type ScopedTriggerPool = TriggerPoolDescriptor;
 
+/// Stable, manifest-authored faction name. The runtime stores only the resolved
+/// scalar index on an entity; names stay in this engine-global content registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionDescriptor {
+    pub name: String,
+}
+
+/// The absent faction carried by player pawns.
+pub const PLAYER_FACTION_INDEX: f32 = 0.0;
+/// The compatibility faction used by brain-bearing archetypes without an
+/// authored faction declaration.
+pub const DEFAULT_ENEMY_FACTION_INDEX: f32 = 1.0;
+const FIRST_AUTHORED_FACTION_INDEX: f32 = 2.0;
+const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
+
+/// Manifest faction names resolved to compact, stable entity-state indices.
+///
+/// Indices 0 and 1 stay reserved for the player and the built-in default enemy
+/// faction. Author declarations retain manifest order and begin at index 2.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FactionRegistry {
+    descriptors: Vec<FactionDescriptor>,
+}
+
+impl FactionRegistry {
+    pub fn from_descriptors(descriptors: Vec<FactionDescriptor>) -> Result<Self, String> {
+        let mut names = HashSet::with_capacity(descriptors.len());
+        for descriptor in &descriptors {
+            if descriptor.name.is_empty() {
+                return Err("faction name must be a non-empty string".to_string());
+            }
+            if !names.insert(descriptor.name.as_str()) {
+                return Err(format!("duplicate faction name `{}`", descriptor.name));
+            }
+        }
+        // A f32 exactly represents every integer in this range. Reserving the
+        // two built-ins keeps authored values from colliding with player/default
+        // semantics even when the registry is later read directly by the AI.
+        if descriptors.len() > MAX_EXACT_FACTION_INDEX - FIRST_AUTHORED_FACTION_INDEX as usize + 1 {
+            return Err("too many authored factions for f32 index storage".to_string());
+        }
+        Ok(Self { descriptors })
+    }
+
+    /// Resolve an authored stable name to its entity-state scalar.
+    pub fn index_for_name(&self, name: &str) -> Option<f32> {
+        self.descriptors
+            .iter()
+            .position(|descriptor| descriptor.name == name)
+            .map(|offset| FIRST_AUTHORED_FACTION_INDEX + offset as f32)
+    }
+
+    pub fn descriptors(&self) -> &[FactionDescriptor] {
+        &self.descriptors
+    }
+}
+
 /// Data registries collected from script execution.
 /// `reactions`, `crossings`, `trigger_events`, and `trigger_pools` are per-level
-/// and cleared on unload; entity, map, and global reaction/crossing/trigger-event/
-/// trigger-pool definitions survive level unload.
+/// and cleared on unload; entity, faction, map, and global
+/// reaction/crossing/trigger-event/trigger-pool definitions survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
     /// Active reactions for this level after composing matching mod-global
@@ -75,6 +132,9 @@ pub struct DataRegistry {
     /// Consumers of derived descriptor data use this to refresh once per
     /// registry change without fingerprinting descriptors in a hot path.
     entity_types_generation: u64,
+    /// Manifest-authored named faction registry. Engine-global like entity
+    /// descriptors: level unload clears no faction declarations or indices.
+    pub factions: FactionRegistry,
     /// Mod map catalog entries. Engine-global — survive level unload.
     /// Populated by the boot caller from `ModManifest.maps` so the
     /// frontend and catalog-id load path can discover maps before a level is
@@ -312,6 +372,13 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
+    /// Replace the complete committed faction snapshot. Manifest validation
+    /// constructs this registry before it reaches the drain, so this operation
+    /// is an infallible atomic replacement beside entity descriptors.
+    pub fn replace_factions(&mut self, factions: FactionRegistry) {
+        self.factions = factions;
+    }
+
     /// Identity of the current complete entity-descriptor snapshot.
     pub fn entity_types_generation(&self) -> u64 {
         self.entity_types_generation
@@ -357,7 +424,7 @@ impl DataRegistry {
     }
 
     /// Drop every active per-level reaction/crossing/trigger-event/trigger-pool
-    /// definition. Engine-global entity, map, and global reaction/crossing/
+    /// definition. Engine-global entity, faction, map, and global reaction/crossing/
     /// trigger-event/trigger-pool definitions outlive the clear. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub fn clear(&mut self) {
@@ -390,6 +457,7 @@ impl DataRegistry {
             && self.level_trigger_events.is_empty()
             && self.level_trigger_pools.is_empty()
             && self.entities.is_empty()
+            && self.factions.descriptors().is_empty()
             && self.maps.is_empty()
             && self.default_weapon_placement.is_none()
     }
@@ -418,6 +486,7 @@ mod tests {
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("grunt".to_string()),
             inventory: None,
             light: None,
@@ -817,6 +886,40 @@ mod tests {
         r.clear();
         assert_eq!(r.reactions.len(), 0);
         assert_eq!(r.entities.len(), 1, "entities survive level unload");
+    }
+
+    #[test]
+    fn faction_registry_reserves_builtin_indices_and_preserves_manifest_order() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("distinct non-empty faction names are valid");
+
+        assert_eq!(PLAYER_FACTION_INDEX, 0.0);
+        assert_eq!(DEFAULT_ENEMY_FACTION_INDEX, 1.0);
+        assert_eq!(factions.index_for_name("cabal"), Some(2.0));
+        assert_eq!(factions.index_for_name("resistance"), Some(3.0));
+    }
+
+    #[test]
+    fn clear_keeps_manifest_factions_for_the_next_level() {
+        let mut registry = DataRegistry::new();
+        let factions = FactionRegistry::from_descriptors(vec![FactionDescriptor {
+            name: "cabal".to_string(),
+        }])
+        .expect("valid faction declaration");
+        registry.replace_factions(factions);
+        registry.populate_level(sample_level_reactions(), Vec::new(), &[]);
+
+        registry.clear();
+
+        assert!(registry.reactions.is_empty());
+        assert_eq!(registry.factions.index_for_name("cabal"), Some(2.0));
     }
 
     #[test]

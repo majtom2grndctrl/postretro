@@ -865,12 +865,27 @@ impl ScriptingCore {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
+            if let Err(error) = manifest.resolve_entity_faction_indices() {
+                // This should be unreachable after the strict manifest parse,
+                // but retaining the failed snapshot is safer than committing a
+                // descriptor whose named faction could not resolve.
+                log::error!(
+                    "[Scripting] manifest faction resolution rejected during drain: {error}"
+                );
+                return;
+            }
             // `manifest` borrows `self.script_runtime`; `data_registry` and
             // `sequence_registry` are disjoint fields, so all three coexist.
             let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-            for desc in std::mem::take(&mut manifest.entities) {
+            let descriptors = std::mem::take(&mut manifest.entities);
+            // Source names parallel `entities` only until this one-time drain.
+            // Keep the retained manifest internally consistent if a caller
+            // probes the drain path again after registrations were consumed.
+            manifest.entity_faction_names.clear();
+            for desc in descriptors {
                 data_registry.upsert_entity_type(desc);
             }
+            data_registry.replace_factions(std::mem::take(&mut manifest.factions));
             data_registry.replace_maps(std::mem::take(&mut manifest.maps));
             data_registry.set_default_weapon_placement(manifest.default_weapon_placement.take());
             let global_reactions = validate_scoped_sequence_primitives(

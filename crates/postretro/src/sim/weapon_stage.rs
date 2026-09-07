@@ -196,6 +196,7 @@ mod tests {
         placement: WeaponPlacementDescriptor,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some(canonical_name.to_string()),
             inventory: None,
             light: None,

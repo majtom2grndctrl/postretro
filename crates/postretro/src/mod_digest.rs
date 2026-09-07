@@ -163,9 +163,10 @@ mod tests {
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_entities::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
-        CapsuleParams, EntityTypeDescriptor, FallParams, FireMode, GroundParams, HealthDescriptor,
-        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+        CapsuleParams, EntityTypeDescriptor, FactionRegistry, FallParams, FireMode, GroundParams,
+        HealthDescriptor, ImpactEventDescriptor, MeshDescriptor, MotionVerb,
+        PlayerMovementDescriptor, PrimitiveDescriptor, ReactionDescriptor, ScopedReaction,
+        SpeedParams, WeaponDescriptor,
     };
     use postretro_foundation::ir::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
@@ -251,6 +252,8 @@ mod tests {
             switching: Default::default(),
             default_weapon_placement: None,
             entities: vec![entity_descriptor()],
+            factions: FactionRegistry::default(),
+            entity_faction_names: vec![None],
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),
             presentation_overlays: Vec::new(),
@@ -281,6 +284,7 @@ mod tests {
 
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("fixture-entity".to_string()),
             inventory: None,
             light: None,

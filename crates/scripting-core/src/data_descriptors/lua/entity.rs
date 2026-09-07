@@ -11,6 +11,9 @@ use super::super::*;
 pub fn entity_descriptor_from_lua(
     value: LuaValue,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
+    // Keep the descriptor parser's shape validation in parity with the
+    // mod-manifest path, which retains the name for commit-time resolution.
+    let _ = entity_faction_name_from_lua(value.clone())?;
     let table = match value {
         LuaValue::Table(t) => t,
         other => {
@@ -209,6 +212,7 @@ pub fn entity_descriptor_from_lua(
     }
 
     let descriptor = EntityTypeDescriptor {
+        faction: None,
         canonical_name,
         inventory,
         light,
@@ -221,6 +225,46 @@ pub fn entity_descriptor_from_lua(
         behavior,
     };
     Ok(descriptor)
+}
+
+/// Read an optional named faction without resolving it. Resolution belongs to
+/// the complete manifest commit, after every declaration is known.
+pub fn entity_faction_name_from_lua(value: LuaValue) -> Result<Option<String>, DescriptorError> {
+    let table = lua_table(value, "entity entry")?;
+    if !table.contains_key("components").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let components: LuaValue = table.get("components").map_err(lua_err)?;
+    let LuaValue::Table(components) = components else {
+        if matches!(components, LuaValue::Nil) {
+            return Ok(None);
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components` must be a table".to_string(),
+        });
+    };
+    if !components.contains_key("faction").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = components.get("faction").map_err(lua_err)?;
+    let name = match raw {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.faction` must be a string when supplied, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    if name.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.faction` must be a non-empty string when supplied".to_string(),
+        });
+    }
+    Ok(Some(name))
 }
 
 /// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.

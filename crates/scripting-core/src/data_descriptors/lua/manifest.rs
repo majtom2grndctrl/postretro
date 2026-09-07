@@ -877,6 +877,36 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
     Ok(out)
 }
 
+/// Luau twin of [`drain_factions_js`]. Faction declarations are strict manifest
+/// data because later archetype references must resolve atomically.
+pub fn drain_factions_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+    use crate::data_registry::{FactionDescriptor, FactionRegistry};
+
+    let raw: LuaValue = table.get("factions").map_err(lua_err)?;
+    let LuaValue::Table(array) = raw else {
+        if matches!(raw, LuaValue::Nil) {
+            return Ok(FactionRegistry::default());
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factions` must be an array"),
+        });
+    };
+    let length = validate_dense_lua_array(&array, "`factions` field")?;
+    let mut descriptors = Vec::with_capacity(length);
+    for index in 1..=(length as i64) {
+        let value: LuaValue = array.get(index).map_err(lua_err)?;
+        let entry = lua_table(value, "faction entry")?;
+        let name = get_required_string_lua(&entry, "name")?;
+        descriptors.push(FactionDescriptor { name });
+    }
+    FactionRegistry::from_descriptors(descriptors).map_err(|reason| DescriptorError::InvalidShape {
+        reason: format!("{scope}: `factions` invalid: {reason}"),
+    })
+}
+
 /// Drain mod-global reaction definitions from a Luau manifest table. Mirrors
 /// [`drain_global_reactions_js`].
 pub fn drain_global_reactions_lua(

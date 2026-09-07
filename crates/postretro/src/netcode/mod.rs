@@ -2691,6 +2691,7 @@ mod tests {
             },
         };
         let descriptor = EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("live_ion_rifle".to_string()),
             inventory: None,
             light: None,
@@ -3266,6 +3267,7 @@ mod tests {
             )
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("reference_pistol".to_string()),
             inventory: None,
             light: None,
@@ -4826,6 +4828,7 @@ mod tests {
     /// `PlayerMovement` pawn and marks it the local player (the host's own pawn).
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
             canonical_name: Some("player".to_string()),
             inventory: None,
             light: None,

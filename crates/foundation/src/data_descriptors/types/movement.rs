@@ -44,7 +44,8 @@ pub struct PlayerMovementDescriptor {
     /// the present-then-all-required discipline of `dash`/`crouch`.
     pub slide: Option<SlideParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
-    /// sway). Absent ⇒ view feel disabled (no `ViewFeelParams` materialized).
+    /// sway, state-transition impulse). Absent ⇒ view feel disabled (no
+    /// `ViewFeelParams` materialized).
     /// A render-only camera effect — see `ViewFeelParams`.
     pub view_feel: Option<ViewFeelParams>,
 }
@@ -302,13 +303,12 @@ pub struct SlideParams {
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,
-/// strafe tilt, ambient sway). OPTIONAL on [`PlayerMovementDescriptor`] — absent
+/// strafe tilt, ambient sway, state-transition impulse). OPTIONAL on [`PlayerMovementDescriptor`] — absent
 /// disables view feel entirely (no `ViewFeelParams` materialized). When present,
-/// each of `bob`/`tilt`/`sway` is independently optional; an absent sub-object
-/// disables that motion. Within a present sub-object, all tuning fields are
-/// required EXCEPT the optional `groundedOnly` gate. This two-level
-/// present-then-all-required discipline mirrors the optional `dash`/`crouch`
-/// sub-objects, applied at two nesting levels. View feel is consumed by the
+/// each motion is independently optional; an absent sub-object disables that
+/// motion. Present bob, tilt, and sway blocks require all tuning fields except
+/// the optional `groundedOnly` gate. A present impulse block requires its top-level
+/// fields while its per-state rows stay sparse. View feel is consumed by the
 /// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewFeelParams {
@@ -324,23 +324,37 @@ pub struct ViewFeelParams {
 }
 
 /// Render-rate state-transition impulse tuning. A present block requires a
-/// positive default spring `tension`, a per-channel output `max`, and the
+/// bounded default spring `tension`, a per-channel output `max`, and the
 /// sparse per-state tuning table. Each state can override its settle rate and
 /// independently author entry/exit displacements in signed degrees.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpulseParams {
-    /// Default critically-damped settle rate in 1/sec. Must be finite > 0.
+    /// Default critically-damped settle rate in 1/sec. Must be finite in
+    /// [`Self::MIN_TENSION`, `Self::MAX_TENSION`].
     pub tension: f32,
     /// Per-channel absolute ceiling applied only to the summed presentation
-    /// output. Each field must be finite ≥ 0.
+    /// output. Each field must be finite in
+    /// `[0, Self::MAX_CHANNEL_MAGNITUDE]`.
     pub max: ImpulseChannels,
     /// Sparse state-keyed impulse definitions for the closed movement vocabulary.
     pub states: ImpulseStates,
 }
 
-/// Signed displacement in descriptor degrees. Used both by `max` (where each
-/// value is validated non-negative) and by state entry/exit kicks (where signed
-/// and zero values are valid).
+impl ImpulseParams {
+    /// Slowest supported settle rate. This still permits a long, soft tail
+    /// without making an impulse effectively permanent.
+    pub const MIN_TENSION: f32 = 0.1;
+    /// Fastest supported settle rate. Values above this are visually
+    /// indistinguishable from an immediate return at ordinary frame rates.
+    pub const MAX_TENSION: f32 = 240.0;
+    /// Largest authored absolute displacement or presentation ceiling, in
+    /// degrees. The uniform bound keeps every accepted spring input finite.
+    pub const MAX_CHANNEL_MAGNITUDE: f32 = 180.0;
+}
+
+/// Signed displacement in descriptor degrees. Used both by `max` (validated in
+/// `[0, ImpulseParams::MAX_CHANNEL_MAGNITUDE]`) and by state entry/exit kicks
+/// (validated within the corresponding signed range).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ImpulseChannels {
     pub fov: f32,
@@ -361,6 +375,8 @@ pub struct ImpulseStates {
 /// and/or exit displacement. All optional fields preserve sparse inheritance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpulseStateParams {
+    /// Optional settle-rate override. Uses [`ImpulseParams::MIN_TENSION`] to
+    /// [`ImpulseParams::MAX_TENSION`] when present.
     pub tension: Option<f32>,
     pub enter: Option<ImpulseChannels>,
     pub exit: Option<ImpulseChannels>,

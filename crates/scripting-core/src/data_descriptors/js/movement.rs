@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
+use rquickjs::object::Filter;
 
 pub fn movement_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
@@ -191,11 +192,11 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
-    // `viewFeel` is optional: absence disables view feel. When present, each of
-    // `bob`/`tilt`/`sway` is independently optional; an absent sub-object
-    // disables that motion. Within a present sub-object, all tuning fields are
-    // required except the optional `groundedOnly` gate (two-level
-    // present-then-all-required, mirroring the `dash`/`crouch` discipline).
+    // `viewFeel` is optional: absence disables view feel. `bob`/`tilt`/`sway`
+    // and `impulse` are independently optional. An absent legacy motion block
+    // disables that motion; a present one requires all tuning fields except the
+    // optional `groundedOnly` gate. `impulse` validates its own nested state and
+    // channel shape.
     let view_feel = if obj.contains_key("viewFeel").map_err(js_err)? {
         let raw: JsValue = obj.get("viewFeel").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
@@ -288,8 +289,10 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
 }
 
 pub fn impulse_params_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseParams, DescriptorError> {
-    let tension = validate_positive_finite(
+    let tension = validate_in_range_finite(
         get_required_f32_js(obj, "tension")?,
+        ImpulseParams::MIN_TENSION,
+        ImpulseParams::MAX_TENSION,
         "movement.viewFeel.impulse.tension",
     )?;
     let max: Object = get_required_object_js(obj, "max")?;
@@ -303,22 +306,29 @@ pub fn impulse_params_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseParams, D
 
 fn impulse_max_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseChannels, DescriptorError> {
     Ok(ImpulseChannels {
-        fov: validate_non_negative_finite(
+        fov: validate_in_range_finite(
             get_required_f32_js(obj, "fov")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.fov",
         )?,
-        pitch: validate_non_negative_finite(
+        pitch: validate_in_range_finite(
             get_required_f32_js(obj, "pitch")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.pitch",
         )?,
-        roll: validate_non_negative_finite(
+        roll: validate_in_range_finite(
             get_required_f32_js(obj, "roll")?,
+            0.0,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             "movement.viewFeel.impulse.max.roll",
         )?,
     })
 }
 
 fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, DescriptorError> {
+    validate_impulse_state_keys_js(obj)?;
     Ok(ImpulseStates {
         normal: optional_impulse_state_from_js(obj, "normal")?,
         dash: optional_impulse_state_from_js(obj, "dash")?,
@@ -327,11 +337,35 @@ fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, Descr
     })
 }
 
+fn validate_impulse_state_keys_js(obj: &Object<'_>) -> Result<(), DescriptorError> {
+    if let Some(key) = obj
+        .own_keys::<rquickjs::Atom>(Filter::new().symbol())
+        .next()
+    {
+        key.map_err(js_err)?;
+        return Err(DescriptorError::InvalidShape {
+            reason: "`movement.viewFeel.impulse.states` keys must be strings, got symbol"
+                .to_string(),
+        });
+    }
+    for key in obj.own_keys::<String>(Filter::new().string()) {
+        let key = key.map_err(js_err)?;
+        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn optional_impulse_state_from_js<'js>(
     obj: &Object<'js>,
     field: &'static str,
 ) -> Result<Option<ImpulseStateParams>, DescriptorError> {
-    if !obj.contains_key(field).map_err(js_err)? {
+    if !has_own_impulse_state_key_js(obj, field)? {
         return Ok(None);
     }
     let raw: JsValue = obj.get(field).map_err(js_err)?;
@@ -342,8 +376,10 @@ fn optional_impulse_state_from_js<'js>(
         reason: format!("`movement.viewFeel.impulse.states.{field}` must be an object"),
     })?;
     let tension = match get_optional_f32_js(&state, "tension")? {
-        Some(value) => Some(validate_positive_finite(
+        Some(value) => Some(validate_in_range_finite(
             value,
+            ImpulseParams::MIN_TENSION,
+            ImpulseParams::MAX_TENSION,
             &format!("movement.viewFeel.impulse.states.{field}.tension"),
         )?),
         None => None,
@@ -353,6 +389,15 @@ fn optional_impulse_state_from_js<'js>(
         enter: optional_impulse_channels_from_js(&state, "enter", field)?,
         exit: optional_impulse_channels_from_js(&state, "exit", field)?,
     }))
+}
+
+/// State rows are authored descriptor content only when they are own
+/// properties. Prototype rows must not bypass the closed state vocabulary.
+fn has_own_impulse_state_key_js(obj: &Object<'_>, wanted: &str) -> Result<bool, DescriptorError> {
+    obj.own_keys::<String>(Filter::new().string())
+        .try_fold(false, |found, key| {
+            Ok(found || key.map_err(js_err)? == wanted)
+        })
 }
 
 fn optional_impulse_channels_from_js<'js>(
@@ -377,20 +422,20 @@ fn optional_impulse_channels_from_js<'js>(
     Ok(Some(ImpulseChannels {
         fov: validate_in_range_finite(
             get_required_f32_js(&channels, "fov")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("fov"),
         )?,
         pitch: validate_in_range_finite(
             get_required_f32_js(&channels, "pitch")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("pitch"),
         )?,
         roll: validate_in_range_finite(
             get_required_f32_js(&channels, "roll")?,
-            f32::MIN,
-            f32::MAX,
+            -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
             &path("roll"),
         )?,
     }))

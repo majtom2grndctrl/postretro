@@ -1,6 +1,5 @@
-// Pure first-person view-feel evaluator: head bob, strafe tilt, ambient sway.
-// Render-rate, pawn-driven, owns no GPU or camera basis — the caller maps the
-// scalar outputs onto its camera basis at the render-assembly site in `main.rs`.
+// Pure first-person view-feel evaluator: head bob, strafe tilt, ambient sway, and
+// state-transition impulses. Render-rate, pawn-driven; caller composes scalar outputs into camera orientation and projection.
 // See: context/lib/movement.md
 
 use glam::Vec3;
@@ -58,6 +57,14 @@ impl Default for ViewFeelState {
             sway_clock: 0.0,
             impulse_springs: [impulse::ImpulseSpring::ZERO; 4],
         }
+    }
+}
+
+impl ViewFeelState {
+    /// Discard transition kicks derived from movement state that no longer
+    /// exists while preserving independent bob, tilt, and sway continuity.
+    pub(crate) fn clear_impulses(&mut self) {
+        self.impulse_springs = [impulse::ImpulseSpring::ZERO; 4];
     }
 }
 
@@ -1032,6 +1039,52 @@ mod tests {
         );
     }
 
+    // Regression: accepted extreme values could overflow the f32 critical-spring update.
+    #[test]
+    fn impulse_numeric_boundaries_remain_finite_after_a_long_frame() {
+        let mut params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(ImpulseStateParams {
+                tension: Some(ImpulseParams::MAX_TENSION),
+                enter: Some(channels(
+                    ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+                    -ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+                    ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+                )),
+                exit: None,
+            }),
+            crouch: None,
+            slide: None,
+        });
+        let impulse = params.impulse.as_mut().unwrap();
+        impulse.tension = ImpulseParams::MIN_TENSION;
+        impulse.max = channels(
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+            ImpulseParams::MAX_CHANNEL_MAGNITUDE,
+        );
+
+        let edge = timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0);
+        let mut state = ViewFeelState::default();
+        let first = evaluate_with_edges(&params, 0.0, 0.0, true, &[edge], &mut state, 0.0, 1.0);
+        assert!(first.impulse_fov.is_finite());
+        assert!(first.impulse_pitch.is_finite());
+        assert!(first.impulse_roll.is_finite());
+
+        let settled = evaluate_with_edges(&params, 0.0, 0.0, true, &[], &mut state, f32::MAX, 1.0);
+        assert!(settled.impulse_fov.is_finite());
+        assert!(settled.impulse_pitch.is_finite());
+        assert!(settled.impulse_roll.is_finite());
+        assert!(state.impulse_springs.iter().all(|spring| {
+            spring.position.fov.is_finite()
+                && spring.position.pitch.is_finite()
+                && spring.position.roll.is_finite()
+                && spring.velocity.fov.is_finite()
+                && spring.velocity.pitch.is_finite()
+                && spring.velocity.roll.is_finite()
+        }));
+    }
+
     #[test]
     fn impulse_pitch_and_roll_map_without_moving_the_eye_and_reset_when_removed() {
         let params = impulse_params(ImpulseStates {
@@ -1062,6 +1115,43 @@ mod tests {
                 .iter()
                 .all(|spring| *spring == impulse::ImpulseSpring::ZERO)
         );
+    }
+
+    // Regression: movement hot reload left a pre-refresh transition kick visible.
+    #[test]
+    fn clear_impulses_discards_in_flight_transition_output() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: Some(state(Some(channels(8.0, -2.0, 1.0)), None)),
+            crouch: None,
+            slide: None,
+        });
+        let mut evaluator_state = ViewFeelState::default();
+        evaluator_state.tilt_roll = 3.0;
+        let kicked = evaluate_with_edges(
+            &params,
+            0.0,
+            0.0,
+            true,
+            &[timed_edge(
+                MovementStateKind::Normal,
+                MovementStateKind::Dash,
+                0.0,
+            )],
+            &mut evaluator_state,
+            0.0,
+            1.0,
+        );
+        assert!(kicked.impulse_fov > 0.0);
+
+        evaluator_state.clear_impulses();
+        let cleared =
+            evaluate_with_edges(&params, 0.0, 0.0, true, &[], &mut evaluator_state, 0.0, 1.0);
+
+        assert!(approx_eq(cleared.impulse_fov, 0.0));
+        assert!(approx_eq(cleared.impulse_pitch, 0.0));
+        assert!(approx_eq(cleared.impulse_roll, 0.0));
+        assert!(approx_eq(evaluator_state.tilt_roll, 3.0));
     }
 
     // --- Camera-basis helpers ----------------------------------------------

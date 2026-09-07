@@ -95,11 +95,15 @@ pub struct DescriptorRefreshDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DescriptorRefreshApplySummary {
     pub applied_actions: usize,
     pub kept_old_actions: usize,
     pub dropped_missing_targets: usize,
+    /// Movement components actually replaced or removed by this apply pass.
+    /// App-side presentation uses this lifecycle signal to discard transient
+    /// camera impulses that belonged to the component's pre-refresh state.
+    pub changed_movement_entities: Vec<EntityId>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -188,6 +192,9 @@ pub fn apply_descriptor_refresh_plan(
                 registry
                     .set_component_value(*entity, component.clone())
                     .map_err(DescriptorRefreshApplyError::Registry)?;
+                if component.kind() == ComponentKind::PlayerMovement {
+                    summary.changed_movement_entities.push(*entity);
+                }
                 summary.applied_actions += 1;
             }
             DescriptorRefreshAction::Remove { entity, kind } => {
@@ -209,6 +216,9 @@ pub fn apply_descriptor_refresh_plan(
                         }
                         other => DescriptorRefreshApplyError::Registry(other),
                     })?;
+                if *kind == ComponentKind::PlayerMovement {
+                    summary.changed_movement_entities.push(*entity);
+                }
                 summary.applied_actions += 1;
             }
         }
@@ -1245,6 +1255,39 @@ mod tests {
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded());
         assert_eq!(component.air_ticks, 7);
+    }
+
+    // Regression: movement hot reload reset gameplay state without invalidating its presentation impulses.
+    #[test]
+    fn apply_refresh_reports_changed_movement_entity() {
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.movement_state = MovementState::Dash {
+            elapsed_ms: 40.0,
+            boost: Vec3::new(9.0, 0.0, 0.0),
+        };
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+        let summary = apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
+
+        assert_eq!(summary.changed_movement_entities, vec![id]);
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .movement_state,
+            MovementState::Normal,
+        );
     }
 
     #[test]

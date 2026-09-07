@@ -20,6 +20,7 @@ use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
 use crate::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use crate::quickjs::{QuickJsConfig, QuickJsSubsystem};
+use crate::registry::EntityId;
 use crate::slot_table::StoreDeclarationSet;
 #[cfg(debug_assertions)]
 use crate::staged_manifest::StagedManifestBuildLane;
@@ -154,6 +155,10 @@ pub enum StagedManifestCommitOutcome {
         descriptor_count: usize,
         applied_actions: usize,
         dropped_missing_targets: usize,
+        /// Live movement components replaced or removed by this commit.
+        /// Consumers use entity identity to invalidate derived state without
+        /// treating descriptor refresh as a gameplay transition.
+        changed_movement_entities: Vec<EntityId>,
     },
     DiscardedStale {
         generation: u64,

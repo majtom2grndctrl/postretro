@@ -47,7 +47,7 @@ No save-on-change occurs at runtime until the E13 settings menu is wired. The bo
 
 ## 5. `view_feel_scale` Seam
 
-`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Passed as the `global_scale` argument to `view_feel::evaluate` at the render-assembly site — multiplies all view-feel output (bob, tilt, sway). `0` zeroes all view feel.
+`view_feel_scale` (`[0, 1]`, default `1.0`) is an accessibility scale for view-feel responsiveness. Clamped on load. Multiplies presented bob, tilt, sway, and state-transition FOV/pitch/roll impulses at render assembly. `0` suppresses all view-feel presentation; impulse integration continues.
 
 ---
 

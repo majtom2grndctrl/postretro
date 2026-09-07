@@ -720,11 +720,11 @@ pub(crate) struct App {
     /// carries `view_feel`. See: context/lib/movement.md
     view_feel_state: view_feel::ViewFeelState,
     /// Pawn currently owning the app-level view-feel integrator. A change
-    /// clears transient state so a prior pawn's impulse never rides along.
+    /// clears all state so no motion continuity leaks between camera drivers.
     view_feel_followed_pawn: Option<postretro_entities::EntityId>,
     /// Last descriptor used by the render integrator. A hot-reloaded change
-    /// invalidates any transient state rather than carrying an old kick into
-    /// the replacement tuning.
+    /// invalidates transition impulses while preserving independent bob,
+    /// tilt, and sway continuity for the same followed pawn.
     view_feel_descriptor: Option<postretro_foundation::ViewFeelParams>,
 
     /// Parallel to `input_system`; same key events, debug actions only.
@@ -1414,6 +1414,35 @@ fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
     registry.local_player_movement_pawn()
+}
+
+/// Reconcile render-rate view-feel state with the camera's current driver.
+/// Descriptor refresh on the same pawn invalidates only movement-state
+/// impulses; a different pawn or no driver invalidates all evaluator state.
+fn sync_view_feel_driver(
+    state: &mut view_feel::ViewFeelState,
+    followed_pawn: &mut Option<postretro_entities::EntityId>,
+    descriptor: &mut Option<postretro_foundation::ViewFeelParams>,
+    driver: Option<(
+        postretro_entities::EntityId,
+        &postretro_foundation::ViewFeelParams,
+    )>,
+) {
+    let Some((pawn, params)) = driver else {
+        *state = view_feel::ViewFeelState::default();
+        *followed_pawn = None;
+        *descriptor = None;
+        return;
+    };
+
+    if *followed_pawn != Some(pawn) {
+        *state = view_feel::ViewFeelState::default();
+    } else if descriptor.as_ref() != Some(params) {
+        state.clear_impulses();
+    }
+
+    *followed_pawn = Some(pawn);
+    *descriptor = Some(params.clone());
 }
 
 /// Resolve a local first-person asset strictly through the pawn's live weapon
@@ -3571,13 +3600,12 @@ impl ApplicationHandler for App {
                     .unwrap_or(1.0);
                 let (vf_fov_offset, vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((pawn, params, velocity, is_grounded)) = view_feel_inputs {
-                        if self.view_feel_followed_pawn != Some(pawn)
-                            || self.view_feel_descriptor.as_ref() != Some(&params)
-                        {
-                            self.view_feel_state = view_feel::ViewFeelState::default();
-                            self.view_feel_followed_pawn = Some(pawn);
-                            self.view_feel_descriptor = Some(params.clone());
-                        }
+                        sync_view_feel_driver(
+                            &mut self.view_feel_state,
+                            &mut self.view_feel_followed_pawn,
+                            &mut self.view_feel_descriptor,
+                            Some((pawn, &params)),
+                        );
                         let (horizontal_speed, lateral_velocity) =
                             view_feel::view_feel_inputs(velocity, camera_right);
                         let output = view_feel::evaluate_with_edges(
@@ -3600,9 +3628,12 @@ impl ApplicationHandler for App {
                             view_feel::map_output_to_camera(&output, camera_right);
                         (output.impulse_fov, roll, yaw, pitch, eye)
                     } else {
-                        self.view_feel_state = view_feel::ViewFeelState::default();
-                        self.view_feel_followed_pawn = None;
-                        self.view_feel_descriptor = None;
+                        sync_view_feel_driver(
+                            &mut self.view_feel_state,
+                            &mut self.view_feel_followed_pawn,
+                            &mut self.view_feel_descriptor,
+                            None,
+                        );
                         // Pass-through: no driving pawn, or it carries no
                         // `view_feel`. Identical-to-today render path.
                         (0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
@@ -12029,6 +12060,7 @@ mod tests {
             descriptor_count: 0,
             applied_actions: 0,
             dropped_missing_targets: 0,
+            changed_movement_entities: Vec::new(),
         };
         let (trees, theme, frontend) = staged_ui_commit_payload(&result, &committed)
             .expect("successful current staged result commits UI/theme/frontend");
@@ -12073,6 +12105,7 @@ mod tests {
             descriptor_count: 0,
             applied_actions: 0,
             dropped_missing_targets: 0,
+            changed_movement_entities: Vec::new(),
         };
 
         let (trees, theme, frontend) =

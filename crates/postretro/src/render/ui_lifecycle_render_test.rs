@@ -129,6 +129,7 @@ fn committed(generation: u64) -> StagedManifestCommitOutcome {
         descriptor_count: 0,
         applied_actions: 0,
         dropped_missing_targets: 0,
+        changed_movement_entities: Vec::new(),
     }
 }
 

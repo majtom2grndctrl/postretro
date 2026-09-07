@@ -140,11 +140,33 @@ fn advance_critical(
 }
 
 fn advance_channel(position: &mut f32, velocity: &mut f32, tension: f32, dt: f32) {
-    let x0 = *position;
-    let v0 = *velocity;
+    if !position.is_finite() || !velocity.is_finite() || !tension.is_finite() || !dt.is_finite() {
+        *position = 0.0;
+        *velocity = 0.0;
+        return;
+    }
+
+    // Use f64 intermediates so a long render pause cannot turn the exact
+    // solution's exponentially-decayed terms into `0 * infinity` in f32.
+    let x0 = f64::from(*position);
+    let v0 = f64::from(*velocity);
+    let tension = f64::from(tension);
+    let dt = f64::from(dt);
     let exp = (-tension * dt).exp();
-    *position = exp * (x0 + (v0 + tension * x0) * dt);
-    *velocity = exp * (v0 - tension * (v0 + tension * x0) * dt);
+    let common = v0 + tension * x0;
+    let next_position = exp * (x0 + common * dt);
+    let next_velocity = exp * (v0 - tension * common * dt);
+    if next_position.is_finite()
+        && next_velocity.is_finite()
+        && next_position.abs() <= f64::from(f32::MAX)
+        && next_velocity.abs() <= f64::from(f32::MAX)
+    {
+        *position = next_position as f32;
+        *velocity = next_velocity as f32;
+    } else {
+        *position = 0.0;
+        *velocity = 0.0;
+    }
 }
 
 fn zero_channels() -> ImpulseChannels {
@@ -156,9 +178,18 @@ fn zero_channels() -> ImpulseChannels {
 }
 
 fn add_assign(sum: &mut ImpulseChannels, add: ImpulseChannels) {
-    sum.fov += add.fov;
-    sum.pitch += add.pitch;
-    sum.roll += add.roll;
+    sum.fov = finite_sum(sum.fov, add.fov);
+    sum.pitch = finite_sum(sum.pitch, add.pitch);
+    sum.roll = finite_sum(sum.roll, add.roll);
+}
+
+fn finite_sum(left: f32, right: f32) -> f32 {
+    let sum = f64::from(left) + f64::from(right);
+    if sum.is_finite() {
+        sum.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
+    } else {
+        0.0
+    }
 }
 
 fn clamp_channels(value: ImpulseChannels, max: ImpulseChannels) -> ImpulseChannels {

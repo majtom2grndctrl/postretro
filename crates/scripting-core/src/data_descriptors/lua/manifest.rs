@@ -907,6 +907,52 @@ pub fn drain_factions_lua(
     })
 }
 
+/// Luau twin of [`drain_faction_sentiments_js`]. It validates names while
+/// draining and commits only the registry's resolved faction-index matrix.
+pub fn drain_faction_sentiments_lua(
+    table: &Table,
+    factions: crate::data_registry::FactionRegistry,
+    scope: &str,
+) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+    use crate::data_registry::FactionSentimentDescriptor;
+
+    let raw: LuaValue = table.get("sentiment").map_err(lua_err)?;
+    let LuaValue::Table(array) = raw else {
+        if matches!(raw, LuaValue::Nil) {
+            return Ok(factions);
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment` must be an array"),
+        });
+    };
+    let length = validate_dense_lua_array(&array, "`sentiment` field")?;
+    let mut entries = Vec::with_capacity(length);
+    for index in 1..=(length as i64) {
+        let value: LuaValue = array.get(index).map_err(lua_err)?;
+        let entry = lua_table(value, "sentiment entry")?;
+        let sentiment = get_required_f32_lua(&entry, "sentiment")?;
+        let tolerance = get_required_f32_lua(&entry, "tolerance")?;
+        if !sentiment.is_finite() || !tolerance.is_finite() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{scope}: `sentiment[{index}].sentiment` and `.tolerance` must be finite f32 values"
+                ),
+            });
+        }
+        entries.push(FactionSentimentDescriptor {
+            from_faction: get_required_string_lua(&entry, "fromFaction")?,
+            to_faction: get_required_string_lua(&entry, "toFaction")?,
+            sentiment,
+            tolerance,
+        });
+    }
+    factions
+        .with_sentiments(entries)
+        .map_err(|reason| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment` invalid: {reason}"),
+        })
+}
+
 /// Drain mod-global reaction definitions from a Luau manifest table. Mirrors
 /// [`drain_global_reactions_js`].
 pub fn drain_global_reactions_lua(

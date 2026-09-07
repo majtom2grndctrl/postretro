@@ -57,7 +57,7 @@ use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
-    EntityRegistry, Transform,
+    EntityRegistry, FactionRegistry, Transform,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::TargetPawn;
@@ -217,6 +217,10 @@ pub(crate) struct AiTickInputs<'a> {
     pub(crate) collision_world: Option<&'a CollisionWorld>,
     pub(crate) descriptors: &'a [EntityTypeDescriptor],
     pub(crate) descriptor_generation: u64,
+    /// Resolved manifest faction relationships. The App borrows this from the
+    /// same `DataRegistry` snapshot as descriptors, so a tick cannot observe a
+    /// new faction matrix beside stale content.
+    pub(crate) factions: &'a FactionRegistry,
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -320,6 +324,7 @@ pub(crate) fn run_ai_tick_with_navigation(
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
 ) -> Vec<Cow<'static, str>> {
+    let factions = FactionRegistry::default();
     run_ai_tick_with_navigation_and_impact(
         registry,
         runtime,
@@ -329,6 +334,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             collision_world,
             descriptors: &[],
             descriptor_generation: 0,
+            factions: &factions,
         },
         |_| {},
     )
@@ -347,6 +353,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         collision_world,
         descriptors,
         descriptor_generation,
+        factions,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -415,6 +422,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         dt_ms,
         nav_graph,
         collision_world,
+        factions,
     );
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);

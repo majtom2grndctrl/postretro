@@ -101,6 +101,7 @@ export {
   defineEntity,
   defineMod,
   defineFaction,
+  sentiment,
   defineMapCatalog,
   defineWeaponPlacement,
   defineTriggerPool,

@@ -11,7 +11,8 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    drain_default_weapon_placement_js, drain_default_weapon_placement_lua, drain_factions_js,
+    drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
@@ -481,6 +482,12 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let factions = drain_faction_sentiments_js(&obj, factions, "default mod manifest export")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `sentiment` invalid: {e}"
+            ),
+        })?;
     let (entities, entity_faction_names) = match obj.contains_key("entities") {
         Ok(false) => (Vec::new(), Vec::new()),
         Ok(true) => match obj.get::<_, JsArray>("entities") {
@@ -771,6 +778,12 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let factions = drain_faction_sentiments_lua(&table, factions, "returned mod manifest")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {e}"
+            ),
+        })?;
     let (entities, entity_faction_names) = if table.contains_key("entities").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -1243,6 +1256,106 @@ mod tests {
                     .iter()
                     .all(|descriptor| descriptor.faction.is_none()),
                 "{runtime} parsing must retain names until atomic manifest commit"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_manifest_resolves_directional_faction_sentiment_in_both_runtimes() {
+        for (runtime, entry, source) in [
+            (
+                "QuickJS",
+                "start-script.js",
+                r#"
+                    globalThis.__postretroModManifest = {
+                        name: "Sentiment", id: "sentiment", version: "1",
+                        factions: [{ name: "cabal" }, { name: "resistance" }],
+                        sentiment: [sentiment("cabal", "resistance", {
+                            sentiment: -0.75, tolerance: 0.25,
+                        })],
+                    };
+                "#,
+            ),
+            (
+                "Luau",
+                "start-script.luau",
+                r#"
+                    return {
+                        name = "Sentiment", id = "sentiment", version = "1",
+                        factions = {{ name = "cabal" }, { name = "resistance" }},
+                        sentiment = {sentiment("cabal", "resistance", {
+                            sentiment = -0.75, tolerance = 0.25,
+                        })},
+                    }
+                "#,
+            ),
+        ] {
+            let dir = temp_mod_root(&format!("directional_sentiment_{runtime}"));
+            fs::write(dir.join(entry), source).expect("sentiment fixture should be written");
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!(
+                    "expected {runtime} sentiment manifest to build: {:?}",
+                    result.diagnostics
+                );
+            };
+
+            assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
+            assert_eq!(manifest.factions.tolerance(2.0, 3.0), Some(0.25));
+            assert_eq!(
+                manifest.factions.sentiment(3.0, 2.0),
+                -1.0,
+                "the unlisted reverse pair keeps the compatibility default"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_manifest_rejects_undeclared_sentiment_factions_in_both_runtimes() {
+        for (runtime, entry, source) in [
+            (
+                "QuickJS",
+                "start-script.js",
+                r#"
+                    globalThis.__postretroModManifest = {
+                        name: "Sentiment", id: "sentiment", version: "1",
+                        factions: [{ name: "cabal" }],
+                        sentiment: [{
+                            fromFaction: "cabal", toFaction: "missing",
+                            sentiment: -1, tolerance: 0,
+                        }],
+                    };
+                "#,
+            ),
+            (
+                "Luau",
+                "start-script.luau",
+                r#"
+                    return {
+                        name = "Sentiment", id = "sentiment", version = "1",
+                        factions = {{ name = "cabal" }},
+                        sentiment = {{
+                            fromFaction = "cabal", toFaction = "missing",
+                            sentiment = -1, tolerance = 0,
+                        }},
+                    }
+                "#,
+            ),
+        ] {
+            let dir = temp_mod_root(&format!("undeclared_sentiment_{runtime}"));
+            fs::write(dir.join(entry), source)
+                .expect("invalid sentiment fixture should be written");
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+
+            assert_eq!(result.status, StagedManifestBuildStatus::Failed);
+            assert!(
+                result.diagnostics.iter().any(|diagnostic| {
+                    diagnostic
+                        .message
+                        .contains("sentiment references undeclared to faction `missing`")
+                }),
+                "{runtime} must reject unresolved sentiment names: {:?}",
+                result.diagnostics
             );
         }
     }

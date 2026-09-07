@@ -1080,6 +1080,57 @@ pub fn drain_factions_js<'js>(
     })
 }
 
+/// Drain strict directional sentiment entries after faction names have been
+/// validated. The returned registry owns the resolved index matrix, so no
+/// named lookup reaches the AI candidate hot path.
+pub fn drain_faction_sentiments_js<'js>(
+    obj: &Object<'js>,
+    factions: crate::data_registry::FactionRegistry,
+    scope: &str,
+) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+    use crate::data_registry::FactionSentimentDescriptor;
+
+    if !obj.contains_key("sentiment").map_err(js_err)? {
+        return Ok(factions);
+    }
+    let raw: JsValue = obj.get("sentiment").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(factions);
+    }
+    let Some(array) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment` must be an array"),
+        });
+    };
+    let mut entries = Vec::with_capacity(array.len());
+    for index in 0..array.len() {
+        let value: JsValue = array.get(index).map_err(js_err)?;
+        let entry = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment[{index}]` must be an object"),
+        })?;
+        let sentiment = get_required_f32_js(&entry, "sentiment")?;
+        let tolerance = get_required_f32_js(&entry, "tolerance")?;
+        if !sentiment.is_finite() || !tolerance.is_finite() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{scope}: `sentiment[{index}].sentiment` and `.tolerance` must be finite f32 values"
+                ),
+            });
+        }
+        entries.push(FactionSentimentDescriptor {
+            from_faction: get_required_string_js(&entry, "fromFaction")?,
+            to_faction: get_required_string_js(&entry, "toFaction")?,
+            sentiment,
+            tolerance,
+        });
+    }
+    factions
+        .with_sentiments(entries)
+        .map_err(|reason| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment` invalid: {reason}"),
+        })
+}
+
 /// Drain mod-global reaction definitions from a QuickJS manifest object.
 /// Missing/null `reactions` normalizes to empty; present entries use the same
 /// descriptor parser as level-local reactions plus an optional `levels` scope.

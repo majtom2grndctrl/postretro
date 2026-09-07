@@ -36,7 +36,10 @@ use postretro_entities::components::mesh::{
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
-use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
+use postretro_entities::{
+    DataRegistry, EntityStateComponent, FactionDescriptor, FactionRegistry,
+    FactionSentimentDescriptor, ScriptCtx,
+};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
     BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
@@ -1188,8 +1191,16 @@ fn select_target_for_test(
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
 ) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
+    let factions = FactionRegistry::default();
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-    let offers = target_offers(registry, from, enemy_faction, None, retained_target);
+    let offers = target_offers(
+        registry,
+        &factions,
+        from,
+        enemy_faction,
+        None,
+        retained_target,
+    );
     let nearest = offers.nearest;
     let mut candidate_perception = |target: TargetPawn| {
         Some(perception::RawTargetPerception {
@@ -1203,6 +1214,8 @@ fn select_target_for_test(
         retained,
         &offers,
         registry,
+        &factions,
+        enemy_faction,
         candidate_filter,
         candidate_scope,
         &mut candidate_perception,
@@ -1519,6 +1532,126 @@ fn faction_seed_is_transparent_and_target_hostility_tracks_a_retained_target() {
 }
 
 #[test]
+fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
+    let mut graph = tuning();
+    graph.envelope.transitions.insert(
+        TEST_IDLE_STATE.to_string(),
+        vec![edge(
+            TEST_ALERT_STATE,
+            brain_input(BRAIN_TARGET_HOSTILE_INPUT),
+        )],
+    );
+    graph.envelope.transitions.insert(
+        "*".to_string(),
+        vec![
+            edge(TEST_IDLE_STATE, target_lost()),
+            edge(
+                TEST_IDLE_STATE,
+                IrNode::Select {
+                    cond: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                    a: Box::new(IrNode::Const {
+                        value: IrValue::Bool(false),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Bool(true),
+                    }),
+                },
+            ),
+        ],
+    );
+    graph.candidate_filter = None;
+
+    let factions = FactionRegistry::from_descriptors(vec![
+        FactionDescriptor {
+            name: "cabal".to_string(),
+        },
+        FactionDescriptor {
+            name: "resistance".to_string(),
+        },
+    ])
+    .expect("valid factions")
+    .with_sentiments(vec![
+        FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 0.0,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "resistance".to_string(),
+            to_faction: "cabal".to_string(),
+            sentiment: 0.0,
+            tolerance: 0.0,
+        },
+    ])
+    .expect("directed pairs resolve");
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    registry
+        .entity_state_mut(player)
+        .expect("player carries entity state")
+        .set(FACTION_STATE_FIELD, 3.0);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    registry
+        .entity_state_mut(enemy)
+        .expect("enemy carries entity state")
+        .set(FACTION_STATE_FIELD, 2.0);
+
+    run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &factions,
+        },
+        |_| {},
+    );
+    assert_eq!(enemy_state_name(&registry, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(player));
+
+    // Retention keeps the target available to the durable guard fact. Swapping
+    // both factions reverses the directed pair: resistance -> cabal is neutral
+    // even though cabal -> resistance was hostile on acquisition.
+    registry
+        .entity_state_mut(enemy)
+        .expect("enemy remains live")
+        .set(FACTION_STATE_FIELD, 3.0);
+    registry
+        .entity_state_mut(player)
+        .expect("player remains live")
+        .set(FACTION_STATE_FIELD, 2.0);
+    run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &factions,
+        },
+        |_| {},
+    );
+
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_IDLE_STATE,
+        "the retained target's durable fact must use the reverse directional relation"
+    );
+}
+
+#[test]
 fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
     let mut graph = tuning();
     graph.envelope.transitions.insert(
@@ -1559,6 +1692,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             collision_world: None,
             descriptors: &[],
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |registry| {
             registry
@@ -8473,6 +8607,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     )
@@ -8501,6 +8636,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8617,6 +8753,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8656,6 +8793,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8719,6 +8857,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8743,6 +8882,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8789,6 +8929,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8833,6 +8974,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8890,6 +9032,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     )

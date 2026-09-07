@@ -2,11 +2,15 @@
 // See: context/lib/scripting.md §11
 
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
+#[cfg(test)]
+use postretro_foundation::CANDIDATE_SENTIMENT_INPUT;
 use postretro_foundation::{
     BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue, ResolvedInput, ResolvedOutput,
     resolve_candidate_input,
 };
+
+use super::FACTION_STATE_FIELD;
 
 /// Read handle for a fixed candidate fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,15 +38,21 @@ impl CandidateScope {
     pub(crate) fn refresh(
         &mut self,
         registry: &EntityRegistry,
+        factions: &FactionRegistry,
+        evaluating_faction: f32,
         candidate: EntityId,
         distance: f32,
     ) {
         let health = registry.get_component::<HealthComponent>(candidate).ok();
+        let candidate_faction = registry
+            .get_component::<EntityStateComponent>(candidate)
+            .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
         self.fixed = [
             IrValue::Number(distance),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
             IrValue::Bool(health.is_some_and(|health| health.death_handled)),
+            IrValue::Number(factions.sentiment(evaluating_faction, candidate_faction)),
         ];
     }
 }
@@ -77,7 +87,9 @@ mod tests {
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
     use glam::Vec3;
-    use postretro_entities::{EntityRegistry, Transform};
+    use postretro_entities::{
+        EntityRegistry, FactionDescriptor, FactionRegistry, FactionSentimentDescriptor, Transform,
+    };
     use postretro_foundation::{
         BakedIr, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT,
         CANDIDATE_MAX_HEALTH_INPUT, CURRENT_IR_VERSION, IrNode, bind, eval_value,
@@ -105,12 +117,14 @@ mod tests {
             )
             .expect("candidate is live");
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, 5.0);
+        let factions = FactionRegistry::default();
+        scope.refresh(&registry, &factions, 1.0, candidate, 5.0);
         for (name, expected) in [
             (CANDIDATE_DISTANCE_INPUT, IrValue::Number(5.0)),
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(7.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(11.0)),
             (CANDIDATE_DIED_INPUT, IrValue::Bool(true)),
+            (CANDIDATE_SENTIMENT_INPUT, IrValue::Number(-1.0)),
         ] {
             let handle = scope.resolve_input(name).expect("known input").handle;
             assert_eq!(scope.read(&handle), expected, "{name}");
@@ -125,7 +139,8 @@ mod tests {
             ..Transform::default()
         });
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, 1.0);
+        let factions = FactionRegistry::default();
+        scope.refresh(&registry, &factions, 1.0, candidate, 1.0);
         for (name, expected) in [
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(0.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(0.0)),
@@ -134,6 +149,57 @@ mod tests {
             let handle = scope.resolve_input(name).expect("known input").handle;
             assert_eq!(scope.read(&handle), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn refresh_projects_the_evaluating_factions_directional_sentiment() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -1.0,
+                tolerance: 2.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.0,
+                tolerance: 2.0,
+            },
+        ])
+        .expect("directed pairs resolve");
+        let mut registry = EntityRegistry::new();
+        let candidate = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(candidate)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let mut scope = CandidateScope::for_validation();
+
+        scope.refresh(&registry, &factions, 2.0, candidate, 1.0);
+        let handle = scope
+            .resolve_input(CANDIDATE_SENTIMENT_INPUT)
+            .expect("sentiment input resolves")
+            .handle;
+        assert_eq!(scope.read(&handle), IrValue::Number(-1.0));
+
+        scope.refresh(&registry, &factions, 3.0, candidate, 1.0);
+        assert_eq!(scope.read(&handle), IrValue::Number(0.0));
+        registry
+            .entity_state_mut(candidate)
+            .expect("candidate remains live")
+            .set(FACTION_STATE_FIELD, 2.0);
+        scope.refresh(&registry, &factions, 3.0, candidate, 1.0);
+        assert_eq!(scope.read(&handle), IrValue::Number(0.0));
     }
 
     #[test]
@@ -165,11 +231,12 @@ mod tests {
             &scope,
         )
         .expect("candidate filter binds");
-        scope.refresh(&registry, first, 5.0);
+        let factions = FactionRegistry::default();
+        scope.refresh(&registry, &factions, 1.0, first, 5.0);
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, second, 8.0);
+        scope.refresh(&registry, &factions, 1.0, second, 8.0);
         let value = eval_value(&program, &scope);
         assert_eq!(
             snapshot.allocs_since(),

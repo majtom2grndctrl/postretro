@@ -8,11 +8,12 @@ use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value
 
 use crate::data_descriptors::{
     EntityTypeDescriptor, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
-    drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
-    drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_maps_js, drain_maps_lua, drain_mover_defaults_js,
-    drain_mover_defaults_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
+    drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
+    drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
@@ -176,6 +177,21 @@ pub(super) fn run_mod_init_quickjs(
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!(
                         "mod-init: `{source_path}` default mod manifest export `factions` invalid: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        let factions = match drain_faction_sentiments_js(
+            &obj,
+            factions,
+            "default mod manifest export",
+        ) {
+            Ok(factions) => factions,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `sentiment` invalid: {error}"
                     ),
                 });
                 return;
@@ -550,6 +566,12 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let factions = drain_faction_sentiments_lua(&table, factions, "returned mod manifest")
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {error}"
+            ),
+        })?;
 
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
     // → InvalidArgument. Each element parses via the shared descriptor reader

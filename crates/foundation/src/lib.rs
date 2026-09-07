@@ -28,8 +28,8 @@ pub use brain::{
 };
 pub use candidate::{
     CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT, CANDIDATE_INPUT_PREFIX,
-    CANDIDATE_INPUTS, CANDIDATE_MAX_HEALTH_INPUT, CandidateInputRef, CandidateValidationScope,
-    bind_candidate_filter, resolve_candidate_input,
+    CANDIDATE_INPUTS, CANDIDATE_MAX_HEALTH_INPUT, CANDIDATE_SENTIMENT_INPUT, CandidateInputRef,
+    CandidateValidationScope, bind_candidate_filter, resolve_candidate_input,
 };
 pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams};

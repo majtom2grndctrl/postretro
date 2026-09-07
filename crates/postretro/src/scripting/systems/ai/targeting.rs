@@ -11,7 +11,9 @@ use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, Transform};
+use postretro_entities::{
+    EntityId, EntityRegistry, EntityStateComponent, FactionRegistry, Transform,
+};
 use postretro_foundation::{BoundProgram, IrValue, eval_value};
 
 use super::candidate_scope::CandidateScope;
@@ -68,6 +70,7 @@ pub(super) fn target_candidate(
 /// must remain independent of candidacy and LOS.
 pub(super) fn target_offers(
     registry: &EntityRegistry,
+    factions: &FactionRegistry,
     from: Vec3,
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
@@ -94,10 +97,10 @@ pub(super) fn target_offers(
         // friendly pawn therefore prices neither selection nor its think stride.
         // Retained lookup stays above this scan and deliberately never re-gates
         // its target on hostility.
-        let hostile = registry
+        let candidate_faction = registry
             .get_component::<EntityStateComponent>(candidate.target.entity)
-            .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD))
-            != enemy_faction;
+            .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD));
+        let hostile = is_hostile(factions, enemy_faction, candidate_faction);
         if !hostile {
             continue;
         }
@@ -112,6 +115,13 @@ pub(super) fn target_offers(
         nearest,
         candidates,
     }
+}
+
+/// The one directional hostility decision shared by offer filtering and the
+/// durable brain fact. A strict negative value is hostile; zero remains
+/// neutral and positive allied.
+pub(super) fn is_hostile(factions: &FactionRegistry, from_faction: f32, to_faction: f32) -> bool {
+    factions.sentiment(from_faction, to_faction) < 0.0
 }
 
 pub(super) fn target_distance(target: TargetPawn, from: Vec3) -> f32 {
@@ -142,6 +152,8 @@ pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
     registry: &EntityRegistry,
+    factions: &FactionRegistry,
+    evaluating_faction: f32,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
     candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
@@ -154,7 +166,13 @@ pub(super) fn select_target(
             // Both predicates apply only to fresh candidacy. Keep this after
             // the raw offer calculation so LOS never reprices the stride.
             let filter_allows = candidate_filter.is_none_or(|filter| {
-                candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
+                candidate_scope.refresh(
+                    registry,
+                    factions,
+                    evaluating_faction,
+                    candidate.target.entity,
+                    candidate.distance,
+                );
                 eval_value(filter, candidate_scope) == IrValue::Bool(true)
             });
             let fresh_perception = filter_allows
@@ -296,8 +314,16 @@ mod tests {
         candidate_filter: Option<&BoundProgram<CandidateScope>>,
         candidate_scope: &mut CandidateScope,
     ) -> (Option<TargetCandidate>, Option<TargetPawn>) {
+        let factions = FactionRegistry::default();
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-        let offers = target_offers(registry, from, enemy_faction, None, retained_target);
+        let offers = target_offers(
+            registry,
+            &factions,
+            from,
+            enemy_faction,
+            None,
+            retained_target,
+        );
         let mut candidate_perception = |target: TargetPawn| {
             Some(RawTargetPerception {
                 target: target.entity,
@@ -310,6 +336,8 @@ mod tests {
             retained,
             &offers,
             registry,
+            &factions,
+            enemy_faction,
             candidate_filter,
             candidate_scope,
             &mut candidate_perception,
@@ -349,8 +377,15 @@ mod tests {
             .entity_state_mut(peer)
             .expect("fresh peer has entity state")
             .set(super::super::FACTION_STATE_FIELD, 1.0);
-        let hostile_offers =
-            target_offers(&registry, Vec3::ZERO, 0.0, Some(evaluating_enemy), None);
+        let factions = FactionRegistry::default();
+        let hostile_offers = target_offers(
+            &registry,
+            &factions,
+            Vec3::ZERO,
+            0.0,
+            Some(evaluating_enemy),
+            None,
+        );
         assert_eq!(
             hostile_offers
                 .candidates
@@ -365,8 +400,14 @@ mod tests {
             .entity_state_mut(peer)
             .expect("fresh peer has entity state")
             .set(super::super::FACTION_STATE_FIELD, 0.0);
-        let default_faction_offers =
-            target_offers(&registry, Vec3::ZERO, 0.0, Some(evaluating_enemy), None);
+        let default_faction_offers = target_offers(
+            &registry,
+            &factions,
+            Vec3::ZERO,
+            0.0,
+            Some(evaluating_enemy),
+            None,
+        );
         assert!(
             default_faction_offers.candidates.is_empty(),
             "same-default-faction brain peers are walked but remain non-hostile",
@@ -374,10 +415,85 @@ mod tests {
     }
 
     #[test]
+    fn directional_sentiment_controls_offers_while_defaults_preserve_faction_inequality() {
+        use postretro_entities::{FactionDescriptor, FactionSentimentDescriptor};
+
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -1.0,
+                tolerance: 1.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.0,
+                tolerance: 1.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: -0.5,
+                tolerance: 1.0,
+            },
+        ])
+        .expect("directed entries resolve");
+        let mut registry = EntityRegistry::new();
+        let resistance = pawn(&mut registry, 4.0);
+        registry
+            .entity_state_mut(resistance)
+            .expect("pawn has state")
+            .set(super::super::FACTION_STATE_FIELD, 3.0);
+
+        let cabal_offers = target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None);
+        assert_eq!(
+            cabal_offers
+                .candidates
+                .iter()
+                .map(|candidate| candidate.target.entity)
+                .collect::<Vec<_>>(),
+            vec![resistance],
+            "cabal's negative sentiment toward resistance offers it"
+        );
+        registry
+            .entity_state_mut(resistance)
+            .expect("pawn remains live")
+            .set(super::super::FACTION_STATE_FIELD, 2.0);
+        let resistance_offers = target_offers(&registry, &factions, Vec3::ZERO, 3.0, None, None);
+        assert!(
+            resistance_offers.candidates.is_empty(),
+            "resistance's neutral sentiment toward cabal does not offer it"
+        );
+        assert_eq!(
+            target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None)
+                .candidates
+                .len(),
+            1,
+            "an authored same-faction negative sentiment overrides the neutral default"
+        );
+        assert!(
+            is_hostile(&FactionRegistry::default(), 1.0, 0.0)
+                && !is_hostile(&FactionRegistry::default(), 1.0, 1.0),
+            "unlisted pairs retain cross-faction hostile and same-faction neutral defaults"
+        );
+    }
+
+    #[test]
     fn fresh_selection_carries_the_candidate_los_result_but_retention_does_not() {
         let mut registry = EntityRegistry::new();
         let pawn = pawn(&mut registry, 4.0);
-        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None, None);
+        let factions = FactionRegistry::default();
+        let offers = target_offers(&registry, &factions, Vec3::ZERO, 1.0, None, None);
         let expected = RawTargetPerception {
             target: pawn,
             visible: true,
@@ -394,6 +510,8 @@ mod tests {
             None,
             &offers,
             &registry,
+            &factions,
+            1.0,
             None,
             &mut CandidateScope::for_validation(),
             &mut candidate_perception,
@@ -404,11 +522,13 @@ mod tests {
         assert_eq!(selected.fresh_perception, Some(expected));
 
         let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
-        let empty_offers = target_offers(&registry, Vec3::ZERO, 1.0, None, Some(pawn));
+        let empty_offers = target_offers(&registry, &factions, Vec3::ZERO, 1.0, None, Some(pawn));
         let retained_selection = select_target(
             Some(retained),
             &empty_offers,
             &registry,
+            &factions,
+            1.0,
             None,
             &mut CandidateScope::for_validation(),
             &mut candidate_perception,
@@ -426,7 +546,15 @@ mod tests {
         let challenger = pawn(&mut registry, 2.0);
         let retained =
             target_candidate(&registry, retained_entity, Vec3::ZERO).expect("retained target");
-        let offers = target_offers(&registry, Vec3::ZERO, 1.0, None, Some(retained_entity));
+        let factions = FactionRegistry::default();
+        let offers = target_offers(
+            &registry,
+            &factions,
+            Vec3::ZERO,
+            1.0,
+            None,
+            Some(retained_entity),
+        );
         let mut candidate_perception = |target: TargetPawn| {
             Some(RawTargetPerception {
                 target: target.entity,
@@ -440,6 +568,8 @@ mod tests {
             Some(retained),
             &offers,
             &registry,
+            &factions,
+            1.0,
             None,
             &mut CandidateScope::for_validation(),
             &mut candidate_perception,

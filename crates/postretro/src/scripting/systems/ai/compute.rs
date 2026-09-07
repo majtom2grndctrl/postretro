@@ -1,5 +1,5 @@
 use glam::Vec3;
-use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
 
 use super::{FACTION_STATE_FIELD, LocomotionIntent, perception};
 
@@ -47,8 +47,8 @@ use super::graph_eval::{
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
-    TargetSelection, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance, target_offers,
+    TargetSelection, acquisition_due, is_hostile, select_target, selected_target_alive,
+    target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome};
 use crate::agent_steering;
@@ -68,6 +68,7 @@ pub(super) fn evaluate(
     dt_ms: f32,
     nav_graph: Option<&crate::nav::NavGraph>,
     collision_world: Option<&crate::collision::CollisionWorld>,
+    factions: &FactionRegistry,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
@@ -121,6 +122,7 @@ pub(super) fn evaluate(
                         programs.candidate_filter_context(snap.id);
                     let offers = target_offers(
                         registry,
+                        factions,
                         snap.position,
                         enemy_faction,
                         Some(snap.id),
@@ -140,6 +142,8 @@ pub(super) fn evaluate(
                         Some(retained),
                         &offers,
                         registry,
+                        factions,
+                        enemy_faction,
                         candidate_filter,
                         candidate_scope,
                         &mut candidate_perception,
@@ -152,8 +156,14 @@ pub(super) fn evaluate(
                 };
                 (target, evaluate_acquisition)
             } else {
-                let offers =
-                    target_offers(registry, snap.position, enemy_faction, Some(snap.id), None);
+                let offers = target_offers(
+                    registry,
+                    factions,
+                    snap.position,
+                    enemy_faction,
+                    Some(snap.id),
+                    None,
+                );
                 let evaluate_acquisition =
                     acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
                 let (candidate_filter, candidate_scope) =
@@ -178,6 +188,8 @@ pub(super) fn evaluate(
                         None,
                         &offers,
                         registry,
+                        factions,
+                        enemy_faction,
                         candidate_filter,
                         candidate_scope,
                         &mut candidate_perception,
@@ -266,8 +278,9 @@ pub(super) fn evaluate(
             .last_known_target_pos
             .map(|position| crate::nav::distance_xz(snap.position, position))
             .unwrap_or(BRAIN_NO_TARGET_DISTANCE);
-        let target_hostile = selected_target
-            .is_some_and(|(target, _, _)| entity_faction(registry, target) != enemy_faction);
+        let target_hostile = selected_target.is_some_and(|(target, _, _)| {
+            is_hostile(factions, enemy_faction, entity_faction(registry, target))
+        });
         // Reachability is the nav floor's pathfinder verdict, cached on the
         // existing acquisition stride. It deliberately mirrors the same
         // `find_path` capability chase consumes, rather than claiming a

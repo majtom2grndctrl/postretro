@@ -930,6 +930,18 @@ export type FactionDescriptor = {
   name: string,
 }
 
+--- One directed relationship from `fromFaction` toward `toFaction`. Negative sentiment is hostile, zero is neutral, and positive is allied. Both endpoint names must be declared in `ModManifest.factions`.
+export type FactionSentimentDescriptor = {
+  --- Evaluating faction name (the directional source).
+  fromFaction: string,
+  --- Offered candidate faction name (the directional destination).
+  toFaction: string,
+  --- Finite directional sentiment: negative hostile, zero neutral, positive allied.
+  sentiment: number,
+  --- Finite per-pair tolerance reserved for the engine-owned retaliation term.
+  tolerance: number,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -950,6 +962,8 @@ export type ModManifest = {
   entities: {EntityTypeDescriptor}?,
   --- Engine-global named faction declarations. Optional; survive level unload and resolve optional archetype `components.faction` names during manifest commit.
   factions: {FactionDescriptor}?,
+  --- Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral.
+  sentiment: {FactionSentimentDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -1802,10 +1816,13 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
+--- Build one directed relationship for `sentiment` in the returned mod
+--- manifest. Negative sentiment is hostile, zero neutral, positive allied.
+declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number }): FactionSentimentDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -1879,6 +1896,7 @@ export type ModManifestInput = {
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
   factions: {FactionDescriptor}?,
+  sentiment: {FactionSentimentDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -2317,7 +2335,7 @@ export type BrainInputs = {
   targetDied: RuntimeGuardNode,
   --- XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number).
   distanceFromAnchor: RuntimeGuardNode,
-  --- `true` when the selected target's faction differs from this enemy's; false with no target (boolean).
+  --- `true` when directional sentiment from this enemy's faction toward its selected target is negative; false with no target (boolean).
   targetHostile: RuntimeGuardNode,
   --- `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean).
   targetReachable: RuntimeGuardNode,
@@ -2352,6 +2370,8 @@ export type CandidateInputs = {
   maxHealth: RuntimeGuardNode,
   --- `true` once the death sweep has handled this candidate (boolean).
   died: RuntimeGuardNode,
+  --- Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number).
+  sentiment: RuntimeGuardNode,
 }
 
 --- Pre-wrapped leaves for graph candidate eligibility.
@@ -2499,6 +2519,8 @@ export type PostretroModule = {
   defineEntity: typeof(defineEntity),
   --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
+  --- Build one directed faction relationship for a mod manifest.
+  sentiment: typeof(sentiment),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

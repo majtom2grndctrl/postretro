@@ -67,6 +67,14 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("name", "String", "Stable non-empty faction name. Entity archetypes refer to this name through `components.faction`.")
         .finish();
     registry
+        .register_type("FactionSentimentDescriptor")
+        .doc("One directed relationship from `fromFaction` toward `toFaction`. Negative sentiment is hostile, zero is neutral, and positive is allied. Both endpoint names must be declared in `ModManifest.factions`.")
+        .field("fromFaction", "String", "Evaluating faction name (the directional source).")
+        .field("toFaction", "String", "Offered candidate faction name (the directional destination).")
+        .field("sentiment", "f32", "Finite directional sentiment: negative hostile, zero neutral, positive allied.")
+        .field("tolerance", "f32", "Finite per-pair tolerance reserved for the engine-owned retaliation term.")
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -109,6 +117,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "factions?",
             "Vec<FactionDescriptor>",
             "Engine-global named faction declarations. Optional; survive level unload and resolve optional archetype `components.faction` names during manifest commit.",
+        )
+        .field(
+            "sentiment?",
+            "Vec<FactionSentimentDescriptor>",
+            "Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral.",
         )
         .field(
             "uiTrees?",

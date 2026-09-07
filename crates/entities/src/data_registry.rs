@@ -40,6 +40,26 @@ pub struct FactionDescriptor {
     pub name: String,
 }
 
+/// One authored directional relationship entry. Names exist only at manifest
+/// drain time; [`FactionRegistry`] resolves them into its compact index matrix
+/// before the AI tick can read the relationship.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FactionSentimentDescriptor {
+    pub from_faction: String,
+    pub to_faction: String,
+    pub sentiment: f32,
+    pub tolerance: f32,
+}
+
+/// A directional relationship resolved from the faction registry. `tolerance`
+/// remains optional so the later retaliation consumer can distinguish an
+/// authored pair override from its own compatibility default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FactionRelationship {
+    pub sentiment: f32,
+    pub tolerance: Option<f32>,
+}
+
 /// The absent faction carried by player pawns.
 pub const PLAYER_FACTION_INDEX: f32 = 0.0;
 /// The compatibility faction used by brain-bearing archetypes without an
@@ -52,9 +72,14 @@ const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
 ///
 /// Indices 0 and 1 stay reserved for the player and the built-in default enemy
 /// faction. Author declarations retain manifest order and begin at index 2.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FactionRegistry {
     descriptors: Vec<FactionDescriptor>,
+    /// Full directed matrix over player, default-enemy, and authored faction
+    /// indices. `None` means the compatibility relationship: same-faction is
+    /// neutral and different factions are hostile. This keeps candidate-scan
+    /// lookup to indexed reads with no name allocation or collection.
+    relationships: Vec<Option<FactionRelationship>>,
 }
 
 impl FactionRegistry {
@@ -74,7 +99,61 @@ impl FactionRegistry {
         if descriptors.len() > MAX_EXACT_FACTION_INDEX - FIRST_AUTHORED_FACTION_INDEX as usize + 1 {
             return Err("too many authored factions for f32 index storage".to_string());
         }
-        Ok(Self { descriptors })
+        let faction_count = descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
+        Ok(Self {
+            descriptors,
+            relationships: vec![None; faction_count.saturating_mul(faction_count)],
+        })
+    }
+
+    /// Resolve strict manifest-authored directional relationships into the
+    /// fixed faction-index matrix. Both endpoint names must name declared
+    /// factions; player and default-enemy compatibility rows remain seeded by
+    /// the unlisted-pair fallback.
+    pub fn with_sentiments(
+        mut self,
+        sentiments: Vec<FactionSentimentDescriptor>,
+    ) -> Result<Self, String> {
+        for entry in sentiments {
+            if !entry.sentiment.is_finite() {
+                return Err(format!(
+                    "sentiment from `{}` to `{}` must be finite",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            if !entry.tolerance.is_finite() {
+                return Err(format!(
+                    "tolerance from `{}` to `{}` must be finite",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            let from = self.index_for_name(&entry.from_faction).ok_or_else(|| {
+                format!(
+                    "sentiment references undeclared from faction `{}`",
+                    entry.from_faction
+                )
+            })?;
+            let to = self.index_for_name(&entry.to_faction).ok_or_else(|| {
+                format!(
+                    "sentiment references undeclared to faction `{}`",
+                    entry.to_faction
+                )
+            })?;
+            let index = self
+                .matrix_index(from, to)
+                .expect("declared faction indices fit the relationship matrix");
+            if self.relationships[index].is_some() {
+                return Err(format!(
+                    "duplicate sentiment entry from `{}` to `{}`",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            self.relationships[index] = Some(FactionRelationship {
+                sentiment: entry.sentiment,
+                tolerance: Some(entry.tolerance),
+            });
+        }
+        Ok(self)
     }
 
     /// Resolve an authored stable name to its entity-state scalar.
@@ -88,6 +167,44 @@ impl FactionRegistry {
     pub fn descriptors(&self) -> &[FactionDescriptor] {
         &self.descriptors
     }
+
+    /// Sentiment from the evaluating faction toward a candidate faction.
+    /// Unlisted rows preserve the prior faction-inequality behavior exactly:
+    /// equal indices are neutral, different indices are hostile.
+    pub fn sentiment(&self, from: f32, to: f32) -> f32 {
+        self.relationship(from, to).sentiment
+    }
+
+    /// Pair tolerance only when the authored relationship declared one. Task 5
+    /// resolves the fallback default; Task 3 wires this value without giving it
+    /// gameplay meaning yet.
+    pub fn tolerance(&self, from: f32, to: f32) -> Option<f32> {
+        self.relationship(from, to).tolerance
+    }
+
+    pub fn relationship(&self, from: f32, to: f32) -> FactionRelationship {
+        self.matrix_index(from, to)
+            .and_then(|index| self.relationships.get(index).copied().flatten())
+            .unwrap_or(FactionRelationship {
+                sentiment: if from == to { 0.0 } else { -1.0 },
+                tolerance: None,
+            })
+    }
+
+    fn matrix_index(&self, from: f32, to: f32) -> Option<usize> {
+        let from = faction_index(from)?;
+        let to = faction_index(to)?;
+        let dimension = self.descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
+        (from < dimension && to < dimension).then_some(from * dimension + to)
+    }
+}
+
+fn faction_index(index: f32) -> Option<usize> {
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+        return None;
+    }
+    let resolved = index as usize;
+    (resolved as f32 == index).then_some(resolved)
 }
 
 /// Data registries collected from script execution.
@@ -904,6 +1021,82 @@ mod tests {
         assert_eq!(DEFAULT_ENEMY_FACTION_INDEX, 1.0);
         assert_eq!(factions.index_for_name("cabal"), Some(2.0));
         assert_eq!(factions.index_for_name("resistance"), Some(3.0));
+    }
+
+    #[test]
+    fn faction_registry_resolves_directional_sentiment_and_compatibility_defaults() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid faction declarations")
+        .with_sentiments(vec![
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -0.75,
+                tolerance: 4.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.0,
+                tolerance: 9.0,
+            },
+        ])
+        .expect("declared endpoint names resolve");
+
+        assert_eq!(factions.sentiment(2.0, 3.0), -0.75);
+        assert_eq!(factions.sentiment(3.0, 2.0), 0.0);
+        assert_eq!(factions.tolerance(2.0, 3.0), Some(4.0));
+        assert_eq!(factions.tolerance(3.0, 2.0), Some(9.0));
+        assert_eq!(factions.sentiment(2.0, 2.0), 0.0, "same defaults neutral");
+        assert_eq!(
+            factions.sentiment(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
+            -1.0,
+            "unlisted cross-faction pairs retain the prior hostile rule"
+        );
+        assert_eq!(factions.tolerance(2.0, 2.0), None);
+    }
+
+    #[test]
+    fn faction_registry_rejects_duplicate_or_unknown_sentiment_pairs() {
+        let factions = FactionRegistry::from_descriptors(vec![FactionDescriptor {
+            name: "cabal".to_string(),
+        }])
+        .expect("valid faction declaration");
+        let unknown = factions
+            .clone()
+            .with_sentiments(vec![FactionSentimentDescriptor {
+                from_faction: "missing".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: -1.0,
+                tolerance: 1.0,
+            }])
+            .expect_err("unknown endpoint rejects the manifest");
+        assert!(unknown.contains("undeclared from faction `missing`"));
+
+        let duplicate = factions
+            .with_sentiments(vec![
+                FactionSentimentDescriptor {
+                    from_faction: "cabal".to_string(),
+                    to_faction: "cabal".to_string(),
+                    sentiment: 0.0,
+                    tolerance: 1.0,
+                },
+                FactionSentimentDescriptor {
+                    from_faction: "cabal".to_string(),
+                    to_faction: "cabal".to_string(),
+                    sentiment: -1.0,
+                    tolerance: 2.0,
+                },
+            ])
+            .expect_err("ambiguous duplicate pair rejects the manifest");
+        assert!(duplicate.contains("duplicate sentiment entry"));
     }
 
     #[test]

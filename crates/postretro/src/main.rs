@@ -3010,6 +3010,7 @@ impl ApplicationHandler for App {
                             touch_system,
                             descriptors,
                             descriptor_generation,
+                            &data_registry.factions,
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,

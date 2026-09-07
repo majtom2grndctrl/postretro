@@ -45,8 +45,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
-    SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
+    ScriptCtx, SlotTable,
 };
 use postretro_foundation::{
     WeaponPlacementDescriptor,
@@ -378,6 +378,7 @@ pub(crate) fn simulate_tick(
 ) -> TickEvents {
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
+    let factions = FactionRegistry::default();
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
@@ -398,6 +399,7 @@ pub(crate) fn simulate_tick(
         &mut touch_system,
         &[],
         0,
+        &factions,
         None,
         &touch_edges,
         &touch_edges,
@@ -430,6 +432,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     touch_system: &mut TouchSystem,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
+    factions: &FactionRegistry,
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
@@ -645,6 +648,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 collision_world: Some(collision_world),
                 descriptors,
                 descriptor_generation,
+                factions,
             },
             &mut on_impact,
         )
@@ -2099,6 +2103,7 @@ mod tests {
             &mut touch_system,
             &[],
             0,
+            &FactionRegistry::default(),
             None,
             &edges,
             &edges,
@@ -2218,6 +2223,7 @@ mod tests {
             &mut touch_system,
             &[],
             0,
+            &FactionRegistry::default(),
             None,
             &use_edges,
             &HashMap::new(),

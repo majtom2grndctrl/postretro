@@ -30,7 +30,8 @@ pub use ctx::ScriptCtx;
 pub use data_descriptors::*;
 pub use data_registry::{
     DEFAULT_ENEMY_FACTION_INDEX, DataRegistry, FactionDescriptor, FactionRegistry,
-    PLAYER_FACTION_INDEX, ScopedCrossing, ScopedReaction,
+    FactionRelationship, FactionSentimentDescriptor, PLAYER_FACTION_INDEX, ScopedCrossing,
+    ScopedReaction,
 };
 pub use engine_state_catalog::*;
 pub use postretro_foundation::{

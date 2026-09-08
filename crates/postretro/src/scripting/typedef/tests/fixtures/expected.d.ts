@@ -439,6 +439,18 @@ declare module "postretro" {
     pelletCount?: number;
     /** Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis). */
     spreadDegrees?: number;
+    /** Sustained-fire bloom added after each resolved shot, in degrees. Range: 0..=45; defaults to 0. */
+    bloomPerShotDegrees?: number;
+    /** Maximum sustained-fire bloom above base spread, in degrees. Range: 0..=45; defaults to 0. */
+    bloomMaxDegrees?: number;
+    /** Rate at which sustained-fire bloom decays after its delay, in degrees per second. Must be finite and >= 0; defaults to 0. */
+    bloomDecayDegreesPerSecond?: number;
+    /** Idle delay before sustained-fire bloom begins to decay, in milliseconds. Must be finite and >= 0; defaults to 0. */
+    bloomDecayDelayMs?: number;
+    /** Maximum movement-derived spread at authored run speed, in degrees. Range: 0..=45; defaults to 0. */
+    movementSpreadDegrees?: number;
+    /** Upward tilt applied to the dynamic spread cone axis. Range: 0..=1; defaults to 0 (no tilt). */
+    spreadVerticalBias?: number;
     /** Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0. */
     range: number;
     /** Minimum interval between shots in milliseconds. Must be finite and > 0. */

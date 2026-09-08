@@ -14,6 +14,7 @@ use postretro_entities::registry::{
 };
 use postretro_render_cpu::smoke::MAX_SPRITES;
 
+use crate::sprite_collection::derive_collection_id;
 use crate::weapon::spread::sample_cone_direction as sample_shared_cone_direction;
 
 use super::eval_curve;
@@ -360,7 +361,14 @@ fn spawn_one(
         emitter: Some(parent),
     };
     let visual = SpriteVisual {
-        sprite: component.sprite.clone(),
+        collection: derive_collection_id(
+            &component.sprite,
+            Some(component.lifetime),
+            None,
+            0.0,
+            None,
+            None,
+        ),
         // Sim runs the same frame; it overwrites size/opacity from curves at
         // t = 0 immediately. Spawn-frame zeros are only visible for one tick.
         size: 0.0,
@@ -721,6 +729,60 @@ mod tests {
             }
         }
         assert_eq!(found, 3);
+    }
+
+    #[test]
+    fn trail_particles_stamp_the_registered_collection_id_without_fallback() {
+        use crate::scripting_systems::particle_render::ParticleRenderCollector;
+        use postretro_visibility::VisibleCells;
+
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.sprite = "smoke_puff/smoke_puff_00.png".to_string();
+        component.lifetime = 0.45;
+        component.burst = Some(1);
+        let emitter = spawn_emitter(&mut registry, component.clone());
+        let mut bridge = EmitterBridge::new();
+        update_bridge(&mut bridge, &mut registry, 1.0 / 60.0, 0.0);
+
+        let expected = derive_collection_id(
+            &component.sprite,
+            Some(component.lifetime),
+            None,
+            0.0,
+            None,
+            None,
+        );
+        let particle = registry
+            .iter_with_kind(ComponentKind::ParticleState)
+            .find_map(|(id, value)| matches!(value, ComponentValue::ParticleState(_)).then_some(id))
+            .expect("burst emits one particle");
+        assert_eq!(
+            registry
+                .get_component::<SpriteVisual>(particle)
+                .expect("emitted particle has visual")
+                .collection,
+            expected
+        );
+
+        // A raw asset key would land in the first fallback buffer. The expected
+        // id must instead select its own registered collection directly.
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("first-fallback-collection");
+        collector.register_sprite(&expected);
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        let collected = collector
+            .iter_collections()
+            .map(|(collection, _)| collection)
+            .collect::<Vec<_>>();
+        assert_eq!(collected, vec![expected.as_str()]);
+        assert!(
+            registry
+                .get_component::<ParticleState>(particle)
+                .expect("particle state persists")
+                .emitter
+                == Some(emitter)
+        );
     }
 
     #[test]

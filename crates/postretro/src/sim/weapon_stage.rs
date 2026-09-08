@@ -1997,7 +1997,7 @@ mod tests {
                     *projectile
                 )
                 .expect("descriptor body attaches at fire time")
-                .sprite,
+                .collection,
             "sprites/projectiles/test-bolt.png"
         );
         assert!(

@@ -15,16 +15,16 @@ use postretro_visibility::VisibleCells;
 /// inside `SmokePass`.
 pub(crate) struct ParticleRenderCollector {
     buffers: HashMap<String, Vec<u8>>,
-    /// Pre-built sprite-name → collection-key resolution map. Built once per
+    /// Pre-built collection-id → collection-key resolution map. Built once per
     /// level at `register_sprite` time; read on the per-particle hot path so
-    /// `collect` resolves a sprite to its target buffer key with a single
+    /// `collect` resolves a collection id to its target buffer key with a single
     /// borrowed lookup and **zero per-particle heap allocation** (the old
     /// `resolve_collection` allocated a `String` for every particle). Every
     /// registered collection maps to itself; the resolution borrows the stored
     /// key (`&str`) rather than cloning it.
     sprite_to_collection: HashMap<String, String>,
-    /// First-registered collection key — the fallback target for runtime sprite
-    /// names that were never registered at level load.
+    /// First-registered collection key — the fallback target for runtime
+    /// collection ids that were never registered at level load.
     default_collection: Option<String>,
     warned_unregistered: HashSet<String>,
 }
@@ -39,13 +39,13 @@ impl ParticleRenderCollector {
         }
     }
 
-    /// Pre-register a sprite collection at level load. The first registered
-    /// collection becomes the fallback for unregistered runtime names. Caller
+    /// Pre-register a sprite collection id at level load. The first registered
+    /// collection becomes the fallback for unregistered runtime ids. Caller
     /// is responsible for the matching `SmokePass::register_collection` upload
     /// — this collector only tracks bookkeeping.
     ///
-    /// Called at level load for every distinct `BillboardEmitterComponent.sprite`
-    /// value in the registry after classname dispatch. Populates the
+    /// Called at level load for every derived collection id after classname
+    /// dispatch. Populates the
     /// `sprite_to_collection` map so the render-collect hot path never allocates.
     pub(crate) fn register_sprite(&mut self, collection: &str) {
         let is_new = self
@@ -69,7 +69,7 @@ impl ParticleRenderCollector {
         }
     }
 
-    /// Walk particle and projectile-body sprites, bucket by `SpriteVisual.sprite`,
+    /// Walk particle and projectile-body sprites, bucket by `SpriteVisual.collection`,
     /// and pack bytes. Clears each per-collection buffer first so capacity is
     /// reused across frames.
     ///
@@ -233,15 +233,15 @@ impl ParticleRenderCollector {
             }
         }
 
-        // Resolve the target collection key. The common case (sprite was
+        // Resolve the target collection key. The common case (collection id was
         // registered at level load) is a borrowed map lookup with no allocation.
-        // Only an unregistered runtime sprite takes the cold fallback branch.
-        let target: &str = match self.sprite_to_collection.get(&visual.sprite) {
+        // Only an unregistered runtime collection id takes the cold fallback branch.
+        let target: &str = match self.sprite_to_collection.get(&visual.collection) {
             Some(key) => key.as_str(),
             None => match Self::resolve_fallback(
                 &self.default_collection,
                 &mut self.warned_unregistered,
-                &visual.sprite,
+                &visual.collection,
             ) {
                 Some(key) => key,
                 None => return,
@@ -253,10 +253,10 @@ impl ParticleRenderCollector {
         pack_sprite_instance(transform, age, visual, buf);
     }
 
-    /// Cold-path resolution for a sprite that was **not** pre-registered at
+    /// Cold-path resolution for a collection id that was **not** pre-registered at
     /// level load (so it missed the `sprite_to_collection` map). Falls back to
     /// the default collection, emitting a one-time `log::warn!` per offending
-    /// sprite. Returns the borrowed default key, or `None` when no collections
+    /// collection id. Returns the borrowed default key, or `None` when no collections
     /// are registered at all (no fallback target available).
     ///
     /// Takes the two fields it touches by reference (not `&mut self`) so the
@@ -266,13 +266,13 @@ impl ParticleRenderCollector {
     fn resolve_fallback<'a>(
         default_collection: &'a Option<String>,
         warned_unregistered: &mut HashSet<String>,
-        sprite: &str,
+        collection: &str,
     ) -> Option<&'a str> {
         let fallback = default_collection.as_deref()?;
-        if !warned_unregistered.contains(sprite) {
-            warned_unregistered.insert(sprite.to_string());
+        if !warned_unregistered.contains(collection) {
+            warned_unregistered.insert(collection.to_string());
             log::warn!(
-                "[ParticleRender] sprite '{sprite}' was not registered at level load; \
+                "[ParticleRender] collection id '{collection}' was not registered at level load; \
                  falling back to default collection '{fallback}'. \
                  Add it to the level-load definition sweep."
             );
@@ -474,7 +474,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: sprite.into(),
+                    collection: sprite.into(),
                     size: 1.0,
                     opacity: 0.5,
                     rotation: 0.25,
@@ -521,7 +521,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: sprite.into(),
+                    collection: sprite.into(),
                     size: 0.4,
                     opacity: 0.9,
                     rotation: 0.25,
@@ -700,7 +700,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: "sprites/animated-plasma".to_string(),
+                    collection: "sprites/animated-plasma".to_string(),
                     size: 0.4,
                     opacity: 0.9,
                     rotation: 0.25,
@@ -790,7 +790,7 @@ mod tests {
             .set_component(
                 presentation,
                 SpriteVisual {
-                    sprite: SPRITE.to_string(),
+                    collection: SPRITE.to_string(),
                     size: 0.4,
                     opacity: 1.0,
                     rotation: 0.0,
@@ -831,7 +831,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: "sprites/decorative.png".to_string(),
+                    collection: "sprites/decorative.png".to_string(),
                     size: 1.0,
                     opacity: 1.0,
                     rotation: 0.0,
@@ -883,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn unregistered_sprite_falls_back_to_default_and_warns_once() {
+    fn unregistered_collection_falls_back_to_default_and_warns_once() {
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke"); // first registered = default
@@ -905,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn map_only_sprite_renders_to_its_own_bucket_when_registered() {
+    fn map_only_collection_renders_to_its_own_bucket_when_registered() {
         // Regression for the AC: a `billboard_emitter` map entity with
         // `sprite = "dust"` and no script preset referencing "dust" must still
         // render into the "dust" collection rather than the default fallback.
@@ -919,7 +919,7 @@ mod tests {
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0, "dust");
-        // No warning emitted: the sprite was registered at level load.
+        // No warning emitted: the collection id was registered at level load.
         assert!(collector.warned_unregistered.is_empty());
     }
 

@@ -77,6 +77,7 @@ mod scripting;
 mod session;
 mod sim;
 mod spawner;
+mod sprite_collection;
 mod startup;
 mod trigger_bindings;
 mod trigger_commands;

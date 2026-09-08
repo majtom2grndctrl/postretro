@@ -188,7 +188,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("SpriteVisual")
         .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.")
-        .field("sprite", "String", "Sprite/material identifier resolved by the billboard renderer.")
+        .field("collection", "String", "Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path.")
         .field("size", "f32", "Billboard size multiplier for this frame.")
         .field("opacity", "f32", "Billboard opacity for this frame, in [0, 1].")
         .field("rotation", "f32", "Billboard rotation in radians for this frame.")

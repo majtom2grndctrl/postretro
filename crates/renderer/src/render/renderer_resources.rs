@@ -21,11 +21,12 @@ impl Renderer {
     /// emitter and projectile consumer's frame count before this boundary; the
     /// smoke pass owns its baked-sidecar attempt and PNG-decode fallback. The
     /// eligibility flag is true only for map-authored billboard emitters. Duplicate
-    /// calls are reported and rejected rather than silently overriding an
+    /// calls for an id are reported and rejected rather than silently overriding an
     /// accepted descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
-        collection: &str,
+        collection_id: &str,
+        asset: &str,
         texture_root: &Path,
         prm_cache_root: &Path,
         registration: SpriteCollectionRegistration,
@@ -42,7 +43,8 @@ impl Renderer {
         full.smoke_pass.register_collection(
             device,
             queue,
-            collection,
+            collection_id,
+            asset,
             texture_root,
             prm_cache_root,
             registration,

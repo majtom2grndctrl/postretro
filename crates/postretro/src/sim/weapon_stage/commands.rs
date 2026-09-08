@@ -644,7 +644,7 @@ pub(crate) fn spawn_projectile(
             let _ = registry.set_component(
                 projectile_id,
                 SpriteVisual {
-                    sprite,
+                    collection: sprite,
                     size,
                     opacity,
                     rotation,
@@ -906,7 +906,7 @@ mod projectile_spawn_tests {
             registry
                 .get_component::<SpriteVisual>(projectile)
                 .expect("sprite body attaches")
-                .sprite,
+                .collection,
             "sprites/plasma.png"
         );
         let trail = registry

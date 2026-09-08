@@ -1220,6 +1220,12 @@ fn spawn_determinism_weapon(registry: &mut EntityRegistry) -> EntityId {
         .clone();
     component.pellet_count = 8;
     component.spread_degrees = 4.0;
+    component.bloom_per_shot_degrees = 2.0;
+    component.bloom_max_degrees = 8.0;
+    component.bloom_decay_degrees_per_second = 1.0;
+    component.bloom_decay_delay_ms = 250.0;
+    component.spread_vertical_bias = 0.25;
+    component.fire_mode = FireMode::Auto;
     registry
         .set_component(weapon, component)
         .expect("determinism weapon tuning updates");
@@ -2991,6 +2997,10 @@ fn fixed_command_stream() -> Vec<RecordedCommand> {
         .map(|tick| {
             let phase = tick % 120;
             let fire_pressed = matches!(tick, 5 | 180 | 360 | 540);
+            let fire_active = matches!(
+                tick,
+                5..=15 | 180..=190 | 360..=370 | 540..=550
+            );
             RecordedCommand {
                 wish_dir: if phase < 45 {
                     Vec2::new(0.25, 1.0)
@@ -3005,7 +3015,7 @@ fn fixed_command_stream() -> Vec<RecordedCommand> {
                 crouch_intent: (300..360).contains(&tick),
                 facing_yaw: if tick < 300 { 0.0 } else { 0.35 },
                 fire_pressed,
-                fire_active: fire_pressed || matches!(tick, 6 | 181 | 361 | 541),
+                fire_active,
             }
         })
         .collect()
@@ -3128,7 +3138,7 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     );
 }
 
-fn assert_fixed_stream_weapon_positive_anchors(run: &SimRun) {
+fn assert_sustained_bloom_burst_positive_anchors(run: &SimRun) {
     let pellet_fans = run
         .events
         .iter()
@@ -3138,21 +3148,23 @@ fn assert_fixed_stream_weapon_positive_anchors(run: &SimRun) {
         .collect::<Vec<_>>();
     assert_eq!(
         pellet_fans.len(),
-        4,
-        "the fixed command stream must fire all four deterministic shotgun shells"
+        12,
+        "the fixed command stream must fire three auto shells in each of four held-trigger bursts"
     );
     assert!(
         pellet_fans.iter().all(|fan| fan.len() == 8),
-        "the backstop makes every multi-pellet shell expose all eight cast impacts"
+        "the backstop makes every multi-pellet bloom shell expose all eight cast impacts"
     );
-    assert_ne!(
-        pellet_fans[0], pellet_fans[1],
-        "consecutive shells, fired from the two inventory slots after the switch, must use distinct fans"
-    );
-    assert_ne!(
-        pellet_fans[1], pellet_fans[2],
-        "consecutive shells from the same inventory slot must use distinct fans"
-    );
+    for burst in pellet_fans.chunks_exact(3) {
+        assert_ne!(
+            burst[0], burst[1],
+            "a sustained bloom burst samples a new fan"
+        );
+        assert_ne!(
+            burst[1], burst[2],
+            "each later bloom shell samples a new fan"
+        );
+    }
 }
 
 fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
@@ -3296,7 +3308,7 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
     assert_trigger_positive_anchors(&baseline);
-    assert_fixed_stream_weapon_positive_anchors(&baseline);
+    assert_sustained_bloom_burst_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
 }

@@ -367,11 +367,38 @@ fn apply_net_wieldable_tuning(
     } else {
         0.0
     };
+    weapon.bloom_per_shot_degrees = clamp_tuning_degrees(tuning.bloom_per_shot_degrees);
+    weapon.bloom_max_degrees = clamp_tuning_degrees(tuning.bloom_max_degrees);
+    weapon.bloom_decay_degrees_per_second =
+        clamp_tuning_nonnegative(tuning.bloom_decay_degrees_per_second);
+    weapon.bloom_decay_delay_ms = clamp_tuning_nonnegative(tuning.bloom_decay_delay_ms);
+    weapon.movement_spread_degrees = clamp_tuning_degrees(tuning.movement_spread_degrees);
+    weapon.spread_vertical_bias = if tuning.spread_vertical_bias.is_finite() {
+        tuning.spread_vertical_bias.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     weapon.fire_mode = tuning.fire_mode;
     weapon.resolution = tuning.resolution;
     weapon.lower_ms = tuning.lower_ms;
     weapon.raise_ms = tuning.raise_ms;
     let _ = registry.set_component(weapon_id, weapon);
+}
+
+fn clamp_tuning_degrees(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 45.0)
+    } else {
+        0.0
+    }
+}
+
+fn clamp_tuning_nonnegative(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Materialize the presentation-only components for a client's remote descriptor
@@ -1000,6 +1027,12 @@ mod tests {
             cooldown_ms,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms,
@@ -1047,6 +1080,74 @@ mod tests {
     }
 
     #[test]
+    fn net_wieldable_tuning_clamps_untrusted_dynamic_accuracy_on_apply() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let descriptor = weapon_descriptor("reference_pistol");
+        registry
+            .set_component(
+                weapon_id,
+                WeaponComponent::from_descriptor(descriptor.weapon.as_ref().unwrap()),
+            )
+            .unwrap();
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+
+        for (bloom_per_shot, bloom_max, decay_rate, decay_delay, movement, bias, expected) in [
+            (
+                -1.0,
+                -2.0,
+                -3.0,
+                -4.0,
+                -5.0,
+                -0.1,
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ),
+            (
+                90.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                60.0,
+                2.0,
+                (45.0, 0.0, 0.0, 0.0, 45.0, 1.0),
+            ),
+            (
+                1.5,
+                6.0,
+                1_000_000.0,
+                175.0,
+                3.0,
+                0.25,
+                (1.5, 6.0, 1_000_000.0, 175.0, 3.0, 0.25),
+            ),
+        ] {
+            let payload = tuning.wieldables[0].as_mut().unwrap();
+            payload.bloom_per_shot_degrees = bloom_per_shot;
+            payload.bloom_max_degrees = bloom_max;
+            payload.bloom_decay_degrees_per_second = decay_rate;
+            payload.bloom_decay_delay_ms = decay_delay;
+            payload.movement_spread_degrees = movement;
+            payload.spread_vertical_bias = bias;
+            apply_net_wieldable_tuning(&mut registry, weapon_id, payload);
+
+            let weapon = registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap();
+            assert_eq!(
+                (
+                    weapon.bloom_per_shot_degrees,
+                    weapon.bloom_max_degrees,
+                    weapon.bloom_decay_degrees_per_second,
+                    weapon.bloom_decay_delay_ms,
+                    weapon.movement_spread_degrees,
+                    weapon.spread_vertical_bias,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn net_wieldable_tuning_drives_predicted_pellet_ray_count() {
         let mut registry = EntityRegistry::new();
         let weapon_id = registry.spawn(Transform::default());
@@ -1082,12 +1183,24 @@ mod tests {
         let payload = tuning.wieldables[0].as_mut().unwrap();
         payload.pellet_count = 8;
         payload.spread_degrees = 0.0;
+        payload.bloom_per_shot_degrees = 1.5;
+        payload.bloom_max_degrees = 6.0;
+        payload.bloom_decay_degrees_per_second = 2.5;
+        payload.bloom_decay_delay_ms = 175.0;
+        payload.movement_spread_degrees = 3.0;
+        payload.spread_vertical_bias = 0.2;
         apply_net_wieldable_tuning(&mut registry, weapon_id, payload);
 
         let mut weapon = registry
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
+        assert_eq!(weapon.bloom_per_shot_degrees, 1.5);
+        assert_eq!(weapon.bloom_max_degrees, 6.0);
+        assert_eq!(weapon.bloom_decay_degrees_per_second, 2.5);
+        assert_eq!(weapon.bloom_decay_delay_ms, 175.0);
+        assert_eq!(weapon.movement_spread_degrees, 3.0);
+        assert_eq!(weapon.spread_vertical_bias, 0.2);
         let resolution = crate::weapon::resolve_client_fire(
             None,
             &mut weapon,
@@ -1190,6 +1303,12 @@ mod tests {
             cooldown_ms: 100.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 0,
@@ -1287,6 +1406,12 @@ mod tests {
             cooldown_ms: tuning_weapon.cooldown_ms,
             pellet_count: tuning_weapon.pellet_count,
             spread_degrees: tuning_weapon.spread_degrees,
+            bloom_per_shot_degrees: tuning_weapon.bloom_per_shot_degrees,
+            bloom_max_degrees: tuning_weapon.bloom_max_degrees,
+            bloom_decay_degrees_per_second: tuning_weapon.bloom_decay_degrees_per_second,
+            bloom_decay_delay_ms: tuning_weapon.bloom_decay_delay_ms,
+            movement_spread_degrees: tuning_weapon.movement_spread_degrees,
+            spread_vertical_bias: tuning_weapon.spread_vertical_bias,
             fire_mode: tuning_weapon.fire_mode,
             resolution: tuning_weapon.resolution,
             lower_ms: tuning_weapon.lower_ms,

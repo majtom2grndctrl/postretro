@@ -1,7 +1,7 @@
 // Deterministic pellet-cone sampling and per-shell RNG seeding for weapon resolution.
 // See: context/plans/done/E16--shotgun-pellet-spread/index.md (Task 2)
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::trigger_pools::SplitMix64;
 
@@ -38,6 +38,33 @@ pub(crate) fn sample_cone_direction(axis: Vec3, half_angle_rad: f32, u1: f32, u2
         + axis * cos_theta;
 
     direction.normalize_or_zero()
+}
+
+/// Tilt a hitscan cone axis upward around the camera-right axis.
+///
+/// The zero-bias and zero-angle paths retain the input bits exactly, preserving
+/// legacy straight-through casts. Near-vertical aim has no stable camera-right
+/// axis, so it also retains the unmodified input axis.
+pub(crate) fn tilt_cone_axis_upward(
+    axis: Vec3,
+    vertical_bias: f32,
+    effective_spread_degrees: f32,
+) -> Vec3 {
+    if vertical_bias == 0.0 || effective_spread_degrees == 0.0 {
+        return axis;
+    }
+
+    let right = axis.cross(Vec3::Y);
+    let right_length_squared = right.length_squared();
+    if !right.is_finite() || !right_length_squared.is_finite() || right_length_squared <= 1.0e-12 {
+        return axis;
+    }
+
+    let tilt_radians = (vertical_bias * effective_spread_degrees).to_radians();
+    if !tilt_radians.is_finite() || tilt_radians == 0.0 {
+        return axis;
+    }
+    Quat::from_axis_angle(right / right_length_squared.sqrt(), tilt_radians) * axis
 }
 
 /// Deterministic pellet-direction stream for one resolved shell.
@@ -109,6 +136,29 @@ mod tests {
         assert!((direction.length() - 1.0).abs() < 1e-5);
         assert!(direction.dot(Vec3::Y) >= 0.6_f32.cos() - 1e-5);
         assert_eq!(sample_cone_direction(Vec3::ZERO, 0.0, 0.25, 0.75), Vec3::Y);
+    }
+
+    #[test]
+    fn upward_axis_tilt_preserves_zero_bias_and_degenerate_axis_bits() {
+        let axis = Vec3::new(0.0, 1.0, -0.0);
+
+        assert_vec3_bits_eq(tilt_cone_axis_upward(axis, 0.0, 4.0), axis);
+        assert_vec3_bits_eq(tilt_cone_axis_upward(Vec3::Y, 1.0, 4.0), Vec3::Y);
+    }
+
+    #[test]
+    fn upward_axis_tilt_uses_camera_right_axis() {
+        let tilted = tilt_cone_axis_upward(Vec3::NEG_Z, 0.5, 10.0);
+
+        assert!((tilted.length() - 1.0).abs() <= 1.0e-6);
+        assert!(
+            tilted.y > 0.0,
+            "positive bias must tilt a forward aim upward"
+        );
+        assert!(
+            tilted.z > -1.0,
+            "the upward tilt must rotate away from straight forward"
+        );
     }
 
     #[test]

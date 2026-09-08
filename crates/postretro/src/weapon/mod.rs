@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
@@ -432,7 +433,7 @@ pub(crate) fn tick_resolved_component(
     let stats = weapon.effective();
     let damage = stats.damage;
     let pellet_count = stats.pellet_count;
-    let spread_radians = stats.spread_degrees.to_radians();
+    let base_spread_degrees = stats.spread_degrees;
     let range = stats.range;
     let resolution = stats.resolution;
     let projectile = stats.projectile.cloned();
@@ -445,6 +446,11 @@ pub(crate) fn tick_resolved_component(
             // sequence. Only a resolved shell advances this instance-local state.
             let shell_counter = weapon.shells_fired;
             weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
+            let (spread_radians, hitscan_direction) = if resolution == ResolutionMode::Hitscan {
+                composed_hitscan_cone(registry, owner_pawn, weapon, command.aim_direction)
+            } else {
+                (base_spread_degrees.to_radians(), command.aim_direction)
+            };
             let (origin, direction) = if resolution == ResolutionMode::Projectile {
                 resolve_projectile_launch_pose(
                     owner_pawn,
@@ -459,9 +465,9 @@ pub(crate) fn tick_resolved_component(
                     range,
                 )
             } else {
-                (command.aim_origin, command.aim_direction)
+                (command.aim_origin, hitscan_direction)
             };
-            fire_hitscan(
+            let events = fire_hitscan(
                 owner_pawn,
                 origin,
                 direction,
@@ -479,7 +485,11 @@ pub(crate) fn tick_resolved_component(
                 shell_counter,
                 pellet_salt_name,
                 active_slot,
-            )
+            );
+            if resolution == ResolutionMode::Hitscan {
+                weapon.apply_bloom_shot();
+            }
+            events
         }
         WeaponFireAuthorization::Empty => WeaponFireEvents {
             dry_fire: true,
@@ -487,6 +497,35 @@ pub(crate) fn tick_resolved_component(
         },
         WeaponFireAuthorization::Rejected => WeaponFireEvents::default(),
     }
+}
+
+/// Compose the dynamic hitscan cone identically for host simulation and client
+/// prediction. The movement component is absent for non-pawn owners, where
+/// movement accuracy contributes nothing.
+fn composed_hitscan_cone(
+    registry: &EntityRegistry,
+    owner_pawn: Option<EntityId>,
+    weapon: &WeaponComponent,
+    aim_direction: Vec3,
+) -> (f32, Vec3) {
+    let (horizontal_speed, run_speed) = owner_pawn
+        .and_then(|pawn| registry.get_component::<PlayerMovementComponent>(pawn).ok())
+        .map_or((0.0, 0.0), |movement| {
+            let velocity = movement.velocity;
+            (
+                (velocity.x * velocity.x + velocity.z * velocity.z).sqrt(),
+                movement.ground_params.speed.run,
+            )
+        });
+    let effective_degrees = weapon.effective_spread_degrees(horizontal_speed, run_speed);
+    (
+        effective_degrees.to_radians(),
+        spread::tilt_cone_axis_upward(
+            aim_direction,
+            weapon.spread_vertical_bias,
+            effective_degrees,
+        ),
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -605,21 +644,11 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (
-        cooldown_ms,
-        pellet_count,
-        spread_radians,
-        range,
-        resolution,
-        projectile,
-        damage,
-        credit_source,
-    ) = {
+    let (cooldown_ms, pellet_count, range, resolution, projectile, damage, credit_source) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
             stats.pellet_count,
-            stats.spread_degrees.to_radians(),
             stats.range,
             stats.resolution,
             stats.projectile.cloned(),
@@ -627,13 +656,18 @@ pub(crate) fn resolve_client_fire(
             stats.credit_source.to_string(),
         )
     };
+    let (spread_radians, hitscan_direction) = if resolution == ResolutionMode::Hitscan {
+        composed_hitscan_cone(registry, owner_pawn, weapon, aim_direction)
+    } else {
+        (weapon.spread_degrees.to_radians(), aim_direction)
+    };
     weapon.cooldown_remaining_ms = cooldown_ms;
     let (hits, projectile_launch) = match resolution {
         ResolutionMode::Hitscan => (
             resolve_client_hitscan(
                 owner_pawn,
                 aim_origin,
-                aim_direction,
+                hitscan_direction,
                 collision_world,
                 registry,
                 hit_zone_store,
@@ -678,6 +712,9 @@ pub(crate) fn resolve_client_fire(
             )
         }
     };
+    if resolution == ResolutionMode::Hitscan {
+        weapon.apply_bloom_shot();
+    }
     Some(ClientFireResolution {
         client_tick,
         hits,
@@ -691,6 +728,7 @@ pub(crate) fn advance_client_fire_state(
     frame_dt: f32,
 ) -> bool {
     let dt_ms = (frame_dt.max(0.0)) * 1000.0;
+    weapon.tick_bloom(dt_ms);
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
     let fire_mode = weapon.effective().fire_mode;
@@ -1304,8 +1342,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn projectile_without_muzzle_keeps_legacy_eye_launch_bits() {
+    fn projectile_without_muzzle_ignores_dynamic_accuracy_and_keeps_legacy_eye_launch_bits() {
         let mut weapon = projectile_weapon_component(None);
+        weapon.spread_degrees = 20.0;
+        weapon.bloom_per_shot_degrees = 3.0;
+        weapon.bloom_max_degrees = 12.0;
+        weapon.bloom_accumulator_degrees = 8.0;
+        weapon.movement_spread_degrees = 6.0;
+        weapon.spread_vertical_bias = 1.0;
         let placement = WeaponPlacementDescriptor {
             offset: postretro_foundation::PlacementOffset {
                 right: 0.7,
@@ -1344,6 +1388,7 @@ pub(crate) mod tests {
         let launch = resolution.projectile_launch.expect("projectile launch");
         assert_vec3_bits_eq(launch.origin, eye);
         assert_vec3_bits_eq(launch.direction, aim);
+        assert_eq!(weapon.bloom_accumulator_degrees, 8.0);
     }
 
     #[test]
@@ -1372,6 +1417,12 @@ pub(crate) mod tests {
         };
         let registry = EntityRegistry::new();
         let mut weapon = projectile_weapon_component(Some(muzzle_local));
+        weapon.spread_degrees = 20.0;
+        weapon.bloom_per_shot_degrees = 3.0;
+        weapon.bloom_max_degrees = 12.0;
+        weapon.bloom_accumulator_degrees = 8.0;
+        weapon.movement_spread_degrees = 6.0;
+        weapon.spread_vertical_bias = 1.0;
         let events = tick_resolved_component(
             &registry,
             None,
@@ -1398,6 +1449,11 @@ pub(crate) mod tests {
             ),
         );
         assert_eq!(launch.range, 10.0, "remaining range stays descriptor range");
+        assert_vec3_approx(
+            launch.direction,
+            (command.aim_origin + command.aim_direction * launch.range - launch.origin).normalize(),
+        );
+        assert_eq!(weapon.bloom_accumulator_degrees, 8.0);
     }
 
     #[test]

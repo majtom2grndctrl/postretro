@@ -141,6 +141,28 @@ export const reticle = defineUiTree({
   ),
 });
 
+// `Tree` has one root, so this centered layer sits beneath the fixed aim mark
+// above. The raw degree value is deliberately a 1:1 relative presentation
+// binding; the retained UI clamps it to the ring's radius at draw time.
+export const spreadReticle = defineUiTree({
+  name: "hud.spreadReticle",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "center", offset: [0.0, 0.0] },
+    Ring({
+      diameter: 72.0,
+      radius: bindState(player.spread, {
+        tween: {
+          durationMs: 90.0,
+          easing: "easeOut",
+        },
+      }),
+      thickness: 2.0,
+      fill: color.hud.text,
+    }),
+  ),
+});
+
 const reloadMeter = Bar({
   bind: bindState(player.reloadProgress),
   max: 1.0,

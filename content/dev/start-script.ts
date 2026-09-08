@@ -27,7 +27,7 @@ import {
   crossfireSentinelEntity,
 } from "./scripts/faction-crossfire";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
-import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
+import { hud, hudTheme, reloadMeterTree, reticle, spreadReticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
 import {
@@ -74,7 +74,7 @@ export default defineMod({
       pitch: -0.08,
     },
   },
-  uiTrees: [hud, reticle, reloadMeterTree, pauseMenu, frontendMenu],
+  uiTrees: [hud, spreadReticle, reticle, reloadMeterTree, pauseMenu, frontendMenu],
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
   presentationTemplates: [damageNumber, damagedEnemyBar],

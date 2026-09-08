@@ -7,7 +7,7 @@
 //
 // See: context/lib/rendering_pipeline.md §7.4
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -429,28 +429,115 @@ fn warn_sprite_array_invalid_input(collection: &str) {
     );
 }
 
-/// One loaded sprite sheet, shared across all emitters whose `collection`
-/// matches.
+/// Asset-intrinsic GPU resources shared by every collection id that resolves to
+/// one asset reference. The texture arrays/views live here rather than in a
+/// collection's draw binding so differing draw contracts do not multiply VRAM.
+struct SpriteAssetResources {
+    /// Owns the diffuse array alongside its retained view.
+    #[allow(dead_code)]
+    diffuse_texture: wgpu::Texture,
+    diffuse_view: wgpu::TextureView,
+    /// Owns the baked specular resource alongside its retained view.
+    #[allow(dead_code)]
+    specular_texture: Option<wgpu::Texture>,
+    /// Baked optional specular array. Shimmer binds it only when the same
+    /// `NORMAL`-slot predicate that enables shimmer is true.
+    specular_view: Option<wgpu::TextureView>,
+    /// Owns the baked normal resource alongside its retained view.
+    #[allow(dead_code)]
+    normal_texture: Option<wgpu::Texture>,
+    /// Baked optional normal array. Its presence classifies the collection as
+    /// shimmer and selects the fragment static-specular path.
+    normal_view: Option<wgpu::TextureView>,
+    /// Number of animation frames. One for a fallback array layer.
+    frame_count: u32,
+    /// Slots parsed from the baked sidecar. Decode fallback assets are
+    /// diffuse-only, matching their runtime PNG upload.
+    slot_mask: PrmSlots,
+    /// Baked sidecars need their asset-specific mip clamp. Decoded PNG assets
+    /// continue using the pass-wide single-mip sampler.
+    baked_lod_max_clamp: Option<f32>,
+}
+
+/// The level-owned asset cache beneath the collection-id draw cache.
+///
+/// It deliberately tracks the collection-id → asset relation separately from
+/// the uploaded resources so the relationship is testable without a GPU.
+struct SpriteAssetCache<T> {
+    assets: HashMap<String, T>,
+    collection_assets: HashMap<String, String>,
+}
+
+impl<T> SpriteAssetCache<T> {
+    fn new() -> Self {
+        Self {
+            assets: HashMap::new(),
+            collection_assets: HashMap::new(),
+        }
+    }
+
+    /// Upload once per asset reference. A failed upload is not cached so its
+    /// collection id is not recorded as registered.
+    fn get_or_try_upload(
+        &mut self,
+        asset: &str,
+        upload: impl FnOnce() -> Option<T>,
+    ) -> Option<bool> {
+        match self.assets.entry(asset.to_string()) {
+            Entry::Occupied(_) => Some(false),
+            Entry::Vacant(entry) => {
+                let resource = upload()?;
+                entry.insert(resource);
+                Some(true)
+            }
+        }
+    }
+
+    fn resource(&self, asset: &str) -> Option<&T> {
+        self.assets.get(asset)
+    }
+
+    fn record_collection(&mut self, collection_id: &str, asset: &str) {
+        let previous = self
+            .collection_assets
+            .insert(collection_id.to_string(), asset.to_string());
+        debug_assert!(
+            previous.is_none(),
+            "duplicate collection ids must be rejected before asset-cache registration"
+        );
+    }
+
+    /// GPU-free ownership seam: true iff both registered collection ids point
+    /// to the same currently-uploaded asset array.
+    fn collection_ids_share_uploaded_array(&self, left: &str, right: &str) -> bool {
+        let Some(left_asset) = self.collection_assets.get(left) else {
+            return false;
+        };
+        let Some(right_asset) = self.collection_assets.get(right) else {
+            return false;
+        };
+        left_asset == right_asset && self.assets.contains_key(left_asset)
+    }
+
+    #[cfg(test)]
+    fn uploaded_asset_count(&self) -> usize {
+        self.assets.len()
+    }
+
+    fn clear(&mut self) {
+        self.assets.clear();
+        self.collection_assets.clear();
+    }
+}
+
+/// One collection-id-specific draw binding. The bind group and uniform remain
+/// distinct even when the texture arrays it references are shared by asset.
 pub struct SpriteSheet {
     /// Sprite sheet texture bind group (group 1 of the billboard pipeline).
     pub bind_group: wgpu::BindGroup,
     /// Number of animation frames. 1 when the collection has a single PNG.
     #[allow(dead_code)]
     pub frame_count: u32,
-    /// Owns the baked specular resource alongside its retained view.
-    #[allow(dead_code)]
-    specular_texture: Option<wgpu::Texture>,
-    /// Baked optional specular array. Shimmer binds it only when the same
-    /// `NORMAL`-slot predicate that enables shimmer is true.
-    #[allow(dead_code)]
-    pub specular_view: Option<wgpu::TextureView>,
-    /// Owns the baked normal resource alongside its retained view.
-    #[allow(dead_code)]
-    normal_texture: Option<wgpu::Texture>,
-    /// Baked optional normal array. Its presence classifies the collection as
-    /// shimmer and selects the fragment static-specular path.
-    #[allow(dead_code)]
-    pub normal_view: Option<wgpu::TextureView>,
     /// Slots parsed from the baked sidecar. Decode fallback sheets are
     /// diffuse-only, matching their runtime PNG upload.
     #[allow(dead_code)]
@@ -592,6 +679,11 @@ pub struct SmokePass {
 
     /// Loaded sprite-frame arrays keyed by collection id. Populated at level load.
     sheets: HashMap<String, SpriteSheet>,
+
+    /// Uploaded texture arrays keyed by asset reference. Multiple collection
+    /// ids may bind the same asset views while retaining distinct group-1 draw
+    /// bindings and `SpriteDrawParams` uniforms.
+    sprite_assets: SpriteAssetCache<SpriteAssetResources>,
 
     /// Shared linear sampler for sprite-frame arrays.
     sampler: wgpu::Sampler,
@@ -874,6 +966,7 @@ impl SmokePass {
             instance_window,
             instance_bind_group,
             sheets: HashMap::new(),
+            sprite_assets: SpriteAssetCache::new(),
             sampler,
             specular_placeholder_texture,
             specular_placeholder_view,
@@ -882,37 +975,17 @@ impl SmokePass {
         }
     }
 
-    /// Register a sprite collection. Uploads each frame to its own layer of one
-    /// RGBA8 texture array and creates the per-collection bind group (group 1).
-    /// Frames must carry the shared dimensions guaranteed by the CPU loader.
-    /// Only map-emitter collections may opt into baked sidecars; every other
-    /// source stays on the decoded-PNG path.
-    /// Reports and rejects duplicate collection calls, or unusable frame lists,
-    /// so caller ordering cannot silently replace a draw contract.
-    pub fn register_collection(
-        &mut self,
+    /// Upload one asset's frame arrays. The asset reference, never a collection
+    /// id, selects this path: collection ids encode draw contracts and are not
+    /// filesystem references.
+    fn upload_sprite_asset(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        collection_id: &str,
         asset: &str,
         texture_root: &Path,
         prm_cache_root: &Path,
-        registration: SpriteCollectionRegistration,
-    ) {
-        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
-            log::warn!(
-                "[Smoke] collection id '{collection_id}' rejected: specular exponent must be finite and greater than zero (got {})",
-                registration.spec_exponent,
-            );
-            return;
-        }
-        if self.sheets.contains_key(collection_id) {
-            log::warn!(
-                "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
-            );
-            return;
-        }
-
+        baked_sidecar_eligible: bool,
+    ) -> Option<SpriteAssetResources> {
         let collection_frame_count =
             collection_frame_paths(texture_root, asset, SpriteSlot::Diffuse).len();
         let limits = device.limits();
@@ -920,36 +993,33 @@ impl SmokePass {
             max_texture_array_layers: limits.max_texture_array_layers,
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
         };
-        let baked_sprite = should_attempt_baked_sprite_load(
-            registration.baked_sidecar_eligible,
-            asset,
-            collection_frame_count,
-        )
-        .then(|| {
-            load_baked_sprite_array(
-                texture_root,
-                prm_cache_root,
-                asset,
-                collection_frame_count,
-                sprite_texture_limits,
-            )
-            .map(|(header, slots, plan)| (header, slots, plan, collection_frame_count))
-        })
-        .flatten();
+        let baked_sprite =
+            should_attempt_baked_sprite_load(baked_sidecar_eligible, asset, collection_frame_count)
+                .then(|| {
+                    load_baked_sprite_array(
+                        texture_root,
+                        prm_cache_root,
+                        asset,
+                        collection_frame_count,
+                        sprite_texture_limits,
+                    )
+                    .map(|(header, slots, plan)| (header, slots, plan, collection_frame_count))
+                })
+                .flatten();
         if let Some((header, slots, baked_plan, collection_frame_count)) = baked_sprite {
             let diffuse_slot = slots[0]
                 .as_ref()
                 .expect("baked sprite plan requires a parsed diffuse slot");
             debug_assert!(u32::from(diffuse_slot.level_count) <= baked_plan.mip_level_count);
             let diffuse_layers = slot_layer_levels(diffuse_slot, header.layer_count);
-            let (_diffuse_texture, diffuse_view) = upload_texture_array_data(
+            let (diffuse_texture, diffuse_view) = upload_texture_array_data(
                 device,
                 queue,
                 prm_format_to_wgpu(diffuse_slot.format),
                 &diffuse_layers,
                 baked_plan.array_layer_count,
                 u32::from(diffuse_slot.level_count),
-                &format!("Baked Sprite Diffuse Array: {collection_id}"),
+                &format!("Baked Sprite Diffuse Array: {asset}"),
             );
 
             let (specular_texture, specular_view) = if header.slot_mask.contains(PrmSlots::SPECULAR)
@@ -966,7 +1036,7 @@ impl SmokePass {
                     &layers,
                     baked_plan.array_layer_count,
                     u32::from(slot.level_count),
-                    &format!("Baked Sprite Specular Array: {collection_id}"),
+                    &format!("Baked Sprite Specular Array: {asset}"),
                 );
                 (Some(texture), Some(view))
             } else {
@@ -985,100 +1055,24 @@ impl SmokePass {
                     &layers,
                     baked_plan.array_layer_count,
                     u32::from(slot.level_count),
-                    &format!("Baked Sprite Normal Array: {collection_id}"),
+                    &format!("Baked Sprite Normal Array: {asset}"),
                 );
                 (Some(texture), Some(view))
             } else {
                 (None, None)
             };
 
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some(&format!("Baked Sprite Mip Sampler: {collection_id}")),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                lod_max_clamp: baked_plan.lod_max_clamp,
-                ..Default::default()
+            return Some(SpriteAssetResources {
+                diffuse_texture,
+                diffuse_view,
+                specular_texture,
+                specular_view,
+                normal_texture,
+                normal_view,
+                frame_count: collection_frame_count as u32,
+                slot_mask: header.slot_mask,
+                baked_lod_max_clamp: Some(baked_plan.lod_max_clamp),
             });
-            // `NORMAL` presence is the sole shimmer discriminator. The exact
-            // same predicate controls params2.x and whether optional slot views
-            // are exposed to the fragment shader, so a collection can never be
-            // flagged shimmer while sampling placeholder normal data (or vice
-            // versa). A shimmer collection may omit SPECULAR; that input then
-            // receives the white mask placeholder.
-            let is_shimmer = sprite_shimmer_flag(header.slot_mask) != 0.0;
-            let bound_specular_view = if is_shimmer {
-                specular_view
-                    .as_ref()
-                    .unwrap_or(&self.specular_placeholder_view)
-            } else {
-                &self.specular_placeholder_view
-            };
-            let bound_normal_view = if is_shimmer {
-                normal_view
-                    .as_ref()
-                    .expect("a shimmer slot mask must have uploaded its normal array")
-            } else {
-                &self.normal_placeholder_view
-            };
-            let frame_count = collection_frame_count as u32;
-            let params_bytes = build_draw_params(
-                frame_count,
-                registration.spec_intensity,
-                registration.lifetime,
-                registration.emissive,
-                registration.spec_exponent,
-                header.slot_mask,
-            );
-            let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Sprite Draw Params: {collection_id}")),
-                contents: &params_bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!(
-                    "Baked Sprite Frame Array Bind Group: {collection_id}"
-                )),
-                layout: &self.sheet_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(bound_specular_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(bound_normal_view),
-                    },
-                ],
-            });
-            self.sheets.insert(
-                collection_id.to_string(),
-                SpriteSheet {
-                    bind_group,
-                    frame_count,
-                    specular_texture,
-                    specular_view,
-                    normal_texture,
-                    normal_view,
-                    slot_mask: header.slot_mask,
-                },
-            );
-            return;
         }
 
         // A cache miss, malformed sidecar, or direct PNG reference reaches the
@@ -1092,10 +1086,8 @@ impl SmokePass {
             max_texture_array_layers,
             limits.max_texture_dimension_2d,
         ) else {
-            log::warn!(
-                "[Smoke] Asset '{asset}' for collection id '{collection_id}' had no usable normalized frame array"
-            );
-            return;
+            log::warn!("[Smoke] Asset '{asset}' had no usable normalized frame array");
+            return None;
         };
         match plan.fallback {
             Some(SpriteArrayFallback::FrameLayerLimit) => {
@@ -1112,8 +1104,8 @@ impl SmokePass {
         let width = plan.width;
         let height = plan.height;
         let frame_count = plan.frame_count();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&format!("Sprite Frame Array: {collection_id}")),
+        let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&format!("Sprite Frame Array: {asset}")),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1130,7 +1122,7 @@ impl SmokePass {
         let upload_layer = |layer: u32, data: &[u8]| {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
+                    texture: &diffuse_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
                         x: 0,
@@ -1159,39 +1151,140 @@ impl SmokePass {
                 upload_layer(layer as u32, &frame.data);
             }
         }
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some(&format!("Sprite Frame Array View: {collection_id}")),
+        let diffuse_view = diffuse_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("Sprite Frame Array View: {asset}")),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             mip_level_count: Some(1),
             array_layer_count: Some(frame_count),
             ..Default::default()
         });
+        Some(SpriteAssetResources {
+            diffuse_texture,
+            diffuse_view,
+            specular_texture: None,
+            specular_view: None,
+            normal_texture: None,
+            normal_view: None,
+            frame_count,
+            slot_mask: PrmSlots::DIFFUSE,
+            baked_lod_max_clamp: None,
+        })
+    }
 
+    /// Register one collection id. The collection owns a group-1 bind group
+    /// and `SpriteDrawParams` uniform; its asset reference owns the deduped
+    /// texture arrays and views beneath it.
+    pub fn register_collection(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        collection_id: &str,
+        asset: &str,
+        texture_root: &Path,
+        prm_cache_root: &Path,
+        registration: SpriteCollectionRegistration,
+    ) {
+        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
+            log::warn!(
+                "[Smoke] collection id '{collection_id}' rejected: specular exponent must be finite and greater than zero (got {})",
+                registration.spec_exponent,
+            );
+            return;
+        }
+        if self.sheets.contains_key(collection_id) {
+            log::warn!(
+                "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
+            );
+            return;
+        }
+
+        if self
+            .sprite_assets
+            .get_or_try_upload(asset, || {
+                Self::upload_sprite_asset(
+                    device,
+                    queue,
+                    asset,
+                    texture_root,
+                    prm_cache_root,
+                    registration.baked_sidecar_eligible,
+                )
+            })
+            .is_none()
+        {
+            return;
+        }
+
+        let sprite_asset = self
+            .sprite_assets
+            .resource(asset)
+            .expect("successful sprite asset upload must populate the cache");
+        // `NORMAL` presence is the sole shimmer discriminator. The exact same
+        // predicate controls params2.x and whether optional slot views are
+        // exposed to the fragment shader, so a collection can never be flagged
+        // shimmer while sampling placeholder normal data (or vice versa). A
+        // shimmer collection may omit SPECULAR; that input then receives the
+        // white mask placeholder.
+        let is_shimmer = sprite_shimmer_flag(sprite_asset.slot_mask) != 0.0;
+        let bound_specular_view = if is_shimmer {
+            sprite_asset
+                .specular_view
+                .as_ref()
+                .unwrap_or(&self.specular_placeholder_view)
+        } else {
+            &self.specular_placeholder_view
+        };
+        let bound_normal_view = if is_shimmer {
+            sprite_asset
+                .normal_view
+                .as_ref()
+                .expect("a shimmer slot mask must have uploaded its normal array")
+        } else {
+            &self.normal_placeholder_view
+        };
+        // The sampler's LOD clamp is asset-intrinsic, but the group-1 bind
+        // group remains collection-owned. Decode fallback uses the shared
+        // single-mip sampler exactly as before.
+        let baked_sampler = sprite_asset.baked_lod_max_clamp.map(|lod_max_clamp| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(&format!("Baked Sprite Mip Sampler: {collection_id}")),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                lod_max_clamp,
+                ..Default::default()
+            })
+        });
+        let sampler = baked_sampler.as_ref().unwrap_or(&self.sampler);
+        let frame_count = sprite_asset.frame_count;
+        let slot_mask = sprite_asset.slot_mask;
         let params_bytes = build_draw_params(
             frame_count,
             registration.spec_intensity,
             registration.lifetime,
             registration.emissive,
             registration.spec_exponent,
-            PrmSlots::DIFFUSE,
+            slot_mask,
         );
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Sprite Draw Params: {collection_id}")),
             contents: &params_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
-
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&format!("Sprite Frame Array Bind Group: {collection_id}")),
             layout: &self.sheet_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(&sprite_asset.diffuse_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1199,11 +1292,11 @@ impl SmokePass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.specular_placeholder_view),
+                    resource: wgpu::BindingResource::TextureView(bound_specular_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.normal_placeholder_view),
+                    resource: wgpu::BindingResource::TextureView(bound_normal_view),
                 },
             ],
         });
@@ -1213,19 +1306,17 @@ impl SmokePass {
             SpriteSheet {
                 bind_group,
                 frame_count,
-                specular_texture: None,
-                specular_view: None,
-                normal_texture: None,
-                normal_view: None,
-                slot_mask: PrmSlots::DIFFUSE,
+                slot_mask,
             },
         );
+        self.sprite_assets.record_collection(collection_id, asset);
     }
 
     /// Drop per-level sprite sheet textures and bind groups. The shared
     /// instance buffer is renderer-lifetime scratch and stays allocated.
     pub fn clear_collections(&mut self) {
         self.sheets.clear();
+        self.sprite_assets.clear();
     }
 
     /// Whether any collection is registered. Used by the renderer to skip the
@@ -1748,6 +1839,48 @@ mod tests {
         for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             assert!(!sprite_specular_exponent_is_valid(invalid));
         }
+    }
+
+    #[test]
+    fn asset_cache_uploads_once_and_shares_one_array_across_collection_ids() {
+        let mut cache = SpriteAssetCache::new();
+        let mut upload_count = 0;
+        for collection_id in [
+            "smoke|contract=short",
+            "smoke|contract=long",
+            "smoke|contract=emissive",
+        ] {
+            let uploaded = cache
+                .get_or_try_upload("smoke", || {
+                    upload_count += 1;
+                    Some(())
+                })
+                .expect("the synthetic asset upload must succeed");
+            if uploaded {
+                assert_eq!(upload_count, 1, "the first id owns the only upload");
+            }
+            cache.record_collection(collection_id, "smoke");
+        }
+
+        assert_eq!(upload_count, 1, "N ids over one asset upload once");
+        assert_eq!(cache.uploaded_asset_count(), 1);
+        assert!(cache.collection_ids_share_uploaded_array(
+            "smoke|contract=short",
+            "smoke|contract=long",
+        ));
+        assert!(
+            cache.collection_ids_share_uploaded_array(
+                "smoke|contract=long",
+                "smoke|contract=emissive",
+            )
+        );
+        assert!(
+            !cache.collection_ids_share_uploaded_array(
+                "smoke|contract=short",
+                "unregistered|contract=short",
+            ),
+            "an unregistered id cannot appear to own a shared uploaded array",
+        );
     }
 
     #[test]

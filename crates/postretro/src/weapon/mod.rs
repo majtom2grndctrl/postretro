@@ -639,7 +639,7 @@ pub(crate) fn resolve_client_fire(
 ) -> Option<ClientFireResolution> {
     let frame_dt_ms = (frame_dt.max(0.0)) * 1000.0;
     if !advance_client_fire_gate(weapon, button, frame_dt_ms) {
-        weapon.tick_bloom(frame_dt_ms);
+        tick_client_bloom_for_frame(weapon, frame_dt_ms, logical_tick_elapsed_ms);
         return None;
     }
 
@@ -788,10 +788,25 @@ pub(crate) fn advance_client_fire_state(
     weapon: &mut WeaponComponent,
     button: FireButtonState,
     frame_dt: f32,
+    logical_tick_elapsed_ms: &[f32],
 ) -> bool {
     let dt_ms = (frame_dt.max(0.0)) * 1000.0;
-    weapon.tick_bloom(dt_ms);
+    tick_client_bloom_for_frame(weapon, dt_ms, logical_tick_elapsed_ms);
     advance_client_fire_gate(weapon, button, dt_ms)
+}
+
+fn tick_client_bloom_for_frame(
+    weapon: &mut WeaponComponent,
+    frame_dt_ms: f32,
+    logical_tick_elapsed_ms: &[f32],
+) {
+    let mut previous_elapsed_ms = 0.0;
+    for &elapsed_ms in logical_tick_elapsed_ms {
+        let elapsed_ms = elapsed_ms.clamp(previous_elapsed_ms, frame_dt_ms);
+        weapon.tick_bloom(elapsed_ms - previous_elapsed_ms);
+        previous_elapsed_ms = elapsed_ms;
+    }
+    weapon.tick_bloom(frame_dt_ms - previous_elapsed_ms);
 }
 
 fn advance_client_fire_gate(
@@ -1965,6 +1980,7 @@ pub(crate) mod tests {
                 active: true,
             },
             0.0,
+            &[],
         ));
         assert_eq!(weapon.shells_fired, 9);
     }

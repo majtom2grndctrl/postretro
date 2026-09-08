@@ -314,6 +314,7 @@ fn collect_node(
         Some(NodeContext::Ring {
             diameter,
             radius,
+            radius_range,
             thickness,
             start_angle,
             sweep,
@@ -321,6 +322,10 @@ fn collect_node(
             track,
         }) => {
             let radius = ring_scalar_value(radius, slot_values, cell_values);
+            let radius = radius_range.as_ref().map_or(radius, |range| {
+                let fraction = (radius / range.input_max).clamp(0.0, 1.0);
+                range.min + (range.max - range.min) * fraction
+            });
             let thickness = ring_scalar_value(thickness, slot_values, cell_values);
             let start_angle = ring_scalar_value(start_angle, slot_values, cell_values);
             let sweep = ring_scalar_value(sweep, slot_values, cell_values);

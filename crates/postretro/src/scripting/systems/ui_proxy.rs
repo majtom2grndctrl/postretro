@@ -173,8 +173,10 @@ impl PlayerHudStatePublisher {
         if is_connected_client {
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
-            self.publish_local_weapon_state();
-            return weapon_hud_values(&self.ctx.registry.borrow()).0;
+            let (sampled_weapon, _, _, _, effective_spread_degrees) =
+                weapon_hud_values(&self.ctx.registry.borrow());
+            self.publish_local_weapon_state(effective_spread_degrees);
+            return sampled_weapon;
         }
         self.tick_and_report_sampled_weapon()
     }
@@ -205,7 +207,9 @@ impl PlayerHudStatePublisher {
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
         self.publish_local_per_owner_mod_slots();
-        self.publish_local_weapon_state();
+        let (sampled_weapon, ammo, reload_progress, reload_active, effective_spread_degrees) =
+            weapon_hud_values(&self.ctx.registry.borrow());
+        self.publish_local_weapon_state(effective_spread_degrees);
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -214,8 +218,6 @@ impl PlayerHudStatePublisher {
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
 
-        let (sampled_weapon, ammo, reload_progress, reload_active, _) =
-            weapon_hud_values(&self.ctx.registry.borrow());
         match (sampled_weapon, ammo) {
             (_, Some((magazine, reserve))) => {
                 self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
@@ -257,7 +259,7 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    fn publish_local_weapon_state(&mut self) {
+    fn publish_local_weapon_state(&mut self, effective_spread_degrees: f32) {
         let (current, pending, switching) =
             weapon_state_values(&self.ctx.registry.borrow(), self.pending_weapon_slot);
         self.write_hud_slot("player.weapon.current", SlotValue::String(current));
@@ -266,7 +268,6 @@ impl PlayerHudStatePublisher {
 
         // Spread is local predicted state, so every role publishes it from its
         // own active component before a connected client returns early.
-        let effective_spread_degrees = weapon_hud_values(&self.ctx.registry.borrow()).4;
         self.write_hud_slot("player.spread", SlotValue::Number(effective_spread_degrees));
     }
 
@@ -821,16 +822,21 @@ mod tests {
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
         publisher.tick_for_role(true, None);
-        assert_eq!(
-            read_store_slot(&ctx, "player.spread").unwrap(),
-            SlotValue::Number(5.0),
+        let SlotValue::Number(client_spread) = read_store_slot(&ctx, "player.spread").unwrap()
+        else {
+            panic!("player.spread must be a number");
+        };
+        assert!(
+            (client_spread - 5.0).abs() < 1e-6,
             "a connected client publishes its own predicted active-weapon spread"
         );
 
         publisher.tick_for_role(false, None);
-        assert_eq!(
-            read_store_slot(&ctx, "player.spread").unwrap(),
-            SlotValue::Number(5.0),
+        let SlotValue::Number(host_spread) = read_store_slot(&ctx, "player.spread").unwrap() else {
+            panic!("player.spread must be a number");
+        };
+        assert!(
+            (host_spread - 5.0).abs() < 1e-6,
             "the host uses the same local active-weapon projection"
         );
 

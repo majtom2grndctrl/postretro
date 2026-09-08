@@ -634,6 +634,8 @@ impl BarWidget {
 pub struct RingWidget {
     pub diameter: f32,
     pub radius: ScalarValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius_range: Option<RingRadiusRange>,
     pub thickness: ScalarValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_angle: Option<ScalarValue>,
@@ -659,6 +661,8 @@ pub struct RingWidget {
 struct RingWidgetWire {
     diameter: f32,
     radius: ScalarValue,
+    #[serde(default)]
+    radius_range: Option<RingRadiusRange>,
     thickness: ScalarValue,
     #[serde(default)]
     start_angle: Option<ScalarValue>,
@@ -682,6 +686,7 @@ impl TryFrom<RingWidgetWire> for RingWidget {
         let ring = Self {
             diameter: wire.diameter,
             radius: wire.radius,
+            radius_range: wire.radius_range,
             thickness: wire.thickness,
             start_angle: wire.start_angle,
             sweep: wire.sweep,
@@ -707,6 +712,12 @@ impl RingWidget {
         validate_ring_positive_literal("radius", &self.radius)?;
         validate_ring_positive_literal("thickness", &self.thickness)?;
         validate_ring_source("radius", &self.radius)?;
+        if let Some(range) = &self.radius_range {
+            if !matches!(self.radius, ScalarValue::Bound(_)) {
+                return Err("`ring.radiusRange` requires a bound `ring.radius`".to_string());
+            }
+            range.validate(self.diameter)?;
+        }
         validate_ring_source("thickness", &self.thickness)?;
         if let ScalarValue::Literal(radius) = &self.radius {
             if *radius > self.diameter / 2.0 {
@@ -737,6 +748,34 @@ impl RingWidget {
         validate_ring_color("fill", &self.fill)?;
         if let Some(track) = &self.track {
             validate_ring_color("track", track)?;
+        }
+        Ok(())
+    }
+}
+
+/// Presentation-only linear remap for a bound ring radius. It leaves the
+/// authoritative source untouched, which lets HUD authors turn a neutral value
+/// such as weapon spread degrees into a visible logical-pixel indicator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RingRadiusRange {
+    pub input_max: f32,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl RingRadiusRange {
+    fn validate(&self, diameter: f32) -> Result<(), String> {
+        if !self.input_max.is_finite() || self.input_max <= 0.0 {
+            return Err(
+                "`ring.radiusRange.inputMax` must be finite and greater than zero".to_string(),
+            );
+        }
+        if !self.min.is_finite() || self.min <= 0.0 {
+            return Err("`ring.radiusRange.min` must be finite and greater than zero".to_string());
+        }
+        if !self.max.is_finite() || self.max < self.min || self.max > diameter / 2.0 {
+            return Err("`ring.radiusRange.max` must be finite, at least `min`, and no greater than half of `ring.diameter`".to_string());
         }
         Ok(())
     }

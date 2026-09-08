@@ -11,7 +11,7 @@ use postretro_entities::components::inventory::Inventory;
 #[cfg(test)]
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon::{MAX_EFFECTIVE_SPREAD_DEGREES, WeaponComponent};
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::{MAX_PELLET_COUNT, NavAgentParams};
@@ -363,7 +363,9 @@ fn apply_net_wieldable_tuning(
     weapon.cooldown_ms = tuning.cooldown_ms;
     weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
     weapon.spread_degrees = if tuning.spread_degrees.is_finite() {
-        tuning.spread_degrees.clamp(0.0, 45.0)
+        tuning
+            .spread_degrees
+            .clamp(0.0, MAX_EFFECTIVE_SPREAD_DEGREES)
     } else {
         0.0
     };
@@ -387,7 +389,7 @@ fn apply_net_wieldable_tuning(
 
 fn clamp_tuning_degrees(value: f32) -> f32 {
     if value.is_finite() {
-        value.clamp(0.0, 45.0)
+        value.clamp(0.0, MAX_EFFECTIVE_SPREAD_DEGREES)
     } else {
         0.0
     }

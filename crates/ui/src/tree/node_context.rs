@@ -7,7 +7,8 @@ use std::cell::RefCell;
 use taffy::prelude::Display;
 
 use super::super::descriptor::{
-    BarExitFade, BarMax, Border, BoundScalar, PanelBind, Predicate, SliderBind, TextBind,
+    BarExitFade, BarMax, Border, BoundScalar, PanelBind, Predicate, RingRadiusRange, SliderBind,
+    TextBind,
 };
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
@@ -173,6 +174,7 @@ pub enum NodeContext {
     Ring {
         diameter: f32,
         radius: RingScalar,
+        radius_range: Option<RingRadiusRange>,
         thickness: RingScalar,
         start_angle: RingScalar,
         sweep: RingScalar,

@@ -18,6 +18,7 @@ use crate::sim::{
     EnemyProjectilePresentationSpawn, RemoteProjectilePresentationLaunch,
     projectile_model_body_rotation,
 };
+use crate::sprite_collection::derive_collection_id;
 use crate::weapon;
 
 use super::{
@@ -571,12 +572,20 @@ pub(super) fn attach_projectile_visual_components(
             opacity,
             rotation,
             tint,
-            ..
+            emissive,
+            frame_duration_ms,
         } => {
             let _ = registry.set_component(
                 id,
                 SpriteVisual {
-                    collection: sprite.clone(),
+                    collection: derive_collection_id(
+                        sprite,
+                        None,
+                        *frame_duration_ms,
+                        *emissive,
+                        None,
+                        None,
+                    ),
                     size: *size,
                     opacity: *opacity,
                     rotation: *rotation,
@@ -706,6 +715,19 @@ mod tests {
             model: "models/projectiles/rocket.gltf".to_string(),
         };
         descriptor
+    }
+
+    fn projectile_body_collection_id(projectile: &ProjectileDescriptor) -> String {
+        let ProjectileBodyVisual::Sprite {
+            sprite,
+            emissive,
+            frame_duration_ms,
+            ..
+        } = &projectile.visual.body
+        else {
+            panic!("test fixture must use a sprite projectile body");
+        };
+        derive_collection_id(sprite, None, *frame_duration_ms, *emissive, None, None)
     }
 
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
@@ -1081,6 +1103,15 @@ mod tests {
         };
         let mut weapon_descriptor = projectile_visual_descriptor();
         weapon_descriptor.canonical_name = Some("enemy_rifle".to_string());
+        let expected_collection = projectile_body_collection_id(
+            weapon_descriptor
+                .weapon
+                .as_ref()
+                .expect("test descriptor declares a weapon")
+                .projectile
+                .as_ref()
+                .expect("test weapon declares a projectile"),
+        );
         assert!(
             super::super::remote_materialize::materialize_armed_remote_projectile(
                 remote,
@@ -1094,7 +1125,7 @@ mod tests {
                 .get_component::<SpriteVisual>(remote.entity_id)
                 .expect("client materializes the weapon projectile visual")
                 .collection,
-            "sprites/projectiles/remote-bolt.png"
+            expected_collection
         );
         assert_eq!(
             observer_registry
@@ -1190,9 +1221,22 @@ mod tests {
             client_entities.insert(class, (remote.network_id, remote.entity_id));
         }
         assert_eq!(client_entities.len(), 2);
-        for (class, expected_sprite) in [
-            ("enemy_plasma_blue", "sprites/projectiles/blue.png"),
-            ("enemy_plasma_orange", "sprites/projectiles/orange.png"),
+        for (class, expected_collection) in [
+            (
+                "enemy_plasma_blue",
+                derive_collection_id("sprites/projectiles/blue.png", None, None, 0.0, None, None),
+            ),
+            (
+                "enemy_plasma_orange",
+                derive_collection_id(
+                    "sprites/projectiles/orange.png",
+                    None,
+                    None,
+                    0.0,
+                    None,
+                    None,
+                ),
+            ),
         ] {
             let (_, entity) = client_entities
                 .get(class)
@@ -1202,7 +1246,7 @@ mod tests {
                     .get_component::<SpriteVisual>(*entity)
                     .expect("materialized mirror carries its projectile body")
                     .collection,
-                expected_sprite
+                expected_collection
             );
         }
         let baseline_ack = baseline_outcome
@@ -1434,6 +1478,45 @@ mod tests {
             peak_radius: Some(9.0),
             fade_ms: 180.0,
         });
+        let expected_collection = projectile_body_collection_id(&projectile);
+        let competing_collection = derive_collection_id(
+            "sprites/projectiles/remote-bolt.png",
+            None,
+            None,
+            0.0,
+            None,
+            None,
+        );
+        assert_ne!(
+            expected_collection, competing_collection,
+            "one asset with a different projectile draw contract needs its own collection"
+        );
+        let local_projectile = crate::sim::spawn_projectile(
+            &mut registry,
+            pawn,
+            weapon,
+            weapon::ProjectileLaunch {
+                origin: Vec3::new(1.0, 2.0, 3.0),
+                direction: Vec3::NEG_Z,
+                speed: projectile.speed,
+                radius: projectile.radius,
+                range: 12.0,
+                lifetime: projectile.lifetime_ms / 1_000.0,
+                damage: 10.0,
+                credit_source: "weapon.test.remote".to_string(),
+                descriptor: projectile.clone(),
+            },
+            None,
+        )
+        .expect("host local projectile spawns");
+        assert_eq!(
+            registry
+                .get_component::<SpriteVisual>(local_projectile)
+                .expect("host local projectile carries its descriptor sprite")
+                .collection,
+            expected_collection,
+            "the host local shooter derives the collection from its descriptor"
+        );
         let launch = RemoteProjectilePresentationLaunch {
             owner_client_id: FIRING_CLIENT,
             shot_id,
@@ -1473,7 +1556,8 @@ mod tests {
                 .get_component::<SpriteVisual>(visual)
                 .expect("host presentation carries its descriptor sprite")
                 .collection,
-            "sprites/projectiles/remote-bolt.png"
+            expected_collection,
+            "the host observer derives the same collection from the shared descriptor"
         );
         let snapshots = produce_owned_snapshots(
             &registry,
@@ -1535,10 +1619,13 @@ mod tests {
             remote.entity_id
         };
         assert!(observer_registry.exists(observer_visual));
-        assert!(
+        assert_eq!(
             observer_registry
                 .get_component::<SpriteVisual>(observer_visual)
-                .is_ok()
+                .expect("client materializes the descriptor sprite")
+                .collection,
+            expected_collection,
+            "the client derives the same collection without a wire field"
         );
         let observer_light = observer_registry
             .get_component::<LightComponent>(observer_visual)
@@ -1574,7 +1661,8 @@ mod tests {
         );
         let mut collector =
             crate::scripting_systems::particle_render::ParticleRenderCollector::new();
-        collector.register_sprite("sprites/projectiles/remote-bolt.png");
+        collector.register_sprite(&competing_collection);
+        collector.register_sprite(&expected_collection);
         collector.collect_at_tick(
             &observer_registry,
             None,
@@ -1583,7 +1671,7 @@ mod tests {
         );
         let collected = collector.iter_collections().collect::<Vec<_>>();
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].0, "sprites/projectiles/remote-bolt.png");
+        assert_eq!(collected[0].0, expected_collection);
         assert_eq!(
             collected[0].1.len(),
             postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE,

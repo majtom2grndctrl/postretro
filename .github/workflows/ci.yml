@@ -15,9 +15,11 @@
 #     via swc (a Rust library), so no JS runtime is needed. It is not exercised
 #     here anyway (that is a dist concern).
 #
-# Toolchain: current `stable` is required (the engine uses `if_let_guard`,
-# stabilized after 1.94.1). `dtolnay/rust-toolchain@stable` installs current
-# stable, matching rust-toolchain.toml's floating "stable" pin.
+# Toolchain: the workspace targets current `stable`. It uses recent
+# stable-only features (e.g. `if_let_guard` let-chains in match guards), and
+# rust-toolchain.toml floats its pin to "stable"; `dtolnay/rust-toolchain@stable`
+# installs current stable to match. Verified building and testing green on
+# current stable.
 
 name: CI
 
@@ -26,10 +28,12 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs on the same branch/PR to save runner minutes.
+# Cancel superseded runs on the same branch/PR to save runner minutes, but
+# never on main: cancelling there would leave pushed commits with no recorded
+# pass/fail, which breaks bisecting a break to a specific commit.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

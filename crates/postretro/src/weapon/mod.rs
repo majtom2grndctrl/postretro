@@ -629,6 +629,7 @@ pub(crate) fn resolve_client_fire(
     placement: &WeaponPlacementDescriptor,
     muzzle_offset: Option<Vec3>,
     client_tick: u32,
+    trailing_selected_shots: usize,
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -713,7 +714,15 @@ pub(crate) fn resolve_client_fire(
         }
     };
     if resolution == ResolutionMode::Hitscan {
+        // A catch-up frame casts only the first selected client shot against the
+        // rendered pose. The host still resolves each trailing selected logical
+        // shot, so they must each advance the same replay-stable bloom state.
+        // They deliberately consume neither a shell position nor RNG: no local
+        // ray is cast for their empty declarations.
         weapon.apply_bloom_shot();
+        for _ in 0..trailing_selected_shots {
+            weapon.apply_bloom_shot();
+        }
     }
     Some(ClientFireResolution {
         client_tick,
@@ -1378,6 +1387,7 @@ pub(crate) mod tests {
             &placement,
             None,
             1,
+            1,
             &CollisionWorld::new(),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
@@ -1388,7 +1398,10 @@ pub(crate) mod tests {
         let launch = resolution.projectile_launch.expect("projectile launch");
         assert_vec3_bits_eq(launch.origin, eye);
         assert_vec3_bits_eq(launch.direction, aim);
-        assert_eq!(weapon.bloom_accumulator_degrees, 8.0);
+        assert_eq!(
+            weapon.bloom_accumulator_degrees, 8.0,
+            "trailing catch-up shots do not affect projectile accuracy"
+        );
     }
 
     #[test]
@@ -1484,6 +1497,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            0,
             &world,
             &registry,
             &store,
@@ -1513,6 +1527,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             8,
+            0,
             &world,
             &registry,
             &store,
@@ -1644,6 +1659,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            0,
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -1696,6 +1712,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            0,
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -1792,6 +1809,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             1,
+            0,
             &CollisionWorld::new(),
             &registry,
             &zones,
@@ -1817,6 +1835,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             Some(Vec3::new(0.5, 0.0, -0.4)),
             2,
+            0,
             &CollisionWorld::new(),
             &registry,
             &zones,
@@ -1853,6 +1872,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            0,
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -2336,6 +2356,7 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             77,
+            0,
             &CollisionWorld::new(),
             &registry,
             &store,

@@ -1215,6 +1215,7 @@ mod tests {
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             None,
             7,
+            0,
             &crate::collision::CollisionWorld::new(),
             &registry,
             &crate::scripting_systems::hit_zones::HitZoneStore::new(),

@@ -576,7 +576,7 @@ pub(super) fn attach_projectile_visual_components(
             let _ = registry.set_component(
                 id,
                 SpriteVisual {
-                    sprite: sprite.clone(),
+                    collection: sprite.clone(),
                     size: *size,
                     opacity: *opacity,
                     rotation: *rotation,
@@ -1093,7 +1093,7 @@ mod tests {
             observer_registry
                 .get_component::<SpriteVisual>(remote.entity_id)
                 .expect("client materializes the weapon projectile visual")
-                .sprite,
+                .collection,
             "sprites/projectiles/remote-bolt.png"
         );
         assert_eq!(
@@ -1201,7 +1201,7 @@ mod tests {
                 observer_registry
                     .get_component::<SpriteVisual>(*entity)
                     .expect("materialized mirror carries its projectile body")
-                    .sprite,
+                    .collection,
                 expected_sprite
             );
         }
@@ -1472,7 +1472,7 @@ mod tests {
             registry
                 .get_component::<SpriteVisual>(visual)
                 .expect("host presentation carries its descriptor sprite")
-                .sprite,
+                .collection,
             "sprites/projectiles/remote-bolt.png"
         );
         let snapshots = produce_owned_snapshots(

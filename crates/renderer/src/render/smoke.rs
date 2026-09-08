@@ -590,7 +590,7 @@ pub struct SmokePass {
     /// frame).
     instance_bind_group: wgpu::BindGroup,
 
-    /// Loaded sprite-frame arrays keyed by collection name. Populated at level load.
+    /// Loaded sprite-frame arrays keyed by collection id. Populated at level load.
     sheets: HashMap<String, SpriteSheet>,
 
     /// Shared linear sampler for sprite-frame arrays.
@@ -893,27 +893,28 @@ impl SmokePass {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        collection: &str,
+        collection_id: &str,
+        asset: &str,
         texture_root: &Path,
         prm_cache_root: &Path,
         registration: SpriteCollectionRegistration,
     ) {
         if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
             log::warn!(
-                "[Smoke] collection '{collection}' rejected: specular exponent must be finite and greater than zero (got {})",
+                "[Smoke] collection id '{collection_id}' rejected: specular exponent must be finite and greater than zero (got {})",
                 registration.spec_exponent,
             );
             return;
         }
-        if self.sheets.contains_key(collection) {
+        if self.sheets.contains_key(collection_id) {
             log::warn!(
-                "[Smoke] duplicate collection '{collection}' rejected; level installation must resolve one draw contract"
+                "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
             );
             return;
         }
 
         let collection_frame_count =
-            collection_frame_paths(texture_root, collection, SpriteSlot::Diffuse).len();
+            collection_frame_paths(texture_root, asset, SpriteSlot::Diffuse).len();
         let limits = device.limits();
         let sprite_texture_limits = SpriteTextureLimits {
             max_texture_array_layers: limits.max_texture_array_layers,
@@ -921,14 +922,14 @@ impl SmokePass {
         };
         let baked_sprite = should_attempt_baked_sprite_load(
             registration.baked_sidecar_eligible,
-            collection,
+            asset,
             collection_frame_count,
         )
         .then(|| {
             load_baked_sprite_array(
                 texture_root,
                 prm_cache_root,
-                collection,
+                asset,
                 collection_frame_count,
                 sprite_texture_limits,
             )
@@ -948,7 +949,7 @@ impl SmokePass {
                 &diffuse_layers,
                 baked_plan.array_layer_count,
                 u32::from(diffuse_slot.level_count),
-                &format!("Baked Sprite Diffuse Array: {collection}"),
+                &format!("Baked Sprite Diffuse Array: {collection_id}"),
             );
 
             let (specular_texture, specular_view) = if header.slot_mask.contains(PrmSlots::SPECULAR)
@@ -965,7 +966,7 @@ impl SmokePass {
                     &layers,
                     baked_plan.array_layer_count,
                     u32::from(slot.level_count),
-                    &format!("Baked Sprite Specular Array: {collection}"),
+                    &format!("Baked Sprite Specular Array: {collection_id}"),
                 );
                 (Some(texture), Some(view))
             } else {
@@ -984,7 +985,7 @@ impl SmokePass {
                     &layers,
                     baked_plan.array_layer_count,
                     u32::from(slot.level_count),
-                    &format!("Baked Sprite Normal Array: {collection}"),
+                    &format!("Baked Sprite Normal Array: {collection_id}"),
                 );
                 (Some(texture), Some(view))
             } else {
@@ -992,7 +993,7 @@ impl SmokePass {
             };
 
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some(&format!("Baked Sprite Mip Sampler: {collection}")),
+                label: Some(&format!("Baked Sprite Mip Sampler: {collection_id}")),
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1033,13 +1034,13 @@ impl SmokePass {
                 header.slot_mask,
             );
             let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Sprite Draw Params: {collection}")),
+                label: Some(&format!("Sprite Draw Params: {collection_id}")),
                 contents: &params_bytes,
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(&format!(
-                    "Baked Sprite Frame Array Bind Group: {collection}"
+                    "Baked Sprite Frame Array Bind Group: {collection_id}"
                 )),
                 layout: &self.sheet_bind_group_layout,
                 entries: &[
@@ -1066,7 +1067,7 @@ impl SmokePass {
                 ],
             });
             self.sheets.insert(
-                collection.to_string(),
+                collection_id.to_string(),
                 SpriteSheet {
                     bind_group,
                     frame_count,
@@ -1083,7 +1084,7 @@ impl SmokePass {
         // A cache miss, malformed sidecar, or direct PNG reference reaches the
         // unchanged decoded-frame array upload below. Keep this after the baked
         // branch so a valid sidecar never pays the PNG pixel-decode cost.
-        let frames = postretro_render_cpu::smoke::load_sprite_frames(texture_root, collection)
+        let frames = postretro_render_cpu::smoke::load_sprite_frames(texture_root, asset)
             .unwrap_or_default();
         let max_texture_array_layers = limits.max_texture_array_layers;
         let Some(plan) = plan_sprite_array(
@@ -1091,18 +1092,20 @@ impl SmokePass {
             max_texture_array_layers,
             limits.max_texture_dimension_2d,
         ) else {
-            log::warn!("[Smoke] Collection '{collection}' had no usable normalized frame array");
+            log::warn!(
+                "[Smoke] Asset '{asset}' for collection id '{collection_id}' had no usable normalized frame array"
+            );
             return;
         };
         match plan.fallback {
             Some(SpriteArrayFallback::FrameLayerLimit) => {
                 warn_sprite_frame_count_exceeds_device_limit(
-                    collection,
+                    asset,
                     plan.requested_frame_count,
                     max_texture_array_layers,
                 );
             }
-            Some(SpriteArrayFallback::InvalidInput) => warn_sprite_array_invalid_input(collection),
+            Some(SpriteArrayFallback::InvalidInput) => warn_sprite_array_invalid_input(asset),
             None => {}
         }
         let frames = plan.frames;
@@ -1110,7 +1113,7 @@ impl SmokePass {
         let height = plan.height;
         let frame_count = plan.frame_count();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&format!("Sprite Frame Array: {collection}")),
+            label: Some(&format!("Sprite Frame Array: {collection_id}")),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1157,7 +1160,7 @@ impl SmokePass {
             }
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some(&format!("Sprite Frame Array View: {collection}")),
+            label: Some(&format!("Sprite Frame Array View: {collection_id}")),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             mip_level_count: Some(1),
             array_layer_count: Some(frame_count),
@@ -1173,13 +1176,13 @@ impl SmokePass {
             PrmSlots::DIFFUSE,
         );
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Sprite Draw Params: {collection}")),
+            label: Some(&format!("Sprite Draw Params: {collection_id}")),
             contents: &params_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("Sprite Frame Array Bind Group: {collection}")),
+            label: Some(&format!("Sprite Frame Array Bind Group: {collection_id}")),
             layout: &self.sheet_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1206,7 +1209,7 @@ impl SmokePass {
         });
 
         self.sheets.insert(
-            collection.to_string(),
+            collection_id.to_string(),
             SpriteSheet {
                 bind_group,
                 frame_count,
@@ -1240,7 +1243,7 @@ impl SmokePass {
     /// batches all emitters sharing a collection into one slice — that batching
     /// happens upstream in `ParticleRenderCollector::collect`
     /// (`scripting/systems/particle_render.rs`), which buckets particles by
-    /// `SpriteVisual.sprite`; `record_draws` itself is unaware of emitter
+    /// `SpriteVisual.collection`; `record_draws` itself is unaware of emitter
     /// boundaries — so a collection still issues exactly one draw — N collections
     /// produce N draws.
     ///

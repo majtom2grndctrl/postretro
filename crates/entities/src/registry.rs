@@ -1966,7 +1966,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());
         let value = SpriteVisual {
-            sprite: "smoke".into(),
+            collection: "smoke".into(),
             size: 1.25,
             opacity: 0.5,
             rotation: 0.75,

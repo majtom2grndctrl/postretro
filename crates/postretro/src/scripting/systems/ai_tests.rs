@@ -10277,7 +10277,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
     let visual = registry
         .get_component::<SpriteVisual>(refreshed_projectile)
         .expect("reloaded projectile materializes its refreshed visual");
-    assert_eq!(visual.sprite, "sprites/projectiles/test-bolt.png");
+    assert_eq!(visual.collection, "sprites/projectiles/test-bolt.png");
     assert!((visual.size - 0.5).abs() <= EPS);
     assert!((visual.opacity - 0.75).abs() <= EPS);
     assert!((visual.rotation - 0.25).abs() <= EPS);

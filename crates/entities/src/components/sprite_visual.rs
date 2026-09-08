@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 /// channel yet (documented as a non-goal in the plan).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpriteVisual {
-    pub sprite: String,
+    /// Render collection id, derived from an asset reference and draw contract.
+    /// It is not a texture path; the renderer resolves the asset at level load.
+    pub collection: String,
     pub size: f32,
     pub opacity: f32,
     pub rotation: f32,
@@ -24,13 +26,15 @@ mod tests {
     #[test]
     fn sprite_visual_serde_round_trip() {
         let value = SpriteVisual {
-            sprite: "smoke".into(),
+            collection: "smoke|sprite-collection-v1|lifetime=none|frame_duration_ms=none|emissive=bits:00000000|spec_intensity=none|spec_exponent=none".into(),
             size: 1.25,
             opacity: 0.5,
             rotation: 0.75,
             tint: [1.0, 0.6, 0.2],
         };
         let json = serde_json::to_string(&value).unwrap();
+        assert!(json.contains("\"collection\""));
+        assert!(!json.contains("\"sprite\""));
         let back: SpriteVisual = serde_json::from_str(&json).unwrap();
         assert_eq!(value, back);
     }

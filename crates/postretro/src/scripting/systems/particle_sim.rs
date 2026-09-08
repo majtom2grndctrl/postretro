@@ -214,7 +214,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: "smoke".into(),
+                    collection: "smoke".into(),
                     size: 0.0,
                     opacity: 0.0,
                     rotation: 0.0,

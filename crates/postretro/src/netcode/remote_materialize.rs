@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(
             reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)
                 .unwrap()
-                .sprite,
+                .collection,
             "sprites/projectiles/bolt.png"
         );
         let trail = reg

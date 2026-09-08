@@ -91,6 +91,7 @@ const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
 const POSITION_EPSILON: f32 = 0.001;
 const VELOCITY_EPSILON: f32 = 0.001;
+const ACCURACY_EPSILON: f32 = 1.0e-6;
 const ALERT_STATE: &str = "alert";
 const ATTACK_STATE: &str = "attack";
 
@@ -265,6 +266,10 @@ struct SimRun {
     trigger_arm_target_armed: bool,
     role_health_ledger: Vec<(Role, f32)>,
     trap_pool_source_selected: bool,
+    /// Per-tick `(bloom accumulator, neutral effective spread)` f32 bits for
+    /// the active weapon. Bits make replay parity explicit while the positive
+    /// anchor below decodes the values to prove bloom participates in compose.
+    weapon_accuracy_bits: Vec<(u32, u32)>,
 }
 
 struct SimHarness {
@@ -945,6 +950,22 @@ impl SimHarness {
             .current
     }
 
+    fn active_weapon_accuracy_bits(&self) -> (u32, u32) {
+        let registry = self.registry.borrow();
+        let active_weapon = registry
+            .get_component::<Inventory>(self.selected_player)
+            .ok()
+            .and_then(Inventory::active_wieldable)
+            .expect("selected player keeps an active weapon");
+        let weapon = registry
+            .get_component::<WeaponComponent>(active_weapon)
+            .expect("active weapon keeps its weapon component");
+        (
+            weapon.bloom_accumulator_degrees.to_bits(),
+            weapon.effective_spread_degrees(0.0, 0.0).to_bits(),
+        )
+    }
+
     fn enemy_state(&self) -> String {
         self.registry
             .borrow()
@@ -1186,6 +1207,12 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
+                bloom_per_shot_degrees: 0.0,
+                bloom_max_degrees: 0.0,
+                bloom_decay_degrees_per_second: 0.0,
+                bloom_decay_delay_ms: 0.0,
+                movement_spread_degrees: 0.0,
+                spread_vertical_bias: 0.0,
                 range: 30.0,
                 cooldown_ms: 80.0,
                 fire_mode: FireMode::Semi,
@@ -1214,6 +1241,12 @@ fn spawn_determinism_weapon(registry: &mut EntityRegistry) -> EntityId {
         .clone();
     component.pellet_count = 8;
     component.spread_degrees = 4.0;
+    component.bloom_per_shot_degrees = 2.0;
+    component.bloom_max_degrees = 8.0;
+    component.bloom_decay_degrees_per_second = 1.0;
+    component.bloom_decay_delay_ms = 250.0;
+    component.spread_vertical_bias = 0.25;
+    component.fire_mode = FireMode::Auto;
     registry
         .set_component(weapon, component)
         .expect("determinism weapon tuning updates");
@@ -2985,6 +3018,10 @@ fn fixed_command_stream() -> Vec<RecordedCommand> {
         .map(|tick| {
             let phase = tick % 120;
             let fire_pressed = matches!(tick, 5 | 180 | 360 | 540);
+            let fire_active = matches!(
+                tick,
+                5..=15 | 180..=190 | 360..=370 | 540..=550
+            );
             RecordedCommand {
                 wish_dir: if phase < 45 {
                     Vec2::new(0.25, 1.0)
@@ -2999,7 +3036,7 @@ fn fixed_command_stream() -> Vec<RecordedCommand> {
                 crouch_intent: (300..360).contains(&tick),
                 facing_yaw: if tick < 300 { 0.0 } else { 0.35 },
                 fire_pressed,
-                fire_active: fire_pressed || matches!(tick, 6 | 181 | 361 | 541),
+                fire_active,
             }
         })
         .collect()
@@ -3009,9 +3046,11 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
     let mut harness = SimHarness::new(spawn_order, SimFixture::Determinism);
     let mut events = Vec::with_capacity(commands.len());
     let mut ir_slot_timeline = Vec::with_capacity(commands.len());
+    let mut weapon_accuracy_bits = Vec::with_capacity(commands.len());
     for command in commands {
         events.push(harness.tick(*command));
         ir_slot_timeline.push(harness.trigger_slot());
+        weapon_accuracy_bits.push(harness.active_weapon_accuracy_bits());
     }
     let predicate_crossing_sequence = events
         .iter()
@@ -3031,6 +3070,7 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         trigger_arm_target_armed: harness.trigger_arm_target_armed(),
         role_health_ledger: harness.role_health_ledger(),
         trap_pool_source_selected: harness.trap_pool_source_selected,
+        weapon_accuracy_bits,
         events,
     }
 }
@@ -3122,31 +3162,42 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     );
 }
 
-fn assert_fixed_stream_weapon_positive_anchors(run: &SimRun) {
-    let pellet_fans = run
+fn assert_sustained_bloom_burst_positive_anchors(run: &SimRun) {
+    let fired_shells = run
         .events
         .iter()
-        .filter_map(|events| {
-            (!events.weapon_impact_points.is_empty()).then_some(&events.weapon_impact_points)
+        .zip(&run.weapon_accuracy_bits)
+        .filter_map(|(events, accuracy_bits)| {
+            (!events.weapon_impact_points.is_empty())
+                .then_some((&events.weapon_impact_points, *accuracy_bits))
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        pellet_fans.len(),
-        4,
-        "the fixed command stream must fire all four deterministic shotgun shells"
+        fired_shells.len(),
+        12,
+        "the fixed command stream must fire three auto shells in each of four held-trigger bursts"
     );
     assert!(
-        pellet_fans.iter().all(|fan| fan.len() == 8),
-        "the backstop makes every multi-pellet shell expose all eight cast impacts"
+        fired_shells.iter().all(|(fan, _)| fan.len() == 8),
+        "the backstop makes every multi-pellet bloom shell expose all eight cast impacts"
     );
-    assert_ne!(
-        pellet_fans[0], pellet_fans[1],
-        "consecutive shells, fired from the two inventory slots after the switch, must use distinct fans"
-    );
-    assert_ne!(
-        pellet_fans[1], pellet_fans[2],
-        "consecutive shells from the same inventory slot must use distinct fans"
-    );
+
+    let first_burst_accuracy = fired_shells[..3]
+        .iter()
+        .map(|(_, (bloom_bits, effective_bits))| {
+            (f32::from_bits(*bloom_bits), f32::from_bits(*effective_bits))
+        })
+        .collect::<Vec<_>>();
+    for (sample, expected) in first_burst_accuracy
+        .iter()
+        .zip([(2.0, 6.0), (4.0, 8.0), (6.0, 10.0)])
+    {
+        assert!(
+            (sample.0 - expected.0).abs() <= ACCURACY_EPSILON
+                && (sample.1 - expected.1).abs() <= ACCURACY_EPSILON,
+            "sustained hitscan bloom must grow and compose after each shell: actual={sample:?}, expected={expected:?}"
+        );
+    }
 }
 
 fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
@@ -3188,6 +3239,10 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.trap_pool_source_selected, expected.trap_pool_source_selected,
         "the fixed-seed trap-pool selection must match exactly"
+    );
+    assert_eq!(
+        actual.weapon_accuracy_bits, expected.weapon_accuracy_bits,
+        "bloom accumulation and composed effective spread must remain bit-identical"
     );
     assert_eq!(
         actual.pawns.len(),
@@ -3290,7 +3345,7 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
     assert_trigger_positive_anchors(&baseline);
-    assert_fixed_stream_weapon_positive_anchors(&baseline);
+    assert_sustained_bloom_burst_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
 }

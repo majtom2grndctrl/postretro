@@ -313,6 +313,13 @@ The engine intentionally does not classify any event as a reward. The two grants
 below are dev-mod reference content that another mod replaces with its own
 policies; they exercise two distinct recipient paths.
 
+## Dynamic spread walkthrough
+
+Equip the reference rifle and sustain automatic fire while standing still, then
+while moving: its spread ring opens rapidly, climbs upward, and recovers after a
+short pause. Switch to the reference pistol and rapidly pull the trigger to see
+its smaller ring open and settle back more quickly.
+
 1. **Kill payout — impact source.** At the point-blank distance above, shoot a
    `target_dummy` twice with the reference shotgun. The second full-connect shell
    crosses from positive health to below zero, so `ammo-on-kill` grants the

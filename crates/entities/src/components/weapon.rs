@@ -13,6 +13,8 @@ use crate::data_descriptors::{
 };
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
+/// Engine ceiling for the composed hitscan cone half-angle.
+pub const MAX_EFFECTIVE_SPREAD_DEGREES: f32 = 45.0;
 
 #[cfg(debug_assertions)]
 static WARNED_UNKNOWN_CREDIT_SOURCE: Once = Once::new();
@@ -262,6 +264,18 @@ pub struct WeaponComponent {
     pub pellet_count: u32,
     #[serde(default)]
     pub spread_degrees: f32,
+    #[serde(default)]
+    pub bloom_per_shot_degrees: f32,
+    #[serde(default)]
+    pub bloom_max_degrees: f32,
+    #[serde(default)]
+    pub bloom_decay_degrees_per_second: f32,
+    #[serde(default)]
+    pub bloom_decay_delay_ms: f32,
+    #[serde(default)]
+    pub movement_spread_degrees: f32,
+    #[serde(default)]
+    pub spread_vertical_bias: f32,
     pub range: f32,
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
@@ -306,6 +320,12 @@ pub struct WeaponComponent {
     /// Monotonic per-instance shell counter used to seed deterministic pellet spread.
     #[serde(default)]
     pub shells_fired: u32,
+    /// Sustained-fire bloom accumulated by resolved shots in neutral degrees.
+    #[serde(default)]
+    pub bloom_accumulator_degrees: f32,
+    /// Idle time since the last resolved shot in milliseconds.
+    #[serde(default)]
+    pub bloom_idle_ms: f32,
     /// Bounded endpoint stream with independent HUD and owner-projection cursors.
     #[serde(skip)]
     pub reload_feedback: ReloadFeedbackStream,
@@ -326,6 +346,12 @@ impl WeaponComponent {
             damage: desc.damage,
             pellet_count: desc.pellet_count,
             spread_degrees: desc.spread_degrees,
+            bloom_per_shot_degrees: desc.bloom_per_shot_degrees,
+            bloom_max_degrees: desc.bloom_max_degrees,
+            bloom_decay_degrees_per_second: desc.bloom_decay_degrees_per_second,
+            bloom_decay_delay_ms: desc.bloom_decay_delay_ms,
+            movement_spread_degrees: desc.movement_spread_degrees,
+            spread_vertical_bias: desc.spread_vertical_bias,
             range: desc.range,
             cooldown_ms: desc.cooldown_ms,
             fire_mode: desc.fire_mode,
@@ -347,6 +373,8 @@ impl WeaponComponent {
             state_elapsed_sub_ms: 0.0,
             reload_credited: 0,
             shells_fired: 0,
+            bloom_accumulator_degrees: 0.0,
+            bloom_idle_ms: 0.0,
             reload_feedback: ReloadFeedbackStream::default(),
         }
     }
@@ -376,10 +404,46 @@ impl WeaponComponent {
         }
     }
 
+    /// Advance sustained-fire bloom recovery by one simulation or prediction step.
+    pub fn tick_bloom(&mut self, dt_ms: f32) {
+        let dt_ms = dt_ms.max(0.0);
+        self.bloom_idle_ms += dt_ms;
+        if self.bloom_idle_ms >= self.bloom_decay_delay_ms {
+            self.bloom_accumulator_degrees = (self.bloom_accumulator_degrees
+                - self.bloom_decay_degrees_per_second * (dt_ms / 1000.0))
+                .max(0.0);
+        }
+    }
+
+    /// Compose the current hitscan cone half-angle from authored and live state.
+    pub fn effective_spread_degrees(&self, horizontal_speed: f32, run_speed: f32) -> f32 {
+        let movement_term = if run_speed > 0.0 {
+            self.movement_spread_degrees * (horizontal_speed / run_speed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (self.spread_degrees + self.bloom_accumulator_degrees + movement_term)
+            .clamp(0.0, MAX_EFFECTIVE_SPREAD_DEGREES)
+    }
+
+    /// Record one resolved hitscan shell after it has sampled the current cone.
+    pub fn apply_bloom_shot(&mut self) {
+        self.bloom_accumulator_degrees = (self.bloom_accumulator_degrees
+            + self.bloom_per_shot_degrees)
+            .min(self.bloom_max_degrees);
+        self.bloom_idle_ms = 0.0;
+    }
+
     pub fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
         self.damage = desc.damage;
         self.pellet_count = desc.pellet_count;
         self.spread_degrees = desc.spread_degrees;
+        self.bloom_per_shot_degrees = desc.bloom_per_shot_degrees;
+        self.bloom_max_degrees = desc.bloom_max_degrees;
+        self.bloom_decay_degrees_per_second = desc.bloom_decay_degrees_per_second;
+        self.bloom_decay_delay_ms = desc.bloom_decay_delay_ms;
+        self.movement_spread_degrees = desc.movement_spread_degrees;
+        self.spread_vertical_bias = desc.spread_vertical_bias;
         self.range = desc.range;
         self.cooldown_ms = desc.cooldown_ms;
         self.fire_mode = desc.fire_mode;
@@ -394,7 +458,7 @@ impl WeaponComponent {
         }
         self.ammo = ammo_tuning(desc);
         // Cooldown, input edges, magazine, state, timed-state fields, reload credit,
-        // and shells fired are live instance state. Hot reload changes authored tuning,
+        // shell counter, and bloom state are live instance state. Hot reload changes authored tuning,
         // not the active state sample or whether this instance is mid-cooldown. An
         // absent `creditSource` also keeps the already-resolved spawn-time default so
         // canonical defaults do not regress to `weapon.unknown` on reload.
@@ -542,6 +606,12 @@ mod tests {
             damage,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range,
             cooldown_ms,
             fire_mode: FireMode::Semi,
@@ -611,6 +681,113 @@ mod tests {
         assert_eq!(component.state_remaining_ms, 0);
         assert_eq!(component.state_total_ms, 0);
         assert_eq!(component.effective().ammo, None);
+    }
+
+    #[test]
+    fn dynamic_accuracy_tuning_materializes_and_live_state_defaults_to_zero() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.bloom_per_shot_degrees = 1.5;
+        descriptor.bloom_max_degrees = 7.0;
+        descriptor.bloom_decay_degrees_per_second = 3.0;
+        descriptor.bloom_decay_delay_ms = 200.0;
+        descriptor.movement_spread_degrees = 2.5;
+        descriptor.spread_vertical_bias = 0.25;
+
+        let component = WeaponComponent::from_descriptor(&descriptor);
+        assert!((component.bloom_per_shot_degrees - 1.5).abs() < f32::EPSILON);
+        assert!((component.bloom_max_degrees - 7.0).abs() < f32::EPSILON);
+        assert!((component.bloom_decay_degrees_per_second - 3.0).abs() < f32::EPSILON);
+        assert!((component.bloom_decay_delay_ms - 200.0).abs() < f32::EPSILON);
+        assert!((component.movement_spread_degrees - 2.5).abs() < f32::EPSILON);
+        assert!((component.spread_vertical_bias - 0.25).abs() < f32::EPSILON);
+        assert!((component.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn bloom_shots_grow_to_cap_and_reset_idle_time() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        component.spread_degrees = 2.0;
+        component.bloom_per_shot_degrees = 2.0;
+        component.bloom_max_degrees = 5.0;
+        component.bloom_idle_ms = 120.0;
+
+        assert!((component.effective_spread_degrees(0.0, 1.0) - 2.0).abs() < f32::EPSILON);
+        component.apply_bloom_shot();
+        assert!((component.bloom_accumulator_degrees - 2.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(0.0, 1.0) - 4.0).abs() < f32::EPSILON);
+
+        component.apply_bloom_shot();
+        assert!((component.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        component.apply_bloom_shot();
+        assert!((component.bloom_accumulator_degrees - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn bloom_holds_through_delay_then_decays_by_elapsed_tick_time() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        component.bloom_accumulator_degrees = 4.0;
+        component.bloom_decay_degrees_per_second = 2.0;
+        component.bloom_decay_delay_ms = 250.0;
+
+        component.tick_bloom(100.0);
+        assert!((component.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 100.0).abs() < f32::EPSILON);
+
+        component.tick_bloom(150.0);
+        assert!((component.bloom_accumulator_degrees - 3.7).abs() <= f32::EPSILON);
+        assert!((component.bloom_idle_ms - 250.0).abs() < f32::EPSILON);
+
+        component.tick_bloom(2_000.0);
+        assert!((component.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn effective_spread_composes_movement_and_clamps_to_engine_ceiling() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        component.spread_degrees = 2.0;
+        component.bloom_accumulator_degrees = 3.0;
+        component.movement_spread_degrees = 5.0;
+
+        assert!((component.effective_spread_degrees(0.0, 10.0) - 5.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(5.0, 10.0) - 7.5).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(20.0, 10.0) - 10.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(-1.0, 10.0) - 5.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(20.0, 0.0) - 5.0).abs() < f32::EPSILON);
+
+        component.spread_degrees = 44.0;
+        component.bloom_accumulator_degrees = 10.0;
+        assert!(
+            (component.effective_spread_degrees(10.0, 10.0) - MAX_EFFECTIVE_SPREAD_DEGREES).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn zero_dynamic_accuracy_preserves_base_spread_bits() {
+        let mut component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        component.spread_degrees = 4.125;
+
+        assert_eq!(
+            component.effective_spread_degrees(8.0, 10.0).to_bits(),
+            component.spread_degrees.to_bits()
+        );
+    }
+
+    #[test]
+    fn deserialized_weapon_component_defaults_omitted_bloom_live_state() {
+        let component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
+        let mut persisted = serde_json::to_value(component).unwrap();
+        let fields = persisted
+            .as_object_mut()
+            .expect("weapon component serializes as an object");
+        fields.remove("bloom_accumulator_degrees");
+        fields.remove("bloom_idle_ms");
+
+        let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
+        assert!((restored.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
+        assert!((restored.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -946,15 +1123,29 @@ mod tests {
         component.state_elapsed_sub_ms = 0.5;
         component.reload_credited = 3;
         component.shells_fired = 7;
+        component.bloom_accumulator_degrees = 6.5;
+        component.bloom_idle_ms = 120.0;
 
         let mut reloaded = descriptor(25.0, 80.0, 250.0);
         reloaded.pellet_count = 8;
         reloaded.spread_degrees = 4.0;
+        reloaded.bloom_per_shot_degrees = 1.5;
+        reloaded.bloom_max_degrees = 7.0;
+        reloaded.bloom_decay_degrees_per_second = 3.0;
+        reloaded.bloom_decay_delay_ms = 200.0;
+        reloaded.movement_spread_degrees = 2.5;
+        reloaded.spread_vertical_bias = 0.25;
         component.refresh_from_descriptor(&reloaded);
 
         assert!((component.damage - 25.0).abs() < f32::EPSILON);
         assert_eq!(component.pellet_count, 8);
         assert!((component.spread_degrees - 4.0).abs() < f32::EPSILON);
+        assert!((component.bloom_per_shot_degrees - 1.5).abs() < f32::EPSILON);
+        assert!((component.bloom_max_degrees - 7.0).abs() < f32::EPSILON);
+        assert!((component.bloom_decay_degrees_per_second - 3.0).abs() < f32::EPSILON);
+        assert!((component.bloom_decay_delay_ms - 200.0).abs() < f32::EPSILON);
+        assert!((component.movement_spread_degrees - 2.5).abs() < f32::EPSILON);
+        assert!((component.spread_vertical_bias - 0.25).abs() < f32::EPSILON);
         assert!((component.range - 80.0).abs() < f32::EPSILON);
         assert!((component.cooldown_ms - 250.0).abs() < f32::EPSILON);
         assert!((component.cooldown_remaining_ms - 42.0).abs() < f32::EPSILON);
@@ -965,6 +1156,8 @@ mod tests {
         assert!((component.state_elapsed_sub_ms - 0.5).abs() < f64::EPSILON);
         assert_eq!(component.reload_credited, 3);
         assert_eq!(component.shells_fired, 7);
+        assert!((component.bloom_accumulator_degrees - 6.5).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 120.0).abs() < f32::EPSILON);
         assert_eq!(component.credit_source, "reference_pistol");
     }
 

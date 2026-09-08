@@ -33,9 +33,13 @@ export type WidgetDescriptor = { [string]: any }
 --- Readonly numeric bind for `Ring` geometry. Presentation facts are unsupported.
 export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: NumberTween? }
 
+--- Presentation-only linear map for a bound `Ring.radius`.
+export type RingRadiusRange = { inputMax: number, min: number, max: number }
+
 export type RingProps = {
   diameter: number,
   radius: number | RingBindProp,
+  radiusRange: RingRadiusRange?,
   thickness: number | RingBindProp,
   startAngle: (number | RingBindProp)?,
   sweep: (number | RingBindProp)?,
@@ -747,6 +751,21 @@ function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
     error("Ring: `diameter` must be greater than zero")
   end
   local radius = buildScalar(props.radius, "radius", "Ring")
+  if props.radiusRange ~= nil then
+    if type(radius) == "number" then
+      error("Ring: `radiusRange` requires a bound `radius`")
+    end
+    requireObject(props.radiusRange, "Ring.radiusRange")
+    requireFiniteF32Number(props.radiusRange.inputMax, "radiusRange.inputMax", "Ring")
+    requireFiniteF32Number(props.radiusRange.min, "radiusRange.min", "Ring")
+    requireFiniteF32Number(props.radiusRange.max, "radiusRange.max", "Ring")
+    if props.radiusRange.inputMax <= 0 or props.radiusRange.min <= 0 then
+      error("Ring: `radiusRange.inputMax` and `radiusRange.min` must be greater than zero")
+    end
+    if props.radiusRange.max < props.radiusRange.min or props.radiusRange.max > props.diameter / 2 then
+      error("Ring: `radiusRange.max` must be at least `min` and no greater than half of `diameter`")
+    end
+  end
   local thickness = buildScalar(props.thickness, "thickness", "Ring")
   if type(radius) == "number" then
     if radius <= 0 then
@@ -772,6 +791,7 @@ function UiWidgetsSdk.Ring(props: RingProps): WidgetDescriptor
     radius = radius,
     thickness = thickness,
   }
+  if props.radiusRange ~= nil then out.radiusRange = props.radiusRange end
   if props.startAngle ~= nil then
     out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring")
   end

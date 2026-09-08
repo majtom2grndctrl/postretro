@@ -65,6 +65,7 @@ In TypeScript, token leaves are keyed from the concrete theme object, so editors
 Widgets bind authoritative store slots by state reference at the SDK layer and by dotted slot name on the retained wire. The retained UI may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:
 
 - The authoritative slot is always the target; the widget renders the display value, never the slot directly.
+- A `Ring` may opt into `radiusRange: { inputMax, min, max }` for a bound radius. The retained UI first eases the neutral source value, then linearly maps `0..inputMax` into the presentation-only `min..max` logical-pixel radius and clamps outside that interval. The mapping never writes back to the source slot.
 - Display state is presentation-only and retained-UI-local; the renderer consumes its resulting draw list at the GPU boundary. No store write ever originates in the UI module.
 - Retargeting is continuous: a target change mid-flight eases from the current display value, never snaps.
 - Bar widgets may resolve `max` from either a literal number or a readonly numeric state reference. The bar fill normalizes the displayed value against that resolved max. `styleRanges` on a bar evaluate the normalized displayed fill; health bars use thresholds in `[0, 1]` and `styleRanges.max = 1.0`.

@@ -22,6 +22,7 @@ pub(super) fn authorize_fire(
     context: FireAuthorizationContext<'_>,
 ) -> WeaponFireAuthorization {
     let dt_ms = (context.tick_dt.max(0.0)) * 1000.0;
+    weapon.tick_bloom(dt_ms);
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
     let verdict = weapon_fire_authorization_verdict(weapon, command);

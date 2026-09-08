@@ -114,6 +114,31 @@ pub(crate) fn normalize_wieldable_inventory(
     weapon_stage::normalize_inventory_liveness(registry, pawn)
 }
 
+#[cfg(test)]
+pub(crate) fn run_local_weapon_fire_for_test(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: EntityId,
+    command: &crate::weapon::WeaponFireCommand,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    tick_dt: f32,
+) {
+    let mut no_impact = |_: &mut EntityRegistry| {};
+    let _ = weapon_stage::run_local_weapon_command(
+        registry,
+        Some(pawn),
+        false,
+        None,
+        command,
+        false,
+        collision_world,
+        hit_zone_store,
+        0.0,
+        tick_dt,
+        &mut no_impact,
+    );
+}
+
 /// Advance only the connected client's local wieldable machine. Movement stays on
 /// the prediction path and authoritative combat stays on the host; this pass owns
 /// the immediate local lower/raise/repoint and suppresses fire while doing so.
@@ -132,7 +157,7 @@ pub(crate) fn simulate_client_wieldable_tick(
 ) -> (bool, Option<EntityId>) {
     let mut equip_was_active = false;
     let mut requested_new_slot = false;
-    let cooldown_before = pawn.and_then(|pawn| {
+    let fire_clock_before = pawn.and_then(|pawn| {
         let registry = registry.borrow();
         let inventory = registry
             .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
@@ -151,8 +176,12 @@ pub(crate) fn simulate_client_wieldable_tick(
             postretro_entities::components::wieldable_state::WieldableState::Lowering
                 | postretro_entities::components::wieldable_state::WieldableState::Raising
         );
-        let cooldown = component.cooldown_remaining_ms;
-        Some((weapon, cooldown))
+        Some((
+            weapon,
+            component.cooldown_remaining_ms,
+            component.bloom_accumulator_degrees,
+            component.bloom_idle_ms,
+        ))
     });
     let machine_button = if select_slot.is_some() || equip_was_active {
         fire_button
@@ -183,16 +212,18 @@ pub(crate) fn simulate_client_wieldable_tick(
         tick_dt,
         &mut ignore_impact,
     );
-    // Client fire prediction advances cooldown once at render rate after the
+    // Client fire prediction advances cooldown and bloom once after the
     // fixed-tick loop. Keep this equip-only pass from charging the same elapsed
     // time twice while preserving deploy clamps on the incoming instance.
-    if let Some((weapon, cooldown)) = cooldown_before {
+    if let Some((weapon, cooldown, bloom_accumulator, bloom_idle_ms)) = fire_clock_before {
         let mut registry = registry.borrow_mut();
         if let Ok(mut component) = registry
             .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
             .cloned()
         {
             component.cooldown_remaining_ms = cooldown;
+            component.bloom_accumulator_degrees = bloom_accumulator;
+            component.bloom_idle_ms = bloom_idle_ms;
             let _ = registry.set_component(weapon, component);
         }
     }
@@ -1737,6 +1768,12 @@ mod tests {
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,
@@ -1764,6 +1801,12 @@ mod tests {
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range: 100.0,
             cooldown_ms: 100.0,
             fire_mode: FireMode::Semi,

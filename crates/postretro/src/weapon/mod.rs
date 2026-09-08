@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
@@ -432,7 +433,7 @@ pub(crate) fn tick_resolved_component(
     let stats = weapon.effective();
     let damage = stats.damage;
     let pellet_count = stats.pellet_count;
-    let spread_radians = stats.spread_degrees.to_radians();
+    let base_spread_degrees = stats.spread_degrees;
     let range = stats.range;
     let resolution = stats.resolution;
     let projectile = stats.projectile.cloned();
@@ -445,6 +446,11 @@ pub(crate) fn tick_resolved_component(
             // sequence. Only a resolved shell advances this instance-local state.
             let shell_counter = weapon.shells_fired;
             weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
+            let (spread_radians, hitscan_direction) = if resolution == ResolutionMode::Hitscan {
+                composed_hitscan_cone(registry, owner_pawn, weapon, command.aim_direction)
+            } else {
+                (base_spread_degrees.to_radians(), command.aim_direction)
+            };
             let (origin, direction) = if resolution == ResolutionMode::Projectile {
                 resolve_projectile_launch_pose(
                     owner_pawn,
@@ -459,9 +465,9 @@ pub(crate) fn tick_resolved_component(
                     range,
                 )
             } else {
-                (command.aim_origin, command.aim_direction)
+                (command.aim_origin, hitscan_direction)
             };
-            fire_hitscan(
+            let events = fire_hitscan(
                 owner_pawn,
                 origin,
                 direction,
@@ -479,7 +485,11 @@ pub(crate) fn tick_resolved_component(
                 shell_counter,
                 pellet_salt_name,
                 active_slot,
-            )
+            );
+            if resolution == ResolutionMode::Hitscan {
+                weapon.apply_bloom_shot();
+            }
+            events
         }
         WeaponFireAuthorization::Empty => WeaponFireEvents {
             dry_fire: true,
@@ -487,6 +497,35 @@ pub(crate) fn tick_resolved_component(
         },
         WeaponFireAuthorization::Rejected => WeaponFireEvents::default(),
     }
+}
+
+/// Compose the dynamic hitscan cone identically for host simulation and client
+/// prediction. The movement component is absent for non-pawn owners, where
+/// movement accuracy contributes nothing.
+fn composed_hitscan_cone(
+    registry: &EntityRegistry,
+    owner_pawn: Option<EntityId>,
+    weapon: &WeaponComponent,
+    aim_direction: Vec3,
+) -> (f32, Vec3) {
+    let (horizontal_speed, run_speed) = owner_pawn
+        .and_then(|pawn| registry.get_component::<PlayerMovementComponent>(pawn).ok())
+        .map_or((0.0, 0.0), |movement| {
+            let velocity = movement.velocity;
+            (
+                (velocity.x * velocity.x + velocity.z * velocity.z).sqrt(),
+                movement.ground_params.speed.run,
+            )
+        });
+    let effective_degrees = weapon.effective_spread_degrees(horizontal_speed, run_speed);
+    (
+        effective_degrees.to_radians(),
+        spread::tilt_cone_axis_upward(
+            aim_direction,
+            weapon.spread_vertical_bias,
+            effective_degrees,
+        ),
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -590,13 +629,17 @@ pub(crate) fn resolve_client_fire(
     placement: &WeaponPlacementDescriptor,
     muzzle_offset: Option<Vec3>,
     client_tick: u32,
+    selected_shot_elapsed_ms: &[f32],
+    logical_tick_elapsed_ms: &[f32],
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     frame_dt: f32,
 ) -> Option<ClientFireResolution> {
-    if !advance_client_fire_state(weapon, button, frame_dt) {
+    let frame_dt_ms = (frame_dt.max(0.0)) * 1000.0;
+    if !advance_client_fire_gate(weapon, button, frame_dt_ms) {
+        tick_client_bloom_for_frame(weapon, frame_dt_ms, logical_tick_elapsed_ms);
         return None;
     }
 
@@ -605,21 +648,11 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (
-        cooldown_ms,
-        pellet_count,
-        spread_radians,
-        range,
-        resolution,
-        projectile,
-        damage,
-        credit_source,
-    ) = {
+    let (cooldown_ms, pellet_count, range, resolution, projectile, damage, credit_source) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
             stats.pellet_count,
-            stats.spread_degrees.to_radians(),
             stats.range,
             stats.resolution,
             stats.projectile.cloned(),
@@ -627,13 +660,39 @@ pub(crate) fn resolve_client_fire(
             stats.credit_source.to_string(),
         )
     };
+    let mut replayed_bloom_until_ms = 0.0;
+    let (spread_radians, hitscan_direction) = if resolution == ResolutionMode::Hitscan {
+        // The post-loop path casts one rendered-pose ray, but the host has run
+        // every selected logical tick. Replay bloom through the first selected
+        // tick before sampling its cone; the remaining selected ticks advance
+        // below without consuming a client ray, shell position, or RNG fan.
+        replayed_bloom_until_ms = selected_shot_elapsed_ms
+            .first()
+            .copied()
+            .unwrap_or(frame_dt_ms)
+            .clamp(0.0, frame_dt_ms);
+        let mut previous_logical_tick_ms = 0.0;
+        for &elapsed_ms in logical_tick_elapsed_ms {
+            let elapsed_ms = elapsed_ms.clamp(previous_logical_tick_ms, frame_dt_ms);
+            if elapsed_ms > replayed_bloom_until_ms {
+                break;
+            }
+            weapon.tick_bloom(elapsed_ms - previous_logical_tick_ms);
+            previous_logical_tick_ms = elapsed_ms;
+        }
+        weapon.tick_bloom(replayed_bloom_until_ms - previous_logical_tick_ms);
+        composed_hitscan_cone(registry, owner_pawn, weapon, aim_direction)
+    } else {
+        weapon.tick_bloom(frame_dt_ms);
+        (weapon.spread_degrees.to_radians(), aim_direction)
+    };
     weapon.cooldown_remaining_ms = cooldown_ms;
     let (hits, projectile_launch) = match resolution {
         ResolutionMode::Hitscan => (
             resolve_client_hitscan(
                 owner_pawn,
                 aim_origin,
-                aim_direction,
+                hitscan_direction,
                 collision_world,
                 registry,
                 hit_zone_store,
@@ -678,6 +737,46 @@ pub(crate) fn resolve_client_fire(
             )
         }
     };
+    if resolution == ResolutionMode::Hitscan {
+        // Each trailing selected shot runs after the intervening logical-tick
+        // bloom decay. It has an empty declaration, so no client ray, shell
+        // position, or RNG fan is consumed for it.
+        weapon.apply_bloom_shot();
+        let first_selected_shot_ms = replayed_bloom_until_ms;
+        let mut logical_ticks = logical_tick_elapsed_ms
+            .iter()
+            .copied()
+            .map(|elapsed_ms| elapsed_ms.clamp(first_selected_shot_ms, frame_dt_ms))
+            .peekable();
+        while logical_ticks
+            .peek()
+            .is_some_and(|elapsed_ms| *elapsed_ms <= replayed_bloom_until_ms)
+        {
+            let _ = logical_ticks.next();
+        }
+        let mut trailing_selected_shots =
+            selected_shot_elapsed_ms.iter().copied().skip(1).peekable();
+        for elapsed_ms in logical_ticks {
+            weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
+            replayed_bloom_until_ms = elapsed_ms;
+            while trailing_selected_shots
+                .peek()
+                .is_some_and(|selected_ms| *selected_ms <= elapsed_ms)
+            {
+                weapon.apply_bloom_shot();
+                let _ = trailing_selected_shots.next();
+            }
+        }
+        for elapsed_ms in trailing_selected_shots {
+            let elapsed_ms = elapsed_ms.clamp(replayed_bloom_until_ms, frame_dt_ms);
+            weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
+            weapon.apply_bloom_shot();
+            replayed_bloom_until_ms = elapsed_ms;
+        }
+        // Preserve decay after the final selected fire tick until the rendered
+        // frame ends, including a partial fixed-tick remainder.
+        weapon.tick_bloom(frame_dt_ms - replayed_bloom_until_ms);
+    }
     Some(ClientFireResolution {
         client_tick,
         hits,
@@ -689,8 +788,32 @@ pub(crate) fn advance_client_fire_state(
     weapon: &mut WeaponComponent,
     button: FireButtonState,
     frame_dt: f32,
+    logical_tick_elapsed_ms: &[f32],
 ) -> bool {
     let dt_ms = (frame_dt.max(0.0)) * 1000.0;
+    tick_client_bloom_for_frame(weapon, dt_ms, logical_tick_elapsed_ms);
+    advance_client_fire_gate(weapon, button, dt_ms)
+}
+
+fn tick_client_bloom_for_frame(
+    weapon: &mut WeaponComponent,
+    frame_dt_ms: f32,
+    logical_tick_elapsed_ms: &[f32],
+) {
+    let mut previous_elapsed_ms = 0.0;
+    for &elapsed_ms in logical_tick_elapsed_ms {
+        let elapsed_ms = elapsed_ms.clamp(previous_elapsed_ms, frame_dt_ms);
+        weapon.tick_bloom(elapsed_ms - previous_elapsed_ms);
+        previous_elapsed_ms = elapsed_ms;
+    }
+    weapon.tick_bloom(frame_dt_ms - previous_elapsed_ms);
+}
+
+fn advance_client_fire_gate(
+    weapon: &mut WeaponComponent,
+    button: FireButtonState,
+    dt_ms: f32,
+) -> bool {
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
     let fire_mode = weapon.effective().fire_mode;
@@ -985,6 +1108,12 @@ pub(crate) mod tests {
             damage: 25.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range: 10.0,
             cooldown_ms,
             fire_mode,
@@ -1025,6 +1154,12 @@ pub(crate) mod tests {
             damage: 25.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range: 10.0,
             cooldown_ms,
             fire_mode,
@@ -1292,8 +1427,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn projectile_without_muzzle_keeps_legacy_eye_launch_bits() {
+    fn projectile_without_muzzle_ignores_dynamic_accuracy_and_keeps_legacy_eye_launch_bits() {
         let mut weapon = projectile_weapon_component(None);
+        weapon.spread_degrees = 20.0;
+        weapon.bloom_per_shot_degrees = 3.0;
+        weapon.bloom_max_degrees = 12.0;
+        weapon.bloom_accumulator_degrees = 8.0;
+        weapon.movement_spread_degrees = 6.0;
+        weapon.spread_vertical_bias = 1.0;
         let placement = WeaponPlacementDescriptor {
             offset: postretro_foundation::PlacementOffset {
                 right: 0.7,
@@ -1322,6 +1463,8 @@ pub(crate) mod tests {
             &placement,
             None,
             1,
+            &[0.0, 0.0],
+            &[],
             &CollisionWorld::new(),
             &EntityRegistry::new(),
             &HitZoneStore::new(),
@@ -1332,6 +1475,10 @@ pub(crate) mod tests {
         let launch = resolution.projectile_launch.expect("projectile launch");
         assert_vec3_bits_eq(launch.origin, eye);
         assert_vec3_bits_eq(launch.direction, aim);
+        assert!(
+            (weapon.bloom_accumulator_degrees - 8.0).abs() < f32::EPSILON,
+            "trailing catch-up shots do not affect projectile accuracy"
+        );
     }
 
     #[test]
@@ -1360,6 +1507,12 @@ pub(crate) mod tests {
         };
         let registry = EntityRegistry::new();
         let mut weapon = projectile_weapon_component(Some(muzzle_local));
+        weapon.spread_degrees = 20.0;
+        weapon.bloom_per_shot_degrees = 3.0;
+        weapon.bloom_max_degrees = 12.0;
+        weapon.bloom_accumulator_degrees = 8.0;
+        weapon.movement_spread_degrees = 6.0;
+        weapon.spread_vertical_bias = 1.0;
         let events = tick_resolved_component(
             &registry,
             None,
@@ -1386,6 +1539,11 @@ pub(crate) mod tests {
             ),
         );
         assert_eq!(launch.range, 10.0, "remaining range stays descriptor range");
+        assert_vec3_approx(
+            launch.direction,
+            (command.aim_origin + command.aim_direction * launch.range - launch.origin).normalize(),
+        );
+        assert!((weapon.bloom_accumulator_degrees - 8.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1416,6 +1574,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            &[0.0],
+            &[],
             &world,
             &registry,
             &store,
@@ -1445,6 +1605,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             8,
+            &[0.0],
+            &[],
             &world,
             &registry,
             &store,
@@ -1576,6 +1738,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -1628,6 +1792,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -1724,6 +1890,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             1,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &zones,
@@ -1749,6 +1917,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             Some(Vec3::new(0.5, 0.0, -0.4)),
             2,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &zones,
@@ -1785,6 +1955,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             7,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &HitZoneStore::new(),
@@ -1808,6 +1980,7 @@ pub(crate) mod tests {
                 active: true,
             },
             0.0,
+            &[],
         ));
         assert_eq!(weapon.shells_fired, 9);
     }
@@ -2268,6 +2441,8 @@ pub(crate) mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             77,
+            &[0.0],
+            &[],
             &CollisionWorld::new(),
             &registry,
             &store,

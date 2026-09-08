@@ -45,7 +45,7 @@ Add the dynamic accuracy axis to weapons: a per-shot spread that grows under sus
 - [ ] **AC9** New tuning fields replicate to connected clients; a client's predicted weapon computes the same effective-spread growth from replicated tuning. `TUNING_PAYLOAD_EPOCH` is bumped and the committed JSON fixture updated.
 - [ ] **AC10** The determinism gate passes with a bloom-authored weapon: a sustained burst's sampled fan is bit-identical run-to-run and across spawn-order reversal.
 - [ ] **AC11** `player.spread` publishes the local active weapon's effective spread half-angle in degrees each tick, on every network role, as a readonly non-replicated (`ReplicationScope::None`) `player.*` slot reachable as `getGameState().player.spread`; it reads 0 with no active weapon.
-- [ ] **AC12** `hud.reticle` shows a spread ring whose radius tracks `player.spread` with a tween: minimum at rest, visibly expanding during sustained fire and while moving, easing back as accuracy recovers. (Review/playtest-verified — a HUD visual, not an automated assertion.)
+- [ ] **AC12** `hud.reticle` shows one spread ring whose radius tracks `player.spread` with a tween: it starts as a visible 4 px ring at rest and maps the rifle's 0–8° sustained-fire bloom range to 4–20 px, so full bloom is 5× the resting radius; it eases back as accuracy recovers. (Review/playtest-verified — a HUD visual, not an automated assertion.)
 - [ ] **AC13** A full-auto hitscan `reference_rifle` exists using `content/dev/models/cyberpunk_weapons/rifle/model.gltf` and `bullets.rifle` ammo, is in the player loadout and registered, and demonstrates strong sustained-fire bloom, movement spread, and upward bias.
 - [ ] **AC14** The reference pistol stays `fireMode: "semi"` and gains a gentler bloom signature — rapid trigger-pulling visibly widens its spread and the ring, recovering faster and to a smaller cap than the rifle. Shotgun and projectile reference weapons are unchanged.
 - [ ] **AC15** Projectile weapons' launch direction is unaffected by dynamic spread.
@@ -66,7 +66,7 @@ Add a `player.spread` entry to `BUILTIN_ENGINE_STATE` in `crates/entities/src/en
 Author a new full-auto hitscan assault-rifle reference weapon and give the pistol a gentler bloom signature; leave the shotgun and projectile weapons untouched. Create `content/dev/scripts/reference-rifle.ts` following the `reference-shotgun.ts` / `reference-pistol.ts` pattern: a `defineEntity` named `reference_rifle`, `resolution: "hitscan"`, `fireMode: "auto"`, moderate damage and a fast `fireRateMs`, `range` ~80, `thirdPersonModel`/`viewmodel`/`mesh` = `models/cyberpunk_weapons/rifle/model.gltf`, an authored `muzzleOffset`, `touchable`, and a `resource` of `kind: "ammo"`, `type: "bullets.rifle"` (a new free-form ammo string — no registry to touch), a ~30 magazine, ~120 reserve, magazine reload. Author strong dynamic-spread tuning that visibly reads: sizable `bloomPerShotDegrees`, a high `bloomMaxDegrees`, a moderate `bloomDecayDegreesPerSecond`, a short `bloomDecayDelayMs`, a meaningful `movementSpreadDegrees`, and a positive `spreadVerticalBias` for upward climb (starting values in the Rough sketch and the Script syntax example — adjust for feel). Export `referenceRifleEntity`, add it to the `loadout` array in `content/dev/scripts/player.ts` and to the `entities` array in `content/dev/start-script.ts`. Retune `content/dev/scripts/reference-pistol.ts`: keep `fireMode: "semi"`, add a gentler bloom (smaller `bloomMaxDegrees` and faster `bloomDecayDegreesPerSecond` than the rifle, small `movementSpreadDegrees`, `spreadVerticalBias` 0) so rapid trigger-pulling widens its spread but recovers quickly. Update `content/dev/maps/combat-demo.README.md` to describe trying sustained fire on the rifle and rapid-firing the pistol to watch the spread ring open. This is content only; it depends on the field surface from Task 1 and the behavior from Task 2 to be exercised. Delivers AC13, AC14; with Task 2, completes AC3's "existing weapons unchanged" for the shotgun and projectiles.
 
 ### Task 5: Spread ring in the reticle
-Make `hud.reticle` (`content/dev/scripts/hud.ts`) show a spread ring driven by `player.spread`. Keep a fixed inner aim mark, and add a second `Ring` whose `radius` binds the new slot: `radius: bindState(player.spread, { tween: { durationMs: <short>, easing: "easeOut" } })`, where `player` comes from `getGameState()` and `player.spread` is the `ComputedRef<number>` Task 3 exposes. Size the ring's fixed `diameter` (start ~72) large enough that the effective-spread range maps to a visible radius (the bind is 1:1 in pixels, runtime-clamped to `diameter/2`; the ring is a relative indicator, not a pixel-precise cone); at rest `player.spread` is 0, so confirm a bound radius of 0 renders cleanly (or floor the ring at a small minimum). Choose `fill`/`thickness` consistent with the existing reticle. The result: at rest the spread ring sits at its minimum, expands during sustained fire and while moving, and eases back as accuracy recovers (AC12). Delivers AC12. Consumes Task 3's `player.spread` slot.
+Make `hud.reticle` (`content/dev/scripts/hud.ts`) the single spread-ring tree driven by `player.spread`. Its `Ring.radius` binds the new slot: `radius: bindState(player.spread, { tween: { durationMs: <short>, easing: "easeOut" } })`, where `player` comes from `getGameState()` and `player.spread` is the `ComputedRef<number>` Task 3 exposes. Pair that bind with `radiusRange: { inputMax: 8, min: 4, max: 20 }`: the retained UI eases the neutral degree value, then maps the rifle's full sustained-fire bloom to a 4 px resting ring through a 20 px maximum ring (exactly 5×). Do not register a fixed aim-mark tree: one centered ring keeps the spread signal legible. Choose `fill`/`thickness` consistent with the existing reticle. The result: at rest the ring is visible, expands during sustained fire and while moving, and eases back as accuracy recovers (AC12). Delivers AC12. Consumes Task 3's `player.spread` slot.
 
 ## Sequencing
 
@@ -81,7 +81,7 @@ Make `hud.reticle` (`content/dev/scripts/hud.ts`) show a spread ring driven by `
 - One implementation of decay/growth/compose as `WeaponComponent` methods (`tick_bloom`, `effective_spread_degrees`, `apply_bloom_shot`), called from both host and client paths — avoids the two-call-site drift between `tick_resolved_component` and `resolve_client_fire`.
 - Axis tilt: the aim direction rotates upward about the world-space camera-right axis before `sample_cone_direction`, unchanged at bias 0 (full mechanics, including the near-vertical degenerate guard, in Task 2).
 - Starting tune (content, adjust for feel): **rifle** `damage` ~9, `fireRateMs` ~110, `bloomPerShotDegrees` ~1.3, `bloomMaxDegrees` ~8, `bloomDecayDegreesPerSecond` ~14, `bloomDecayDelayMs` ~120, `movementSpreadDegrees` ~3, `spreadVerticalBias` ~0.3. **pistol** `bloomPerShotDegrees` ~1.6, `bloomMaxDegrees` ~4.5, `bloomDecayDegreesPerSecond` ~20, `bloomDecayDelayMs` ~90, `movementSpreadDegrees` ~1.5, `spreadVerticalBias` 0.
-- Ring: a second `Ring` in `hud.reticle`; `diameter` ~72 so ~30° effective spread maps to a visibly large radius under the 1:1 px clamp.
+- Ring: `hud.reticle` owns the sole spread ring (`diameter` ~72), mapping 0–8° of spread to a 4–20 px radius; no fixed aim-mark tree competes with it.
 
 ## Boundary inventory
 
@@ -157,17 +157,17 @@ export const referenceRifleEntity = defineEntity({
 ```
 
 ```ts
-// content/dev/scripts/hud.ts — spread ring bound to player.spread
+// content/dev/scripts/hud.ts — one centered, spread-bound reticle tree
 const { player } = getGameState();
-export const reticle = defineUiTree({
+export const spreadReticle = defineUiTree({
   name: "hud.reticle",
   alwaysOn: true,
   tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
-    Ring({ diameter: 8.0, radius: 2.0, thickness: 2.0, fill: color.hud.text }), // fixed aim mark
     Ring({
       diameter: 72.0,
       radius: bindState(player.spread, { tween: { durationMs: 90, easing: "easeOut" } }),
+      radiusRange: { inputMax: 8.0, min: 4.0, max: 20.0 },
       thickness: 2.0,
       fill: color.hud.text,
     }),

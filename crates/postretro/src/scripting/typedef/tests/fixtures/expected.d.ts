@@ -439,6 +439,18 @@ declare module "postretro" {
     pelletCount?: number;
     /** Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis). */
     spreadDegrees?: number;
+    /** Hitscan-only sustained-fire bloom added after each resolved hitscan shell, in degrees. Range: 0..=45; defaults to 0. */
+    bloomPerShotDegrees?: number;
+    /** Maximum hitscan-only sustained-fire bloom above base spread, in degrees. Range: 0..=45; defaults to 0. */
+    bloomMaxDegrees?: number;
+    /** Rate at which hitscan-only sustained-fire bloom decays after its delay, in degrees per second. Must be finite and >= 0; defaults to 0. */
+    bloomDecayDegreesPerSecond?: number;
+    /** Idle delay before hitscan-only sustained-fire bloom begins to decay, in milliseconds. Must be finite and >= 0; defaults to 0. */
+    bloomDecayDelayMs?: number;
+    /** Maximum movement-derived hitscan spread at authored run speed, in degrees. Range: 0..=45; defaults to 0. */
+    movementSpreadDegrees?: number;
+    /** Upward tilt applied to the hitscan spread cone axis. Range: 0..=1; defaults to 0 (no tilt). */
+    spreadVerticalBias?: number;
     /** Maximum hitscan distance in metres, or the second travel cap for a projectile. Must be finite and > 0. */
     range: number;
     /** Minimum interval between shots in milliseconds. Must be finite and > 0. */
@@ -1138,6 +1150,7 @@ declare module "postretro" {
       readonly maxHealth: ComputedRef<number>;
       readonly reloadActive: ComputedRef<boolean>;
       readonly reloadProgress: ComputedRef<number>;
+      readonly spread: ComputedRef<number>;
       readonly weapon: {
         readonly current: ComputedRef<string>;
         readonly pending: ComputedRef<string>;
@@ -2222,8 +2235,10 @@ declare module "postretro/ui" {
   export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
   /** Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`. */
   export function Bar(props: BarProps): WidgetDescriptor;
-  /** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind; angles are degrees with 0 at 12 o'clock and positive clockwise. */
-  export type RingProps = { diameter: number; radius: number | RingBindProp; thickness: number | RingBindProp; startAngle?: number | RingBindProp; sweep?: number | RingBindProp; fill: WidgetColor; track?: WidgetColor; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Presentation-only linear map from a bound `Ring.radius` source range into visible pixels after tweening. */
+  export type RingRadiusRange = { inputMax: number; min: number; max: number };
+  /** Props for `Ring`. Geometry is literal or a readonly state/local bind; angles are degrees with 0 at 12 o'clock and positive clockwise. */
+  export type RingProps = { diameter: number; radius: number | RingBindProp; radiusRange?: RingRadiusRange; thickness: number | RingBindProp; startAngle?: number | RingBindProp; sweep?: number | RingBindProp; fill: WidgetColor; track?: WidgetColor; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a passive annulus or angular arc descriptor. */
   export function Ring(props: RingProps): WidgetDescriptor;
   /** Props for `Announce`. `priority` defaults to `"polite"`; `visibleWhen` gates whether the live-region message is active. */

@@ -114,6 +114,31 @@ pub(crate) fn normalize_wieldable_inventory(
     weapon_stage::normalize_inventory_liveness(registry, pawn)
 }
 
+#[cfg(test)]
+pub(crate) fn run_local_weapon_fire_for_test(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: EntityId,
+    command: &crate::weapon::WeaponFireCommand,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    tick_dt: f32,
+) {
+    let mut no_impact = |_: &mut EntityRegistry| {};
+    let _ = weapon_stage::run_local_weapon_command(
+        registry,
+        Some(pawn),
+        false,
+        None,
+        command,
+        false,
+        collision_world,
+        hit_zone_store,
+        0.0,
+        tick_dt,
+        &mut no_impact,
+    );
+}
+
 /// Advance only the connected client's local wieldable machine. Movement stays on
 /// the prediction path and authoritative combat stays on the host; this pass owns
 /// the immediate local lower/raise/repoint and suppresses fire while doing so.

@@ -756,7 +756,7 @@ pub(crate) fn resolve_client_fire(
         }
         let mut trailing_selected_shots =
             selected_shot_elapsed_ms.iter().copied().skip(1).peekable();
-        while let Some(elapsed_ms) = logical_ticks.next() {
+        for elapsed_ms in logical_ticks {
             weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
             replayed_bloom_until_ms = elapsed_ms;
             while trailing_selected_shots
@@ -767,7 +767,7 @@ pub(crate) fn resolve_client_fire(
                 let _ = trailing_selected_shots.next();
             }
         }
-        while let Some(elapsed_ms) = trailing_selected_shots.next() {
+        for elapsed_ms in trailing_selected_shots {
             let elapsed_ms = elapsed_ms.clamp(replayed_bloom_until_ms, frame_dt_ms);
             weapon.tick_bloom(elapsed_ms - replayed_bloom_until_ms);
             weapon.apply_bloom_shot();

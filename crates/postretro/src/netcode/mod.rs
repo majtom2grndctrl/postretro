@@ -1556,6 +1556,12 @@ pub(crate) fn tuning_payload_for_pawn(
                     cooldown_ms: weapon.cooldown_ms,
                     pellet_count: weapon.pellet_count,
                     spread_degrees: weapon.spread_degrees,
+                    bloom_per_shot_degrees: weapon.bloom_per_shot_degrees,
+                    bloom_max_degrees: weapon.bloom_max_degrees,
+                    bloom_decay_degrees_per_second: weapon.bloom_decay_degrees_per_second,
+                    bloom_decay_delay_ms: weapon.bloom_decay_delay_ms,
+                    movement_spread_degrees: weapon.movement_spread_degrees,
+                    spread_vertical_bias: weapon.spread_vertical_bias,
                     fire_mode: weapon.fire_mode,
                     resolution: weapon.resolution,
                     lower_ms: weapon.lower_ms,
@@ -2607,6 +2613,12 @@ mod tests {
             cooldown_ms: 90.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 25,
@@ -2629,6 +2641,12 @@ mod tests {
         weapon.cooldown_ms = 180.0;
         weapon.pellet_count = 8;
         weapon.spread_degrees = 4.0;
+        weapon.bloom_per_shot_degrees = 1.5;
+        weapon.bloom_max_degrees = 6.0;
+        weapon.bloom_decay_degrees_per_second = 2.5;
+        weapon.bloom_decay_delay_ms = 175.0;
+        weapon.movement_spread_degrees = 3.0;
+        weapon.spread_vertical_bias = 0.2;
         weapon.fire_mode = FireMode::Auto;
         weapon.lower_ms = 45;
         weapon.raise_ms = 70;
@@ -2668,6 +2686,12 @@ mod tests {
         assert_eq!(slot.cooldown_ms, 180.0);
         assert_eq!(slot.pellet_count, 8);
         assert_eq!(slot.spread_degrees, 4.0);
+        assert_eq!(slot.bloom_per_shot_degrees, 1.5);
+        assert_eq!(slot.bloom_max_degrees, 6.0);
+        assert_eq!(slot.bloom_decay_degrees_per_second, 2.5);
+        assert_eq!(slot.bloom_decay_delay_ms, 175.0);
+        assert_eq!(slot.movement_spread_degrees, 3.0);
+        assert_eq!(slot.spread_vertical_bias, 0.2);
         assert_eq!(slot.fire_mode, FireMode::Auto);
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);

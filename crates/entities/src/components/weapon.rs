@@ -700,8 +700,8 @@ mod tests {
         assert!((component.bloom_decay_delay_ms - 200.0).abs() < f32::EPSILON);
         assert!((component.movement_spread_degrees - 2.5).abs() < f32::EPSILON);
         assert!((component.spread_vertical_bias - 0.25).abs() < f32::EPSILON);
-        assert_eq!(component.bloom_accumulator_degrees, 0.0);
-        assert_eq!(component.bloom_idle_ms, 0.0);
+        assert!((component.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -712,16 +712,16 @@ mod tests {
         component.bloom_max_degrees = 5.0;
         component.bloom_idle_ms = 120.0;
 
-        assert_eq!(component.effective_spread_degrees(0.0, 1.0), 2.0);
+        assert!((component.effective_spread_degrees(0.0, 1.0) - 2.0).abs() < f32::EPSILON);
         component.apply_bloom_shot();
-        assert_eq!(component.bloom_accumulator_degrees, 2.0);
-        assert_eq!(component.bloom_idle_ms, 0.0);
-        assert_eq!(component.effective_spread_degrees(0.0, 1.0), 4.0);
+        assert!((component.bloom_accumulator_degrees - 2.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(0.0, 1.0) - 4.0).abs() < f32::EPSILON);
 
         component.apply_bloom_shot();
-        assert_eq!(component.bloom_accumulator_degrees, 4.0);
+        assert!((component.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
         component.apply_bloom_shot();
-        assert_eq!(component.bloom_accumulator_degrees, 5.0);
+        assert!((component.bloom_accumulator_degrees - 5.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -732,15 +732,15 @@ mod tests {
         component.bloom_decay_delay_ms = 250.0;
 
         component.tick_bloom(100.0);
-        assert_eq!(component.bloom_accumulator_degrees, 4.0);
-        assert_eq!(component.bloom_idle_ms, 100.0);
+        assert!((component.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        assert!((component.bloom_idle_ms - 100.0).abs() < f32::EPSILON);
 
         component.tick_bloom(150.0);
         assert!((component.bloom_accumulator_degrees - 3.7).abs() <= f32::EPSILON);
-        assert_eq!(component.bloom_idle_ms, 250.0);
+        assert!((component.bloom_idle_ms - 250.0).abs() < f32::EPSILON);
 
         component.tick_bloom(2_000.0);
-        assert_eq!(component.bloom_accumulator_degrees, 0.0);
+        assert!((component.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -750,17 +750,17 @@ mod tests {
         component.bloom_accumulator_degrees = 3.0;
         component.movement_spread_degrees = 5.0;
 
-        assert_eq!(component.effective_spread_degrees(0.0, 10.0), 5.0);
-        assert_eq!(component.effective_spread_degrees(5.0, 10.0), 7.5);
-        assert_eq!(component.effective_spread_degrees(20.0, 10.0), 10.0);
-        assert_eq!(component.effective_spread_degrees(-1.0, 10.0), 5.0);
-        assert_eq!(component.effective_spread_degrees(20.0, 0.0), 5.0);
+        assert!((component.effective_spread_degrees(0.0, 10.0) - 5.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(5.0, 10.0) - 7.5).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(20.0, 10.0) - 10.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(-1.0, 10.0) - 5.0).abs() < f32::EPSILON);
+        assert!((component.effective_spread_degrees(20.0, 0.0) - 5.0).abs() < f32::EPSILON);
 
         component.spread_degrees = 44.0;
         component.bloom_accumulator_degrees = 10.0;
-        assert_eq!(
-            component.effective_spread_degrees(10.0, 10.0),
-            MAX_EFFECTIVE_SPREAD_DEGREES
+        assert!(
+            (component.effective_spread_degrees(10.0, 10.0) - MAX_EFFECTIVE_SPREAD_DEGREES).abs()
+                < f32::EPSILON
         );
     }
 
@@ -786,8 +786,8 @@ mod tests {
         fields.remove("bloom_idle_ms");
 
         let restored: WeaponComponent = serde_json::from_value(persisted).unwrap();
-        assert_eq!(restored.bloom_accumulator_degrees, 0.0);
-        assert_eq!(restored.bloom_idle_ms, 0.0);
+        assert!((restored.bloom_accumulator_degrees - 0.0).abs() < f32::EPSILON);
+        assert!((restored.bloom_idle_ms - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]

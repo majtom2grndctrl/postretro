@@ -1398,8 +1398,8 @@ pub(crate) mod tests {
         let launch = resolution.projectile_launch.expect("projectile launch");
         assert_vec3_bits_eq(launch.origin, eye);
         assert_vec3_bits_eq(launch.direction, aim);
-        assert_eq!(
-            weapon.bloom_accumulator_degrees, 8.0,
+        assert!(
+            (weapon.bloom_accumulator_degrees - 8.0).abs() < f32::EPSILON,
             "trailing catch-up shots do not affect projectile accuracy"
         );
     }
@@ -1466,7 +1466,7 @@ pub(crate) mod tests {
             launch.direction,
             (command.aim_origin + command.aim_direction * launch.range - launch.origin).normalize(),
         );
-        assert_eq!(weapon.bloom_accumulator_degrees, 8.0);
+        assert!((weapon.bloom_accumulator_degrees - 8.0).abs() < f32::EPSILON);
     }
 
     #[test]

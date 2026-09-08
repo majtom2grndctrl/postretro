@@ -1133,17 +1133,22 @@ mod tests {
             let weapon = registry
                 .get_component::<WeaponComponent>(weapon_id)
                 .unwrap();
-            assert_eq!(
-                (
-                    weapon.bloom_per_shot_degrees,
-                    weapon.bloom_max_degrees,
-                    weapon.bloom_decay_degrees_per_second,
-                    weapon.bloom_decay_delay_ms,
-                    weapon.movement_spread_degrees,
-                    weapon.spread_vertical_bias,
-                ),
-                expected
+            let (
+                expected_bloom_per_shot,
+                expected_bloom_max,
+                expected_decay_rate,
+                expected_decay_delay,
+                expected_movement,
+                expected_bias,
+            ) = expected;
+            assert!((weapon.bloom_per_shot_degrees - expected_bloom_per_shot).abs() < f32::EPSILON);
+            assert!((weapon.bloom_max_degrees - expected_bloom_max).abs() < f32::EPSILON);
+            assert!(
+                (weapon.bloom_decay_degrees_per_second - expected_decay_rate).abs() < f32::EPSILON
             );
+            assert!((weapon.bloom_decay_delay_ms - expected_decay_delay).abs() < f32::EPSILON);
+            assert!((weapon.movement_spread_degrees - expected_movement).abs() < f32::EPSILON);
+            assert!((weapon.spread_vertical_bias - expected_bias).abs() < f32::EPSILON);
         }
     }
 
@@ -1195,12 +1200,12 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
-        assert_eq!(weapon.bloom_per_shot_degrees, 1.5);
-        assert_eq!(weapon.bloom_max_degrees, 6.0);
-        assert_eq!(weapon.bloom_decay_degrees_per_second, 2.5);
-        assert_eq!(weapon.bloom_decay_delay_ms, 175.0);
-        assert_eq!(weapon.movement_spread_degrees, 3.0);
-        assert_eq!(weapon.spread_vertical_bias, 0.2);
+        assert!((weapon.bloom_per_shot_degrees - 1.5).abs() < f32::EPSILON);
+        assert!((weapon.bloom_max_degrees - 6.0).abs() < f32::EPSILON);
+        assert!((weapon.bloom_decay_degrees_per_second - 2.5).abs() < f32::EPSILON);
+        assert!((weapon.bloom_decay_delay_ms - 175.0).abs() < f32::EPSILON);
+        assert!((weapon.movement_spread_degrees - 3.0).abs() < f32::EPSILON);
+        assert!((weapon.spread_vertical_bias - 0.2).abs() < f32::EPSILON);
         let resolution = crate::weapon::resolve_client_fire(
             None,
             &mut weapon,

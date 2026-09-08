@@ -95,7 +95,7 @@ sequenceDiagram
     Note over Gate: every tick, dt available
     Gate->>Gate: cooldown_remaining_ms -= dt
     Gate->>Gate: bloom_idle_ms += dt
-    Gate->>Gate: if bloom_idle_ms >= bloomDecayDelayMs:<br/>bloom_accumulator -= bloomDecayDegreesPerSecond*dt (clamp >=0)
+    Gate->>Gate: if bloom_idle_ms >= bloomDecayDelayMs:<br/>bloom_accumulator -= bloomDecayDegreesPerSecond*(dt_ms/1000) (clamp >=0)
     alt fire authorized this tick
         Resolve->>Resolve: read pawn horizontal speed (PlayerMovementComponent)
         Resolve->>Resolve: eff = clamp(spread_degrees + bloom_accumulator + movement_term, 0, MAX_EFFECTIVE_SPREAD_DEGREES)
@@ -127,4 +127,4 @@ The one work-eliminating claim — "the host needs no dynamic-spread model" — 
 Dynamic spread feeds the **hitscan** cone sampling only (`fire_hitscan` / `resolve_client_hitscan`). The projectile launch path converges the direction on the crosshair target (`networking.md` "Fire origin composes on placement") and does not sample the cone; reference projectiles author no bloom (fields default 0). So plasma-bolt and rocket are unchanged. Matches the owner's intent (non-ballistic weapons have no recoil).
 
 ## Oversized-file note
-`weapon/mod.rs` is 2726 lines. New logic homes in `weapon/spread.rs` (composition helpers) and a `WeaponComponent` impl block in `weapon.rs`; `mod.rs` gains only call-site edits (read the composed angle, call the shot-growth method). A preemptive split of `mod.rs` is out of proportion to that footprint — not scheduled.
+`weapon/mod.rs` is 2726 lines. The compose/decay/growth logic homes as a `WeaponComponent` impl block in `crates/entities/src/components/weapon.rs` (the crate that owns `WeaponComponent`; `postretro-entities` cannot depend on `postretro`, so the arithmetic cannot live in `crates/postretro/src/weapon/spread.rs`). `crates/postretro/src/weapon/spread.rs` keeps the RNG sampler and the postretro-side axis tilt; `mod.rs` gains only call-site edits (read the composed angle, call the shot-growth method). A preemptive split of `mod.rs` is out of proportion to that footprint — not scheduled.

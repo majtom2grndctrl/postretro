@@ -334,6 +334,18 @@ pub struct WeaponDescriptor {
     pub pellet_count: u32,
     #[serde(default)]
     pub spread_degrees: f32,
+    #[serde(default)]
+    pub bloom_per_shot_degrees: f32,
+    #[serde(default)]
+    pub bloom_max_degrees: f32,
+    #[serde(default)]
+    pub bloom_decay_degrees_per_second: f32,
+    #[serde(default)]
+    pub bloom_decay_delay_ms: f32,
+    #[serde(default)]
+    pub movement_spread_degrees: f32,
+    #[serde(default)]
+    pub spread_vertical_bias: f32,
     pub range: f32,
     #[serde(rename = "fireRateMs")]
     pub cooldown_ms: f32,
@@ -398,6 +410,44 @@ impl WeaponDescriptor {
                 reason: format!(
                     "`components.weapon.spreadDegrees` must be a finite value in 0.0..=45.0, got {}",
                     self.spread_degrees
+                ),
+            });
+        }
+        for (field, value) in [
+            ("bloomPerShotDegrees", self.bloom_per_shot_degrees),
+            ("bloomMaxDegrees", self.bloom_max_degrees),
+            ("movementSpreadDegrees", self.movement_spread_degrees),
+        ] {
+            if !value.is_finite() || !(0.0..=45.0).contains(&value) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.{field}` must be a finite value in 0.0..=45.0, got {value}"
+                    ),
+                });
+            }
+        }
+        for (field, value) in [
+            (
+                "bloomDecayDegreesPerSecond",
+                self.bloom_decay_degrees_per_second,
+            ),
+            ("bloomDecayDelayMs", self.bloom_decay_delay_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.{field}` must be a finite value >= 0.0, got {value}"
+                    ),
+                });
+            }
+        }
+        if !self.spread_vertical_bias.is_finite()
+            || !(0.0..=1.0).contains(&self.spread_vertical_bias)
+        {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.weapon.spreadVerticalBias` must be a finite value in 0.0..=1.0, got {}",
+                    self.spread_vertical_bias
                 ),
             });
         }
@@ -891,6 +941,12 @@ mod tests {
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
             range: 64.0,
             cooldown_ms: 180.0,
             fire_mode: FireMode::Semi,
@@ -1390,6 +1446,12 @@ mod tests {
         let mut descriptor = weapon_descriptor(None);
         descriptor.pellet_count = MAX_PELLET_COUNT;
         descriptor.spread_degrees = 45.0;
+        descriptor.bloom_per_shot_degrees = 45.0;
+        descriptor.bloom_max_degrees = 45.0;
+        descriptor.bloom_decay_degrees_per_second = 1.0;
+        descriptor.bloom_decay_delay_ms = 1.0;
+        descriptor.movement_spread_degrees = 45.0;
+        descriptor.spread_vertical_bias = 1.0;
         assert!(descriptor.clone().validate().is_ok());
 
         for pellet_count in [0, MAX_PELLET_COUNT + 1] {
@@ -1405,6 +1467,66 @@ mod tests {
             let error = invalid.validate().unwrap_err();
             assert!(error.to_string().contains("spreadDegrees"), "{error}");
         }
+
+        for (field, value) in [
+            ("bloomPerShotDegrees", -0.1),
+            ("bloomPerShotDegrees", 45.1),
+            ("bloomPerShotDegrees", f32::NAN),
+            ("bloomMaxDegrees", -0.1),
+            ("bloomMaxDegrees", 45.1),
+            ("bloomMaxDegrees", f32::INFINITY),
+            ("movementSpreadDegrees", -0.1),
+            ("movementSpreadDegrees", 45.1),
+            ("movementSpreadDegrees", f32::NAN),
+            ("bloomDecayDegreesPerSecond", -0.1),
+            ("bloomDecayDegreesPerSecond", f32::NAN),
+            ("bloomDecayDelayMs", -0.1),
+            ("bloomDecayDelayMs", f32::INFINITY),
+            ("spreadVerticalBias", -0.1),
+            ("spreadVerticalBias", 1.1),
+            ("spreadVerticalBias", f32::NAN),
+        ] {
+            let mut invalid = descriptor.clone();
+            match field {
+                "bloomPerShotDegrees" => invalid.bloom_per_shot_degrees = value,
+                "bloomMaxDegrees" => invalid.bloom_max_degrees = value,
+                "bloomDecayDegreesPerSecond" => {
+                    invalid.bloom_decay_degrees_per_second = value;
+                }
+                "bloomDecayDelayMs" => invalid.bloom_decay_delay_ms = value,
+                "movementSpreadDegrees" => invalid.movement_spread_degrees = value,
+                "spreadVerticalBias" => invalid.spread_vertical_bias = value,
+                _ => unreachable!(),
+            }
+            let error = invalid.validate().unwrap_err();
+            assert!(error.to_string().contains(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn weapon_dynamic_spread_tuning_defaults_to_zero_when_omitted() {
+        let mut authored = serde_json::to_value(weapon_descriptor(None)).unwrap();
+        let fields = authored
+            .as_object_mut()
+            .expect("weapon descriptor serializes as an object");
+        for field in [
+            "bloomPerShotDegrees",
+            "bloomMaxDegrees",
+            "bloomDecayDegreesPerSecond",
+            "bloomDecayDelayMs",
+            "movementSpreadDegrees",
+            "spreadVerticalBias",
+        ] {
+            fields.remove(field);
+        }
+
+        let parsed: WeaponDescriptor = serde_json::from_value(authored).unwrap();
+        assert_eq!(parsed.bloom_per_shot_degrees, 0.0);
+        assert_eq!(parsed.bloom_max_degrees, 0.0);
+        assert_eq!(parsed.bloom_decay_degrees_per_second, 0.0);
+        assert_eq!(parsed.bloom_decay_delay_ms, 0.0);
+        assert_eq!(parsed.movement_spread_degrees, 0.0);
+        assert_eq!(parsed.spread_vertical_bias, 0.0);
     }
 
     #[test]

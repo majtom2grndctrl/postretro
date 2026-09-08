@@ -30,6 +30,7 @@ export type {
   SliderBindProp,
   BarBindProp,
   RingBindProp,
+  RingRadiusRange,
   BarMaxProp,
   LocalBindRef,
   FactBindRef,

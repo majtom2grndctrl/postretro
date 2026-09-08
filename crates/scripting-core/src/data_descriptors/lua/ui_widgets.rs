@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
-use crate::ui::descriptor::BarExitFade;
+use crate::ui::descriptor::{BarExitFade, RingRadiusRange};
 
 // --- Lua UI deserialization -------------------------------------------------
 
@@ -259,6 +259,7 @@ pub fn ring_widget_from_lua(table: &Table) -> Result<RingWidget, DescriptorError
     let ring = RingWidget {
         diameter: get_required_f32_lua(table, "diameter")?,
         radius: scalar_value_from_lua(table, "radius")?,
+        radius_range: ring_radius_range_from_lua(table)?,
         thickness: scalar_value_from_lua(table, "thickness")?,
         start_angle: scalar_value_opt_from_lua(table, "startAngle")?,
         sweep: scalar_value_opt_from_lua(table, "sweep")?,
@@ -271,6 +272,17 @@ pub fn ring_widget_from_lua(table: &Table) -> Result<RingWidget, DescriptorError
     ring.validate()
         .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     Ok(ring)
+}
+
+fn ring_radius_range_from_lua(table: &Table) -> Result<Option<RingRadiusRange>, DescriptorError> {
+    let Some(range) = optional_table_lua(table, "radiusRange")? else {
+        return Ok(None);
+    };
+    Ok(Some(RingRadiusRange {
+        input_max: get_required_f32_lua(&range, "inputMax")?,
+        min: get_required_f32_lua(&range, "min")?,
+        max: get_required_f32_lua(&range, "max")?,
+    }))
 }
 
 fn optional_bar_dimension_lua(

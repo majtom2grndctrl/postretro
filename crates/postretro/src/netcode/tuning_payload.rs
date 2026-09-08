@@ -12,7 +12,7 @@ use thiserror::Error;
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 7;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 8;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -31,6 +31,12 @@ pub(crate) struct WieldableTuningPayload {
     pub(crate) cooldown_ms: f32,
     pub(crate) pellet_count: u32,
     pub(crate) spread_degrees: f32,
+    pub(crate) bloom_per_shot_degrees: f32,
+    pub(crate) bloom_max_degrees: f32,
+    pub(crate) bloom_decay_degrees_per_second: f32,
+    pub(crate) bloom_decay_delay_ms: f32,
+    pub(crate) movement_spread_degrees: f32,
+    pub(crate) spread_vertical_bias: f32,
     pub(crate) fire_mode: FireMode,
     pub(crate) resolution: ResolutionMode,
     pub(crate) lower_ms: u32,
@@ -234,6 +240,12 @@ mod tests {
             cooldown_ms: 125.0,
             pellet_count: 1,
             spread_degrees: 0.0,
+            bloom_per_shot_degrees: 1.5,
+            bloom_max_degrees: 6.0,
+            bloom_decay_degrees_per_second: 2.5,
+            bloom_decay_delay_ms: 175.0,
+            movement_spread_degrees: 3.0,
+            spread_vertical_bias: 0.2,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 40,
@@ -247,6 +259,12 @@ mod tests {
             cooldown_ms: 240.0,
             pellet_count: 8,
             spread_degrees: 4.0,
+            bloom_per_shot_degrees: 2.0,
+            bloom_max_degrees: 12.0,
+            bloom_decay_degrees_per_second: 1.0,
+            bloom_decay_delay_ms: 250.0,
+            movement_spread_degrees: 4.0,
+            spread_vertical_bias: 0.5,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             lower_ms: 75,
@@ -356,14 +374,14 @@ mod tests {
     fn payload_rejects_previous_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(6);
+        json["epoch"] = serde_json::json!(7);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 7,
-                received: 6,
+                expected: 8,
+                received: 7,
             })
         ));
     }

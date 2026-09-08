@@ -127,14 +127,24 @@ export const hud = defineUiTree({
   ),
 });
 
-export const reticle = defineUiTree({
+// A single ring makes the changing fire-spread radius legible without a
+// stationary aim mark competing at the same center point.
+export const spreadReticle = defineUiTree({
   name: "hud.reticle",
   alwaysOn: true,
   tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
     Ring({
-      diameter: 28.0,
-      radius: 10.0,
+      diameter: 72.0,
+      radius: bindState(player.spread, {
+        tween: {
+          durationMs: 90.0,
+          easing: "easeOut",
+        },
+      }),
+      // Eight degrees is the rifle's full sustained-fire bloom. Map it from a
+      // visible 4 px resting ring to a 20 px ring — exactly five times larger.
+      radiusRange: { inputMax: 8.0, min: 4.0, max: 20.0 },
       thickness: 2.0,
       fill: color.hud.text,
     }),

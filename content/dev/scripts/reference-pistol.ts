@@ -13,6 +13,14 @@ export const referencePistolEntity = defineEntity({
       fireRateMs: 180.0,
       fireMode: "semi",
       resolution: "hitscan",
+      // Rapid trigger pulls briefly widen the cone, but this sidearm recovers
+      // faster and caps lower than the rifle.
+      bloomPerShotDegrees: 1.6,
+      bloomMaxDegrees: 4.5,
+      bloomDecayDegreesPerSecond: 20.0,
+      bloomDecayDelayMs: 90,
+      movementSpreadDegrees: 1.5,
+      spreadVerticalBias: 0.0,
       thirdPersonModel: "models/cyberpunk_weapons/pistol/model.gltf",
       viewmodel: "models/cyberpunk_weapons/pistol/model.gltf",
       placement: pistolPlacement,

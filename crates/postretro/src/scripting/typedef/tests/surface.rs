@@ -254,7 +254,10 @@ fn typescript_ui_module_declaration_is_generated() {
                 "export type RingBindProp = ((ComputedRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };"
             )
             && ui_module.contains(
-                "export type RingProps = { diameter: number; radius: number | RingBindProp;"
+                "export type RingRadiusRange = { inputMax: number; min: number; max: number };"
+            )
+            && ui_module.contains(
+                "export type RingProps = { diameter: number; radius: number | RingBindProp; radiusRange?: RingRadiusRange;"
             )
             && ui_module.contains("export function Ring(props: RingProps): WidgetDescriptor;")
             && ui_module.contains("export function defineTheme<const T extends ThemeDefinition>")

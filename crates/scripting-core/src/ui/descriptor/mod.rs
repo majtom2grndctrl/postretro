@@ -24,8 +24,8 @@ pub use values::{
 };
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
-    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingWidget, SliderBind,
-    SliderWidget, SpacerWidget, TextBind, TextWidget, Widget,
+    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
+    RingWidget, SliderBind, SliderWidget, SpacerWidget, TextBind, TextWidget, Widget,
 };
 
 #[cfg(test)]
@@ -1138,13 +1138,21 @@ mod tests {
 
     #[test]
     fn ring_bound_scalar_wire_round_trips_slot_local_and_tween() {
-        let json = r#"{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":{"slot":"hud.start"},"sweep":{"local":"sweep"},"fill":"critical","track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#;
+        let json = r#"{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"radiusRange":{"inputMax":8.0,"min":4.0,"max":20.0},"thickness":{"local":"stroke"},"startAngle":{"slot":"hud.start"},"sweep":{"local":"sweep"},"fill":"critical","track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}"#;
         let widget: Widget = serde_json::from_str(json).expect("valid bound ring");
         assert_eq!(serde_json::to_string(&widget).unwrap(), json);
         let Widget::Ring(ring) = widget else {
             panic!("ring kind must deserialize to Widget::Ring");
         };
         assert!(matches!(ring.radius, ScalarValue::Bound(_)));
+        assert_eq!(
+            ring.radius_range,
+            Some(RingRadiusRange {
+                input_max: 8.0,
+                min: 4.0,
+                max: 20.0,
+            })
+        );
         assert!(matches!(ring.thickness, ScalarValue::Bound(_)));
         assert!(matches!(ring.start_angle, Some(ScalarValue::Bound(_))));
         assert!(matches!(ring.sweep, Some(ScalarValue::Bound(_))));
@@ -1160,6 +1168,8 @@ mod tests {
             r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":26.0,"fill":[1.0,1.0,1.0,1.0]}"#,
             r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":1.0,"sweep":0.0,"fill":[1.0,1.0,1.0,1.0]}"#,
             r#"{"kind":"ring","diameter":100.0,"radius":25.0,"thickness":1.0,"sweep":360.1,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":25.0,"radiusRange":{"inputMax":8.0,"min":4.0,"max":20.0},"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
+            r#"{"kind":"ring","diameter":100.0,"radius":{"slot":"hud.radius"},"radiusRange":{"inputMax":0.0,"min":4.0,"max":20.0},"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
             r#"{"kind":"ring","diameter":100.0,"radius":{"fact":"unsupported"},"thickness":1.0,"fill":[1.0,1.0,1.0,1.0]}"#,
         ];
         for json in invalid {
@@ -1180,6 +1190,7 @@ mod tests {
         let valid = RingWidget {
             diameter: 100.0,
             radius: ScalarValue::Literal(25.0),
+            radius_range: None,
             thickness: ScalarValue::Literal(2.0),
             start_angle: Some(ScalarValue::Literal(0.0)),
             sweep: Some(ScalarValue::Literal(90.0)),
@@ -1220,6 +1231,7 @@ mod tests {
                 },
                 tween: Some(tween),
             }),
+            radius_range: None,
             thickness: ScalarValue::Literal(2.0),
             start_angle: None,
             sweep: None,

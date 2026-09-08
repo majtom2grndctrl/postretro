@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::components::weapon::MAX_EFFECTIVE_SPREAD_DEGREES;
 use crate::slot_table::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
 };
@@ -425,6 +426,20 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.spread",
+        sdk_path: &["player", "spread"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange {
+            min: 0.0,
+            max: MAX_EFFECTIVE_SPREAD_DEGREES,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Each machine predicts and publishes its own active weapon's spread.
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weaponCooldownMs",
         sdk_path: &["player", "weaponCooldownMs"],
         value_type: EngineStateValueType::Number,
@@ -715,6 +730,7 @@ mod tests {
                 "player.maxHealth",
                 "player.reloadActive",
                 "player.reloadProgress",
+                "player.spread",
                 "player.weapon.current",
                 "player.weapon.pending",
                 "player.weapon.switching",
@@ -795,6 +811,24 @@ mod tests {
             ReplicationScope::OwnerPrivatePlayer
         );
 
+        let player_spread = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.spread")
+            .unwrap();
+        assert_eq!(player_spread.sdk_path, &["player", "spread"]);
+        assert_eq!(player_spread.value_type, EngineStateValueType::Number);
+        assert_eq!(player_spread.default, EngineStateDefault::Number(0.0));
+        assert_eq!(
+            player_spread.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: MAX_EFFECTIVE_SPREAD_DEGREES,
+            })
+        );
+        assert!(!player_spread.persist);
+        assert_eq!(player_spread.capability, EngineStateCapability::Readonly);
+        assert_eq!(player_spread.network, ReplicationScope::None);
+
         let weapon_cooldown = entries
             .iter()
             .find(|entry| entry.wire_name == "player.weaponCooldownMs")
@@ -843,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn player_owner_private_slots_are_replicated_except_local_weapon_display_slots() {
+    fn player_owner_private_slots_are_replicated_except_local_presentation_slots() {
         // Server-authoritative player facts replicate owner-private (server sends
         // each only to the owning client); every other built-in slot stays
         // local-only (`None`).
@@ -871,6 +905,7 @@ mod tests {
         }
 
         for wire_name in [
+            "player.spread",
             "player.weapon.current",
             "player.weapon.pending",
             "player.weapon.switching",
@@ -882,7 +917,7 @@ mod tests {
             assert_eq!(
                 entry.network,
                 ReplicationScope::None,
-                "{wire_name} is locally owned display state, never an owner-private projection"
+                "{wire_name} is local presentation state, never an owner-private projection"
             );
         }
 

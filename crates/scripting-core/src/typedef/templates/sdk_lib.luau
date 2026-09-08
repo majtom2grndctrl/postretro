@@ -1123,7 +1123,9 @@ declare function Bar(props: BarProps): WidgetDescriptor
 
 --- Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind;
 --- angles are degrees with 0 at 12 o'clock and positive clockwise.
-export type RingProps = { diameter: number, radius: number | RingBindProp, thickness: number | RingBindProp, startAngle: (number | RingBindProp)?, sweep: (number | RingBindProp)?, fill: WidgetColor, track: WidgetColor?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
+--- `radiusRange` maps a bound source range into visible pixels after tweening.
+export type RingRadiusRange = { inputMax: number, min: number, max: number }
+export type RingProps = { diameter: number, radius: number | RingBindProp, radiusRange: RingRadiusRange?, thickness: number | RingBindProp, startAngle: (number | RingBindProp)?, sweep: (number | RingBindProp)?, fill: WidgetColor, track: WidgetColor?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- Build a passive annulus or angular arc descriptor.
 declare function Ring(props: RingProps): WidgetDescriptor

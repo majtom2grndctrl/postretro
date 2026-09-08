@@ -374,14 +374,14 @@ mod tests {
     fn payload_rejects_previous_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(6);
+        json["epoch"] = serde_json::json!(7);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 7,
-                received: 6,
+                expected: 8,
+                received: 7,
             })
         ));
     }

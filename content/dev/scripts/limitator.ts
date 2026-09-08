@@ -66,6 +66,8 @@ export const limitatorEntity = defineEntity({
         leg: 0.5,
       },
     },
+    // One ordinary hit is enough to make this ranged fixture reconsider its target.
+    tolerance: 4,
     mesh: {
       model: "models/limitator/model.gltf",
       attachments: {
@@ -204,7 +206,8 @@ export const limitatorEntity = defineEntity({
       transitions: {
         "*": [
           { to: "idle", when: brain.hasTarget.not() },
-          { to: "idle", when: brain.targetHostile.not() },
+          // A selected neutral target is an engine-admitted over-tolerance
+          // retaliator, so it remains engageable like an ordinary hostile.
         ],
         idle: [
           {

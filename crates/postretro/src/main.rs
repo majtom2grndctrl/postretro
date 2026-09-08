@@ -1264,10 +1264,23 @@ struct ClientFrameFireCommand {
     elapsed_ms: f32,
 }
 
+#[cfg(test)]
 fn client_fire_ticks_for_post_loop(
     commands: &[ClientFrameFireCommand],
     weapon: &postretro_entities::components::weapon::WeaponComponent,
 ) -> Vec<u32> {
+    client_fire_commands_for_post_loop(commands, weapon)
+        .into_iter()
+        .map(|command| command.client_tick)
+        .collect()
+}
+
+/// Select the logical fire ticks the host will authorize, retaining their
+/// frame-relative simulation times so client bloom can replay the same order.
+fn client_fire_commands_for_post_loop(
+    commands: &[ClientFrameFireCommand],
+    weapon: &postretro_entities::components::weapon::WeaponComponent,
+) -> Vec<ClientFrameFireCommand> {
     let mut selected = Vec::new();
     let mut cooldown_ms = weapon.cooldown_remaining_ms.max(0.0);
     let mut previous_elapsed_ms = 0.0;
@@ -1285,7 +1298,7 @@ fn client_fire_ticks_for_post_loop(
             postretro_foundation::FireMode::Auto => command.button.active,
         };
         if weapon.state.allows_fire() && wants_fire && cooldown_ms <= 0.0 {
-            selected.push(command.client_tick);
+            selected.push(*command);
             cooldown_ms = stats.cooldown_ms;
             if stats.fire_mode == postretro_foundation::FireMode::Semi {
                 break;
@@ -6897,18 +6910,25 @@ impl App {
         if let Some(command) = zero_tick_fire_command.as_mut() {
             command.firing_slot = u8::try_from(active_slot).unwrap_or_default();
         }
-        let client_ticks = if zero_tick_fire_command.is_some() {
+        let selected_fire_commands = if zero_tick_fire_command.is_some() {
             netcode::client_peek_next_command_tick(
                 self.session
                     .as_ref()
                     .and_then(|session| session.net_endpoint.as_ref()),
             )
             .into_iter()
+            .map(|client_tick| ClientFrameFireCommand {
+                client_tick,
+                button,
+                // A zero-tick input has no earlier logical-tick boundary in
+                // this frame, so it preserves the legacy post-frame timing.
+                elapsed_ms: (frame_dt.max(0.0)) * 1000.0,
+            })
             .collect::<Vec<_>>()
         } else {
-            client_fire_ticks_for_post_loop(sent_fire_commands, &component)
+            client_fire_commands_for_post_loop(sent_fire_commands, &component)
         };
-        let Some(&client_tick) = client_ticks.first() else {
+        let Some(first_selected) = selected_fire_commands.first().copied() else {
             let _ = weapon::advance_client_fire_state(&mut component, button, frame_dt);
             let mut registry = script_ctx.registry.borrow_mut();
             let _ = registry.set_component(weapon_id, component);
@@ -6919,6 +6939,19 @@ impl App {
             }
             return;
         };
+        let selected_shot_elapsed_ms = selected_fire_commands
+            .iter()
+            .map(|command| command.elapsed_ms)
+            .collect::<Vec<_>>();
+        let logical_tick_elapsed_ms = zero_tick_fire_command
+            .is_some()
+            .then(Vec::new)
+            .unwrap_or_else(|| {
+                sent_fire_commands
+                    .iter()
+                    .map(|command| command.elapsed_ms)
+                    .collect()
+            });
         let (aim_origin, aim_direction) = self.camera.aim_ray();
         let cooldown_before_ms = component.cooldown_remaining_ms;
         let resolution = {
@@ -6933,8 +6966,9 @@ impl App {
                 aim_direction,
                 &fire_terms.placement,
                 fire_terms.muzzle_offset,
-                client_tick,
-                client_ticks.len().saturating_sub(1),
+                first_selected.client_tick,
+                &selected_shot_elapsed_ms,
+                &logical_tick_elapsed_ms,
                 &self.collision_world,
                 &registry,
                 &session.hit_zone_store,
@@ -7004,8 +7038,8 @@ impl App {
             // each later tick in a multi-tick frame still authorized a host shot, so
             // send an empty declaration per remaining tick to retire it and keep
             // shot_id accounting balanced with the host without extra ray casts.
-            for client_tick in client_ticks.iter().copied().skip(1) {
-                let shot_id = netcode::shot_id_raw(local_pawn_network_id, client_tick);
+            for command in selected_fire_commands.iter().skip(1) {
+                let shot_id = netcode::shot_id_raw(local_pawn_network_id, command.client_tick);
                 let _ = netcode::client_send_hit_declaration(
                     self.session
                         .as_mut()
@@ -10175,13 +10209,18 @@ mod tests {
 
     #[test]
     fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
+        use postretro_entities::components::inventory::Inventory;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
         let mut state =
             client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
-        state.pellet_count = 8;
-        state.spread_degrees = 4.0;
-        state.bloom_per_shot_degrees = 1.5;
+        state.spread_degrees = 2.0;
+        state.bloom_accumulator_degrees = 4.0;
+        state.bloom_per_shot_degrees = 1.0;
         state.bloom_max_degrees = 8.0;
-        let mut host_state = state.clone();
+        state.bloom_decay_degrees_per_second = 10.0;
+        state.bloom_decay_delay_ms = 30.0;
         let commands = [
             ClientFrameFireCommand {
                 client_tick: 7,
@@ -10209,20 +10248,58 @@ mod tests {
             },
         ];
 
-        let selected = client_fire_ticks_for_post_loop(&commands, &state);
+        let selected = client_fire_commands_for_post_loop(&commands, &state);
         assert_eq!(
-            selected,
+            selected
+                .iter()
+                .map(|command| command.client_tick)
+                .collect::<Vec<_>>(),
             vec![7, 9],
             "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
         );
 
-        // Regression: a hitch used to grow client bloom only for `selected[0]`,
-        // although the host resolves every selected logical auto shot.
-        // The post-loop fire path keeps one rendered-pose cast and one client
-        // shell position, but applies the trailing selected hitscan bloom steps.
+        // Regression: batching trailing bloom after a frame-wide decay made a
+        // delayed-decay hitch end at 5.52 instead of the host's 5.84 degrees.
+        // Run the complete host weapon command path so authorize_fire ticks
+        // bloom before each logical authorization and resolution grows it.
+        let host_registry = Rc::new(RefCell::new(postretro_entities::EntityRegistry::new()));
+        let (host_pawn, host_weapon) = {
+            let mut registry = host_registry.borrow_mut();
+            let pawn = registry.spawn(postretro_entities::Transform::default());
+            let weapon = registry.spawn(postretro_entities::Transform::default());
+            registry
+                .set_component(weapon, state.clone())
+                .expect("host weapon attaches");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("host pawn owns the weapon");
+            (pawn, weapon)
+        };
         let registry = postretro_entities::EntityRegistry::new();
         let collision_world = collision::CollisionWorld::new();
         let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
+        for command in &commands {
+            sim::run_local_weapon_fire_for_test(
+                &host_registry,
+                host_pawn,
+                &weapon::WeaponFireCommand {
+                    button: command.button,
+                    aim_origin: Vec3::ZERO,
+                    aim_direction: Vec3::NEG_Z,
+                    can_fire: true,
+                },
+                &collision_world,
+                &hit_zone_store,
+                0.016,
+            );
+        }
+
+        let selected_shot_elapsed_ms = selected
+            .iter()
+            .map(|command| command.elapsed_ms)
+            .collect::<Vec<_>>();
         let resolution = weapon::resolve_client_fire(
             None,
             &mut state,
@@ -10233,37 +10310,21 @@ mod tests {
             Vec3::NEG_Z,
             &WeaponPlacementDescriptor::default(),
             None,
-            selected[0],
-            selected.len() - 1,
+            selected[0].client_tick,
+            &selected_shot_elapsed_ms,
+            &commands.map(|command| command.elapsed_ms),
             &collision_world,
             &registry,
             &hit_zone_store,
             0.0,
-            0.0,
+            0.048,
         )
         .expect("the first selected auto tick resolves the frame's one cast");
-
-        let host_command = weapon::WeaponFireCommand {
-            button: commands[0].button,
-            aim_origin: Vec3::ZERO,
-            aim_direction: Vec3::NEG_Z,
-            can_fire: true,
-        };
-        for _ in &selected {
-            let _ = weapon::tick_resolved_component(
-                &registry,
-                None,
-                &mut host_state,
-                "weapon.unknown",
-                0,
-                &host_command,
-                &WeaponPlacementDescriptor::default(),
-                &collision_world,
-                &hit_zone_store,
-                0.0,
-                weapon::WeaponFireAuthorization::Accepted,
-            );
-        }
+        let host_state = host_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
+            .expect("host weapon persists")
+            .clone();
 
         assert_eq!(resolution.client_tick, 7);
         assert_eq!(state.shells_fired, 1, "only the first selected shot casts");
@@ -10271,16 +10332,22 @@ mod tests {
             host_state.shells_fired, 2,
             "the host resolves both logical shots"
         );
-        assert_eq!(
-            state.bloom_accumulator_degrees,
-            host_state.bloom_accumulator_degrees
+        assert!(
+            (state.bloom_accumulator_degrees - 5.84).abs() < 1.0e-5,
+            "the replay preserves the delayed-decay timing between 16ms and 48ms shots"
         );
-        assert_eq!(
-            state.effective_spread_degrees(0.0, 0.0),
-            host_state.effective_spread_degrees(0.0, 0.0),
+        assert!(
+            (state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs() < 1.0e-5,
+            "the next client cone matches the host bloom accumulator"
+        );
+        assert!(
+            (state.effective_spread_degrees(0.0, 0.0)
+                - host_state.effective_spread_degrees(0.0, 0.0))
+            .abs()
+                < 1.0e-5,
             "the next client cone and local player.spread match host bloom"
         );
-        assert_eq!(selected[1..], [9]);
+        assert_eq!(selected[1].client_tick, 9);
     }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {

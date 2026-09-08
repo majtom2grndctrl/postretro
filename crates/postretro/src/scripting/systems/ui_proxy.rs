@@ -267,10 +267,7 @@ impl PlayerHudStatePublisher {
         // Spread is local predicted state, so every role publishes it from its
         // own active component before a connected client returns early.
         let effective_spread_degrees = weapon_hud_values(&self.ctx.registry.borrow()).4;
-        self.write_hud_slot(
-            "player.spread",
-            SlotValue::Number(effective_spread_degrees),
-        );
+        self.write_hud_slot("player.spread", SlotValue::Number(effective_spread_degrees));
     }
 
     /// Refresh unaddressed HUD reads of mod-owned per-owner slots from the

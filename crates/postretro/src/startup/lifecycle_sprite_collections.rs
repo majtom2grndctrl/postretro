@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn invalid_specular_exponent_is_rejected_before_registration() {
-        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        for invalid in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let candidate = sprite_candidate(
                 "invalid material",
                 "sprites/shared.png",

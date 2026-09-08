@@ -884,24 +884,69 @@ mod tests {
 
     #[test]
     fn unregistered_collection_falls_back_to_default_and_warns_once() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke"); // first registered = default
         collector.register_sprite("spark");
         spawn_particle(&mut registry, Vec3::ZERO, "ghost", 0.1);
         spawn_particle(&mut registry, Vec3::ZERO, "ghost", 0.2);
+        let capture = LogCapture::start();
 
         collector.collect(&registry, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         // Both ghost particles bucket into the default ("smoke") collection.
         let smoke_bytes = pairs.iter().find(|(n, _)| *n == "smoke").unwrap().1;
         assert_eq!(smoke_bytes.len(), 2 * SPRITE_INSTANCE_SIZE);
-        // 'ghost' should be recorded as warned-once. A second collect tick
-        // must not add a duplicate entry.
-        assert!(collector.warned_unregistered.contains("ghost"));
-        let warn_count = collector.warned_unregistered.len();
+        capture.assert_logged_once(
+            Level::Warn,
+            "[ParticleRender] collection id 'ghost' was not registered at level load",
+        );
+        // A second collect tick must not add a duplicate warning.
         collector.collect(&registry, None, &VisibleCells::DrawAll);
-        assert_eq!(collector.warned_unregistered.len(), warn_count);
+        capture.assert_logged_once(
+            Level::Warn,
+            "[ParticleRender] collection id 'ghost' was not registered at level load",
+        );
+    }
+
+    #[test]
+    fn distinct_unregistered_collections_each_warn_once() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let mut registry = EntityRegistry::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        spawn_particle(&mut registry, Vec3::ZERO, "ghost-a", 0.1);
+        spawn_particle(&mut registry, Vec3::ZERO, "ghost-a", 0.2);
+        spawn_particle(&mut registry, Vec3::ZERO, "ghost-b", 0.3);
+        let capture = LogCapture::start();
+
+        collector.collect(&registry, None, &VisibleCells::DrawAll);
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "[ParticleRender] collection id 'ghost-a' was not registered at level load",
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "[ParticleRender] collection id 'ghost-b' was not registered at level load",
+        );
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.level == Level::Warn
+                        && record.message.contains("was not registered at level load")
+                })
+                .count(),
+            2,
+            "warning granularity is one record per unregistered collection id"
+        );
     }
 
     #[test]
@@ -949,15 +994,20 @@ mod tests {
 
     #[test]
     fn collect_with_no_registrations_drops_particles_silently() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
         // If level load harvested zero sprites (no emitters anywhere), the
         // collector has no fallback target. Particles existing in that state
         // are anomalous; collect must not panic and must produce no draws.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         spawn_particle(&mut registry, Vec3::ZERO, "smoke", 0.1);
+        let capture = LogCapture::start();
 
         collector.collect(&registry, None, &VisibleCells::DrawAll);
         assert!(collector.iter_collections().next().is_none());
+        capture.assert_not_logged(Level::Warn, "was not registered at level load");
     }
 
     #[test]

@@ -6928,8 +6928,22 @@ impl App {
         } else {
             client_fire_commands_for_post_loop(sent_fire_commands, &component)
         };
+        let logical_tick_elapsed_ms = zero_tick_fire_command
+            .is_some()
+            .then(Vec::new)
+            .unwrap_or_else(|| {
+                sent_fire_commands
+                    .iter()
+                    .map(|command| command.elapsed_ms)
+                    .collect()
+            });
         let Some(first_selected) = selected_fire_commands.first().copied() else {
-            let _ = weapon::advance_client_fire_state(&mut component, button, frame_dt);
+            let _ = weapon::advance_client_fire_state(
+                &mut component,
+                button,
+                frame_dt,
+                &logical_tick_elapsed_ms,
+            );
             let mut registry = script_ctx.registry.borrow_mut();
             let _ = registry.set_component(weapon_id, component);
             if zero_tick_fire_command.is_some() {
@@ -6943,15 +6957,6 @@ impl App {
             .iter()
             .map(|command| command.elapsed_ms)
             .collect::<Vec<_>>();
-        let logical_tick_elapsed_ms = zero_tick_fire_command
-            .is_some()
-            .then(Vec::new)
-            .unwrap_or_else(|| {
-                sent_fire_commands
-                    .iter()
-                    .map(|command| command.elapsed_ms)
-                    .collect()
-            });
         let (aim_origin, aim_direction) = self.camera.aim_ray();
         let cooldown_before_ms = component.cooldown_remaining_ms;
         let resolution = {
@@ -10182,6 +10187,55 @@ mod tests {
         component
     }
 
+    fn spawn_owned_test_weapon(
+        component: postretro_entities::components::weapon::WeaponComponent,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
+        postretro_entities::EntityId,
+        postretro_entities::EntityId,
+    ) {
+        use postretro_entities::components::inventory::Inventory;
+
+        let registry = std::rc::Rc::new(std::cell::RefCell::new(
+            postretro_entities::EntityRegistry::new(),
+        ));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(postretro_entities::Transform::default());
+            let weapon = registry.spawn(postretro_entities::Transform::default());
+            registry
+                .set_component(weapon, component)
+                .expect("test weapon attaches");
+            let mut inventory = Inventory::default();
+            inventory.wieldables[0] = Some(weapon);
+            registry
+                .set_component(pawn, inventory)
+                .expect("test pawn owns the weapon");
+            (pawn, weapon)
+        };
+        (registry, pawn, weapon)
+    }
+
+    fn run_client_wieldable_prepass(
+        registry: &std::rc::Rc<std::cell::RefCell<postretro_entities::EntityRegistry>>,
+        pawn: postretro_entities::EntityId,
+        button: weapon::FireButtonState,
+        tick_dt: f32,
+    ) {
+        let _ = sim::simulate_client_wieldable_tick(
+            registry.clone(),
+            &collision::CollisionWorld::new(),
+            &scripting_systems::hit_zones::HitZoneStore::new(),
+            Some(pawn),
+            false,
+            None,
+            button,
+            false,
+            0.0,
+            tick_dt,
+        );
+    }
+
     #[test]
     fn client_fire_tick_selection_keeps_press_independent_of_pruned_history() {
         let state = client_fire_selection_state(postretro_foundation::FireMode::Semi, 0.0, 100.0);
@@ -10207,20 +10261,179 @@ mod tests {
         assert_eq!(client_fire_ticks_for_post_loop(&commands, &state), vec![41]);
     }
 
+    // Regression: the connected-client wieldable prepass advanced bloom before
+    // the post-loop prediction clock advanced the same 16 ms again.
+    #[test]
+    fn idle_client_wieldable_prepass_and_post_loop_match_host_bloom_clock() {
+        let mut initial =
+            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
+        initial.spread_degrees = 2.0;
+        initial.bloom_accumulator_degrees = 4.0;
+        initial.bloom_decay_degrees_per_second = 10.0;
+        initial.bloom_decay_delay_ms = 30.0;
+        let button = weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        };
+        let world = collision::CollisionWorld::new();
+        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
+        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
+        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
+
+        sim::run_local_weapon_fire_for_test(
+            &host_registry,
+            host_pawn,
+            &weapon::WeaponFireCommand {
+                button,
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+                can_fire: true,
+            },
+            &world,
+            &hit_zones,
+            0.016,
+        );
+        run_client_wieldable_prepass(&client_registry, client_pawn, button, 0.016);
+
+        let mut client_state = client_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
+            .expect("client weapon persists")
+            .clone();
+        assert!((client_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        assert!(client_state.bloom_idle_ms.abs() < f32::EPSILON);
+        let _ = weapon::advance_client_fire_state(&mut client_state, button, 0.016, &[16.0]);
+        let host_state = host_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
+            .expect("host weapon persists")
+            .clone();
+
+        assert!((host_state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        assert!((host_state.bloom_idle_ms - 16.0).abs() < f32::EPSILON);
+        assert!((host_state.effective_spread_degrees(0.0, 0.0) - 6.0).abs() < f32::EPSILON);
+        assert!(
+            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
+                < 1.0e-6
+        );
+        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-6);
+        assert!(
+            (client_state.effective_spread_degrees(0.0, 0.0)
+                - host_state.effective_spread_degrees(0.0, 0.0))
+            .abs()
+                < 1.0e-6
+        );
+    }
+
+    // Regression: one frame-wide bloom tick collapsed a delay crossing that the
+    // host evaluated at three fixed logical boundaries.
+    #[test]
+    fn unselected_client_fire_hitch_replays_host_bloom_boundaries() {
+        let mut initial =
+            client_fire_selection_state(postretro_foundation::FireMode::Auto, 100.0, 100.0);
+        initial.spread_degrees = 2.0;
+        initial.bloom_accumulator_degrees = 4.0;
+        initial.bloom_decay_degrees_per_second = 10.0;
+        initial.bloom_decay_delay_ms = 30.0;
+        let commands = [
+            ClientFrameFireCommand {
+                client_tick: 7,
+                button: weapon::FireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+                elapsed_ms: 16.0,
+            },
+            ClientFrameFireCommand {
+                client_tick: 8,
+                button: weapon::FireButtonState {
+                    pressed: false,
+                    active: true,
+                },
+                elapsed_ms: 32.0,
+            },
+            ClientFrameFireCommand {
+                client_tick: 9,
+                button: weapon::FireButtonState {
+                    pressed: false,
+                    active: true,
+                },
+                elapsed_ms: 48.0,
+            },
+        ];
+        assert!(
+            client_fire_commands_for_post_loop(&commands, &initial).is_empty(),
+            "cooldown suppresses every logical fire command"
+        );
+
+        let world = collision::CollisionWorld::new();
+        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
+        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
+        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
+        for command in &commands {
+            sim::run_local_weapon_fire_for_test(
+                &host_registry,
+                host_pawn,
+                &weapon::WeaponFireCommand {
+                    button: command.button,
+                    aim_origin: Vec3::ZERO,
+                    aim_direction: Vec3::NEG_Z,
+                    can_fire: true,
+                },
+                &world,
+                &hit_zones,
+                0.016,
+            );
+            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
+        }
+
+        let mut client_state = client_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
+            .expect("client weapon persists")
+            .clone();
+        let elapsed = commands.map(|command| command.elapsed_ms);
+        let _ = weapon::advance_client_fire_state(
+            &mut client_state,
+            commands[0].button,
+            0.048,
+            &elapsed,
+        );
+        let host_state = host_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(host_weapon)
+            .expect("host weapon persists")
+            .clone();
+
+        assert!((client_state.bloom_accumulator_degrees - 3.68).abs() < 1.0e-5);
+        assert!((client_state.bloom_idle_ms - 48.0).abs() < 1.0e-5);
+        assert!((client_state.effective_spread_degrees(0.0, 0.0) - 5.68).abs() < 1.0e-5);
+        assert!(
+            (client_state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (client_state.cooldown_remaining_ms - host_state.cooldown_remaining_ms).abs() < 1.0e-5
+        );
+        assert!((client_state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5);
+        assert!(
+            (client_state.effective_spread_degrees(0.0, 0.0)
+                - host_state.effective_spread_degrees(0.0, 0.0))
+            .abs()
+                < 1.0e-5
+        );
+    }
+
     #[test]
     fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
-        use postretro_entities::components::inventory::Inventory;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let mut state =
+        let mut initial =
             client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
-        state.spread_degrees = 2.0;
-        state.bloom_accumulator_degrees = 4.0;
-        state.bloom_per_shot_degrees = 1.0;
-        state.bloom_max_degrees = 8.0;
-        state.bloom_decay_degrees_per_second = 10.0;
-        state.bloom_decay_delay_ms = 30.0;
+        initial.spread_degrees = 2.0;
+        initial.bloom_accumulator_degrees = 4.0;
+        initial.bloom_per_shot_degrees = 1.0;
+        initial.bloom_max_degrees = 8.0;
+        initial.bloom_decay_degrees_per_second = 10.0;
+        initial.bloom_decay_delay_ms = 30.0;
         let commands = [
             ClientFrameFireCommand {
                 client_tick: 7,
@@ -10248,7 +10461,7 @@ mod tests {
             },
         ];
 
-        let selected = client_fire_commands_for_post_loop(&commands, &state);
+        let selected = client_fire_commands_for_post_loop(&commands, &initial);
         assert_eq!(
             selected
                 .iter()
@@ -10258,26 +10471,10 @@ mod tests {
             "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
         );
 
-        // Regression: batching trailing bloom after a frame-wide decay made a
-        // delayed-decay hitch end at 5.52 instead of the host's 5.84 degrees.
-        // Run the complete host weapon command path so authorize_fire ticks
-        // bloom before each logical authorization and resolution grows it.
-        let host_registry = Rc::new(RefCell::new(postretro_entities::EntityRegistry::new()));
-        let (host_pawn, host_weapon) = {
-            let mut registry = host_registry.borrow_mut();
-            let pawn = registry.spawn(postretro_entities::Transform::default());
-            let weapon = registry.spawn(postretro_entities::Transform::default());
-            registry
-                .set_component(weapon, state.clone())
-                .expect("host weapon attaches");
-            let mut inventory = Inventory::default();
-            inventory.wieldables[0] = Some(weapon);
-            registry
-                .set_component(pawn, inventory)
-                .expect("host pawn owns the weapon");
-            (pawn, weapon)
-        };
-        let registry = postretro_entities::EntityRegistry::new();
+        // Regression: the fire-suppressed client prepass and frame-wide bloom
+        // replay double-advanced the clock during a sustained-fire hitch.
+        let (host_registry, host_pawn, host_weapon) = spawn_owned_test_weapon(initial.clone());
+        let (client_registry, client_pawn, client_weapon) = spawn_owned_test_weapon(initial);
         let collision_world = collision::CollisionWorld::new();
         let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
         for command in &commands {
@@ -10294,12 +10491,21 @@ mod tests {
                 &hit_zone_store,
                 0.016,
             );
+            run_client_wieldable_prepass(&client_registry, client_pawn, command.button, 0.016);
         }
 
+        let mut state = client_registry
+            .borrow()
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(client_weapon)
+            .expect("client weapon persists")
+            .clone();
+        assert!((state.bloom_accumulator_degrees - 4.0).abs() < f32::EPSILON);
+        assert!(state.bloom_idle_ms.abs() < f32::EPSILON);
         let selected_shot_elapsed_ms = selected
             .iter()
             .map(|command| command.elapsed_ms)
             .collect::<Vec<_>>();
+        let registry = client_registry.borrow();
         let resolution = weapon::resolve_client_fire(
             None,
             &mut state,
@@ -10339,6 +10545,10 @@ mod tests {
         assert!(
             (state.bloom_accumulator_degrees - host_state.bloom_accumulator_degrees).abs() < 1.0e-5,
             "the next client cone matches the host bloom accumulator"
+        );
+        assert!(
+            (state.bloom_idle_ms - host_state.bloom_idle_ms).abs() < 1.0e-5,
+            "the next client decay boundary matches the host idle clock"
         );
         assert!(
             (state.effective_spread_degrees(0.0, 0.0)

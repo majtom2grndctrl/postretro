@@ -2,7 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
-use crate::ui::descriptor::BarExitFade;
+use crate::ui::descriptor::{BarExitFade, RingRadiusRange};
 
 // --- JS UI deserialization --------------------------------------------------
 
@@ -299,6 +299,7 @@ pub fn ring_widget_from_js<'js>(
     let ring = RingWidget {
         diameter: get_required_f32_js(obj, "diameter")?,
         radius: scalar_value_from_js(ctx, obj, "radius")?,
+        radius_range: ring_radius_range_from_js(obj)?,
         thickness: scalar_value_from_js(ctx, obj, "thickness")?,
         start_angle: scalar_value_opt_from_js(ctx, obj, "startAngle")?,
         sweep: scalar_value_opt_from_js(ctx, obj, "sweep")?,
@@ -311,6 +312,19 @@ pub fn ring_widget_from_js<'js>(
     ring.validate()
         .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     Ok(ring)
+}
+
+fn ring_radius_range_from_js<'js>(
+    obj: &Object<'js>,
+) -> Result<Option<RingRadiusRange>, DescriptorError> {
+    let Some(range) = optional_object_js(obj, "radiusRange")? else {
+        return Ok(None);
+    };
+    Ok(Some(RingRadiusRange {
+        input_max: get_required_f32_js(&range, "inputMax")?,
+        min: get_required_f32_js(&range, "min")?,
+        max: get_required_f32_js(&range, "max")?,
+    }))
 }
 
 fn optional_bar_dimension_js<'js>(

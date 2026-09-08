@@ -12,6 +12,7 @@ fn ring(
     Widget::Ring(RingWidget {
         diameter: 120.0,
         radius: ScalarValue::Literal(48.0),
+        radius_range: None,
         thickness: ScalarValue::Literal(3.0),
         start_angle: start_angle.map(ScalarValue::Literal),
         sweep: sweep.map(ScalarValue::Literal),
@@ -71,6 +72,7 @@ fn ring_with_scalars(
     Widget::Ring(RingWidget {
         diameter: 100.0,
         radius,
+        radius_range: None,
         thickness,
         start_angle: Some(start_angle),
         sweep: Some(sweep),
@@ -676,4 +678,49 @@ fn local_bound_ring_scalar_resolves_in_its_declaring_scope() {
     let data = retained(&mut ui, &mut fonts, &no_slots(), &cells, 0.0);
     assert_eq!(data.rings.len(), 1);
     assert!(approx(data.rings[0].radius, 25.0));
+}
+
+#[test]
+fn bound_radius_range_keeps_a_visible_minimum_and_reaches_its_maximum() {
+    let mut root = ring_with_scalars(
+        bound("player.spread", Some(tween(90.0, None))),
+        ScalarValue::Literal(2.0),
+        ScalarValue::Literal(0.0),
+        ScalarValue::Literal(360.0),
+    );
+    let Widget::Ring(ring) = &mut root else {
+        unreachable!("ring helper returns a Ring");
+    };
+    ring.radius_range = Some(RingRadiusRange {
+        input_max: 8.0,
+        min: 4.0,
+        max: 20.0,
+    });
+    let mut ui = UiTree::from_descriptor(&anchored(root), &theme());
+    let mut fonts = font_system();
+
+    let resting = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("player.spread", 0.0)]),
+        &no_cells(),
+        0.0,
+    );
+    assert!(approx(resting.rings[0].radius, 4.0));
+    // The changed source starts a 90 ms tween; sample again at its endpoint.
+    retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("player.spread", 8.0)]),
+        &no_cells(),
+        0.09,
+    );
+    let maxed = retained(
+        &mut ui,
+        &mut fonts,
+        &ring_slots(&[("player.spread", 8.0)]),
+        &no_cells(),
+        0.18,
+    );
+    assert!(approx(maxed.rings[0].radius, 20.0));
 }

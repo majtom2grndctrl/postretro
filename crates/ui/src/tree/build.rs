@@ -358,6 +358,7 @@ fn build_ring(
             NodeContext::Ring {
                 diameter: ring.diameter,
                 radius: build_ring_scalar(&ring.radius, scope),
+                radius_range: ring.radius_range.clone(),
                 thickness: build_ring_scalar(&ring.thickness, scope),
                 start_angle: ring
                     .start_angle

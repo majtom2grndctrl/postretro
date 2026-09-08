@@ -1061,10 +1061,14 @@ export function Bar(props: BarProps): WidgetDescriptor {
 
 // --- Ring -------------------------------------------------------------------
 
-/** Props for `Ring`. Geometry is literal or a readonly 1:1 state/local bind. */
+/** Presentation-only linear map for a bound `Ring.radius`. */
+export type RingRadiusRange = { inputMax: number; min: number; max: number };
+
+/** Props for `Ring`. Geometry is literal or a readonly state/local bind. */
 export type RingProps = {
   diameter: number;
   radius: number | RingBindProp;
+  radiusRange?: RingRadiusRange;
   thickness: number | RingBindProp;
   startAngle?: number | RingBindProp;
   sweep?: number | RingBindProp;
@@ -1083,6 +1087,21 @@ export function Ring(props: RingProps): WidgetDescriptor {
     throw new Error("Ring: `diameter` must be greater than zero");
   }
   const radius = buildScalar(props.radius, "radius", "Ring");
+  if (props.radiusRange !== undefined) {
+    if (typeof radius === "number") {
+      throw new Error("Ring: `radiusRange` requires a bound `radius`");
+    }
+    requireObject(props.radiusRange, "Ring.radiusRange");
+    requireFiniteF32Number(props.radiusRange.inputMax, "radiusRange.inputMax", "Ring");
+    requireFiniteF32Number(props.radiusRange.min, "radiusRange.min", "Ring");
+    requireFiniteF32Number(props.radiusRange.max, "radiusRange.max", "Ring");
+    if (props.radiusRange.inputMax <= 0 || props.radiusRange.min <= 0) {
+      throw new Error("Ring: `radiusRange.inputMax` and `radiusRange.min` must be greater than zero");
+    }
+    if (props.radiusRange.max < props.radiusRange.min || props.radiusRange.max > props.diameter / 2) {
+      throw new Error("Ring: `radiusRange.max` must be at least `min` and no greater than half of `diameter`");
+    }
+  }
   const thickness = buildScalar(props.thickness, "thickness", "Ring");
   if (typeof radius === "number") {
     if (radius <= 0) throw new Error("Ring: `radius` must be greater than zero");
@@ -1104,6 +1123,7 @@ export function Ring(props: RingProps): WidgetDescriptor {
     radius,
     thickness,
   };
+  if (props.radiusRange !== undefined) out.radiusRange = props.radiusRange;
   if (props.startAngle !== undefined) {
     out.startAngle = buildScalar(props.startAngle, "startAngle", "Ring");
   }

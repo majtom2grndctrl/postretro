@@ -127,25 +127,10 @@ export const hud = defineUiTree({
   ),
 });
 
-export const reticle = defineUiTree({
-  name: "hud.reticle",
-  alwaysOn: true,
-  tree: Tree(
-    { anchor: "center", offset: [0.0, 0.0] },
-    Ring({
-      diameter: 28.0,
-      radius: 10.0,
-      thickness: 2.0,
-      fill: color.hud.text,
-    }),
-  ),
-});
-
-// `Tree` has one root, so this centered layer sits beneath the fixed aim mark
-// above. The raw degree value is deliberately a 1:1 relative presentation
-// binding; the retained UI clamps it to the ring's radius at draw time.
+// A single ring makes the changing fire-spread radius legible without a
+// stationary aim mark competing at the same center point.
 export const spreadReticle = defineUiTree({
-  name: "hud.spreadReticle",
+  name: "hud.reticle",
   alwaysOn: true,
   tree: Tree(
     { anchor: "center", offset: [0.0, 0.0] },
@@ -157,6 +142,9 @@ export const spreadReticle = defineUiTree({
           easing: "easeOut",
         },
       }),
+      // Eight degrees is the rifle's full sustained-fire bloom. Map it from a
+      // visible 4 px resting ring to a 20 px ring — exactly five times larger.
+      radiusRange: { inputMax: 8.0, min: 4.0, max: 20.0 },
       thickness: 2.0,
       fill: color.hud.text,
     }),

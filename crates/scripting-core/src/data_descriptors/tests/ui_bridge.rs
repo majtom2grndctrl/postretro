@@ -232,6 +232,7 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
             children: [{
                 kind: "ring", diameter: 120,
                 radius: { slot: "hud.radius", tween: { durationMs: 90, easing: "easeOut" } },
+                radiusRange: { inputMax: 8, min: 4, max: 20 },
                 thickness: { local: "stroke" }, startAngle: 15, sweep: { slot: "hud.sweep" },
                 fill: [1, 0.2, 0.3, 1], track: [0.1, 0.1, 0.1, 1],
                 id: "reticle", visibleWhen: { slot: "hud.visible" }, role: "none"
@@ -246,6 +247,7 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
             children = {{
                 kind = "ring", diameter = 120,
                 radius = { slot = "hud.radius", tween = { durationMs = 90, easing = "easeOut" } },
+                radiusRange = { inputMax = 8, min = 4, max = 20 },
                 thickness = { ["local"] = "stroke" }, startAngle = 15, sweep = { slot = "hud.sweep" },
                 fill = {1, 0.2, 0.3, 1}, track = {0.1, 0.1, 0.1, 1},
                 id = "reticle", visibleWhen = { slot = "hud.visible" }, role = "none"
@@ -268,12 +270,20 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
         panic!("fixture child must be a ring");
     };
     assert!(matches!(ring.radius, ScalarValue::Bound(_)));
+    assert_eq!(
+        ring.radius_range,
+        Some(RingRadiusRange {
+            input_max: 8.0,
+            min: 4.0,
+            max: 20.0,
+        })
+    );
     assert!(matches!(ring.thickness, ScalarValue::Bound(_)));
     assert!(matches!(ring.start_angle, Some(ScalarValue::Literal(15.0))));
     assert!(matches!(ring.sweep, Some(ScalarValue::Bound(_))));
     assert_eq!(
         serde_json::to_string(&js_tree).unwrap(),
-        r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","localState":{"scope":"ring","cells":{"stroke":3.0}},"children":[{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"thickness":{"local":"stroke"},"startAngle":15.0,"sweep":{"slot":"hud.sweep"},"fill":[1.0,0.2,0.3,1.0],"track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}]}}"#
+        r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","localState":{"scope":"ring","cells":{"stroke":3.0}},"children":[{"kind":"ring","diameter":120.0,"radius":{"slot":"hud.radius","tween":{"durationMs":90.0,"easing":"easeOut"}},"radiusRange":{"inputMax":8.0,"min":4.0,"max":20.0},"thickness":{"local":"stroke"},"startAngle":15.0,"sweep":{"slot":"hud.sweep"},"fill":[1.0,0.2,0.3,1.0],"track":[0.1,0.1,0.1,1.0],"id":"reticle","visibleWhen":{"slot":"hud.visible"},"role":"none"}]}}"#
     );
 
     for (invalid_js, invalid_lua) in [
@@ -304,6 +314,10 @@ fn ring_bridge_parses_mixed_scalars_and_rejects_invalid_contracts_in_both_runtim
         (
             r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, thickness:2, sweep:360.1, fill:[1,1,1,1] } })"#,
             r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, thickness=2, sweep=360.1, fill={1,1,1,1} } }"#,
+        ),
+        (
+            r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:25, radiusRange:{inputMax:8,min:4,max:20}, thickness:2, fill:[1,1,1,1] } })"#,
+            r#"return { anchor="center", offset={0,0}, root={ kind="ring", diameter=100, radius=25, radiusRange={inputMax=8,min=4,max=20}, thickness=2, fill={1,1,1,1} } }"#,
         ),
         (
             r#"({ anchor:"center", offset:[0,0], root:{ kind:"ring", diameter:100, radius:{fact:"unsupported"}, thickness:2, fill:[1,1,1,1] } })"#,

@@ -2393,6 +2393,7 @@ mod tests {
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             None,
             9,
+            0,
             &CollisionWorld::new(),
             &client_registry.borrow(),
             &HitZoneStore::new(),

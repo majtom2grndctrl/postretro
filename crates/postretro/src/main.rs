@@ -6934,6 +6934,7 @@ impl App {
                 &fire_terms.placement,
                 fire_terms.muzzle_offset,
                 client_tick,
+                client_ticks.len().saturating_sub(1),
                 &self.collision_world,
                 &registry,
                 &session.hit_zone_store,
@@ -10173,11 +10174,14 @@ mod tests {
     }
 
     #[test]
-    fn held_auto_fire_tick_selection_accounts_for_hitch_cooldown_windows() {
+    fn held_auto_fire_hitch_keeps_client_bloom_aligned_with_host() {
         let mut state =
             client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
         state.pellet_count = 8;
         state.spread_degrees = 4.0;
+        state.bloom_per_shot_degrees = 1.5;
+        state.bloom_max_degrees = 8.0;
+        let mut host_state = state.clone();
         let commands = [
             ClientFrameFireCommand {
                 client_tick: 7,
@@ -10212,10 +10216,13 @@ mod tests {
             "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
         );
 
-        // The post-loop fire path resolves only `selected[0]`; its remaining
-        // selected ticks are retired by the empty-declaration loop. This keeps
-        // a hitch frame to one rendered-pose cast and one shell-counter advance.
+        // Regression: a hitch used to grow client bloom only for `selected[0]`,
+        // although the host resolves every selected logical auto shot.
+        // The post-loop fire path keeps one rendered-pose cast and one client
+        // shell position, but applies the trailing selected hitscan bloom steps.
         let registry = postretro_entities::EntityRegistry::new();
+        let collision_world = collision::CollisionWorld::new();
+        let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
         let resolution = weapon::resolve_client_fire(
             None,
             &mut state,
@@ -10227,16 +10234,52 @@ mod tests {
             &WeaponPlacementDescriptor::default(),
             None,
             selected[0],
-            &collision::CollisionWorld::new(),
+            selected.len() - 1,
+            &collision_world,
             &registry,
-            &scripting_systems::hit_zones::HitZoneStore::new(),
+            &hit_zone_store,
             0.0,
             0.0,
         )
         .expect("the first selected auto tick resolves the frame's one cast");
 
+        let host_command = weapon::WeaponFireCommand {
+            button: commands[0].button,
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        for _ in &selected {
+            let _ = weapon::tick_resolved_component(
+                &registry,
+                None,
+                &mut host_state,
+                "weapon.unknown",
+                0,
+                &host_command,
+                &WeaponPlacementDescriptor::default(),
+                &collision_world,
+                &hit_zone_store,
+                0.0,
+                weapon::WeaponFireAuthorization::Accepted,
+            );
+        }
+
         assert_eq!(resolution.client_tick, 7);
-        assert_eq!(state.shells_fired, 1);
+        assert_eq!(state.shells_fired, 1, "only the first selected shot casts");
+        assert_eq!(
+            host_state.shells_fired, 2,
+            "the host resolves both logical shots"
+        );
+        assert_eq!(
+            state.bloom_accumulator_degrees,
+            host_state.bloom_accumulator_degrees
+        );
+        assert_eq!(
+            state.effective_spread_degrees(0.0, 0.0),
+            host_state.effective_spread_degrees(0.0, 0.0),
+            "the next client cone and local player.spread match host bloom"
+        );
         assert_eq!(selected[1..], [9]);
     }
 

@@ -1045,6 +1045,102 @@ pub fn drain_maps_js<'js>(
     Ok(out)
 }
 
+/// Drain the strict manifest faction collection. Unlike optional presentation
+/// fields, malformed faction content rejects the manifest: entity faction names
+/// must resolve against one stable, all-or-nothing declaration set.
+pub fn drain_factions_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<crate::data_registry::FactionRegistry, DescriptorError> {
+    use crate::data_registry::{FactionDescriptor, FactionRegistry};
+
+    if !obj.contains_key("factions").map_err(js_err)? {
+        return Ok(FactionRegistry::default());
+    }
+    let raw: JsValue = obj.get("factions").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(FactionRegistry::default());
+    }
+    let Some(array) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factions` must be an array"),
+        });
+    };
+    let mut descriptors = Vec::with_capacity(array.len());
+    for index in 0..array.len() {
+        let value: JsValue = array.get(index).map_err(js_err)?;
+        let entry = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factions[{index}]` must be an object"),
+        })?;
+        let name = get_required_string_js(&entry, "name")?;
+        descriptors.push(FactionDescriptor { name });
+    }
+    FactionRegistry::from_descriptors(descriptors).map_err(|reason| DescriptorError::InvalidShape {
+        reason: format!("{scope}: `factions` invalid: {reason}"),
+    })
+}
+
+/// Drain strict directional sentiment entries after faction names have been
+/// validated. The returned registry owns sorted sparse `(from, to)` index-pair
+/// overrides, while the
+/// descriptors stay on the normalized manifest carrier for SDK-shape parity;
+/// no named lookup reaches the AI candidate hot path.
+pub fn drain_faction_sentiments_js<'js>(
+    obj: &Object<'js>,
+    factions: crate::data_registry::FactionRegistry,
+    scope: &str,
+) -> Result<
+    (
+        crate::data_registry::FactionRegistry,
+        Vec<crate::data_registry::FactionSentimentDescriptor>,
+    ),
+    DescriptorError,
+> {
+    use crate::data_registry::FactionSentimentDescriptor;
+
+    if !obj.contains_key("sentiment").map_err(js_err)? {
+        return Ok((factions, Vec::new()));
+    }
+    let raw: JsValue = obj.get("sentiment").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok((factions, Vec::new()));
+    }
+    let Some(array) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment` must be an array"),
+        });
+    };
+    let mut entries = Vec::with_capacity(array.len());
+    for index in 0..array.len() {
+        let value: JsValue = array.get(index).map_err(js_err)?;
+        let entry = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+            reason: format!("{scope}: `sentiment[{index}]` must be an object"),
+        })?;
+        let sentiment = get_required_f32_js(&entry, "sentiment")?;
+        let tolerance = get_required_f32_js(&entry, "tolerance")?;
+        if !sentiment.is_finite() || !tolerance.is_finite() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "{scope}: `sentiment[{index}].sentiment` and `.tolerance` must be finite f32 values"
+                ),
+            });
+        }
+        entries.push(FactionSentimentDescriptor {
+            from_faction: get_required_string_js(&entry, "fromFaction")?,
+            to_faction: get_required_string_js(&entry, "toFaction")?,
+            sentiment,
+            tolerance,
+        });
+    }
+    let factions =
+        factions
+            .with_sentiments(&entries)
+            .map_err(|reason| DescriptorError::InvalidShape {
+                reason: format!("{scope}: `sentiment` invalid: {reason}"),
+            })?;
+    Ok((factions, entries))
+}
+
 /// Drain mod-global reaction definitions from a QuickJS manifest object.
 /// Missing/null `reactions` normalizes to empty; present entries use the same
 /// descriptor parser as level-local reactions plus an optional `levels` scope.

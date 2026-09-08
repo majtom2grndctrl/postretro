@@ -5,7 +5,7 @@ use super::super::*;
 use rquickjs::object::Filter;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -16,6 +16,11 @@ pub fn entity_descriptor_from_js<'js>(
     ctx: &Ctx<'js>,
     value: JsValue<'js>,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
+    // Validate the faction and tolerance wire fields here too so direct
+    // descriptor parsing has the same contract as the mod-manifest path.
+    // Manifest parsing retains the faction name for commit-time resolution.
+    let _ = entity_faction_name_from_js(value.clone())?;
+    let tolerance = entity_tolerance_from_js(value.clone())?;
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "entity entry must be an object".to_string(),
     })?;
@@ -175,6 +180,8 @@ pub fn entity_descriptor_from_js<'js>(
     }
 
     let descriptor = EntityTypeDescriptor {
+        faction: None,
+        tolerance,
         canonical_name,
         inventory,
         light,
@@ -187,6 +194,62 @@ pub fn entity_descriptor_from_js<'js>(
         behavior,
     };
     Ok(descriptor)
+}
+
+/// Read an optional per-archetype tolerance without treating an explicit zero
+/// as omission. It is resolved only for brain-bearing descriptor spawns.
+pub fn entity_tolerance_from_js<'js>(value: JsValue<'js>) -> Result<Option<f32>, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "entity entry must be an object".to_string(),
+    })?;
+    if !obj.contains_key("components").map_err(js_err)? {
+        return Ok(None);
+    }
+    let components: JsValue = obj.get("components").map_err(js_err)?;
+    if components.is_null() || components.is_undefined() {
+        return Ok(None);
+    }
+    let components = Object::from_value(components).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`components` must be an object".to_string(),
+    })?;
+    get_optional_f32_js(&components, "tolerance")?
+        .map(|value| validate_finite_f32(value, "components.tolerance"))
+        .transpose()
+}
+
+/// Read the optional named faction from an entity descriptor without resolving
+/// it. Resolution needs the complete manifest faction registry and therefore
+/// happens only at the atomic manifest commit.
+pub fn entity_faction_name_from_js<'js>(
+    value: JsValue<'js>,
+) -> Result<Option<String>, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "entity entry must be an object".to_string(),
+    })?;
+    if !obj.contains_key("components").map_err(js_err)? {
+        return Ok(None);
+    }
+    let components: JsValue = obj.get("components").map_err(js_err)?;
+    if components.is_null() || components.is_undefined() {
+        return Ok(None);
+    }
+    let components = Object::from_value(components).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`components` must be an object".to_string(),
+    })?;
+    if !components.contains_key("faction").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = components.get("faction").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let name = String::from_js_value_required(raw, "components.faction")?;
+    if name.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.faction` must be a non-empty string when supplied".to_string(),
+        });
+    }
+    Ok(Some(name))
 }
 
 /// `Object::contains_key` follows the JavaScript prototype chain. The migration

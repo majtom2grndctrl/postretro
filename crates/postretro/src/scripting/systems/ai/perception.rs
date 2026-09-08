@@ -8,6 +8,8 @@ use glam::Vec3;
 use super::targeting::TargetPawn;
 use crate::collision::{self, CollisionWorld};
 use crate::nav::NavGraph;
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{EntityId, EntityRegistry};
@@ -84,12 +86,34 @@ pub(super) fn enemy_eye(
 }
 
 /// Derive the selected pawn's one target-aim point from the transform snapshot
-/// carried by targeting and its authored capsule eye height.
+/// carried by targeting.
+///
+/// Player pawns retain their exact authored capsule-eye behavior. A
+/// brain-bearing peer is also a targetable pawn, so it uses the same geometry
+/// contract as an enemy eye: its authored health hitbox top-center is exact,
+/// while a hitbox-less peer falls back to its own baked agent height. The
+/// fallback deliberately requires `Brain` plus `Agent`; arbitrary props with
+/// health or nav data never become aimable through this helper.
 pub(super) fn target_aim(registry: &EntityRegistry, target: TargetPawn) -> Option<Vec3> {
-    let movement = registry
-        .get_component::<PlayerMovementComponent>(target.entity)
+    if let Ok(movement) = registry.get_component::<PlayerMovementComponent>(target.entity) {
+        return Some(target.position + Vec3::Y * movement.capsule.eye_height);
+    }
+
+    registry
+        .get_component::<BrainComponent>(target.entity)
         .ok()?;
-    Some(target.position + Vec3::Y * movement.capsule.eye_height)
+
+    if let Ok(health) = registry.get_component::<HealthComponent>(target.entity)
+        && let Some(hitbox) = health.hitbox
+    {
+        return Some(target.position + hitbox.offset + Vec3::Y * hitbox.half_extents.y);
+    }
+
+    let agent = registry
+        .get_component::<AgentComponent>(target.entity)
+        .ok()?;
+    (agent.height.is_finite() && agent.height > 0.0)
+        .then(|| target.position + Vec3::Y * (EYE_FACTOR * agent.height))
 }
 
 /// Raw (undebounced) static-world LOS for a fresh candidate. This uses the same
@@ -278,9 +302,10 @@ mod tests {
             target_aim: Vec3::new(4.0, 5.0, 6.0),
         };
 
-        // A fresh candidate already proved it carried PlayerMovement when the
-        // offer was built. Omitting it here makes any fallback lookup fail, so
-        // this pins the no-second-query handoff rather than LOS geometry.
+        // A fresh candidate already proved it carried an aim-point-capable
+        // pawn component when the offer was built. Omitting every such
+        // component here makes any fallback lookup fail, so this pins the
+        // no-second-query handoff rather than LOS geometry.
         let perception = perceive_target(
             &registry,
             &mut grace,

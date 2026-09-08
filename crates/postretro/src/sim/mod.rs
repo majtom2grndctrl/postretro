@@ -45,8 +45,8 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, ScriptCtx,
-    SlotTable,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
+    ScriptCtx, SlotTable,
 };
 use postretro_foundation::{
     WeaponPlacementDescriptor,
@@ -378,6 +378,7 @@ pub(crate) fn simulate_tick(
 ) -> TickEvents {
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
+    let factions = FactionRegistry::default();
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
@@ -398,10 +399,12 @@ pub(crate) fn simulate_tick(
         &mut touch_system,
         &[],
         0,
+        &factions,
         None,
         &touch_edges,
         &touch_edges,
         trigger_context,
+        |_, _| {},
         on_impact,
     )
 }
@@ -430,18 +433,20 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     touch_system: &mut TouchSystem,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
+    factions: &FactionRegistry,
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
+    mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
-    // (AI, local weapon fire, and host remote-hit ingest after simulate_tick),
-    // so every newly queued effect keeps its full authored delay until the
-    // next fixed tick, including in headless simulation.
+    // (ready remote-hit ingest, AI, and local weapon fire), so every newly
+    // queued effect keeps its full authored delay until the next fixed tick,
+    // including in headless simulation.
     {
         let mut registry = registry.borrow_mut();
         crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
@@ -634,6 +639,25 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
+    // Remote declarations already authorized at this tick's input boundary
+    // land beside authoritative projectile impacts, after deferred-effect aging
+    // but before AI snapshots combat perception. A declaration waiting on this
+    // tick's FIRE authorization remains queued for App's post-sim drain.
+    {
+        let mut registry = registry.borrow_mut();
+        ingest_ready_remote_hits(&mut registry, &mut on_impact);
+    }
+    // Advance projectiles after this tick's movement settles but before AI
+    // snapshots its facts. An impact therefore reaches the Health chokepoint
+    // and attacker ledger in time for same-tick retaliation selection.
+    let local_projectile_contacts = projectile_stage::advance(
+        &registry,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        &mut on_impact,
+    );
     let ai_result = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
@@ -645,6 +669,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 collision_world: Some(collision_world),
                 descriptors,
                 descriptor_generation,
+                factions,
             },
             &mut on_impact,
         )
@@ -726,13 +751,15 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
     weapon.extend(remote_weapon_result.weapon_events);
-    let local_projectile_contacts = projectile_stage::advance(
-        &registry,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        tick_dt,
-        &mut on_impact,
+    // AI and weapon stages can both launch after the flight pass. Consume the
+    // launch tick's grace without moving those projectiles; next tick's
+    // pre-AI flight pass advances them exactly once.
+    projectile_stage::finish_spawn_tick(
+        &mut registry.borrow_mut(),
+        enemy_projectile_spawns
+            .iter()
+            .map(|spawn| spawn.projectile)
+            .chain(local_result.projectile_spawns.iter().copied()),
     );
     let death = run_death_sweep(&registry);
 
@@ -1578,6 +1605,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: Default::default(),
             engagement_radius: None,
@@ -2099,10 +2127,12 @@ mod tests {
             &mut touch_system,
             &[],
             0,
+            &FactionRegistry::default(),
             None,
             &edges,
             &edges,
             None,
+            |_, _| {},
             |_| {},
         );
 
@@ -2218,6 +2248,7 @@ mod tests {
             &mut touch_system,
             &[],
             0,
+            &FactionRegistry::default(),
             None,
             &use_edges,
             &HashMap::new(),
@@ -2230,6 +2261,7 @@ mod tests {
                 auto_close_timers: None,
                 use_edges: &use_edges,
             }),
+            |_, _| {},
             |_| {},
         );
 

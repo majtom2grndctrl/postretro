@@ -17,13 +17,37 @@ pub const CANDIDATE_HEALTH_INPUT: &str = "@candidate.health";
 pub const CANDIDATE_MAX_HEALTH_INPUT: &str = "@candidate.maxHealth";
 /// Whether the offered candidate's death sweep latch has fired.
 pub const CANDIDATE_DIED_INPUT: &str = "@candidate.died";
+/// Directional sentiment from the evaluating enemy's faction toward the
+/// offered candidate's faction. Negative is hostile, zero neutral, positive
+/// allied. This is append-only slot 4; bound candidate programs retain index
+/// handles rather than names at runtime.
+pub const CANDIDATE_SENTIMENT_INPUT: &str = "@candidate.sentiment";
+/// Accumulated positive damage the offered candidate has dealt to the
+/// evaluating enemy, or zero when it is absent from that enemy's bounded
+/// attacker ledger. This is append-only slot 5.
+pub const CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT: &str = "@candidate.damageDealtToMe";
+/// Milliseconds since the offered candidate last damaged the evaluating enemy,
+/// or the shared brain no-hit sentinel when it is absent from that enemy's
+/// bounded attacker ledger. This is append-only slot 6.
+pub const CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT: &str =
+    "@candidate.timeSinceDamageFromCandidate";
+/// Retaliation tolerance resolved from the evaluating enemy's archetype
+/// override or directional faction relationship. This is append-only slot 7.
+pub const CANDIDATE_TOLERANCE_INPUT: &str = "@candidate.tolerance";
 
 /// Fixed candidate facts in runtime read-handle order. Append, never reorder.
-pub const CANDIDATE_INPUTS: [(&str, IrType); 4] = [
+pub const CANDIDATE_INPUTS: [(&str, IrType); 8] = [
     (CANDIDATE_DISTANCE_INPUT, IrType::Number),
     (CANDIDATE_HEALTH_INPUT, IrType::Number),
     (CANDIDATE_MAX_HEALTH_INPUT, IrType::Number),
     (CANDIDATE_DIED_INPUT, IrType::Bool),
+    (CANDIDATE_SENTIMENT_INPUT, IrType::Number),
+    (CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, IrType::Number),
+    (
+        CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+        IrType::Number,
+    ),
+    (CANDIDATE_TOLERANCE_INPUT, IrType::Number),
 ];
 
 /// A fixed candidate fact's runtime slot and projected type.
@@ -107,6 +131,66 @@ mod tests {
         assert!(scope.resolve_input("@candidate.notAnInput").is_none());
         assert!(scope.resolve_input("@state.marked").is_none());
         assert!(scope.resolve_output(CANDIDATE_DISTANCE_INPUT).is_none());
+    }
+
+    #[test]
+    fn candidate_input_slots_keep_existing_handles_and_append_relationship_facts() {
+        assert_eq!(
+            CANDIDATE_INPUTS[0],
+            (CANDIDATE_DISTANCE_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[1],
+            (CANDIDATE_HEALTH_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[2],
+            (CANDIDATE_MAX_HEALTH_INPUT, IrType::Number)
+        );
+        assert_eq!(CANDIDATE_INPUTS[3], (CANDIDATE_DIED_INPUT, IrType::Bool));
+        assert_eq!(
+            CANDIDATE_INPUTS[4],
+            (CANDIDATE_SENTIMENT_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_SENTIMENT_INPUT)
+                .unwrap()
+                .index,
+            4
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[5],
+            (CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)
+                .unwrap()
+                .index,
+            5
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[6],
+            (
+                CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+                IrType::Number
+            )
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT)
+                .unwrap()
+                .index,
+            6
+        );
+        assert_eq!(
+            CANDIDATE_INPUTS[7],
+            (CANDIDATE_TOLERANCE_INPUT, IrType::Number)
+        );
+        assert_eq!(
+            resolve_candidate_input(CANDIDATE_TOLERANCE_INPUT)
+                .unwrap()
+                .index,
+            7
+        );
     }
 
     #[test]

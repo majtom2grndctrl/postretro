@@ -58,8 +58,8 @@ export interface BrainInputs {
   /** XZ distance from this enemy's spawn-time home anchor; zero at home and
    * meaningful even without a selected target (number). */
   readonly distanceFromAnchor: RuntimeGuardNode;
-  /** `true` when the selected target's faction differs from this enemy's;
-   * false with no target (boolean). */
+  /** `true` when the selected target has negative directional sentiment from
+   * this enemy's faction; false with no target (boolean). */
   readonly targetHostile: RuntimeGuardNode;
   /** `true` when the nav pathfinder can route this enemy to its selected
    * target; false with no target or no navmesh. It reflects the pathfinder's
@@ -108,6 +108,19 @@ export interface CandidateInputs {
   readonly maxHealth: RuntimeGuardNode;
   /** `true` once the death sweep has handled this candidate (boolean). */
   readonly died: RuntimeGuardNode;
+  /** Directional sentiment from the evaluating faction toward this candidate:
+   * negative hostile, zero neutral, positive allied (number). */
+  readonly sentiment: RuntimeGuardNode;
+  /** Accumulated positive damage this candidate has dealt to the evaluating
+   * enemy, or zero when it has not damaged that enemy (number). */
+  readonly damageDealtToMe: RuntimeGuardNode;
+  /** Milliseconds since this candidate last damaged the evaluating enemy, or
+   * `1e9` when it has not damaged that enemy (number). */
+  readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
+  /** Retaliation tolerance resolved from this enemy's archetype override, then
+   * its directed faction pair toward this candidate, or `f32::MAX` when
+   * unauthored (number). */
+  readonly tolerance: RuntimeGuardNode;
 }
 
 /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -140,6 +153,10 @@ export const candidate: CandidateInputs = Object.freeze({
   health: input("@candidate.health"),
   maxHealth: input("@candidate.maxHealth"),
   died: input("@candidate.died"),
+  sentiment: input("@candidate.sentiment"),
+  damageDealtToMe: input("@candidate.damageDealtToMe"),
+  timeSinceDamageFromCandidate: input("@candidate.timeSinceDamageFromCandidate"),
+  tolerance: input("@candidate.tolerance"),
 });
 
 /** Read a per-entity state field as a guard input: `state("staggered")` is the

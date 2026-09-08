@@ -668,10 +668,17 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
 declare function defineMod(config: ModManifestInput): ModManifest
+--- Pure builder for a stable named faction declaration. Include the result in
+--- `defineMod({ factions = { ... } })`; archetypes refer to its name through
+--- `components.faction`.
+declare function defineFaction(name: string): FactionDescriptor
+--- Build one directed relationship for `sentiment` in the returned mod
+--- manifest. Negative sentiment is hostile, zero neutral, positive allied.
+declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number }): FactionSentimentDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -878,6 +885,8 @@ export type ModManifestInput = {
   switching: SwitchingDescriptor?,
   defaultWeaponPlacement: WeaponPlacementDescriptor?,
   entities: {EntityTypeDescriptor}?,
+  factions: {FactionDescriptor}?,
+  sentiment: {FactionSentimentDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -1360,7 +1369,7 @@ export type BrainInputs = {
   targetDied: RuntimeGuardNode,
   --- XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number).
   distanceFromAnchor: RuntimeGuardNode,
-  --- `true` when the selected target's faction differs from this enemy's; false with no target (boolean).
+  --- `true` when directional sentiment from this enemy's faction toward its selected target is negative; false with no target (boolean).
   targetHostile: RuntimeGuardNode,
   --- `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean).
   targetReachable: RuntimeGuardNode,
@@ -1395,6 +1404,14 @@ export type CandidateInputs = {
   maxHealth: RuntimeGuardNode,
   --- `true` once the death sweep has handled this candidate (boolean).
   died: RuntimeGuardNode,
+  --- Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number).
+  sentiment: RuntimeGuardNode,
+  --- Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number).
+  damageDealtToMe: RuntimeGuardNode,
+  --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number).
+  timeSinceDamageFromCandidate: RuntimeGuardNode,
+  --- Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number).
+  tolerance: RuntimeGuardNode,
 }
 
 --- Pre-wrapped leaves for graph candidate eligibility.

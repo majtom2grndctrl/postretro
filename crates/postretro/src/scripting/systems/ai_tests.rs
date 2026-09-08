@@ -7,14 +7,14 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
-use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
+use postretro_net::wire::{ComponentPayload, HitDeclaration, HitRecord, WireMeshAnimationState};
 
 use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
@@ -25,8 +25,17 @@ use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
+use crate::kinematic_mover::MoverTickStateTable;
+use crate::movement::MovementInput;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use crate::netcode::{
+    AuthorizedShot, HostCommandQueues, MovementOwners, NetworkIdAllocator, OpenAuthorizedShots,
+    PendingHitDeclarations, ShotId, host_take_ready_hit_declarations,
+    ingest_hit_declaration_for_test,
+};
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::sim::touch::TouchSystem;
+use crate::sim::{PostMovementCommand, SimCommand};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -34,9 +43,13 @@ use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
-use postretro_entities::{DataRegistry, EntityStateComponent, ScriptCtx};
+use postretro_entities::{
+    DataRegistry, EntityStateComponent, FactionDescriptor, FactionRegistry,
+    FactionSentimentDescriptor, ScriptCtx,
+};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
     BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
@@ -46,15 +59,17 @@ use postretro_foundation::{
     BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
     BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
     BehaviorLayerDescriptor, BehaviorSelectorEntry, BehaviorSelectorRow, BindingScope,
-    BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, FireMode,
-    GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor, PatrolMode,
-    ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode, WeaponDescriptor,
-    bind,
+    BoundProgram, CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_DIED_INPUT,
+    CANDIDATE_DISTANCE_INPUT, CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CURRENT_IR_VERSION,
+    FireMode, GuardedRow, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, PatrolDescriptor,
+    PatrolMode, ProjectileBodyVisual, ProjectileDescriptor, ProjectileVisual, ResolutionMode,
+    RetaliationDescriptor, WeaponDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
 };
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -79,6 +94,7 @@ macro_rules! test_behavior_graph {
         activities: $activities:expr,
         transitions: $transitions:expr,
         candidate_filter: $candidate_filter:expr,
+        retaliation: None,
         patrol: $patrol:expr,
         attacks: $attacks:expr,
         engagement_radius: $engagement_radius:expr,
@@ -91,6 +107,7 @@ macro_rules! test_behavior_graph {
                 transitions: $transitions,
             },
             candidate_filter: $candidate_filter,
+            retaliation: None,
             patrol: $patrol,
             attacks: $attacks,
             engagement_radius: $engagement_radius,
@@ -173,6 +190,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
             ),
         ]),
         candidate_filter: Some(candidate_is_alive_within(aggro_range)),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -441,6 +459,84 @@ fn set_hp(reg: &mut EntityRegistry, id: EntityId, current: f32) {
     reg.set_component(id, h).unwrap();
 }
 
+#[test]
+fn target_perception_preserves_player_eye_and_aims_brain_peers_from_their_geometry() {
+    let graph = tuning();
+    let mut registry = EntityRegistry::new();
+
+    let player_position = Vec3::new(5.0, 2.0, -3.0);
+    let player = spawn_player(&mut registry, player_position);
+
+    let hitbox_position = Vec3::new(10.0, 4.0, 2.0);
+    let hitbox_peer = spawn_enemy(
+        &mut registry,
+        hitbox_position,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let hitbox = Hitbox {
+        half_extents: Vec3::new(0.6, 1.3, 0.8),
+        offset: Vec3::new(0.2, 0.4, -0.3),
+    };
+    set_enemy_hitbox(&mut registry, hitbox_peer, hitbox);
+
+    let agent_position = Vec3::new(-7.0, 1.0, 6.0);
+    let agent_peer = spawn_enemy(
+        &mut registry,
+        agent_position,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    assert!(
+        registry
+            .get_component::<PlayerMovementComponent>(agent_peer)
+            .is_err(),
+        "a peer candidate must not need a PlayerMovement shim"
+    );
+
+    let cases = [
+        (
+            TargetPawn {
+                entity: player,
+                position: player_position,
+            },
+            player_position + Vec3::Y * 0.5,
+            "player capsule eye",
+        ),
+        (
+            TargetPawn {
+                entity: hitbox_peer,
+                position: hitbox_position,
+            },
+            hitbox_position + hitbox.offset + Vec3::Y * hitbox.half_extents.y,
+            "brain peer authored hitbox",
+        ),
+        (
+            TargetPawn {
+                entity: agent_peer,
+                position: agent_position,
+            },
+            agent_position + Vec3::Y * (perception::EYE_FACTOR * 1.8),
+            "brain peer nav-agent geometry",
+        ),
+    ];
+
+    for (target, expected_aim, label) in cases {
+        assert_eq!(
+            perception::target_aim(&registry, target),
+            Some(expected_aim),
+            "{label} must derive the canonical target aim point",
+        );
+        let raw = perception::raw_target_perception(&registry, Vec3::ZERO, target, None)
+            .expect("every targetable pawn case supplies an aim point");
+        assert!(
+            raw.visible,
+            "no collision world preserves clear sight for {label}"
+        );
+        assert_eq!(raw.target_aim, expected_aim, "{label} reaches fresh LOS");
+    }
+}
+
 fn enemy_animation(reg: &EntityRegistry, enemy: EntityId) -> String {
     reg.get_component::<MeshComponent>(enemy)
         .unwrap()
@@ -472,6 +568,12 @@ fn enemy_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<Entity
     reg.get_component::<BrainComponent>(enemy)
         .unwrap()
         .acquired_target
+}
+
+fn enemy_retaliation_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<EntityId> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .retaliation_acquired_target
 }
 
 fn set_enemy_aggro_armed(reg: &mut EntityRegistry, enemy: EntityId, aggro_armed: bool) {
@@ -615,6 +717,7 @@ fn reachability_graph() -> BehaviorGraphDescriptor {
             vec![edge("hold", target_is_unreachable())],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -633,6 +736,7 @@ fn reachability_cache_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -1188,8 +1292,16 @@ fn select_target_for_test(
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
 ) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
+    let factions = FactionRegistry::default();
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-    let offers = target_offers(registry, from, enemy_faction, retained_target);
+    let offers = target_offers(
+        registry,
+        &factions,
+        from,
+        enemy_faction,
+        None,
+        retained_target,
+    );
     let nearest = offers.nearest;
     let mut candidate_perception = |target: TargetPawn| {
         Some(perception::RawTargetPerception {
@@ -1203,6 +1315,8 @@ fn select_target_for_test(
         retained,
         &offers,
         registry,
+        &factions,
+        enemy_faction,
         candidate_filter,
         candidate_scope,
         &mut candidate_perception,
@@ -1519,6 +1633,1349 @@ fn faction_seed_is_transparent_and_target_hostility_tracks_a_retained_target() {
 }
 
 #[test]
+fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
+    let mut graph = tuning();
+    graph.envelope.transitions.insert(
+        TEST_IDLE_STATE.to_string(),
+        vec![edge(
+            TEST_ALERT_STATE,
+            brain_input(BRAIN_TARGET_HOSTILE_INPUT),
+        )],
+    );
+    graph.envelope.transitions.insert(
+        "*".to_string(),
+        vec![
+            edge(TEST_IDLE_STATE, target_lost()),
+            edge(
+                TEST_IDLE_STATE,
+                IrNode::Select {
+                    cond: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
+                    a: Box::new(IrNode::Const {
+                        value: IrValue::Bool(false),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Bool(true),
+                    }),
+                },
+            ),
+        ],
+    );
+    graph.candidate_filter = None;
+
+    let factions = FactionRegistry::from_descriptors(vec![
+        FactionDescriptor {
+            name: "cabal".to_string(),
+        },
+        FactionDescriptor {
+            name: "resistance".to_string(),
+        },
+    ])
+    .expect("valid factions")
+    .with_sentiments(vec![
+        FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 0.0,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "resistance".to_string(),
+            to_faction: "cabal".to_string(),
+            sentiment: 0.0,
+            tolerance: 0.0,
+        },
+    ])
+    .expect("directed pairs resolve");
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    registry
+        .entity_state_mut(player)
+        .expect("player carries entity state")
+        .set(FACTION_STATE_FIELD, 3.0);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    registry
+        .entity_state_mut(enemy)
+        .expect("enemy carries entity state")
+        .set(FACTION_STATE_FIELD, 2.0);
+
+    run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &factions,
+        },
+        |_| {},
+    );
+    assert_eq!(enemy_state_name(&registry, enemy), TEST_ALERT_STATE);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(player));
+
+    // Retention keeps the target available to the durable guard fact. Swapping
+    // both factions reverses the directed pair: resistance -> cabal is neutral
+    // even though cabal -> resistance was hostile on acquisition.
+    registry
+        .entity_state_mut(enemy)
+        .expect("enemy remains live")
+        .set(FACTION_STATE_FIELD, 3.0);
+    registry
+        .entity_state_mut(player)
+        .expect("player remains live")
+        .set(FACTION_STATE_FIELD, 2.0);
+    run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &factions,
+        },
+        |_| {},
+    );
+
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        TEST_IDLE_STATE,
+        "the retained target's durable fact must use the reverse directional relation"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: faction crossfire retaliation
+//
+// This is a full AI-tick fixture, not a duplicate of targeting's rank model:
+// hits reach the Health chokepoint, CandidateScope resolves authored faction
+// and tolerance state, and the compute/apply passes persist the selected target
+// and its retaliation latch across ticks.
+// ---------------------------------------------------------------------------
+
+const CROSSFIRE_RAIDER_FACTION: f32 = 2.0;
+const CROSSFIRE_SENTINEL_FACTION: f32 = 3.0;
+const CROSSFIRE_LOW_TOLERANCE: f32 = 4.0;
+
+fn crossfire_factions() -> FactionRegistry {
+    FactionRegistry::from_descriptors(vec![
+        FactionDescriptor {
+            name: "crossfire.raiders".to_string(),
+        },
+        FactionDescriptor {
+            name: "crossfire.sentinels".to_string(),
+        },
+    ])
+    .expect("crossfire factions are valid")
+    .with_sentiments(vec![
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.raiders".to_string(),
+            to_faction: "crossfire.raiders".to_string(),
+            sentiment: 0.0,
+            tolerance: CROSSFIRE_LOW_TOLERANCE,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.raiders".to_string(),
+            to_faction: "crossfire.sentinels".to_string(),
+            sentiment: -1.0,
+            tolerance: CROSSFIRE_LOW_TOLERANCE,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.sentinels".to_string(),
+            to_faction: "crossfire.raiders".to_string(),
+            sentiment: -1.0,
+            tolerance: f32::MAX,
+        },
+        FactionSentimentDescriptor {
+            from_faction: "crossfire.sentinels".to_string(),
+            to_faction: "crossfire.sentinels".to_string(),
+            sentiment: 0.0,
+            tolerance: f32::MAX,
+        },
+    ])
+    .expect("crossfire relationships resolve")
+}
+
+/// The behavior block shared by the dev-mod crossfire controls. The wildcard
+/// is authored policy, not an engine-side retaliation exit: it is the only
+/// reason the retained retaliation target stands down in this fixture.
+fn crossfire_reference_graph() -> BehaviorGraphDescriptor {
+    let mut graph = tuning();
+    graph.candidate_filter = None;
+    graph.retaliation = Some(RetaliationDescriptor {
+        window_ms: 1_500.0,
+        damage_weight: 1.0,
+        recency_weight: 0.001,
+    });
+    graph.envelope.transitions.insert(
+        "*".to_string(),
+        vec![
+            edge(
+                TEST_IDLE_STATE,
+                IrNode::Or {
+                    a: Box::new(brain_input(BRAIN_TARGET_DIED_INPUT)),
+                    b: Box::new(IrNode::Not {
+                        x: Box::new(brain_input(BRAIN_TARGET_VISIBLE_INPUT)),
+                    }),
+                },
+            ),
+            edge(TEST_IDLE_STATE, target_lost()),
+        ],
+    );
+    graph
+}
+
+fn set_crossfire_faction(registry: &mut EntityRegistry, entity: EntityId, faction: f32) {
+    registry
+        .entity_state_mut(entity)
+        .expect("crossfire fixture entity is live")
+        .set(FACTION_STATE_FIELD, faction);
+}
+
+fn set_crossfire_tolerance(registry: &mut EntityRegistry, entity: EntityId, tolerance: f32) {
+    registry
+        .entity_state_mut(entity)
+        .expect("crossfire fixture enemy is live")
+        .set(ARCHETYPE_TOLERANCE_STATE_FIELD, tolerance);
+}
+
+fn damage_crossfire_enemy(
+    registry: &mut EntityRegistry,
+    victim: EntityId,
+    attacker: EntityId,
+    amount: f32,
+) {
+    let mut context = DamageContext::new("test.crossfire", DamageProducer::InTick);
+    context.attacker = Some(attacker);
+    assert!(apply_damage_with_context(
+        registry,
+        victim,
+        &DamagePayload { amount },
+        context,
+    ));
+}
+
+fn run_crossfire_tick(
+    registry: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    factions: &FactionRegistry,
+    dt: f32,
+) {
+    run_ai_tick_with_navigation_and_impact(
+        registry,
+        runtime,
+        dt,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions,
+        },
+        |_| {},
+    );
+}
+
+#[test]
+fn faction_crossfire_reference_content_reprioritizes_holds_and_stands_down() {
+    const DT: f32 = 0.016;
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+
+    // A low-tolerance raider starts engaged with the nearer player, then turns
+    // to either an over-tolerance neutral peer or hostile cross-faction peer.
+    for (attacker_faction, label) in [
+        (CROSSFIRE_RAIDER_FACTION, "same-faction"),
+        (CROSSFIRE_SENTINEL_FACTION, "cross-faction"),
+    ] {
+        let mut registry = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+        let victim = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        let attacker = spawn_enemy(
+            &mut registry,
+            Vec3::new(10.0, 0.0, 0.0),
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        set_crossfire_faction(&mut registry, victim, CROSSFIRE_RAIDER_FACTION);
+        set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+        set_crossfire_faction(&mut registry, attacker, attacker_faction);
+
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(player),
+            "{label} fixture must begin engaged with the nearer player",
+        );
+
+        damage_crossfire_enemy(&mut registry, victim, attacker, 8.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(attacker),
+            "an over-tolerance {label} attacker must beat the nearer player",
+        );
+        assert_eq!(
+            enemy_retaliation_acquired_target(&registry, victim),
+            Some(attacker),
+            "the engine must mark the distant retaliation acquisition",
+        );
+
+        // The ledger no longer contributes once its age has passed the authored
+        // window. The nearer player still cannot reclaim a latch-held attacker.
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, 1.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, 1.0);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(attacker),
+            "ledger decay alone cannot drop a retaliation-held {label} attacker",
+        );
+        assert_eq!(
+            enemy_retaliation_acquired_target(&registry, victim),
+            Some(attacker)
+        );
+
+        // The transient exit is the authored targetDied/targetVisible guard,
+        // not a special-case in retaliation ownership.
+        let mut health = registry
+            .get_component::<HealthComponent>(attacker)
+            .expect("attacker carries health")
+            .clone();
+        health.current = 0.0;
+        health.death_handled = true;
+        registry.set_component(attacker, health).unwrap();
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            None,
+            "the authored targetDied guard stands the retaliator down",
+        );
+        assert_eq!(enemy_retaliation_acquired_target(&registry, victim), None);
+    }
+
+    // The stoic control sees the same distance and hit but uses the authored
+    // finite f32 maximum tolerance, so normal nearest-hostile retention wins.
+    for (attacker_faction, label) in [
+        (CROSSFIRE_SENTINEL_FACTION, "same-faction"),
+        (CROSSFIRE_RAIDER_FACTION, "cross-faction"),
+    ] {
+        let mut registry = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+        let victim = spawn_enemy(
+            &mut registry,
+            Vec3::ZERO,
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        let attacker = spawn_enemy(
+            &mut registry,
+            Vec3::new(10.0, 0.0, 0.0),
+            BrainComponent::from_graph(&graph),
+            100.0,
+        );
+        set_crossfire_faction(&mut registry, victim, CROSSFIRE_SENTINEL_FACTION);
+        set_crossfire_tolerance(&mut registry, victim, f32::MAX);
+        set_crossfire_faction(&mut registry, attacker, attacker_faction);
+
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+        damage_crossfire_enemy(&mut registry, victim, attacker, 8.0);
+        run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+        assert_eq!(
+            enemy_acquired_target(&registry, victim),
+            Some(player),
+            "max-tolerance {label} control must keep the nearer player target",
+        );
+        assert_eq!(enemy_retaliation_acquired_target(&registry, victim), None);
+    }
+
+    // Two same-faction peers are both neutral until their ledger damage is
+    // over tolerance. Their deliberately small score leapfrog proves a marked
+    // target does not thrash; only the later large improvement transfers it.
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker_a = spawn_enemy(
+        &mut registry,
+        Vec3::new(8.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker_b = spawn_enemy(
+        &mut registry,
+        Vec3::new(9.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    for entity in [victim, attacker_a, attacker_b] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+    damage_crossfire_enemy(&mut registry, victim, attacker_a, 10.0);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(attacker_a));
+
+    // The newer B hit is still within the strict one-point transfer margin.
+    damage_crossfire_enemy(&mut registry, victim, attacker_b, 10.5);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(attacker_a),
+        "a within-margin peer leapfrog must not thrash the retaliation latch",
+    );
+
+    damage_crossfire_enemy(&mut registry, victim, attacker_b, 1.0);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(attacker_b),
+        "a challenger transfers only after its retaliation score clears the margin",
+    );
+    assert_eq!(
+        enemy_retaliation_acquired_target(&registry, victim),
+        Some(attacker_b)
+    );
+}
+
+// Regression: authoritative projectile flight ran after the complete AI pass,
+// so its attacker-ledger write could not affect target selection until a later
+// simulation tick.
+#[test]
+fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick() {
+    const DT: f32 = 0.016;
+    const DAMAGE: f32 = 8.0;
+
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker = spawn_enemy(
+        &mut registry,
+        Vec3::new(10.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    for entity in [victim, attacker] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(
+        enemy_acquired_target(&registry, victim),
+        Some(player),
+        "the nearer hostile player is retained before the projectile lands",
+    );
+
+    let mut victim_health = registry
+        .get_component::<HealthComponent>(victim)
+        .expect("crossfire victim carries health")
+        .clone();
+    victim_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::new(0.5, 1.0, 0.5),
+        offset: Vec3::ZERO,
+    });
+    registry
+        .set_component(victim, victim_health)
+        .expect("crossfire victim remains live");
+
+    let projectile = registry.spawn(Transform {
+        position: Vec3::new(1.25, 0.5, 0.0),
+        ..Transform::default()
+    });
+    registry
+        .set_component(
+            projectile,
+            ProjectileComponent {
+                direction: Vec3::NEG_X.to_array(),
+                speed: 100.0,
+                radius: 0.0,
+                remaining_range: 10.0,
+                remaining_lifetime: 1.0,
+                damage: DAMAGE,
+                credit_source: "test.crossfire.projectile".to_string(),
+                owner_pawn: attacker,
+                owner_weapon: attacker,
+                spawned: false,
+                predicted_shot_id: None,
+                elapsed_flight_age: 0.0,
+                flipbook_active: false,
+                impact_light: None,
+            },
+        )
+        .expect("active crossfire projectile attaches");
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        fire_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        reload: false,
+        firing_slot: 0,
+        select_slot: None,
+        use_pressed: false,
+        drop_pressed: false,
+    };
+    let no_edges = HashMap::new();
+    let events = crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &command,
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        DT,
+        &mut touch_system,
+        &[],
+        0,
+        &factions,
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |_, _| {},
+        |_| {},
+    );
+
+    assert_eq!(events.local_projectile_contacts.len(), 1);
+    assert_eq!(events.local_projectile_contacts[0].projectile, projectile);
+    let registry = registry.borrow();
+    assert!(
+        !registry.exists(projectile),
+        "the impacting projectile retires"
+    );
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(victim)
+            .expect("victim survives the focused hit")
+            .current,
+        100.0 - DAMAGE,
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("victim keeps its brain after the tick");
+    let ledger = brain
+        .recent_attacker(attacker)
+        .expect("projectile impact records its owning peer");
+    assert!((ledger.accumulated_damage - DAMAGE).abs() <= EPS);
+    assert!((ledger.time_since_damage_ms - DT * 1_000.0).abs() <= EPS);
+    assert_eq!(
+        brain.acquired_target,
+        Some(attacker),
+        "same-tick AI selection observes the projectile-seeded ledger",
+    );
+    assert_eq!(brain.retaliation_acquired_target, Some(attacker));
+}
+
+// Regression: an already-ready remote HIT was drained after the whole sim,
+// leaving its attacker-ledger write invisible to that tick's AI selection.
+#[test]
+fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() {
+    const DT: f32 = 0.016;
+    const DAMAGE: f32 = 8.0;
+
+    let factions = crossfire_factions();
+    let graph = crossfire_reference_graph();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    let attacker = spawn_enemy(
+        &mut registry,
+        Vec3::new(10.0, 0.0, 0.0),
+        BrainComponent::from_graph(&graph),
+        100.0,
+    );
+    registry
+        .set_component(
+            attacker,
+            PlayerMovementComponent::from_descriptor(&player_movement_descriptor()),
+        )
+        .expect("remote attacker carries the host-authoritative eye component");
+    for entity in [victim, attacker] {
+        set_crossfire_faction(&mut registry, entity, CROSSFIRE_RAIDER_FACTION);
+    }
+    set_crossfire_tolerance(&mut registry, victim, CROSSFIRE_LOW_TOLERANCE);
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, DT);
+    assert_eq!(enemy_acquired_target(&registry, victim), Some(player));
+
+    let weapon = registry.spawn(Transform::default());
+    let mut allocator = NetworkIdAllocator::new();
+    let attacker_net = allocator.stamp(attacker);
+    let victim_net = allocator.stamp(victim);
+    let shot_id = ShotId::from_parts(attacker_net, 11);
+    let mut owners = MovementOwners::new();
+    owners.set(attacker, 7);
+    let mut open_shots = OpenAuthorizedShots::new();
+    open_shots.record(
+        AuthorizedShot {
+            shot_id,
+            pawn: attacker,
+            weapon,
+            fire_tick: 10,
+            damage: DAMAGE,
+            range: 20.0,
+            pellet_count: 1,
+            credit_source: "test.crossfire.remote".to_string(),
+            is_projectile: false,
+            fire_origin: Vec3::new(10.0, 0.5, 0.0),
+            timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+        },
+        7,
+    );
+    let declaration = HitDeclaration {
+        shot_id: shot_id.raw(),
+        records: vec![HitRecord {
+            target: victim_net.0,
+            point: Vec3::new(0.0, 0.5, 0.0).to_array(),
+            zone: None,
+        }],
+    };
+    let mut pending_hits = PendingHitDeclarations::new();
+    pending_hits.push(7, declaration);
+    let mut ready_hits = host_take_ready_hit_declarations(
+        &HostCommandQueues::new(),
+        &mut open_shots,
+        &mut pending_hits,
+        11,
+    );
+    assert_eq!(
+        ready_hits.len(),
+        1,
+        "the pre-command boundary freezes the previously authorized declaration",
+    );
+
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let no_edges = HashMap::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        fire_button: crate::weapon::FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        reload: false,
+        firing_slot: 0,
+        select_slot: None,
+        use_pressed: false,
+        drop_pressed: false,
+    };
+    crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &command,
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        DT,
+        &mut touch_system,
+        &[],
+        0,
+        &factions,
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |registry, _| {
+            let pending = ready_hits
+                .pop()
+                .expect("the frozen pre-command hit is ingested once");
+            let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+                registry,
+                &world,
+                &allocator,
+                &owners,
+                &mut open_shots,
+                pending.client_id,
+                &pending.declaration,
+            );
+            assert!(fire_accepted && hit_accepted);
+        },
+        |_| {},
+    );
+
+    let registry = registry.borrow();
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(victim)
+            .expect("remote-hit victim remains live")
+            .current,
+        100.0 - DAMAGE,
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("remote-hit victim keeps its brain");
+    assert_eq!(brain.acquired_target, Some(attacker));
+    assert_eq!(brain.retaliation_acquired_target, Some(attacker));
+}
+
+// Regression: lethal ready remote damage landed before AI, but the unlatched
+// zero-HP brain still emitted one contact attack before the later death sweep.
+#[test]
+fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        brain_with(tuning(), TEST_ATTACK_STATE),
+        50.0,
+    );
+    let registry = Rc::new(RefCell::new(registry));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut runtime = AiRuntime::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let mut touch_system = TouchSystem::default();
+    let no_edges = HashMap::new();
+
+    let events = crate::sim::simulate_tick_with_presentation_aim(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        0.0,
+        false,
+        0.0,
+        (0.0, 0.0),
+        &mut progress,
+        &mut runtime,
+        &[],
+        &mut mover_states,
+        &[],
+        &SimCommand {
+            movement: MovementInput {
+                wish_dir: Vec2::ZERO,
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+                use_pressed: false,
+                drop_pressed: false,
+            },
+            fire_button: crate::weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+            reload: false,
+            firing_slot: 0,
+            select_slot: None,
+            use_pressed: false,
+            drop_pressed: false,
+        },
+        |_| PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+        },
+        0.016,
+        &mut touch_system,
+        &[],
+        0,
+        &FactionRegistry::default(),
+        None,
+        &no_edges,
+        &no_edges,
+        None,
+        |registry, on_impact| {
+            apply_damage_with_context(
+                registry,
+                enemy,
+                &DamagePayload { amount: 50.0 },
+                DamageContext {
+                    source_id: "test.remote.lethal".to_string(),
+                    attacker: Some(pawn),
+                    weapon: None,
+                    zone: None,
+                    producer: DamageProducer::InTick,
+                },
+            );
+            on_impact(registry);
+        },
+        |_| {},
+    );
+
+    assert!(
+        events.ai.is_empty(),
+        "the depleted brain emits no AI outcome"
+    );
+    assert!(events.enemy_projectile_spawns.is_empty());
+    assert_eq!(player_hp(&registry.borrow(), pawn), 100.0);
+    let registry = registry.borrow();
+    let health = registry.get_component::<HealthComponent>(enemy).unwrap();
+    assert_eq!(health.current, 0.0);
+    assert!(
+        health.death_handled,
+        "the later death sweep still owns the latch"
+    );
+}
+
+// Regression: a later brain's precomputed projectile outcome still fired after
+// an earlier brain lethally damaged it in the same AI apply batch.
+#[test]
+fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
+    let mut contact_graph = standing_attack_graph();
+    contact_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(25.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let second = spawn_enemy(
+        &mut registry,
+        Vec3::X,
+        authored_brain(&projectile_graph, "strike"),
+        25.0,
+    );
+    registry
+        .entity_state_mut(first)
+        .expect("first actor remains live")
+        .set(
+            FACTION_STATE_FIELD,
+            postretro_entities::PLAYER_FACTION_INDEX,
+        );
+    set_enemy_yaw(&mut registry, second, -std::f32::consts::FRAC_PI_2);
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(
+        result.events,
+        vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)],
+        "only the first actor's contact attack raises an event",
+    );
+    assert!(
+        result.projectile_spawns.is_empty(),
+        "the lethally hit second actor must not publish a projectile spawn",
+    );
+    assert!(
+        projectile_ids(&registry).is_empty(),
+        "the lethally hit second actor must not materialize a projectile",
+    );
+    assert_eq!(player_hp(&registry, first), 50.0);
+    let second_health = registry
+        .get_component::<HealthComponent>(second)
+        .expect("zero HP alone keeps the second actor live");
+    assert_eq!(second_health.current, 0.0);
+    assert!(
+        !second_health.death_handled,
+        "the later death sweep still owns the death latch",
+    );
+}
+
+// Regression: two contact attackers committed their fire state during compute,
+// so the later one still raised an attack against a target the first had killed.
+#[test]
+fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
+    let mut killing_graph = standing_attack_graph();
+    killing_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(100.0);
+    let later_graph = standing_attack_graph();
+
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&killing_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&later_graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(player_hp(&registry, target), 0.0);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(first)
+            .expect("first actor keeps its brain")
+            .activity_attack_count(0),
+        Some(1),
+    );
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+// Regression: a projectile proposal against a target killed earlier in the
+// apply batch still spawned, raised an event, and consumed its fire latch.
+#[test]
+fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
+    let mut killing_graph = standing_attack_graph();
+    killing_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(100.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let _first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&killing_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&projectile_graph, "strike"),
+        50.0,
+    );
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(player_hp(&registry, target), 0.0);
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+fn queued_despawn_impact_policy() -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "same_batch_terminal_despawn".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("sameBatchTerminalDespawn".to_string()),
+        policy: vec![serde_json::json!({
+            "primitive": "despawn",
+            "target": "@impact.target",
+            "args": { "afterMs": 1000.0 },
+        })],
+    }
+}
+
+// Regression: a positive-HP target with a queued despawn remained registry-live,
+// so a later precomputed contact outcome damaged it and fired policy again.
+#[test]
+fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy() {
+    let graph = standing_attack_graph();
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    registry
+        .set_tags(target, vec!["sameBatchTerminalDespawn".to_string()])
+        .expect("policy target remains live");
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![queued_despawn_impact_policy()]);
+    let mut policy_fires = 0;
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| {
+            policy_fires += 1;
+            policies.evaluate_pending_in_registry(registry);
+        },
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(policy_fires, 1);
+    assert_eq!(player_hp(&registry, target), 92.0);
+    assert!(
+        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+    );
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(first)
+            .expect("first actor keeps its brain")
+            .activity_attack_count(0),
+        Some(1),
+    );
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+// Regression: a queued despawn did not invalidate a later precomputed AI
+// projectile outcome against the still-positive-health target.
+#[test]
+fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_policy() {
+    let contact_graph = standing_attack_graph();
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let target = spawn_player(&mut registry, Vec3::X);
+    let _first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let later = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&projectile_graph, "strike"),
+        50.0,
+    );
+    registry
+        .set_tags(target, vec!["sameBatchTerminalDespawn".to_string()])
+        .expect("policy target remains live");
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![queued_despawn_impact_policy()]);
+    let mut policy_fires = 0;
+
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| {
+            policy_fires += 1;
+            policies.evaluate_pending_in_registry(registry);
+        },
+    );
+
+    assert_eq!(result.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(policy_fires, 1);
+    assert_eq!(player_hp(&registry, target), 92.0);
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let later_brain = registry
+        .get_component::<BrainComponent>(later)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(later_brain.activity_attack_count(0), Some(0));
+    assert!(
+        later_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none()
+    );
+}
+
+fn immediate_recovery_impact_policy() -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "same_batch_recovery".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("sameBatchRecovery".to_string()),
+        policy: vec![serde_json::json!({
+            "primitive": "setHealth",
+            "target": "@impact.target",
+            "args": {
+                "value": { "op": "const", "value": 25.0 },
+            },
+        })],
+    }
+}
+
+// Regression: synchronous impact-policy recovery made a lethally hit actor
+// look live again before its pre-lethal projectile outcome was applied.
+#[test]
+fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
+    let mut contact_graph = standing_attack_graph();
+    contact_graph
+        .attacks
+        .get_mut("attack")
+        .expect("standing graph declares its attack")
+        .damage = Some(25.0);
+    let projectile_graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+
+    let mut registry = EntityRegistry::new();
+    let first = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&contact_graph, "strike"),
+        50.0,
+    );
+    let recovered = spawn_enemy(
+        &mut registry,
+        Vec3::X,
+        authored_brain(&projectile_graph, "strike"),
+        25.0,
+    );
+    registry
+        .entity_state_mut(first)
+        .expect("first actor remains live")
+        .set(
+            FACTION_STATE_FIELD,
+            postretro_entities::PLAYER_FACTION_INDEX,
+        );
+    registry
+        .set_tags(recovered, vec!["sameBatchRecovery".to_string()])
+        .expect("recoverable actor remains live");
+    set_enemy_yaw(&mut registry, recovered, -std::f32::consts::FRAC_PI_2);
+
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![immediate_recovery_impact_policy()]);
+    let mut runtime = AiRuntime::new();
+    let first_tick = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| policies.evaluate_pending_in_registry(registry),
+    );
+
+    assert_eq!(first_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert!(first_tick.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let health = registry
+        .get_component::<HealthComponent>(recovered)
+        .expect("policy recovery keeps the actor live");
+    assert_eq!(health.current, 25.0);
+    assert!(
+        !health.death_handled,
+        "AI invalidation must not take ownership from the death sweep",
+    );
+    let recovered_brain = registry
+        .get_component::<BrainComponent>(recovered)
+        .expect("recovered actor keeps its brain");
+    assert_eq!(recovered_brain.activity_attack_count(0), Some(0));
+    assert!(
+        recovered_brain
+            .attack_cooldown_remaining_ms
+            .get("attack")
+            .is_none(),
+    );
+
+    let next_tick = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut runtime,
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+        },
+        |registry| policies.evaluate_pending_in_registry(registry),
+    );
+
+    assert_eq!(next_tick.events, vec![Cow::Borrowed(ENEMY_ATTACK_EVENT)]);
+    assert_eq!(next_tick.projectile_spawns.len(), 1);
+    assert_eq!(
+        registry
+            .get_component::<BrainComponent>(recovered)
+            .expect("fresh evaluation commits recovered actor fire state")
+            .activity_attack_count(0),
+        Some(1),
+    );
+}
+
+#[test]
 fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
     let mut graph = tuning();
     graph.envelope.transitions.insert(
@@ -1559,6 +3016,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             collision_world: None,
             descriptors: &[],
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |registry| {
             registry
@@ -1660,6 +3118,12 @@ fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it()
         "detection must set a destination",
     );
 
+    // The ordinary clear path owns an already-latched retaliation target too;
+    // it must not survive an authored stand-down as stale engine state.
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.retaliation_acquired_target = Some(pawn);
+    reg.set_component(enemy, brain).unwrap();
+
     // Player exceeds the graph's authored aggro range (10 > 8): the interrupt
     // must clear the destination.
     let mut t = *reg.get_component::<Transform>(pawn).unwrap();
@@ -1671,6 +3135,11 @@ fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it()
         enemy_acquired_target(&reg, enemy),
         None,
         "the authored stand-down clears the retained target identity",
+    );
+    assert_eq!(
+        enemy_retaliation_acquired_target(&reg, enemy),
+        None,
+        "the authored stand-down also clears the engine retaliation latch",
     );
     assert!(
         !agent_steering::path_state(&reg, enemy)
@@ -2322,6 +3791,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
             )],
         )]),
         candidate_filter: Some(candidate_is_alive_within(TEST_AGGRO_RANGE)),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -2861,12 +4331,12 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: a queued positive-health recovery gives a zero-HP brain an
-// explicit nonterminal downed state; bare zero HP remains active.
+// Acceptance: zero HP quiesces a brain while preserving its nonterminal,
+// explicitly recoverable lifecycle.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn zero_hp_brain_remains_active_without_despawn() {
+fn zero_hp_brain_is_quiescent_without_despawn() {
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -2881,13 +4351,9 @@ fn zero_hp_brain_remains_active_without_despawn() {
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
     assert!(reg.exists(enemy), "zero HP alone must not remove the brain");
-    assert_eq!(
-        enemy_state_name(&reg, enemy),
-        TEST_ATTACK_STATE,
-        "zero HP must not force the terminal death state",
-    );
-    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
-    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(enemy_state_name(&reg, enemy), TEST_ALERT_STATE);
+    assert!(events.is_empty(), "a depleted brain must not emit outcomes");
+    assert_eq!(player_hp(&reg, pawn), 100.0);
 }
 
 #[test]
@@ -4864,6 +6330,7 @@ fn damage_recency_graph() -> BehaviorGraphDescriptor {
             )],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -4992,6 +6459,72 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
     );
 }
 
+#[test]
+fn candidate_damage_recency_matches_the_brain_fact_on_the_same_ai_tick() {
+    const DT: f32 = 0.016;
+    let mut graph = damage_recency_graph();
+    graph.envelope.transitions.clear();
+    graph
+        .envelope
+        .activities
+        .get_mut("rest")
+        .expect("fixture declares rest")
+        .motion = Some(MotionVerb::ChaseTarget);
+    // This predicate admits the attacker only when candidate refresh has seen
+    // the post-tick recency age. If the ledger aged at the old downstream brain
+    // fact site, it would still read zero here and the target would be rejected.
+    graph.candidate_filter = Some(IrNode::And {
+        a: Box::new(IrNode::Ge {
+            a: Box::new(brain_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(7.0),
+            }),
+        }),
+        b: Box::new(IrNode::Ge {
+            a: Box::new(brain_input(
+                CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT,
+            )),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(DT * 1000.0),
+            }),
+        }),
+    });
+
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let attacker = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        BrainComponent::from_graph(&graph),
+        50.0,
+    );
+    let mut context = DamageContext::new("test.attacker-ledger", DamageProducer::InTick);
+    context.attacker = Some(attacker);
+    assert!(apply_damage_with_context(
+        &mut registry,
+        enemy,
+        &DamagePayload { amount: 7.0 },
+        context,
+    ));
+
+    run_ai_tick(&mut registry, &mut runtime, DT);
+
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("enemy keeps its brain");
+    assert_eq!(brain.acquired_target, Some(attacker));
+    let attacker_record = brain
+        .recent_attacker(attacker)
+        .expect("attacker is retained");
+    assert_eq!(brain.time_since_damage_ms, DT * 1000.0);
+    assert_eq!(
+        attacker_record.time_since_damage_ms,
+        brain.time_since_damage_ms
+    );
+    assert_eq!(attacker_record.accumulated_damage, 7.0);
+}
+
 // Regression: an earlier-applied enemy's contact hit was overwritten when the
 // victim's pre-hit brain snapshot was published later in the same apply pass.
 #[test]
@@ -5061,6 +6594,7 @@ fn last_known_memory_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5235,6 +6769,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -5404,6 +6939,7 @@ fn candidate_filter_does_not_reprice_retained_target_think_stride() {
         candidate_filter: Some(IrNode::Const {
             value: IrValue::Bool(false),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5516,6 +7052,7 @@ fn raw_nearest_offer_prices_stride_while_guards_read_the_farther_eligible_target
                 value: IrValue::Number(30.0),
             }),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5675,6 +7212,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
                 value: IrValue::Bool(true),
             }),
         }),
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -5880,6 +7418,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -6063,6 +7602,7 @@ fn a_time_in_activity_guard_exits_on_the_first_tick_the_window_elapses() {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6136,6 +7676,7 @@ fn interrupt_graph(wildcard_rows: Vec<GuardedRow>) -> BehaviorGraphDescriptor {
             ("*".to_string(), wildcard_rows),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6351,6 +7892,7 @@ fn petrifying_graph() -> BehaviorGraphDescriptor {
             )],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -6572,6 +8114,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
             mode: PatrolMode::PingPong,
@@ -6794,15 +8337,6 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                             },
                         ),
                         edge(
-                            "patrol",
-                            IrNode::And {
-                                a: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
-                                b: Box::new(IrNode::Not {
-                                    x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
-                                }),
-                            },
-                        ),
-                        edge(
                             "startle",
                             IrNode::And {
                                 a: Box::new(IrNode::And {
@@ -6922,6 +8456,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ]),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 6.0]],
             mode: PatrolMode::PingPong,
@@ -7048,6 +8583,33 @@ fn step_reference_enemy_graph(
     target_visible: bool,
     time_in_activity_ms: f32,
 ) -> String {
+    step_reference_enemy_graph_with_hostility(
+        current,
+        target_distance,
+        time_since_damage_ms,
+        damage_source_known,
+        time_since_target_visible,
+        distance_to_last_known,
+        damage_bearing,
+        true,
+        target_visible,
+        time_in_activity_ms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_reference_enemy_graph_with_hostility(
+    current: &str,
+    target_distance: Option<f32>,
+    time_since_damage_ms: f32,
+    damage_source_known: bool,
+    time_since_target_visible: f32,
+    distance_to_last_known: f32,
+    damage_bearing: f32,
+    target_hostile: bool,
+    target_visible: bool,
+    time_in_activity_ms: f32,
+) -> String {
     let graph = reference_behavior_graph();
     let mut registry = EntityRegistry::new();
     let enemy = registry.spawn(Transform::default());
@@ -7072,7 +8634,7 @@ fn step_reference_enemy_graph(
             damage_bearing,
             acquisition_due: true,
             distance_from_anchor: 0.0,
-            target_hostile: true,
+            target_hostile,
             target_reachable: true,
             target_visible,
             attacks_fired_in_activity: 0,
@@ -7093,6 +8655,28 @@ fn step_reference_enemy_graph(
         .expect("reference graph keeps a root activity")
         .0
         .to_string()
+}
+
+// Regression: a neutral peer selected through retaliation was immediately
+// discarded by the fixture's `targetHostile` stand-down guard.
+#[test]
+fn reference_enemy_keeps_an_engaged_neutral_retaliation_target() {
+    assert_eq!(
+        step_reference_enemy_graph_with_hostility(
+            "engage",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            true,
+            0.0,
+        ),
+        "engage",
+        "a selected neutral retaliation target remains engaged"
+    );
 }
 
 #[test]
@@ -7729,6 +9313,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([
             (
@@ -8189,6 +9774,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -8229,6 +9815,8 @@ fn projectile_weapon_descriptor(
     cooldown_ms: f32,
 ) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        faction: None,
+        tolerance: None,
         canonical_name: Some(canonical_name.to_string()),
         inventory: None,
         light: None,
@@ -8363,6 +9951,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "shoot".to_string(),
@@ -8472,6 +10061,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     )
@@ -8500,6 +10090,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8616,6 +10207,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8655,6 +10247,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8718,6 +10311,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8742,6 +10336,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8788,6 +10383,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8832,6 +10428,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     );
@@ -8889,6 +10486,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             collision_world: Some(&CollisionWorld::new()),
             descriptors: &descriptors,
             descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
         },
         |_| {},
     )
@@ -9009,6 +10607,7 @@ fn occluded_fresh_offer_prices_stride_but_is_not_acquired() {
             vec![edge("due", brain_input(BRAIN_ACQUISITION_DUE_INPUT))],
         )]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -9094,6 +10693,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),
@@ -9461,6 +11061,7 @@ fn position_goal_graph(
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: patrol,
         attacks: BTreeMap::new(),
         engagement_radius: None,
@@ -9555,6 +11156,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         candidate_filter: None,
+        retaliation: None,
         patrol: Some(PatrolDescriptor {
             points: vec![[0.0, 0.0], [3.0, 0.0]],
             mode: PatrolMode::PingPong,
@@ -9736,6 +11338,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         )]),
         transitions: BTreeMap::new(),
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "attack".to_string(),

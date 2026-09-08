@@ -1,32 +1,38 @@
-//! Compatibility digest for the mod-global trigger lanes that both peers evaluate.
+//! Compatibility digest for mod-global content that can affect peer simulation.
 //!
-//! The recipe is intentionally narrow. Entity descriptors are replicated as tuning
-//! values, while per-level declarations, reactions, and events stay outside this
-//! digest by design.
+//! The recipe covers committed faction relationships and the mod-global trigger
+//! lanes. Entity descriptors are replicated as tuning values, while per-level
+//! declarations, reactions, and events stay outside this digest by design.
 
 use postretro_entities::{
-    CrossingCondition, CrossingDescriptor, DataRegistry, ScopedCrossing, TriggerEventDescriptor,
-    TriggerPoolArm, TriggerPoolDescriptor,
+    CROSS_FACTION_DEFAULT_SENTIMENT, CrossingCondition, CrossingDescriptor,
+    DEFAULT_ENEMY_FACTION_INDEX, DataRegistry, FactionDescriptor, FactionRegistry,
+    FactionRelationship, PLAYER_FACTION_INDEX, SAME_FACTION_DEFAULT_SENTIMENT, ScopedCrossing,
+    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
 };
 
 use crate::content_hash::{hash_f32, hash_f64, hash_ir_node, hash_len, hash_str, hash_u32};
+use crate::scripting_systems::ai::DEFAULT_RETALIATION_TOLERANCE;
 
-/// Produce a deterministic digest over the three mod-global trigger lanes.
+/// Produce a deterministic digest over factions and the mod-global trigger lanes.
 ///
-/// Every entry receives an independent canonical hash before lane ordering is
-/// erased. The exhaustive walks below are a denylist: adding a field or enum
-/// variant in the reached domain fails compilation until its representation is
-/// chosen here.
+/// Faction declaration order remains significant because it assigns runtime
+/// indices. Every trigger entry receives an independent canonical hash before
+/// its lane ordering is erased. The exhaustive walks below are a denylist:
+/// adding a field or enum variant in the reached domain fails compilation until
+/// its representation is chosen here.
 pub(crate) fn mod_compatibility_digest(
+    factions: &FactionRegistry,
     trigger_events: &[TriggerEventDescriptor],
     trigger_pools: &[TriggerPoolDescriptor],
     crossings: &[ScopedCrossing],
 ) -> [u8; 32] {
-    const MOD_DIGEST_EPOCH: u32 = 1;
+    const MOD_DIGEST_EPOCH: u32 = 3;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-mod-compatibility");
     hasher.update(&MOD_DIGEST_EPOCH.to_le_bytes());
+    hash_faction_registry(&mut hasher, factions);
     hash_lane(&mut hasher, trigger_events, hash_trigger_event_descriptor);
     hash_lane(&mut hasher, trigger_pools, hash_trigger_pool_descriptor);
     hash_lane(&mut hasher, crossings, hash_scoped_crossing);
@@ -36,10 +42,87 @@ pub(crate) fn mod_compatibility_digest(
 /// Produce the compatibility digest from committed mod-global registry state.
 pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
     mod_compatibility_digest(
+        &registry.factions,
         &registry.global_trigger_events,
         &registry.global_trigger_pools,
         &registry.global_crossings,
     )
+}
+
+fn hash_faction_registry(hasher: &mut blake3::Hasher, factions: &FactionRegistry) {
+    // Bind the compatibility identities and fallback rule separately from
+    // authored content. Their values are fixed runtime semantics, not entries
+    // in the authored declaration list.
+    hash_str(hasher, "player-faction-index");
+    hash_faction_scalar(hasher, PLAYER_FACTION_INDEX);
+    hash_str(hasher, "default-enemy-faction-index");
+    hash_faction_scalar(hasher, DEFAULT_ENEMY_FACTION_INDEX);
+    hash_str(hasher, "same-faction-default-sentiment");
+    hash_faction_scalar(hasher, SAME_FACTION_DEFAULT_SENTIMENT);
+    hash_str(hasher, "cross-faction-default-sentiment");
+    hash_faction_scalar(hasher, CROSS_FACTION_DEFAULT_SENTIMENT);
+    hash_str(hasher, "default-retaliation-tolerance");
+    hash_faction_scalar(hasher, DEFAULT_RETALIATION_TOLERANCE);
+
+    let compatibility = factions.compatibility_snapshot();
+    let descriptors = compatibility.descriptors();
+    hash_len(hasher, descriptors.len());
+    for (offset, descriptor) in descriptors.iter().enumerate() {
+        hash_len(hasher, offset + 2);
+        hash_faction_descriptor(hasher, descriptor);
+    }
+
+    let override_count = compatibility
+        .relationships()
+        .filter_map(canonical_faction_override)
+        .count();
+    hash_len(hasher, override_count);
+    for (from, to, sentiment, tolerance) in compatibility
+        .relationships()
+        .filter_map(canonical_faction_override)
+    {
+        hash_len(hasher, from);
+        hash_len(hasher, to);
+        hash_faction_scalar(hasher, sentiment);
+        hash_faction_scalar(hasher, tolerance);
+    }
+}
+
+fn hash_faction_descriptor(hasher: &mut blake3::Hasher, descriptor: &FactionDescriptor) {
+    let FactionDescriptor { name } = descriptor;
+    hash_str(hasher, name);
+}
+
+fn canonical_faction_override(
+    (from, to, relationship): (usize, usize, FactionRelationship),
+) -> Option<(usize, usize, f32, f32)> {
+    let FactionRelationship {
+        sentiment,
+        tolerance,
+    } = relationship;
+    let sentiment = canonical_faction_scalar(sentiment);
+    let tolerance = canonical_faction_scalar(tolerance.unwrap_or(DEFAULT_RETALIATION_TOLERANCE));
+    let default_sentiment = if from == to {
+        SAME_FACTION_DEFAULT_SENTIMENT
+    } else {
+        CROSS_FACTION_DEFAULT_SENTIMENT
+    };
+    if sentiment == default_sentiment && tolerance == DEFAULT_RETALIATION_TOLERANCE {
+        None
+    } else {
+        Some((from, to, sentiment, tolerance))
+    }
+}
+
+fn canonical_faction_scalar(value: f32) -> f32 {
+    if value == 0.0 {
+        return 0.0;
+    }
+    value
+}
+
+fn hash_faction_scalar(hasher: &mut blake3::Hasher, value: f32) {
+    hash_f32(hasher, canonical_faction_scalar(value));
 }
 
 fn hash_lane<T>(
@@ -163,9 +246,10 @@ mod tests {
     use postretro_entities::slot_table::StoreDeclarationSet;
     use postretro_entities::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
-        CapsuleParams, EntityTypeDescriptor, FallParams, FireMode, GroundParams, HealthDescriptor,
-        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+        CapsuleParams, EntityTypeDescriptor, FactionRegistry, FactionSentimentDescriptor,
+        FallParams, FireMode, GroundParams, HealthDescriptor, ImpactEventDescriptor,
+        MeshDescriptor, MotionVerb, PlayerMovementDescriptor, PrimitiveDescriptor,
+        ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
     };
     use postretro_foundation::ir::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
@@ -175,7 +259,7 @@ mod tests {
 
     const BLESS_ENV: &str = "POSTRETRO_BLESS_COMPATIBILITY_FIXTURES";
     const FIXTURE_DIGEST_HEX: &str =
-        "7e92147feab99827d4824b740070f164d94963fa211852a460b2c8017a5c19e0";
+        "7ffa9f51839dd1c4d9e541441c85b46c0758a8c0d548715be6fa70fa731937cb";
 
     fn events() -> Vec<TriggerEventDescriptor> {
         vec![
@@ -238,7 +322,12 @@ mod tests {
     }
 
     fn digest() -> [u8; 32] {
-        mod_compatibility_digest(&events(), &pools(), &crossings())
+        mod_compatibility_digest(
+            &FactionRegistry::default(),
+            &events(),
+            &pools(),
+            &crossings(),
+        )
     }
 
     fn manifest() -> ModManifestResult {
@@ -251,6 +340,9 @@ mod tests {
             switching: Default::default(),
             default_weapon_placement: None,
             entities: vec![entity_descriptor()],
+            factions: FactionRegistry::default(),
+            sentiment: Vec::new(),
+            entity_faction_names: vec![None],
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),
             presentation_overlays: Vec::new(),
@@ -272,6 +364,7 @@ mod tests {
         for entity in manifest.entities.clone() {
             registry.upsert_entity_type(entity);
         }
+        registry.replace_factions(manifest.factions.clone());
         registry.replace_global_reactions(manifest.reactions.clone());
         registry.replace_global_crossings(manifest.crossings.clone());
         registry.replace_global_trigger_events(manifest.trigger_events.clone());
@@ -281,6 +374,8 @@ mod tests {
 
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("fixture-entity".to_string()),
             inventory: None,
             light: None,
@@ -350,6 +445,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: Default::default(),
             engagement_radius: None,
@@ -427,7 +523,8 @@ mod tests {
         let events = events();
         let pools = pools();
         let crossings = crossings();
-        let expected = mod_compatibility_digest(&events, &pools, &crossings);
+        let factions = FactionRegistry::default();
+        let expected = mod_compatibility_digest(&factions, &events, &pools, &crossings);
 
         let mut reversed_events = events;
         let mut reversed_pools = pools;
@@ -438,7 +535,165 @@ mod tests {
 
         assert_eq!(
             expected,
-            mod_compatibility_digest(&reversed_events, &reversed_pools, &reversed_crossings)
+            mod_compatibility_digest(
+                &factions,
+                &reversed_events,
+                &reversed_pools,
+                &reversed_crossings,
+            )
+        );
+    }
+
+    #[test]
+    fn digest_changes_for_faction_identity_order_and_relationship_edits() {
+        fn factions(names: [&str; 2], sentiment: f32, tolerance: f32) -> FactionRegistry {
+            FactionRegistry::from_descriptors(
+                names
+                    .into_iter()
+                    .map(|name| FactionDescriptor {
+                        name: name.to_string(),
+                    })
+                    .collect(),
+            )
+            .and_then(|registry| {
+                registry.with_sentiments([FactionSentimentDescriptor {
+                    from_faction: "cabal".to_string(),
+                    to_faction: "resistance".to_string(),
+                    sentiment,
+                    tolerance,
+                }])
+            })
+            .expect("valid faction digest fixture")
+        }
+
+        let mut baseline = manifest();
+        baseline.factions = factions(["cabal", "resistance"], -1.0, 0.25);
+        let expected = manifest_digest(&baseline);
+
+        let mut changed = baseline.clone();
+        changed.factions = factions(["cabal", "resistance"], -0.5, 0.25);
+        assert_ne!(expected, manifest_digest(&changed));
+
+        let mut changed = baseline.clone();
+        changed.factions = factions(["cabal", "resistance"], -1.0, 0.5);
+        assert_ne!(expected, manifest_digest(&changed));
+
+        let mut changed = baseline;
+        changed.factions = factions(["resistance", "cabal"], -1.0, 0.25);
+        assert_ne!(expected, manifest_digest(&changed));
+    }
+
+    fn faction_registry(
+        names: &[&str],
+        relationships: &[(&str, &str, f32, f32)],
+    ) -> FactionRegistry {
+        FactionRegistry::from_descriptors(
+            names
+                .iter()
+                .map(|name| FactionDescriptor {
+                    name: (*name).to_string(),
+                })
+                .collect(),
+        )
+        .and_then(|registry| {
+            registry.with_sentiments(
+                relationships
+                    .iter()
+                    .map(
+                        |(from, to, sentiment, tolerance)| FactionSentimentDescriptor {
+                            from_faction: (*from).to_string(),
+                            to_faction: (*to).to_string(),
+                            sentiment: *sentiment,
+                            tolerance: *tolerance,
+                        },
+                    )
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .expect("valid faction digest fixture")
+    }
+
+    #[test]
+    fn digest_constructs_from_large_sparse_faction_registry() {
+        // Regression: hashing the resolved N x N relationship matrix made a
+        // valid large sparse registry impractical to digest during startup.
+        let descriptors = (0..16_384)
+            .map(|index| FactionDescriptor {
+                name: format!("faction-{index}"),
+            })
+            .collect();
+        let baseline = FactionRegistry::from_descriptors(descriptors)
+            .expect("large faction registry remains within exact f32 indices");
+        let changed = baseline
+            .clone()
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "faction-16383".to_string(),
+                to_faction: "faction-0".to_string(),
+                sentiment: 0.5,
+                tolerance: 2.0,
+            }])
+            .expect("one sparse override resolves");
+
+        assert_ne!(
+            mod_compatibility_digest(&baseline, &[], &[], &[]),
+            mod_compatibility_digest(&changed, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_canonicalizes_sparse_relationship_declaration_order() {
+        let first = faction_registry(
+            &["cabal", "resistance", "wild"],
+            &[
+                ("cabal", "resistance", -0.75, 4.0),
+                ("wild", "cabal", 0.25, 8.0),
+            ],
+        );
+        let reversed = faction_registry(
+            &["cabal", "resistance", "wild"],
+            &[
+                ("wild", "cabal", 0.25, 8.0),
+                ("cabal", "resistance", -0.75, 4.0),
+            ],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&first, &[], &[], &[]),
+            mod_compatibility_digest(&reversed, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_treats_signed_zero_relationship_scalars_as_equivalent() {
+        let positive = faction_registry(
+            &["cabal", "resistance"],
+            &[("cabal", "resistance", 0.0, 0.0)],
+        );
+        let negative = faction_registry(
+            &["cabal", "resistance"],
+            &[("cabal", "resistance", -0.0, -0.0)],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&positive, &[], &[], &[]),
+            mod_compatibility_digest(&negative, &[], &[], &[]),
+        );
+    }
+
+    #[test]
+    fn digest_omits_explicit_semantic_default_relationships() {
+        let omitted = faction_registry(&["cabal", "resistance"], &[]);
+        let explicit = faction_registry(
+            &["cabal", "resistance"],
+            &[
+                ("cabal", "cabal", 0.0, f32::MAX),
+                ("cabal", "resistance", -1.0, f32::MAX),
+            ],
+        );
+
+        assert_eq!(
+            mod_compatibility_digest(&omitted, &[], &[], &[]),
+            mod_compatibility_digest(&explicit, &[], &[], &[]),
         );
     }
 
@@ -450,14 +705,24 @@ mod tests {
         changed_crossings[0].crossing.condition = CrossingCondition::Below { threshold: 0.5 };
         assert_ne!(
             baseline,
-            mod_compatibility_digest(&events(), &pools(), &changed_crossings)
+            mod_compatibility_digest(
+                &FactionRegistry::default(),
+                &events(),
+                &pools(),
+                &changed_crossings,
+            )
         );
 
         let mut changed_crossings = crossings();
         changed_crossings[0].crossing.edge = None;
         assert_ne!(
             baseline,
-            mod_compatibility_digest(&events(), &pools(), &changed_crossings)
+            mod_compatibility_digest(
+                &FactionRegistry::default(),
+                &events(),
+                &pools(),
+                &changed_crossings,
+            )
         );
 
         let mut changed_crossings = crossings();
@@ -472,21 +737,36 @@ mod tests {
         });
         assert_ne!(
             baseline,
-            mod_compatibility_digest(&events(), &pools(), &changed_crossings)
+            mod_compatibility_digest(
+                &FactionRegistry::default(),
+                &events(),
+                &pools(),
+                &changed_crossings,
+            )
         );
 
         let mut changed_events = events();
         changed_events[0].event = "entered-late".to_string();
         assert_ne!(
             baseline,
-            mod_compatibility_digest(&changed_events, &pools(), &crossings())
+            mod_compatibility_digest(
+                &FactionRegistry::default(),
+                &changed_events,
+                &pools(),
+                &crossings(),
+            )
         );
 
         let mut changed_pools = pools();
         changed_pools[0].arm = TriggerPoolArm::Percentage(0.25);
         assert_ne!(
             baseline,
-            mod_compatibility_digest(&events(), &changed_pools, &crossings())
+            mod_compatibility_digest(
+                &FactionRegistry::default(),
+                &events(),
+                &changed_pools,
+                &crossings(),
+            )
         );
     }
 
@@ -561,11 +841,12 @@ mod tests {
         }));
 
         assert_eq!(
-            mod_compatibility_digest(&[], &[], &[first]),
-            mod_compatibility_digest(&[], &[], &[equal])
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[first],),
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[equal],)
         );
         assert_ne!(
             mod_compatibility_digest(
+                &FactionRegistry::default(),
                 &[],
                 &[],
                 &[crossing(CrossingCondition::Ir(IrNode::Add {
@@ -578,7 +859,7 @@ mod tests {
                     }),
                 }))]
             ),
-            mod_compatibility_digest(&[], &[], &[different])
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[different],)
         );
     }
 

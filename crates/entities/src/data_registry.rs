@@ -1,5 +1,5 @@
 // Data-script registries: active level definitions plus engine-global entity,
-// map, reaction, crossing, trigger-event, and trigger-pool snapshots used by
+// faction, map, reaction, crossing, trigger-event, and trigger-pool snapshots used by
 // startup and staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
@@ -33,10 +33,255 @@ pub struct ScopedCrossing {
 pub type ScopedTriggerEvent = TriggerEventDescriptor;
 pub type ScopedTriggerPool = TriggerPoolDescriptor;
 
+/// Stable, manifest-authored faction name. The runtime stores only the resolved
+/// scalar index on an entity; names stay in this engine-global content registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionDescriptor {
+    pub name: String,
+}
+
+/// One authored directional relationship entry. Names exist only at manifest
+/// drain time; [`FactionRegistry`] resolves them into sparse index-pair
+/// overrides before the AI tick can read the relationship.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FactionSentimentDescriptor {
+    pub from_faction: String,
+    pub to_faction: String,
+    pub sentiment: f32,
+    pub tolerance: f32,
+}
+
+/// A directional relationship resolved from the faction registry. `tolerance`
+/// is present only for an authored pair override; AI resolves absent values
+/// through its entity and compatibility tolerance rules.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FactionRelationship {
+    pub sentiment: f32,
+    pub tolerance: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FactionRelationshipOverride {
+    from: usize,
+    to: usize,
+    relationship: FactionRelationship,
+}
+
+/// The absent faction carried by player pawns.
+pub const PLAYER_FACTION_INDEX: f32 = 0.0;
+/// The compatibility faction used by brain-bearing archetypes without an
+/// authored faction declaration.
+pub const DEFAULT_ENEMY_FACTION_INDEX: f32 = 1.0;
+/// Compatibility sentiment for an unlisted same-faction pair.
+pub const SAME_FACTION_DEFAULT_SENTIMENT: f32 = 0.0;
+/// Compatibility sentiment for an unlisted cross-faction pair.
+pub const CROSS_FACTION_DEFAULT_SENTIMENT: f32 = -1.0;
+const FIRST_AUTHORED_FACTION_INDEX: f32 = 2.0;
+const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
+
+/// Manifest faction names resolved to compact, stable entity-state indices.
+///
+/// Indices 0 and 1 stay reserved for the player and the built-in default enemy
+/// faction. Author declarations retain manifest order and begin at index 2.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FactionRegistry {
+    descriptors: Vec<FactionDescriptor>,
+    /// Sorted authored overrides keyed by `(from, to)` numeric indices.
+    /// Candidate-scan lookup is allocation-free; absent pairs use the
+    /// compatibility relationship without reserving an N x N matrix.
+    relationship_overrides: Vec<FactionRelationshipOverride>,
+}
+
+/// Borrowed faction content used by compatibility hashing.
+///
+/// Construction and iteration exhaustively bind the registry's private state,
+/// so a new behavior field requires an explicit compatibility decision.
+pub struct FactionCompatibilitySnapshot<'a> {
+    descriptors: &'a [FactionDescriptor],
+    relationship_overrides: &'a [FactionRelationshipOverride],
+}
+
+impl<'a> FactionCompatibilitySnapshot<'a> {
+    pub fn descriptors(&self) -> &'a [FactionDescriptor] {
+        self.descriptors
+    }
+
+    /// Authored sparse relationship overrides in ascending `(from, to)` order.
+    pub fn relationships(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (usize, usize, FactionRelationship)> + 'a {
+        let relationship_overrides = self.relationship_overrides;
+        relationship_overrides.iter().map(|relationship_override| {
+            let FactionRelationshipOverride {
+                from,
+                to,
+                relationship,
+            } = relationship_override;
+            (*from, *to, *relationship)
+        })
+    }
+}
+
+impl FactionRegistry {
+    pub fn from_descriptors(descriptors: Vec<FactionDescriptor>) -> Result<Self, String> {
+        let mut names = HashSet::with_capacity(descriptors.len());
+        for descriptor in &descriptors {
+            if descriptor.name.is_empty() {
+                return Err("faction name must be a non-empty string".to_string());
+            }
+            if !names.insert(descriptor.name.as_str()) {
+                return Err(format!("duplicate faction name `{}`", descriptor.name));
+            }
+        }
+        // A f32 exactly represents every integer in this range. Reserving the
+        // two built-ins keeps authored values from colliding with player/default
+        // semantics even when the registry is later read directly by the AI.
+        if descriptors.len() > MAX_EXACT_FACTION_INDEX - FIRST_AUTHORED_FACTION_INDEX as usize + 1 {
+            return Err("too many authored factions for f32 index storage".to_string());
+        }
+        Ok(Self {
+            descriptors,
+            relationship_overrides: Vec::new(),
+        })
+    }
+
+    /// Resolve strict manifest-authored directional relationships into the
+    /// sparse faction-index overrides. Both endpoint names must name declared
+    /// factions; player and default-enemy compatibility rows use the unlisted
+    /// pair fallback.
+    pub fn with_sentiments(
+        mut self,
+        sentiments: impl AsRef<[FactionSentimentDescriptor]>,
+    ) -> Result<Self, String> {
+        for entry in sentiments.as_ref() {
+            if !entry.sentiment.is_finite() {
+                return Err(format!(
+                    "sentiment from `{}` to `{}` must be finite",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            if !entry.tolerance.is_finite() {
+                return Err(format!(
+                    "tolerance from `{}` to `{}` must be finite",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            let from = self.index_for_name(&entry.from_faction).ok_or_else(|| {
+                format!(
+                    "sentiment references undeclared from faction `{}`",
+                    entry.from_faction
+                )
+            })?;
+            let to = self.index_for_name(&entry.to_faction).ok_or_else(|| {
+                format!(
+                    "sentiment references undeclared to faction `{}`",
+                    entry.to_faction
+                )
+            })?;
+            let pair = (
+                faction_index(from).expect("declared faction index is exact"),
+                faction_index(to).expect("declared faction index is exact"),
+            );
+            match self
+                .relationship_overrides
+                .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+            {
+                Ok(_) => {
+                    return Err(format!(
+                        "duplicate sentiment entry from `{}` to `{}`",
+                        entry.from_faction, entry.to_faction
+                    ));
+                }
+                Err(index) => self.relationship_overrides.insert(
+                    index,
+                    FactionRelationshipOverride {
+                        from: pair.0,
+                        to: pair.1,
+                        relationship: FactionRelationship {
+                            sentiment: entry.sentiment,
+                            tolerance: Some(entry.tolerance),
+                        },
+                    },
+                ),
+            }
+        }
+        Ok(self)
+    }
+
+    /// Resolve an authored stable name to its entity-state scalar.
+    pub fn index_for_name(&self, name: &str) -> Option<f32> {
+        self.descriptors
+            .iter()
+            .position(|descriptor| descriptor.name == name)
+            .map(|offset| FIRST_AUTHORED_FACTION_INDEX + offset as f32)
+    }
+
+    pub fn descriptors(&self) -> &[FactionDescriptor] {
+        &self.descriptors
+    }
+
+    /// Authoritative borrowed content for peer compatibility hashing.
+    pub fn compatibility_snapshot(&self) -> FactionCompatibilitySnapshot<'_> {
+        let Self {
+            descriptors,
+            relationship_overrides,
+        } = self;
+        FactionCompatibilitySnapshot {
+            descriptors,
+            relationship_overrides,
+        }
+    }
+
+    /// Sentiment from the evaluating faction toward a candidate faction.
+    /// Unlisted rows preserve the prior faction-inequality behavior exactly:
+    /// equal indices are neutral, different indices are hostile.
+    pub fn sentiment(&self, from: f32, to: f32) -> f32 {
+        self.relationship(from, to).sentiment
+    }
+
+    /// Pair tolerance only when the authored relationship declared one.
+    pub fn tolerance(&self, from: f32, to: f32) -> Option<f32> {
+        self.relationship(from, to).tolerance
+    }
+
+    pub fn relationship(&self, from: f32, to: f32) -> FactionRelationship {
+        self.resolved_pair(from, to)
+            .and_then(|pair| {
+                self.relationship_overrides
+                    .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+                    .ok()
+            })
+            .map(|index| self.relationship_overrides[index].relationship)
+            .unwrap_or(FactionRelationship {
+                sentiment: if from == to {
+                    SAME_FACTION_DEFAULT_SENTIMENT
+                } else {
+                    CROSS_FACTION_DEFAULT_SENTIMENT
+                },
+                tolerance: None,
+            })
+    }
+
+    fn resolved_pair(&self, from: f32, to: f32) -> Option<(usize, usize)> {
+        let from = faction_index(from)?;
+        let to = faction_index(to)?;
+        let faction_count = self.descriptors.len() + FIRST_AUTHORED_FACTION_INDEX as usize;
+        (from < faction_count && to < faction_count).then_some((from, to))
+    }
+}
+
+fn faction_index(index: f32) -> Option<usize> {
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+        return None;
+    }
+    let resolved = index as usize;
+    (resolved as f32 == index).then_some(resolved)
+}
+
 /// Data registries collected from script execution.
 /// `reactions`, `crossings`, `trigger_events`, and `trigger_pools` are per-level
-/// and cleared on unload; entity, map, and global reaction/crossing/trigger-event/
-/// trigger-pool definitions survive level unload.
+/// and cleared on unload; entity, faction, map, and global
+/// reaction/crossing/trigger-event/trigger-pool definitions survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
     /// Active reactions for this level after composing matching mod-global
@@ -75,6 +320,9 @@ pub struct DataRegistry {
     /// Consumers of derived descriptor data use this to refresh once per
     /// registry change without fingerprinting descriptors in a hot path.
     entity_types_generation: u64,
+    /// Manifest-authored named faction registry. Engine-global like entity
+    /// descriptors: level unload clears no faction declarations or indices.
+    pub factions: FactionRegistry,
     /// Mod map catalog entries. Engine-global — survive level unload.
     /// Populated by the boot caller from `ModManifest.maps` so the
     /// frontend and catalog-id load path can discover maps before a level is
@@ -312,6 +560,14 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
+    /// Replace the complete committed faction snapshot. Startup accepts any
+    /// validated declaration order. Staged reload verifies that the name-to-index
+    /// mapping is unchanged before calling this, while still allowing authored
+    /// relationship overrides to refresh.
+    pub fn replace_factions(&mut self, factions: FactionRegistry) {
+        self.factions = factions;
+    }
+
     /// Identity of the current complete entity-descriptor snapshot.
     pub fn entity_types_generation(&self) -> u64 {
         self.entity_types_generation
@@ -357,7 +613,7 @@ impl DataRegistry {
     }
 
     /// Drop every active per-level reaction/crossing/trigger-event/trigger-pool
-    /// definition. Engine-global entity, map, and global reaction/crossing/
+    /// definition. Engine-global entity, faction, map, and global reaction/crossing/
     /// trigger-event/trigger-pool definitions outlive the clear. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub fn clear(&mut self) {
@@ -390,6 +646,7 @@ impl DataRegistry {
             && self.level_trigger_events.is_empty()
             && self.level_trigger_pools.is_empty()
             && self.entities.is_empty()
+            && self.factions.descriptors().is_empty()
             && self.maps.is_empty()
             && self.default_weapon_placement.is_none()
     }
@@ -418,6 +675,8 @@ mod tests {
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("grunt".to_string()),
             inventory: None,
             light: None,
@@ -817,6 +1076,221 @@ mod tests {
         r.clear();
         assert_eq!(r.reactions.len(), 0);
         assert_eq!(r.entities.len(), 1, "entities survive level unload");
+    }
+
+    #[test]
+    fn faction_registry_reserves_builtin_indices_and_preserves_manifest_order() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("distinct non-empty faction names are valid");
+
+        assert_eq!(PLAYER_FACTION_INDEX, 0.0);
+        assert_eq!(DEFAULT_ENEMY_FACTION_INDEX, 1.0);
+        assert_eq!(factions.index_for_name("cabal"), Some(2.0));
+        assert_eq!(factions.index_for_name("resistance"), Some(3.0));
+    }
+
+    #[test]
+    fn faction_compatibility_snapshot_preserves_authored_and_pair_order() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+            FactionDescriptor {
+                name: "wild".to_string(),
+            },
+        ])
+        .expect("valid faction declarations")
+        .with_sentiments([
+            FactionSentimentDescriptor {
+                from_faction: "wild".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.25,
+                tolerance: 8.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -0.75,
+                tolerance: 4.0,
+            },
+        ])
+        .expect("declared endpoint names resolve");
+
+        let snapshot = factions.compatibility_snapshot();
+        assert_eq!(
+            snapshot
+                .descriptors()
+                .iter()
+                .map(|descriptor| descriptor.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cabal", "resistance", "wild"],
+        );
+        assert_eq!(
+            snapshot.relationships().collect::<Vec<_>>(),
+            vec![
+                (
+                    2,
+                    3,
+                    FactionRelationship {
+                        sentiment: -0.75,
+                        tolerance: Some(4.0),
+                    },
+                ),
+                (
+                    4,
+                    2,
+                    FactionRelationship {
+                        sentiment: 0.25,
+                        tolerance: Some(8.0),
+                    },
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn faction_registry_resolves_directional_sentiment_and_compatibility_defaults() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid faction declarations")
+        .with_sentiments(vec![
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -0.75,
+                tolerance: 4.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.0,
+                tolerance: 9.0,
+            },
+        ])
+        .expect("declared endpoint names resolve");
+
+        assert!((factions.sentiment(2.0, 3.0) - -0.75).abs() <= f32::EPSILON);
+        assert_eq!(factions.sentiment(3.0, 2.0), 0.0);
+        assert_eq!(factions.tolerance(2.0, 3.0), Some(4.0));
+        assert_eq!(factions.tolerance(3.0, 2.0), Some(9.0));
+        assert_eq!(factions.sentiment(2.0, 2.0), 0.0, "same defaults neutral");
+        assert_eq!(
+            factions.sentiment(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
+            -1.0,
+            "unlisted cross-faction pairs retain the prior hostile rule"
+        );
+        assert_eq!(factions.tolerance(2.0, 2.0), None);
+    }
+
+    #[test]
+    fn faction_registry_allocates_only_authored_sparse_relationship_overrides() {
+        let descriptors = (0..128)
+            .map(|index| FactionDescriptor {
+                name: format!("faction-{index}"),
+            })
+            .collect();
+        let factions = FactionRegistry::from_descriptors(descriptors)
+            .expect("many distinct faction declarations are valid");
+
+        assert!(
+            factions.relationship_overrides.is_empty(),
+            "declaring factions must not eagerly allocate an N x N relationship matrix"
+        );
+
+        let factions = factions
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "faction-127".to_string(),
+                to_faction: "faction-0".to_string(),
+                sentiment: 0.5,
+                tolerance: 3.0,
+            }])
+            .expect("one sparse relationship override resolves");
+        assert_eq!(factions.relationship_overrides.len(), 1);
+        assert!((factions.sentiment(129.0, 2.0) - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(
+            factions.sentiment(2.0, 129.0),
+            -1.0,
+            "the reverse directed pair remains on the compatibility default"
+        );
+    }
+
+    #[test]
+    fn faction_registry_rejects_duplicate_or_unknown_sentiment_pairs() {
+        let factions = FactionRegistry::from_descriptors(vec![FactionDescriptor {
+            name: "cabal".to_string(),
+        }])
+        .expect("valid faction declaration");
+        let unknown = factions
+            .clone()
+            .with_sentiments(vec![FactionSentimentDescriptor {
+                from_faction: "missing".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: -1.0,
+                tolerance: 1.0,
+            }])
+            .expect_err("unknown endpoint rejects the manifest");
+        assert!(unknown.contains("undeclared from faction `missing`"));
+
+        let unknown = factions
+            .clone()
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "missing".to_string(),
+                sentiment: -1.0,
+                tolerance: 1.0,
+            }])
+            .expect_err("unknown destination rejects the manifest");
+        assert!(unknown.contains("undeclared to faction `missing`"));
+
+        let duplicate = factions
+            .with_sentiments(vec![
+                FactionSentimentDescriptor {
+                    from_faction: "cabal".to_string(),
+                    to_faction: "cabal".to_string(),
+                    sentiment: 0.0,
+                    tolerance: 1.0,
+                },
+                FactionSentimentDescriptor {
+                    from_faction: "cabal".to_string(),
+                    to_faction: "cabal".to_string(),
+                    sentiment: -1.0,
+                    tolerance: 2.0,
+                },
+            ])
+            .expect_err("ambiguous duplicate pair rejects the manifest");
+        assert!(duplicate.contains("duplicate sentiment entry"));
+    }
+
+    #[test]
+    fn clear_keeps_manifest_factions_for_the_next_level() {
+        let mut registry = DataRegistry::new();
+        let factions = FactionRegistry::from_descriptors(vec![FactionDescriptor {
+            name: "cabal".to_string(),
+        }])
+        .expect("valid faction declaration");
+        registry.replace_factions(factions);
+        registry.populate_level(sample_level_reactions(), Vec::new(), &[]);
+
+        registry.clear();
+
+        assert!(registry.reactions.is_empty());
+        assert_eq!(registry.factions.index_for_name("cabal"), Some(2.0));
     }
 
     #[test]

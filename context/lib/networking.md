@@ -99,6 +99,8 @@ The app gate splits by **mutability**, not by subject. A value belongs to the ea
 
 **Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved.
 
+Faction declarations and directional relationships are parity-gated mod content, refreshed with the mod digest after content commits. Declaration order remains meaningful because it establishes shared faction identities. Equivalent relationship encodings, including omitted or no-op overrides, canonicalize before comparison.
+
 This overturns the earlier rule that a connection was bound to its content fingerprint for its lifetime, with a content change closing it. **Content divergence is a diagnostic to a still-connected peer, not a disconnect.** Closing would also race the design's own timing: a client's declaration for one level can still be in flight when the host installs the next, so a host that closed on mismatch would tear down a peer it had already demoted a frame earlier.
 
 Putting a mutable value in admission is the failure this split exists to prevent — it converts a recoverable content difference into an unrecoverable disconnect. That is the question to ask of any value added later.

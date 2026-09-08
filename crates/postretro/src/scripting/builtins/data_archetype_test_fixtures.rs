@@ -69,6 +69,8 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
     };
 
     EntityTypeDescriptor {
+        faction: None,
+        tolerance: None,
         canonical_name: Some(classname.to_string()),
         inventory: None,
         light: None,
@@ -138,6 +140,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
             )]),
         },
         candidate_filter: None,
+        retaliation: None,
         patrol: None,
         attacks: BTreeMap::from([(
             "claw".to_string(),

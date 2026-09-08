@@ -999,6 +999,8 @@ mod tests {
     fn resolve_entity_type_finds_registered_classname() {
         let mut data = DataRegistry::new();
         data.upsert_entity_type(EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("grunt".to_string()),
             inventory: None,
             light: None,
@@ -1015,6 +1017,8 @@ mod tests {
         assert_eq!(
             resolved,
             Some(&EntityTypeDescriptor {
+                faction: None,
+                tolerance: None,
                 canonical_name: Some("grunt".to_string()),
                 inventory: None,
                 light: None,

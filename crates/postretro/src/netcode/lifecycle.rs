@@ -546,6 +546,8 @@ mod tests {
     /// `entity_class` `spawn_net_slot_pawn` looks up.
     fn player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("player".to_string()),
             inventory: None,
             light: None,
@@ -608,6 +610,8 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,

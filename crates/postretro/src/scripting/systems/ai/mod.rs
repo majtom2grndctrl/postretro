@@ -15,10 +15,11 @@
 // engine floor (stride, target selection, hysteresis, combat slots, the aggro
 // gate) sits UPSTREAM of guard evaluation and is not authorable.
 //
-// Exactly ONE thing suppresses guard evaluation: a closed aggro gate, which
-// stands the brain down to its graph's `initial` state with steering cleared and
-// reads neither targeting nor guards. Everything else — including having no
-// target at all — evaluates the whole guard set as usual, with the no-target
+// For each admitted live brain, exactly one authored-state condition suppresses
+// guard evaluation: a closed aggro gate. It stands the brain down to its graph's
+// `initial` state with steering cleared and reads neither targeting nor guards.
+// Everything else — including having no target at all — evaluates the whole
+// guard set, with the no-target
 // facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel)
 // projected into the scope. That is what lets a sealed-closet enemy that gets
 // shot flinch on an authored interrupt while it has nobody to chase.
@@ -56,8 +57,7 @@ pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
-    EntityRegistry, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry, Transform,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::TargetPawn;
@@ -90,9 +90,18 @@ const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 /// floor. Guards consume the durable `@brain.targetHostile` fact instead of
 /// binding directly to this storage detail.
 pub(crate) const FACTION_STATE_FIELD: &str = "faction";
+/// Optional per-archetype retaliation tolerance. This engine-owned storage is
+/// intentionally not an authored guard vocabulary; candidate guards consume
+/// only the resolved `@candidate.tolerance` fact.
+pub(crate) const ARCHETYPE_TOLERANCE_STATE_FIELD: &str = "archetype_tolerance";
+/// Compatibility tolerance for a relationship without authored pair or
+/// archetype data. No finite normal damage total can exceed it, so retaliation
+/// remains inert until content deliberately lowers a tolerance.
+pub(crate) const DEFAULT_RETALIATION_TOLERANCE: f32 = f32::MAX;
 /// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
 /// the emergent state field absent and therefore read as faction zero.
-pub(crate) const ENEMY_DEFAULT_FACTION: f32 = 1.0;
+#[cfg(test)]
+pub(crate) const ENEMY_DEFAULT_FACTION: f32 = postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
 
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and a locomotion state plays its
@@ -166,12 +175,10 @@ pub(super) struct EnemyOutcome {
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
-    /// `true` when an attack fired this tick (event raised; projectile contact
-    /// damage arrives in a later simulation stage).
-    attacked: bool,
-    /// Fire-time resolution already selected at the one fire-latch seam. The
-    /// apply pass never re-derives an action from a potentially changed path.
-    attack: Option<AttackOutcome>,
+    /// Immutable fire resolution selected by compute. The mutable cooldown and
+    /// activity-count commit waits for apply to revalidate the target against
+    /// earlier outcomes in the same batch.
+    attack: Option<PendingAttack>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
     pub(super) prior_standoff_distance: f32,
@@ -185,6 +192,12 @@ pub(super) struct EnemyOutcome {
 /// their direct-damage path; weapon attacks carry the launch materialized by
 /// the apply pass, after the immutable evaluator has released its registry
 /// borrow.
+pub(super) struct PendingAttack {
+    attack_name: String,
+    cooldown_ms: f32,
+    effect: AttackOutcome,
+}
+
 pub(super) enum AttackOutcome {
     Contact {
         damage: f32,
@@ -216,6 +229,10 @@ pub(crate) struct AiTickInputs<'a> {
     pub(crate) collision_world: Option<&'a CollisionWorld>,
     pub(crate) descriptors: &'a [EntityTypeDescriptor],
     pub(crate) descriptor_generation: u64,
+    /// Resolved manifest faction relationships. The App borrows this from the
+    /// same `DataRegistry` snapshot as descriptors, so a tick cannot observe a
+    /// new faction matrix beside stale content.
+    pub(crate) factions: &'a FactionRegistry,
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -319,6 +336,7 @@ pub(crate) fn run_ai_tick_with_navigation(
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
 ) -> Vec<Cow<'static, str>> {
+    let factions = FactionRegistry::default();
     run_ai_tick_with_navigation_and_impact(
         registry,
         runtime,
@@ -328,6 +346,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             collision_world,
             descriptors: &[],
             descriptor_generation: 0,
+            factions: &factions,
         },
         |_| {},
     )
@@ -346,6 +365,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         collision_world,
         descriptors,
         descriptor_generation,
+        factions,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -378,17 +398,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // A terminal impact effect or queued despawn leaves the id live
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
-            if registry
-                .get_component::<DeferredEffectComponent>(id)
-                .is_ok_and(|effects| {
-                    effects.inert
-                        || effects
-                            .pending
-                            .iter()
-                            .any(|effect| effect.kind == DeferredEffectKind::Despawn)
-                })
-                || crate::impact_effects::is_downed_for_recovery(registry, id)
-            {
+            if crate::scripting_systems::health::is_quiescent(registry, id) {
                 return None;
             }
             let ComponentValue::Brain(brain) = value else {
@@ -414,6 +424,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         dt_ms,
         nav_graph,
         collision_world,
+        factions,
     );
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);

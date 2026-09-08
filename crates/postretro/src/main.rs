@@ -2926,6 +2926,12 @@ impl ApplicationHandler for App {
                             &mut script_ctx.registry.borrow_mut(),
                         ));
 
+                        // Freeze the declaration set against the pre-command
+                        // authorization state. The sim ingests this batch before
+                        // AI; declarations waiting on this tick's FIRE stay in
+                        // the pending queue for the existing post-sim drain.
+                        let mut ready_hit_declarations = self.host_take_ready_hit_declarations();
+
                         // Host: resolve remote (owned) pawn inputs up front, then the
                         // shared `simulate_tick` runs loaded movers and every player
                         // movement consumer against the same combined collision query.
@@ -2957,7 +2963,9 @@ impl ApplicationHandler for App {
                         let descriptor_generation = data_registry.entity_types_generation();
                         let default_weapon_placement =
                             data_registry.default_weapon_placement.as_ref();
+                        let collision_world = &self.collision_world;
                         let session = self.session.as_mut().expect("running session installed");
+                        let net_endpoint = &mut session.net_endpoint;
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
                         let scripting = &mut session.scripting;
@@ -2971,7 +2979,7 @@ impl ApplicationHandler for App {
                         let debug_chase_agent = self.debug_chase_agent;
                         let tick_events = sim::simulate_tick_with_presentation_aim(
                             script_ctx.registry.clone(),
-                            &self.collision_world,
+                            collision_world,
                             hit_zone_store,
                             self.nav_graph.as_ref(),
                             script_ctx.gravity.get(),
@@ -3010,6 +3018,7 @@ impl ApplicationHandler for App {
                             touch_system,
                             descriptors,
                             descriptor_generation,
+                            &data_registry.factions,
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,
@@ -3022,6 +3031,32 @@ impl ApplicationHandler for App {
                                 auto_close_timers: Some(scripting.auto_close_timers.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
+                            |registry, on_impact| {
+                                let Some(netcode::NetEndpoint::Host {
+                                    server,
+                                    allocator,
+                                    owners,
+                                    open_shots,
+                                    projectile_presentations,
+                                    ..
+                                }) = net_endpoint.as_mut()
+                                else {
+                                    return;
+                                };
+                                let _ = netcode::host_ingest_ready_hit_declarations(
+                                    server,
+                                    registry,
+                                    collision_world,
+                                    allocator,
+                                    owners,
+                                    open_shots,
+                                    std::mem::take(&mut ready_hit_declarations),
+                                    |registry| on_impact(registry),
+                                    |shot_id, point| {
+                                        projectile_presentations.note_contact(shot_id, point)
+                                    },
+                                );
+                            },
                             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
                         );
                         // Advance timed-reaction countdowns for this tick. Position
@@ -7650,6 +7685,28 @@ impl App {
         )
     }
 
+    fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {
+        let Some(netcode::NetEndpoint::Host {
+            tick,
+            command_queues,
+            open_shots,
+            pending_hit_declarations,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return Vec::new();
+        };
+        netcode::host_take_ready_hit_declarations(
+            command_queues,
+            open_shots,
+            pending_hit_declarations,
+            *tick,
+        )
+    }
+
     fn host_run_remote_hit_death_sweep(&mut self) -> Vec<String> {
         let Some(session) = self.session.as_mut() else {
             return Vec::new();
@@ -9447,6 +9504,8 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(canonical_name.to_owned()),
             inventory: None,
             light: None,
@@ -12022,6 +12081,9 @@ mod tests {
                     switching: Default::default(),
                     default_weapon_placement: None,
                     entities: Vec::new(),
+                    factions: Default::default(),
+                    sentiment: Vec::new(),
+                    entity_faction_names: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
@@ -12817,6 +12879,8 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("remote_enemy".to_string()),
             inventory: None,
             light: None,

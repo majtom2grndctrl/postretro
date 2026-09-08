@@ -2206,6 +2206,8 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
         let descriptor = EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("remote-holder".to_string()),
             inventory: None,
             light: None,

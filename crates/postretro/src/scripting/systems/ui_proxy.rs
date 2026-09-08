@@ -9,6 +9,7 @@ use crate::scripting::primitives::store::write_store_slot;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
 use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::provenance::DescriptorProvenance;
@@ -29,20 +30,30 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
 
 fn weapon_hud_values(
     registry: &EntityRegistry,
-) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool) {
+) -> (Option<EntityId>, Option<(u32, u32)>, f32, bool, f32) {
     let Some(pawn) = registry.local_player_movement_pawn() else {
-        return (None, None, 0.0, false);
+        return (None, None, 0.0, false, 0.0);
     };
     let Some(weapon_id) = registry
         .get_component::<Inventory>(pawn)
         .ok()
         .and_then(Inventory::active_wieldable)
     else {
-        return (None, None, 0.0, false);
+        return (None, None, 0.0, false, 0.0);
     };
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
-        return (None, None, 0.0, false);
+        return (None, None, 0.0, false, 0.0);
     };
+    let (horizontal_speed, run_speed) = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()
+        .map_or((0.0, 0.0), |movement| {
+            let velocity = movement.velocity;
+            (
+                (velocity.x * velocity.x + velocity.z * velocity.z).sqrt(),
+                movement.ground_params.speed.run,
+            )
+        });
     let (progress, active) = weapon.reload_status();
     let ammo = weapon.effective().ammo.map(|ammo| {
         let reserve = registry
@@ -50,7 +61,13 @@ fn weapon_hud_values(
             .map_or(0, |reserve| reserve.available(ammo.ammo_type));
         (weapon.magazine, reserve)
     });
-    (Some(weapon_id), ammo, progress, active)
+    (
+        Some(weapon_id),
+        ammo,
+        progress,
+        active,
+        weapon.effective_spread_degrees(horizontal_speed, run_speed),
+    )
 }
 
 /// Read the local display-only switching state from the owning pawn's inventory.
@@ -197,7 +214,7 @@ impl PlayerHudStatePublisher {
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
 
-        let (sampled_weapon, ammo, reload_progress, reload_active) =
+        let (sampled_weapon, ammo, reload_progress, reload_active, _) =
             weapon_hud_values(&self.ctx.registry.borrow());
         match (sampled_weapon, ammo) {
             (_, Some((magazine, reserve))) => {
@@ -246,6 +263,14 @@ impl PlayerHudStatePublisher {
         self.write_hud_slot("player.weapon.current", SlotValue::String(current));
         self.write_hud_slot("player.weapon.pending", SlotValue::String(pending));
         self.write_hud_slot("player.weapon.switching", SlotValue::Boolean(switching));
+
+        // Spread is local predicted state, so every role publishes it from its
+        // own active component before a connected client returns early.
+        let effective_spread_degrees = weapon_hud_values(&self.ctx.registry.borrow()).4;
+        self.write_hud_slot(
+            "player.spread",
+            SlotValue::Number(effective_spread_degrees),
+        );
     }
 
     /// Refresh unaddressed HUD reads of mod-owned per-owner slots from the
@@ -768,6 +793,67 @@ mod tests {
             weapon_hud_values(&ctx.registry.borrow()).1,
             Some((5, 20)),
             "ammo HUD identity is independent of the Health component"
+        );
+    }
+
+    #[test]
+    fn player_spread_publishes_local_effective_spread_on_every_role() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone();
+            movement.velocity = glam::Vec3::new(5.5, 0.0, 0.0);
+            registry.set_component(pawn, movement).unwrap();
+
+            let mut weapon = registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .clone();
+            weapon.spread_degrees = 2.0;
+            weapon.bloom_accumulator_degrees = 1.0;
+            weapon.movement_spread_degrees = 4.0;
+            registry.set_component(weapon_id, weapon).unwrap();
+        }
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.spread").unwrap(),
+            SlotValue::Number(5.0),
+            "a connected client publishes its own predicted active-weapon spread"
+        );
+
+        publisher.tick_for_role(false, None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.spread").unwrap(),
+            SlotValue::Number(5.0),
+            "the host uses the same local active-weapon projection"
+        );
+
+        let mut inventory = ctx
+            .registry
+            .borrow()
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .clone();
+        inventory.wieldables[inventory.active_slot] = None;
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, inventory)
+            .unwrap();
+
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.spread").unwrap(),
+            SlotValue::Number(0.0),
+            "no active weapon resets the local spread presentation to zero"
         );
     }
 

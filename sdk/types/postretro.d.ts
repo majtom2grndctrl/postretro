@@ -1150,6 +1150,7 @@ declare module "postretro" {
       readonly maxHealth: ComputedRef<number>;
       readonly reloadActive: ComputedRef<boolean>;
       readonly reloadProgress: ComputedRef<number>;
+      readonly spread: ComputedRef<number>;
       readonly weapon: {
         readonly current: ComputedRef<string>;
         readonly pending: ComputedRef<string>;

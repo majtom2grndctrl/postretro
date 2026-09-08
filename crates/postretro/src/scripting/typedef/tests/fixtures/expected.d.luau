@@ -1149,6 +1149,7 @@ export type GameStateRefs = {
     maxHealth: ComputedRef<number>,
     reloadActive: ComputedRef<boolean>,
     reloadProgress: ComputedRef<number>,
+    spread: ComputedRef<number>,
     weapon: {
       current: ComputedRef<string>,
       pending: ComputedRef<string>,

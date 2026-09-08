@@ -57,6 +57,8 @@ Type-specific data lives in the component. An entity is "a player" by virtue of 
 
 **Weapon state.** Timed weapon states live in one component-level state machine: a new state is a variant plus its transition arms, never a new component field or boolean. Fire authorization is computed without consulting weapon state, so a preemption check and the real fire gate share one evaluation and cannot drift. State-dependent terms are applied by the caller around that shared verdict, not folded into it.
 
+**Dynamic accuracy** (not yet built). Per-shot spread is a dynamic axis, not a fixed cone. The effective hitscan half-angle composes a base spread, a sustained-fire bloom accumulator that grows per shot toward a cap and decays after an idle delay, and a movement term scaled by horizontal speed normalized against the pawn's authored run speed — clamped to an engine ceiling, with an optional upward tilt of the cone axis. Bloom accumulator and idle timer are live per-instance weapon state, preserved across hot reload like the shot counter. One shared composition method feeds both the host and client fire paths, so the two cannot drift. Projectiles converge on the crosshair and never sample the cone, so accuracy tuning leaves them unchanged. The composed half-angle surfaces to the HUD as neutral degrees, local to each machine — each predicts its own — and the reticle maps it to a spread ring in script.
+
 ---
 
 ## 3. Entity Lifecycle

@@ -308,6 +308,14 @@ impl MeshDescriptor {
 /// `behavior` is the sole authoring surface for an enemy brain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityTypeDescriptor {
+    /// Resolved faction index for brain-bearing entity seeds. This is never a
+    /// script-authored numeric value: manifest drain resolves an optional named
+    /// `components.faction` declaration before this descriptor reaches spawn.
+    pub faction: Option<f32>,
+    /// Optional finite retaliation tolerance for brain-bearing entity
+    /// seeds. It remains engine-owned entity state at runtime; authored guards
+    /// read the resolved candidate fact rather than this storage value.
+    pub tolerance: Option<f32>,
     pub canonical_name: Option<String>,
     pub inventory: Option<InventoryDescriptor>,
     pub light: Option<LightDescriptor>,

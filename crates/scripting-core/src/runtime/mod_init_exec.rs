@@ -8,7 +8,8 @@ use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value
 
 use crate::data_descriptors::{
     EntityTypeDescriptor, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
-    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
+    drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
     drain_maps_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
@@ -17,7 +18,7 @@ use crate::data_descriptors::{
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
     drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
     drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua,
+    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -170,14 +171,43 @@ pub(super) fn run_mod_init_quickjs(
             return;
         }
 
+        let factions = match drain_factions_js(&obj, "default mod manifest export") {
+            Ok(factions) => factions,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `factions` invalid: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        let (factions, sentiment) = match drain_faction_sentiments_js(
+            &obj,
+            factions,
+            "default mod manifest export",
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `sentiment` invalid: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+
         // Optional `entities` array. Missing key → empty Vec. Present-but-not-
         // array → InvalidArgument. Each element parses via the shared
         // descriptor reader (`entity_descriptor_from_js`).
-        let entities: Vec<EntityTypeDescriptor> = match obj.contains_key("entities") {
-            Ok(false) => Vec::new(),
+        let (entities, entity_faction_names): (Vec<EntityTypeDescriptor>, Vec<Option<String>>) =
+            match obj.contains_key("entities") {
+            Ok(false) => (Vec::new(), Vec::new()),
             Ok(true) => match obj.get::<_, JsArray>("entities") {
-                Ok(arr) => {
-                    let mut parsed = Vec::with_capacity(arr.len());
+                    Ok(arr) => {
+                        let mut parsed = Vec::with_capacity(arr.len());
+                        let mut faction_names = Vec::with_capacity(arr.len());
                     let mut err: Option<ScriptError> = None;
                     for i in 0..arr.len() {
                         let v: JsValue = match arr.get(i) {
@@ -191,8 +221,32 @@ pub(super) fn run_mod_init_quickjs(
                                 break;
                             }
                         };
+                        let faction_name = match entity_faction_name_from_js(v.clone()) {
+                            Ok(name) => name,
+                            Err(error) => {
+                                err = Some(ScriptError::InvalidArgument {
+                                    reason: format!(
+                                        "mod-init: `{source_path}` default mod manifest export `entities[{i}].components.faction` invalid: {error}"
+                                    ),
+                                });
+                                break;
+                            }
+                        };
+                        if let Some(name) = faction_name.as_deref()
+                            && factions.index_for_name(name).is_none()
+                        {
+                            err = Some(ScriptError::InvalidArgument {
+                                reason: format!(
+                                    "mod-init: `{source_path}` default mod manifest export `entities[{i}].components.faction` references undeclared faction `{name}`"
+                                ),
+                            });
+                            break;
+                        }
                         match entity_descriptor_from_js(&ctx, v) {
-                            Ok(d) => parsed.push(d),
+                            Ok(d) => {
+                                parsed.push(d);
+                                faction_names.push(faction_name);
+                            }
                             Err(e) => {
                                 err = Some(ScriptError::InvalidArgument {
                                     reason: format!(
@@ -207,7 +261,7 @@ pub(super) fn run_mod_init_quickjs(
                         out = Err(e);
                         return;
                     }
-                    parsed
+                    (parsed, faction_names)
                 }
                 Err(e) => {
                     out = Err(ScriptError::InvalidArgument {
@@ -413,6 +467,9 @@ pub(super) fn run_mod_init_quickjs(
             switching,
             default_weapon_placement,
             entities,
+            factions,
+            sentiment,
+            entity_faction_names,
             ui_trees,
             presentation_templates,
             presentation_overlays,
@@ -503,58 +560,94 @@ pub(super) fn run_mod_init_luau(
         ),
     })?;
 
+    let factions = drain_factions_lua(&table, "returned mod manifest").map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `factions` invalid: {error}"
+            ),
+        }
+    })?;
+    let (factions, sentiment) =
+        drain_faction_sentiments_lua(&table, factions, "returned mod manifest").map_err(
+            |error| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `sentiment` invalid: {error}"
+                ),
+            },
+        )?;
+
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
     // → InvalidArgument. Each element parses via the shared descriptor reader
     // (`entity_descriptor_from_lua`).
-    let entities: Vec<EntityTypeDescriptor> = if table.contains_key("entities").map_err(|e| {
-        ScriptError::InvalidArgument {
-            reason: format!(
-                "mod-init: `{source_path}` returned mod manifest `entities` lookup failed: {e}"
-            ),
-        }
-    })? {
-        let raw: mlua::Value = table
+    let (entities, entity_faction_names): (Vec<EntityTypeDescriptor>, Vec<Option<String>>) =
+        if table
+            .contains_key("entities")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `entities` lookup failed: {e}"
+                ),
+            })?
+        {
+            let raw: mlua::Value = table
             .get("entities")
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!(
                     "mod-init: `{source_path}` returned mod manifest `entities` field could not be read: {e}"
                 ),
             })?;
-        match raw {
-            mlua::Value::Nil => Vec::new(),
-            mlua::Value::Table(arr) => {
-                let len = arr.raw_len();
-                let mut out = Vec::with_capacity(len);
-                for i in 1..=(len as i64) {
-                    let item: mlua::Value =
+            match raw {
+                mlua::Value::Nil => (Vec::new(), Vec::new()),
+                mlua::Value::Table(arr) => {
+                    let len = arr.raw_len();
+                    let mut out = Vec::with_capacity(len);
+                    let mut faction_names = Vec::with_capacity(len);
+                    for i in 1..=(len as i64) {
+                        let item: mlua::Value =
                         arr.get(i).map_err(|e| ScriptError::InvalidArgument {
                             reason: format!(
                                 "mod-init: `{source_path}` returned mod manifest `entities[{i}]` could not be read: {e}"
                             ),
                         })?;
-                    let descriptor = entity_descriptor_from_lua(item).map_err(|e| {
+                        let faction_name = entity_faction_name_from_lua(item.clone()).map_err(|e| {
+                        ScriptError::InvalidArgument {
+                            reason: format!(
+                                "mod-init: `{source_path}` returned mod manifest `entities[{i}].components.faction` invalid: {e}"
+                            ),
+                        }
+                    })?;
+                        if let Some(name) = faction_name.as_deref()
+                            && factions.index_for_name(name).is_none()
+                        {
+                            return Err(ScriptError::InvalidArgument {
+                                reason: format!(
+                                    "mod-init: `{source_path}` returned mod manifest `entities[{i}].components.faction` references undeclared faction `{name}`"
+                                ),
+                            });
+                        }
+                        let descriptor = entity_descriptor_from_lua(item).map_err(|e| {
                         ScriptError::InvalidArgument {
                             reason: format!(
                                 "mod-init: `{source_path}` returned mod manifest `entities[{i}]` invalid: {e}"
                             ),
                         }
                     })?;
-                    out.push(descriptor);
+                        out.push(descriptor);
+                        faction_names.push(faction_name);
+                    }
+                    (out, faction_names)
                 }
-                out
+                other => {
+                    return Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` returned mod manifest `entities` field must be an array, got {}",
+                            other.type_name()
+                        ),
+                    });
+                }
             }
-            other => {
-                return Err(ScriptError::InvalidArgument {
-                    reason: format!(
-                        "mod-init: `{source_path}` returned mod manifest `entities` field must be an array, got {}",
-                        other.type_name()
-                    ),
-                });
-            }
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
     // the drains (ui.md §1.1). Errors here are structural read failures only.
@@ -681,6 +774,9 @@ pub(super) fn run_mod_init_luau(
         switching,
         default_weapon_placement,
         entities,
+        factions,
+        sentiment,
+        entity_faction_names,
         ui_trees,
         presentation_templates,
         presentation_overlays,
@@ -854,6 +950,65 @@ mod tests {
         .expect("absent Luau switching block should default");
         assert_eq!(js_default.switching, SwitchingDescriptor::default());
         assert_eq!(luau_default.switching, SwitchingDescriptor::default());
+    }
+
+    #[test]
+    fn mod_init_parses_named_factions_and_rejects_undeclared_archetype_names() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Factions', id: 'factions', version: '1', factions: [{ name: 'cabal' }, { name: 'resistance' }], sentiment: [{ fromFaction: 'cabal', toFaction: 'resistance', sentiment: -0.75, tolerance: 0.25 }], entities: [{ canonicalName: 'cabal_grunt', components: { faction: 'cabal' } }, { canonicalName: 'resistance_guard', components: { faction: 'resistance' } }] };",
+            "factions.js",
+        )
+        .expect("QuickJS faction manifest should parse");
+        let luau = run_mod_init_luau(
+            &[],
+            "return defineMod({ name = 'Factions', id = 'factions', version = '1', factions = { defineFaction('cabal'), defineFaction('resistance') }, sentiment = { sentiment('cabal', 'resistance', { sentiment = -0.75, tolerance = 0.25 }) }, entities = {{ canonicalName = 'cabal_grunt', components = { faction = 'cabal' } }, { canonicalName = 'resistance_guard', components = { faction = 'resistance' } }} })",
+            "factions.luau",
+            Path::new("."),
+        )
+        .expect("Luau faction SDK helpers should build a valid manifest");
+
+        for manifest in [&js, &luau] {
+            assert_eq!(manifest.factions.index_for_name("cabal"), Some(2.0));
+            assert_eq!(manifest.factions.index_for_name("resistance"), Some(3.0));
+            assert_eq!(manifest.sentiment.len(), 1);
+            assert_eq!(manifest.sentiment[0].from_faction, "cabal");
+            assert_eq!(manifest.sentiment[0].to_faction, "resistance");
+            assert_eq!(manifest.sentiment[0].sentiment, -0.75);
+            assert_eq!(manifest.sentiment[0].tolerance, 0.25);
+            assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
+            assert_eq!(
+                manifest.entity_faction_names,
+                vec![Some("cabal".to_string()), Some("resistance".to_string())],
+            );
+        }
+
+        let js_error = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Bad Factions', id: 'bad-factions', version: '1', entities: [{ canonicalName: 'missing', components: { faction: 'missing' } }] };",
+            "bad-factions.js",
+        )
+        .expect_err("undeclared QuickJS faction must reject mod init");
+        let luau_error = run_mod_init_luau(
+            &[],
+            "return { name = 'Bad Factions', id = 'bad-factions', version = '1', entities = {{ canonicalName = 'missing', components = { faction = 'missing' } }} }",
+            "bad-factions.luau",
+            Path::new("."),
+        )
+        .expect_err("undeclared Luau faction must reject mod init");
+        assert!(
+            js_error
+                .to_string()
+                .contains("undeclared faction `missing`")
+        );
+        assert!(
+            luau_error
+                .to_string()
+                .contains("undeclared faction `missing`")
+        );
     }
 
     #[test]

@@ -129,6 +129,10 @@ export type PostretroModule = {
   defineEntity: typeof(defineEntity),
   --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
+  --- Pure builder for a stable named faction declaration.
+  defineFaction: typeof(defineFaction),
+  --- Build one directed faction relationship for a mod manifest.
+  sentiment: typeof(sentiment),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

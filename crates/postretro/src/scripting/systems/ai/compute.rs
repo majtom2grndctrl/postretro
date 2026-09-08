@@ -1,5 +1,5 @@
 use glam::Vec3;
-use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
 
 use super::{FACTION_STATE_FIELD, LocomotionIntent, perception};
 
@@ -47,10 +47,10 @@ use super::graph_eval::{
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
-    TargetSelection, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance, target_offers,
+    TargetSelection, acquisition_due, is_hostile, select_target_with_attacker_ledger,
+    selected_target_alive, target_candidate, target_distance, target_offers,
 };
-use super::{AttackOutcome, EnemyOutcome};
+use super::{AttackOutcome, EnemyOutcome, PendingAttack};
 use crate::agent_steering;
 use crate::nav::find_path;
 use crate::weapon::ProjectileLaunch;
@@ -68,6 +68,7 @@ pub(super) fn evaluate(
     dt_ms: f32,
     nav_graph: Option<&crate::nav::NavGraph>,
     collision_world: Option<&crate::collision::CollisionWorld>,
+    factions: &FactionRegistry,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {
@@ -91,6 +92,11 @@ pub(super) fn evaluate(
             }
             graph_reseated |= brain.reseat_to_initial();
         }
+        // Candidate refresh runs during selection below, before the established
+        // brain damage-fact aging site. Advance the paired attacker ledger here
+        // exactly once so `@candidate.timeSinceDamageFromCandidate` sees the
+        // same post-tick age that `@brain.timeSinceDamageMs` later publishes.
+        brain.age_recent_attackers(dt_ms);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -121,8 +127,10 @@ pub(super) fn evaluate(
                         programs.candidate_filter_context(snap.id);
                     let offers = target_offers(
                         registry,
+                        factions,
                         snap.position,
                         enemy_faction,
+                        Some(snap.id),
                         Some(retained.target.entity),
                     );
                     let enemy_eye =
@@ -135,23 +143,40 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target(
+                    select_target_with_attacker_ledger(
                         Some(retained),
                         &offers,
                         registry,
+                        factions,
+                        Some(snap.id),
+                        enemy_faction,
                         candidate_filter,
                         candidate_scope,
+                        &brain.recent_attackers,
+                        brain.retaliation_acquired_target,
+                        brain.graph.retaliation(),
+                        dt_ms,
                         &mut candidate_perception,
                     )
                 } else {
                     Some(TargetSelection {
                         target: retained.target,
                         fresh_perception: None,
+                        retaliation_acquired_target: brain
+                            .retaliation_acquired_target
+                            .filter(|target| *target == retained.target.entity),
                     })
                 };
                 (target, evaluate_acquisition)
             } else {
-                let offers = target_offers(registry, snap.position, enemy_faction, None);
+                let offers = target_offers(
+                    registry,
+                    factions,
+                    snap.position,
+                    enemy_faction,
+                    Some(snap.id),
+                    None,
+                );
                 let evaluate_acquisition =
                     acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
                 let (candidate_filter, candidate_scope) =
@@ -172,12 +197,19 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target(
+                    select_target_with_attacker_ledger(
                         None,
                         &offers,
                         registry,
+                        factions,
+                        Some(snap.id),
+                        enemy_faction,
                         candidate_filter,
                         candidate_scope,
+                        &brain.recent_attackers,
+                        brain.retaliation_acquired_target,
+                        brain.graph.retaliation(),
+                        dt_ms,
                         &mut candidate_perception,
                     )
                 });
@@ -264,8 +296,9 @@ pub(super) fn evaluate(
             .last_known_target_pos
             .map(|position| crate::nav::distance_xz(snap.position, position))
             .unwrap_or(BRAIN_NO_TARGET_DISTANCE);
-        let target_hostile = selected_target
-            .is_some_and(|(target, _, _)| entity_faction(registry, target) != enemy_faction);
+        let target_hostile = selected_target.is_some_and(|(target, _, _)| {
+            is_hostile(factions, enemy_faction, entity_faction(registry, target))
+        });
         // Reachability is the nav floor's pathfinder verdict, cached on the
         // existing acquisition stride. It deliberately mirrors the same
         // `find_path` capability chase consumes, rather than claiming a
@@ -407,6 +440,15 @@ pub(super) fn evaluate(
             Some(target) if retains_target => Some(target.entity),
             _ => None,
         };
+        brain.retaliation_acquired_target = match target_selection {
+            Some(selection)
+                if retains_target
+                    && selection.retaliation_acquired_target == Some(selection.target.entity) =>
+            {
+                Some(selection.target.entity)
+            }
+            _ => None,
+        };
 
         // Resolved engagement remains the facing policy for ordinary chase and
         // action paths. Committed actionless aim is handled separately below.
@@ -449,11 +491,10 @@ pub(super) fn evaluate(
         // connect from across the room.
         // An unresolved action name configures no range and no damage, so it
         // never attacks.
-        // Gating on the selected target's Health stops attack/event spam against
-        // an already-dead but still-present pawn and prevents damaging a
-        // different co-op pawn than the one this enemy chose.
+        // Gating on the selected target's damage eligibility stops attack/event
+        // spam against an already-dead or removal-committed pawn and prevents
+        // damaging a different co-op pawn than the one this enemy chose.
         let entered = brain.take_entry_pending();
-        let mut attacked = false;
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && let (Some(target), Some(distance)) = (target, selected_distance)
@@ -522,12 +563,14 @@ pub(super) fn evaluate(
                 })
                 .flatten()
         {
-            attacked = true;
-            attack_outcome = Some(outcome);
-            brain
-                .attack_cooldown_remaining_ms
-                .insert(attack_name, cooldown_ms);
-            brain.record_successful_attack_fire();
+            // This is only an immutable fire proposal. A target can become
+            // dead or disappear while an earlier outcome applies, so the
+            // mutable cooldown/count commit belongs beside the effect in apply.
+            attack_outcome = Some(PendingAttack {
+                attack_name,
+                cooldown_ms,
+                effect: outcome,
+            });
         }
 
         let state_changed = graph_reseated || transitioned || entered.is_some();
@@ -557,7 +600,6 @@ pub(super) fn evaluate(
             prior_acquired_target,
             graph_reseated,
             state_changed,
-            attacked,
             attack: attack_outcome,
             prior_standoff_distance,
             standoff_distance,

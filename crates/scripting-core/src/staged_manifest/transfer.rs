@@ -7,7 +7,9 @@ use super::super::data_descriptors::{
     PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerPoolDescriptor,
     WeaponPlacementDescriptor,
 };
-use super::super::data_registry::{ScopedCrossing, ScopedReaction};
+use super::super::data_registry::{
+    FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
+};
 use super::super::runtime::{Frontend, ModMapEntry, ModMoverDefaults, ModRenderProfile};
 use super::super::slot_table::StoreDeclarationSet;
 
@@ -49,6 +51,12 @@ pub struct StagedManifest {
     pub switching: SwitchingDescriptor,
     pub default_weapon_placement: Option<WeaponPlacementDescriptor>,
     pub entities: Vec<EntityTypeDescriptor>,
+    pub factions: FactionRegistry,
+    /// Original authored entries whose values are already resolved in
+    /// `factions`; retained across the worker boundary to keep staged and
+    /// ordinary manifest carriers equivalent.
+    pub sentiment: Vec<FactionSentimentDescriptor>,
+    pub entity_faction_names: Vec<Option<String>>,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,

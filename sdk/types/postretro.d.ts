@@ -221,6 +221,10 @@ declare module "postretro" {
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
     health?: HealthDescriptor | null;
+    /** Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state. */
+    faction?: string | null;
+    /** Optional finite retaliation tolerance for this brain-bearing archetype. Candidate guards read only the resolved `candidate.tolerance` relationship fact, never engine-owned state storage. */
+    tolerance?: number | null;
     /** Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn. */
     behavior?: BehaviorGraphDescriptor | null;
   };
@@ -584,6 +588,16 @@ declare module "postretro" {
     transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
   };
 
+  /** Scalar tuning for the engine-owned retaliation preference. It exposes no authored ranking expression: the engine applies its fixed threshold, score, and retention rule. */
+  export type RetaliationDescriptor = {
+    /** Optional recent-damage window in milliseconds. Must be finite and >= 0; zero or a duration shorter than one AI tick explicitly disables retaliation accrual. Defaults to 1500. */
+    windowMs?: number;
+    /** Optional finite non-negative multiplier for accumulated damage in the engine retaliation score. Defaults to 1. */
+    damageWeight?: number;
+    /** Optional finite non-negative per-millisecond age penalty in the engine retaliation score. Defaults to 0.001. */
+    recencyWeight?: number;
+  };
+
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
   export type BehaviorGraphDescriptor = {
     /** Root initial activity. It is also forced when the aggro gate closes. */
@@ -594,6 +608,8 @@ declare module "postretro" {
     transitions: { readonly [source: string]: ReadonlyArray<GuardedRow> };
     /** Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target. */
     candidateFilter?: RuntimeValue;
+    /** Optional scalar tuning for the engine-owned retaliation preference. The block cannot author ranking logic; omitted values use compatibility defaults and the default tolerance keeps the term inert. */
+    retaliation?: RetaliationDescriptor;
     /** Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion. */
     patrol?: PatrolDescriptor;
     /** Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph. */
@@ -923,6 +939,24 @@ declare module "postretro" {
     blockDuringReload: boolean;
   };
 
+  /** A stable named faction declared in `ModManifest.factions`. The engine assigns authored declarations indices from 2 upward; player absence remains index 0 and the built-in default enemy faction remains index 1. */
+  export type FactionDescriptor = {
+    /** Stable non-empty faction name. Entity archetypes refer to this name through `components.faction`. */
+    name: string;
+  };
+
+  /** One directed relationship from `fromFaction` toward `toFaction`. Negative sentiment is hostile, zero is neutral, and positive is allied. Both endpoint names must be declared in `ModManifest.factions`. */
+  export type FactionSentimentDescriptor = {
+    /** Evaluating faction name (the directional source). */
+    fromFaction: string;
+    /** Offered candidate faction name (the directional destination). */
+    toFaction: string;
+    /** Finite directional sentiment: negative hostile, zero neutral, positive allied. */
+    sentiment: number;
+    /** Finite per-pair tolerance reserved for the engine-owned retaliation term. */
+    tolerance: number;
+  };
+
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed. */
   export type ModManifest = {
     /** Human-readable mod name used for diagnostics and UI. Required. */
@@ -941,6 +975,10 @@ declare module "postretro" {
     defaultWeaponPlacement?: WeaponPlacementDescriptor;
     /** Engine-global entity-type registrations. Optional; survive level unload and are committed only after manifest validation and required durable-identity validation succeed. */
     entities?: ReadonlyArray<EntityTypeDescriptor>;
+    /** Engine-global named faction declarations. Optional; survive level unload and resolve optional archetype `components.faction` names during manifest commit. */
+    factions?: ReadonlyArray<FactionDescriptor>;
+    /** Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral. */
+    sentiment?: ReadonlyArray<FactionSentimentDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
@@ -1737,8 +1775,12 @@ declare module "postretro" {
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
   export function defineMod(config: ModManifestInput): ModManifest;
+  /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. */
+  export function defineFaction(name: string): FactionDescriptor;
+  /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. */
+  export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance">): FactionSentimentDescriptor;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
   /** Pure identity builder for reusable first-person weapon placement data. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
@@ -1921,7 +1963,7 @@ declare module "postretro" {
     readonly targetDied: RuntimeGuardNode;
     /** XZ distance from this enemy's spawn-time home anchor; zero at home and meaningful without a selected target (number). */
     readonly distanceFromAnchor: RuntimeGuardNode;
-    /** `true` when the selected target's faction differs from this enemy's; false with no target (boolean). */
+    /** `true` when directional sentiment from this enemy's faction toward its selected target is negative; false with no target (boolean). */
     readonly targetHostile: RuntimeGuardNode;
     /** `true` when the nav pathfinder can route this enemy to its selected target; false with no target or no navmesh. It reflects the pathfinder's current capability rather than ground-truth reachability (boolean). */
     readonly targetReachable: RuntimeGuardNode;
@@ -1956,6 +1998,14 @@ declare module "postretro" {
     readonly maxHealth: RuntimeGuardNode;
     /** `true` once the death sweep has handled this candidate (boolean). */
     readonly died: RuntimeGuardNode;
+    /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
+    readonly sentiment: RuntimeGuardNode;
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    readonly damageDealtToMe: RuntimeGuardNode;
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
+    /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
+    readonly tolerance: RuntimeGuardNode;
   }
 
   /** Pre-wrapped leaves for graph candidate eligibility. */

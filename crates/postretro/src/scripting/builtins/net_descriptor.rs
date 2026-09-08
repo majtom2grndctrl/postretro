@@ -487,6 +487,8 @@ mod tests {
         };
 
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -611,6 +613,7 @@ mod tests {
                 transitions: std::collections::BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: Default::default(),
             engagement_radius: None,
@@ -817,6 +820,8 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,
@@ -832,6 +837,8 @@ mod tests {
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: Some(postretro_entities::InventoryDescriptor {
                 loadout: vec![default_weapon.to_string()],
@@ -849,6 +856,8 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(classname.to_string()),
             inventory: None,
             light: None,

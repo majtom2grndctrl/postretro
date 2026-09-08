@@ -444,6 +444,8 @@ mod tests {
                 "scopeReactions",
                 "defineEntity",
                 "defineMod",
+                "defineFaction",
+                "sentiment",
                 "defineMapCatalog",
                 "defineWeaponPlacement",
                 "defineTriggerPool",

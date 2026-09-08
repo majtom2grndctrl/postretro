@@ -1,4 +1,4 @@
-import { defineMod, defineTriggerPool } from "postretro";
+import { defineFaction, defineMod, defineTriggerPool, sentiment } from "postretro";
 import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceShotgunEntity } from "./scripts/reference-shotgun";
@@ -17,6 +17,14 @@ import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
 import { enemyRifleEntity } from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
+import {
+  CROSSFIRE_RAIDERS_FACTION,
+  CROSSFIRE_SENTINELS_FACTION,
+  MAX_RETALIATION_TOLERANCE,
+  RAIDER_TOLERANCE,
+  crossfireRaiderEntity,
+  crossfireSentinelEntity,
+} from "./scripts/faction-crossfire";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
@@ -93,6 +101,33 @@ export default defineMod({
       levels: ["trap-pools"],
     }),
   ],
+  // Reference relationship content for the two crossfire archetypes below.
+  // Same-raider hits are neutral until damage exceeds the raider's local
+  // tolerance; sentinel relations are directional hostile defaults so maps can
+  // also stage cross-faction provokers. The per-archetype values in the entity
+  // module deliberately win over these pair fallbacks.
+  factions: [
+    defineFaction(CROSSFIRE_RAIDERS_FACTION),
+    defineFaction(CROSSFIRE_SENTINELS_FACTION),
+  ],
+  sentiment: [
+    sentiment(CROSSFIRE_RAIDERS_FACTION, CROSSFIRE_RAIDERS_FACTION, {
+      sentiment: 0,
+      tolerance: RAIDER_TOLERANCE,
+    }),
+    sentiment(CROSSFIRE_RAIDERS_FACTION, CROSSFIRE_SENTINELS_FACTION, {
+      sentiment: -1,
+      tolerance: RAIDER_TOLERANCE,
+    }),
+    sentiment(CROSSFIRE_SENTINELS_FACTION, CROSSFIRE_RAIDERS_FACTION, {
+      sentiment: -1,
+      tolerance: MAX_RETALIATION_TOLERANCE,
+    }),
+    sentiment(CROSSFIRE_SENTINELS_FACTION, CROSSFIRE_SENTINELS_FACTION, {
+      sentiment: 0,
+      tolerance: MAX_RETALIATION_TOLERANCE,
+    }),
+  ],
   entities: [
     playerEntity,
     referencePistolEntity,
@@ -115,6 +150,11 @@ export default defineMod({
     referenceEnemyEntity,
     enemyRifleEntity,
     limitatorEntity,
+    // Crossfire reference controls. Place `crossfire_raider` with either a
+    // raider or sentinel peer to observe retaliation; `crossfire_sentinel`
+    // remains on its player target under the same incoming damage.
+    crossfireRaiderEntity,
+    crossfireSentinelEntity,
     ...referenceEntities,
   ],
 });

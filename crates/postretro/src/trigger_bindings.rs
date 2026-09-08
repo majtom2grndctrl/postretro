@@ -1147,6 +1147,7 @@ mod tests {
                 transitions: Default::default(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: Default::default(),
             engagement_radius: None,

@@ -1869,9 +1869,49 @@ pub(crate) fn host_flush_pending_hit_declarations(
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
 ) -> bool {
+    let ready = host_take_ready_hit_declarations(
+        command_queues,
+        open_shots,
+        pending_hit_declarations,
+        current_tick,
+    );
+    host_ingest_ready_hit_declarations(
+        server,
+        registry,
+        collision_world,
+        allocator,
+        owners,
+        open_shots,
+        ready,
+        &mut on_impact,
+        &mut on_projectile_contact,
+    )
+}
+
+pub(crate) fn host_take_ready_hit_declarations(
+    command_queues: &HostCommandQueues,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    current_tick: u32,
+) -> Vec<PendingHitDeclaration> {
     open_shots.prune_stale(current_tick);
+    pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_ingest_ready_hit_declarations(
+    server: &mut NetServer,
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    ready: Vec<PendingHitDeclaration>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_projectile_contact: impl FnMut(ShotId, Vec3),
+) -> bool {
     let mut accepted_any_hit = false;
-    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots, current_tick) {
+    for pending in ready {
         let result = ingest_hit_declaration(
             HostHitIngestContext {
                 registry: &mut *registry,
@@ -2057,7 +2097,7 @@ fn valid_projectile_contact_point(shot: &AuthorizedShot, record: &wire::HitRecor
 }
 
 /// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
-/// same ingester through [`host_flush_pending_hit_declarations`]; this keeps tests from
+/// same ingester through [`host_ingest_ready_hit_declarations`]; this keeps tests from
 /// duplicating its authorization and damage rules just to observe the result.
 #[cfg(test)]
 pub(crate) fn ingest_hit_declaration_for_test(
@@ -2095,13 +2135,17 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
+    if crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target) {
+        return false;
+    }
     let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
         return false;
     };
-    // Deferred direct-impact projectiles share the local projectile liveness
-    // contract: once a target is down, their sole impact is spent without a
-    // second application. Hitscan/pellet declarations retain the common impact
-    // dispatch semantics used by authored zero-HP/downed policies.
+    // Every resolution rejects a target already committed to removal above.
+    // Deferred direct-impact projectiles additionally share the local
+    // projectile liveness contract: once a target is down, their sole impact
+    // is spent without a second application. Hitscan/pellet declarations retain
+    // the common impact dispatch semantics used by authored zero-HP policies.
     if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
         return false;
     }
@@ -2691,6 +2735,8 @@ mod tests {
             },
         };
         let descriptor = EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("live_ion_rifle".to_string()),
             inventory: None,
             light: None,
@@ -3266,6 +3312,8 @@ mod tests {
             )
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("reference_pistol".to_string()),
             inventory: None,
             light: None,
@@ -3795,9 +3843,13 @@ mod tests {
         pending.push(7, declaration.clone());
 
         assert!(
-            pending
-                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100)
-                .is_empty(),
+            host_take_ready_hit_declarations(
+                &HostCommandQueues::new(),
+                &mut fixture.open_shots,
+                &mut pending,
+                100,
+            )
+            .is_empty(),
             "before FIRE authorization the declaration remains queued"
         );
         fixture.open_shots.record(
@@ -3811,7 +3863,12 @@ mod tests {
             ),
             7,
         );
-        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots, 100);
+        let ready = host_take_ready_hit_declarations(
+            &HostCommandQueues::new(),
+            &mut fixture.open_shots,
+            &mut pending,
+            100,
+        );
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].client_id, 7);
 
@@ -4018,6 +4075,64 @@ mod tests {
 
         assert!(result.hit_accepted);
         assert_eq!(health_seen_by_consumer, [90.0, 80.0]);
+    }
+
+    // Regression: a remote pellet policy could queue target despawn, but the
+    // next record still damaged and dispatched the registry-live target.
+    #[test]
+    fn hit_declaration_skips_later_pellet_after_target_commits_to_despawn() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.pellet_count = 2;
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+        ]);
+        let target = fixture.target;
+        let mut policy_fires = 0;
+
+        let result = ingest_hit_declaration(
+            HostHitIngestContext {
+                registry: &mut fixture.registry,
+                collision_world: &fixture.collision_world,
+                allocator: &fixture.allocator,
+                owners: &fixture.owners,
+                open_shots: &mut fixture.open_shots,
+            },
+            7,
+            &declaration,
+            |registry| {
+                policy_fires += 1;
+                crate::impact_effects::despawn(registry, target, Some(1000.0));
+            },
+        );
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(policy_fires, 1);
+        assert!((fixture.target_health().current - 90.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            fixture
+                .target_health()
+                .contributor_ledger
+                .total_recorded_hits(),
+            1
+        );
+        assert!(
+            crate::scripting_systems::health::is_terminally_committed_to_removal(
+                &fixture.registry,
+                target,
+            )
+        );
     }
 
     #[test]
@@ -4826,6 +4941,8 @@ mod tests {
     /// `PlayerMovement` pawn and marks it the local player (the host's own pawn).
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some("player".to_string()),
             inventory: None,
             light: None,

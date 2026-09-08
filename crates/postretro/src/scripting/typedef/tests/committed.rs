@@ -163,6 +163,8 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
         for needle in [
             "BehaviorGraphDescriptor",
             "candidateFilter",
+            "RetaliationDescriptor",
+            "retaliation",
             "PatrolDescriptor",
             "PatrolMode",
             "moveToAnchor",
@@ -493,6 +495,8 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && ts.contains("frontend?: Frontend;")
             && ts.contains("reactions?: ReadonlyArray<NamedReactionDescriptor>;")
             && ts.contains("crossings?: ReadonlyArray<CrossingDescriptor>;")
+            && ts.contains("export type FactionDescriptor = {")
+            && ts.contains("factions?: ReadonlyArray<FactionDescriptor>;")
             && ts.contains("export type SwitchingDescriptor = {")
             && ts.contains("commitOnDirectSelect: boolean;")
             && ts.contains("cycleCommitDwellMs: number;")
@@ -501,6 +505,7 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && ts.contains("blockDuringReload?: boolean;")
             && ts.contains("defaultWeaponPlacement?: WeaponPlacementDescriptor;")
             && ts.contains("export function defineMod(config: ModManifestInput): ModManifest;")
+            && ts.contains("export function defineFaction(name: string): FactionDescriptor;")
             && ts.contains(
                 "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
             )
@@ -522,6 +527,8 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("frontend: Frontend?")
             && luau.contains("reactions: {NamedReactionDescriptor}?")
             && luau.contains("crossings: {CrossingDescriptor}?")
+            && luau.contains("export type FactionDescriptor = {")
+            && luau.contains("factions: {FactionDescriptor}?")
             && luau.contains("export type SwitchingDescriptor = {")
             && luau.contains("commitOnDirectSelect: boolean,")
             && luau.contains("cycleCommitDwellMs: number,")
@@ -530,10 +537,12 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
             && luau.contains("blockDuringReload: boolean?")
             && luau.contains("defaultWeaponPlacement: WeaponPlacementDescriptor?")
             && luau.contains("declare function defineMod(config: ModManifestInput): ModManifest")
+            && luau.contains("declare function defineFaction(name: string): FactionDescriptor")
             && luau.contains(
                 "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
             )
             && luau.contains("defineMod: typeof(defineMod),")
+            && luau.contains("defineFaction: typeof(defineFaction),")
             && luau.contains("defineMapCatalog: typeof(defineMapCatalog),")
             && luau.contains(
                 "declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponPlacementDescriptor"

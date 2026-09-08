@@ -920,6 +920,8 @@ mod tests {
 
     fn descriptor_with_hitbox(class: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(class.to_string()),
             inventory: None,
             light: None,

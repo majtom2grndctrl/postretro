@@ -1028,7 +1028,7 @@ end
 --- `config.name`, `config.id`, and `config.version` are required. The id gates
 --- multiplayer admission; the version is display-only and never compared. The
 --- first committed id and version remain active across staged reloads. Optional
---- arrays include `entities`, `maps`, `uiTrees`, `presentationTemplates`,
+--- arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
 --- effects until the manifest is returned and validated.
@@ -1045,6 +1045,29 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
   end
   manifest.stores = stores
   return manifest
+end
+
+--- Pure builder for a stable named faction declaration. Include the result in
+--- `defineMod({ factions = { ... } })`; archetypes refer to the name through
+--- `components.faction`.
+function DataScriptSdk.defineFaction(name: string): FactionDescriptor
+  return { name = name }
+end
+
+--- Build one directed faction relationship for `sentiment` in the returned
+--- mod manifest. Negative sentiment is hostile, zero neutral, and positive
+--- allied; the engine validates both faction names at manifest drain.
+function DataScriptSdk.sentiment(
+  fromFaction: string,
+  toFaction: string,
+  values: { sentiment: number, tolerance: number }
+): FactionSentimentDescriptor
+  return {
+    fromFaction = fromFaction,
+    toFaction = toFaction,
+    sentiment = values.sentiment,
+    tolerance = values.tolerance,
+  }
 end
 
 --- Identity builder for a mod map catalog. `entries` are `ModMapEntry` tables

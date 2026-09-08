@@ -4,13 +4,17 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
 pub fn entity_descriptor_from_lua(
     value: LuaValue,
 ) -> Result<EntityTypeDescriptor, DescriptorError> {
+    // Keep the descriptor parser's faction and tolerance validation in parity
+    // with the mod-manifest path, which retains the faction name for commit.
+    let _ = entity_faction_name_from_lua(value.clone())?;
+    let tolerance = entity_tolerance_from_lua(value.clone())?;
     let table = match value {
         LuaValue::Table(t) => t,
         other => {
@@ -209,6 +213,8 @@ pub fn entity_descriptor_from_lua(
     }
 
     let descriptor = EntityTypeDescriptor {
+        faction: None,
+        tolerance,
         canonical_name,
         inventory,
         light,
@@ -221,6 +227,67 @@ pub fn entity_descriptor_from_lua(
         behavior,
     };
     Ok(descriptor)
+}
+
+/// Read an optional per-archetype tolerance without treating an explicit zero
+/// as omission. It is resolved only for brain-bearing descriptor spawns.
+pub fn entity_tolerance_from_lua(value: LuaValue) -> Result<Option<f32>, DescriptorError> {
+    let table = lua_table(value, "entity entry")?;
+    if !table.contains_key("components").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let components: LuaValue = table.get("components").map_err(lua_err)?;
+    let LuaValue::Table(components) = components else {
+        if matches!(components, LuaValue::Nil) {
+            return Ok(None);
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components` must be a table".to_string(),
+        });
+    };
+    get_optional_f32_lua(&components, "tolerance")?
+        .map(|value| validate_finite_f32(value, "components.tolerance"))
+        .transpose()
+}
+
+/// Read an optional named faction without resolving it. Resolution belongs to
+/// the complete manifest commit, after every declaration is known.
+pub fn entity_faction_name_from_lua(value: LuaValue) -> Result<Option<String>, DescriptorError> {
+    let table = lua_table(value, "entity entry")?;
+    if !table.contains_key("components").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let components: LuaValue = table.get("components").map_err(lua_err)?;
+    let LuaValue::Table(components) = components else {
+        if matches!(components, LuaValue::Nil) {
+            return Ok(None);
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components` must be a table".to_string(),
+        });
+    };
+    if !components.contains_key("faction").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = components.get("faction").map_err(lua_err)?;
+    let name = match raw {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.faction` must be a string when supplied, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    if name.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.faction` must be a non-empty string when supplied".to_string(),
+        });
+    }
+    Ok(Some(name))
 }
 
 /// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.

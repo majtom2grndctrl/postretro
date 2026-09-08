@@ -5,6 +5,7 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
+use super::targeting::selected_target_alive;
 use super::{
     AiTickResult, AttackOutcome, ENEMY_ATTACK_EVENT, ENEMY_ATTACK_SOURCE_ID, LocomotionIntent,
 };
@@ -19,6 +20,23 @@ use postretro_entities::components::health::{
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_foundation::DamagePayload;
 use std::borrow::Cow;
+use std::collections::HashSet;
+
+fn commit_attack_fire(
+    registry: &mut postretro_entities::EntityRegistry,
+    actor: postretro_entities::EntityId,
+    attack_name: String,
+    cooldown_ms: f32,
+) -> bool {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(actor).cloned() else {
+        return false;
+    };
+    brain
+        .attack_cooldown_remaining_ms
+        .insert(attack_name, cooldown_ms);
+    brain.record_successful_attack_fire();
+    registry.set_component(actor, brain).is_ok()
+}
 
 /// Pass 3: mutate the registry from resolved enemy outcomes.
 pub(super) fn apply_outcomes(
@@ -31,6 +49,10 @@ pub(super) fn apply_outcomes(
 ) -> super::AiTickResult {
     let mut events: Vec<Cow<'static, str>> = Vec::new();
     let mut projectile_spawns = Vec::new();
+    // Once an entity crosses the terminal simulation gate in this batch, a
+    // synchronous impact policy may restore positive health but cannot make a
+    // pre-lethal AI decision current again. The next tick computes a fresh one.
+    let mut invalidated_entities = HashSet::new();
 
     // Publish the complete compute-pass snapshot for every brain before any
     // outcome can run damage or callbacks. A contact attack may mutate a later
@@ -41,6 +63,18 @@ pub(super) fn apply_outcomes(
     }
 
     for mut outcome in outcomes {
+        // Earlier outcomes can synchronously damage or terminally inactivate a
+        // later actor. Keep every compute snapshot published above, but do not
+        // let that actor's stale outcome produce any observable work.
+        if invalidated_entities.contains(&outcome.id)
+            || crate::scripting_systems::health::is_quiescent(registry, outcome.id)
+            || registry
+                .get_component::<BrainComponent>(outcome.id)
+                .is_err()
+        {
+            continue;
+        }
+
         // The entered state's authored entry event. Raised before this tick's
         // action so a reaction reads the state the brain is now IN.
         if let Some(address) = outcome.on_enter.take() {
@@ -139,19 +173,25 @@ pub(super) fn apply_outcomes(
             let _ = registry.set_component(outcome.id, transform);
         }
 
-        // Fire: contact attacks route their configured amount through the
+        // Fire: revalidate the selected target after every earlier outcome in
+        // this batch. Compute deliberately left cooldown/count state untouched;
+        // those fields commit only with an effect that can actually fire.
+        // Contact attacks route their configured amount through the
         // chokepoint to the SELECTED target id. Projectile attacks instead
         // materialize a host-owned flight entity; the shared projectile stage
-        // resolves its later contact through that same chokepoint. In both
-        // cases the selected target was confirmed live before the latch.
-        if outcome.attacked {
-            match outcome
-                .attack
-                .take()
-                .expect("a successful enemy fire latch carries its resolution")
-            {
+        // resolves its later contact through that same chokepoint.
+        if let (Some(pending), Some(target)) = (outcome.attack.take(), outcome.target)
+            && !invalidated_entities.contains(&target.entity)
+            && selected_target_alive(registry, target.entity)
+        {
+            let attack_fired = match pending.effect {
                 AttackOutcome::Contact { damage } => {
-                    if let Some(target) = outcome.target {
+                    if commit_attack_fire(
+                        registry,
+                        outcome.id,
+                        pending.attack_name,
+                        pending.cooldown_ms,
+                    ) {
                         apply_damage_with_context(
                             registry,
                             target.entity,
@@ -164,7 +204,16 @@ pub(super) fn apply_outcomes(
                                 producer: DamageProducer::InTick,
                             },
                         );
+                        // Observe the direct damage result before impact policy
+                        // dispatch can synchronously recover it. Death-sweep
+                        // latching remains downstream and untouched.
+                        if crate::scripting_systems::health::is_quiescent(registry, target.entity) {
+                            invalidated_entities.insert(target.entity);
+                        }
                         on_impact(registry);
+                        true
+                    } else {
+                        false
                     }
                 }
                 AttackOutcome::Projectile {
@@ -174,17 +223,29 @@ pub(super) fn apply_outcomes(
                     // Enemies have no materialized weapon entity. The projectile
                     // impact path uses this id only as engine-internal damage
                     // context provenance, never as a weapon lookup.
-                    if let Some(projectile) =
-                        spawn_projectile(registry, outcome.id, outcome.id, *launch, None)
+                    let projectile =
+                        spawn_projectile(registry, outcome.id, outcome.id, *launch, None);
+                    if let Some(projectile) = projectile
+                        && commit_attack_fire(
+                            registry,
+                            outcome.id,
+                            pending.attack_name,
+                            pending.cooldown_ms,
+                        )
                     {
                         projectile_spawns.push(EnemyProjectilePresentationSpawn {
                             projectile,
                             descriptor_class,
                         });
+                        true
+                    } else {
+                        false
                     }
                 }
+            };
+            if attack_fired {
+                events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
             }
-            events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
         }
 
         // Animation: on a state change or locomotion stop/resume, request the

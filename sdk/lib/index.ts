@@ -100,6 +100,8 @@ export {
   scopeReactions,
   defineEntity,
   defineMod,
+  defineFaction,
+  sentiment,
   defineMapCatalog,
   defineWeaponPlacement,
   defineTriggerPool,

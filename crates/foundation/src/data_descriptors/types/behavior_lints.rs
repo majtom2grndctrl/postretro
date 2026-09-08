@@ -99,6 +99,7 @@ mod tests {
                 )]),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks: BTreeMap::new(),
             engagement_radius: None,

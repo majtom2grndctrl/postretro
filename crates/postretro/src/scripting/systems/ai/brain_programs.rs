@@ -474,6 +474,7 @@ mod tests {
                 transitions: BTreeMap::new(),
             },
             candidate_filter: None,
+            retaliation: None,
             patrol: None,
             attacks,
             engagement_radius: None,
@@ -510,6 +511,8 @@ mod tests {
         cooldown_ms: f32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            faction: None,
+            tolerance: None,
             canonical_name: Some(canonical_name.to_string()),
             inventory: None,
             light: None,

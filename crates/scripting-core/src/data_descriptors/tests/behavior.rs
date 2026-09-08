@@ -110,6 +110,24 @@ fn recursive_descriptor_parses_identically_in_both_runtimes() {
 }
 
 #[test]
+fn retaliation_tuning_parses_identically_in_both_runtimes() {
+    let js = eval_js(
+        &js_behavior(", retaliation: { windowMs: 750, damageWeight: 2, recencyWeight: 0.25 }"),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_behavior(", retaliation = { windowMs = 750, damageWeight = 2, recencyWeight = 0.25 }"),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let (js, lua) = (js.behavior.unwrap(), lua.behavior.unwrap());
+
+    assert_eq!(js, lua);
+    assert_eq!(js.retaliation().window_ms, 750.0);
+    assert_eq!(js.retaliation().damage_weight, 2.0);
+    assert_eq!(js.retaliation().recency_weight, 0.25);
+}
+
+#[test]
 fn both_runtimes_reject_flat_states_and_interrupts() {
     for (js_extra, lua_extra) in [
         (", states: {}", ", states = {}"),

@@ -1,16 +1,78 @@
 // Live binding scope for per-offered-candidate behavior predicates.
 // See: context/lib/scripting.md §11
 
+use postretro_entities::components::brain::{RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker};
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{EntityId, EntityRegistry};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
 use postretro_foundation::{
-    BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue, ResolvedInput, ResolvedOutput,
-    resolve_candidate_input,
+    BRAIN_NO_TARGET_DISTANCE, BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue,
+    ResolvedInput, ResolvedOutput, resolve_candidate_input,
 };
+#[cfg(test)]
+use postretro_foundation::{
+    CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT, CANDIDATE_SENTIMENT_INPUT,
+    CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT, CANDIDATE_TOLERANCE_INPUT,
+};
+
+use super::{ARCHETYPE_TOLERANCE_STATE_FIELD, DEFAULT_RETALIATION_TOLERANCE, FACTION_STATE_FIELD};
 
 /// Read handle for a fixed candidate fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CandidateInputHandle(usize);
+
+/// Engine-facing subset of one refreshed candidate scope. Keeping these values
+/// beside the fixed IR inputs lets targeting make its engine-owned offer and
+/// ranking decisions from the exact same ledger/tolerance resolution authored
+/// guards observe, without a second divergent lookup.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CandidateFacts {
+    pub(crate) sentiment: f32,
+    pub(crate) accumulated_damage: f32,
+    pub(crate) time_since_damage_ms: f32,
+    pub(crate) tolerance: f32,
+    /// Distinguishes a real zero-damage ledger entry from the public
+    /// zero/sentinel defaults projected for a candidate that never attacked.
+    /// Engine retaliation admission requires provenance; authored candidate
+    /// facts deliberately keep their established defaults.
+    pub(crate) has_attacker_record: bool,
+}
+
+/// Stable evaluator inputs shared by every candidate in one acquisition scan.
+/// Borrowing them as one context keeps [`CandidateScope::refresh`] focused on
+/// the candidate relation and makes the hot loop's read-only inputs explicit
+/// without allocating or rebuilding a lookup per candidate.
+#[derive(Clone, Copy)]
+pub(crate) struct CandidateRefreshContext<'a> {
+    registry: &'a EntityRegistry,
+    factions: &'a FactionRegistry,
+    evaluating_faction: f32,
+    archetype_tolerance: Option<f32>,
+    recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+}
+
+impl<'a> CandidateRefreshContext<'a> {
+    pub(crate) fn new(
+        registry: &'a EntityRegistry,
+        factions: &'a FactionRegistry,
+        evaluating_enemy: Option<EntityId>,
+        evaluating_faction: f32,
+        recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+    ) -> Self {
+        let archetype_tolerance = evaluating_enemy.and_then(|enemy| {
+            registry
+                .get_component::<EntityStateComponent>(enemy)
+                .ok()
+                .and_then(|state| state.get_opt(ARCHETYPE_TOLERANCE_STATE_FIELD))
+        });
+        Self {
+            registry,
+            factions,
+            evaluating_faction,
+            archetype_tolerance,
+            recent_attackers,
+        }
+    }
+}
 
 /// One reusable snapshot, refreshed for every candidate during an acquisition
 /// scan. The array is fixed at the source table's length: refresh writes slots
@@ -33,17 +95,54 @@ impl CandidateScope {
     /// as zero/false so a stale candidate snapshot can never leak across scans.
     pub(crate) fn refresh(
         &mut self,
-        registry: &EntityRegistry,
+        context: CandidateRefreshContext<'_>,
         candidate: EntityId,
         distance: f32,
-    ) {
-        let health = registry.get_component::<HealthComponent>(candidate).ok();
+    ) -> CandidateFacts {
+        let health = context
+            .registry
+            .get_component::<HealthComponent>(candidate)
+            .ok();
+        let candidate_faction = context
+            .registry
+            .get_component::<EntityStateComponent>(candidate)
+            .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
+        let tolerance = context
+            .archetype_tolerance
+            .or_else(|| {
+                context
+                    .factions
+                    .tolerance(context.evaluating_faction, candidate_faction)
+            })
+            .unwrap_or(DEFAULT_RETALIATION_TOLERANCE);
+        let sentiment = context
+            .factions
+            .sentiment(context.evaluating_faction, candidate_faction);
+        let attacker_record = context
+            .recent_attackers
+            .iter()
+            .flatten()
+            .find(|entry| entry.attacker == candidate);
+        let accumulated_damage = attacker_record.map_or(0.0, |entry| entry.accumulated_damage);
+        let time_since_damage_ms =
+            attacker_record.map_or(BRAIN_NO_TARGET_DISTANCE, |entry| entry.time_since_damage_ms);
         self.fixed = [
             IrValue::Number(distance),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
             IrValue::Bool(health.is_some_and(|health| health.death_handled)),
+            IrValue::Number(sentiment),
+            IrValue::Number(accumulated_damage),
+            IrValue::Number(time_since_damage_ms),
+            IrValue::Number(tolerance),
         ];
+        CandidateFacts {
+            sentiment,
+            accumulated_damage,
+            time_since_damage_ms,
+            tolerance,
+            has_attacker_record: attacker_record.is_some(),
+        }
     }
 }
 
@@ -77,7 +176,9 @@ mod tests {
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
     use glam::Vec3;
-    use postretro_entities::{EntityRegistry, Transform};
+    use postretro_entities::{
+        EntityRegistry, FactionDescriptor, FactionRegistry, FactionSentimentDescriptor, Transform,
+    };
     use postretro_foundation::{
         BakedIr, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT,
         CANDIDATE_MAX_HEALTH_INPUT, CURRENT_IR_VERSION, IrNode, bind, eval_value,
@@ -105,12 +206,24 @@ mod tests {
             )
             .expect("candidate is live");
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, 5.0);
+        let factions = FactionRegistry::default();
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                None,
+                1.0,
+                &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            ),
+            candidate,
+            5.0,
+        );
         for (name, expected) in [
             (CANDIDATE_DISTANCE_INPUT, IrValue::Number(5.0)),
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(7.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(11.0)),
             (CANDIDATE_DIED_INPUT, IrValue::Bool(true)),
+            (CANDIDATE_SENTIMENT_INPUT, IrValue::Number(-1.0)),
         ] {
             let handle = scope.resolve_input(name).expect("known input").handle;
             assert_eq!(scope.read(&handle), expected, "{name}");
@@ -125,7 +238,18 @@ mod tests {
             ..Transform::default()
         });
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, 1.0);
+        let factions = FactionRegistry::default();
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                None,
+                1.0,
+                &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            ),
+            candidate,
+            1.0,
+        );
         for (name, expected) in [
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(0.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(0.0)),
@@ -134,6 +258,211 @@ mod tests {
             let handle = scope.resolve_input(name).expect("known input").handle;
             assert_eq!(scope.read(&handle), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn refresh_projects_the_evaluating_factions_directional_sentiment() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -1.0,
+                tolerance: 2.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.0,
+                tolerance: 2.0,
+            },
+        ])
+        .expect("directed pairs resolve");
+        let mut registry = EntityRegistry::new();
+        let candidate = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(candidate)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let mut scope = CandidateScope::for_validation();
+
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                None,
+                2.0,
+                &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            ),
+            candidate,
+            1.0,
+        );
+        let handle = scope
+            .resolve_input(CANDIDATE_SENTIMENT_INPUT)
+            .expect("sentiment input resolves")
+            .handle;
+        assert_eq!(scope.read(&handle), IrValue::Number(-1.0));
+
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                None,
+                3.0,
+                &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            ),
+            candidate,
+            1.0,
+        );
+        assert_eq!(scope.read(&handle), IrValue::Number(0.0));
+        registry
+            .entity_state_mut(candidate)
+            .expect("candidate remains live")
+            .set(FACTION_STATE_FIELD, 2.0);
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                None,
+                3.0,
+                &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+            ),
+            candidate,
+            1.0,
+        );
+        assert_eq!(scope.read(&handle), IrValue::Number(0.0));
+    }
+
+    #[test]
+    fn refresh_resolves_archetype_tolerance_then_pair_then_max_default() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 12.0,
+        }])
+        .expect("directed pair resolves");
+        let mut registry = EntityRegistry::new();
+        let override_enemy = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(override_enemy)
+            .expect("every entity has state")
+            .set(ARCHETYPE_TOLERANCE_STATE_FIELD, 3.5);
+        let pair_enemy = registry.spawn(Transform::default());
+        let paired_candidate = registry.spawn(Transform::default());
+        registry
+            .entity_state_mut(paired_candidate)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let unpaired_candidate = registry.spawn(Transform::default());
+        let mut scope = CandidateScope::for_validation();
+        let tolerance = scope
+            .resolve_input(CANDIDATE_TOLERANCE_INPUT)
+            .expect("tolerance input resolves at slot 7")
+            .handle;
+        let empty_ledger = [None; RECENT_ATTACKER_LEDGER_CAPACITY];
+
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                Some(override_enemy),
+                2.0,
+                &empty_ledger,
+            ),
+            paired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), 3.5);
+
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                Some(pair_enemy),
+                2.0,
+                &empty_ledger,
+            ),
+            paired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), 12.0);
+
+        scope.refresh(
+            CandidateRefreshContext::new(
+                &registry,
+                &factions,
+                Some(pair_enemy),
+                2.0,
+                &empty_ledger,
+            ),
+            unpaired_candidate,
+            1.0,
+        );
+        assert_number(scope.read(&tolerance), DEFAULT_RETALIATION_TOLERANCE);
+    }
+
+    #[test]
+    fn refresh_projects_each_attackers_damage_and_recency_without_stale_values() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        let non_attacker = registry.spawn(Transform::default());
+        let mut ledger = [None; RECENT_ATTACKER_LEDGER_CAPACITY];
+        ledger[0] = Some(RecentAttacker {
+            attacker: first,
+            accumulated_damage: 7.5,
+            time_since_damage_ms: 32.0,
+        });
+        ledger[1] = Some(RecentAttacker {
+            attacker: second,
+            accumulated_damage: 3.0,
+            time_since_damage_ms: 64.0,
+        });
+        let factions = FactionRegistry::default();
+        let mut scope = CandidateScope::for_validation();
+        let damage = scope
+            .resolve_input(CANDIDATE_DAMAGE_DEALT_TO_ME_INPUT)
+            .expect("damage input resolves")
+            .handle;
+        let recency = scope
+            .resolve_input(CANDIDATE_TIME_SINCE_DAMAGE_FROM_CANDIDATE_INPUT)
+            .expect("recency input resolves")
+            .handle;
+
+        let context = CandidateRefreshContext::new(&registry, &factions, None, 1.0, &ledger);
+        scope.refresh(context, first, 4.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(7.5));
+        assert_eq!(scope.read(&recency), IrValue::Number(32.0));
+
+        scope.refresh(context, second, 8.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(3.0));
+        assert_eq!(scope.read(&recency), IrValue::Number(64.0));
+
+        scope.refresh(context, non_attacker, 12.0);
+        assert_eq!(scope.read(&damage), IrValue::Number(0.0));
+        assert_eq!(
+            scope.read(&recency),
+            IrValue::Number(BRAIN_NO_TARGET_DISTANCE),
+            "a non-attacker must not inherit the preceding candidate's ledger facts"
+        );
     }
 
     #[test]
@@ -165,11 +494,42 @@ mod tests {
             &scope,
         )
         .expect("candidate filter binds");
-        scope.refresh(&registry, first, 5.0);
+        registry
+            .entity_state_mut(first)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 2.0);
+        registry
+            .entity_state_mut(second)
+            .expect("every entity has state")
+            .set(FACTION_STATE_FIELD, 3.0);
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments(vec![FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -1.0,
+            tolerance: 6.0,
+        }])
+        .expect("directed pair resolves");
+        let context = CandidateRefreshContext::new(
+            &registry,
+            &factions,
+            Some(first),
+            2.0,
+            &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
+        );
+        scope.refresh(context, first, 5.0);
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, second, 8.0);
+        scope.refresh(context, second, 8.0);
         let value = eval_value(&program, &scope);
         assert_eq!(
             snapshot.allocs_since(),
@@ -177,5 +537,16 @@ mod tests {
             "candidate refresh + eval allocates"
         );
         assert_eq!(value, IrValue::Bool(true));
+    }
+
+    fn assert_number(value: IrValue, expected: f32) {
+        let IrValue::Number(actual) = value else {
+            panic!("expected number {expected}, got {value:?}");
+        };
+        assert!(
+            (actual - expected).abs() <= f32::EPSILON,
+            "expected {expected} ± {}, got {actual}",
+            f32::EPSILON
+        );
     }
 }

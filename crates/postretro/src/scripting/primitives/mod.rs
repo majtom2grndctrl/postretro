@@ -273,6 +273,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("touchable?", "Option<TouchableDescriptor>", "Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
+        .field("faction?", "Option<String>", "Optional named faction declared in `ModManifest.factions`. The manifest resolves the name to engine-owned interim index storage; guards must use `brain.targetHostile`, never this numeric state.")
+        .field("tolerance?", "Option<f32>", "Optional finite retaliation tolerance for this brain-bearing archetype. Candidate guards read only the resolved `candidate.tolerance` relationship fact, never engine-owned state storage.")
         .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored hierarchical enemy behavior statechart: recursive envelopes hold named activities and source-keyed guarded rows; composites own orthogonal layers. It materializes a brain plus a navigation agent at spawn.")
         .finish();
     registry
@@ -584,12 +586,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("transitions", "BehaviorTransitions", "Source-keyed ordered adjacency rows; `\"*\"` is the enclosing scope-all key.")
         .finish();
     registry
+        .register_type("RetaliationDescriptor")
+        .doc("Scalar tuning for the engine-owned retaliation preference. It exposes no authored ranking expression: the engine applies its fixed threshold, score, and retention rule.")
+        .field("windowMs?", "f32", "Optional recent-damage window in milliseconds. Must be finite and >= 0; zero or a duration shorter than one AI tick explicitly disables retaliation accrual. Defaults to 1500.")
+        .field("damageWeight?", "f32", "Optional finite non-negative multiplier for accumulated damage in the engine retaliation score. Defaults to 1.")
+        .field("recencyWeight?", "f32", "Optional finite non-negative per-millisecond age penalty in the engine retaliation score. Defaults to 0.001.")
+        .finish();
+    registry
         .register_type("BehaviorGraphDescriptor")
         .doc("Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.")
         .field("initial", "String", "Root initial activity. It is also forced when the aggro gate closes.")
         .field("activities", "BehaviorActivities", "Root activities, keyed by author-chosen name. Must be non-empty.")
         .field("transitions", "BehaviorTransitions", "Root source-keyed ordered adjacency rows. `\"*\"` applies at root scope.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
+        .field("retaliation?", "RetaliationDescriptor", "Optional scalar tuning for the engine-owned retaliation preference. The block cannot author ranking logic; omitted values use compatibility defaults and the default tolerance keeps the term inert.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
         .field("attacks?", "BehaviorAttacks", "Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries. Omit for an attackless graph.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")

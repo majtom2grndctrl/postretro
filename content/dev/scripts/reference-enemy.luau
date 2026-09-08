@@ -34,6 +34,8 @@ M.referenceEnemyEntity = defineEntity({
         leg = 0.5,
       },
     },
+    -- A single normal hit is enough to redirect this playtest fixture.
+    tolerance = 4,
     mesh = {
       model = "models/reference_enemy_kaykit_knight/scene.gltf",
       animations = {
@@ -161,13 +163,8 @@ M.referenceEnemyEntity = defineEntity({
               brain.distanceToLastKnown:le(ARRIVE)
             ),
           },
-          {
-            to = "patrol",
-            when = brain.hasTarget["and"](
-              brain.hasTarget,
-              brain.targetHostile["not"](brain.targetHostile)
-            ),
-          },
+          -- A selected neutral target is an engine-admitted over-tolerance
+          -- retaliator, so it remains engageable like an ordinary hostile.
           {
             to = "startle",
             when = brain.damageSourceKnown["and"](

@@ -52,14 +52,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collection_id_is_bit_exact_and_distinguishes_every_contract_input() {
+    fn collection_id_is_injective_over_each_contract_field() {
         let base = derive_collection_id(
             "sprites/shared.png",
-            Some(1.0),
-            Some(50.0),
-            2.0,
-            Some(0.45),
-            Some(4.0),
+            Some(f32::from_bits(0x3F80_0000)),
+            Some(f32::from_bits(0x4248_0000)),
+            f32::from_bits(0x4000_0000),
+            Some(f32::from_bits(0x3EE6_6666)),
+            Some(f32::from_bits(0x4080_0000)),
         );
         let variants = [
             derive_collection_id(
@@ -72,51 +72,76 @@ mod tests {
             ),
             derive_collection_id(
                 "sprites/shared.png",
-                None,
-                Some(50.0),
-                2.0,
-                Some(0.45),
-                Some(4.0),
-            ),
-            derive_collection_id(
-                "sprites/shared.png",
-                Some(1.0),
-                None,
-                2.0,
-                Some(0.45),
-                Some(4.0),
-            ),
-            derive_collection_id(
-                "sprites/shared.png",
-                Some(1.0),
-                Some(50.0),
-                -0.0,
-                Some(0.45),
-                Some(4.0),
-            ),
-            derive_collection_id(
-                "sprites/shared.png",
-                Some(1.0),
-                Some(50.0),
-                2.0,
-                None,
-                Some(4.0),
-            ),
-            derive_collection_id(
-                "sprites/shared.png",
-                Some(1.0),
-                Some(50.0),
-                2.0,
-                Some(0.45),
-                None,
-            ),
-            derive_collection_id(
-                "sprites/shared.png",
                 Some(f32::from_bits(0x3F80_0001)),
-                Some(50.0),
-                2.0,
-                Some(0.45),
-                Some(4.0),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0001)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0001),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6667)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0001)),
+            ),
+            // `None` is distinct from any `Some`, even where the raw bits are zero.
+            derive_collection_id(
+                "sprites/shared.png",
+                None,
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                None,
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                None,
+                Some(f32::from_bits(0x4080_0000)),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(f32::from_bits(0x3F80_0000)),
+                Some(f32::from_bits(0x4248_0000)),
+                f32::from_bits(0x4000_0000),
+                Some(f32::from_bits(0x3EE6_6666)),
+                None,
             ),
         ];
 
@@ -125,6 +150,81 @@ mod tests {
         assert!(!base.contains("none"));
         for variant in variants {
             assert_ne!(base, variant);
+        }
+    }
+
+    #[test]
+    fn collection_id_preserves_zero_sign_and_option_float_bits() {
+        let positive_zero_contract = derive_collection_id(
+            "sprites/shared.png",
+            Some(0.0),
+            Some(0.0),
+            0.0,
+            Some(0.0),
+            Some(0.0),
+        );
+        let byte_identical_contract = derive_collection_id(
+            "sprites/shared.png",
+            Some(0.0),
+            Some(0.0),
+            0.0,
+            Some(0.0),
+            Some(0.0),
+        );
+        let absent_spec_intensity = derive_collection_id(
+            "sprites/shared.png",
+            Some(0.0),
+            Some(0.0),
+            0.0,
+            None,
+            Some(0.0),
+        );
+
+        assert_eq!(positive_zero_contract, byte_identical_contract);
+        assert_ne!(positive_zero_contract, absent_spec_intensity);
+        for negative_zero_contract in [
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(-0.0),
+                Some(0.0),
+                0.0,
+                Some(0.0),
+                Some(0.0),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(0.0),
+                Some(-0.0),
+                0.0,
+                Some(0.0),
+                Some(0.0),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(0.0),
+                Some(0.0),
+                -0.0,
+                Some(0.0),
+                Some(0.0),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(0.0),
+                Some(0.0),
+                0.0,
+                Some(-0.0),
+                Some(0.0),
+            ),
+            derive_collection_id(
+                "sprites/shared.png",
+                Some(0.0),
+                Some(0.0),
+                0.0,
+                Some(0.0),
+                Some(-0.0),
+            ),
+        ] {
+            assert_ne!(positive_zero_contract, negative_zero_contract);
         }
     }
 

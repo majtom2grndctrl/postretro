@@ -1,0 +1,106 @@
+# Engine gate: the same checks as the local `preflight` skill, run on every PR
+# and every push to main. This guards engine-code correctness (fmt, clippy,
+# tests, a release compile, and the crate-graph snapshot).
+#
+# Scope notes (2026-09):
+#   * Linux-only for now. The engine had not been built for Linux before this
+#     workflow; it is now verified to compile and pass the full suite on current
+#     stable. Windows/macOS legs are a deliberate follow-up.
+#   * No distribution/bake job here. `xtask dist` bakes the dev mod's heavy
+#     fixtures (stress-warren-hallway-inspection needs >13 GiB RAM) and OOMs on
+#     hosted runners, and the dev mod is fixture content, not shippable levels.
+#     CD-on-tag is deferred until content is real/right-sized or larger runners
+#     are opted into.
+#   * No setup-node: the TypeScript mod is transpiled in-process by `scripts-build`
+#     via swc (a Rust library), so no JS runtime is needed. It is not exercised
+#     here anyway (that is a dist concern).
+#
+# Toolchain: current `stable` is required (the engine uses `if_let_guard`,
+# stabilized after 1.94.1). `dtolnay/rust-toolchain@stable` installs current
+# stable, matching rust-toolchain.toml's floating "stable" pin.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Format & Clippy (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This workspace's full build tree is large (~25 GiB). Reclaim space that
+      # the hosted image spends on toolchains this build never uses, so the
+      # clippy compile does not run the runner out of disk.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      # clippy compiles the workspace, so the sys-crate build scripts run:
+      # alsa-sys (kira/cpal) and libudev-sys (gilrs) need these headers.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      # Shared target dir on purpose: unlike local `preflight`, a CI runner has
+      # no warm dev cache to protect, and this job builds nothing else.
+      - name: cargo clippy -D warnings
+        run: cargo clippy -- -D warnings
+
+  test:
+    name: Test, release-check & crate-graph (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `#[ignore]`-gated cold-bake / heavy-map suites are skipped by default;
+      # they are on-demand only (see context/lib/testing_guide.md §3).
+      - name: cargo test
+        run: cargo test
+
+      # Catches the release-only class debug builds miss, e.g. a call site of a
+      # `#[cfg(debug_assertions)]` helper (development_guide.md §3.6).
+      - name: cargo check --release
+        run: cargo check --release
+
+      - name: crate-graph snapshot up to date
+        run: cargo run -p xtask -- crate-graph --check

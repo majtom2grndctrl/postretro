@@ -8337,15 +8337,6 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                             },
                         ),
                         edge(
-                            "patrol",
-                            IrNode::And {
-                                a: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
-                                b: Box::new(IrNode::Not {
-                                    x: Box::new(brain_input(BRAIN_TARGET_HOSTILE_INPUT)),
-                                }),
-                            },
-                        ),
-                        edge(
                             "startle",
                             IrNode::And {
                                 a: Box::new(IrNode::And {
@@ -8592,6 +8583,33 @@ fn step_reference_enemy_graph(
     target_visible: bool,
     time_in_activity_ms: f32,
 ) -> String {
+    step_reference_enemy_graph_with_hostility(
+        current,
+        target_distance,
+        time_since_damage_ms,
+        damage_source_known,
+        time_since_target_visible,
+        distance_to_last_known,
+        damage_bearing,
+        true,
+        target_visible,
+        time_in_activity_ms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_reference_enemy_graph_with_hostility(
+    current: &str,
+    target_distance: Option<f32>,
+    time_since_damage_ms: f32,
+    damage_source_known: bool,
+    time_since_target_visible: f32,
+    distance_to_last_known: f32,
+    damage_bearing: f32,
+    target_hostile: bool,
+    target_visible: bool,
+    time_in_activity_ms: f32,
+) -> String {
     let graph = reference_behavior_graph();
     let mut registry = EntityRegistry::new();
     let enemy = registry.spawn(Transform::default());
@@ -8616,7 +8634,7 @@ fn step_reference_enemy_graph(
             damage_bearing,
             acquisition_due: true,
             distance_from_anchor: 0.0,
-            target_hostile: true,
+            target_hostile,
             target_reachable: true,
             target_visible,
             attacks_fired_in_activity: 0,
@@ -8637,6 +8655,28 @@ fn step_reference_enemy_graph(
         .expect("reference graph keeps a root activity")
         .0
         .to_string()
+}
+
+// Regression: a neutral peer selected through retaliation was immediately
+// discarded by the fixture's `targetHostile` stand-down guard.
+#[test]
+fn reference_enemy_keeps_an_engaged_neutral_retaliation_target() {
+    assert_eq!(
+        step_reference_enemy_graph_with_hostility(
+            "engage",
+            Some(4.0),
+            BRAIN_NO_TARGET_DISTANCE,
+            false,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            true,
+            0.0,
+        ),
+        "engage",
+        "a selected neutral retaliation target remains engaged"
+    );
 }
 
 #[test]

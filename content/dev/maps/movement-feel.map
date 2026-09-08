@@ -799,6 +799,39 @@
 {
 "classname" "func_group"
 "_tb_type" "_tb_group"
+"_tb_name" "crossfire_raider_cluster"
+"_tb_id" "12"
+"_tb_linked_group_id" "a54e1cda-5d6f-4f96-9f48-5b4e5bf6f3ec"
+"_tb_transformation" "1 0 0 0 0 1 0 0 0 0 1 176 0 0 0 1"
+}
+// entity 33
+{
+"classname" "crossfire_raider"
+"origin" "-144 756 192"
+"angles" "0 0 0"
+"_tags" "enemy crossfire_raider"
+"_tb_group" "12"
+}
+// entity 34
+{
+"classname" "crossfire_raider"
+"origin" "-144 900 192"
+"angles" "0 0 0"
+"_tags" "enemy crossfire_raider"
+"_tb_group" "12"
+}
+// entity 35
+{
+"classname" "crossfire_raider"
+"origin" "-144 1044 192"
+"angles" "0 0 0"
+"_tags" "enemy crossfire_raider"
+"_tb_group" "12"
+}
+// entity 36
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
 "_tb_name" "pink_ambient_lights"
 "_tb_id" "10"
 "_tb_linked_group_id" "75079b20-ed10-40e0-805e-23199c6180c6"

@@ -51,6 +51,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         leg: 0.5,
       },
     },
+    // A single normal hit is enough to redirect this playtest fixture.
+    tolerance: 4,
     mesh: {
       model: "models/reference_enemy_kaykit_knight/scene.gltf",
       animations: {
@@ -178,10 +180,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               .and(brain.timeSinceDamageMs.gt(ALERT_MS))
               .and(brain.distanceToLastKnown.le(ARRIVE)),
           },
-          {
-            to: "patrol",
-            when: brain.hasTarget.and(brain.targetHostile.not()),
-          },
+          // A selected neutral target is an engine-admitted over-tolerance
+          // retaliator, so it remains engageable like an ordinary hostile.
           {
             to: "startle",
             when: brain.damageSourceKnown

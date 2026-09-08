@@ -1,6 +1,7 @@
 import { defineFaction, defineMod, defineTriggerPool, sentiment } from "postretro";
 import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
+import { referenceRifleEntity } from "./scripts/reference-rifle";
 import { referenceShotgunEntity } from "./scripts/reference-shotgun";
 import {
   referencePlasmaBoltEntity,
@@ -131,6 +132,7 @@ export default defineMod({
   entities: [
     playerEntity,
     referencePistolEntity,
+    referenceRifleEntity,
     referenceShotgunEntity,
     referencePlasmaBoltEntity,
     referenceRocketEntity,

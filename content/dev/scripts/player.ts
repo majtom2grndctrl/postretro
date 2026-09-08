@@ -1,5 +1,6 @@
 import { defineEntity, runtime } from "postretro";
 import { referencePistolEntity } from "./reference-pistol";
+import { referenceRifleEntity } from "./reference-rifle";
 import { referenceShotgunEntity } from "./reference-shotgun";
 import {
   referencePlasmaBoltEntity,
@@ -27,6 +28,7 @@ export const playerEntity = defineEntity({
       loadout: [
         referenceShotgunEntity,
         referencePistolEntity,
+        referenceRifleEntity,
         referencePlasmaBoltEntity,
         referenceRocketEntity,
       ],

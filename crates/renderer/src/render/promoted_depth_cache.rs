@@ -1,7 +1,8 @@
 // Renderer-owned promoted-shadow depth-cache planning and reuse state.
 // See: context/lib/rendering_pipeline.md §4
 use super::renderer_types::{
-    MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind, PromotedStaticLightRecord,
+    MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedLightRecordSource, PromotedShadowPoolKind,
+    PromotedStaticLightRecord,
 };
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
@@ -12,6 +13,7 @@ struct CacheKey {
     global_light_index: u32,
     selection_index: u32,
     slot: u32,
+    source: PromotedLightRecordSource,
 }
 
 impl CacheKey {
@@ -20,6 +22,7 @@ impl CacheKey {
             global_light_index: record.global_light_index,
             selection_index: record.selection_index,
             slot: record.slot,
+            source: record.source,
         }
     }
 }
@@ -350,6 +353,22 @@ mod tests {
             pool_kind,
             slot,
             weight: 1.0,
+            source: PromotedLightRecordSource::SelectedStatic,
+        }
+    }
+
+    fn animated_record(
+        animated_baked_index: u32,
+        pool_kind: PromotedShadowPoolKind,
+        slot: u32,
+    ) -> PromotedStaticLightRecord {
+        PromotedStaticLightRecord {
+            global_light_index: animated_baked_index + 100,
+            selection_index: animated_baked_index,
+            pool_kind,
+            slot,
+            weight: 1.0,
+            source: PromotedLightRecordSource::AnimatedBaked,
         }
     }
 
@@ -442,6 +461,42 @@ mod tests {
         let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &reassigned);
         assert!(second.spot[0].needs_world_render);
         assert!(second.should_dispatch_spot_cull(4));
+    }
+
+    #[test]
+    fn animated_baked_record_reuses_static_world_depth_and_refreshes_entities() {
+        let (mut spot_layers, mut cube_layers) = cache_without_gpu();
+        let records = [animated_record(4, PromotedShadowPoolKind::Spot, 2)];
+
+        // P4: assignment is cold, so the world cache fill must precede the
+        // entity-only live-pool pass that the forward receiver will sample.
+        let first = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
+        assert!(first.spot[0].needs_world_render);
+        spot_layers[first.spot[0].cache_layer as usize].warm = true;
+
+        // The same raw AnimatedBakedLights record remains warm on the next
+        // frame: static world cull/render is skipped while the depth pass still
+        // runs its per-frame entity branch for the occupied slot.
+        let second = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
+        assert!(second.spot[0].is_warm());
+        assert!(!second.should_dispatch_spot_cull(2));
+        assert_eq!(second.counters.cached_world_render_skips, 1);
+    }
+
+    #[test]
+    fn animated_receiver_despawn_releases_its_cache_layer() {
+        let (mut spot_layers, mut cube_layers) = cache_without_gpu();
+        let records = [animated_record(2, PromotedShadowPoolKind::Spot, 4)];
+        let first = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
+        spot_layers[first.spot[0].cache_layer as usize].warm = true;
+
+        // P7: when the receiver disappears, its record vanishes from the
+        // cache plan. Reusing that same raw index later must be a cold fill,
+        // proving the prior layer did not remain live behind a stale weight.
+        let empty = plan_with_layers(&mut spot_layers, &mut cube_layers, &[]);
+        assert!(empty.spot.is_empty());
+        let respawned = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
+        assert!(respawned.spot[0].needs_world_render);
     }
 
     fn plan_with_layers(

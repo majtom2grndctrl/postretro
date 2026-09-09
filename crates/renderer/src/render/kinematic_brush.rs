@@ -1336,5 +1336,14 @@ mod tests {
                 && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
             "only selected-static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
+        assert!(
+            dynamic_loop.contains("if i >= kinematic_light_params.dynamic_light_count {")
+                && dynamic_loop.contains(
+                    "let promoted_index = i - kinematic_light_params.dynamic_light_count;"
+                )
+                && dynamic_loop.contains("sample_spot_shadow_with_static(")
+                && dynamic_loop.contains("sample_point_shadow_with_static("),
+            "raw section-45 mover tails must keep descriptors while reading their static-world cache metadata after the dynamic prefix",
+        );
     }
 }

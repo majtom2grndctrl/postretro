@@ -265,12 +265,13 @@ impl Renderer {
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
         full.promoted_static_weight_scratch.clear();
         full.promoted_static_last_update_time = None;
-        // Match the init-time policy: the cache exists only for a non-empty
-        // selection. A same-selection reload keeps the existing cache and just
-        // clears its layer state; a swap to an empty selection frees the cache
-        // (VRAM back to zero); a swap from empty to selection-bearing allocates
-        // it. Mirrors the conditional weight-buffer allocation below.
-        if geometry.entity_shadow_lights.is_empty() {
+        // Match the init-time policy: selected-static and section-45 animated
+        // candidates share the fixed-projection cache. A level with neither
+        // source frees it; either source allocates/reuses it and clears every
+        // cache layer on reload (P7).
+        let has_promoted_cache_source =
+            !geometry.entity_shadow_lights.is_empty() || !animated_baked_candidates.is_empty();
+        if !has_promoted_cache_source {
             full.promoted_depth_cache = None;
         } else if let Some(cache) = &mut full.promoted_depth_cache {
             cache.reset_level();

@@ -5,8 +5,8 @@
 use super::renderer_lighting::LIGHT_INFLUENCE_SIZE;
 use super::renderer_types::{
     FullRenderer, MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT,
-    PromotedShadowPoolKind, PromotedStaticLightRecord, PromotedStaticLightState,
-    animated_baked_promotion_weight,
+    PromotedLightRecordSource, PromotedShadowPoolKind, PromotedStaticLightRecord,
+    PromotedStaticLightState, animated_baked_promotion_weight,
 };
 use super::*;
 use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
@@ -23,6 +23,16 @@ const DEMOTE_SECONDS: f32 = 0.3;
 /// selected-static promotion records append after that tail.
 fn forward_light_count(full: &FullRenderer) -> u32 {
     full.light_count + full.animated_baked_light_count as u32
+}
+
+/// Only selected-static cache records append a new forward GpuLight. Animated
+/// records reuse their fixed raw section-45 tail position, so counting all
+/// cache records here would make the forward/influence prefixes diverge.
+fn selected_static_record_count(records: &[PromotedStaticLightRecord]) -> usize {
+    records
+        .iter()
+        .filter(|record| record.source == PromotedLightRecordSource::SelectedStatic)
+        .count()
 }
 
 // Read the renderer's CPU mirror of the exact dynamic GPU record. The live
@@ -127,6 +137,12 @@ impl Renderer {
                 .fill(PromotedStaticLightState::default());
             full.promoted_animated_states
                 .fill(PromotedStaticLightState::default());
+            // P7: a level with no surviving candidates must not retain any
+            // static-world cache layer from its prior animated receiver.
+            if let Some(cache) = &mut full.promoted_depth_cache {
+                cache.reset_level();
+            }
+            full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.total_light_count = forward_light_count(full);
             queue.write_buffer(
                 &full.uniform_buffer,
@@ -153,6 +169,11 @@ impl Renderer {
         // = degenerate (couldn't assign to a non-solid cell) → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
+        // Distinct from the brightness/visibility gate: a receiver despawn
+        // resets animated promotion immediately, so no stale `(1 - w)` compose
+        // factor or cache key survives (P7).
+        let mut promoted_baked_has_shadow_receiver =
+            vec![false; self.full().shadow_candidate_lights.len()];
         {
             let full = self.full_mut();
             // Fixed within the frame — build the source→level reverse lookup once
@@ -206,19 +227,12 @@ impl Renderer {
                     // shared pool slot that could produce a forward-only term.
                     continue;
                 }
-                let reaches_view = shadow_candidate_reaches_visible_cell(
-                    light,
-                    full.shadow_candidate_influences.get(i),
-                    reachable_cell_aabbs,
-                );
-                if !reaches_view {
-                    continue;
-                }
-                if shadow_candidate_is_promoted_baked(
+                let is_promoted_baked = shadow_candidate_is_promoted_baked(
                     &full.shadow_candidate_selection_indices,
                     &full.shadow_candidate_animated_baked_indices,
                     i,
-                ) {
+                );
+                if is_promoted_baked {
                     let has_shadow_mesh = selected_static_light_has_shadow_entity(
                         light,
                         full.shadow_candidate_influences.get(i),
@@ -229,9 +243,18 @@ impl Renderer {
                         full.shadow_candidate_influences.get(i),
                         &full.mover_occluder_aabbs,
                     );
+                    promoted_baked_has_shadow_receiver[i] = has_shadow_mesh || has_shadow_mover;
                     if !has_shadow_mesh && !has_shadow_mover {
                         continue;
                     }
+                }
+                let reaches_view = shadow_candidate_reaches_visible_cell(
+                    light,
+                    full.shadow_candidate_influences.get(i),
+                    reachable_cell_aabbs,
+                );
+                if !reaches_view {
+                    continue;
                 }
                 // Dynamic and animated-baked candidates intentionally read
                 // different keyed channels. The latter must never fall through
@@ -286,6 +309,7 @@ impl Renderer {
             &slot_assignment,
             &cube_slot_assignment,
             &visible_lights,
+            &promoted_baked_has_shadow_receiver,
             camera_position,
             camera_near_clip,
             frame_dt,
@@ -378,8 +402,9 @@ impl Renderer {
 
         // The bridge owns the complete dynamic prefix plus one raw section-45
         // influence per animated-baked tail record. Selected-static promotion
-        // appends after both. Gate the combined re-upload on static records;
-        // without them the bridge's prefix upload is already complete.
+        // appends after both. A promoted animated record also needs its raw
+        // metadata cache-layer prefix, so every surviving cache record enters
+        // this combined re-upload.
         // The `entity_shadow_light_influences` vector is raw-length N and
         // index-parallel to the selection index, so `[selection_index]` is a
         // direct aligned lookup for every promoted record.
@@ -402,7 +427,11 @@ impl Renderer {
                 influence_bytes.resize(dynamic_bytes, 0);
                 influence_bytes.resize(forward_prefix_bytes, 0);
             }
-            for record in &full.promoted_static_records {
+            for record in full
+                .promoted_static_records
+                .iter()
+                .filter(|record| record.source == PromotedLightRecordSource::SelectedStatic)
+            {
                 let influence =
                     &full.entity_shadow_light_influences[record.selection_index as usize];
                 influence::pack_influence_into(
@@ -411,6 +440,7 @@ impl Renderer {
                 );
             }
             shadowmask::pack_forward_shadowmask_metadata(
+                full.animated_baked_light_count,
                 &full.promoted_static_records,
                 &full.promoted_static_cache_layers,
                 &full.entity_shadow_spec_light_indices,
@@ -940,6 +970,7 @@ impl Renderer {
         spot_assignment: &[u32],
         cube_assignment: &[u32],
         visible_lights: &[bool],
+        promoted_baked_has_shadow_receiver: &[bool],
         camera_position: Vec3,
         camera_near_clip: f32,
         frame_dt: f32,
@@ -1015,6 +1046,7 @@ impl Renderer {
                             pool_kind,
                             slot,
                             weight: state.weight.clamp(0.0, 1.0),
+                            source: PromotedLightRecordSource::SelectedStatic,
                         });
                 }
             } else {
@@ -1040,6 +1072,17 @@ impl Renderer {
                 .shadow_candidate_animated_baked_indices
                 .iter()
                 .position(|idx| *idx == Some(animated_index));
+
+            let has_shadow_receiver = candidate_index
+                .and_then(|candidate_index| {
+                    promoted_baked_has_shadow_receiver
+                        .get(candidate_index)
+                        .copied()
+                })
+                .unwrap_or(false);
+            if reset_animated_promotion_without_receiver(state, has_shadow_receiver) {
+                continue;
+            }
 
             let assigned = candidate_index.and_then(|candidate_index| {
                 let spot = spot_assignment
@@ -1077,6 +1120,33 @@ impl Renderer {
                 )
             });
             advance_promoted_baked_state(state, assigned, frame_dt);
+
+            // The animated forward record already lives at this raw section-45
+            // index. This cache record supplies its fixed world-depth layer;
+            // it never appends a duplicate light record or aliases an
+            // EntityShadowLights selection index.
+            if state.weight > 0.0 {
+                let candidate_index = full
+                    .shadow_candidate_animated_baked_indices
+                    .iter()
+                    .position(|idx| *idx == Some(animated_index));
+                if let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
+                {
+                    if let Some(&global_light_index) =
+                        full.shadow_candidate_source_indices.get(candidate_index)
+                    {
+                        full.promoted_static_records
+                            .push(PromotedStaticLightRecord {
+                                global_light_index: global_light_index as u32,
+                                selection_index: animated_index as u32,
+                                pool_kind,
+                                slot: state.slot,
+                                weight: state.weight.clamp(0.0, 1.0),
+                                source: PromotedLightRecordSource::AnimatedBaked,
+                            });
+                    }
+                }
+            }
         }
 
         let record_count_before_cache_layers = full.promoted_static_records.len();
@@ -1085,6 +1155,7 @@ impl Renderer {
             full.promoted_static_cache_layers = apply_promoted_cache_layers(
                 &mut full.promoted_static_records,
                 &mut full.promoted_static_weights,
+                &mut full.promoted_animated_states,
                 &mut plan,
             );
             if full.promoted_static_records.len() != record_count_before_cache_layers
@@ -1131,8 +1202,8 @@ impl Renderer {
             0,
             &full.promoted_static_weight_scratch,
         );
-        full.total_light_count =
-            forward_light_count(full) + full.promoted_static_records.len() as u32;
+        full.total_light_count = forward_light_count(full)
+            + selected_static_record_count(&full.promoted_static_records) as u32;
     }
 }
 
@@ -1143,7 +1214,8 @@ impl Renderer {
 ///
 fn apply_promoted_cache_layers(
     records: &mut Vec<PromotedStaticLightRecord>,
-    weights: &mut [f32],
+    selected_static_weights: &mut [f32],
+    animated_states: &mut [PromotedStaticLightState],
     plan: &mut PromotedDepthCacheFramePlan,
 ) -> Vec<i32> {
     let mut cache_layers = Vec::with_capacity(records.len());
@@ -1157,8 +1229,23 @@ fn apply_promoted_cache_layers(
             }),
         };
         let Some(layer) = layer else {
-            if let Some(weight) = weights.get_mut(record.selection_index as usize) {
-                *weight = 0.0;
+            match record.source {
+                PromotedLightRecordSource::SelectedStatic => {
+                    if let Some(weight) =
+                        selected_static_weights.get_mut(record.selection_index as usize)
+                    {
+                        *weight = 0.0;
+                    }
+                }
+                PromotedLightRecordSource::AnimatedBaked => {
+                    // P3: the section-45 compose factor derives from this raw
+                    // AnimatedBakedLights state. Reset it in the same drop
+                    // pass that removes the runtime cache record, otherwise
+                    // Pass B would retain `(1 - w)` with no replacement term.
+                    if let Some(state) = animated_states.get_mut(record.selection_index as usize) {
+                        *state = PromotedStaticLightState::default();
+                    }
+                }
             }
             return false;
         };
@@ -1458,6 +1545,22 @@ fn advance_promoted_baked_state(
     }
 }
 
+/// P7's receiver-despawn boundary. Unlike a normal eligibility or brightness
+/// miss (which participates in the sticky crossfade), no receiver means no
+/// runtime shadow term exists to cover a partially reduced baked delta. Clear
+/// the raw AnimatedBakedLights state in one step; the caller then drops its
+/// cache record and slot assignment in the same frame.
+fn reset_animated_promotion_without_receiver(
+    state: &mut PromotedStaticLightState,
+    has_shadow_receiver: bool,
+) -> bool {
+    if has_shadow_receiver {
+        return false;
+    }
+    *state = PromotedStaticLightState::default();
+    true
+}
+
 fn selected_static_light_has_shadow_entity(
     light: &MapLight,
     influence: Option<&LightInfluence>,
@@ -1562,7 +1665,11 @@ fn build_count_split_light_upload(
         full.promoted_static_states.len(),
         "selected-static light vector must be raw-length N, index-parallel to selection index",
     );
-    for record in &full.promoted_static_records {
+    for record in full
+        .promoted_static_records
+        .iter()
+        .filter(|record| record.source == PromotedLightRecordSource::SelectedStatic)
+    {
         let light = &full.entity_shadow_lights[record.selection_index as usize];
         let mut weighted = light.clone();
         weighted.intensity *= record.weight.clamp(0.0, 1.0);
@@ -1759,6 +1866,7 @@ mod tests {
             pool_kind: PromotedShadowPoolKind::Cube,
             slot: 1,
             weight: 0.75,
+            source: PromotedLightRecordSource::SelectedStatic,
         };
 
         assert_eq!(record.global_light_index, 42);
@@ -1782,11 +1890,18 @@ mod tests {
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 3,
             weight: 0.75,
+            source: PromotedLightRecordSource::SelectedStatic,
         }];
         let mut weights = [0.75];
+        let mut animated_states = [];
         let mut plan = PromotedDepthCacheFramePlan::default();
 
-        let cache_layers = apply_promoted_cache_layers(&mut records, &mut weights, &mut plan);
+        let cache_layers = apply_promoted_cache_layers(
+            &mut records,
+            &mut weights,
+            &mut animated_states,
+            &mut plan,
+        );
 
         assert!(
             records.is_empty(),
@@ -1802,6 +1917,92 @@ mod tests {
             "dropped records must not pack a metadata tail"
         );
         assert_eq!(plan.counters.promoted_count, 0);
+    }
+
+    #[test]
+    fn missing_cache_layer_drops_animated_record_at_raw_index_and_restores_full_delta() {
+        let mut records = vec![PromotedStaticLightRecord {
+            global_light_index: 42,
+            // Deliberately distinct from the static selection index: this
+            // proves P3 cannot accidentally zero promoted_static_weights[0].
+            selection_index: 2,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 3,
+            weight: 0.75,
+            source: PromotedLightRecordSource::AnimatedBaked,
+        }];
+        let mut selected_static_weights = [0.4];
+        let mut animated_states = vec![
+            PromotedStaticLightState {
+                weight: 0.1,
+                ..PromotedStaticLightState::default()
+            },
+            PromotedStaticLightState {
+                weight: 0.2,
+                ..PromotedStaticLightState::default()
+            },
+            PromotedStaticLightState {
+                weight: 0.75,
+                pool_kind: Some(PromotedShadowPoolKind::Spot),
+                slot: 3,
+                ..PromotedStaticLightState::default()
+            },
+        ];
+        let mut plan = PromotedDepthCacheFramePlan::default();
+
+        let cache_layers = apply_promoted_cache_layers(
+            &mut records,
+            &mut selected_static_weights,
+            &mut animated_states,
+            &mut plan,
+        );
+
+        assert!(records.is_empty());
+        assert!(cache_layers.is_empty());
+        assert_eq!(
+            selected_static_weights,
+            [0.4],
+            "P3 must not alias an AnimatedBakedLights index into static weights"
+        );
+        assert_eq!(
+            animated_baked_promotion_weight(2, animated_states.get(2)),
+            0.0,
+            "P3: dropping the runtime cache record restores Pass B's full (1-w) delta"
+        );
+        assert_eq!(animated_states[0].weight, 0.1);
+        assert_eq!(animated_states[1].weight, 0.2);
+        assert_eq!(plan.counters.promoted_count, 0);
+    }
+
+    #[test]
+    fn receiver_despawn_resets_animated_state_and_full_delta_compose_factor() {
+        let mut state = PromotedStaticLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Cube),
+            slot: 1,
+            last_score: 4.0,
+        };
+
+        assert!(reset_animated_promotion_without_receiver(&mut state, false));
+        assert_eq!(
+            animated_baked_promotion_weight(5, Some(&state)),
+            0.0,
+            "P7: a despawned receiver restores Pass B's full `(1 - w)` delta"
+        );
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.sticky_remaining, 0.0);
+
+        let mut retained = PromotedStaticLightState {
+            weight: 0.75,
+            ..PromotedStaticLightState::default()
+        };
+        assert!(!reset_animated_promotion_without_receiver(
+            &mut retained,
+            true
+        ));
+        assert_eq!(retained.weight, 0.75);
     }
 
     #[test]

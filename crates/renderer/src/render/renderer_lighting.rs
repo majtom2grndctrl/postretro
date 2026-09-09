@@ -541,7 +541,13 @@ impl Renderer {
         full.light_count = light_count as u32;
         full.total_light_count = full.light_count
             + full.animated_baked_light_count as u32
-            + full.promoted_static_records.len() as u32;
+            + full
+                .promoted_static_records
+                .iter()
+                .filter(|record| {
+                    record.source == renderer_types::PromotedLightRecordSource::SelectedStatic
+                })
+                .count() as u32;
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool
         // (`update_dynamic_light_slots`) then patches the real slot field onto

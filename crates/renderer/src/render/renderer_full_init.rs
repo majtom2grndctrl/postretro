@@ -369,12 +369,13 @@ pub(crate) fn build_full_renderer(
         &depth_view,
         cube_sampling_view,
     );
-    // Only allocate the promoted-slot cache when the map has a non-empty
-    // entity-shadow selection; an empty/absent selection can never promote a
-    // light. Construction precedes mesh/kinematic bind-group wiring so their
-    // new sampleable cache bindings can reference it immediately.
-    let promoted_depth_cache = (!entity_shadow_indices.is_empty())
-        .then(|| PromotedDepthCache::new(device, cube_array_supported));
+    // Both selected-static and section-45 animated-baked candidates use the
+    // fixed-projection promoted cache. Construction precedes mesh/kinematic
+    // bind-group wiring so their sampleable cache bindings are valid even for
+    // an animated-only map.
+    let promoted_depth_cache = (!entity_shadow_indices.is_empty()
+        || !animated_baked_candidates.is_empty())
+    .then(|| PromotedDepthCache::new(device, cube_array_supported));
     let dynamic_depth_cache = DynamicDepthCacheGpu::new(
         device,
         dynamic_depth_cache::DynamicCacheAllocation::for_lights(

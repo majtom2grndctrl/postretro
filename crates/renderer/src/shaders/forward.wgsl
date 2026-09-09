@@ -55,6 +55,8 @@ struct Uniforms {
     // 2 composed animated. Forward does not read it; the field preserves the
     // shared 128-byte ABI.
     has_scatter: u32,
+    // Bit 0: baked DIRECT SH present. Bits 1..31: raw section-45
+    // AnimatedBakedLights tail count for receiver-only runtime records.
     has_direct: u32,
     total_light_count: u32,
     // Dev toggle: force static-light shadowmask visibility to 1.0 for the
@@ -71,6 +73,10 @@ struct GpuLight {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+fn animated_baked_light_tail_count() -> u32 {
+    return uniforms.has_direct >> 1u;
+}
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
@@ -756,17 +762,21 @@ fn shadowmask_union_subtraction(
     out.subtraction = vec3<f32>(0.0);
     // White means no eligible promoted light covers this receiver.
     out.raw_pool_visibility = 1.0;
-    if uniforms.total_light_count <= uniforms.light_count {
+    let promoted_start = min(
+        uniforms.light_count + animated_baked_light_tail_count(),
+        uniforms.total_light_count,
+    );
+    if uniforms.total_light_count <= promoted_start {
         return out;
     }
     // Hoisted because every promoted light shares this fragment's lightmap
     // UV/layer.
     let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
-    let promoted_count = uniforms.total_light_count - uniforms.light_count;
+    let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
     for (var p: u32 = 0u; p < promoted_count; p = p + 1u) {
-        let influence_index = uniforms.light_count + p;
+        let influence_index = promoted_start + p;
         if influence_index >= influence_len {
             break;
         }

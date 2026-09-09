@@ -4,8 +4,9 @@
 
 use super::renderer_lighting::LIGHT_INFLUENCE_SIZE;
 use super::renderer_types::{
-    FullRenderer, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind,
-    PromotedStaticLightRecord, PromotedStaticLightState,
+    FullRenderer, MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT,
+    PromotedShadowPoolKind, PromotedStaticLightRecord, PromotedStaticLightState,
+    animated_baked_promotion_weight,
 };
 use super::*;
 use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
@@ -16,6 +17,13 @@ use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
 pub const PROMOTE_SECONDS: f32 = 0.3;
 const STICKY_SECONDS: f32 = 0.5;
 const DEMOTE_SECONDS: f32 = 0.3;
+
+/// Dynamic-tier records occupy the world-forward prefix. Every raw
+/// `AnimatedBakedLights` entry then owns a mover-only forward tail record;
+/// selected-static promotion records append after that tail.
+fn forward_light_count(full: &FullRenderer) -> u32 {
+    full.light_count + full.animated_baked_light_count as u32
+}
 
 // Read the renderer's CPU mirror of the exact dynamic GPU record. The live
 // bridge can move attached lights and animate their radius; level-load
@@ -119,7 +127,7 @@ impl Renderer {
                 .fill(PromotedStaticLightState::default());
             full.promoted_animated_states
                 .fill(PromotedStaticLightState::default());
-            full.total_light_count = full.light_count;
+            full.total_light_count = forward_light_count(full);
             queue.write_buffer(
                 &full.uniform_buffer,
                 TOTAL_LIGHT_COUNT_OFFSET,
@@ -187,6 +195,17 @@ impl Renderer {
                 }
             }
             for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
+                if full
+                    .shadow_candidate_animated_baked_indices
+                    .get(i)
+                    .and_then(|index| *index)
+                    .is_some_and(|index| index >= MAX_ANIMATED_BAKED_LIGHTS)
+                {
+                    // Pass B has no compose-weight entry for this raw roster
+                    // row. It must remain fully baked and may not consume a
+                    // shared pool slot that could produce a forward-only term.
+                    continue;
+                }
                 let reaches_view = shadow_candidate_reaches_visible_cell(
                     light,
                     full.shadow_candidate_influences.get(i),
@@ -357,10 +376,10 @@ impl Renderer {
         }
         full.lights_pack_scratch = scratch;
 
-        // The bridge owns the complete dynamic influence prefix, including
-        // runtime-spawned lights. Promotion appends its static tail after the
-        // current dynamic count. Gate the combined re-upload on promoted records;
-        // without promotion the bridge's prefix upload is already complete.
+        // The bridge owns the complete dynamic prefix plus one raw section-45
+        // influence per animated-baked tail record. Selected-static promotion
+        // appends after both. Gate the combined re-upload on static records;
+        // without them the bridge's prefix upload is already complete.
         // The `entity_shadow_light_influences` vector is raw-length N and
         // index-parallel to the selection index, so `[selection_index]` is a
         // direct aligned lookup for every promoted record.
@@ -373,11 +392,15 @@ impl Renderer {
             let mut influence_bytes = std::mem::take(&mut full.influence_pack_scratch);
             influence_bytes.clear();
             let dynamic_bytes = full.light_count as usize * 16;
-            if full.last_influence_upload.len() >= dynamic_bytes {
-                influence_bytes.extend_from_slice(&full.last_influence_upload[..dynamic_bytes]);
+            let forward_prefix_bytes =
+                dynamic_bytes + full.animated_baked_light_count * LIGHT_INFLUENCE_SIZE;
+            if full.last_influence_upload.len() >= forward_prefix_bytes {
+                influence_bytes
+                    .extend_from_slice(&full.last_influence_upload[..forward_prefix_bytes]);
             } else {
                 influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
                 influence_bytes.resize(dynamic_bytes, 0);
+                influence_bytes.resize(forward_prefix_bytes, 0);
             }
             for record in &full.promoted_static_records {
                 let influence =
@@ -1009,6 +1032,10 @@ impl Renderer {
         // task owns the eligibility and slot-retention lifecycle so a short
         // dark strobe cannot churn a shared-pool slot every frame.
         for (animated_index, state) in full.promoted_animated_states.iter_mut().enumerate() {
+            if animated_index >= MAX_ANIMATED_BAKED_LIGHTS {
+                *state = PromotedStaticLightState::default();
+                continue;
+            }
             let candidate_index = full
                 .shadow_candidate_animated_baked_indices
                 .iter()
@@ -1104,7 +1131,8 @@ impl Renderer {
             0,
             &full.promoted_static_weight_scratch,
         );
-        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
+        full.total_light_count =
+            forward_light_count(full) + full.promoted_static_records.len() as u32;
     }
 }
 
@@ -1496,14 +1524,32 @@ fn build_count_split_light_upload(
 ) {
     bytes.clear();
     let dynamic_bytes = full.light_count as usize * postretro_lighting::GPU_LIGHT_SIZE;
-    if full.last_lights_upload.len() >= dynamic_bytes && dynamic_bytes > 0 {
-        bytes.extend_from_slice(&full.last_lights_upload[..dynamic_bytes]);
+    let animated_tail_bytes = full.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE;
+    let forward_prefix_bytes = dynamic_bytes + animated_tail_bytes;
+    if full.last_lights_upload.len() >= forward_prefix_bytes && forward_prefix_bytes > 0 {
+        bytes.extend_from_slice(&full.last_lights_upload[..forward_prefix_bytes]);
         postretro_lighting::patch_shadow_slots(bytes, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
     } else if !full.level_lights.is_empty() {
         pack_lights_with_slots_into(bytes, &full.level_lights, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
         bytes.resize(dynamic_bytes, 0);
+    }
+
+    // Section-45 tail records are authored/unweighted when the bridge uploads
+    // them. Apply the exact same `state.weight` that Pass B converts into its
+    // `(1 - w)` compose factor, then patch the shadow-pool slot selected this
+    // frame. Tail records at/above the fixed uniform cap remain unpromotable.
+    if bytes.len() < forward_prefix_bytes {
+        bytes.resize(forward_prefix_bytes, 0);
+    }
+    for (animated_baked_index, state) in full.promoted_animated_states.iter().enumerate() {
+        let start = dynamic_bytes + animated_baked_index * postretro_lighting::GPU_LIGHT_SIZE;
+        let end = start + postretro_lighting::GPU_LIGHT_SIZE;
+        let Some(record) = bytes.get_mut(start..end) else {
+            continue;
+        };
+        apply_animated_promotion_to_tail_record(record, animated_baked_index, state);
     }
 
     // `entity_shadow_lights` is raw-length N and index-parallel to the selection
@@ -1536,6 +1582,36 @@ fn build_count_split_light_upload(
     if bytes.is_empty() {
         bytes.resize(postretro_lighting::GPU_LIGHT_SIZE, 0);
     }
+}
+
+/// Turn one authored bridge tail record into its mover-only runtime term.
+/// `w` is deliberately read once and supplies both its RGB multiplier and the
+/// slot enable. The compose uploader derives the complementary `(1 - w)` from
+/// that same state in `AnimatedDirectShDebugOverride::bytes`.
+fn apply_animated_promotion_to_tail_record(
+    record: &mut [u8],
+    animated_baked_index: usize,
+    state: &PromotedStaticLightState,
+) {
+    debug_assert_eq!(record.len(), postretro_lighting::GPU_LIGHT_SIZE);
+    let weight = animated_baked_promotion_weight(animated_baked_index, Some(state));
+    for offset in [16, 20, 24] {
+        let color = read_light_float(record, offset);
+        record[offset..offset + 4].copy_from_slice(&(color * weight).to_ne_bytes());
+    }
+
+    let spot_slot = if weight > 0.0 && state.pool_kind == Some(PromotedShadowPoolKind::Spot) {
+        state.slot
+    } else {
+        postretro_lighting::NO_SHADOW_SLOT
+    };
+    let cube_slot = if weight > 0.0 && state.pool_kind == Some(PromotedShadowPoolKind::Cube) {
+        state.slot
+    } else {
+        postretro_lighting::NO_SHADOW_SLOT
+    };
+    postretro_lighting::patch_shadow_slots(record, &[spot_slot]);
+    postretro_lighting::patch_cube_slots(record, &[cube_slot]);
 }
 
 #[cfg(test)]
@@ -1736,6 +1812,63 @@ mod tests {
         assert!((w - 0.3).abs() < 1.0e-6);
         assert_eq!(step_toward(0.95, 1.0, 0.2), 1.0);
         assert_eq!(step_toward(0.05, 0.0, 0.2), 0.0);
+    }
+
+    #[test]
+    fn animated_tail_uses_one_state_weight_without_cross_light_bleed() {
+        let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let mut first = postretro_lighting::pack_light(&source);
+        let mut second = postretro_lighting::pack_light(&source);
+        let mut unpromoted = postretro_lighting::pack_light(&source);
+        let mut overflow = postretro_lighting::pack_light(&source);
+        let first_state = PromotedStaticLightState {
+            weight: 0.25,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            ..PromotedStaticLightState::default()
+        };
+        let second_state = PromotedStaticLightState {
+            weight: 0.75,
+            pool_kind: Some(PromotedShadowPoolKind::Cube),
+            slot: 1,
+            ..PromotedStaticLightState::default()
+        };
+
+        apply_animated_promotion_to_tail_record(&mut first, 0, &first_state);
+        apply_animated_promotion_to_tail_record(&mut second, 1, &second_state);
+        apply_animated_promotion_to_tail_record(
+            &mut unpromoted,
+            2,
+            &PromotedStaticLightState::default(),
+        );
+        // P13: the cap is keyed by raw AnimatedBakedLights index, not batch
+        // position. An over-cap state cannot affect the prior valid tail.
+        apply_animated_promotion_to_tail_record(
+            &mut overflow,
+            MAX_ANIMATED_BAKED_LIGHTS,
+            &PromotedStaticLightState {
+                weight: 1.0,
+                pool_kind: Some(PromotedShadowPoolKind::Spot),
+                slot: 0,
+                ..PromotedStaticLightState::default()
+            },
+        );
+
+        let read_rgb = |record: &[u8]| [16, 20, 24].map(|offset| read_light_float(record, offset));
+        assert_eq!(read_rgb(&first), [0.25, 0.25, 0.25]);
+        assert_eq!(read_rgb(&second), [0.75, 0.75, 0.75]);
+        assert_eq!(
+            read_rgb(&unpromoted),
+            [0.0, 0.0, 0.0],
+            "P5: w=0 leaves the reserved runtime tail byte-identical to no runtime radiance",
+        );
+        assert_eq!(read_rgb(&overflow), [0.0, 0.0, 0.0]);
+        assert_eq!(
+            animated_baked_promotion_weight(0, Some(&first_state))
+                + (1.0 - animated_baked_promotion_weight(0, Some(&first_state))),
+            1.0,
+            "P1: forward w and Pass-B (1-w) derive from the identical state entry",
+        );
     }
 
     // The pure score sort, promoted-static cap, and tier-neutral eviction

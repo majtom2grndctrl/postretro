@@ -38,15 +38,15 @@ struct GridDims {
     _pad1: u32,
 };
 
-struct DebugOverride {
+// Binding 26 stays a uniform because Pass B already uses all eight supported
+// storage-buffer bindings. The vec4 array preserves the raw section-45
+// AnimatedBakedLights namespace without runtime-sized uniform data.
+struct AnimatedLightScale {
     enabled: u32,
     light_index: u32,
     _pad0: u32,
     _pad1: u32,
-    weight: f32,
-    _pad2: f32,
-    _pad3: f32,
-    _pad4: f32,
+    compose_weights: array<vec4<f32>, 64>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -62,8 +62,9 @@ struct DebugOverride {
 @group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
 @group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
 // Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
-// Pass A's binding-27 promotion-selection override.
-@group(1) @binding(26) var<uniform> debug_override: DebugOverride;
+// Pass A's binding-27 promotion-selection override. `compose_weights` carries
+// `(1 - w)` keyed by that same raw index.
+@group(1) @binding(26) var<uniform> animated_light_scale_uniform: AnimatedLightScale;
 // Low/high u32 words for every affinity-cell valid-probe mask, followed by one
 // widened coarsening level per cell, then one f16-half payload offset for every
 // post-drop CSR entry. id-27 and id-45 share this metadata layout, so their
@@ -75,6 +76,7 @@ struct DebugOverride {
 
 const AFFINITY_FACTOR: u32 = 4u;
 const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
+const MAX_ANIMATED_BAKED_LIGHTS: u32 = 256u;
 const LIGHT_TERM_BAKED_DIRECT_ANIMATED: u32 = 0x10u;
 // PRL validation pins the runtime tile dimension to 6. Keeping the shared
 // lattice fixed-size makes one brick workgroup fit well below the 16 KiB
@@ -280,11 +282,24 @@ fn reconstruct_l1_shared_texel(target_local: u32, texel_index: u32) -> vec3<f32>
     return vec3<f32>(0.0);
 }
 
+fn animated_compose_weight(light_index: u32) -> f32 {
+    // Capped overflow is deliberately full baked delta. It cannot be a
+    // promotion candidate and must not read outside the fixed uniform.
+    if (light_index >= MAX_ANIMATED_BAKED_LIGHTS) {
+        return 1.0;
+    }
+    let packed = animated_light_scale_uniform.compose_weights[light_index / 4u];
+    return clamp(packed[light_index % 4u], 0.0, 1.0);
+}
+
 fn animated_light_scale(light_index: u32) -> vec3<f32> {
     if ((uniforms.light_term_mask & LIGHT_TERM_BAKED_DIRECT_ANIMATED) == 0u) {
         return vec3<f32>(0.0);
     }
-    if (debug_override.enabled != 0u && light_index != debug_override.light_index) {
+    if (
+        animated_light_scale_uniform.enabled != 0u
+            && light_index != animated_light_scale_uniform.light_index
+    ) {
         return vec3<f32>(0.0);
     }
     let descriptor_index = animation_descriptor_indices[light_index];
@@ -311,12 +326,7 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
             vec3<f32>(0.0),
         ) * desc.base_color;
     }
-    let debug_weight = select(
-        1.0,
-        clamp(debug_override.weight, 0.0, 1.0),
-        debug_override.enabled != 0u,
-    );
-    return color * brightness * debug_weight;
+    return color * brightness * animated_compose_weight(light_index);
 }
 
 @compute @workgroup_size(8, 8, 1)

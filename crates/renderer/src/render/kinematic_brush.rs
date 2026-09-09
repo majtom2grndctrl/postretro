@@ -26,7 +26,9 @@ struct KinematicLightParams {
     light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
-    _pad: [u32; 3],
+    /// Descriptor-bearing prefix: dynamic tier plus section-45 animated tail.
+    scripted_light_count: u32,
+    _pad: [u32; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,8 +125,8 @@ fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
 }
 
 /// Serialize the 32-byte uniform row shared with `KinematicLightParams` in
-/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16; the tail
-/// stays explicit padding so the next uniform row remains 16-byte aligned.
+/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16 and the
+/// descriptor-bearing dynamic-plus-animated count at byte 20.
 fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGHT_PARAMS_SIZE] {
     let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
@@ -132,6 +134,7 @@ fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGH
     bytes[8..12].copy_from_slice(&params.light_term_mask.to_ne_bytes());
     bytes[12..16].copy_from_slice(&params.ambient_floor.to_ne_bytes());
     bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
+    bytes[20..24].copy_from_slice(&params.scripted_light_count.to_ne_bytes());
     bytes
 }
 
@@ -769,6 +772,7 @@ impl KinematicBrushPass {
         queue: &wgpu::Queue,
         light_count: u32,
         dynamic_light_count: u32,
+        scripted_light_count: u32,
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
@@ -779,10 +783,11 @@ impl KinematicBrushPass {
             &build_light_params_bytes(KinematicLightParams {
                 light_count,
                 dynamic_light_count,
+                scripted_light_count,
                 time,
                 light_term_mask,
                 ambient_floor,
-                _pad: [0; 3],
+                _pad: [0; 2],
             }),
         );
     }
@@ -1165,14 +1170,15 @@ mod tests {
     }
 
     #[test]
-    fn kinematic_light_params_uploads_dynamic_tier_count_in_second_uniform_row() {
+    fn kinematic_light_params_uploads_dynamic_and_scripted_counts_in_second_uniform_row() {
         let bytes = build_light_params_bytes(KinematicLightParams {
             light_count: 11,
             time: 1.5,
             light_term_mask: 0x7F,
             ambient_floor: 0.375,
             dynamic_light_count: 7,
-            _pad: [0; 3],
+            scripted_light_count: 10,
+            _pad: [0; 2],
         });
 
         assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
@@ -1181,7 +1187,8 @@ mod tests {
         assert_eq!(bytes[8..12], 0x7Fu32.to_ne_bytes());
         assert_eq!(bytes[12..16], 0.375f32.to_ne_bytes());
         assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
-        assert_eq!(bytes[20..], [0; 12]);
+        assert_eq!(bytes[20..24], 10u32.to_ne_bytes());
+        assert_eq!(bytes[24..], [0; 8]);
     }
 
     #[test]
@@ -1220,7 +1227,7 @@ mod tests {
                 Some("light_term_mask"),
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
-                Some("_pad0"),
+                Some("scripted_light_count"),
                 Some("_pad1"),
                 Some("_pad2"),
             ],
@@ -1300,7 +1307,7 @@ mod tests {
         );
         assert!(
             dynamic_loop.contains(
-                "if use_specular && i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"
+                "if use_specular && i >= kinematic_light_params.scripted_light_count && n_dot_l > 0.0"
             ),
             "only front-lit promoted records with LightTermMask specular enabled may add mover specular",
         );
@@ -1319,15 +1326,15 @@ mod tests {
     }
 
     #[test]
-    fn kinematic_animated_descriptors_are_limited_to_dynamic_prefix() {
+    fn kinematic_animated_descriptors_cover_the_raw_animated_tail_only() {
         let dynamic_loop = extract_wgsl_fn(
             include_str!("../shaders/kinematic_brush.wgsl"),
             "accumulate_dynamic_direct",
         );
         assert!(
-            dynamic_loop.contains("if i < kinematic_light_params.dynamic_light_count {")
+            dynamic_loop.contains("if i < kinematic_light_params.scripted_light_count {")
                 && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
-            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
+            "only selected-static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
     }
 }

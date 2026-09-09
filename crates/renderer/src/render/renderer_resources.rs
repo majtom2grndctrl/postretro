@@ -215,13 +215,16 @@ impl Renderer {
         let shadow_candidate_animated_baked_indices =
             filtered_shadow_candidates.animated_baked_indices;
         full.light_count = level_lights.len() as u32;
-        full.total_light_count = full.light_count;
+        full.animated_baked_light_count = animated_baked_descriptor_indices.len();
+        full.total_light_count = full.light_count + full.animated_baked_light_count as u32;
         let level_light_count = level_lights.len();
         let selected_static_count = selected_static.lights.len();
         let dynamic_light_capacity = level_light_count + RUNTIME_DYNAMIC_LIGHT_RESERVE;
         full.dynamic_light_capacity = dynamic_light_capacity;
 
-        let light_record_capacity = (dynamic_light_capacity + selected_static_count).max(1);
+        let light_record_capacity =
+            (dynamic_light_capacity + full.animated_baked_light_count + selected_static_count)
+                .max(1);
         let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
         if !level_lights.is_empty() {
             lights_data.extend_from_slice(&pack_lights(&level_lights));
@@ -307,6 +310,7 @@ impl Renderer {
 
         let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
             dynamic_light_capacity,
+            full.animated_baked_light_count,
             selected_static_count,
         );
         let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);

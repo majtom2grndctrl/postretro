@@ -59,6 +59,12 @@ pub const DEFAULT_DYNAMIC_DIRECT_SCALE: f32 = 1.0;
 /// game layer can append lights without reallocating or rebinding GPU state.
 pub const RUNTIME_DYNAMIC_LIGHT_RESERVE: usize = 256;
 
+/// Fixed number of section-45 animated-baked lights that may crossfade into
+/// the forward shadow-pool path. Pass B carries the matching `(1 - w)` values
+/// in binding 26's fixed-size uniform; entries at and above this cap retain
+/// their full baked delta and are never promotion candidates.
+pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
+
 pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
 }
@@ -455,6 +461,23 @@ pub(crate) struct PromotedStaticLightState {
     pub last_score: f32,
 }
 
+/// The one CPU seam for an animated-baked promotion's runtime share. Both the
+/// forward tail encoder and binding-26's complementary compose array call this
+/// against the same raw `AnimatedBakedLights` state entry. Capped overflow is
+/// never promoted and stays fully baked in Pass B.
+pub(super) fn animated_baked_promotion_weight(
+    animated_baked_index: usize,
+    state: Option<&PromotedStaticLightState>,
+) -> f32 {
+    if animated_baked_index >= MAX_ANIMATED_BAKED_LIGHTS {
+        return 0.0;
+    }
+    state
+        .map(|state| state.weight)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
 /// Renderer GPU state. Windowed construction begins with a boot splash before
 /// the heavier pipelines/resources are built; offscreen construction builds the
 /// full renderer immediately.
@@ -567,9 +590,14 @@ pub(super) struct FullRenderer {
     /// Promoted static records occupy a separate reserved tail.
     pub(super) dynamic_light_capacity: usize,
     pub(super) light_count: u32,
-    /// Dynamic-tier records plus promoted static records appended for entity
-    /// consumers this frame. Forward world rendering continues to use
-    /// `light_count`; mesh/billboard use this total.
+    /// Raw `AnimatedBakedLights` roster length. Every row reserves a forward
+    /// record after the dynamic prefix, including holes and entries above the
+    /// fixed Pass-B compose-weight cap, so the per-row identity never compacts.
+    pub(super) animated_baked_light_count: usize,
+    /// Dynamic tier, raw animated-baked tail, then promoted static records.
+    /// World and billboards recover the static suffix from the packed tail
+    /// count in the stable frame-uniform ABI; mesh/kinematic receivers consume
+    /// the complete count through their dedicated params uniforms.
     pub(super) total_light_count: u32,
     /// The frame's forward `Uniforms.time` value, cached by
     /// `update_per_frame_uniforms` so the skinned-mesh group-2 params uniform

@@ -183,14 +183,17 @@ struct MeshLightParams {
     light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
-    _pad: [u32; 3],
+    /// Descriptor-bearing prefix: dynamic tier plus the raw section-45
+    /// animated-baked tail. Selected-static promotion records append after it.
+    scripted_light_count: u32,
+    _pad: [u32; 2],
 }
 
 /// Byte size of the group-2 params uniform (`MeshLightParams`, 32 B).
 const MESH_LIGHT_PARAMS_SIZE: u64 = std::mem::size_of::<MeshLightParams>() as u64;
 
-/// Serialize `MeshLightParams` to its 32-byte std140 upload. `dynamic_light_count`
-/// sits at bytes 16..20; the remaining second row stays explicit zero padding.
+/// Serialize `MeshLightParams` to its 32-byte std140 upload. The dynamic count
+/// sits at bytes 16..20 and the descriptor-bearing count at 20..24.
 /// Split out from
 /// `write_light_params` so the byte layout can be asserted GPU-free in tests.
 fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
@@ -200,9 +203,9 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
         params.light_term_mask.to_ne_bytes(),
         params.ambient_floor.to_ne_bytes(),
         params.dynamic_light_count.to_ne_bytes(),
+        params.scripted_light_count.to_ne_bytes(),
         params._pad[0].to_ne_bytes(),
         params._pad[1].to_ne_bytes(),
-        params._pad[2].to_ne_bytes(),
     ]
     .concat()
 }
@@ -1508,6 +1511,7 @@ impl MeshPass {
         queue: &wgpu::Queue,
         light_count: u32,
         dynamic_light_count: u32,
+        scripted_light_count: u32,
         time: f32,
         light_term_mask: u32,
         ambient_floor: f32,
@@ -1515,10 +1519,11 @@ impl MeshPass {
         let bytes = build_light_params_bytes(MeshLightParams {
             light_count,
             dynamic_light_count,
+            scripted_light_count,
             time,
             light_term_mask,
             ambient_floor,
-            _pad: [0; 3],
+            _pad: [0; 2],
         });
         queue.write_buffer(&self.light_params_buffer, 0, &bytes);
     }
@@ -2162,9 +2167,9 @@ mod tests {
     // Guard the group-2 params uniform layout contract: `MeshLightParams` is eight
     // u32/f32 lanes (32 B std140), mirrored by the WGSL struct at group 2 binding 4.
     // Its first row holds the total count, time, term mask, and ambient floor;
-    // `dynamic_light_count` begins the explicit padded second row at byte 16. That
-    // count separates dynamic-prefix records from appended promoted static records,
-    // so a silent layout edit on either side must fail here.
+    // `dynamic_light_count` and `scripted_light_count` share the second row.
+    // Their separate boundaries distinguish dynamic, raw animated-tail, and
+    // selected-static records, so a silent layout edit must fail here.
     #[test]
     fn mesh_light_params_is_thirty_two_bytes() {
         assert_eq!(
@@ -2187,7 +2192,8 @@ mod tests {
             light_term_mask: 0x7F,
             ambient_floor,
             dynamic_light_count: 2,
-            _pad: [0; 3],
+            scripted_light_count: 5,
+            _pad: [0; 2],
         });
         assert_eq!(bytes.len(), 32, "serialized MeshLightParams must be 32 B");
         assert_eq!(
@@ -2208,7 +2214,12 @@ mod tests {
             &2u32.to_le_bytes(),
             "dynamic_light_count at 16..20",
         );
-        assert_eq!(&bytes[20..], &[0; 12], "second-row padding stays zero");
+        assert_eq!(
+            &bytes[20..24],
+            &5u32.to_le_bytes(),
+            "scripted_light_count at 20..24",
+        );
+        assert_eq!(&bytes[24..], &[0; 8], "second-row padding stays zero");
     }
 
     #[test]
@@ -2247,7 +2258,7 @@ mod tests {
                 Some("light_term_mask"),
                 Some("ambient_floor"),
                 Some("dynamic_light_count"),
-                Some("_pad0"),
+                Some("scripted_light_count"),
                 Some("_pad1"),
                 Some("_pad2"),
             ],
@@ -2413,15 +2424,15 @@ mod tests {
     }
 
     #[test]
-    fn skinned_mesh_animated_descriptors_are_limited_to_dynamic_prefix() {
+    fn skinned_mesh_animated_descriptors_cover_the_raw_animated_tail_only() {
         let dynamic_loop = extract_wgsl_fn(
             include_str!("../shaders/skinned_mesh.wgsl"),
             "accumulate_dynamic_direct",
         );
         assert!(
-            dynamic_loop.contains("if i < mesh_light_params.dynamic_light_count {")
+            dynamic_loop.contains("if i < mesh_light_params.scripted_light_count {")
                 && dynamic_loop.contains("let scripted_desc = scripted_light_descriptors[i];"),
-            "promoted static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
+            "only selected-static records append after the descriptor-upload prefix and must not read stale descriptor tail bytes",
         );
     }
 

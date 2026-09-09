@@ -16,6 +16,9 @@ use super::direct_sh_compose::{
     texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
+use super::renderer_types::{
+    MAX_ANIMATED_BAKED_LIGHTS, PromotedStaticLightState, animated_baked_promotion_weight,
+};
 use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
@@ -26,7 +29,6 @@ use super::sh_volume::AnimatedLightBuffers;
 pub(crate) struct AnimatedDirectShDebugOverride {
     pub enabled: bool,
     pub light_index: u32,
-    pub weight: f32,
 }
 
 impl Default for AnimatedDirectShDebugOverride {
@@ -34,41 +36,77 @@ impl Default for AnimatedDirectShDebugOverride {
         Self {
             enabled: false,
             light_index: 0,
-            weight: 0.0,
         }
     }
 }
 
 impl AnimatedDirectShDebugOverride {
     pub fn active(self) -> bool {
-        self.enabled && self.weight > 0.0
+        self.enabled
     }
 
-    pub(super) fn bytes(self) -> [u8; ANIMATED_DEBUG_OVERRIDE_SIZE] {
-        let mut bytes = [0u8; ANIMATED_DEBUG_OVERRIDE_SIZE];
+    /// Serializes binding 26 without changing its binding class: Pass B has
+    /// already consumed its storage-buffer budget. The fixed, raw section-45
+    /// index space deliberately leaves any entries beyond the cap at 1.0 so
+    /// they retain their full baked animated delta.
+    pub(super) fn bytes(
+        self,
+        promoted_states: &[PromotedStaticLightState],
+    ) -> [u8; ANIMATED_LIGHT_SCALE_SIZE] {
+        let mut bytes = [0u8; ANIMATED_LIGHT_SCALE_SIZE];
         bytes[0..4].copy_from_slice(&(self.enabled as u32).to_ne_bytes());
         bytes[4..8].copy_from_slice(&self.light_index.to_ne_bytes());
-        bytes[16..20].copy_from_slice(&self.weight.clamp(0.0, 1.0).to_ne_bytes());
+        for animated_baked_index in 0..MAX_ANIMATED_BAKED_LIGHTS {
+            let promotion_weight = animated_baked_promotion_weight(
+                animated_baked_index,
+                promoted_states.get(animated_baked_index),
+            );
+            let compose_weight = 1.0 - promotion_weight;
+            let offset = ANIMATED_LIGHT_SCALE_HEADER_SIZE + animated_baked_index * size_of::<f32>();
+            bytes[offset..offset + size_of::<f32>()].copy_from_slice(&compose_weight.to_ne_bytes());
+        }
         bytes
     }
 }
 
-const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
+const BIND_ANIMATED_LIGHT_SCALE: u32 = 26;
 /// Combined low/high valid-probe mask words, one coarsening level per cell,
 /// then one f16-half payload offset per post-drop CSR entry. Binding 26 is the
-/// pass-B debug override.
+/// pass-B fixed animated-light scale uniform.
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 /// Load-derived id-34 indirection words that map probes to stored atlas slots.
 const BIND_PROBE_INDIRECTION: u32 = 28;
-const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
+const ANIMATED_LIGHT_SCALE_HEADER_SIZE: usize = 16;
+const ANIMATED_LIGHT_SCALE_VEC4_COUNT: usize = MAX_ANIMATED_BAKED_LIGHTS / 4;
+
+/// Rust-side wire mirror of WGSL `AnimatedLightScale`. Bytes are serialized
+/// explicitly below, following the surrounding renderer uniform convention,
+/// but keeping this mirror makes size/offset drift fail at compile time.
+#[repr(C)]
+struct AnimatedLightScaleUniformLayout {
+    enabled: u32,
+    light_index: u32,
+    _pad: [u32; 2],
+    compose_weights: [[f32; 4]; ANIMATED_LIGHT_SCALE_VEC4_COUNT],
+}
+
+const ANIMATED_LIGHT_SCALE_SIZE: usize =
+    ANIMATED_LIGHT_SCALE_HEADER_SIZE + MAX_ANIMATED_BAKED_LIGHTS * size_of::<f32>();
+const _: () = assert!(MAX_ANIMATED_BAKED_LIGHTS % 4 == 0);
+const _: () = assert!(ANIMATED_LIGHT_SCALE_SIZE % 16 == 0);
+const _: () = assert!(size_of::<AnimatedLightScaleUniformLayout>() == ANIMATED_LIGHT_SCALE_SIZE);
+const _: () = assert!(
+    std::mem::offset_of!(AnimatedLightScaleUniformLayout, compose_weights)
+        == ANIMATED_LIGHT_SCALE_HEADER_SIZE
+);
 #[cfg(feature = "dev-tools")]
 const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
 
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
     pub(super) bind_group: wgpu::BindGroup,
-    pub(super) debug_override_buffer: wgpu::Buffer,
-    pub(super) last_debug_override_bytes: [u8; ANIMATED_DEBUG_OVERRIDE_SIZE],
+    pub(super) animated_light_scale_buffer: wgpu::Buffer,
+    pub(super) last_animated_light_scale_bytes: [u8; ANIMATED_LIGHT_SCALE_SIZE],
 }
 
 /// The two textures that carry animated-direct composition from the promotion
@@ -156,12 +194,13 @@ pub(super) fn build_animated_direct_pass(
         }),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-    let debug_override_bytes = AnimatedDirectShDebugOverride::default().bytes();
-    let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Animated Direct SH Compose Debug Override"),
-        contents: &debug_override_bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let animated_light_scale_bytes = AnimatedDirectShDebugOverride::default().bytes(&[]);
+    let animated_light_scale_buffer =
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Animated Direct SH Compose Light Scale"),
+            contents: &animated_light_scale_bytes,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Animated Direct SH Compose BGL"),
@@ -244,8 +283,8 @@ pub(super) fn build_animated_direct_pass(
                 resource: descriptor_indices_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: BIND_ANIMATED_DEBUG_OVERRIDE,
-                resource: debug_override_buffer.as_entire_binding(),
+                binding: BIND_ANIMATED_LIGHT_SCALE,
+                resource: animated_light_scale_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: BIND_PROBE_INDIRECTION,
@@ -257,8 +296,8 @@ pub(super) fn build_animated_direct_pass(
     AnimatedDirectShComposePipeline {
         pipeline,
         bind_group,
-        debug_override_buffer,
-        last_debug_override_bytes: debug_override_bytes,
+        animated_light_scale_buffer,
+        last_animated_light_scale_bytes: animated_light_scale_bytes,
     }
 }
 
@@ -275,7 +314,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_ANIMATION_SAMPLES),
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
-        uniform_bgl_entry(BIND_ANIMATED_DEBUG_OVERRIDE),
+        uniform_bgl_entry(BIND_ANIMATED_LIGHT_SCALE),
         storage_bgl_entry(BIND_PROBE_INDIRECTION),
     ]
 }
@@ -314,7 +353,7 @@ mod tests {
         );
         assert_eq!(storage_bindings.len(), 8);
         assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
-            entry.binding == BIND_ANIMATED_DEBUG_OVERRIDE
+            entry.binding == BIND_ANIMATED_LIGHT_SCALE
                 && matches!(
                     entry.ty,
                     wgpu::BindingType::Buffer {
@@ -386,20 +425,38 @@ mod tests {
     }
 
     #[test]
-    fn animated_debug_override_bytes_encode_animated_baked_light_index() {
+    fn animated_light_scale_uniform_is_fixed_and_index_parallel() {
+        let mut states = vec![PromotedStaticLightState::default(); MAX_ANIMATED_BAKED_LIGHTS + 1];
+        states[0].weight = 0.25;
+        states[17].weight = 0.75;
+        // An entry past the fixed shader uniform must not bleed into its last
+        // valid neighbor.
+        states[MAX_ANIMATED_BAKED_LIGHTS].weight = 1.0;
         let bytes = AnimatedDirectShDebugOverride {
             enabled: true,
             light_index: 13,
-            weight: 0.5,
         }
-        .bytes();
+        .bytes(&states);
 
-        assert_eq!(bytes.len(), ANIMATED_DEBUG_OVERRIDE_SIZE);
+        assert_eq!(bytes.len(), ANIMATED_LIGHT_SCALE_SIZE);
         assert_eq!(u32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(bytes[4..8].try_into().unwrap()), 13);
-        assert!((f32::from_ne_bytes(bytes[16..20].try_into().unwrap()) - 0.5).abs() < f32::EPSILON);
+        let compose_factor = |index: usize| {
+            f32::from_ne_bytes(
+                bytes[ANIMATED_LIGHT_SCALE_HEADER_SIZE + index * size_of::<f32>()
+                    ..ANIMATED_LIGHT_SCALE_HEADER_SIZE + (index + 1) * size_of::<f32>()]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        assert!((compose_factor(0) - 0.75).abs() < f32::EPSILON);
+        assert!((compose_factor(17) - 0.25).abs() < f32::EPSILON);
+        assert!(
+            (compose_factor(2) - 1.0).abs() < f32::EPSILON,
+            "P5: an unpromoted valid row retains its full baked animated delta",
+        );
+        assert!((compose_factor(MAX_ANIMATED_BAKED_LIGHTS - 1) - 1.0).abs() < f32::EPSILON);
         assert!(bytes[8..16].iter().all(|&byte| byte == 0));
-        assert!(bytes[20..32].iter().all(|&byte| byte == 0));
     }
 
     #[test]

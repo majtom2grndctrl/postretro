@@ -52,9 +52,9 @@ struct KinematicLightParams {
     light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
-    // Keep the second 16-byte row scalar-packed. A vec3 here would align to
-    // byte 32 and make the uniform 48 bytes, diverging from the Rust upload.
-    _pad0: u32,
+    // Dynamic tier plus raw AnimatedBakedLights tail. Keep this scalar-packed
+    // row at 32 bytes; a vec3 here would make the uniform 48 bytes.
+    scripted_light_count: u32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -214,8 +214,8 @@ fn accumulate_dynamic_direct(
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         var cache_layer = -1i;
-        if i >= kinematic_light_params.dynamic_light_count {
-            let promoted_index = i - kinematic_light_params.dynamic_light_count;
+        if i >= kinematic_light_params.scripted_light_count {
+            let promoted_index = i - kinematic_light_params.scripted_light_count;
             let meta_index = kinematic_light_params.light_count
                 + promoted_index * SHADOWMASK_META_VEC4S_PER_RECORD;
             if meta_index + 1u < arrayLength(&light_influence) {
@@ -237,9 +237,9 @@ fn accumulate_dynamic_direct(
 
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
-        // Only dynamic-tier lights own descriptor slots. Promoted static records
-        // append after that prefix and must not read stale descriptor tail bytes.
-        if i < kinematic_light_params.dynamic_light_count {
+        // The dynamic tier and raw animated-baked tail own descriptors.
+        // Selected-static records append after that prefix.
+        if i < kinematic_light_params.scripted_light_count {
             let scripted_desc = scripted_light_descriptors[i];
             if scripted_desc.is_active != 0u {
                 let cycle_t = animation_curve_t(
@@ -276,7 +276,7 @@ fn accumulate_dynamic_direct(
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
                     var shadow: f32;
-                    if i >= kinematic_light_params.dynamic_light_count {
+                    if i >= kinematic_light_params.scripted_light_count {
                         shadow = sample_point_shadow_with_static(
                             cube_slot,
                             cache_layer,
@@ -305,7 +305,7 @@ fn accumulate_dynamic_direct(
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
                     var shadow: f32;
-                    if i >= kinematic_light_params.dynamic_light_count {
+                    if i >= kinematic_light_params.scripted_light_count {
                         shadow = sample_spot_shadow_with_static(
                             slot_index,
                             cache_layer,
@@ -332,10 +332,10 @@ fn accumulate_dynamic_direct(
         let n_dot_l = dot(n, L);
         total = total + effective_color * attenuation * max(n_dot_l, 0.0);
 
-        // The runtime buffer lists dynamic-tier lights first, then promoted
-        // static records. Dynamic lights remain diffuse-only; a promoted
-        // record's effective color already carries its de-promotion weight.
-        if use_specular && i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0 {
+        // Animated direct tails are diffuse-only. Selected-static records begin
+        // after the descriptor-bearing prefix and retain their existing mover
+        // specular path.
+        if use_specular && i >= kinematic_light_params.scripted_light_count && n_dot_l > 0.0 {
             total = total + blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation;
         }
     }

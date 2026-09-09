@@ -41,22 +41,27 @@ pub(crate) struct LightSnapshot {
 /// Payload handed back to the renderer after `update`.
 ///
 /// GPU buffer fields (`lights_bytes`, `descriptor_bytes`, `samples_bytes`) are
-/// only populated when `has_dirty_data` is true; callers skip `write_buffer`
-/// otherwise. `effective_brightness` is always populated — it is time-varying
-/// and must be re-evaluated every frame for correct shadow-slot ranking.
+/// populated when `has_dirty_data` is true. A section-45 roster keeps that
+/// flag true every frame: its forward tail must be restored to authored base
+/// bytes before the renderer applies the current promotion weight.
+/// `effective_brightness` is always populated — it is time-varying and must be
+/// re-evaluated every frame for correct shadow-slot ranking.
 ///
-/// - `lights_bytes` — packed `GpuLight` records for dynamic lights only, in
-///   their stable filtered-authored order. Baked lights never enter the direct
-///   forward buffer.
-/// - `descriptor_bytes` — one `AnimationDescriptor` per dynamic light, same
-///   order as `lights_bytes`. Lights without an animation get the sentinel
-///   descriptor (all counts zero) so `forward.wgsl` falls back to the static path.
+/// - `lights_bytes` — packed `GpuLight` records for dynamic lights followed by
+///   one section-45 animated-baked tail record per raw `AnimatedBakedLights`
+///   roster row. The renderer multiplies every tail color by that row's current
+///   promotion weight, so this bridge-owned copy deliberately remains authored
+///   and unweighted.
+/// - `descriptor_bytes` — one `AnimationDescriptor` per record in
+///   `lights_bytes`. Animated-baked tail descriptors carry brightness/color
+///   curves but deliberately omit direction curves so the runtime cone remains
+///   at its authored rest direction.
 /// - `samples_bytes` — packed f32 samples for the scripted-animation region
 ///   of `anim_samples`. The map-authored prefix uses full authored order, one
 ///   `SCRIPTED_FLOATS_PER_LIGHT`-wide slot per light; written at
 ///   `scripted_sample_byte_offset` by `Renderer::upload_bridge_samples`.
-/// - `influence_bytes` — one packed influence sphere per dynamic light, same
-///   compact order as `lights_bytes`.
+/// - `influence_bytes` — one packed influence sphere per record in
+///   `lights_bytes`, in the same compact-plus-raw-roster order.
 #[derive(Debug)]
 pub(crate) struct LightBridgeUpdate {
     pub(crate) has_dirty_data: bool,
@@ -686,7 +691,11 @@ impl LightBridge {
             })
             .collect();
 
-        if !self.dirty {
+        // Section-45 forward records are patched with a renderer-owned weight
+        // after bridge upload. Re-emit their authored base bytes each frame so
+        // a prior frame's `color × w` cannot compound into the next frame.
+        let emit_animated_forward_tail = !self.animated_baked_descriptor_indices.is_empty();
+        if !self.dirty && !emit_animated_forward_tail {
             return Some(LightBridgeUpdate {
                 has_dirty_data: false,
                 lights_bytes: Vec::new(),
@@ -701,10 +710,21 @@ impl LightBridge {
         self.dirty = false;
 
         let dynamic_light_count = self.shape.iter().filter(|shape| shape.is_dynamic).count();
-        let mut lights_bytes: Vec<u8> = Vec::with_capacity(dynamic_light_count * GPU_LIGHT_SIZE);
+        let animated_baked_count = self.animated_baked_descriptor_indices.len();
+        let forward_count = dynamic_light_count + animated_baked_count;
+        let mut lights_bytes: Vec<u8> = Vec::with_capacity(forward_count * GPU_LIGHT_SIZE);
         let mut descriptor_bytes: Vec<u8> =
-            Vec::with_capacity(dynamic_light_count * ANIMATION_DESCRIPTOR_SIZE);
-        let mut influences = Vec::with_capacity(dynamic_light_count);
+            Vec::with_capacity(forward_count * ANIMATION_DESCRIPTOR_SIZE);
+        let mut influences = Vec::with_capacity(forward_count);
+        // Raw section-45 roster position is the only promotion identity.
+        // Keep holes as zero records instead of compacting later entries.
+        let mut animated_forward_records: Vec<
+            Option<(
+                [u8; GPU_LIGHT_SIZE],
+                [u8; ANIMATION_DESCRIPTOR_SIZE],
+                LightInfluence,
+            )>,
+        > = vec![None; animated_baked_count];
         let mut compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])> = Vec::new();
 
         self.scripted_sample_buf.fill(0.0);
@@ -785,6 +805,32 @@ impl LightBridge {
                 influences.push(influence);
             }
 
+            // A baked animated record is always present in the forward tail,
+            // even while unpromoted. Its base color is intentionally unweighted
+            // here; `update_dynamic_light_slots` applies the same state.weight
+            // that Pass B converts to `(1 - w)`. Direction animation is not
+            // packed by `pack_forward_animation_descriptor`, so `map_light`'s
+            // authored rest cone is the only runtime direction.
+            if !self.shape[map_idx].is_dynamic
+                && let Some(descriptor_index) = self.shape[map_idx].animated_slot
+            {
+                let mut influence = self.cached_influences[map_idx].clone();
+                if let Some(position) = followed_position {
+                    influence.center = position;
+                }
+                if let Some(radius) = sampled_radius {
+                    influence.radius = radius;
+                }
+                for (animated_baked_index, &roster_descriptor_index) in
+                    self.animated_baked_descriptor_indices.iter().enumerate()
+                {
+                    if roster_descriptor_index == descriptor_index {
+                        animated_forward_records[animated_baked_index] =
+                            Some((pack_light(&map_light), forward_desc, influence.clone()));
+                    }
+                }
+            }
+
             // For `_animated` (and other slot-bearing) lights, also queue a
             // write into the animated-compose descriptor buffer at the cached
             // section slot. The compose pass reads the same 48-byte stride
@@ -803,6 +849,23 @@ impl LightBridge {
                         ),
                     ));
                 }
+            }
+        }
+
+        for record in animated_forward_records {
+            if let Some((light, descriptor, influence)) = record {
+                lights_bytes.extend_from_slice(&light);
+                descriptor_bytes.extend_from_slice(&descriptor);
+                influences.push(influence);
+            } else {
+                // A missing/bake-only MapLight must not shift any later
+                // AnimatedBakedLights index into a different promotion row.
+                lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
+                descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
+                influences.push(LightInfluence {
+                    center: glam::Vec3::ZERO,
+                    radius: 0.0,
+                });
             }
         }
 
@@ -4106,6 +4169,62 @@ mod tests {
         assert!(
             bridge.animated_baked_descriptor_indices.is_empty(),
             "level unload clears the section-45 promotion roster"
+        );
+    }
+
+    #[test]
+    fn animated_forward_tail_uses_rest_cone_and_reemits_authored_base_every_frame() {
+        let mut baked_spot = sample_spot_light();
+        baked_spot.is_dynamic = false;
+        baked_spot.animated_slot = Some(7);
+        let authored_rest_direction = glam::Vec3::from_array(baked_spot.cone_direction);
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked_spot], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(vec![0.25, 1.0]),
+            color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 1.0, 0.0])]),
+            // This curve must affect neither the injected GpuLight direction
+            // nor its forward descriptor. Task 3 can consequently cache
+            // static-world depth against the authored rest cone.
+            direction: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let first = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert!(first.has_dirty_data);
+        assert_eq!(first.lights_bytes.len(), GPU_LIGHT_SIZE);
+        assert!(
+            packed_dynamic_direction(&first.lights_bytes).distance(authored_rest_direction)
+                <= 1.0e-6,
+            "the injected promoted light must hold its authored rest direction",
+        );
+        assert!(
+            first.descriptor_bytes[40..48].iter().all(|&byte| byte == 0),
+            "forward tail descriptors omit direction curves",
+        );
+
+        let second = bridge.update(&mut registry, 0.1, 0.0).unwrap();
+        assert!(
+            second.has_dirty_data,
+            "the tail must overwrite prior color×w every frame"
+        );
+        assert_eq!(
+            second.lights_bytes, first.lights_bytes,
+            "the bridge reemits the same unweighted authored base before renderer-side weighting",
         );
     }
 }

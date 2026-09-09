@@ -257,6 +257,10 @@ impl Renderer {
                 .iter()
                 .any(|weight| *weight > 0.0)
                 || full
+                    .promoted_animated_states
+                    .iter()
+                    .any(|state| state.weight > 0.0)
+                || full
                     .sh_volume_resources
                     .direct
                     .has_active_animated_descriptor(&full.sh_volume_resources.animation)
@@ -298,6 +302,7 @@ impl Renderer {
                             promotion: direct_sh_debug_override,
                             animated: animated_direct_sh_debug_override,
                         },
+                        animated_promotion_states: &full.promoted_animated_states,
                         timestamp_writes: DirectShComposeTimestampWrites {
                             promotion: direct_sh_ts,
                             animated: animated_direct_sh_ts,
@@ -509,6 +514,7 @@ impl Renderer {
                     queue,
                     full.total_light_count,
                     full.light_count,
+                    full.light_count + full.animated_baked_light_count as u32,
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
@@ -571,6 +577,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.light_count,
+                        full.light_count + full.animated_baked_light_count as u32,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,
@@ -808,6 +815,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.light_count,
+                        full.light_count + full.animated_baked_light_count as u32,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,

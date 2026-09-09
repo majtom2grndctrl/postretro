@@ -15,21 +15,39 @@ fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Opti
     (count <= capacity).then_some(count)
 }
 
-/// Validate the bridge upload that fills the compact dynamic descriptor prefix.
-/// Promoted static records are appended to the light buffer but have no descriptor
-/// slots, so an upload must end at `dynamic_light_count` rather than their total
-/// forward-light count.
-fn dynamic_descriptor_prefix_len(
+/// The bridge writes a dynamic prefix followed by one raw section-45 forward
+/// record per `AnimatedBakedLights` row. Validate the two regions without
+/// compacting roster holes into the dynamic namespace.
+fn bridge_dynamic_prefix_count(
+    bytes_len: usize,
+    stride: usize,
+    dynamic_capacity: usize,
+    animated_baked_count: usize,
+) -> Option<usize> {
+    let total_count = bytes_len.checked_div(stride)?;
+    if bytes_len % stride != 0 || total_count < animated_baked_count {
+        return None;
+    }
+    let dynamic_count = total_count - animated_baked_count;
+    (dynamic_count <= dynamic_capacity).then_some(dynamic_count)
+}
+
+/// Validate the bridge upload that fills all forward descriptors: the compact
+/// dynamic prefix plus the raw animated-baked tail. Promoted static records
+/// append later and deliberately have no descriptors.
+fn forward_descriptor_prefix_len(
     descriptor_bytes_len: usize,
     dynamic_light_count: u32,
     dynamic_light_capacity: usize,
+    animated_baked_count: usize,
 ) -> Option<usize> {
-    let expected = dynamic_light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+    let expected = (dynamic_light_count as usize + animated_baked_count)
+        * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
     (descriptor_bytes_len == expected
         && bridge_record_count(
             descriptor_bytes_len,
             sh_volume::ANIMATION_DESCRIPTOR_SIZE,
-            dynamic_light_capacity,
+            dynamic_light_capacity + animated_baked_count,
         )
         .is_some())
     .then_some(expected)
@@ -501,16 +519,18 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let Some(light_count) = bridge_record_count(
+        let Some(light_count) = bridge_dynamic_prefix_count(
             lights_bytes.len(),
             GPU_LIGHT_SIZE,
             full.dynamic_light_capacity,
+            full.animated_baked_light_count,
         ) else {
             log::warn!(
                 "[Renderer] upload_bridge_lights: bridge produced {} bytes; expected a multiple \
-                 of {} within the {}-record dynamic-light capacity. Skipping upload.",
+                 of {} with its {}-record animated-baked tail inside the {}-record dynamic capacity. Skipping upload.",
                 lights_bytes.len(),
                 GPU_LIGHT_SIZE,
+                full.animated_baked_light_count,
                 full.dynamic_light_capacity,
             );
             return;
@@ -519,7 +539,9 @@ impl Renderer {
             queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
         }
         full.light_count = light_count as u32;
-        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
+        full.total_light_count = full.light_count
+            + full.animated_baked_light_count as u32
+            + full.promoted_static_records.len() as u32;
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool
         // (`update_dynamic_light_slots`) then patches the real slot field onto
@@ -539,18 +561,20 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected = full.light_count as usize * LIGHT_INFLUENCE_SIZE;
+        let expected =
+            (full.light_count as usize + full.animated_baked_light_count) * LIGHT_INFLUENCE_SIZE;
         if influence_bytes.len() != expected
-            || bridge_record_count(
+            || bridge_dynamic_prefix_count(
                 influence_bytes.len(),
                 LIGHT_INFLUENCE_SIZE,
                 full.dynamic_light_capacity,
+                full.animated_baked_light_count,
             )
             .is_none()
         {
             log::warn!(
                 "[Renderer] upload_bridge_influences: bridge produced {} bytes; expected {} \
-                 dynamic records × {} = {}. Skipping upload.",
+                 dynamic-plus-animated-forward records × {} = {}. Skipping upload.",
                 influence_bytes.len(),
                 full.light_count,
                 LIGHT_INFLUENCE_SIZE,
@@ -572,12 +596,14 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
-        let Some(prefix_len) = dynamic_descriptor_prefix_len(
+        let Some(prefix_len) = forward_descriptor_prefix_len(
             descriptor_bytes.len(),
             full.light_count,
             full.dynamic_light_capacity,
+            full.animated_baked_light_count,
         ) else {
-            let expected = full.light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+            let expected = (full.light_count as usize + full.animated_baked_light_count)
+                * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
@@ -891,29 +917,57 @@ mod bridge_contract_tests {
     }
 
     // Regression: a dynamic-light despawn contracts the descriptor upload from
-    // K+1 records to K, while promoted static records may occupy the stale K tail.
+    // K+1 to K dynamic records, but its raw section-45 tail remains in place
+    // and selected-static records may occupy the stale suffix after it.
     #[test]
-    fn dynamic_descriptor_prefix_contraction_excludes_stale_promoted_tail() {
+    fn forward_descriptor_prefix_keeps_raw_animated_tail_and_excludes_static_suffix() {
         let stride = sh_volume::ANIMATION_DESCRIPTOR_SIZE;
-        let mut gpu_bytes = vec![0u8; 3 * stride];
-        gpu_bytes[stride..2 * stride].fill(0xAB); // Previous dynamic descriptor K.
+        let animated_baked_count = 2;
+        let mut gpu_bytes = vec![0u8; 4 * stride];
+        gpu_bytes[3 * stride..4 * stride].fill(0xAB); // Stale selected-static suffix.
 
         let dynamic_count_after_despawn = 1u32;
-        let uploaded_prefix = dynamic_descriptor_prefix_len(stride, dynamic_count_after_despawn, 3)
-            .expect("one live dynamic descriptor should fill exactly its prefix");
+        let uploaded_prefix = forward_descriptor_prefix_len(
+            3 * stride,
+            dynamic_count_after_despawn,
+            3,
+            animated_baked_count,
+        )
+        .expect(
+            "one live dynamic plus two raw animated descriptors should fill exactly its prefix",
+        );
         gpu_bytes[..uploaded_prefix].fill(0xCD);
 
-        assert_eq!(uploaded_prefix, stride);
+        assert_eq!(uploaded_prefix, 3 * stride);
         assert!(
-            gpu_bytes[stride..2 * stride]
+            gpu_bytes[3 * stride..4 * stride]
                 .iter()
                 .all(|&byte| byte == 0xAB),
-            "the uploader intentionally leaves the old dynamic tail intact",
+            "the uploader intentionally leaves the selected-static suffix intact",
         );
         assert_eq!(
-            dynamic_descriptor_prefix_len(2 * stride, dynamic_count_after_despawn, 3),
+            forward_descriptor_prefix_len(
+                2 * stride,
+                dynamic_count_after_despawn,
+                3,
+                animated_baked_count,
+            ),
             None,
-            "a promoted record after the contracted prefix must never gain a descriptor slot",
+            "every raw animated tail record must retain its descriptor slot",
+        );
+    }
+
+    #[test]
+    fn bridge_dynamic_prefix_count_preserves_raw_animated_tail_at_every_roster_size() {
+        assert_eq!(
+            bridge_dynamic_prefix_count(5 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4, 3),
+            Some(2),
+            "two dynamic records plus three raw animated entries stay index-parallel",
+        );
+        assert_eq!(
+            bridge_dynamic_prefix_count(2 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4, 3),
+            None,
+            "a partial raw tail must not be reinterpreted as compact dynamic records",
         );
     }
 }

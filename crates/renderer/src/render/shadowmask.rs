@@ -16,9 +16,11 @@ const FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE: f32 = 4.0;
 
 pub(crate) fn influence_capacity_with_shadowmask_metadata(
     dynamic_light_count: usize,
+    animated_baked_light_count: usize,
     selected_static_count: usize,
 ) -> usize {
     (dynamic_light_count
+        + animated_baked_light_count
         + selected_static_count
         + selected_static_count * FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD)
         .max(1)

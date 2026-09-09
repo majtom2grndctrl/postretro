@@ -245,7 +245,6 @@ impl Renderer {
         let value = AnimatedDirectShDebugOverride {
             enabled: value.enabled,
             light_index: value.light_index,
-            weight: value.weight.clamp(0.0, 1.0),
         };
         self.full_mut().animated_direct_sh_debug_override = value;
     }

@@ -316,8 +316,13 @@ pub(crate) fn build_lighting_bind_group(
     let promoted_capacity = geometry
         .map(|g| g.entity_shadow_lights.len())
         .unwrap_or_default();
+    let animated_baked_capacity = geometry
+        .and_then(|g| g.animated_direct_sh_delta_volumes)
+        .map(|section| section.animation_descriptor_indices.len())
+        .unwrap_or_default();
     let dynamic_light_capacity = level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
-    let light_record_capacity = (dynamic_light_capacity + promoted_capacity).max(1);
+    let light_record_capacity =
+        (dynamic_light_capacity + animated_baked_capacity + promoted_capacity).max(1);
     // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
     let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
     if !level_lights.is_empty() {
@@ -333,6 +338,7 @@ pub(crate) fn build_lighting_bind_group(
     // Influence volume buffer — same dummy strategy as lights.
     let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
         dynamic_light_capacity,
+        animated_baked_capacity,
         promoted_capacity,
     );
     let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
@@ -624,6 +630,7 @@ pub(crate) fn build_initial_uniform_data(
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,
+        animated_baked_light_count: 0,
         spec_shadowmask_force_one: false,
     })
 }

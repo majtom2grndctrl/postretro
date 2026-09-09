@@ -292,14 +292,15 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
     assert!(
         src.contains(
             "direct_scatter = uniforms.direct_scale * sample_billboard_direct_scatter(sprite_pos);"
-        ) && src.contains("} else if uniforms.has_direct != 0u {")
+        ) && src.contains("} else if has_direct_sh() {")
             && src.contains("sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);"),
         "scatter must replace only the static direct-SH read; unavailable maps retain legacy direct SH",
     );
     assert!(
         src.contains("if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl)")
-            && src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"),
-        "scatter must exclude static-light-map specular while the promoted tail remains available solely on the legacy path",
+            && src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)")
+            && src.contains("if i >= animated_tail_begin && i < animated_tail_end"),
+        "scatter must exclude static-light-map specular while the legacy path skips mover-only animated tails",
     );
 
     // Regression: section 47 bakes only static-light-map transport. Gating the
@@ -428,22 +429,24 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
             .expect("fragment entry follows helpers")];
 
     assert!(
-        helper.contains("if uniforms.total_light_count <= uniforms.light_count"),
-        "no promoted lights must return before reading promoted metadata"
+        helper.contains("let promoted_start = min(")
+            && helper.contains("uniforms.light_count + animated_baked_light_tail_count()")
+            && helper.contains("if uniforms.total_light_count <= promoted_start"),
+        "world promotion must skip the raw animated tail before reading static metadata"
     );
     assert!(
-        helper.contains("let promoted_count = uniforms.total_light_count - uniforms.light_count;"),
+        helper.contains("let promoted_count = uniforms.total_light_count - promoted_start;"),
         "shadowmask loop must be bounded by promoted count"
     );
     assert!(
-        helper.contains("let influence_index = uniforms.light_count + p;"),
+        helper.contains("let influence_index = promoted_start + p;"),
         "influence-volume early-out must read the promoted influence before metadata"
     );
     assert!(
         helper.contains(
             "let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;"
         ),
-        "metadata must live after the dynamic+promoted influence prefix"
+        "metadata must live after the complete dynamic/animated/static influence prefix"
     );
     assert!(
         helper.contains("if meta_index + 1u >= influence_len"),
@@ -503,7 +506,7 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
     );
     assert!(
         helper.contains("out.subtraction = vec3<f32>(0.0);")
-            && helper.contains("if uniforms.total_light_count <= uniforms.light_count")
+            && helper.contains("if uniforms.total_light_count <= promoted_start")
             && helper.contains("return out;"),
         "zero promoted lights must retain a zero union subtraction"
     );
@@ -716,16 +719,40 @@ fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light()
     let scale = &src[scale_start..];
 
     assert!(
-        src.contains("@group(1) @binding(26) var<uniform> debug_override: DebugOverride;"),
-        "Pass B must use its own uniform override binding",
+        src.contains(
+            "@group(1) @binding(26) var<uniform> animated_light_scale_uniform: AnimatedLightScale;"
+        ),
+        "Pass B must preserve its existing uniform binding for fixed scale factors",
     );
     assert!(
-        scale.contains("light_index != debug_override.light_index"),
+        scale.contains("light_index != animated_light_scale_uniform.light_index"),
         "Pass B override must suppress every non-selected AnimatedBakedLights entry",
     );
     assert!(
-        scale.contains("clamp(debug_override.weight, 0.0, 1.0)"),
-        "Pass B override must retain the selected light's inspectable weight",
+        src.contains("compose_weights: array<vec4<f32>, 64>")
+            && src.contains("const MAX_ANIMATED_BAKED_LIGHTS: u32 = 256u;")
+            && scale.contains("return color * brightness * animated_compose_weight(light_index);"),
+        "Pass B must use the fixed raw-index `(1 - w)` array rather than one debug weight",
+    );
+}
+
+#[test]
+fn animated_promotion_forward_and_compose_sample_the_same_curve_helpers() {
+    let forward = SHADER_SOURCE;
+    let compose = include_str!("../../shaders/animated_direct_sh_compose.wgsl");
+    for helper in ["sample_curve_catmull_rom(", "sample_color_catmull_rom("] {
+        assert!(
+            forward.contains(helper),
+            "forward runtime lighting must evaluate animated radiance with {helper}",
+        );
+        assert!(
+            compose.contains(helper),
+            "Pass B must evaluate the complementary animated delta with {helper}",
+        );
+    }
+    assert!(
+        compose.contains("@group(1) @binding(23) var<storage, read> anim_samples"),
+        "Pass B must read the shared animation sample storage rather than a CPU brightness scalar",
     );
 }
 

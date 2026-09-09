@@ -605,6 +605,7 @@ pub(crate) fn build_full_renderer(
         influence_buffer,
         dynamic_light_capacity: level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
         light_count,
+        animated_baked_light_count: animated_baked_descriptor_indices.len(),
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         frame_light_term_mask: LightTermMask::ALL,

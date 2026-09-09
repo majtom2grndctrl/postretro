@@ -29,9 +29,10 @@ struct Uniforms {
     direct_scale: f32,
     // Load-fixed scatter mode: 0 unavailable, 1 static base, 2 composed animated.
     has_scatter: u32,
-    // 0 when the baked DIRECT SH section is absent → skip the direct sample.
+    // Bit 0 says a baked DIRECT SH section is present; bits 1..31 carry the
+    // raw section-45 AnimatedBakedLights tail count.
     has_direct: u32,
-    // Dynamic-tier records plus promoted static records appended after them.
+    // Dynamic tier, then mover-only animated-baked tail, then promoted static.
     total_light_count: u32,
     // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), inert
     // here so the shared group-0 Uniforms layout remains 128 bytes.
@@ -39,6 +40,14 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+fn has_direct_sh() -> bool {
+    return (uniforms.has_direct & 1u) != 0u;
+}
+
+fn animated_baked_light_tail_count() -> u32 {
+    return uniforms.has_direct >> 1u;
+}
 
 // --- Group 1: sprite-frame texture array + sampler ---
 @group(1) @binding(0) var sprite_texture: texture_2d_array<f32>;
@@ -308,7 +317,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
         if use_baked_direct_scatter {
             direct_scatter = uniforms.direct_scale * sample_billboard_direct_scatter(sprite_pos);
         }
-    } else if uniforms.has_direct != 0u {
+    } else if has_direct_sh() {
         sh_direct = uniforms.direct_scale * sample_sh_direct(sprite_pos, N);
     }
     // Scatter contains the static-light-map baked direct transport for the
@@ -372,14 +381,24 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // Dynamic direct (diffuse only — sharp specular highlights on billboards
     // read as artifact). Scatter's baked static transport has already received
     // its static lights, so it reads only the dynamic prefix. Legacy direct-SH
-    // retains the appended promoted-static tail and camera-facing cosine.
+    // retains the appended promoted-static tail and camera-facing cosine. The
+    // mover-only animated-baked tail in the middle is skipped: sprites remain
+    // baked-delta-only receivers for that feature.
     var dynamic_diffuse = vec3<f32>(0.0);
     let dynamic_count = select(
         0u,
         select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u),
         use_dynamic_direct,
     );
+    let animated_tail_begin = uniforms.light_count;
+    let animated_tail_end = min(
+        animated_tail_begin + animated_baked_light_tail_count(),
+        uniforms.total_light_count,
+    );
     for (var i: u32 = 0u; i < dynamic_count; i = i + 1u) {
+        if i >= animated_tail_begin && i < animated_tail_end {
+            continue;
+        }
         let influence = light_influence[i];
         let inf_radius = influence.w;
         if inf_radius <= 1.0e30 {

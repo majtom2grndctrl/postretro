@@ -208,10 +208,15 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 
     let billboard_src = include_str!("../../shaders/billboard.wgsl");
     assert!(
-        billboard_src.contains(
-            "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
-        ),
-        "scatter billboards must stop their runtime loop at the dynamic prefix while legacy direct-SH still consumes the promoted tail",
+        billboard_src.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
+            && billboard_src.contains("if uniforms.has_scatter == 0u {")
+            && billboard_src.contains(
+                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
+            )
+            && !billboard_src.contains(
+                "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
+            ),
+        "scatter billboards must consume only the dynamic prefix, while legacy direct-SH adds the promoted suffix after the raw animated tail",
     );
 
     let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
@@ -261,13 +266,19 @@ fn billboard_light_term_mask_gates_vertex_and_shimmer_terms() {
             && vertex.contains("if use_baked_direct_scatter {")
             && vertex.contains("if use_specular && draw_params.params2.x == 0.0")
             && fragment.contains("if use_specular && chunk_grid.has_chunk_grid != 0u && spec_int > 0.0 {")
+            && vertex.contains("if use_dynamic_direct {")
+            && vertex.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
+            && vertex.contains("if uniforms.has_scatter == 0u {")
             && vertex.contains(
+                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
+            )
+            && !vertex.contains(
                 "select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)"
             )
             && vertex.contains(
                 "let ambient_floor = select(0.0, uniforms.ambient_floor, use_ambient_floor);"
             ),
-        "billboard isotropic static specular, shimmer static specular, dynamic diffuse, and ambient floor must remain independently gated in their shader stages",
+        "billboard isotropic static specular, shimmer static specular, dynamic prefix and legacy promoted suffix diffuse, and ambient floor must remain independently gated in their shader stages",
     );
     assert!(
         !src.contains("uniforms.dynamic_direct_isolation"),
@@ -298,9 +309,16 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
     );
     assert!(
         src.contains("if uniforms.has_scatter != 0u && !spec_light_is_sdf(sl)")
-            && src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)")
-            && src.contains("if i >= animated_tail_begin && i < animated_tail_end"),
-        "scatter must exclude static-light-map specular while the legacy path skips mover-only animated tails",
+            && src.contains("for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u)")
+            && src.contains("if uniforms.has_scatter == 0u {")
+            && src.contains("let animated_tail_begin = uniforms.light_count;")
+            && src.contains("animated_tail_begin + animated_baked_light_tail_count()")
+            && src.contains(
+                "for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u)"
+            )
+            && !src.contains("select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u)")
+            && !src.contains("if i >= animated_tail_begin && i < animated_tail_end"),
+        "scatter must cover only the dynamic prefix, while legacy direct-SH adds the promoted-static suffix and both paths exclude the raw animated tail",
     );
 
     // Regression: section 47 bakes only static-light-map transport. Gating the
@@ -321,23 +339,29 @@ fn billboard_scatter_shader_is_normal_free_and_keeps_legacy_direct_path() {
     );
 
     let runtime_direct = src
-        .split("for (var i: u32 = 0u; i < dynamic_count; i = i + 1u) {")
+        .split("fn billboard_direct_light(")
         .nth(1)
-        .expect("billboard shader must retain the runtime direct loop");
+        .expect("billboard shader must retain the runtime direct helper")
+        .split("fn falloff(")
+        .next()
+        .expect("billboard runtime direct helper must precede falloff");
     let scatter_dynamic = runtime_direct
         .split("if uniforms.has_scatter != 0u {")
         .nth(1)
         .expect("dynamic scatter branch must exist")
-        .split("} else {")
+        .split("// Legacy direct-SH billboards retain")
         .next()
         .expect("dynamic scatter branch must close before legacy branch");
     assert!(
         scatter_dynamic.contains("light.color_and_falloff_model.xyz * attenuation")
             && !scatter_dynamic.contains("NdotL")
-            && src.contains("let influence = light_influence[i];")
+            && runtime_direct.contains("let NdotL = max(dot(N, L), 0.0);")
+            && runtime_direct
+                .contains("return light.color_and_falloff_model.xyz * attenuation * NdotL;")
+            && runtime_direct.contains("let influence = light_influence[light_idx];")
             && src.contains("if inf_radius <= 1.0e30 {")
             && src.contains("let cone = cone_attenuation("),
-        "scatter dynamic lighting must preserve influence/range/cone rejection without a Lambert cosine",
+        "scatter dynamic lighting must preserve influence/range/cone rejection without a Lambert cosine, while legacy direct-SH retains its camera-facing cosine",
     );
 }
 

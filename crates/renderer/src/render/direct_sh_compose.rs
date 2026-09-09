@@ -16,7 +16,7 @@ use super::animated_direct_sh_compose::{
     build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
-use super::renderer_types::PromotedStaticLightState;
+use super::renderer_types::PromotedBakedLightState;
 use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
@@ -86,7 +86,7 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
     pub(super) debug_overrides: DirectShComposeDebugOverrides,
     /// Raw `AnimatedBakedLights` states. Binding 26 packs their complementary
     /// `(1 - state.weight)` factors without ever compacting the namespace.
-    pub(super) animated_promotion_states: &'a [PromotedStaticLightState],
+    pub(super) animated_promotion_states: &'a [PromotedBakedLightState],
     pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
 }
 
@@ -992,7 +992,7 @@ mod tests {
         assert!(
             source.contains("let output_is_stored = stored_slot.write;")
                 && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
-            "Pass A must derive stored-slot writes from Task 3's id-34 indirection"
+            "direct SH compose must derive stored-slot writes from id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),

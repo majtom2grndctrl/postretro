@@ -2,7 +2,7 @@
 // built from boot state (the boot phase lives in `renderer_init.rs`).
 // See: context/lib/rendering_pipeline.md
 
-use super::renderer_types::{FullRenderer, PromotedStaticLightState};
+use super::renderer_types::{FullRenderer, PromotedBakedLightState};
 use super::*;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from
@@ -671,22 +671,22 @@ pub(crate) fn build_full_renderer(
         kinematic_brush,
         rigid_occluder_depth,
         promoted_static_states: vec![
-            PromotedStaticLightState::default();
+            PromotedBakedLightState::default();
             entity_shadow_indices.len()
         ],
         // Raw section-45 length, not compact candidate count: an unavailable
         // bake-only MapLight leaves a hole but later candidates keep their
-        // AnimatedBakedLights index for Task 2's weight array and Task 3 cache.
+        // AnimatedBakedLights index for the promotion weight and depth cache.
         promoted_animated_states: vec![
-            PromotedStaticLightState::default();
+            PromotedBakedLightState::default();
             animated_baked_descriptor_indices.len()
         ],
-        promoted_static_records: Vec::new(),
-        promoted_static_cache_layers: Vec::new(),
+        promoted_baked_records: Vec::new(),
+        promoted_baked_cache_layers: Vec::new(),
         promoted_static_weights: vec![0.0; entity_shadow_indices.len()],
         promoted_static_weight_buffer,
         promoted_static_weight_scratch: Vec::new(),
-        promoted_static_last_update_time: None,
+        promoted_baked_last_update_time: None,
         promoted_depth_cache,
         promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),

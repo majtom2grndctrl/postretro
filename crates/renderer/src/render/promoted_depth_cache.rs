@@ -1,8 +1,8 @@
 // Renderer-owned promoted-shadow depth-cache planning and reuse state.
 // See: context/lib/rendering_pipeline.md §4
 use super::renderer_types::{
-    MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedLightRecordSource, PromotedShadowPoolKind,
-    PromotedStaticLightRecord,
+    MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedBakedLightRecord, PromotedBakedLightSource,
+    PromotedShadowPoolKind,
 };
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
@@ -11,16 +11,14 @@ use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CacheKey {
     global_light_index: u32,
-    selection_index: u32,
     slot: u32,
-    source: PromotedLightRecordSource,
+    source: PromotedBakedLightSource,
 }
 
 impl CacheKey {
-    fn from_record(record: &PromotedStaticLightRecord) -> Self {
+    fn from_record(record: &PromotedBakedLightRecord) -> Self {
         Self {
             global_light_index: record.global_light_index,
-            selection_index: record.selection_index,
             slot: record.slot,
             source: record.source,
         }
@@ -214,7 +212,7 @@ impl PromotedDepthCache {
 
     pub fn plan_frame(
         &mut self,
-        records: &[PromotedStaticLightRecord],
+        records: &[PromotedBakedLightRecord],
     ) -> PromotedDepthCacheFramePlan {
         plan_frame_with_layers(&mut self.spot_layers, &mut self.cube_layers, records)
     }
@@ -285,7 +283,7 @@ fn assign_layer(layers: &mut [LayerState], key: CacheKey) -> Option<usize> {
 fn plan_frame_with_layers(
     spot_layers: &mut [LayerState],
     cube_layers: &mut [LayerState],
-    records: &[PromotedStaticLightRecord],
+    records: &[PromotedBakedLightRecord],
 ) -> PromotedDepthCacheFramePlan {
     let spot_keys: Vec<CacheKey> = records
         .iter()
@@ -346,14 +344,13 @@ mod tests {
         selection_index: u32,
         pool_kind: PromotedShadowPoolKind,
         slot: u32,
-    ) -> PromotedStaticLightRecord {
-        PromotedStaticLightRecord {
+    ) -> PromotedBakedLightRecord {
+        PromotedBakedLightRecord {
             global_light_index: selection_index + 100,
-            selection_index,
             pool_kind,
             slot,
             weight: 1.0,
-            source: PromotedLightRecordSource::SelectedStatic,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index },
         }
     }
 
@@ -361,14 +358,15 @@ mod tests {
         animated_baked_index: u32,
         pool_kind: PromotedShadowPoolKind,
         slot: u32,
-    ) -> PromotedStaticLightRecord {
-        PromotedStaticLightRecord {
+    ) -> PromotedBakedLightRecord {
+        PromotedBakedLightRecord {
             global_light_index: animated_baked_index + 100,
-            selection_index: animated_baked_index,
             pool_kind,
             slot,
             weight: 1.0,
-            source: PromotedLightRecordSource::AnimatedBaked,
+            source: PromotedBakedLightSource::AnimatedBaked {
+                animated_baked_index,
+            },
         }
     }
 
@@ -468,7 +466,7 @@ mod tests {
         let (mut spot_layers, mut cube_layers) = cache_without_gpu();
         let records = [animated_record(4, PromotedShadowPoolKind::Spot, 2)];
 
-        // P4: assignment is cold, so the world cache fill must precede the
+        // Assignment is cold, so the world cache fill must precede the
         // entity-only live-pool pass that the forward receiver will sample.
         let first = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
         assert!(first.spot[0].needs_world_render);
@@ -490,8 +488,8 @@ mod tests {
         let first = plan_with_layers(&mut spot_layers, &mut cube_layers, &records);
         spot_layers[first.spot[0].cache_layer as usize].warm = true;
 
-        // P7: when the receiver disappears, its record vanishes from the
-        // cache plan. Reusing that same raw index later must be a cold fill,
+        // When the receiver disappears, its record vanishes from the cache
+        // plan. Reusing that same raw index later must be a cold fill,
         // proving the prior layer did not remain live behind a stale weight.
         let empty = plan_with_layers(&mut spot_layers, &mut cube_layers, &[]);
         assert!(empty.spot.is_empty());
@@ -502,7 +500,7 @@ mod tests {
     fn plan_with_layers(
         spot_layers: &mut [LayerState],
         cube_layers: &mut [LayerState],
-        records: &[PromotedStaticLightRecord],
+        records: &[PromotedBakedLightRecord],
     ) -> PromotedDepthCacheFramePlan {
         plan_frame_with_layers(spot_layers, cube_layers, records)
     }

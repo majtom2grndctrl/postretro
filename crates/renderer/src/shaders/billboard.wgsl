@@ -385,68 +385,22 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     // mover-only animated-baked tail in the middle is skipped: sprites remain
     // baked-delta-only receivers for that feature.
     var dynamic_diffuse = vec3<f32>(0.0);
-    let dynamic_count = select(
-        0u,
-        select(uniforms.total_light_count, uniforms.light_count, uniforms.has_scatter != 0u),
-        use_dynamic_direct,
-    );
     let animated_tail_begin = uniforms.light_count;
     let animated_tail_end = min(
         animated_tail_begin + animated_baked_light_tail_count(),
         uniforms.total_light_count,
     );
-    for (var i: u32 = 0u; i < dynamic_count; i = i + 1u) {
-        if i >= animated_tail_begin && i < animated_tail_end {
-            continue;
+    if use_dynamic_direct {
+        // Scatter consumes only the live dynamic prefix. Legacy direct-SH
+        // additionally consumes the promoted-static suffix, but neither path
+        // visits the mover-only animated-baked records between these ranges.
+        for (var i: u32 = 0u; i < uniforms.light_count; i = i + 1u) {
+            dynamic_diffuse = dynamic_diffuse + billboard_direct_light(i, sprite_pos, N);
         }
-        let influence = light_influence[i];
-        let inf_radius = influence.w;
-        if inf_radius <= 1.0e30 {
-            let dd = sprite_pos - influence.xyz;
-            if dot(dd, dd) > inf_radius * inf_radius {
-                continue;
+        if uniforms.has_scatter == 0u {
+            for (var i: u32 = animated_tail_end; i < uniforms.total_light_count; i = i + 1u) {
+                dynamic_diffuse = dynamic_diffuse + billboard_direct_light(i, sprite_pos, N);
             }
-        }
-        let light = lights[i];
-        let light_type = bitcast<u32>(light.position_and_type.w);
-        let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
-        var L: vec3<f32>;
-        var attenuation: f32;
-        switch light_type {
-            case 0u: {
-                let to_light = light.position_and_type.xyz - sprite_pos;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
-            }
-            case 1u: {
-                let to_light = light.position_and_type.xyz - sprite_pos;
-                let dist = length(to_light);
-                L = to_light / max(dist, 0.0001);
-                let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
-                let cone = cone_attenuation(
-                    L,
-                    light.direction_and_range.xyz,
-                    light.cone_angles_and_pad.x,
-                    light.cone_angles_and_pad.y,
-                );
-                attenuation = dist_falloff * cone;
-            }
-            default: {
-                L = -light.direction_and_range.xyz;
-                attenuation = 1.0;
-            }
-        }
-        if uniforms.has_scatter != 0u {
-            // Normal-free scatter carries the baked static transport. Runtime
-            // dynamic lights keep influence/range/cone rejection but no longer
-            // borrow a camera-facing Lambert cosine.
-            dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation;
-        } else {
-            // Legacy direct-SH billboards retain the prior camera-facing disk
-            // cosine and promoted-static tail exactly.
-            let NdotL = max(dot(N, L), 0.0);
-            dynamic_diffuse = dynamic_diffuse + light.color_and_falloff_model.xyz * attenuation * NdotL;
         }
     }
 
@@ -503,6 +457,59 @@ fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
     let H = normalize(L + V);
     let NdH = max(dot(N, H), 0.0);
     return color * pow(NdH, spec_exp) * spec_int;
+}
+
+fn billboard_direct_light(light_idx: u32, sprite_pos: vec3<f32>, N: vec3<f32>) -> vec3<f32> {
+    let influence = light_influence[light_idx];
+    let inf_radius = influence.w;
+    if inf_radius <= 1.0e30 {
+        let dd = sprite_pos - influence.xyz;
+        if dot(dd, dd) > inf_radius * inf_radius {
+            return vec3<f32>(0.0);
+        }
+    }
+
+    let light = lights[light_idx];
+    let light_type = bitcast<u32>(light.position_and_type.w);
+    let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
+    var L: vec3<f32>;
+    var attenuation: f32;
+    switch light_type {
+        case 0u: {
+            let to_light = light.position_and_type.xyz - sprite_pos;
+            let dist = length(to_light);
+            L = to_light / max(dist, 0.0001);
+            attenuation = falloff(dist, light.direction_and_range.w, falloff_model);
+        }
+        case 1u: {
+            let to_light = light.position_and_type.xyz - sprite_pos;
+            let dist = length(to_light);
+            L = to_light / max(dist, 0.0001);
+            let dist_falloff = falloff(dist, light.direction_and_range.w, falloff_model);
+            let cone = cone_attenuation(
+                L,
+                light.direction_and_range.xyz,
+                light.cone_angles_and_pad.x,
+                light.cone_angles_and_pad.y,
+            );
+            attenuation = dist_falloff * cone;
+        }
+        default: {
+            L = -light.direction_and_range.xyz;
+            attenuation = 1.0;
+        }
+    }
+
+    if uniforms.has_scatter != 0u {
+        // Normal-free scatter carries the baked static transport. Runtime
+        // dynamic lights keep influence/range/cone rejection but no longer
+        // borrow a camera-facing Lambert cosine.
+        return light.color_and_falloff_model.xyz * attenuation;
+    }
+
+    // Legacy direct-SH billboards retain the prior camera-facing disk cosine.
+    let NdotL = max(dot(N, L), 0.0);
+    return light.color_and_falloff_model.xyz * attenuation * NdotL;
 }
 
 fn falloff(distance: f32, range: f32, model: u32) -> f32 {

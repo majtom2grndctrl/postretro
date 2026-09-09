@@ -437,8 +437,12 @@ fn accumulate_dynamic_direct(
     let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         var cache_layer = -1i;
-        if i >= mesh_light_params.scripted_light_count {
-            let promoted_index = i - mesh_light_params.scripted_light_count;
+        // Baked promoted records begin after the dynamic prefix. The raw
+        // section-45 tail keeps descriptors through `scripted_light_count`,
+        // but uses this preceding metadata prefix for its static world-depth
+        // cache layer; selected-static records follow it.
+        if i >= mesh_light_params.dynamic_light_count {
+            let promoted_index = i - mesh_light_params.dynamic_light_count;
             let meta_index = mesh_light_params.light_count
                 + promoted_index * SHADOWMASK_META_VEC4S_PER_RECORD;
             if meta_index + 1u < arrayLength(&light_influence) {
@@ -535,7 +539,7 @@ fn accumulate_dynamic_direct(
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
                     var shadow: f32;
-                    if i >= mesh_light_params.scripted_light_count {
+                    if i >= mesh_light_params.dynamic_light_count {
                         shadow = sample_point_shadow_with_static(
                             cube_slot,
                             cache_layer,
@@ -575,7 +579,7 @@ fn accumulate_dynamic_direct(
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
                     var shadow: f32;
-                    if i >= mesh_light_params.scripted_light_count {
+                    if i >= mesh_light_params.dynamic_light_count {
                         shadow = sample_spot_shadow_with_static(
                             slot_index,
                             cache_layer,

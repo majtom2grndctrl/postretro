@@ -432,8 +432,20 @@ pub(crate) enum PromotedShadowPoolKind {
     Cube,
 }
 
-/// One static light promoted into a shadow pool slot this frame. Pinned Task-4
-/// contract (see the static-light-entity-shadows plan); consumed by Tasks 5-6.
+/// The raw index namespace a promoted depth-cache record belongs to. The two
+/// namespaces intentionally remain distinct: selected-static records key the
+/// shadowmask/`EntityShadowLights` arrays, while section-45 animated records
+/// key the `AnimatedBakedLights` roster and its compose-weight state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PromotedLightRecordSource {
+    SelectedStatic,
+    AnimatedBaked,
+}
+
+/// One baked light promoted into a shadow pool slot this frame. Selected-static
+/// records append a forward light record; animated-baked records instead point
+/// at their already-reserved section-45 forward tail. Both use the same static
+/// world-depth cache because their light projections are fixed for the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PromotedStaticLightRecord {
     /// Index into the level's full light array.
@@ -448,6 +460,8 @@ pub(crate) struct PromotedStaticLightRecord {
     /// Promotion crossfade weight w ∈ [0,1] — 0 is fully baked SH, 1 is fully
     /// the runtime pool term (see rendering_pipeline.md §4 "Promoted static lights").
     pub weight: f32,
+    /// Which raw index namespace owns `selection_index` and this cache record.
+    pub source: PromotedLightRecordSource,
 }
 
 /// Per-candidate-light promotion tracking across frames: current weight,
@@ -777,9 +791,9 @@ pub(super) struct FullRenderer {
     pub(super) promoted_static_weight_buffer: wgpu::Buffer,
     pub(super) promoted_static_weight_scratch: Vec<u8>,
     pub(super) promoted_static_last_update_time: Option<f64>,
-    /// `None` for maps with an empty/absent `EntityShadowLights` selection —
-    /// no light can ever promote, so the ~44 MiB spot/cube depth cache arrays
-    /// are never allocated. `Some` only when the selection is non-empty.
+    /// `None` only when a map has neither selected-static nor section-45
+    /// animated-baked promotion candidates. Either source can use the same
+    /// static world-depth cache, so an animated-only map still allocates it.
     pub(super) promoted_depth_cache: Option<PromotedDepthCache>,
     /// Missing cache-plan entries are defensive degradation, warned once per
     /// installed level rather than once per rendered frame.

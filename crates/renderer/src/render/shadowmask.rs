@@ -1,7 +1,9 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
 // Governing context: context/lib/rendering_pipeline.md
 
-use super::renderer_types::{LevelGeometry, PromotedShadowPoolKind, PromotedStaticLightRecord};
+use super::renderer_types::{
+    LevelGeometry, PromotedLightRecordSource, PromotedShadowPoolKind, PromotedStaticLightRecord,
+};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::MapLight;
 
@@ -22,7 +24,10 @@ pub(crate) fn influence_capacity_with_shadowmask_metadata(
     (dynamic_light_count
         + animated_baked_light_count
         + selected_static_count
-        + selected_static_count * FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD)
+        // The metadata tail has a raw section-45 prefix for cache-layer lookup,
+        // followed by selected-static records with their shadowmask metadata.
+        + (animated_baked_light_count + selected_static_count)
+            * FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD)
         .max(1)
 }
 
@@ -95,6 +100,7 @@ fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -
 }
 
 pub(crate) fn pack_forward_shadowmask_metadata(
+    animated_baked_light_count: usize,
     records: &[PromotedStaticLightRecord],
     cache_layers: &[i32],
     selection_spec_light_indices: &[u32],
@@ -103,9 +109,41 @@ pub(crate) fn pack_forward_shadowmask_metadata(
     out: &mut Vec<u8>,
 ) {
     out.clear();
-    out.reserve(records.len() * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD);
+    out.reserve(
+        (animated_baked_light_count + records.len()) * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD,
+    );
+
+    // Keep this prefix in raw AnimatedBakedLights order. The tail records are
+    // already in that order, whereas MapLight animated_slot and descriptor
+    // table indices are unrelated namespaces. An unpromoted row's -1 cache
+    // layer is harmless because its forward shadow slot remains the sentinel.
+    let mut animated_cache_layers = vec![-1i32; animated_baked_light_count];
+    for (record_index, record) in records.iter().enumerate() {
+        if record.source != PromotedLightRecordSource::AnimatedBaked {
+            continue;
+        }
+        if let Some(cache_layer) = animated_cache_layers.get_mut(record.selection_index as usize) {
+            *cache_layer = cache_layers.get(record_index).copied().unwrap_or(-1);
+        }
+    }
+    for (animated_index, cache_layer) in animated_cache_layers.into_iter().enumerate() {
+        // Section-45 receivers consume only the second vec4's `.w` cache
+        // layer. Keep the other lanes as ordinary sentinels; they must not
+        // alias EntityShadowLights shadowmask/spec state.
+        push_f32(out, -1.0);
+        push_f32(out, animated_index as f32);
+        push_f32(out, FORWARD_SHADOWMASK_INVALID_INDEX_VALUE);
+        push_f32(out, 0.0);
+        push_f32(out, -1.0);
+        push_f32(out, -1.0);
+        push_f32(out, FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE);
+        push_f32(out, cache_layer as f32);
+    }
 
     for (record_index, record) in records.iter().enumerate() {
+        if record.source != PromotedLightRecordSource::SelectedStatic {
+            continue;
+        }
         let selection_index = record.selection_index as usize;
         let spec_index = selection_spec_light_indices
             .get(selection_index)
@@ -282,10 +320,12 @@ mod tests {
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 3,
             weight: 0.5,
+            source: PromotedLightRecordSource::SelectedStatic,
         }];
         let mut bytes = Vec::new();
 
         pack_forward_shadowmask_metadata(
+            0,
             &records,
             &[6],
             &[2],
@@ -316,10 +356,11 @@ mod tests {
             pool_kind: PromotedShadowPoolKind::Cube,
             slot: 1,
             weight: 1.0,
+            source: PromotedLightRecordSource::SelectedStatic,
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(&records, &[1], &[0], &[0], false, &mut bytes);
+        pack_forward_shadowmask_metadata(0, &records, &[1], &[0], &[0], false, &mut bytes);
 
         assert_eq!(read_f32(&bytes, 16), 1.0);
         assert_eq!(read_f32(&bytes, 20), 1.0);
@@ -338,10 +379,11 @@ mod tests {
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 0,
             weight: 1.0,
+            source: PromotedLightRecordSource::SelectedStatic,
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(&records, &[-1], &[], &[0], true, &mut bytes);
+        pack_forward_shadowmask_metadata(0, &records, &[-1], &[], &[0], true, &mut bytes);
 
         assert_eq!(read_f32(&bytes, 8), FORWARD_SHADOWMASK_INVALID_INDEX_VALUE);
         assert_ne!(
@@ -354,7 +396,39 @@ mod tests {
     #[test]
     fn no_promoted_records_produces_no_metadata() {
         let mut bytes = vec![1, 2, 3];
-        pack_forward_shadowmask_metadata(&[], &[], &[], &[], true, &mut bytes);
+        pack_forward_shadowmask_metadata(0, &[], &[], &[], &[], true, &mut bytes);
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn animated_cache_metadata_uses_raw_roster_index_without_static_aliasing() {
+        let records = [PromotedStaticLightRecord {
+            global_light_index: 11,
+            selection_index: 2,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 5,
+            weight: 0.75,
+            source: PromotedLightRecordSource::AnimatedBaked,
+        }];
+        let mut bytes = Vec::new();
+
+        pack_forward_shadowmask_metadata(4, &records, &[7], &[0], &[0], true, &mut bytes);
+
+        assert_eq!(
+            bytes.len(),
+            4 * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD,
+            "raw AnimatedBakedLights positions, including holes, own the metadata prefix"
+        );
+        let third_entry = 2 * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD;
+        assert_eq!(
+            read_f32(&bytes, third_entry + 28),
+            7.0,
+            "the cache layer follows AnimatedBakedLights index 2, not EntityShadowLights index 0"
+        );
+        assert_eq!(read_f32(&bytes, 28), -1.0);
+        assert_eq!(
+            read_f32(&bytes, FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD + 28),
+            -1.0
+        );
     }
 }

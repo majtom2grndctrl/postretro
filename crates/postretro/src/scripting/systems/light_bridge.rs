@@ -12,7 +12,7 @@ use postretro_render_cpu::sh_volume::{
     SCRIPTED_FLOATS_PER_LIGHT,
 };
 use postretro_render_data::influence::LightInfluence;
-use postretro_renderer::RUNTIME_DYNAMIC_LIGHT_RESERVE;
+use postretro_renderer::{PROMOTE_SECONDS, RUNTIME_DYNAMIC_LIGHT_RESERVE};
 
 use postretro_entities::Transform;
 use postretro_entities::components::light::LightAnimation;
@@ -69,6 +69,12 @@ pub(crate) struct LightBridgeUpdate {
     /// shadow-slot suppression must track the live animation curve every frame.
     /// Color-only animations report `1.0`; `start_active: Some(false)` reports `0.0`.
     pub(crate) effective_brightness: Vec<f32>,
+    /// One forward-lookahead brightness maximum per animated baked light, in
+    /// `AnimatedBakedLights` roster order. This is separate from
+    /// `effective_brightness`: baked animated lights do not appear in the
+    /// compact dynamic-light array, and promotion must never index them through
+    /// that unrelated namespace.
+    pub(crate) animated_window_brightness: Vec<f32>,
     /// Compose-side descriptor writes for `_animated` (and other slot-bearing)
     /// lights. Each entry is `(animated_slot, 48-byte ANIMATION_DESCRIPTOR
     /// bytes)` — the renderer overwrites the compose descriptor buffer at the
@@ -99,6 +105,11 @@ pub(crate) struct LightBridge {
     preserve_baked_descriptors: HashSet<EntityId>,
     /// Shape metadata needed to re-pack. Parallels `entity_ids`.
     shape: Vec<MapLightShape>,
+    /// Section-45 `AnimatedBakedLights` roster, expressed as the descriptor
+    /// slot that resolves each roster row to its MapLight entity. The vector's
+    /// position is the only promotion identity; descriptor slots are lookup
+    /// keys and can be sparse or reordered.
+    animated_baked_descriptor_indices: Vec<u32>,
     /// Static, slotless map lights for which the animation diagnostic has
     /// already been emitted. Map-light indices are stable for the level, so
     /// this avoids tying author-facing diagnostics to runtime `EntityId`s.
@@ -154,6 +165,7 @@ impl LightBridge {
             snapshots: HashMap::new(),
             preserve_baked_descriptors: HashSet::new(),
             shape: Vec::new(),
+            animated_baked_descriptor_indices: Vec::new(),
             warned_slotless_animation_indices: std::collections::HashSet::new(),
             dirty: false,
             cached_origins_f64: Vec::new(),
@@ -175,6 +187,7 @@ impl LightBridge {
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
+        self.animated_baked_descriptor_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.dirty = false;
         self.cached_origins_f64.clear();
@@ -198,6 +211,19 @@ impl LightBridge {
     #[allow(dead_code)]
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
         self.entity_ids.get(map_index).copied()
+    }
+
+    /// Set the section-45 roster used by animated shadow-promotion gating.
+    /// Each input value is a compose descriptor slot used only to locate the
+    /// corresponding map-light entity; the output brightness vector is always
+    /// indexed by this slice's *position* (`AnimatedBakedLights` index).
+    pub(crate) fn set_animated_baked_promotion_roster(
+        &mut self,
+        animation_descriptor_indices: &[u32],
+    ) {
+        self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_descriptor_indices
+            .extend_from_slice(animation_descriptor_indices);
     }
 
     /// Collect all tracked lights (FGD map-authored + descriptor-spawned dynamic)
@@ -280,6 +306,7 @@ impl LightBridge {
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
+        self.animated_baked_descriptor_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.cached_origins_f64.clear();
         self.cached_influences.clear();
@@ -637,6 +664,28 @@ impl LightBridge {
             })
             .collect();
 
+        // This is intentionally a separate roster from the dynamic vector
+        // above. Its index is the explicit section-45 `AnimatedBakedLights`
+        // roster order. `animated_slot` is only a descriptor lookup key, so a
+        // missing/bake-only map light leaves a dark hole rather than shifting
+        // every later AnimatedBakedLights index into the wrong brightness row.
+        let animated_window_brightness: Vec<f32> = self
+            .animated_baked_descriptor_indices
+            .iter()
+            .map(|&descriptor_index| {
+                let Some((_, &id)) = self.entity_ids.iter().enumerate().find(|(map_index, _)| {
+                    let shape = &self.shape[*map_index];
+                    !shape.is_dynamic && shape.animated_slot == Some(descriptor_index)
+                }) else {
+                    return 0.0;
+                };
+                let Ok(component) = registry.get_component::<LightComponent>(id) else {
+                    return 0.0;
+                };
+                animated_promotion_window_max(component, self.snapshots.get(&id), current_time)
+            })
+            .collect();
+
         if !self.dirty {
             return Some(LightBridgeUpdate {
                 has_dirty_data: false,
@@ -645,6 +694,7 @@ impl LightBridge {
                 influence_bytes: Vec::new(),
                 samples_bytes: Vec::new(),
                 effective_brightness,
+                animated_window_brightness,
                 compose_descriptor_writes: Vec::new(),
             });
         }
@@ -771,6 +821,7 @@ impl LightBridge {
             influence_bytes,
             samples_bytes,
             effective_brightness,
+            animated_window_brightness,
             compose_descriptor_writes,
         })
     }
@@ -1074,6 +1125,109 @@ fn eval_effective_brightness(
             }
         }
     }
+}
+
+/// Maximum brightness the animated-baked promotion gate can expect during its
+/// fade-in window. The renderer ramps for [`PROMOTE_SECONDS`], so looking ahead
+/// by that exact real-time duration lets `w` reach one before a bright curve
+/// interval begins. This is an eligibility signal only; GPU curve evaluation
+/// remains the radiance source for both compose and forward paths.
+fn animated_promotion_window_max(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> f32 {
+    let Some(animation) = component.animation.as_ref() else {
+        return 1.0;
+    };
+    if animation.start_active == Some(false) {
+        return 0.0;
+    }
+    let Some(samples) = animation
+        .brightness
+        .as_deref()
+        .filter(|samples| !samples.is_empty())
+    else {
+        return 1.0;
+    };
+
+    let period_s = animation.period_ms / 1000.0;
+    // Degenerate animated periods freeze at the first curve value in the
+    // runtime sampler. Reading that exact value prevents both dark lights
+    // retaining a slot and bright lights being accidentally suppressed.
+    if period_s <= 0.0 {
+        return sample_brightness_at(samples, 0.0);
+    }
+
+    let phase = animation.phase.unwrap_or(0.0).rem_euclid(1.0);
+    if animation.play_count.is_some_and(|count| count > 0)
+        && let Some(snapshot) = snapshot
+        && let Some(start) = snapshot.animation_start_time
+    {
+        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
+        let start_t = phase + ((current_time - cycle_start) / period_s) * (1.0 - phase);
+        let end_t = start_t + PROMOTE_SECONDS * (1.0 - phase) / period_s;
+        return open_curve_window_max(samples, start_t, end_t);
+    }
+
+    let start_t = (current_time / period_s + phase).rem_euclid(1.0);
+    let window_t = PROMOTE_SECONDS / period_s;
+    closed_curve_window_max(samples, start_t, window_t)
+}
+
+/// Scan a closed Catmull-Rom curve's window boundaries and every authored
+/// sample knot it contains. Each knot is sampled through the existing CPU/WGSL
+/// mirror rather than a second curve evaluator; `window_t >= 1` visits the
+/// complete period once. This bounded loop catches a bright authored peak even
+/// when no frame lands on it (P12).
+fn closed_curve_window_max(samples: &[f32], start_t: f32, window_t: f32) -> f32 {
+    if samples.len() <= 1 || window_t >= 1.0 {
+        return closed_curve_full_max(samples);
+    }
+    let count = samples.len() as f32;
+    let start = start_t.rem_euclid(1.0);
+    let end = start + window_t.max(0.0);
+    let mut max_brightness = sample_brightness_at(samples, start);
+    max_brightness = max_brightness.max(sample_brightness_at(samples, end.rem_euclid(1.0)));
+
+    let first_knot = (start * count).ceil() as usize;
+    let last_knot = (end * count).floor() as usize;
+    for knot in first_knot..=last_knot {
+        max_brightness = max_brightness.max(sample_brightness_at(samples, knot as f32 / count));
+    }
+    max_brightness
+}
+
+fn closed_curve_full_max(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 1.0;
+    }
+    let count = samples.len() as f32;
+    (0..samples.len())
+        .map(|knot| sample_brightness_at(samples, knot as f32 / count))
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// Endpoint-clamped equivalent of [`closed_curve_window_max`] for a finite
+/// animation. The window cannot wrap past its final keyframe.
+fn open_curve_window_max(samples: &[f32], start_t: f32, end_t: f32) -> f32 {
+    if samples.len() <= 1 {
+        return sample_brightness_at_open(samples, start_t);
+    }
+    let start = start_t.clamp(0.0, 1.0);
+    let end = end_t.clamp(start, 1.0);
+    let segment_count = (samples.len() - 1) as f32;
+    let mut max_brightness = sample_brightness_at_open(samples, start);
+    max_brightness = max_brightness.max(sample_brightness_at_open(samples, end));
+    let first_knot = (start * segment_count).ceil() as usize;
+    let last_knot = (end * segment_count).floor() as usize;
+    for knot in first_knot..=last_knot {
+        max_brightness = max_brightness.max(sample_brightness_at_open(
+            samples,
+            knot as f32 / segment_count,
+        ));
+    }
+    max_brightness
 }
 
 /// Current sampled falloff range, when an animation owns the radius channel.
@@ -3831,6 +3985,127 @@ mod tests {
         assert_eq!(
             &with_runtime.lights_bytes[..bridge.authored_light_count * GPU_LIGHT_SIZE],
             authored_forward.as_slice()
+        );
+    }
+
+    fn promotion_brightness_animation(period_ms: f32, samples: Vec<f32>) -> LightAnimation {
+        LightAnimation {
+            period_ms,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(samples),
+            color: None,
+            direction: None,
+            radius: None,
+        }
+    }
+
+    #[test]
+    fn animated_promotion_window_looks_ahead_for_strobes_and_narrow_peaks() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        component.animation = Some(promotion_brightness_animation(
+            1000.0,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ));
+
+        // P6: the instant at t=.8 is dark, but its 0.3s promotion window
+        // wraps through the bright knot at t=1.0, so the bridge keeps the
+        // candidate eligible before the bright interval starts.
+        assert!(
+            eval_effective_brightness(&component, None, 0.8) < 0.01,
+            "instantaneous strobe sample should be dark"
+        );
+        assert!(
+            animated_promotion_window_max(&component, None, 0.8) > 0.99,
+            "lookahead must retain a strobe slot across a short dark trough"
+        );
+
+        // P6b: a long all-dark interval has no bright knot in its window and
+        // therefore lets the sticky/demote lifecycle release shared capacity.
+        assert!(
+            animated_promotion_window_max(&component, None, 0.3) < 0.01,
+            "a long dark pulse must not remain eligible forever"
+        );
+
+        // P12: scan authored knots as well as endpoints; otherwise this
+        // narrow peak is missed when no rendered frame lands on t=.375.
+        component.animation = Some(promotion_brightness_animation(
+            1000.0,
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        ));
+        assert!(
+            animated_promotion_window_max(&component, None, 0.1) > 0.99,
+            "lookahead must include a bright authored knot inside the window"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_degenerate_period_reads_first_brightness_sample() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        component.animation = Some(promotion_brightness_animation(0.0, vec![0.0, 1.0]));
+        assert_eq!(
+            animated_promotion_window_max(&component, None, 42.0),
+            0.0,
+            "P9: a degenerate dark animation must not borrow a later sample"
+        );
+
+        component.animation = Some(promotion_brightness_animation(-10.0, vec![0.75, 0.0]));
+        assert_eq!(
+            animated_promotion_window_max(&component, None, 42.0),
+            0.75,
+            "P11: a degenerate bright animation reads brightness[0]"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_window_uses_open_sampler_for_finite_animation() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        let mut animation = promotion_brightness_animation(1000.0, vec![0.0, 0.0, 1.0]);
+        animation.play_count = Some(1);
+        component.animation = Some(animation);
+        let snapshot = LightSnapshot {
+            component: component.clone(),
+            animation_start_time: Some(0.0),
+            animation_cycle_index: 0,
+        };
+
+        assert!(
+            animated_promotion_window_max(&component, Some(&snapshot), 0.9) > 0.99,
+            "finite animation windows must endpoint-clamp onto their final bright key"
+        );
+    }
+
+    #[test]
+    fn bridge_keys_animated_promotion_brightness_by_section_45_roster_position() {
+        let mut descriptor_two = sample_point_light();
+        descriptor_two.animated_slot = Some(2);
+        let mut descriptor_seven = sample_point_light();
+        descriptor_seven.animated_slot = Some(7);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[descriptor_two, descriptor_seven], &mut registry, 0);
+        // This intentionally disagrees with both authored order and descriptor
+        // slot order. The result must remain keyed [section45 index 0, 1].
+        bridge.set_animated_baked_promotion_roster(&[7, 2]);
+
+        for (map_index, brightness) in [(0, 0.2), (1, 0.8)] {
+            let id = bridge.entity_for_map_index(map_index).unwrap();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.animation = Some(promotion_brightness_animation(0.0, vec![brightness]));
+            registry.set_component(id, component).unwrap();
+        }
+
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(update.animated_window_brightness, vec![0.8, 0.2]);
+
+        bridge.clear();
+        assert!(
+            bridge.animated_baked_descriptor_indices.is_empty(),
+            "level unload clears the section-45 promotion roster"
         );
     }
 }

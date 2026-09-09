@@ -706,8 +706,12 @@ pub(super) struct FullRenderer {
     pub(super) shadow_candidate_lights: Vec<MapLight>,
     /// Original full level-light index for each `shadow_candidate_lights` entry.
     pub(super) shadow_candidate_source_indices: Vec<usize>,
-    /// Selection index for a shadow candidate. `None` means dynamic-tier.
+    /// Selection index for a selected-static shadow candidate. Animated baked
+    /// candidates use `shadow_candidate_animated_baked_indices` instead.
     pub(super) shadow_candidate_selection_indices: Vec<Option<usize>>,
+    /// `AnimatedBakedLights` index for a section-45 candidate. Kept separate
+    /// from both selected-static selection and `MapLight::animated_slot`.
+    pub(super) shadow_candidate_animated_baked_indices: Vec<Option<usize>>,
     /// Candidate-indexed influence volumes paired with `shadow_candidate_lights`.
     /// Missing/short PRL influence data is represented by an uncullable sentinel
     /// so shadow eligibility follows the same degradation contract as forward
@@ -715,6 +719,10 @@ pub(super) struct FullRenderer {
     pub(super) shadow_candidate_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     pub(super) light_effective_brightness: Vec<f32>,
+    /// Forward-lookahead brightness maxima keyed by `AnimatedBakedLights`
+    /// index. Animated candidates must never read the dynamic-tier
+    /// `light_effective_brightness` index space.
+    pub(super) animated_light_window_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     pub(super) last_camera_position: Vec3,
     /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
@@ -729,6 +737,10 @@ pub(super) struct FullRenderer {
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
+    /// Promotion ramp state keyed by `AnimatedBakedLights` index. Task 2 uses
+    /// these weights to inject the runtime animated-light record; keeping this
+    /// state separate prevents collisions with `EntityShadowLights` indices.
+    pub(super) promoted_animated_states: Vec<PromotedStaticLightState>,
     pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
     /// Cache-layer metadata parallel to `promoted_static_records`; packed into
     /// the forward shadowmask metadata tail's `meta1.w` lane.

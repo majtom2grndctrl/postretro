@@ -1506,6 +1506,7 @@ impl MeshPass {
     /// `ambient_floor` MUST be the SAME value the renderer writes to forward
     /// `Uniforms.ambient_floor` this frame, so shadowed mesh faces lift with the
     /// diagnostics ambient-floor slider exactly as world surfaces do.
+    #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
         queue: &wgpu::Queue,

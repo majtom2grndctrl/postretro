@@ -261,10 +261,7 @@ pub(crate) fn animated_baked_shadow_candidates_with_direct_delta(
             // delta block. `affinity_lights` is the sparse direct-delta
             // membership set, so only rows appearing there are eligible for
             // runtime promotion.
-            if !affinity_lights
-                .iter()
-                .any(|&index| index == animated_baked_index_u32)
-            {
+            if !affinity_lights.contains(&animated_baked_index_u32) {
                 return None;
             }
             // `animation_descriptor_indices` is the explicit section-45

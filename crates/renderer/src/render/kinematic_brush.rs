@@ -767,6 +767,7 @@ impl KinematicBrushPass {
         queue.write_buffer(&self.instance_buffer, 0, &self.instance_bytes);
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirrors the fixed group-2 light uniform fields.
     pub fn write_light_params(
         &self,
         queue: &wgpu::Queue,

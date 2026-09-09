@@ -25,19 +25,10 @@ use super::sh_volume::AnimatedLightBuffers;
 /// Pass-B-only dev-tools override. Its `light_index` is in the
 /// `AnimatedBakedLights` namespace used by section 45, not the promotion
 /// selection namespace consumed by Pass A.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct AnimatedDirectShDebugOverride {
     pub enabled: bool,
     pub light_index: u32,
-}
-
-impl Default for AnimatedDirectShDebugOverride {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            light_index: 0,
-        }
-    }
 }
 
 impl AnimatedDirectShDebugOverride {

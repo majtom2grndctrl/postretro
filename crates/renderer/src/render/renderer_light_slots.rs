@@ -106,6 +106,7 @@ impl Renderer {
     /// brightness is keyed on `level_lights`; animated brightness is supplied
     /// separately in `animated_window_brightness`, keyed by
     /// `AnimatedBakedLights` index.
+    #[allow(clippy::too_many_arguments)] // Per-frame bridge inputs remain separate index spaces.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -668,6 +669,7 @@ impl Renderer {
     ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
     ///   broader promoted-static shadow-relevance set; `forward` is a mesh-pass
     ///   classification, not a raw PVS count.
+    #[allow(clippy::too_many_arguments)] // Mirrors the shadow-slot diagnostics inputs.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,
@@ -1011,6 +1013,7 @@ impl Renderer {
         slot_assignment
     }
 
+    #[allow(clippy::too_many_arguments)] // Keeps shared pool assignments and lifecycle inputs explicit.
     fn update_promoted_static_weights_and_records(
         &mut self,
         spot_assignment: &[u32],

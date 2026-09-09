@@ -19,6 +19,13 @@ use postretro_entities::components::light::LightAnimation;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 
+/// Bridge-owned, authored bytes for one raw section-45 forward-tail row.
+type AnimatedForwardRecord = (
+    [u8; GPU_LIGHT_SIZE],
+    [u8; ANIMATION_DESCRIPTOR_SIZE],
+    LightInfluence,
+);
+
 /// Snapshot of a map light's component state as last observed by the bridge.
 /// Dirty detection compares the live registry component against this value.
 ///
@@ -718,13 +725,8 @@ impl LightBridge {
         let mut influences = Vec::with_capacity(forward_count);
         // Raw section-45 roster position is the only promotion identity.
         // Keep holes as zero records instead of compacting later entries.
-        let mut animated_forward_records: Vec<
-            Option<(
-                [u8; GPU_LIGHT_SIZE],
-                [u8; ANIMATION_DESCRIPTOR_SIZE],
-                LightInfluence,
-            )>,
-        > = vec![None; animated_baked_count];
+        let mut animated_forward_records: Vec<Option<AnimatedForwardRecord>> =
+            vec![None; animated_baked_count];
         let mut compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])> = Vec::new();
 
         self.scripted_sample_buf.fill(0.0);

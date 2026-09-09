@@ -24,6 +24,10 @@ pub(crate) struct CaptureScene {
     pub(crate) resolution: [u32; 2],
     pub(crate) output: String,
     pub(crate) force_active: Option<Vec<ForcedAnimLight>>,
+    /// Capture-only fixed crossfade values for animated-baked promotion. A
+    /// one-frame capture cannot advance the normal ramp, so these expose known
+    /// `(1 - w)` / `w` splits for same-adapter golden comparisons.
+    pub(crate) force_promotion: Option<Vec<ForcedAnimatedPromotion>>,
 }
 
 /// An authored, single-instant active state for tagged baked animated lights.
@@ -32,6 +36,15 @@ pub(crate) struct CaptureScene {
 pub(crate) struct ForcedAnimLight {
     pub(crate) tag: String,
     pub(crate) radiance: [f32; 3],
+}
+
+/// A capture-only requested promotion weight for each animated-baked light
+/// matching `tag`. It never changes gameplay state or normal pool ranking.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ForcedAnimatedPromotion {
+    pub(crate) tag: String,
+    pub(crate) weight: f32,
 }
 
 /// Static camera pose expressed in degrees for author-facing JSON.
@@ -59,12 +72,18 @@ pub(crate) enum SceneError {
     EmptyOutput,
     #[error("invalid capture scene: force_active tag must not be empty")]
     EmptyForcedAnimLightTag,
+    #[error("invalid capture scene: force_promotion tag must not be empty")]
+    EmptyForcedAnimatedPromotionTag,
     #[error("invalid capture scene: force_active radiance must be finite")]
     NonFiniteForcedAnimLightRadiance,
     #[error(
         "invalid capture scene: force_active radiance channels must be in 0..={MAX_FORCED_RADIANCE}, got {value}"
     )]
     ForcedAnimLightRadianceOutOfRange { value: f32 },
+    #[error("invalid capture scene: force_promotion weight must be finite")]
+    NonFiniteForcedAnimatedPromotionWeight,
+    #[error("invalid capture scene: force_promotion weight must be in 0.0..=1.0, got {value}")]
+    ForcedAnimatedPromotionWeightOutOfRange { value: f32 },
     #[error(
         "invalid capture scene: fov_deg must be between {MIN_FOV_DEG} and {MAX_FOV_DEG}, got {value}"
     )]
@@ -109,6 +128,21 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
                 if !(0.0..=MAX_FORCED_RADIANCE).contains(&value) {
                     return Err(SceneError::ForcedAnimLightRadianceOutOfRange { value });
                 }
+            }
+        }
+    }
+    if let Some(forced_promotions) = &scene.force_promotion {
+        for promotion in forced_promotions {
+            if promotion.tag.trim().is_empty() {
+                return Err(SceneError::EmptyForcedAnimatedPromotionTag);
+            }
+            if !promotion.weight.is_finite() {
+                return Err(SceneError::NonFiniteForcedAnimatedPromotionWeight);
+            }
+            if !(0.0..=1.0).contains(&promotion.weight) {
+                return Err(SceneError::ForcedAnimatedPromotionWeightOutOfRange {
+                    value: promotion.weight,
+                });
             }
         }
     }
@@ -210,6 +244,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_scene_accepts_capture_only_forced_promotion_weight() {
+        let json = SCENE_WITH_DEFAULT_FOV.replace(
+            "\"output\": \"capture.png\"",
+            "\"output\": \"capture.png\", \"force_promotion\": [{ \"tag\": \"alarm_light\", \"weight\": 0.5 }]",
+        );
+
+        let scene = parse_scene(&json).expect("forced promotion scene must parse");
+        assert_eq!(
+            scene.force_promotion,
+            Some(vec![ForcedAnimatedPromotion {
+                tag: "alarm_light".into(),
+                weight: 0.5,
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_scene_rejects_invalid_forced_promotion_weights() {
+        for weight in [f32::NAN, -0.01, 1.01] {
+            let json = SCENE_WITH_DEFAULT_FOV.replace(
+                "\"output\": \"capture.png\"",
+                &format!(
+                    "\"output\": \"capture.png\", \"force_promotion\": [{{ \"tag\": \"alarm_light\", \"weight\": {weight} }}]"
+                ),
+            );
+            assert!(
+                parse_scene(&json).is_err(),
+                "invalid forced-promotion weight {weight:?} must fail"
+            );
+        }
+    }
+
+    #[test]
     fn parse_scene_rejects_unknown_force_active_light_fields() {
         let json = SCENE_WITH_DEFAULT_FOV.replace(
             "\"output\": \"capture.png\"",
@@ -268,6 +335,7 @@ mod tests {
                 tag: "alarm_light".into(),
                 radiance: [f32::NAN, 0.0, 0.0],
             }]),
+            force_promotion: None,
         };
         assert!(matches!(
             validate_scene(&scene),

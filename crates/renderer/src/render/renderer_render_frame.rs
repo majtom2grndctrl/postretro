@@ -65,6 +65,7 @@ impl Renderer {
             camera_cell,
             view_proj,
             particle_collections,
+            &[],
             now_seconds,
             clear_color,
             render_world,
@@ -91,6 +92,7 @@ impl Renderer {
         view_proj: Mat4,
         camera_position: Vec3,
         particle_collections: &[(&str, &[u8])],
+        capture_animated_promotion_weights: &[(usize, f32)],
         clear_color: ClearColor,
         render_world: bool,
     ) -> Result<Vec<u8>> {
@@ -112,6 +114,7 @@ impl Renderer {
             camera_cell,
             view_proj,
             particle_collections,
+            capture_animated_promotion_weights,
             0.0,
             clear_color,
             render_world,
@@ -148,6 +151,7 @@ impl Renderer {
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
+        capture_animated_promotion_weights: &[(usize, f32)],
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
@@ -226,6 +230,9 @@ impl Renderer {
                 now_seconds,
                 promotion_mesh_frame_plan,
             );
+            if !capture_animated_promotion_weights.is_empty() {
+                self.apply_capture_animated_promotion_weights(capture_animated_promotion_weights)?;
+            }
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
             // effect on culling/selection. Skipped entirely when disabled.

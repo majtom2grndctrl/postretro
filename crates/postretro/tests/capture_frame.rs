@@ -421,6 +421,7 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
     // every lighting payload and the other receiver. Triangle masks bound the
     // receiver footprint; removal controls distinguish its visible surfaces
     // from world geometry that occludes those projected triangles.
+    let mut closet_door_pixels = None;
     for receiver in [
         capture_receiver_controls::Receiver::Mover,
         capture_receiver_controls::Receiver::Prop,
@@ -454,8 +455,43 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
             &no_direct,
             &proven_receiver_pixels,
         );
+        if matches!(receiver, capture_receiver_controls::Receiver::Mover) {
+            closet_door_pixels = Some(proven_receiver_pixels);
+        }
     }
     assert_region_reddens("cone-lit wall", &rest, &red, (432, 152, 160, 136));
+
+    // A normal one-frame capture cannot tick far enough to reach each point
+    // in the promotion ramp. Pin w only after the normal candidate/pool
+    // decision, at this motionless authored door pose, so the frames exercise
+    // the actual promoted forward term, slot/depth path, and section-45
+    // subtraction. `red` deliberately omits force_promotion: it is the v1
+    // flat delta-only control against which w=0 must remain byte-identical.
+    let mut promoted = Vec::new();
+    for weight in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let scene = temp.path().join(format!("promoted-w-{weight:.2}.json"));
+        let output = temp.path().join(format!("promoted-w-{weight:.2}.png"));
+        write_spawner_promoted_capture_scene(&scene, &map, &output, Some([4.0, 0.0, 0.0]), weight);
+        if !run_capture_or_skip_without_adapter(&workspace, &scene) {
+            return;
+        }
+        promoted.push((weight, output));
+    }
+    assert_eq!(
+        fs::read(&promoted[0].1).expect("read w=0 promoted capture bytes"),
+        fs::read(&red_output).expect("read v1 delta-only capture bytes"),
+        "forced w=0 must be byte-identical to the v1 forced-red section-45 delta capture",
+    );
+    let promoted_frames: Vec<_> = promoted
+        .iter()
+        .map(|(weight, output)| (*weight, load_capture_rgba(output)))
+        .collect();
+    assert_promoted_door_red_self_shadow_crossfade(
+        &red,
+        &dark,
+        &promoted_frames,
+        &closet_door_pixels.expect("closet mover removal control produced receiver pixels"),
+    );
 }
 
 fn write_spawner_capture_scene(
@@ -463,6 +499,32 @@ fn write_spawner_capture_scene(
     map: &std::path::Path,
     output: &std::path::Path,
     alarm_radiance: Option<[f32; 3]>,
+) {
+    write_spawner_capture_scene_with_promotion(scene_path, map, output, alarm_radiance, None);
+}
+
+fn write_spawner_promoted_capture_scene(
+    scene_path: &std::path::Path,
+    map: &std::path::Path,
+    output: &std::path::Path,
+    alarm_radiance: Option<[f32; 3]>,
+    promotion_weight: f32,
+) {
+    write_spawner_capture_scene_with_promotion(
+        scene_path,
+        map,
+        output,
+        alarm_radiance,
+        Some(promotion_weight),
+    );
+}
+
+fn write_spawner_capture_scene_with_promotion(
+    scene_path: &std::path::Path,
+    map: &std::path::Path,
+    output: &std::path::Path,
+    alarm_radiance: Option<[f32; 3]>,
+    promotion_weight: Option<f32>,
 ) {
     let mut scene = serde_json::json!({
         "map": map.display().to_string(),
@@ -483,11 +545,104 @@ fn write_spawner_capture_scene(
             { "tag": "alarm_light", "radiance": radiance }
         ]);
     }
+    if let Some(weight) = promotion_weight {
+        scene["force_promotion"] = serde_json::json!([
+            { "tag": "alarm_light", "weight": weight }
+        ]);
+    }
     fs::write(
         scene_path,
         serde_json::to_vec_pretty(&scene).expect("serialize spawner capture scene"),
     )
     .expect("write spawner capture scene");
+}
+
+fn rgb_sum(pixel: [u8; 4]) -> i32 {
+    pixel[..3].iter().map(|channel| i32::from(*channel)).sum()
+}
+
+// The full promoted endpoint gives the stable split: door texels whose
+// section-45 delta was already close to the true unoccluded result remain
+// constant, while texels that need the door's own depth are darker. The test
+// selects both populations from the independently receiver-proven mask, then
+// requires every intermediate forced-w frame to track the appropriate trend.
+fn assert_promoted_door_red_self_shadow_crossfade(
+    v1_delta: &RgbaImage,
+    dark: &RgbaImage,
+    promoted_frames: &[(f32, RgbaImage)],
+    door_pixels: &[(u32, u32)],
+) {
+    const MIN_SELF_SHADOWED_PIXELS: usize = 32;
+    const MIN_LIT_PIXELS: usize = 32;
+    const SELF_SHADOW_DARKENING: i32 = 8;
+    const LIT_ENDPOINT_DRIFT: i32 = 12;
+    const INTERMEDIATE_LIT_DRIFT: i32 = 16;
+
+    assert_eq!(
+        promoted_frames
+            .iter()
+            .map(|(weight, _)| *weight)
+            .collect::<Vec<_>>(),
+        vec![0.0, 0.25, 0.5, 0.75, 1.0],
+        "the forced-w golden must cover the complete promoted crossfade",
+    );
+    let fully_promoted = &promoted_frames
+        .last()
+        .expect("forced-w golden has a w=1 frame")
+        .1;
+
+    let self_shadowed: Vec<_> = door_pixels
+        .iter()
+        .filter(|&&(x, y)| {
+            let delta = rgb_sum(v1_delta.get_pixel(x, y).0);
+            let promoted = rgb_sum(fully_promoted.get_pixel(x, y).0);
+            let dark_red = i32::from(dark.get_pixel(x, y).0[0]);
+            delta - promoted >= SELF_SHADOW_DARKENING
+                && i32::from(v1_delta.get_pixel(x, y).0[0]) - dark_red > 8
+        })
+        .copied()
+        .collect();
+    assert!(
+        self_shadowed.len() >= MIN_SELF_SHADOWED_PIXELS,
+        "promoted closet door must expose at least {MIN_SELF_SHADOWED_PIXELS} red self-shadow texels; found {}",
+        self_shadowed.len(),
+    );
+    for pair in promoted_frames.windows(2) {
+        let (previous_weight, previous) = &pair[0];
+        let (next_weight, next) = &pair[1];
+        for &(x, y) in &self_shadowed {
+            assert!(
+                rgb_sum(next.get_pixel(x, y).0) <= rgb_sum(previous.get_pixel(x, y).0),
+                "self-shadow texel ({x}, {y}) brightened from forced w={previous_weight} to w={next_weight}",
+            );
+        }
+    }
+
+    let lit: Vec<_> = door_pixels
+        .iter()
+        .filter(|&&(x, y)| {
+            let delta = rgb_sum(v1_delta.get_pixel(x, y).0);
+            let promoted = rgb_sum(fully_promoted.get_pixel(x, y).0);
+            let dark_pixel = dark.get_pixel(x, y).0;
+            (delta - promoted).abs() <= LIT_ENDPOINT_DRIFT
+                && i32::from(fully_promoted.get_pixel(x, y).0[0]) - i32::from(dark_pixel[0]) > 8
+        })
+        .copied()
+        .collect();
+    assert!(
+        lit.len() >= MIN_LIT_PIXELS,
+        "promoted closet door must retain at least {MIN_LIT_PIXELS} red lit texels; found {}",
+        lit.len(),
+    );
+    for (weight, frame) in promoted_frames {
+        for &(x, y) in &lit {
+            assert!(
+                (rgb_sum(frame.get_pixel(x, y).0) - rgb_sum(v1_delta.get_pixel(x, y).0)).abs()
+                    <= INTERMEDIATE_LIT_DRIFT,
+                "lit red texel ({x}, {y}) drifted too far at forced w={weight}",
+            );
+        }
+    }
 }
 
 fn run_capture_or_skip_without_adapter(

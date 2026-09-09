@@ -586,6 +586,52 @@ impl Renderer {
         full.dynamic_depth_cache_frame_plan = plan;
     }
 
+    /// Pin already-assigned animated-baked promotion records for a one-frame
+    /// offscreen capture. Normal gameplay never calls this: it does not alter
+    /// candidate eligibility, ranking, or cache allocation, all of which ran
+    /// immediately before this hook. It only replaces the ramp's resulting
+    /// `w` with a requested capture value so a still can compare the same door
+    /// pose at known `(1 - w)` / `w` splits.
+    pub(super) fn apply_capture_animated_promotion_weights(
+        &mut self,
+        overrides: &[(usize, f32)],
+    ) -> Result<()> {
+        for &(animated_baked_index, weight) in overrides {
+            let (pool_kind, slot) = self
+                .full()
+                .promoted_animated_states
+                .get(animated_baked_index)
+                .and_then(|state| state.pool_kind.map(|pool_kind| (pool_kind, state.slot)))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "capture promotion row {animated_baked_index} did not win a shadow-pool slot"
+                    )
+                })?;
+            let record = self
+                .full_mut()
+                .promoted_static_records
+                .iter_mut()
+                .find(|record| {
+                    record.source == PromotedLightRecordSource::AnimatedBaked
+                        && record.selection_index as usize == animated_baked_index
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "capture promotion row {animated_baked_index} has no promoted depth-cache record"
+                    )
+                })?;
+            if record.pool_kind != pool_kind || record.slot != slot {
+                anyhow::bail!(
+                    "capture promotion row {animated_baked_index} disagrees with its shadow-pool record"
+                );
+            }
+            let weight = weight.clamp(0.0, 1.0);
+            record.weight = weight;
+            self.full_mut().promoted_animated_states[animated_baked_index].weight = weight;
+        }
+        Ok(())
+    }
+
     /// Env-gated shadow-pipeline diagnostics (`POSTRETRO_SHADOW_DEBUG=1`).
     ///
     /// READ-ONLY: logs the per-frame shadow decisions so a non-author can watch

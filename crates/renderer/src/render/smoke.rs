@@ -509,6 +509,7 @@ impl<T> SpriteAssetCache<T> {
 
     /// GPU-free ownership seam: true iff both registered collection ids point
     /// to the same currently-uploaded asset array.
+    #[cfg(test)]
     fn collection_ids_share_uploaded_array(&self, left: &str, right: &str) -> bool {
         let Some(left_asset) = self.collection_assets.get(left) else {
             return false;

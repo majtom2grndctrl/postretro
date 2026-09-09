@@ -12,7 +12,8 @@
 //   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
 //               fragment samples diffuse + character-model sampler from this group)
 //   * group 2 = runtime direct lighting + shadow receipt (fully allocated b0–b8):
-//               b0 dynamic-tier records plus promoted static records, b1
+//               b0 three regions: dynamic prefix, raw animated-baked tail, and
+//               selected-static suffix, b1
 //               per-light influence volumes, b2
 //               scripted-animation descriptors, b3 scripted-animation curve
 //               samples, b4 the mesh-side params uniform; b5 spot shadow depth,
@@ -173,8 +174,10 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
 /// renderer uploads to forward `Uniforms.ambient_floor` that frame; the mesh
 /// fragment shader adds it once as an additive fill so shadowed mesh faces lift
 /// with the diagnostics slider exactly as world surfaces do (see forward.wgsl's
-/// ambient-floor term). Its second std140 row carries the dynamic-prefix count
-/// used to identify promoted static records in the shader.
+/// ambient-floor term). Its second std140 row defines b0's three regions:
+/// `[0, dynamic_light_count)` is the dynamic prefix,
+/// `[dynamic_light_count, scripted_light_count)` is the raw animated-baked tail,
+/// and `[scripted_light_count, light_count)` is the selected-static suffix.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct MeshLightParams {
@@ -217,7 +220,8 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
 /// so a drift in either the shader's group-2 declarations or the budget fails CI
 /// before a real GPU would reject the pipeline. Pinned binding map (mirrors
 /// `skinned_mesh.wgsl` group 2 and rendering_pipeline.md §9, §10):
-///   b0 dynamic-tier records plus promoted static records, b1 per-light
+///   b0 three regions — dynamic prefix, raw animated-baked tail, and
+///   selected-static suffix — b1 per-light
 ///   influence volumes, b2 scripted-animation descriptors, b3 scripted-animation
 ///   curve samples, b4 the mesh-side params uniform (all FRAGMENT-only). The
 ///   dynamic-light loop runs in the fragment stage, so b0–b3 contribute FOUR
@@ -260,7 +264,7 @@ fn mesh_light_bind_group_layout_entries(
         count: None,
     };
     let mut entries = vec![
-        // b0: dynamic-tier records first, promoted static records appended.
+        // b0: dynamic prefix, raw animated-baked tail, selected-static suffix.
         storage_entry(0),
         // b1: per-light influence volumes.
         storage_entry(1),
@@ -924,11 +928,12 @@ pub struct MeshPass {
     viewmodel_uniform_bind_group: wgpu::BindGroup,
 
     /// Group 2 BGL (runtime direct lighting). Pinned binding map (see
-    /// [`MeshPass::new`]): b0 dynamic-tier records plus promoted static records,
-    /// b1 per-light influence volumes, b2 scripted-animation descriptors, b3
-    /// scripted-animation curve samples, b4 the mesh-side params uniform. b0–b3 alias the SAME
-    /// renderer-owned GPU buffers forward binds; b4 is owned here. Retained so
-    /// the bind group can be rebuilt on buffer reallocation (level load).
+    /// [`MeshPass::new`]): b0 dynamic prefix, raw animated-baked tail, then
+    /// selected-static suffix; b1 per-light influence volumes, b2
+    /// scripted-animation descriptors, b3 scripted-animation curve samples, b4
+    /// the mesh-side params uniform. b0–b3 alias the SAME renderer-owned GPU
+    /// buffers forward binds; b4 is owned here. Retained so the bind group can
+    /// be rebuilt on buffer reallocation (level load).
     light_bind_group_layout: wgpu::BindGroupLayout,
 
     /// Group 2 bind group. `None` until the renderer first calls
@@ -1132,8 +1137,8 @@ impl MeshPass {
             });
 
         // Group 2: runtime direct lighting. Binding map PINNED across both M10
-        // mesh specs — b0 dynamic-tier records plus promoted static records
-        // appended by the renderer, b1 per-light influence volumes, b2 scripted-animation
+        // mesh specs — b0 dynamic prefix, raw animated-baked tail, then
+        // selected-static suffix, b1 per-light influence volumes, b2 scripted-animation
         // descriptors (forward's group-3 b13 `scripted_light_descriptors`, the
         // SAME buffer rebound here), b3 scripted-animation curve samples
         // (forward's group-3 b12 `anim_samples`, same buffer), b4 the
@@ -1383,9 +1388,12 @@ impl MeshPass {
     /// renderer and bound here by reference; b4 is this pass's own
     /// `light_params_buffer`.
     ///
-    /// The runtime-light buffer's dynamic prefix is the renderer's
-    /// `filter_dynamic_lights` output; promoted static records may be appended each
-    /// frame and are loop-bound by the params uniform. Do not bind the raw
+    /// b0 uses three semantic intervals:
+    /// - `[0, dynamic_light_count)`: dynamic prefix from `filter_dynamic_lights`;
+    /// - `[dynamic_light_count, scripted_light_count)`: raw animated-baked tail;
+    /// - `[scripted_light_count, light_count)`: selected-static suffix.
+    ///
+    /// The params uniform loop-bounds all three regions. Do not bind the raw
     /// shadow-candidate set here. `influence` is the matching per-light
     /// influence-volume buffer. `scripted_descriptors` is forward's group-3 b13
     /// `scripted_light_descriptors`; `anim_samples` is forward's group-3 b12
@@ -2347,35 +2355,43 @@ mod tests {
         );
     }
 
-    // CONTRACT-DOC PIN (not a behavioral test): the lighting-tier split — mesh
-    // group-2 b0 carries dynamic-tier records first, then promoted static records
-    // appended by the renderer. This lives in the actual bind-group wiring
-    // (`rebuild_light_bind_group`), which takes a `lights` slice and cannot be
-    // exercised without a GPU. This test does NOT verify that wiring; it is a
-    // string pin that keeps the DOCUMENTED contract present and self-consistent.
-    // If a future edit deletes or contradicts that documented contract, this
-    // fails — flagging the docs for review. It would NOT catch a wiring bug that
-    // rebound b0 to the wrong buffer while leaving the doc strings intact; that is
-    // the GPU layer, verified by running the engine (testing_guide §3).
+    // CONTRACT-DOC PIN (not a behavioral test): b0's durable layout is defined
+    // by two count boundaries, not by an upload or bind-group implementation.
+    // This test pins the documented meaning of those boundaries: dynamic prefix,
+    // raw animated-baked tail, then selected-static suffix. It would not catch a
+    // wiring bug that rebound b0 to the wrong buffer; that is the GPU layer,
+    // verified by running the engine (testing_guide §3).
     #[test]
-    fn skinned_mesh_b0_count_split_contract_is_documented() {
-        // The shader's b0 declaration documents the count-split invariant.
+    fn skinned_mesh_b0_three_region_contract_is_documented() {
+        // The shader owns the b0 declaration that this contract describes.
         let shader_src = include_str!("../shaders/skinned_mesh.wgsl");
         assert!(
             shader_src.contains("@group(2) @binding(0) var<storage, read> lights"),
             "skinned_mesh.wgsl must declare runtime light records at group-2 b0",
         );
-        assert!(
-            shader_src.contains("promoted static lights appended"),
-            "the b0 declaration must document the dynamic-first/promoted-static-appended split",
-        );
-        // The wiring contract (`rebuild_light_bind_group`) names the count split
-        // as the REQUIRED b0 source.
+
+        // Pin the semantic interval contract rather than a particular upload or
+        // bind-group implementation. Limit the source slice to text before the
+        // test module, so these assertions cannot satisfy themselves with their
+        // own expected-string literals.
         let rust_src = include_str!("mesh_pass.rs");
-        assert!(
-            rust_src.contains("dynamic-tier records plus promoted static records"),
-            "rebuild_light_bind_group must pin the count-split runtime light records as the b0 source",
-        );
+        let documented_contract = rust_src
+            .split_once("/// b0 uses three semantic intervals:")
+            .and_then(|(_, after_heading)| {
+                after_heading.split_once("pub fn rebuild_light_bind_group")
+            })
+            .map(|(contract, _)| contract)
+            .expect("rebuild_light_bind_group interval documentation must remain present");
+        for interval in [
+            "- `[0, dynamic_light_count)`: dynamic prefix from `filter_dynamic_lights`;",
+            "- `[dynamic_light_count, scripted_light_count)`: raw animated-baked tail;",
+            "- `[scripted_light_count, light_count)`: selected-static suffix.",
+        ] {
+            assert!(
+                documented_contract.contains(interval),
+                "b0 documentation must preserve the {interval} region contract",
+            );
+        }
     }
 
     // The mesh dynamic-direct loop contributes nothing when `light_count == 0`.

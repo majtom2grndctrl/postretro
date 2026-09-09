@@ -89,6 +89,9 @@ fn candidate_gate_brightness(
 }
 
 impl Renderer {
+    // Animated lifecycle, cache validation, and tail packing stay with the
+    // shared-pool owner because their same-frame order is load-bearing:
+    // assign slot -> advance state -> validate cache -> encode both w arms.
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
     /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
     ///
@@ -1171,7 +1174,7 @@ impl Renderer {
                         .unwrap_or(false),
                 )
             });
-            advance_promoted_baked_state(state, assigned, frame_dt);
+            advance_animated_promoted_baked_state(state, assigned, frame_dt);
 
             // The animated forward record already lives at this raw section-45
             // index. This cache record supplies its fixed world-depth layer;
@@ -1605,10 +1608,8 @@ fn step_toward(value: f32, target: f32, step: f32) -> f32 {
     .clamp(0.0, 1.0)
 }
 
-/// Advance the sticky promote/demote lifecycle shared by static and animated
-/// baked candidates. Animated tests exercise this directly because their
-/// section-45 index space must retain exactly the same release behavior as the
-/// established selected-static path.
+/// Advance the animated sticky promote/demote lifecycle while the candidate
+/// retains its assignment. The wrapper below handles resource loss first.
 fn advance_promoted_baked_state(
     state: &mut PromotedBakedLightState,
     assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
@@ -1631,6 +1632,21 @@ fn advance_promoted_baked_state(
         state.sticky_remaining = 0.0;
         state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
     }
+}
+
+/// Animated promotion can fade only while it still owns a shadow slot. A pool
+/// eviction has no runtime resource to support a partial forward arm, so it
+/// falls back atomically to the full baked delta.
+fn advance_animated_promoted_baked_state(
+    state: &mut PromotedBakedLightState,
+    assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
+    frame_dt: f32,
+) {
+    if assigned.is_none() {
+        *state = PromotedBakedLightState::default();
+        return;
+    }
+    advance_promoted_baked_state(state, assigned, frame_dt);
 }
 
 /// Unlike a normal eligibility or brightness miss (which participates in the
@@ -2095,6 +2111,46 @@ mod tests {
             true
         ));
         assert_eq!(retained.weight, 0.75);
+    }
+
+    #[test]
+    fn shared_pool_eviction_atomically_restores_full_delta_and_zeros_forward_tail() {
+        let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let mut state = PromotedBakedLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            last_score: 4.0,
+        };
+
+        advance_animated_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+
+        assert_eq!(
+            animated_baked_promotion_weight(0, Some(&state)),
+            0.0,
+            "an evicted light cannot retain a forward share without a shadow slot",
+        );
+        assert_eq!(1.0 - animated_baked_promotion_weight(0, Some(&state)), 1.0);
+        let mut tail = postretro_lighting::pack_light(&source);
+        apply_animated_promotion_to_tail_record(&mut tail, 0, &state);
+        for offset in [16, 20, 24] {
+            assert_eq!(read_light_float(&tail, offset), 0.0);
+        }
+        assert_eq!(
+            u32::from_ne_bytes(
+                tail[postretro_lighting::SHADOW_SLOT_BYTE_OFFSET
+                    ..postretro_lighting::SHADOW_SLOT_BYTE_OFFSET + 4]
+                    .try_into()
+                    .unwrap(),
+            ),
+            postretro_lighting::NO_SHADOW_SLOT,
+        );
+        assert_eq!(state.weight, 0.0);
+        assert_eq!(state.sticky_remaining, 0.0);
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.last_score, 0.0);
     }
 
     #[test]

@@ -16,6 +16,8 @@ use super::direct_sh_compose::{
     texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
+#[cfg(test)]
+use super::renderer_types::PromotedShadowPoolKind;
 use super::renderer_types::{
     MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
 };
@@ -419,7 +421,10 @@ mod tests {
     fn animated_light_scale_uniform_is_fixed_and_index_parallel() {
         let mut states = vec![PromotedBakedLightState::default(); MAX_ANIMATED_BAKED_LIGHTS + 1];
         states[0].weight = 0.25;
+        states[0].pool_kind = Some(PromotedShadowPoolKind::Spot);
         states[17].weight = 0.75;
+        states[17].pool_kind = Some(PromotedShadowPoolKind::Cube);
+        states[2].weight = 0.9;
         // An entry past the fixed shader uniform must not bleed into its last
         // valid neighbor.
         states[MAX_ANIMATED_BAKED_LIGHTS].weight = 1.0;
@@ -444,7 +449,7 @@ mod tests {
         assert!((compose_factor(17) - 0.25).abs() < f32::EPSILON);
         assert!(
             (compose_factor(2) - 1.0).abs() < f32::EPSILON,
-            "an unpromoted valid row retains its full baked animated delta",
+            "a detached row retains its full baked delta despite stale nonzero state",
         );
         assert!((compose_factor(MAX_ANIMATED_BAKED_LIGHTS - 1) - 1.0).abs() < f32::EPSILON);
         assert!(bytes[8..16].iter().all(|&byte| byte == 0));

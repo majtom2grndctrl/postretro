@@ -129,6 +129,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         install_capture_animated_promotion_bridge(
             &mut renderer,
             &world,
+            &static_lights,
             &mut registry,
             &forced_active_writes,
         )?;
@@ -274,13 +275,19 @@ fn install_forced_active_animation_descriptors(
 /// is the one exception: materialize the same bridge tail windowed gameplay
 /// emits, then let the renderer pin the already-assigned row's `w`. This keeps
 /// the capture VM-free and single-instant while exercising the real forward
-/// descriptor, rest cone, slot, and depth-cache seams.
+/// descriptor, rest cone, slot, and depth-cache seams. The bridge still starts
+/// from capture's compact static-only list; the raw section-45 roster supplies
+/// promotion identity without restoring the authored dynamic tier.
 fn install_capture_animated_promotion_bridge(
     renderer: &mut Renderer,
     world: &postretro_level_loader::LevelWorld,
+    capture_lights: &[postretro_level_loader::MapLight],
     registry: &mut EntityRegistry,
     forced_active_writes: &[(u32, [f32; 3])],
 ) -> Result<()> {
+    if capture_lights.iter().any(|light| light.is_dynamic) {
+        bail!("capture promotion bridge requires the static-only capture light list");
+    }
     let baked_descriptors = world
         .sh_volume
         .as_ref()
@@ -293,8 +300,8 @@ fn install_capture_animated_promotion_bridge(
         .unwrap_or(&[]);
     let mut bridge = LightBridge::new();
     bridge.populate_from_level_with_influences(
-        &world.lights,
-        &world.light_influences,
+        capture_lights,
+        &[],
         baked_descriptors,
         registry,
         (renderer.scripted_sample_byte_offset() / size_of::<f32>()) as u32,
@@ -307,15 +314,15 @@ fn install_capture_animated_promotion_bridge(
     if !update.has_dirty_data {
         bail!("capture promotion bridge did not emit its animated forward tail");
     }
-    renderer.upload_bridge_lights(&update.lights_bytes);
-    renderer.upload_bridge_influences(&update.influence_bytes);
-    renderer.upload_bridge_descriptors(&update.descriptor_bytes);
-    renderer.upload_bridge_samples(&update.samples_bytes);
-    for (slot, bytes) in &update.compose_descriptor_writes {
+    renderer.upload_bridge_lights(update.lights_bytes);
+    renderer.upload_bridge_influences(update.influence_bytes);
+    renderer.upload_bridge_descriptors(update.descriptor_bytes);
+    renderer.upload_bridge_samples(update.samples_bytes);
+    for (slot, bytes) in update.compose_descriptor_writes {
         renderer.write_animated_compose_descriptor(*slot, bytes);
     }
-    renderer.set_light_effective_brightness(&update.effective_brightness);
-    renderer.set_animated_light_window_brightness(&update.animated_window_brightness);
+    renderer.set_light_effective_brightness(update.effective_brightness);
+    renderer.set_animated_light_window_brightness(update.animated_window_brightness);
     Ok(())
 }
 
@@ -449,6 +456,7 @@ fn resolve_forced_animated_promotion_rows(
     let section = section.ok_or_else(|| {
         anyhow!("force_promotion requires an AnimatedDirectShDeltaVolumes section")
     })?;
+    let delta_rows: HashSet<u32> = section.affinity_lights.iter().copied().collect();
 
     let mut rows = BTreeMap::new();
     for forced in forced_promotions {
@@ -471,6 +479,12 @@ fn resolve_forced_animated_promotion_rows(
                     continue;
                 }
                 roster_row_found = true;
+                if !delta_rows.contains(&(animated_baked_index as u32)) {
+                    bail!(
+                        "force_promotion tag `{}` resolves to section-45 AnimatedBakedLights row {animated_baked_index}, but that row has no affinity/direct delta and is not promotion-eligible",
+                        forced.tag
+                    );
+                }
                 match rows.entry(animated_baked_index) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(forced.weight);
@@ -1032,7 +1046,7 @@ mod tests {
             valid_probe_masks: Vec::new(),
             cell_levels: Vec::new(),
             affinity_offsets: vec![0],
-            affinity_lights: Vec::new(),
+            affinity_lights: vec![1],
             delta_subblocks: Vec::new(),
         };
         let forced = [ForcedAnimatedPromotion {
@@ -1073,6 +1087,69 @@ mod tests {
         let error = resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
             .expect_err("a descriptor without an AnimatedBakedLights row cannot promote");
         assert!(error.to_string().contains("section-45"));
+    }
+
+    // Regression: a descriptor-only roster row reached the renderer and failed
+    // later with the misleading "did not win a shadow-pool slot" error.
+    #[test]
+    fn force_promotion_rejects_section_45_row_without_affinity_delta() {
+        let mut alarm = test_light(false, 1.0);
+        alarm.tags = vec!["alarm_light".into()];
+        alarm.animated_slot = Some(7);
+        let section = postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [0; 3],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![7],
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let forced = [ForcedAnimatedPromotion {
+            tag: "alarm_light".into(),
+            weight: 0.5,
+        }];
+
+        let error = resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+            .expect_err("a row without a direct delta cannot be promoted");
+        assert!(
+            error.to_string().contains("no affinity/direct delta")
+                && error.to_string().contains("not promotion-eligible"),
+            "capture must reject the ineligible row at configuration time: {error:#}",
+        );
+    }
+
+    // Regression: standing up the promotion bridge from the full authored
+    // light list restored dynamic-tier lighting to static-only captures.
+    #[test]
+    fn forced_promotion_bridge_input_remains_static_only_with_mixed_authored_lights() {
+        let mut dynamic = test_light(true, 19.0);
+        dynamic.animated_slot = Some(3);
+        let mut animated_baked = test_light(false, 4.0);
+        animated_baked.animated_slot = Some(7);
+        let (capture_lights, _) =
+            capture_static_lights_and_shadow_selection(&[dynamic, animated_baked.clone()], &[]);
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level_with_influences(&capture_lights, &[], &[], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+        let update = bridge
+            .update(&mut registry, 0.0, 1.0)
+            .expect("the animated-baked tail must be emitted");
+
+        assert!(
+            update.effective_brightness.is_empty(),
+            "capture promotion must not recreate an authored dynamic prefix",
+        );
+        assert_eq!(
+            update.lights_bytes,
+            postretro_lighting::pack_light(&animated_baked),
+            "the renderer handoff contains only the raw section-45 tail record",
+        );
     }
 
     #[test]

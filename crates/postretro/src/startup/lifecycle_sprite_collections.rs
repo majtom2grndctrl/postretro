@@ -1,4 +1,5 @@
-//! Sprite-collection registration during level installation.
+//! Owns sprite-collection registration during level installation.
+//! Governing context: `boot_sequence.md`; renderer/draw contract: `rendering_pipeline.md` §7.4.
 
 use std::collections::HashSet;
 use std::path::Path;

@@ -21,9 +21,10 @@ impl Renderer {
     /// Upload one draw contract per collection. Level installation resolves every
     /// emitter and projectile consumer's frame count before this boundary; the
     /// smoke pass owns its baked-sidecar attempt and PNG-decode fallback. The
-    /// eligibility flag is true only for map-authored billboard emitters. Duplicate
-    /// calls for an id are reported and rejected rather than silently overriding an
-    /// accepted descriptor's cadence or emissive strength.
+    /// baked-sidecar eligibility is an asset-level flag established by map-authored
+    /// billboard emitters, so collections using the same asset share its cache
+    /// decision. Duplicate calls for an id are reported and rejected rather than
+    /// silently overriding an accepted descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection_id: &str,

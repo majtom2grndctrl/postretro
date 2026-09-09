@@ -3,6 +3,7 @@
 // See: context/lib/resource_management.md
 
 use super::renderer_types::PromotedStaticLightState;
+use super::smoke::SpriteCollectionAssetSource;
 use super::*;
 
 /// Discard the cull-split per-frame mover inputs when level geometry changes.
@@ -44,9 +45,11 @@ impl Renderer {
             device,
             queue,
             collection_id,
-            asset,
-            texture_root,
-            prm_cache_root,
+            SpriteCollectionAssetSource {
+                asset,
+                texture_root,
+                prm_cache_root,
+            },
             registration,
         );
     }

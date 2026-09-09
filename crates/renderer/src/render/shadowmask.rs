@@ -1,9 +1,7 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
 // Governing context: context/lib/rendering_pipeline.md
 
-use super::renderer_types::{
-    LevelGeometry, PromotedLightRecordSource, PromotedShadowPoolKind, PromotedStaticLightRecord,
-};
+use super::renderer_types::{LevelGeometry, PromotedBakedLightRecord, PromotedShadowPoolKind};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::MapLight;
 
@@ -101,7 +99,7 @@ fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -
 
 pub(crate) fn pack_forward_shadowmask_metadata(
     animated_baked_light_count: usize,
-    records: &[PromotedStaticLightRecord],
+    records: &[PromotedBakedLightRecord],
     cache_layers: &[i32],
     selection_spec_light_indices: &[u32],
     channels: &[u8],
@@ -119,10 +117,10 @@ pub(crate) fn pack_forward_shadowmask_metadata(
     // layer is harmless because its forward shadow slot remains the sentinel.
     let mut animated_cache_layers = vec![-1i32; animated_baked_light_count];
     for (record_index, record) in records.iter().enumerate() {
-        if record.source != PromotedLightRecordSource::AnimatedBaked {
+        let Some(animated_baked_index) = record.source.animated_baked_index() else {
             continue;
-        }
-        if let Some(cache_layer) = animated_cache_layers.get_mut(record.selection_index as usize) {
+        };
+        if let Some(cache_layer) = animated_cache_layers.get_mut(animated_baked_index) {
             *cache_layer = cache_layers.get(record_index).copied().unwrap_or(-1);
         }
     }
@@ -141,10 +139,9 @@ pub(crate) fn pack_forward_shadowmask_metadata(
     }
 
     for (record_index, record) in records.iter().enumerate() {
-        if record.source != PromotedLightRecordSource::SelectedStatic {
+        let Some(selection_index) = record.source.selected_static_index() else {
             continue;
-        }
-        let selection_index = record.selection_index as usize;
+        };
         let spec_index = selection_spec_light_indices
             .get(selection_index)
             .copied()
@@ -163,7 +160,7 @@ pub(crate) fn pack_forward_shadowmask_metadata(
         };
 
         push_f32(out, record.global_light_index as f32);
-        push_f32(out, record.selection_index as f32);
+        push_f32(out, selection_index as f32);
         push_f32(out, metadata_index_value(spec_index));
         push_f32(out, record.weight.clamp(0.0, 1.0));
 
@@ -199,6 +196,7 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::renderer_types::PromotedBakedLightSource;
     use super::*;
     use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
     use postretro_level_loader::{FalloffModel, LightType, ShadowType};
@@ -314,13 +312,12 @@ mod tests {
 
     #[test]
     fn dropped_channel_is_uploaded_without_suppressing_promoted_record() {
-        let records = [PromotedStaticLightRecord {
+        let records = [PromotedBakedLightRecord {
             global_light_index: 7,
-            selection_index: 0,
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 3,
             weight: 0.5,
-            source: PromotedLightRecordSource::SelectedStatic,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
         }];
         let mut bytes = Vec::new();
 
@@ -350,13 +347,12 @@ mod tests {
 
     #[test]
     fn absent_shadowmask_forces_dropped_channel_only() {
-        let records = [PromotedStaticLightRecord {
+        let records = [PromotedBakedLightRecord {
             global_light_index: 2,
-            selection_index: 0,
             pool_kind: PromotedShadowPoolKind::Cube,
             slot: 1,
             weight: 1.0,
-            source: PromotedLightRecordSource::SelectedStatic,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
         }];
         let mut bytes = Vec::new();
 
@@ -373,13 +369,12 @@ mod tests {
 
     #[test]
     fn invalid_spec_index_is_uploaded_as_float_safe_sentinel() {
-        let records = [PromotedStaticLightRecord {
+        let records = [PromotedBakedLightRecord {
             global_light_index: 2,
-            selection_index: 4,
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 0,
             weight: 1.0,
-            source: PromotedLightRecordSource::SelectedStatic,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 4 },
         }];
         let mut bytes = Vec::new();
 
@@ -402,13 +397,14 @@ mod tests {
 
     #[test]
     fn animated_cache_metadata_uses_raw_roster_index_without_static_aliasing() {
-        let records = [PromotedStaticLightRecord {
+        let records = [PromotedBakedLightRecord {
             global_light_index: 11,
-            selection_index: 2,
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 5,
             weight: 0.75,
-            source: PromotedLightRecordSource::AnimatedBaked,
+            source: PromotedBakedLightSource::AnimatedBaked {
+                animated_baked_index: 2,
+            },
         }];
         let mut bytes = Vec::new();
 

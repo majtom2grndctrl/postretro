@@ -115,8 +115,8 @@ pub(crate) struct FilteredShadowCandidates {
     pub selection_indices: Vec<Option<usize>>,
     /// `AnimatedBakedLights` index for section-45 animated-baked candidates.
     /// This deliberately does not reuse `MapLight::animated_slot` or a compose
-    /// descriptor index: section 45's affinity entries, Task 2's weight array,
-    /// and Task 3's depth-cache key all use this independent namespace.
+    /// descriptor index: section 45's affinity entries, promotion weights, and
+    /// depth-cache keys all use this independent namespace.
     pub animated_baked_indices: Vec<Option<usize>>,
 }
 
@@ -183,9 +183,9 @@ pub(crate) fn filter_dynamic_lights(
 /// whether moving-ENTITY occluders are drawn into the already-allocated slot
 /// (`entity_occluder_eligible`), not whether the slot exists.
 ///
-/// Ranking runs downstream in `assign_shadow_pool_slots_with_promoted_static`
+/// Ranking runs downstream in `assign_shadow_pool_slots_with_promoted_baked`
 /// (renderer_light_slots.rs): it scores this candidate slice and competes the
-/// dynamic and promoted-static lights for the pool's slots.
+/// dynamic and promoted-baked lights for the pool's slots.
 #[cfg(test)]
 pub(crate) fn filter_entity_shadow_candidates(
     lights: &[MapLight],
@@ -539,11 +539,9 @@ impl Renderer {
         full.total_light_count = full.light_count
             + full.animated_baked_light_count as u32
             + full
-                .promoted_static_records
+                .promoted_baked_records
                 .iter()
-                .filter(|record| {
-                    record.source == renderer_types::PromotedLightRecordSource::SelectedStatic
-                })
+                .filter(|record| record.source.selected_static_index().is_some())
                 .count() as u32;
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool

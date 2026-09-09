@@ -19,13 +19,6 @@ use postretro_entities::components::light::LightAnimation;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 
-/// Bridge-owned, authored bytes for one raw section-45 forward-tail row.
-type AnimatedForwardRecord = (
-    [u8; GPU_LIGHT_SIZE],
-    [u8; ANIMATION_DESCRIPTOR_SIZE],
-    LightInfluence,
-);
-
 /// Snapshot of a map light's component state as last observed by the bridge.
 /// Dirty detection compares the live registry component against this value.
 ///
@@ -122,6 +115,9 @@ pub(crate) struct LightBridge {
     /// position is the only promotion identity; descriptor slots are lookup
     /// keys and can be sparse or reordered.
     animated_baked_descriptor_indices: Vec<u32>,
+    /// Cached raw `AnimatedBakedLights` row -> authored map-light index join.
+    /// `None` preserves a sparse or bake-only roster row as a dark hole.
+    animated_baked_map_indices: Vec<Option<usize>>,
     /// Static, slotless map lights for which the animation diagnostic has
     /// already been emitted. Map-light indices are stable for the level, so
     /// this avoids tying author-facing diagnostics to runtime `EntityId`s.
@@ -163,6 +159,9 @@ struct MapLightShape {
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
     /// without re-querying the source.
     animated_slot: Option<u32>,
+    /// Raw section-45 rows joined to this authored map light. Built once when
+    /// the promotion roster is installed so per-frame packing never scans it.
+    animated_baked_raw_indices: Vec<usize>,
     /// Runtime tombstones are reclaimed exactly once after their entity
     /// disappears. Reuse resets this marker for the new entity.
     reclaimed: bool,
@@ -178,6 +177,7 @@ impl LightBridge {
             preserve_baked_descriptors: HashSet::new(),
             shape: Vec::new(),
             animated_baked_descriptor_indices: Vec::new(),
+            animated_baked_map_indices: Vec::new(),
             warned_slotless_animation_indices: std::collections::HashSet::new(),
             dirty: false,
             cached_origins_f64: Vec::new(),
@@ -200,6 +200,7 @@ impl LightBridge {
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
         self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_map_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.dirty = false;
         self.cached_origins_f64.clear();
@@ -236,6 +237,44 @@ impl LightBridge {
         self.animated_baked_descriptor_indices.clear();
         self.animated_baked_descriptor_indices
             .extend_from_slice(animation_descriptor_indices);
+        self.rebuild_animated_baked_map_join();
+    }
+
+    fn rebuild_animated_baked_map_join(&mut self) {
+        for shape in &mut self.shape {
+            shape.animated_baked_raw_indices.clear();
+        }
+
+        let mut descriptor_to_map_index = HashMap::new();
+        for (map_index, shape) in self.shape.iter().enumerate() {
+            if !shape.is_dynamic
+                && let Some(descriptor_index) = shape.animated_slot
+            {
+                // Match the former linear search: the first authored map light
+                // wins if malformed input repeats a descriptor slot.
+                descriptor_to_map_index
+                    .entry(descriptor_index)
+                    .or_insert(map_index);
+            }
+        }
+
+        self.animated_baked_map_indices.clear();
+        self.animated_baked_map_indices
+            .reserve(self.animated_baked_descriptor_indices.len());
+        for (raw_index, descriptor_index) in self
+            .animated_baked_descriptor_indices
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let map_index = descriptor_to_map_index.get(&descriptor_index).copied();
+            self.animated_baked_map_indices.push(map_index);
+            if let Some(map_index) = map_index {
+                self.shape[map_index]
+                    .animated_baked_raw_indices
+                    .push(raw_index);
+            }
+        }
     }
 
     /// Collect all tracked lights (FGD map-authored + descriptor-spawned dynamic)
@@ -319,6 +358,7 @@ impl LightBridge {
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
         self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_map_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.cached_origins_f64.clear();
         self.cached_influences.clear();
@@ -355,6 +395,7 @@ impl LightBridge {
                 is_dynamic: light.is_dynamic,
                 cell_index: light.cell_index,
                 animated_slot: light.animated_slot,
+                animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             });
             self.cached_origins_f64.push(light.origin);
@@ -469,6 +510,7 @@ impl LightBridge {
                 // Script-spawned dynamic lights have no baked slot; the
                 // bridge routes them via the legacy forward path.
                 animated_slot: None,
+                animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             };
             if let Some(slot) = self.free_slots.pop() {
@@ -682,19 +724,17 @@ impl LightBridge {
         // missing/bake-only map light leaves a dark hole rather than shifting
         // every later AnimatedBakedLights index into the wrong brightness row.
         let animated_window_brightness: Vec<f32> = self
-            .animated_baked_descriptor_indices
+            .animated_baked_map_indices
             .iter()
-            .map(|&descriptor_index| {
-                let Some((_, &id)) = self.entity_ids.iter().enumerate().find(|(map_index, _)| {
-                    let shape = &self.shape[*map_index];
-                    !shape.is_dynamic && shape.animated_slot == Some(descriptor_index)
-                }) else {
+            .map(|&map_index| {
+                let Some(id) = map_index.and_then(|map_index| self.entity_ids.get(map_index))
+                else {
                     return 0.0;
                 };
-                let Ok(component) = registry.get_component::<LightComponent>(id) else {
+                let Ok(component) = registry.get_component::<LightComponent>(*id) else {
                     return 0.0;
                 };
-                animated_promotion_window_max(component, self.snapshots.get(&id), current_time)
+                animated_promotion_window_max(component, self.snapshots.get(id), current_time)
             })
             .collect();
 
@@ -719,15 +759,20 @@ impl LightBridge {
         let dynamic_light_count = self.shape.iter().filter(|shape| shape.is_dynamic).count();
         let animated_baked_count = self.animated_baked_descriptor_indices.len();
         let forward_count = dynamic_light_count + animated_baked_count;
-        let mut lights_bytes: Vec<u8> = Vec::with_capacity(forward_count * GPU_LIGHT_SIZE);
-        let mut descriptor_bytes: Vec<u8> =
-            Vec::with_capacity(forward_count * ANIMATION_DESCRIPTOR_SIZE);
-        let mut influences = Vec::with_capacity(forward_count);
-        // Raw section-45 roster position is the only promotion identity.
-        // Keep holes as zero records instead of compacting later entries.
-        let mut animated_forward_records: Vec<Option<AnimatedForwardRecord>> =
-            vec![None; animated_baked_count];
+        // Allocate the final compact-prefix + raw-roster layout up front. Raw
+        // section-45 position is the promotion identity, so unmatched rows
+        // remain zeroed holes rather than compacting later entries.
+        let mut lights_bytes = vec![0u8; forward_count * GPU_LIGHT_SIZE];
+        let mut descriptor_bytes = vec![0u8; forward_count * ANIMATION_DESCRIPTOR_SIZE];
+        let mut influences = vec![
+            LightInfluence {
+                center: glam::Vec3::ZERO,
+                radius: 0.0,
+            };
+            forward_count
+        ];
         let mut compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])> = Vec::new();
+        let mut dynamic_record_index = 0usize;
 
         self.scripted_sample_buf.fill(0.0);
 
@@ -738,9 +783,8 @@ impl LightBridge {
                 // an explicit compose tombstone or its last baked delta stays
                 // active indefinitely.
                 if self.shape[map_idx].is_dynamic {
-                    lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
-                    descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
-                    influences.push(self.cached_influences[map_idx].clone());
+                    influences[dynamic_record_index] = self.cached_influences[map_idx].clone();
+                    dynamic_record_index += 1;
                 }
                 if let Some(slot) = self.shape[map_idx].animated_slot {
                     compose_descriptor_writes.push((slot, [0u8; ANIMATION_DESCRIPTOR_SIZE]));
@@ -795,8 +839,12 @@ impl LightBridge {
                 color_offset,
             );
             if self.shape[map_idx].is_dynamic {
-                lights_bytes.extend_from_slice(&pack_light(&map_light));
-                descriptor_bytes.extend_from_slice(&forward_desc);
+                let light_start = dynamic_record_index * GPU_LIGHT_SIZE;
+                lights_bytes[light_start..light_start + GPU_LIGHT_SIZE]
+                    .copy_from_slice(&pack_light(&map_light));
+                let descriptor_start = dynamic_record_index * ANIMATION_DESCRIPTOR_SIZE;
+                descriptor_bytes[descriptor_start..descriptor_start + ANIMATION_DESCRIPTOR_SIZE]
+                    .copy_from_slice(&forward_desc);
                 let mut influence = self.cached_influences[map_idx].clone();
                 if let Some(position) = followed_position {
                     influence.center = position;
@@ -804,7 +852,8 @@ impl LightBridge {
                 if let Some(radius) = sampled_radius {
                     influence.radius = radius;
                 }
-                influences.push(influence);
+                influences[dynamic_record_index] = influence;
+                dynamic_record_index += 1;
             }
 
             // A baked animated record is always present in the forward tail,
@@ -813,9 +862,7 @@ impl LightBridge {
             // that Pass B converts to `(1 - w)`. Direction animation is not
             // packed by `pack_forward_animation_descriptor`, so `map_light`'s
             // authored rest cone is the only runtime direction.
-            if !self.shape[map_idx].is_dynamic
-                && let Some(descriptor_index) = self.shape[map_idx].animated_slot
-            {
+            if !self.shape[map_idx].is_dynamic {
                 let mut influence = self.cached_influences[map_idx].clone();
                 if let Some(position) = followed_position {
                     influence.center = position;
@@ -823,13 +870,17 @@ impl LightBridge {
                 if let Some(radius) = sampled_radius {
                     influence.radius = radius;
                 }
-                for (animated_baked_index, &roster_descriptor_index) in
-                    self.animated_baked_descriptor_indices.iter().enumerate()
-                {
-                    if roster_descriptor_index == descriptor_index {
-                        animated_forward_records[animated_baked_index] =
-                            Some((pack_light(&map_light), forward_desc, influence.clone()));
-                    }
+                let packed_light = pack_light(&map_light);
+                for &raw_index in &self.shape[map_idx].animated_baked_raw_indices {
+                    let forward_index = dynamic_light_count + raw_index;
+                    let light_start = forward_index * GPU_LIGHT_SIZE;
+                    lights_bytes[light_start..light_start + GPU_LIGHT_SIZE]
+                        .copy_from_slice(&packed_light);
+                    let descriptor_start = forward_index * ANIMATION_DESCRIPTOR_SIZE;
+                    descriptor_bytes
+                        [descriptor_start..descriptor_start + ANIMATION_DESCRIPTOR_SIZE]
+                        .copy_from_slice(&forward_desc);
+                    influences[forward_index] = influence.clone();
                 }
             }
 
@@ -854,22 +905,7 @@ impl LightBridge {
             }
         }
 
-        for record in animated_forward_records {
-            if let Some((light, descriptor, influence)) = record {
-                lights_bytes.extend_from_slice(&light);
-                descriptor_bytes.extend_from_slice(&descriptor);
-                influences.push(influence);
-            } else {
-                // A missing/bake-only MapLight must not shift any later
-                // AnimatedBakedLights index into a different promotion row.
-                lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
-                descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
-                influences.push(LightInfluence {
-                    center: glam::Vec3::ZERO,
-                    radius: 0.0,
-                });
-            }
-        }
+        debug_assert_eq!(dynamic_record_index, dynamic_light_count);
 
         // Matches `postretro_render_cpu::sh_volume` sample packing: native-endian f32 bytes.
         let samples_bytes = self
@@ -1244,7 +1280,7 @@ fn animated_promotion_window_max(
 /// sample knot it contains. Each knot is sampled through the existing CPU/WGSL
 /// mirror rather than a second curve evaluator; `window_t >= 1` visits the
 /// complete period once. This bounded loop catches a bright authored peak even
-/// when no frame lands on it (P12).
+/// when no frame lands on it.
 fn closed_curve_window_max(samples: &[f32], start_t: f32, window_t: f32) -> f32 {
     if samples.len() <= 1 || window_t >= 1.0 {
         return closed_curve_full_max(samples);
@@ -4074,7 +4110,7 @@ mod tests {
             vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ));
 
-        // P6: the instant at t=.8 is dark, but its 0.3s promotion window
+        // The instant at t=.8 is dark, but its 0.3s promotion window
         // wraps through the bright knot at t=1.0, so the bridge keeps the
         // candidate eligible before the bright interval starts.
         assert!(
@@ -4093,7 +4129,7 @@ mod tests {
             "a long dark pulse must not remain eligible forever"
         );
 
-        // P12: scan authored knots as well as endpoints; otherwise this
+        // Scan authored knots as well as endpoints; otherwise this
         // narrow peak is missed when no rendered frame lands on t=.375.
         component.animation = Some(promotion_brightness_animation(
             1000.0,
@@ -4112,14 +4148,14 @@ mod tests {
         assert_eq!(
             animated_promotion_window_max(&component, None, 42.0),
             0.0,
-            "P9: a degenerate dark animation must not borrow a later sample"
+            "a degenerate dark animation must not borrow a later sample"
         );
 
         component.animation = Some(promotion_brightness_animation(-10.0, vec![0.75, 0.0]));
         assert_eq!(
             animated_promotion_window_max(&component, None, 42.0),
             0.75,
-            "P11: a degenerate bright animation reads brightness[0]"
+            "a degenerate bright animation reads brightness[0]"
         );
     }
 
@@ -4172,6 +4208,35 @@ mod tests {
             bridge.animated_baked_descriptor_indices.is_empty(),
             "level unload clears the section-45 promotion roster"
         );
+        assert!(
+            bridge.animated_baked_map_indices.is_empty(),
+            "level unload clears the cached section-45 map-light join"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_roster_preserves_sparse_rows_and_duplicate_joins() {
+        let mut baked = sample_point_light();
+        baked.animated_slot = Some(7);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[99, 7, 7]);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(promotion_brightness_animation(0.0, vec![0.6]));
+        registry.set_component(id, component).unwrap();
+
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(update.animated_window_brightness, vec![0.0, 0.6, 0.6]);
+        let records: Vec<&[u8]> = update.lights_bytes.chunks_exact(GPU_LIGHT_SIZE).collect();
+        assert_eq!(records.len(), 3);
+        assert!(records[0].iter().all(|&byte| byte == 0));
+        assert_eq!(records[1], records[2]);
     }
 
     #[test]
@@ -4198,9 +4263,9 @@ mod tests {
             start_active: Some(true),
             brightness: Some(vec![0.25, 1.0]),
             color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 1.0, 0.0])]),
-            // This curve must affect neither the injected GpuLight direction
-            // nor its forward descriptor. Task 3 can consequently cache
-            // static-world depth against the authored rest cone.
+            // This curve affects neither the injected GpuLight direction nor
+            // its forward descriptor, so static-world depth can be cached
+            // against the authored rest cone.
             direction: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
             radius: None,
         });

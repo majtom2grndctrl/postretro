@@ -2,7 +2,7 @@
 // model loading.
 // See: context/lib/resource_management.md
 
-use super::renderer_types::PromotedStaticLightState;
+use super::renderer_types::PromotedBakedLightState;
 use super::smoke::SpriteCollectionAssetSource;
 use super::*;
 
@@ -252,23 +252,23 @@ impl Renderer {
         full.shadowmask_present = false;
         full.forward_shadowmask_metadata_scratch.clear();
         full.promoted_static_states =
-            vec![PromotedStaticLightState::default(); geometry.entity_shadow_lights.len()];
+            vec![PromotedBakedLightState::default(); geometry.entity_shadow_lights.len()];
         // Preserve raw section-45 index space even when a roster row lacks a
         // runtime MapLight candidate (for example, a bake-only entry).
         full.promoted_animated_states =
-            vec![PromotedStaticLightState::default(); animated_baked_descriptor_indices.len()];
+            vec![PromotedBakedLightState::default(); animated_baked_descriptor_indices.len()];
         // A level reload must not let the prior level's window maxima keep a
         // newly-loaded animated candidate alive before its bridge update.
         full.animated_light_window_brightness = vec![0.0; animated_baked_descriptor_indices.len()];
-        full.promoted_static_records.clear();
-        full.promoted_static_cache_layers.clear();
+        full.promoted_baked_records.clear();
+        full.promoted_baked_cache_layers.clear();
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
         full.promoted_static_weight_scratch.clear();
-        full.promoted_static_last_update_time = None;
+        full.promoted_baked_last_update_time = None;
         // Match the init-time policy: selected-static and section-45 animated
         // candidates share the fixed-projection cache. A level with neither
         // source frees it; either source allocates/reuses it and clears every
-        // cache layer on reload (P7).
+        // cache layer on reload.
         let has_promoted_cache_source =
             !geometry.entity_shadow_lights.is_empty() || !animated_baked_candidates.is_empty();
         if !has_promoted_cache_source {

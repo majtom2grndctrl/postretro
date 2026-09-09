@@ -221,7 +221,7 @@ impl Renderer {
             let animated_window_brightness =
                 std::mem::take(&mut self.full_mut().animated_light_window_brightness);
             let last_camera_position = self.full().last_camera_position;
-            self.update_dynamic_light_slots(
+            self.update_dynamic_light_slots_with_capture_overrides(
                 last_camera_position,
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
@@ -229,10 +229,8 @@ impl Renderer {
                 reachable_cell_aabbs,
                 now_seconds,
                 promotion_mesh_frame_plan,
-            );
-            if !capture_animated_promotion_weights.is_empty() {
-                self.apply_capture_animated_promotion_weights(capture_animated_promotion_weights)?;
-            }
+                capture_animated_promotion_weights,
+            )?;
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
             // effect on culling/selection. Skipped entirely when disabled.

@@ -437,9 +437,27 @@ pub(crate) enum PromotedShadowPoolKind {
 /// shadowmask/`EntityShadowLights` arrays, while section-45 animated records
 /// key the `AnimatedBakedLights` roster and its compose-weight state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PromotedLightRecordSource {
-    SelectedStatic,
-    AnimatedBaked,
+pub(crate) enum PromotedBakedLightSource {
+    SelectedStatic { selection_index: u32 },
+    AnimatedBaked { animated_baked_index: u32 },
+}
+
+impl PromotedBakedLightSource {
+    pub(crate) fn selected_static_index(self) -> Option<usize> {
+        match self {
+            Self::SelectedStatic { selection_index } => Some(selection_index as usize),
+            Self::AnimatedBaked { .. } => None,
+        }
+    }
+
+    pub(crate) fn animated_baked_index(self) -> Option<usize> {
+        match self {
+            Self::SelectedStatic { .. } => None,
+            Self::AnimatedBaked {
+                animated_baked_index,
+            } => Some(animated_baked_index as usize),
+        }
+    }
 }
 
 /// One baked light promoted into a shadow pool slot this frame. Selected-static
@@ -447,12 +465,9 @@ pub(crate) enum PromotedLightRecordSource {
 /// at their already-reserved section-45 forward tail. Both use the same static
 /// world-depth cache because their light projections are fixed for the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PromotedStaticLightRecord {
+pub(crate) struct PromotedBakedLightRecord {
     /// Index into the level's full light array.
     pub global_light_index: u32,
-    /// 0-based position in `EntityShadowLights` order — the space the delta
-    /// `affinity_lights` and the per-selected-light weight buffer are indexed by.
-    pub selection_index: u32,
     /// Which shadow pool (spot or cube) the light is promoted into.
     pub pool_kind: PromotedShadowPoolKind,
     /// Slot index within that pool.
@@ -460,14 +475,14 @@ pub(crate) struct PromotedStaticLightRecord {
     /// Promotion crossfade weight w ∈ [0,1] — 0 is fully baked SH, 1 is fully
     /// the runtime pool term (see rendering_pipeline.md §4 "Promoted static lights").
     pub weight: f32,
-    /// Which raw index namespace owns `selection_index` and this cache record.
-    pub source: PromotedLightRecordSource,
+    /// Source variant carries the correctly typed raw roster index.
+    pub source: PromotedBakedLightSource,
 }
 
 /// Per-candidate-light promotion tracking across frames: current weight,
 /// sticky hold-over time, and which pool slot (if any) the light occupies.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct PromotedStaticLightState {
+pub(crate) struct PromotedBakedLightState {
     pub weight: f32,
     pub sticky_remaining: f32,
     pub pool_kind: Option<PromotedShadowPoolKind>,
@@ -481,7 +496,7 @@ pub(crate) struct PromotedStaticLightState {
 /// never promoted and stays fully baked in Pass B.
 pub(super) fn animated_baked_promotion_weight(
     animated_baked_index: usize,
-    state: Option<&PromotedStaticLightState>,
+    state: Option<&PromotedBakedLightState>,
 ) -> f32 {
     if animated_baked_index >= MAX_ANIMATED_BAKED_LIGHTS {
         return 0.0;
@@ -778,19 +793,18 @@ pub(super) struct FullRenderer {
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
-    pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
-    /// Promotion ramp state keyed by `AnimatedBakedLights` index. Task 2 uses
-    /// these weights to inject the runtime animated-light record; keeping this
+    pub(super) promoted_static_states: Vec<PromotedBakedLightState>,
+    /// Promotion ramp state keyed by `AnimatedBakedLights` index. Keeping this
     /// state separate prevents collisions with `EntityShadowLights` indices.
-    pub(super) promoted_animated_states: Vec<PromotedStaticLightState>,
-    pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
-    /// Cache-layer metadata parallel to `promoted_static_records`; packed into
+    pub(super) promoted_animated_states: Vec<PromotedBakedLightState>,
+    pub(super) promoted_baked_records: Vec<PromotedBakedLightRecord>,
+    /// Cache-layer metadata parallel to `promoted_baked_records`; packed into
     /// the forward shadowmask metadata tail's `meta1.w` lane.
-    pub(super) promoted_static_cache_layers: Vec<i32>,
+    pub(super) promoted_baked_cache_layers: Vec<i32>,
     pub(super) promoted_static_weights: Vec<f32>,
     pub(super) promoted_static_weight_buffer: wgpu::Buffer,
     pub(super) promoted_static_weight_scratch: Vec<u8>,
-    pub(super) promoted_static_last_update_time: Option<f64>,
+    pub(super) promoted_baked_last_update_time: Option<f64>,
     /// `None` only when a map has neither selected-static nor section-45
     /// animated-baked promotion candidates. Either source can use the same
     /// static world-depth cache, so an animated-only map still allocates it.

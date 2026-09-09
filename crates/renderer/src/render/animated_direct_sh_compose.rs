@@ -17,7 +17,7 @@ use super::direct_sh_compose::{
 };
 use super::direct_sh_resources::DirectAtlasLayout;
 use super::renderer_types::{
-    MAX_ANIMATED_BAKED_LIGHTS, PromotedStaticLightState, animated_baked_promotion_weight,
+    MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
 };
 use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
@@ -42,7 +42,7 @@ impl AnimatedDirectShDebugOverride {
     /// they retain their full baked animated delta.
     pub(super) fn bytes(
         self,
-        promoted_states: &[PromotedStaticLightState],
+        promoted_states: &[PromotedBakedLightState],
     ) -> [u8; ANIMATED_LIGHT_SCALE_SIZE] {
         let mut bytes = [0u8; ANIMATED_LIGHT_SCALE_SIZE];
         bytes[0..4].copy_from_slice(&(self.enabled as u32).to_ne_bytes());
@@ -372,7 +372,7 @@ mod tests {
         assert!(
             source.contains("let output_is_stored = stored_slot.write;")
                 && source.contains("@group(1) @binding(28) var<storage, read> probe_indirection"),
-            "Pass B must derive stored-slot writes from Task 3's id-34 indirection"
+            "animated direct SH compose must derive stored-slot writes from id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn animated_light_scale_uniform_is_fixed_and_index_parallel() {
-        let mut states = vec![PromotedStaticLightState::default(); MAX_ANIMATED_BAKED_LIGHTS + 1];
+        let mut states = vec![PromotedBakedLightState::default(); MAX_ANIMATED_BAKED_LIGHTS + 1];
         states[0].weight = 0.25;
         states[17].weight = 0.75;
         // An entry past the fixed shader uniform must not bleed into its last
@@ -444,7 +444,7 @@ mod tests {
         assert!((compose_factor(17) - 0.25).abs() < f32::EPSILON);
         assert!(
             (compose_factor(2) - 1.0).abs() < f32::EPSILON,
-            "P5: an unpromoted valid row retains its full baked animated delta",
+            "an unpromoted valid row retains its full baked animated delta",
         );
         assert!((compose_factor(MAX_ANIMATED_BAKED_LIGHTS - 1) - 1.0).abs() < f32::EPSILON);
         assert!(bytes[8..16].iter().all(|&byte| byte == 0));

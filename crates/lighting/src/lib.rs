@@ -96,11 +96,11 @@ pub const CUBE_SLOT_BYTE_OFFSET: usize = 60;
 /// world shadow but draws no entity occluders, so the two gates must not be
 /// conflated.
 ///
-/// Dynamic lights opt in with `casts_entity_shadows`; promoted static lights
+/// Dynamic lights opt in with `casts_entity_shadows`; promoted baked lights
 /// always draw entity occluders while assigned, because promotion exists only
 /// for crisp runtime entity shadows.
-pub fn entity_occluder_eligible(light: &MapLight, promoted_static: bool) -> bool {
-    promoted_static || (light.casts_entity_shadows && light.is_dynamic)
+pub fn entity_occluder_eligible(light: &MapLight, promoted_baked: bool) -> bool {
+    promoted_baked || (light.casts_entity_shadows && light.is_dynamic)
 }
 
 /// Shadow-slot eligibility predicate: does this light's influence volume reach
@@ -413,7 +413,7 @@ mod tests {
     }
 
     /// Dynamic entity-occluder eligibility is `casts_entity_shadows &&
-    /// is_dynamic`; promoted static lights bypass that authored toggle.
+    /// is_dynamic`; promoted baked lights bypass that authored toggle.
     #[test]
     fn entity_occluder_gate_requires_dynamic_and_toggle() {
         let mut light = sample_spot();
@@ -443,7 +443,7 @@ mod tests {
         );
         assert!(
             entity_occluder_eligible(&light, true),
-            "a promoted static light renders entity occluders unconditionally"
+            "a promoted baked light renders entity occluders unconditionally"
         );
     }
 

@@ -176,6 +176,17 @@ impl Renderer {
             }
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.total_light_count = forward_light_count(full);
+            // The raw section-45 tail survives even when none of its rows is a
+            // promotion candidate. Rebuild it after zeroing state so authored
+            // RGB from the bridge cannot remain live with `w == 0`.
+            let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+            build_count_split_light_upload(full, &[], &[], &mut scratch);
+            if scratch != full.last_lights_upload {
+                queue.write_buffer(&full.lights_buffer, 0, &scratch);
+                full.last_lights_upload.clear();
+                full.last_lights_upload.extend_from_slice(&scratch);
+            }
+            full.lights_pack_scratch = scratch;
             queue.write_buffer(
                 &full.uniform_buffer,
                 TOTAL_LIGHT_COUNT_OFFSET,
@@ -1750,14 +1761,12 @@ fn build_count_split_light_upload(
     if bytes.len() < forward_prefix_bytes {
         bytes.resize(forward_prefix_bytes, 0);
     }
-    for (animated_baked_index, state) in full.promoted_animated_states.iter().enumerate() {
-        let start = dynamic_bytes + animated_baked_index * postretro_lighting::GPU_LIGHT_SIZE;
-        let end = start + postretro_lighting::GPU_LIGHT_SIZE;
-        let Some(record) = bytes.get_mut(start..end) else {
-            continue;
-        };
-        apply_animated_promotion_to_tail_record(record, animated_baked_index, state);
-    }
+    patch_animated_promotion_tail_records(
+        bytes,
+        full.light_count as usize,
+        full.animated_baked_light_count,
+        &full.promoted_animated_states,
+    );
 
     // `entity_shadow_lights` is raw-length N and index-parallel to the selection
     // index, so `[selection_index]` is a direct aligned lookup for every promoted
@@ -1796,6 +1805,25 @@ fn build_count_split_light_upload(
 
     if bytes.is_empty() {
         bytes.resize(postretro_lighting::GPU_LIGHT_SIZE, 0);
+    }
+}
+
+fn patch_animated_promotion_tail_records(
+    bytes: &mut [u8],
+    dynamic_light_count: usize,
+    animated_baked_light_count: usize,
+    states: &[PromotedBakedLightState],
+) {
+    let dynamic_bytes = dynamic_light_count * postretro_lighting::GPU_LIGHT_SIZE;
+    let default_state = PromotedBakedLightState::default();
+    for animated_baked_index in 0..animated_baked_light_count {
+        let start = dynamic_bytes + animated_baked_index * postretro_lighting::GPU_LIGHT_SIZE;
+        let end = start + postretro_lighting::GPU_LIGHT_SIZE;
+        let Some(record) = bytes.get_mut(start..end) else {
+            continue;
+        };
+        let state = states.get(animated_baked_index).unwrap_or(&default_state);
+        apply_animated_promotion_to_tail_record(record, animated_baked_index, state);
     }
 }
 
@@ -2218,6 +2246,64 @@ mod tests {
             1.0,
             "forward w and compose (1-w) derive from the identical state entry",
         );
+    }
+
+    // Regression: an all-non-promotable sparse roster took the empty-candidate
+    // return after resetting w, leaving authored RGB live in retained tail rows.
+    #[test]
+    fn empty_candidate_sparse_roster_zeros_every_retained_animated_tail_row() {
+        let dynamic = dynamic_shadow_light(postretro_level_loader::LightType::Point);
+        let animated = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let dynamic_record = postretro_lighting::pack_light(&dynamic);
+        let mut bytes = dynamic_record.to_vec();
+        bytes.resize(
+            dynamic_record.len() + 3 * postretro_lighting::GPU_LIGHT_SIZE,
+            0,
+        );
+        let authored = postretro_lighting::pack_light_with_slot(&animated, 4);
+        let row_one = 2 * postretro_lighting::GPU_LIGHT_SIZE;
+        let row_two = 3 * postretro_lighting::GPU_LIGHT_SIZE;
+        bytes[row_one..row_one + postretro_lighting::GPU_LIGHT_SIZE].copy_from_slice(&authored);
+        bytes[row_two..row_two + postretro_lighting::GPU_LIGHT_SIZE].copy_from_slice(&authored);
+        let retained_len = bytes.len();
+        let states = vec![PromotedBakedLightState::default(); 3];
+
+        patch_animated_promotion_tail_records(&mut bytes, 1, 3, &states);
+
+        assert_eq!(
+            bytes.len(),
+            retained_len,
+            "raw roster count must stay stable"
+        );
+        assert_eq!(
+            &bytes[..postretro_lighting::GPU_LIGHT_SIZE],
+            &dynamic_record
+        );
+        for animated_baked_index in 0..3 {
+            let start = (1 + animated_baked_index) * postretro_lighting::GPU_LIGHT_SIZE;
+            let record = &bytes[start..start + postretro_lighting::GPU_LIGHT_SIZE];
+            for offset in [16, 20, 24] {
+                assert_eq!(read_light_float(record, offset), 0.0);
+            }
+            assert_eq!(
+                u32::from_ne_bytes(
+                    record[postretro_lighting::SHADOW_SLOT_BYTE_OFFSET
+                        ..postretro_lighting::SHADOW_SLOT_BYTE_OFFSET + 4]
+                        .try_into()
+                        .unwrap(),
+                ),
+                postretro_lighting::NO_SHADOW_SLOT,
+            );
+            assert_eq!(
+                u32::from_ne_bytes(
+                    record[postretro_lighting::CUBE_SLOT_BYTE_OFFSET
+                        ..postretro_lighting::CUBE_SLOT_BYTE_OFFSET + 4]
+                        .try_into()
+                        .unwrap(),
+                ),
+                postretro_lighting::NO_SHADOW_SLOT,
+            );
+        }
     }
 
     // Regression: capture changed Pass B's state after the forward tail had

@@ -427,4 +427,50 @@ mod tests {
             -1.0
         );
     }
+
+    // Regression: selected-static metadata used to be read from the animated
+    // cache-prefix row when both promotion tiers coexisted.
+    #[test]
+    fn animated_and_selected_static_metadata_keep_disjoint_coexistence_regions() {
+        let records = [
+            PromotedBakedLightRecord {
+                global_light_index: 11,
+                pool_kind: PromotedShadowPoolKind::Spot,
+                slot: 5,
+                weight: 0.75,
+                source: PromotedBakedLightSource::AnimatedBaked {
+                    animated_baked_index: 1,
+                },
+            },
+            PromotedBakedLightRecord {
+                global_light_index: 19,
+                pool_kind: PromotedShadowPoolKind::Cube,
+                slot: 1,
+                weight: 0.5,
+                source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
+            },
+        ];
+        let mut bytes = Vec::new();
+
+        pack_forward_shadowmask_metadata(2, &records, &[7, 9], &[3], &[2], true, &mut bytes);
+
+        assert_eq!(
+            bytes.len(),
+            3 * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD,
+            "two raw animated rows precede the one selected-static metadata row",
+        );
+        assert_eq!(read_f32(&bytes, 28), -1.0);
+        assert_eq!(
+            read_f32(&bytes, FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD + 28),
+            7.0,
+        );
+        let selected = 2 * FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD;
+        assert_eq!(read_f32(&bytes, selected), 19.0);
+        assert_eq!(read_f32(&bytes, selected + 8), 3.0);
+        assert_eq!(read_f32(&bytes, selected + 12), 0.5);
+        assert_eq!(read_f32(&bytes, selected + 16), 1.0);
+        assert_eq!(read_f32(&bytes, selected + 20), 1.0);
+        assert_eq!(read_f32(&bytes, selected + 24), 2.0);
+        assert_eq!(read_f32(&bytes, selected + 28), 9.0);
+    }
 }

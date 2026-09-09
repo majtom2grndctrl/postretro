@@ -3892,12 +3892,17 @@ impl ApplicationHandler for App {
                             if update.has_dirty_data {
                                 renderer.upload_bridge_lights(update.lights_bytes);
                                 renderer.upload_bridge_influences(update.influence_bytes);
-                                renderer.upload_bridge_descriptors(update.descriptor_bytes);
-                                renderer.upload_bridge_samples(update.samples_bytes);
-                                // Fan out `_animated` descriptor updates to
-                                // the animated-compose buffer.
-                                for (slot, bytes) in update.compose_descriptor_writes {
-                                    renderer.write_animated_compose_descriptor(*slot, bytes);
+                                let forward_descriptors_committed =
+                                    renderer.upload_bridge_descriptors(update.descriptor_bytes);
+                                if forward_descriptors_committed {
+                                    renderer.upload_bridge_samples(update.samples_bytes);
+                                    // Compose and forward descriptors are one
+                                    // curve-scale transaction: retaining an old
+                                    // forward descriptor must retain its paired
+                                    // compose descriptor too.
+                                    for (slot, bytes) in update.compose_descriptor_writes {
+                                        renderer.write_animated_compose_descriptor(*slot, bytes);
+                                    }
                                 }
                             }
                             renderer.set_light_effective_brightness(update.effective_brightness);

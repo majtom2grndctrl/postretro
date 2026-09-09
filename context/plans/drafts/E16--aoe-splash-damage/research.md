@@ -68,8 +68,9 @@ emitting a payload per target; falloff on the payload), `combat-events.md` §4
 - Stage call: `projectile_stage::advance` from `simulate_tick_with_presentation_aim`
   (`sim/mod.rs:684`), frame stage 5 (entity_model §5: "Authoritative projectile
   flight … Impacts route through the Health chokepoint").
-- Owner: `ProjectileComponent { owner_pawn, owner_weapon, credit_source }`
-  (`projectile.rs:26`), set in `spawn_projectile` (`commands.rs:598`).
+- Owner: `ProjectileComponent { owner_pawn, owner_weapon, credit_source, .. }`
+  (14 fields total in `crates/entities/src/components/projectile.rs`; the emitter
+  reads only these three), set in `spawn_projectile` (`commands.rs:598`).
 - Owner exclusion seam: `projectile_collision_excludes(registry, projectile_id,
   owner_pawn, candidate)` (`projectile_stage.rs:438`), passed as the `ignored`
   closure to the entity query.

@@ -92,9 +92,25 @@ pub(crate) struct FilteredShadowCandidates {
     pub influences: Vec<LightInfluence>,
     /// Original index into the full level-light list for each candidate.
     pub source_indices: Vec<usize>,
-    /// Selection index for selected static lights; `None` for dynamic-tier
-    /// candidates.
+    /// Selection index for selected static lights; `None` for dynamic-tier and
+    /// animated-baked candidates.
     pub selection_indices: Vec<Option<usize>>,
+    /// `AnimatedBakedLights` index for section-45 animated-baked candidates.
+    /// This deliberately does not reuse `MapLight::animated_slot` or a compose
+    /// descriptor index: section 45's affinity entries, Task 2's weight array,
+    /// and Task 3's depth-cache key all use this independent namespace.
+    pub animated_baked_indices: Vec<Option<usize>>,
+}
+
+/// Runtime data for one section-45 animated-baked candidate. The roster is
+/// explicitly assembled at level load because it is neither part of the
+/// dynamic tier nor of `EntityShadowLights`.
+#[derive(Debug, Clone)]
+pub(crate) struct AnimatedBakedShadowCandidate {
+    pub source_index: usize,
+    pub animated_baked_index: usize,
+    pub light: MapLight,
+    pub influence: LightInfluence,
 }
 
 /// Shadow candidate reachability uses the runtime influence volume, not the
@@ -157,13 +173,14 @@ pub(crate) fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
 ) -> FilteredShadowCandidates {
-    filter_entity_shadow_candidates_with_selection(lights, influences, &[])
+    filter_entity_shadow_candidates_with_selection(lights, influences, &[], &[])
 }
 
 pub(crate) fn filter_entity_shadow_candidates_with_selection(
     lights: &[MapLight],
     influences: &[LightInfluence],
     entity_shadow_lights: &[u32],
+    animated_baked_lights: &[AnimatedBakedShadowCandidate],
 ) -> FilteredShadowCandidates {
     let mut filtered = FilteredShadowCandidates::default();
     for (i, l) in lights.iter().enumerate().filter(|(_, l)| l.is_dynamic) {
@@ -175,6 +192,7 @@ pub(crate) fn filter_entity_shadow_candidates_with_selection(
         filtered.influences.push(inf);
         filtered.source_indices.push(i);
         filtered.selection_indices.push(None);
+        filtered.animated_baked_indices.push(None);
     }
     // Compacted: a skipped selected-static entry is simply not a candidate. The
     // stamped `selection_index` is the RAW position in `entity_shadow_lights`,
@@ -189,8 +207,87 @@ pub(crate) fn filter_entity_shadow_candidates_with_selection(
         filtered.influences.push(inf);
         filtered.source_indices.push(source_index);
         filtered.selection_indices.push(Some(selection_index));
+        filtered.animated_baked_indices.push(None);
+    }
+    for animated in animated_baked_lights {
+        filtered.lights.push(animated.light.clone());
+        filtered.influences.push(animated.influence.clone());
+        filtered.source_indices.push(animated.source_index);
+        filtered.selection_indices.push(None);
+        filtered
+            .animated_baked_indices
+            .push(Some(animated.animated_baked_index));
     }
     filtered
+}
+
+/// Assemble the section-45 candidate roster in `AnimatedBakedLights` order.
+///
+/// `MapLight::animated_slot` establishes only that a loaded map light belongs
+/// to the baked-animation roster. The index retained on each output row is the
+/// roster position, never that map-light slot or the section's descriptor-table
+/// value. This keeps promotion keyed to the same namespace as section 45's
+/// `affinity_lights` entries even if descriptor routing changes later.
+pub(crate) fn animated_baked_shadow_candidates_with_direct_delta(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+    animation_descriptor_indices: &[u32],
+    affinity_lights: &[u32],
+) -> Vec<AnimatedBakedShadowCandidate> {
+    animation_descriptor_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(animated_baked_index, &descriptor_index)| {
+            let animated_baked_index_u32 = u32::try_from(animated_baked_index).ok()?;
+            // A section-45 descriptor row alone does not prove a light owns a
+            // delta block. `affinity_lights` is the sparse direct-delta
+            // membership set, so only rows appearing there are eligible for
+            // runtime promotion.
+            if !affinity_lights
+                .iter()
+                .any(|&index| index == animated_baked_index_u32)
+            {
+                return None;
+            }
+            // `animation_descriptor_indices` is the explicit section-45
+            // AnimatedBakedLights roster. `animated_slot` only joins its
+            // descriptor identity to a runtime MapLight; it must not become
+            // the candidate's index. Looking up each roster row also leaves a
+            // missing/bake-only MapLight as a hole instead of shifting every
+            // later AnimatedBakedLights index down by one.
+            let (source_index, light) = lights.iter().enumerate().find(|(_, light)| {
+                !light.is_dynamic && light.animated_slot == Some(descriptor_index)
+            })?;
+            Some(AnimatedBakedShadowCandidate {
+                source_index,
+                animated_baked_index,
+                light: light.clone(),
+                influence: influences
+                    .get(source_index)
+                    .cloned()
+                    .unwrap_or_else(uncullable_light_influence),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn shadow_candidate_is_animated_baked(
+    animated_baked_indices: &[Option<usize>],
+    candidate_index: usize,
+) -> bool {
+    animated_baked_indices
+        .get(candidate_index)
+        .and_then(|index| *index)
+        .is_some()
+}
+
+pub(crate) fn shadow_candidate_is_promoted_baked(
+    selection_indices: &[Option<usize>],
+    animated_baked_indices: &[Option<usize>],
+    candidate_index: usize,
+) -> bool {
+    shadow_candidate_is_promoted_static(selection_indices, candidate_index)
+        || shadow_candidate_is_animated_baked(animated_baked_indices, candidate_index)
 }
 
 /// Build the selected-static light/influence/source-index vectors index-parallel
@@ -566,8 +663,9 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            if shadow_candidate_is_promoted_static(
+            if shadow_candidate_is_promoted_baked(
                 &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
                 light_idx,
             ) {
                 continue;
@@ -737,6 +835,30 @@ impl Renderer {
         full.light_effective_brightness
             .extend(effective_brightness.iter().copied().take(expected));
         full.light_effective_brightness.resize(expected, 1.0);
+    }
+
+    /// Install the animated-baked lookahead brightness gate. This vector is
+    /// keyed exclusively by `AnimatedBakedLights` index; it is intentionally a
+    /// separate API from dynamic `effective_brightness`, whose compact index
+    /// space excludes baked animated lights.
+    pub fn set_animated_light_window_brightness(&mut self, brightness: &[f32]) {
+        let full = self.full_mut();
+        let expected = full.promoted_animated_states.len();
+        if brightness.len() != expected {
+            log::warn!(
+                "[Renderer] animated lookahead brightness count {} does not match section-45 animated-light count {}; \\
+                 missing entries default to dark and excess entries are ignored.",
+                brightness.len(),
+                expected,
+            );
+        }
+        full.animated_light_window_brightness.clear();
+        full.animated_light_window_brightness
+            .extend(brightness.iter().copied().take(expected));
+        // Absent bridge data must fail closed: treating a baked animated light
+        // as fully bright here would recreate the dynamic-index-space accident
+        // this channel exists to avoid.
+        full.animated_light_window_brightness.resize(expected, 0.0);
     }
 }
 

@@ -188,15 +188,32 @@ impl Renderer {
             geometry.light_influences,
             geometry.entity_shadow_lights,
         );
+        let (animated_baked_descriptor_indices, animated_baked_affinity_lights) = geometry
+            .animated_direct_sh_delta_volumes
+            .map_or((&[][..], &[][..]), |section| {
+                (
+                    section.animation_descriptor_indices.as_slice(),
+                    section.affinity_lights.as_slice(),
+                )
+            });
+        let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
+            geometry.lights,
+            geometry.light_influences,
+            animated_baked_descriptor_indices,
+            animated_baked_affinity_lights,
+        );
         let filtered_shadow_candidates = filter_entity_shadow_candidates_with_selection(
             geometry.lights,
             geometry.light_influences,
             geometry.entity_shadow_lights,
+            &animated_baked_candidates,
         );
         let shadow_candidate_lights = filtered_shadow_candidates.lights;
         let shadow_candidate_influences = filtered_shadow_candidates.influences;
         let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
         let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
+        let shadow_candidate_animated_baked_indices =
+            filtered_shadow_candidates.animated_baked_indices;
         full.light_count = level_lights.len() as u32;
         full.total_light_count = full.light_count;
         let level_light_count = level_lights.len();
@@ -233,6 +250,13 @@ impl Renderer {
         full.forward_shadowmask_metadata_scratch.clear();
         full.promoted_static_states =
             vec![PromotedStaticLightState::default(); geometry.entity_shadow_lights.len()];
+        // Preserve raw section-45 index space even when a roster row lacks a
+        // runtime MapLight candidate (for example, a bake-only entry).
+        full.promoted_animated_states =
+            vec![PromotedStaticLightState::default(); animated_baked_descriptor_indices.len()];
+        // A level reload must not let the prior level's window maxima keep a
+        // newly-loaded animated candidate alive before its bridge update.
+        full.animated_light_window_brightness = vec![0.0; animated_baked_descriptor_indices.len()];
         full.promoted_static_records.clear();
         full.promoted_static_cache_layers.clear();
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
@@ -279,6 +303,7 @@ impl Renderer {
         full.shadow_candidate_source_indices = shadow_candidate_source_indices;
         full.shadow_candidate_influences = shadow_candidate_influences;
         full.shadow_candidate_selection_indices = shadow_candidate_selection_indices;
+        full.shadow_candidate_animated_baked_indices = shadow_candidate_animated_baked_indices;
 
         let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
             dynamic_light_capacity,

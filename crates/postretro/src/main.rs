@@ -3901,6 +3901,9 @@ impl ApplicationHandler for App {
                                 }
                             }
                             renderer.set_light_effective_brightness(&update.effective_brightness);
+                            renderer.set_animated_light_window_brightness(
+                                &update.animated_window_brightness,
+                            );
                         }
                     }
 

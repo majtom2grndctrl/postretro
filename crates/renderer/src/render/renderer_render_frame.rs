@@ -179,12 +179,15 @@ impl Renderer {
             let full = self.full();
             full.shadow_candidate_lights
                 .iter()
-                .zip(&full.shadow_candidate_selection_indices)
-                .any(|(light, selection)| {
-                    selection.is_some()
-                        && (light.light_type == postretro_level_loader::LightType::Spot
-                            || (light.light_type == postretro_level_loader::LightType::Point
-                                && full.cube_shadow_pool.is_some()))
+                .enumerate()
+                .any(|(candidate_index, light)| {
+                    shadow_candidate_is_promoted_baked(
+                        &full.shadow_candidate_selection_indices,
+                        &full.shadow_candidate_animated_baked_indices,
+                        candidate_index,
+                    ) && (light.light_type == postretro_level_loader::LightType::Spot
+                        || (light.light_type == postretro_level_loader::LightType::Point
+                            && full.cube_shadow_pool.is_some()))
                 })
         } else {
             false
@@ -211,11 +214,14 @@ impl Renderer {
             // mem::take avoids a simultaneous borrow of self; returned after call
             // to reuse the allocation.
             let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
+            let animated_window_brightness =
+                std::mem::take(&mut self.full_mut().animated_light_window_brightness);
             let last_camera_position = self.full().last_camera_position;
             self.update_dynamic_light_slots(
                 last_camera_position,
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
+                &animated_window_brightness,
                 reachable_cell_aabbs,
                 now_seconds,
                 promotion_mesh_frame_plan,
@@ -230,10 +236,12 @@ impl Renderer {
                     light_reachable_cell_mask,
                     reachable_cell_aabbs,
                     &eff_brightness,
+                    &animated_window_brightness,
                     camera_cell,
                 );
             }
             self.full_mut().light_effective_brightness = eff_brightness;
+            self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
             #[cfg(feature = "dev-tools")]
             let direct_sh_debug_override = self.full().direct_sh_debug_override;

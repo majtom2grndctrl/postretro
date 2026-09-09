@@ -734,7 +734,13 @@ impl App {
                 .collect()
         };
 
-        let (map_lights, map_light_influences, baked_light_descriptors, fgd_sample_float_count) = {
+        let (
+            map_lights,
+            map_light_influences,
+            baked_light_descriptors,
+            animated_baked_descriptor_indices,
+            fgd_sample_float_count,
+        ) = {
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {
@@ -794,6 +800,11 @@ impl App {
                     .as_ref()
                     .map(|section| section.animation_descriptors.clone())
                     .unwrap_or_default(),
+                world
+                    .animated_direct_sh_delta_volumes
+                    .as_ref()
+                    .map(|section| section.animation_descriptor_indices.clone())
+                    .unwrap_or_default(),
                 (renderer.scripted_sample_byte_offset() / 4) as u32,
             )
         };
@@ -818,6 +829,11 @@ impl App {
                     &mut registry,
                     fgd_sample_float_count,
                 );
+            self.session
+                .as_mut()
+                .expect("session installed before level install")
+                .light_bridge
+                .set_animated_baked_promotion_roster(&animated_baked_descriptor_indices);
         }
 
         // Segment B of the CPU world install: fog-volume entities, trigger-volume

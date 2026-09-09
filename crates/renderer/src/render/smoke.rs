@@ -46,6 +46,15 @@ pub struct SpriteCollectionRegistration {
     pub emissive: f32,
 }
 
+/// Filesystem inputs for loading one asset's shared sprite arrays. This stays
+/// separate from `collection_id`: the id selects a draw binding, while the
+/// asset reference selects the deduplicated texture upload.
+pub(super) struct SpriteCollectionAssetSource<'a> {
+    pub(super) asset: &'a str,
+    pub(super) texture_root: &'a Path,
+    pub(super) prm_cache_root: &'a Path,
+}
+
 /// Whether a static-light Blinn-Phong exponent is safe to pack for the shader.
 pub fn sprite_specular_exponent_is_valid(spec_exponent: f32) -> bool {
     spec_exponent.is_finite() && spec_exponent > 0.0
@@ -1180,9 +1189,7 @@ impl SmokePass {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         collection_id: &str,
-        asset: &str,
-        texture_root: &Path,
-        prm_cache_root: &Path,
+        asset_source: SpriteCollectionAssetSource<'_>,
         registration: SpriteCollectionRegistration,
     ) {
         if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
@@ -1201,13 +1208,13 @@ impl SmokePass {
 
         if self
             .sprite_assets
-            .get_or_try_upload(asset, || {
+            .get_or_try_upload(asset_source.asset, || {
                 Self::upload_sprite_asset(
                     device,
                     queue,
-                    asset,
-                    texture_root,
-                    prm_cache_root,
+                    asset_source.asset,
+                    asset_source.texture_root,
+                    asset_source.prm_cache_root,
                     registration.baked_sidecar_eligible,
                 )
             })
@@ -1218,7 +1225,7 @@ impl SmokePass {
 
         let sprite_asset = self
             .sprite_assets
-            .resource(asset)
+            .resource(asset_source.asset)
             .expect("successful sprite asset upload must populate the cache");
         // `NORMAL` presence is the sole shimmer discriminator. The exact same
         // predicate controls params2.x and whether optional slot views are
@@ -1310,7 +1317,8 @@ impl SmokePass {
                 slot_mask,
             },
         );
-        self.sprite_assets.record_collection(collection_id, asset);
+        self.sprite_assets
+            .record_collection(collection_id, asset_source.asset);
     }
 
     /// Drop per-level sprite sheet textures and bind groups. The shared

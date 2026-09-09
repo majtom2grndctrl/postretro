@@ -358,7 +358,11 @@ execution surface. Crossing-, named-event-, and level-fired system reactions
 enqueue typed commands for the app-side drain after post-tick events;
 audio/input/UI/lifecycle subsystems consume them without threading engine
 services into scripting. Trigger `on_fire` / `on_exit` `setState` writes instead
-execute in the simulation tick against the tick-context slot table.
+execute in the simulation tick against the tick-context slot table. Only slot
+writes have that in-tick trigger surface: a consequential system reaction that
+writes an engine-owned overlay rather than a tick-context slot — the runtime
+sentiment verbs (not yet built) — drains at frame-end from every source,
+trigger fires included, so it lands the next tick with no same-tick visibility.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into

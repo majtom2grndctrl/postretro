@@ -20,6 +20,16 @@ fn array_layers_sufficient(limit: u32) -> bool {
     limit >= REQUIRED_MAX_TEXTURE_ARRAY_LAYERS
 }
 
+/// Capacity shared by the forward animation-descriptor and scripted-sample
+/// buffers. The bridge emits every raw section-45 roster row, including holes
+/// and duplicate descriptor indices, after the compact dynamic prefix.
+pub(crate) fn scripted_light_capacity(
+    dynamic_light_count: usize,
+    animated_baked_descriptor_indices: &[u32],
+) -> usize {
+    dynamic_light_count + RUNTIME_DYNAMIC_LIGHT_RESERVE + animated_baked_descriptor_indices.len()
+}
+
 /// GPU timing uses pass-descriptor timestamps for individual render/compute
 /// passes and encoder-level timestamps for spans containing copies or several
 /// passes. wgpu exposes those operations as separate device features.
@@ -698,6 +708,21 @@ mod tests {
         assert!(
             array_layers_sufficient(2048),
             "well above the floor must be accepted",
+        );
+    }
+
+    #[test]
+    fn scripted_capacity_counts_sparse_duplicate_raw_tail_past_runtime_reserve() {
+        let mut animated_roster = vec![u32::MAX; 129];
+        animated_roster.extend(std::iter::repeat_n(7, 128));
+
+        let capacity = scripted_light_capacity(3, &animated_roster);
+
+        assert_eq!(animated_roster.len(), 257);
+        assert_eq!(capacity, 3 + RUNTIME_DYNAMIC_LIGHT_RESERVE + 257);
+        assert!(
+            capacity > 4 + RUNTIME_DYNAMIC_LIGHT_RESERVE,
+            "capacity must follow raw tail cardinality, not authored map-light count",
         );
     }
 }

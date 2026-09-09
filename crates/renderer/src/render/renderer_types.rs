@@ -492,8 +492,9 @@ pub(crate) struct PromotedBakedLightState {
 
 /// The one CPU seam for an animated-baked promotion's runtime share. Both the
 /// forward tail encoder and binding-26's complementary compose array call this
-/// against the same raw `AnimatedBakedLights` state entry. Capped overflow is
-/// never promoted and stays fully baked in Pass B.
+/// against the same raw `AnimatedBakedLights` state entry. A detached state has
+/// no shadow resource and therefore contributes no runtime share. Capped
+/// overflow is never promoted and stays fully baked in Pass B.
 pub(super) fn animated_baked_promotion_weight(
     animated_baked_index: usize,
     state: Option<&PromotedBakedLightState>,
@@ -502,6 +503,7 @@ pub(super) fn animated_baked_promotion_weight(
         return 0.0;
     }
     state
+        .filter(|state| state.pool_kind.is_some())
         .map(|state| state.weight)
         .unwrap_or(0.0)
         .clamp(0.0, 1.0)

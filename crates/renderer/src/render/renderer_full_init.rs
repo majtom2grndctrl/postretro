@@ -216,7 +216,8 @@ pub(crate) fn build_full_renderer(
         bloom_render_profile,
     );
 
-    let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
+    let scripted_light_capacity =
+        scripted_light_capacity(level_lights.len(), animated_baked_descriptor_indices);
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,

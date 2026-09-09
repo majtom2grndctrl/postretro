@@ -85,7 +85,8 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
     pub(super) light_term_mask: LightTermMask,
     pub(super) debug_overrides: DirectShComposeDebugOverrides,
     /// Raw `AnimatedBakedLights` states. Binding 26 packs their complementary
-    /// `(1 - state.weight)` factors without ever compacting the namespace.
+    /// effective promotion factors without ever compacting the namespace;
+    /// detached states retain the full baked delta.
     pub(super) animated_promotion_states: &'a [PromotedBakedLightState],
     pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
 }

@@ -408,8 +408,7 @@ impl Renderer {
                 animated_billboard_direct_scatter_delta: geometry
                     .animated_billboard_direct_scatter_delta_volumes,
             },
-            // Runtime-spawned lights append after the full-authored prefix.
-            geometry.lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
+            scripted_light_capacity(level_light_count, animated_baked_descriptor_indices),
             full.probe_occlusion_enabled,
         );
 

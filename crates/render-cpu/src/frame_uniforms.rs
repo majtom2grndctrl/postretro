@@ -223,9 +223,9 @@ pub struct FrameUniforms {
     /// byte-116 `has_direct` word. It is never a radiance scalar.
     pub animated_baked_light_count: u32,
     /// Runtime direct-light records available to dynamic entity consumers.
-    /// `light_count` remains the dynamic-tier count for the forward world path;
-    /// this total additionally includes promoted static lights appended after
-    /// the dynamic records.
+    /// `light_count` is the dynamic-tier count for the forward world path.
+    /// `total_light_count` spans the dynamic prefix, raw Section-45
+    /// `AnimatedBakedLights` tail, and selected-static suffix.
     pub total_light_count: u32,
     /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
     /// forward shader. Encoded as a u32 (0 = normal, non-zero = forced) in

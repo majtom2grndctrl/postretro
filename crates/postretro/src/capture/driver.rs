@@ -316,10 +316,12 @@ fn install_capture_animated_promotion_bridge(
     }
     renderer.upload_bridge_lights(update.lights_bytes);
     renderer.upload_bridge_influences(update.influence_bytes);
-    renderer.upload_bridge_descriptors(update.descriptor_bytes);
-    renderer.upload_bridge_samples(update.samples_bytes);
-    for (slot, bytes) in update.compose_descriptor_writes {
-        renderer.write_animated_compose_descriptor(*slot, bytes);
+    let forward_descriptors_committed = renderer.upload_bridge_descriptors(update.descriptor_bytes);
+    if forward_descriptors_committed {
+        renderer.upload_bridge_samples(update.samples_bytes);
+        for (slot, bytes) in update.compose_descriptor_writes {
+            renderer.write_animated_compose_descriptor(*slot, bytes);
+        }
     }
     renderer.set_light_effective_brightness(update.effective_brightness);
     renderer.set_animated_light_window_brightness(update.animated_window_brightness);
@@ -439,7 +441,8 @@ fn resolve_forced_active_animation_slots(
 /// Resolve capture promotion tags through the section-45 raw roster. A
 /// `MapLight::animated_slot` is only the compose-descriptor lookup key; the
 /// renderer's promotion state is keyed by the roster position, so never pass
-/// the slot itself to the capture override.
+/// the slot itself to the capture override. Duplicate slots use the runtime
+/// bridge's first-static-light identity.
 fn resolve_forced_animated_promotion_rows(
     lights: &[postretro_level_loader::MapLight],
     section: Option<
@@ -458,46 +461,38 @@ fn resolve_forced_animated_promotion_rows(
     })?;
     let delta_rows: HashSet<u32> = section.affinity_lights.iter().copied().collect();
 
+    let first_static_light_for_slot = |slot: u32| {
+        lights
+            .iter()
+            .enumerate()
+            .find(|(_, light)| !light.is_dynamic && light.animated_slot == Some(slot))
+    };
+
     let mut rows = BTreeMap::new();
     for forced in forced_promotions {
         let mut tag_found = false;
         let mut animated_light_found = false;
         let mut roster_row_found = false;
-        for light in lights {
+        for (light_index, light) in lights.iter().enumerate() {
             if !light.tags.iter().any(|tag| tag == &forced.tag) {
                 continue;
             }
             tag_found = true;
+            if light.is_dynamic {
+                continue;
+            }
             let Some(slot) = light.animated_slot else {
                 continue;
             };
             animated_light_found = true;
-            for (animated_baked_index, &descriptor_index) in
-                section.animation_descriptor_indices.iter().enumerate()
-            {
-                if descriptor_index != slot {
-                    continue;
-                }
-                roster_row_found = true;
-                if !delta_rows.contains(&(animated_baked_index as u32)) {
-                    bail!(
-                        "force_promotion tag `{}` resolves to section-45 AnimatedBakedLights row {animated_baked_index}, but that row has no affinity/direct delta and is not promotion-eligible",
-                        forced.tag
-                    );
-                }
-                match rows.entry(animated_baked_index) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(forced.weight);
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry)
-                        if *entry.get() == forced.weight => {}
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        bail!(
-                            "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
-                            forced.tag
-                        );
-                    }
-                }
+            let Some((runtime_light_index, _)) = first_static_light_for_slot(slot) else {
+                continue;
+            };
+            if runtime_light_index != light_index {
+                bail!(
+                    "force_promotion tag `{}` matches duplicate animated slot {slot} at map-light index {light_index}, but runtime section-45 identity resolves to the first static map light at index {runtime_light_index}",
+                    forced.tag
+                );
             }
         }
         if !tag_found {
@@ -508,9 +503,42 @@ fn resolve_forced_animated_promotion_rows(
         }
         if !animated_light_found {
             bail!(
-                "force_promotion tag `{}` does not match an animated map light",
+                "force_promotion tag `{}` does not match an animated baked map light",
                 forced.tag
             );
+        }
+
+        // Resolve each raw row through the same first-static descriptor-slot
+        // join used by the runtime bridge and renderer candidate roster.
+        for (animated_baked_index, &descriptor_index) in
+            section.animation_descriptor_indices.iter().enumerate()
+        {
+            let Some((_, runtime_light)) = first_static_light_for_slot(descriptor_index) else {
+                continue;
+            };
+            if !runtime_light.tags.iter().any(|tag| tag == &forced.tag) {
+                continue;
+            }
+            roster_row_found = true;
+            if !delta_rows.contains(&(animated_baked_index as u32)) {
+                bail!(
+                    "force_promotion tag `{}` resolves to section-45 AnimatedBakedLights row {animated_baked_index}, but that row has no affinity/direct delta and is not promotion-eligible",
+                    forced.tag
+                );
+            }
+            match rows.entry(animated_baked_index) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(forced.weight);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if *entry.get() == forced.weight => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    bail!(
+                        "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
+                        forced.tag
+                    );
+                }
+            }
         }
         if !roster_row_found {
             bail!(
@@ -1059,6 +1087,67 @@ mod tests {
                 .expect("tagged animated light must resolve"),
             vec![(1, 0.75)],
             "the renderer weight state is keyed by raw AnimatedBakedLights row, not descriptor slot 7"
+        );
+    }
+
+    // Regression: capture used the tag-matched duplicate while runtime joins
+    // each raw roster row to the first static light carrying that slot.
+    #[test]
+    fn force_promotion_rejects_tag_on_shadowed_duplicate_animated_slot() {
+        let mut runtime_owner = test_light(false, 1.0);
+        runtime_owner.tags = vec!["first_light".into()];
+        runtime_owner.animated_slot = Some(7);
+        let mut shadowed_duplicate = test_light(false, 2.0);
+        shadowed_duplicate.tags = vec!["alarm_light".into()];
+        shadowed_duplicate.animated_slot = Some(7);
+        let section = postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [0; 3],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![7],
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: vec![0],
+            delta_subblocks: Vec::new(),
+        };
+        let forced = [ForcedAnimatedPromotion {
+            tag: "alarm_light".into(),
+            weight: 0.75,
+        }];
+
+        let error = resolve_forced_animated_promotion_rows(
+            &[runtime_owner, shadowed_duplicate],
+            Some(&section),
+            Some(&forced),
+        )
+        .expect_err("capture must not promote a different duplicate than runtime");
+
+        assert!(
+            error.to_string().contains("duplicate animated slot 7")
+                && error.to_string().contains("first static map light"),
+            "capture must report the raw-roster identity conflict: {error:#}",
+        );
+
+        let mut runtime_owner = test_light(false, 1.0);
+        runtime_owner.tags = vec!["first_light".into()];
+        runtime_owner.animated_slot = Some(7);
+        let mut shadowed_duplicate = test_light(false, 2.0);
+        shadowed_duplicate.tags = vec!["alarm_light".into()];
+        shadowed_duplicate.animated_slot = Some(7);
+        let owner_forced = [ForcedAnimatedPromotion {
+            tag: "first_light".into(),
+            weight: 0.5,
+        }];
+        assert_eq!(
+            resolve_forced_animated_promotion_rows(
+                &[runtime_owner, shadowed_duplicate],
+                Some(&section),
+                Some(&owner_forced),
+            )
+            .expect("the runtime-owned duplicate identity remains forceable"),
+            vec![(0, 0.5)],
         );
     }
 

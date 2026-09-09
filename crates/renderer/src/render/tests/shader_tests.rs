@@ -467,10 +467,9 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         "influence-volume early-out must read the promoted influence before metadata"
     );
     assert!(
-        helper.contains(
-            "let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;"
-        ),
-        "metadata must live after the complete dynamic/animated/static influence prefix"
+        helper.contains("+ animated_baked_light_tail_count() * SHADOWMASK_META_VEC4S_PER_RECORD")
+            && helper.contains("+ p * SHADOWMASK_META_VEC4S_PER_RECORD;"),
+        "selected-static metadata must live after the complete influence prefix and raw animated metadata prefix"
     );
     assert!(
         helper.contains("if meta_index + 1u >= influence_len"),

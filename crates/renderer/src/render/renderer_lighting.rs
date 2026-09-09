@@ -592,7 +592,10 @@ impl Renderer {
     }
 
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
-    pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
+    /// Returns whether the forward descriptor upload committed so callers can
+    /// keep the paired compose descriptor writes transactional with it.
+    #[must_use = "paired compose descriptor writes require a committed forward upload"]
+    pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) -> bool {
         let Self { queue, full, .. } = self;
         let full = full
             .as_ref()
@@ -613,16 +616,17 @@ impl Renderer {
                 sh_volume::ANIMATION_DESCRIPTOR_SIZE,
                 expected,
             );
-            return;
+            return false;
         };
         if prefix_len == 0 {
-            return;
+            return true;
         }
         queue.write_buffer(
             &full.sh_volume_resources.scripted_light_descriptors,
             0,
             &descriptor_bytes[..prefix_len],
         );
+        true
     }
 
     /// Writes at scripted-region offset (after FGD samples).
@@ -955,6 +959,23 @@ mod bridge_contract_tests {
             ),
             None,
             "every raw animated tail record must retain its descriptor slot",
+        );
+    }
+
+    // Regression: a short forward descriptor upload retained the old GPU
+    // descriptor while callers still committed its new compose-side partner.
+    #[test]
+    fn short_forward_descriptor_batch_is_rejected_before_compose_commit() {
+        let stride = sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+
+        assert_eq!(
+            forward_descriptor_prefix_len(stride, 1, 4, 1),
+            None,
+            "one dynamic plus one animated-tail descriptor is the atomic prefix",
+        );
+        assert_eq!(
+            forward_descriptor_prefix_len(2 * stride, 1, 4, 1),
+            Some(2 * stride),
         );
     }
 

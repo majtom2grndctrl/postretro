@@ -728,9 +728,9 @@ pub(super) struct FullRenderer {
     /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
     /// redundant `queue.write_buffer` when the packed bytes are unchanged.
     pub(super) last_lights_upload: Vec<u8>,
-    /// Dynamic-prefix mirror of `influence_buffer`, index-parallel to
-    /// `last_lights_upload`. Promoted static influences and metadata append
-    /// after this prefix during shadow-slot updates.
+    /// Cached dynamic influences plus the raw animated-baked tail, index-parallel
+    /// to `last_lights_upload`. Shadow-slot updates preserve both before appending
+    /// selected-static influences and shadowmask metadata.
     pub(super) last_influence_upload: Vec<u8>,
     /// Scratch buffer for the fallback full-repack path. Used only when
     /// `last_lights_upload` is not yet sized to the current light set
@@ -738,9 +738,9 @@ pub(super) struct FullRenderer {
     /// `last_lights_upload` in place via `patch_shadow_slots` — scratch
     /// is not touched in that branch.
     pub(super) lights_pack_scratch: Vec<u8>,
-    /// Scratch buffer for per-frame influence upload. Dynamic influences are
-    /// followed by promoted static influences, matching the count-split light
-    /// buffer without allocating in the render hot path.
+    /// Scratch buffer for per-frame influence upload: dynamic influences, raw
+    /// animated-baked tail, selected-static influences, then shadowmask metadata.
+    /// Matches the count-split light buffer without render-hot-path allocation.
     pub(super) influence_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     pub(super) level_lights: Vec<MapLight>,

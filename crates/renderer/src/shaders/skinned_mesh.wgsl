@@ -415,8 +415,8 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
     );
 }
 
-// Runtime direct light loop — mirrors forward.wgsl's dynamic-tier loop with
-// promoted static records appended for entity receivers, but DIFFUSE-ONLY:
+// Runtime direct light loop — consumes the dynamic prefix, raw animated-baked
+// tail, and selected-static suffix for entity receivers, but DIFFUSE-ONLY:
 // Lambert against the interpolated skinned
 // normal `n`, no specular and no normal-map perturbation (the mesh path has
 // neither — see rendering_pipeline.md §9). Each per-light term is attenuated by

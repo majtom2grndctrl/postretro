@@ -789,7 +789,9 @@ fn shadowmask_union_subtraction(
             }
         }
 
-        let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;
+        let meta_index = uniforms.total_light_count
+            + animated_baked_light_tail_count() * SHADOWMASK_META_VEC4S_PER_RECORD
+            + p * SHADOWMASK_META_VEC4S_PER_RECORD;
         if meta_index + 1u >= influence_len {
             break;
         }

@@ -24,12 +24,13 @@ use crate::runtime_movers::{
 use crate::scripting::builtins::{ClassnameDispatch, apply_classname_dispatch, register_builtins};
 use crate::scripting::map_entity::MapEntity;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::light_bridge::LightBridge;
 use crate::scripting_systems::mesh_anim::MeshClipTables;
 use crate::scripting_systems::mesh_render::MeshRenderCollector;
 use crate::startup::session::content_root_from_map;
 use crate::startup::worker::derive_prm_root_dev_layout;
 
-use super::scene::{CameraPose, ForcedAnimLight, parse_scene};
+use super::scene::{CameraPose, ForcedAnimLight, ForcedAnimatedPromotion, parse_scene};
 
 /// Portal-walk capture controls diagnostics only; capture has no diagnostic
 /// consumer, so avoid allocating a one-frame trace.
@@ -93,10 +94,15 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         ..level_world_to_geometry(&world, &texture_materials)
     };
     renderer.install_level_geometry(&geometry);
-    install_forced_active_animation_descriptors(
+    let forced_active_writes = install_forced_active_animation_descriptors(
         &mut renderer,
         &world.lights,
         scene.force_active.as_deref(),
+    )?;
+    let forced_promotion_weights = resolve_forced_animated_promotion_rows(
+        &world.lights,
+        world.animated_direct_sh_delta_volumes.as_ref(),
+        scene.force_promotion.as_deref(),
     )?;
 
     let eye = Vec3::from_array(scene.camera.position);
@@ -118,7 +124,15 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
 
     // Capture has no script context or levelLoad event. Stand up only the
     // VM-free map-authored receiver state the windowed render frame collects.
-    let registry = spawn_capture_receiver_registry(&world)?;
+    let mut registry = spawn_capture_receiver_registry(&world)?;
+    if !forced_promotion_weights.is_empty() {
+        install_capture_animated_promotion_bridge(
+            &mut renderer,
+            &world,
+            &mut registry,
+            &forced_active_writes,
+        )?;
+    }
     for model in capture_mesh_models(&registry)? {
         renderer
             .load_skinned_model(&model, &content_root, &prm_cache_root)
@@ -153,6 +167,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         view_proj,
         eye,
         &[],
+        &forced_promotion_weights,
         ClearColor {
             r: 0.05,
             g: 0.05,
@@ -245,12 +260,98 @@ fn install_forced_active_animation_descriptors(
     renderer: &mut Renderer,
     lights: &[postretro_level_loader::MapLight],
     forced_lights: Option<&[ForcedAnimLight]>,
-) -> Result<()> {
+) -> Result<Vec<(u32, [f32; 3])>> {
     let writes = resolve_forced_active_animation_slots(lights, forced_lights)?;
     validate_forced_animation_slot_bounds(&writes, renderer.animated_compose_descriptor_count())?;
-    for (slot, radiance) in writes {
+    for &(slot, radiance) in &writes {
         renderer
             .write_animated_compose_descriptor(slot, &forced_active_animation_descriptor(radiance));
+    }
+    Ok(writes)
+}
+
+/// Capture normally remains the v1, delta-only path. A forced promoted still
+/// is the one exception: materialize the same bridge tail windowed gameplay
+/// emits, then let the renderer pin the already-assigned row's `w`. This keeps
+/// the capture VM-free and single-instant while exercising the real forward
+/// descriptor, rest cone, slot, and depth-cache seams.
+fn install_capture_animated_promotion_bridge(
+    renderer: &mut Renderer,
+    world: &postretro_level_loader::LevelWorld,
+    registry: &mut EntityRegistry,
+    forced_active_writes: &[(u32, [f32; 3])],
+) -> Result<()> {
+    let baked_descriptors = world
+        .sh_volume
+        .as_ref()
+        .map(|volume| volume.animation_descriptors.as_slice())
+        .unwrap_or(&[]);
+    let roster = world
+        .animated_direct_sh_delta_volumes
+        .as_ref()
+        .map(|section| section.animation_descriptor_indices.as_slice())
+        .unwrap_or(&[]);
+    let mut bridge = LightBridge::new();
+    bridge.populate_from_level_with_influences(
+        &world.lights,
+        &world.light_influences,
+        baked_descriptors,
+        registry,
+        (renderer.scripted_sample_byte_offset() / size_of::<f32>()) as u32,
+    );
+    bridge.set_animated_baked_promotion_roster(roster);
+    apply_forced_active_capture_light_components(registry, forced_active_writes)?;
+    let update = bridge
+        .update(registry, 0.0, 1.0)
+        .ok_or_else(|| anyhow!("capture promotion needs at least one map light"))?;
+    if !update.has_dirty_data {
+        bail!("capture promotion bridge did not emit its animated forward tail");
+    }
+    renderer.upload_bridge_lights(&update.lights_bytes);
+    renderer.upload_bridge_influences(&update.influence_bytes);
+    renderer.upload_bridge_descriptors(&update.descriptor_bytes);
+    renderer.upload_bridge_samples(&update.samples_bytes);
+    for (slot, bytes) in &update.compose_descriptor_writes {
+        renderer.write_animated_compose_descriptor(*slot, bytes);
+    }
+    renderer.set_light_effective_brightness(&update.effective_brightness);
+    renderer.set_animated_light_window_brightness(&update.animated_window_brightness);
+    Ok(())
+}
+
+/// The existing `force_active` descriptor only owns Pass B. When a forced
+/// still also promotes, update the bridge-owned light so the forward term uses
+/// identical radiance. The bridge then writes the same 48-byte compose
+/// descriptor, proving a forced `w=0` scene remains byte-identical to v1.
+fn apply_forced_active_capture_light_components(
+    registry: &mut EntityRegistry,
+    forced_active_writes: &[(u32, [f32; 3])],
+) -> Result<()> {
+    let forced_by_slot: BTreeMap<_, _> = forced_active_writes.iter().copied().collect();
+    if forced_by_slot.is_empty() {
+        return Ok(());
+    }
+    let light_ids: Vec<_> = registry
+        .iter_with_kind(ComponentKind::Light)
+        .map(|(id, _)| id)
+        .collect();
+    for id in light_ids {
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .with_context(|| format!("read capture light component {id:?}"))?
+            .clone();
+        let Some(&radiance) = component
+            .animated_slot
+            .and_then(|slot| forced_by_slot.get(&slot))
+        else {
+            continue;
+        };
+        component.color = radiance;
+        component.intensity = 1.0;
+        component.animation = None;
+        registry
+            .set_component(id, component)
+            .with_context(|| format!("write forced capture light component {id:?}"))?;
     }
     Ok(())
 }
@@ -326,6 +427,85 @@ fn resolve_forced_active_animation_slots(
     }
 
     Ok(slot_radiance.into_iter().collect())
+}
+
+/// Resolve capture promotion tags through the section-45 raw roster. A
+/// `MapLight::animated_slot` is only the compose-descriptor lookup key; the
+/// renderer's promotion state is keyed by the roster position, so never pass
+/// the slot itself to the capture override.
+fn resolve_forced_animated_promotion_rows(
+    lights: &[postretro_level_loader::MapLight],
+    section: Option<
+        &postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    >,
+    forced_promotions: Option<&[ForcedAnimatedPromotion]>,
+) -> Result<Vec<(usize, f32)>> {
+    let Some(forced_promotions) = forced_promotions else {
+        return Ok(Vec::new());
+    };
+    if forced_promotions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let section = section.ok_or_else(|| {
+        anyhow!("force_promotion requires an AnimatedDirectShDeltaVolumes section")
+    })?;
+
+    let mut rows = BTreeMap::new();
+    for forced in forced_promotions {
+        let mut tag_found = false;
+        let mut animated_light_found = false;
+        let mut roster_row_found = false;
+        for light in lights {
+            if !light.tags.iter().any(|tag| tag == &forced.tag) {
+                continue;
+            }
+            tag_found = true;
+            let Some(slot) = light.animated_slot else {
+                continue;
+            };
+            animated_light_found = true;
+            for (animated_baked_index, &descriptor_index) in
+                section.animation_descriptor_indices.iter().enumerate()
+            {
+                if descriptor_index != slot {
+                    continue;
+                }
+                roster_row_found = true;
+                match rows.entry(animated_baked_index) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(forced.weight);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry)
+                        if *entry.get() == forced.weight => {}
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        bail!(
+                            "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
+                            forced.tag
+                        );
+                    }
+                }
+            }
+        }
+        if !tag_found {
+            bail!(
+                "force_promotion tag `{}` does not match a map light",
+                forced.tag
+            );
+        }
+        if !animated_light_found {
+            bail!(
+                "force_promotion tag `{}` does not match an animated map light",
+                forced.tag
+            );
+        }
+        if !roster_row_found {
+            bail!(
+                "force_promotion tag `{}` has no section-45 AnimatedBakedLights row",
+                forced.tag
+            );
+        }
+    }
+    Ok(rows.into_iter().collect())
 }
 
 /// Build the active/no-curve compose descriptor through the shared descriptor
@@ -836,6 +1016,63 @@ mod tests {
         }
         assert!(validate_forced_animation_slot_bounds(&writes, 4).is_ok());
         assert!(validate_forced_animation_slot_bounds(&[], 0).is_ok());
+    }
+
+    #[test]
+    fn force_promotion_resolves_the_section_45_row_not_the_descriptor_slot() {
+        let mut alarm = test_light(false, 1.0);
+        alarm.tags = vec!["alarm_light".into()];
+        alarm.animated_slot = Some(7);
+        let section = postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [0; 3],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![19, 7],
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let forced = [ForcedAnimatedPromotion {
+            tag: "alarm_light".into(),
+            weight: 0.75,
+        }];
+
+        assert_eq!(
+            resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+                .expect("tagged animated light must resolve"),
+            vec![(1, 0.75)],
+            "the renderer weight state is keyed by raw AnimatedBakedLights row, not descriptor slot 7"
+        );
+    }
+
+    #[test]
+    fn force_promotion_rejects_animated_lights_missing_from_section_45() {
+        let mut alarm = test_light(false, 1.0);
+        alarm.tags = vec!["alarm_light".into()];
+        alarm.animated_slot = Some(7);
+        let section = postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [0; 3],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![19],
+            valid_probe_masks: Vec::new(),
+            cell_levels: Vec::new(),
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+            delta_subblocks: Vec::new(),
+        };
+        let forced = [ForcedAnimatedPromotion {
+            tag: "alarm_light".into(),
+            weight: 0.5,
+        }];
+
+        let error = resolve_forced_animated_promotion_rows(&[alarm], Some(&section), Some(&forced))
+            .expect_err("a descriptor without an AnimatedBakedLights row cannot promote");
+        assert!(error.to_string().contains("section-45"));
     }
 
     #[test]

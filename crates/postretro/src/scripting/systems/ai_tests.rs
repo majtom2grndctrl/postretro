@@ -36,6 +36,7 @@ use crate::netcode::{
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{PostMovementCommand, SimCommand};
+use crate::sprite_collection::derive_collection_id;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -10277,7 +10278,17 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
     let visual = registry
         .get_component::<SpriteVisual>(refreshed_projectile)
         .expect("reloaded projectile materializes its refreshed visual");
-    assert_eq!(visual.collection, "sprites/projectiles/test-bolt.png");
+    assert_eq!(
+        visual.collection,
+        derive_collection_id(
+            "sprites/projectiles/test-bolt.png",
+            None,
+            Some(50.0),
+            3.0,
+            None,
+            None,
+        )
+    );
     assert!((visual.size - 0.5).abs() <= EPS);
     assert!((visual.opacity - 0.75).abs() <= EPS);
     assert!((visual.rotation - 0.25).abs() <= EPS);

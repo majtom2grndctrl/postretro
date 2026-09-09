@@ -1,8 +1,5 @@
-//! CPU-only sprite collection identity.
-//!
-//! A collection id names one texture asset plus one raw draw contract. It is
-//! intentionally derived locally rather than serialized: presentation peers
-//! already hold the descriptor inputs and therefore arrive at the same key.
+//! Sprite collection identity and draw-contract keys.
+//! See: context/lib/rendering_pipeline.md §7.4
 
 use std::fmt;
 

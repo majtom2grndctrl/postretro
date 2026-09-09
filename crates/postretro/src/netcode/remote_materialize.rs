@@ -307,6 +307,7 @@ pub(super) fn materialize_armed_remote_projectile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sprite_collection::derive_collection_id;
     use glam::{Quat, Vec3};
     use postretro_entities::components::mesh::{
         AnimationState, AttachmentBinding, InterruptPolicy, MeshComponent,
@@ -705,7 +706,25 @@ mod tests {
             reg.get_component::<postretro_entities::components::sprite_visual::SpriteVisual>(id)
                 .unwrap()
                 .collection,
-            "sprites/projectiles/bolt.png"
+            match &descriptors[0]
+                .weapon
+                .as_ref()
+                .expect("fixture weapon has a projectile")
+                .projectile
+                .as_ref()
+                .expect("fixture weapon uses a projectile")
+                .visual
+                .body
+            {
+                ProjectileBodyVisual::Sprite {
+                    sprite,
+                    emissive,
+                    frame_duration_ms,
+                    ..
+                } => derive_collection_id(sprite, None, *frame_duration_ms, *emissive, None, None,),
+                ProjectileBodyVisual::Model { .. } =>
+                    panic!("fixture projectile uses a sprite body"),
+            }
         );
         let trail = reg
             .get_component::<postretro_entities::components::billboard_emitter::BillboardEmitterComponent>(id)

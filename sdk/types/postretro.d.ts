@@ -140,8 +140,8 @@ declare module "postretro" {
 
   /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration. */
   export type SpriteVisual = {
-    /** Sprite/material identifier resolved by the billboard renderer. */
-    sprite: string;
+    /** Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path. */
+    collection: string;
     /** Billboard size multiplier for this frame. */
     size: number;
     /** Billboard opacity for this frame, in [0, 1]. */

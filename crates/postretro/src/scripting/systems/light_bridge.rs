@@ -1602,7 +1602,7 @@ mod tests {
             .set_component(
                 sprite,
                 postretro_entities::components::sprite_visual::SpriteVisual {
-                    sprite: "sprites/projectiles/bolt.png".to_string(),
+                    collection: "sprites/projectiles/bolt.png".to_string(),
                     size: 0.4,
                     opacity: 1.0,
                     rotation: 0.0,

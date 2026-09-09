@@ -30,7 +30,11 @@ mod impact;
 pub(crate) mod spread;
 
 pub(crate) use damage::DamagePayload;
-pub(crate) use impact::sprite_collection as impact_sprite_collection;
+pub(crate) use impact::{
+    collection_id as impact_collection_id, emissive as impact_emissive,
+    spec_exponent as impact_spec_exponent, spec_intensity as impact_spec_intensity,
+    sprite_collection as impact_sprite_collection,
+};
 pub(crate) use impact::{
     lifetime as impact_lifetime, spawn_impact_effect_at, spawn_projectile_impact_light,
 };

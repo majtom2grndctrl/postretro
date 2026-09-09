@@ -13,6 +13,7 @@ use postretro_entities::registry::{EntityRegistry, Transform};
 use postretro_foundation::ProjectileImpactLight;
 
 use crate::impact_effects;
+use crate::sprite_collection::derive_collection_id;
 
 const IMPACT_SPRITE_COLLECTION: &str = "impact";
 
@@ -25,8 +26,22 @@ static IMPACT_SIZE_CURVE: LazyLock<LifetimeCurve> =
 static IMPACT_OPACITY_CURVE: LazyLock<LifetimeCurve> =
     LazyLock::new(|| LifetimeCurve::from([1.0, 0.7, 0.0]));
 const IMPACT_LIFETIME: f32 = 0.18;
+const IMPACT_EMISSIVE: f32 = 0.0;
+const IMPACT_SPEC_INTENSITY: f32 = 0.45;
+const IMPACT_SPEC_EXPONENT: f32 = 4.0;
 const IMPACT_PARTICLE_COUNT: usize = 9;
 const SURFACE_OFFSET: f32 = 0.03;
+
+static IMPACT_COLLECTION_ID: LazyLock<String> = LazyLock::new(|| {
+    derive_collection_id(
+        IMPACT_SPRITE_COLLECTION,
+        Some(IMPACT_LIFETIME),
+        None,
+        IMPACT_EMISSIVE,
+        Some(IMPACT_SPEC_INTENSITY),
+        Some(IMPACT_SPEC_EXPONENT),
+    )
+});
 
 pub(crate) fn sprite_collection() -> &'static str {
     IMPACT_SPRITE_COLLECTION
@@ -34,6 +49,22 @@ pub(crate) fn sprite_collection() -> &'static str {
 
 pub(crate) fn lifetime() -> f32 {
     IMPACT_LIFETIME
+}
+
+pub(crate) fn emissive() -> f32 {
+    IMPACT_EMISSIVE
+}
+
+pub(crate) fn spec_intensity() -> f32 {
+    IMPACT_SPEC_INTENSITY
+}
+
+pub(crate) fn spec_exponent() -> f32 {
+    IMPACT_SPEC_EXPONENT
+}
+
+pub(crate) fn collection_id() -> &'static str {
+    &IMPACT_COLLECTION_ID
 }
 
 /// Spawn the M10 default world-hit burst at `point`, oriented to eject away
@@ -155,7 +186,9 @@ fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3,
         emitter: None,
     };
     let visual = SpriteVisual {
-        sprite: IMPACT_SPRITE_COLLECTION.to_string(),
+        // Registration is keyed from the fixed impact draw contract, not this
+        // particle's intentionally varied simulation lifetime.
+        collection: collection_id().to_string(),
         size: 0.0,
         opacity: 0.0,
         rotation: index as f32 * 0.73,
@@ -212,6 +245,14 @@ mod tests {
             assert!(
                 velocity.dot(normal) > 0.0,
                 "impact velocity should point away from surface normal: {velocity:?}"
+            );
+            assert_eq!(
+                registry
+                    .get_component::<SpriteVisual>(id)
+                    .expect("impact particle has a sprite visual")
+                    .collection,
+                collection_id(),
+                "every impact particle must target the registered impact collection"
             );
         }
     }

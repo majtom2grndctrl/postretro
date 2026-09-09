@@ -5,6 +5,7 @@ use glam::{Quat, Vec3};
 
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::sprite_collection::derive_collection_id;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
@@ -639,12 +640,20 @@ pub(crate) fn spawn_projectile(
             opacity,
             rotation,
             tint,
-            ..
+            emissive,
+            frame_duration_ms,
         } => {
             let _ = registry.set_component(
                 projectile_id,
                 SpriteVisual {
-                    sprite,
+                    collection: derive_collection_id(
+                        &sprite,
+                        None,
+                        frame_duration_ms,
+                        emissive,
+                        None,
+                        None,
+                    ),
                     size,
                     opacity,
                     rotation,
@@ -906,8 +915,8 @@ mod projectile_spawn_tests {
             registry
                 .get_component::<SpriteVisual>(projectile)
                 .expect("sprite body attaches")
-                .sprite,
-            "sprites/plasma.png"
+                .collection,
+            derive_collection_id("sprites/plasma.png", None, None, 0.0, None, None)
         );
         let trail = registry
             .get_component::<BillboardEmitterComponent>(projectile)

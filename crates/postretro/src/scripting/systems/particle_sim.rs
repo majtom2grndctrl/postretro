@@ -102,7 +102,7 @@ pub(crate) fn tick(
         }
 
         // Update the visual. Read-modify-write keeps any future fields the sim
-        // does not own (sprite, tint) intact.
+        // does not own (collection, tint) intact.
         let mut visual = match registry.get_component::<SpriteVisual>(id) {
             Ok(v) => v.clone(),
             Err(_) => continue,
@@ -214,7 +214,7 @@ mod tests {
             .set_component(
                 id,
                 SpriteVisual {
-                    sprite: "smoke".into(),
+                    collection: "smoke".into(),
                     size: 0.0,
                     opacity: 0.0,
                     rotation: 0.0,

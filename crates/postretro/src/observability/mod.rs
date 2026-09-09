@@ -263,7 +263,7 @@ mod tests {
                 emitter: None,
             }),
             ComponentKind::SpriteVisual => ComponentValue::SpriteVisual(SpriteVisual {
-                sprite: "sprite".into(),
+                collection: "sprite".into(),
                 size: 1.0,
                 opacity: 1.0,
                 rotation: 0.0,

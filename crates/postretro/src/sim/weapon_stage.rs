@@ -50,6 +50,7 @@ mod tests {
         PostMovementCommand, PredictedProjectileResolution, ReloadDelivery, ReloadOutcome, ShotId,
         advance_predicted, simulate_tick,
     };
+    use crate::sprite_collection::derive_collection_id;
     use crate::weapon::tests::{
         ammo_weapon_component as gate_ammo_weapon_component, wall_world,
         weapon_component as gate_weapon_component,
@@ -1997,8 +1998,15 @@ mod tests {
                     *projectile
                 )
                 .expect("descriptor body attaches at fire time")
-                .sprite,
-            "sprites/projectiles/test-bolt.png"
+                .collection,
+            derive_collection_id(
+                "sprites/projectiles/test-bolt.png",
+                None,
+                None,
+                0.0,
+                None,
+                None,
+            )
         );
         assert!(
             (registry

@@ -32,8 +32,9 @@
 // surface) with Chebyshev probe-occlusion on. Baked static direct is computed
 // here via `sample_sh_direct`; group 2 carries the live dynamic-direct loop
 // (`accumulate_dynamic_direct`) plus the shadow-receipt bindings (b5–b8): the
-// per-fragment dynamic-tier lights are evaluated with spot/point shadow
-// attenuation and summed into the SH composition.
+// per-fragment runtime records are evaluated with spot/point shadow attenuation
+// and summed into the SH composition: dynamic-tier records first, then the raw
+// AnimatedBakedLights tail, then selected-static records.
 //
 // Design note: skinned_depth.wgsl carries a matching `skin_matrix` helper for
 // its position-only path. WGSL has no shared module include, so keep changes to
@@ -60,7 +61,8 @@ struct CameraUniforms {
 // --- Group 2: runtime direct lighting ----------------------------------------
 // Filled by the runtime-light upload. Binding map PINNED across both M10 mesh specs (the BGL
 // in render/mesh_pass.rs is authoritative): b0 runtime light records (dynamic
-// tier first, promoted static lights appended), b1 matching per-light influence
+// tier first, raw AnimatedBakedLights tail second, selected-static records
+// last), b1 matching per-light influence
 // volumes, b2 scripted-animation descriptors (forward's group-3 b13
 // `scripted_light_descriptors`, SAME buffer), b3 scripted-animation curve samples
 // (forward's group-3 b12 `anim_samples`, SAME buffer), b4 the mesh-side params
@@ -104,23 +106,28 @@ struct AnimationDescriptor {
 // that reference. Same buffer forward binds at its group-3 b12.
 @group(2) @binding(3) var<storage, read> anim_samples: array<f32>;
 
-// Mesh-side group-2 params uniform: runtime/direct light count (dynamic tier plus
-// promoted static records), the frame's render-clock
+// Mesh-side group-2 params uniform: total runtime-direct record count (dynamic
+// tier, raw AnimatedBakedLights tail, then selected-static records), the frame's render-clock
 // `time` (the SAME value the renderer writes to forward `Uniforms.time` that
 // frame, so the scripted curves stay phase-coherent), and `light_term_mask` —
 // the renderer's per-frame mask snapshot, matching forward's group-0 mask that
 // frame. `ambient_floor` is the SAME constant ambient
 // fill the renderer uploads to forward `Uniforms.ambient_floor` that frame; added
 // once in `fs_main` so shadowed mesh faces lift with the diagnostics slider.
-// Mirrors `MeshLightParams` in render/mesh_pass.rs. The dynamic prefix ends at
-// `dynamic_light_count`; promoted records follow it and address metadata tails.
+// Mirrors `MeshLightParams` in render/mesh_pass.rs. The count boundaries are:
+// `[0, dynamic_light_count)` dynamic tier;
+// `[dynamic_light_count, scripted_light_count)` raw AnimatedBakedLights tail;
+// `[scripted_light_count, light_count)` selected-static records. The latter two
+// regions address metadata tails; only the selected-static suffix lacks descriptors.
 struct MeshLightParams {
     light_count: u32,
     time: f32,
     light_term_mask: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
-    _pad0: u32,
+    // Exclusive end of the descriptor-backed prefix: dynamic tier plus raw
+    // AnimatedBakedLights tail. The selected-static suffix follows and lacks descriptors.
+    scripted_light_count: u32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -408,8 +415,8 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
     );
 }
 
-// Runtime direct light loop — mirrors forward.wgsl's dynamic-tier loop with
-// promoted static records appended for entity receivers, but DIFFUSE-ONLY:
+// Runtime direct light loop — consumes the dynamic prefix, raw animated-baked
+// tail, and selected-static suffix for entity receivers, but DIFFUSE-ONLY:
 // Lambert against the interpolated skinned
 // normal `n`, no specular and no normal-map perturbation (the mesh path has
 // neither — see rendering_pipeline.md §9). Each per-light term is attenuated by
@@ -435,6 +442,10 @@ fn accumulate_dynamic_direct(
     let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         var cache_layer = -1i;
+        // Baked promoted records begin after the dynamic prefix. The raw
+        // section-45 tail keeps descriptors through `scripted_light_count`,
+        // but uses this preceding metadata prefix for its static world-depth
+        // cache layer; selected-static records follow it.
         if i >= mesh_light_params.dynamic_light_count {
             let promoted_index = i - mesh_light_params.dynamic_light_count;
             let meta_index = mesh_light_params.light_count
@@ -459,10 +470,10 @@ fn accumulate_dynamic_direct(
 
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
-        // The descriptor buffer is uploaded only for the compact dynamic prefix.
-        // Promoted static records append after it, so they must retain their packed
-        // GpuLight values even when a despawn leaves stale bytes in the old tail.
-        if i < mesh_light_params.dynamic_light_count {
+        // The descriptor buffer covers the dynamic tier and section-45's raw
+        // animated-baked tail. Selected-static records append after it and
+        // retain their packed GpuLight values.
+        if i < mesh_light_params.scripted_light_count {
             let scripted_desc = scripted_light_descriptors[i];
             if scripted_desc.is_active != 0u {
                 let cycle_t = animation_curve_t(
@@ -509,6 +520,8 @@ fn accumulate_dynamic_direct(
                 if light_type == 1u && scripted_desc.direction_count > 0u {
                     effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
                 }
+            } else if light_eval_scripted_descriptor_present(scripted_desc) {
+                effective_color = vec3<f32>(0.0);
             }
         }
 

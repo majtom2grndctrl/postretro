@@ -213,14 +213,19 @@ pub struct FrameUniforms {
     /// binding and legacy path; nonzero values select a real base or composed
     /// group-3 texture without changing this ABI slot.
     pub has_scatter: BillboardScatterMode,
-    /// Whether a baked DIRECT SH section is present. When false the dynamic
-    /// shaders skip the direct sample (direct = 0), falling back to
-    /// indirect-only. Owned here (and mirrored in the mesh uniform).
+    /// Whether a baked DIRECT SH section is present. Bit 0 retains this flag
+    /// at byte 116. The remaining bits carry the raw section-45
+    /// `AnimatedBakedLights` tail count so world/billboard consumers can skip
+    /// the mover-only runtime records without changing the fixed frame-uniform
+    /// layout. Owned here (and mirrored in the mesh uniform).
     pub has_direct: bool,
+    /// Raw section-45 roster length encoded into bits 1..=31 of the existing
+    /// byte-116 `has_direct` word. It is never a radiance scalar.
+    pub animated_baked_light_count: u32,
     /// Runtime direct-light records available to dynamic entity consumers.
-    /// `light_count` remains the dynamic-tier count for the forward world path;
-    /// this total additionally includes promoted static lights appended after
-    /// the dynamic records.
+    /// `light_count` is the dynamic-tier count for the forward world path.
+    /// `total_light_count` spans the dynamic prefix, raw Section-45
+    /// `AnimatedBakedLights` tail, and selected-static suffix.
     pub total_light_count: u32,
     /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
     /// forward shader. Encoded as a u32 (0 = normal, non-zero = forced) in
@@ -252,8 +257,10 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[108..112].copy_from_slice(&u.dynamic_direct_scale.to_ne_bytes());
     let has_scatter: u32 = u.has_scatter as u32;
     bytes[112..116].copy_from_slice(&has_scatter.to_ne_bytes());
-    let has_direct: u32 = u.has_direct as u32;
-    bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
+    debug_assert!(u.animated_baked_light_count <= u32::MAX >> 1);
+    let has_direct_and_animated_tail =
+        u32::from(u.has_direct) | (u.animated_baked_light_count << 1);
+    bytes[116..120].copy_from_slice(&has_direct_and_animated_tail.to_ne_bytes());
     let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
     bytes[total_off..total_off + 4].copy_from_slice(&u.total_light_count.to_ne_bytes());
     let spec_shadowmask_force_one: u32 = u.spec_shadowmask_force_one as u32;
@@ -282,6 +289,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
         });
@@ -342,6 +350,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
         };
@@ -377,6 +386,7 @@ mod tests {
             dynamic_direct_scale: 0.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
         });
@@ -406,6 +416,7 @@ mod tests {
                 dynamic_direct_scale: 0.0,
                 has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
+                animated_baked_light_count: 0,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
             });
@@ -433,6 +444,7 @@ mod tests {
             dynamic_direct_scale: 0.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: true,
         });
@@ -457,6 +469,7 @@ mod tests {
                 dynamic_direct_scale: 0.0,
                 has_scatter: BillboardScatterMode::Unavailable,
                 has_direct: false,
+                animated_baked_light_count: 0,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
             });
@@ -482,6 +495,7 @@ mod tests {
             dynamic_direct_scale: 0.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
         });
@@ -508,6 +522,7 @@ mod tests {
             dynamic_direct_scale: 0.25,
             has_scatter: BillboardScatterMode::StaticBase,
             has_direct: true,
+            animated_baked_light_count: 3,
             total_light_count: 11,
             spec_shadowmask_force_one: false,
         });
@@ -519,7 +534,11 @@ mod tests {
             "LightTermMask must remain at the fixed group-0 88..92 ABI slot",
         );
         assert_eq!(u32::from_ne_bytes(data[112..116].try_into().unwrap()), 1);
-        assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_ne_bytes(data[116..120].try_into().unwrap()),
+            7,
+            "byte 116 retains direct-present at bit 0 and carries a three-row raw animated tail in bits 1..31",
+        );
         assert_eq!(u32::from_ne_bytes(data[120..124].try_into().unwrap()), 11);
         assert!(data[124..128].iter().all(|&b| b == 0));
     }
@@ -544,6 +563,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
         });
@@ -595,6 +615,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             has_scatter: BillboardScatterMode::Unavailable,
             has_direct: false,
+            animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
         });

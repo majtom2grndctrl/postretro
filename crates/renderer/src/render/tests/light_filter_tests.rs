@@ -304,11 +304,80 @@ fn selected_static_lights_join_shadow_candidates_with_selection_index() {
         },
     ];
 
-    let candidates = filter_entity_shadow_candidates_with_selection(&lights, &influences, &[1]);
+    let candidates =
+        filter_entity_shadow_candidates_with_selection(&lights, &influences, &[1], &[]);
 
     assert_eq!(candidates.source_indices, vec![0, 2, 1]);
     assert_eq!(candidates.selection_indices, vec![None, None, Some(0)]);
+    assert_eq!(candidates.animated_baked_indices, vec![None, None, None]);
     assert!(!candidates.lights[2].is_dynamic);
+    assert_f32_near(candidates.influences[2].radius, 2.0);
+}
+
+#[test]
+fn animated_baked_candidates_keep_section_45_roster_indices_not_descriptor_slots() {
+    let mut descriptor_seven = mk_light(1.0, false);
+    descriptor_seven.light_type = postretro_level_loader::LightType::Spot;
+    descriptor_seven.animated_slot = Some(7);
+    let mut descriptor_two = mk_light(1.0, false);
+    descriptor_two.light_type = postretro_level_loader::LightType::Spot;
+    descriptor_two.animated_slot = Some(2);
+    let mut descriptor_nine = mk_light(1.0, false);
+    descriptor_nine.light_type = postretro_level_loader::LightType::Spot;
+    descriptor_nine.animated_slot = Some(9);
+    let lights = vec![
+        descriptor_two,
+        mk_light(1.0, true),
+        descriptor_seven,
+        descriptor_nine,
+    ];
+    let influences = vec![
+        LightInfluence {
+            center: Vec3::new(2.0, 0.0, 0.0),
+            radius: 2.0,
+        },
+        LightInfluence {
+            center: Vec3::new(1.0, 0.0, 0.0),
+            radius: 1.0,
+        },
+        LightInfluence {
+            center: Vec3::new(7.0, 0.0, 0.0),
+            radius: 7.0,
+        },
+        LightInfluence {
+            center: Vec3::new(9.0, 0.0, 0.0),
+            radius: 9.0,
+        },
+    ];
+
+    // Section 45 has roster [descriptor 9, descriptor 7, descriptor 2], but
+    // only indices 1 and 2 have sparse delta blocks. Its roster index, not
+    // either descriptor value or authored-map order, is the promotion key. The
+    // non-delta row must leave a hole rather than compacting descriptor 7 into
+    // AnimatedBakedLights index 0.
+    let roster = animated_baked_shadow_candidates_with_direct_delta(
+        &lights,
+        &influences,
+        &[9, 7, 2],
+        &[1, 2],
+    );
+    assert_eq!(
+        roster
+            .iter()
+            .map(|candidate| (candidate.animated_baked_index, candidate.source_index))
+            .collect::<Vec<_>>(),
+        vec![(1, 2), (2, 0)]
+    );
+
+    let candidates =
+        filter_entity_shadow_candidates_with_selection(&lights, &influences, &[], &roster);
+    assert_eq!(candidates.source_indices, vec![1, 2, 0]);
+    assert_eq!(candidates.selection_indices, vec![None, None, None]);
+    assert_eq!(
+        candidates.animated_baked_indices,
+        vec![None, Some(1), Some(2)]
+    );
+    assert_f32_near(candidates.influences[1].radius, 7.0);
     assert_f32_near(candidates.influences[2].radius, 2.0);
 }
 

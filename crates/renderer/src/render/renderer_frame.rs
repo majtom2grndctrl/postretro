@@ -290,6 +290,7 @@ impl Renderer {
                 .billboard_direct_scatter
                 .has_scatter,
             has_direct: full.sh_volume_resources.direct.has_direct,
+            animated_baked_light_count: full.animated_baked_light_count as u32,
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);

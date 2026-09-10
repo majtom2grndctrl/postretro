@@ -4,11 +4,100 @@
 
 use super::renderer_lighting::LIGHT_INFLUENCE_SIZE;
 use super::renderer_types::{
-    FullRenderer, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind,
-    PromotedStaticLightRecord,
+    FullRenderer, MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT,
+    PromotedBakedLightRecord, PromotedBakedLightSource, PromotedBakedLightState,
+    PromotedShadowPoolKind, animated_baked_promotion_weight,
 };
 use super::*;
 use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
+
+/// Duration of the promoted baked-light fade-in. Kept public so the game-side
+/// bridge can open an animated candidate's lookahead gate exactly one ramp
+/// window before its next bright interval.
+pub const PROMOTE_SECONDS: f32 = 0.3;
+const STICKY_SECONDS: f32 = 0.5;
+const DEMOTE_SECONDS: f32 = 0.3;
+
+/// Dynamic-tier records occupy the world-forward prefix. Every raw
+/// `AnimatedBakedLights` entry then owns a mover-only forward tail record;
+/// selected-static promotion records append after that tail.
+fn forward_light_count(full: &FullRenderer) -> u32 {
+    full.light_count + full.animated_baked_light_count as u32
+}
+
+/// Only selected-static cache records append a new forward GpuLight. Animated
+/// records reuse their fixed raw section-45 tail position, so counting all
+/// cache records here would make the forward/influence prefixes diverge.
+fn selected_static_record_count(records: &[PromotedBakedLightRecord]) -> usize {
+    records
+        .iter()
+        .filter(|record| record.source.selected_static_index().is_some())
+        .count()
+}
+
+/// Reverse maps from each promotion-state namespace to the shared candidate
+/// index. The candidate-side tag vectors remain the identity source; building
+/// this once per frame avoids rescanning them for every state and pool.
+struct PromotionCandidateLookup {
+    selected_static: Vec<Option<usize>>,
+    animated_baked: Vec<Option<usize>>,
+}
+
+/// Per-pool inputs for shadow-slot assignment. These values travel together:
+/// they describe one frame's candidate eligibility and the pool competing for
+/// those candidates.
+struct ShadowPoolSlotAssignmentInputs<'a> {
+    pool_kind: PromotedShadowPoolKind,
+    camera_position: Vec3,
+    camera_near_clip: f32,
+    eligible_lights: &'a [bool],
+    capacity: usize,
+    promoted_cap: usize,
+    promotion_candidate_lookup: &'a PromotionCandidateLookup,
+}
+
+fn build_promotion_candidate_lookup(
+    selection_indices: &[Option<usize>],
+    animated_baked_indices: &[Option<usize>],
+    selected_static_count: usize,
+    animated_baked_count: usize,
+) -> PromotionCandidateLookup {
+    let mut lookup = PromotionCandidateLookup {
+        selected_static: vec![None; selected_static_count],
+        animated_baked: vec![None; animated_baked_count],
+    };
+    for candidate_index in 0..selection_indices.len().max(animated_baked_indices.len()) {
+        let selection_index = selection_indices.get(candidate_index).copied().flatten();
+        let animated_index = animated_baked_indices
+            .get(candidate_index)
+            .copied()
+            .flatten();
+        debug_assert!(
+            selection_index.is_none() || animated_index.is_none(),
+            "one shadow candidate cannot occupy both promotion namespaces",
+        );
+        if let Some(slot) = selection_index.and_then(|index| lookup.selected_static.get_mut(index))
+        {
+            debug_assert!(
+                slot.is_none(),
+                "selected-static candidate identity must be unique"
+            );
+            if slot.is_none() {
+                *slot = Some(candidate_index);
+            }
+        }
+        if let Some(slot) = animated_index.and_then(|index| lookup.animated_baked.get_mut(index)) {
+            debug_assert!(
+                slot.is_none(),
+                "animated-baked candidate identity must be unique"
+            );
+            if slot.is_none() {
+                *slot = Some(candidate_index);
+            }
+        }
+    }
+    lookup
+}
 
 // Read the renderer's CPU mirror of the exact dynamic GPU record. The live
 // bridge can move attached lights and animate their radius; level-load
@@ -30,9 +119,47 @@ fn refresh_shadow_candidate_from_upload(light: &mut MapLight, record: &[u8]) {
     light.cone_angle_outer = read_light_float(record, 52);
 }
 
+/// Read the brightness channel appropriate to this candidate's identity.
+/// Selected-static candidates have no animated suppression channel and remain
+/// bright unless another gate rejects them. Animated-baked candidates fail
+/// closed when the bridge's keyed lookahead vector is absent or short.
+fn candidate_gate_brightness(
+    source_indices: &[usize],
+    animated_baked_indices: &[Option<usize>],
+    candidate_index: usize,
+    level_light_index_lookup: &[Option<usize>],
+    effective_brightness: &[f32],
+    animated_window_brightness: &[f32],
+) -> f32 {
+    if let Some(animated_index) = animated_baked_indices
+        .get(candidate_index)
+        .and_then(|index| *index)
+    {
+        return animated_window_brightness
+            .get(animated_index)
+            .copied()
+            .unwrap_or(0.0);
+    }
+    source_indices
+        .get(candidate_index)
+        .and_then(|&source_index| {
+            level_brightness_for_candidate_indexed(
+                level_light_index_lookup,
+                source_index,
+                effective_brightness,
+            )
+        })
+        .unwrap_or(1.0)
+}
+
 impl Renderer {
+    // Animated lifecycle, cache validation, and tail packing stay with the
+    // shared-pool owner because their same-frame order is load-bearing:
+    // assign slot -> advance state -> validate cache -> encode both w arms.
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
-    /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
+    /// Short/empty dynamic `effective_brightness` defaults to 1.0 for the
+    /// pre-bridge frame. Missing animated-baked lookahead data defaults to 0.0
+    /// and fails closed; the two vectors use unrelated index spaces.
     ///
     /// `reachable_cell_aabbs` are the AABBs of the fog/light-reachable cells —
     /// the WIDER portal-reachable set (same source as `light_reachable_cell_mask`)
@@ -43,20 +170,50 @@ impl Renderer {
     /// reconstruction. Empty = DrawAll sentinel (fallback visibility paths):
     /// every cell-assigned light stays eligible.
     ///
-    /// The **candidate set** is `self.shadow_candidate_lights`: dynamic-tier
-    /// lights plus compiler-selected static lights eligible for entity-shadow
-    /// promotion. `effective_brightness` is keyed on the dynamic-tier
-    /// `level_lights` array, so dynamic candidate brightness is translated
-    /// through the original full level-light index.
+    /// The **candidate set** is `self.shadow_candidate_lights`: dynamic-tier,
+    /// compiler-selected static, and section-45 animated-baked lights. Dynamic
+    /// brightness is keyed on `level_lights`; animated brightness is supplied
+    /// separately in `animated_window_brightness`, keyed by
+    /// `AnimatedBakedLights` index.
+    #[allow(clippy::too_many_arguments)] // Per-frame bridge inputs remain separate index spaces.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
         effective_brightness: &[f32],
+        animated_window_brightness: &[f32],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         now_seconds: f64,
         promotion_mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
     ) {
+        self.update_dynamic_light_slots_with_capture_overrides(
+            camera_position,
+            camera_near_clip,
+            effective_brightness,
+            animated_window_brightness,
+            reachable_cell_aabbs,
+            now_seconds,
+            promotion_mesh_frame_plan,
+            &[],
+        )
+        .expect("empty capture override cannot fail");
+    }
+
+    /// Capture-only variant that pins `w` after allocation and before the
+    /// animated forward tail is packed. Ordinary runtime uses the public
+    /// override-free entry point above.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn update_dynamic_light_slots_with_capture_overrides(
+        &mut self,
+        camera_position: Vec3,
+        camera_near_clip: f32,
+        effective_brightness: &[f32],
+        animated_window_brightness: &[f32],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
+        now_seconds: f64,
+        promotion_mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
+        capture_animated_promotion_weights: &[(usize, f32)],
+    ) -> Result<()> {
         // No runtime shadow candidates this frame. Clear both pools' occupancy:
         // a stale `Some` cone/face matrix carried over from a previous level
         // would keep its depth passes running against slots no light samples.
@@ -71,10 +228,31 @@ impl Renderer {
             if let Some(pool) = &mut full.cube_shadow_pool {
                 pool.clear_occupancy();
             }
-            full.promoted_static_records.clear();
-            full.promoted_static_cache_layers.clear();
+            full.promoted_baked_records.clear();
+            full.promoted_baked_cache_layers.clear();
             full.promoted_static_weights.fill(0.0);
-            full.total_light_count = full.light_count;
+            full.promoted_static_states
+                .fill(PromotedBakedLightState::default());
+            full.promoted_animated_states
+                .fill(PromotedBakedLightState::default());
+            // A level with no surviving candidates must not retain a
+            // static-world cache layer from its prior animated receiver.
+            if let Some(cache) = &mut full.promoted_depth_cache {
+                cache.reset_level();
+            }
+            full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+            full.total_light_count = forward_light_count(full);
+            // The raw section-45 tail survives even when none of its rows is a
+            // promotion candidate. Rebuild it after zeroing state so authored
+            // RGB from the bridge cannot remain live with `w == 0`.
+            let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+            build_count_split_light_upload(full, &[], &[], &mut scratch);
+            if scratch != full.last_lights_upload {
+                queue.write_buffer(&full.lights_buffer, 0, &scratch);
+                full.last_lights_upload.clear();
+                full.last_lights_upload.extend_from_slice(&scratch);
+            }
+            full.lights_pack_scratch = scratch;
             queue.write_buffer(
                 &full.uniform_buffer,
                 TOTAL_LIGHT_COUNT_OFFSET,
@@ -82,7 +260,12 @@ impl Renderer {
             );
             full.dynamic_depth_cache.state.reset_level();
             full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
-            return;
+            apply_capture_animated_promotion_weights(
+                &mut full.promoted_animated_states,
+                &mut full.promoted_baked_records,
+                capture_animated_promotion_weights,
+            )?;
+            return Ok(());
         }
 
         // Shadow-slot eligibility: a light is eligible when its runtime influence
@@ -100,6 +283,11 @@ impl Renderer {
         // = degenerate (couldn't assign to a non-solid cell) → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
+        // Distinct from the brightness/visibility gate: a receiver despawn
+        // resets animated promotion immediately, so no stale `(1 - w)` compose
+        // factor or cache key survives.
+        let mut promoted_baked_has_shadow_receiver =
+            vec![false; self.full().shadow_candidate_lights.len()];
         {
             let full = self.full_mut();
             // Fixed within the frame — build the source→level reverse lookup once
@@ -109,9 +297,13 @@ impl Renderer {
                 build_level_light_index_lookup(&full.level_light_source_indices);
             // The bridge has already uploaded this frame's dynamic prefix.
             // Refresh shadow projections and reachability from those exact
-            // records before ranking; promoted static candidates stay authored.
+            // records before ranking; promoted baked candidates stay authored.
             for (i, light) in full.shadow_candidate_lights.iter_mut().enumerate() {
-                if full.shadow_candidate_selection_indices[i].is_some() {
+                if shadow_candidate_is_promoted_baked(
+                    &full.shadow_candidate_selection_indices,
+                    &full.shadow_candidate_animated_baked_indices,
+                    i,
+                ) {
                     continue;
                 }
                 let source = full.shadow_candidate_source_indices[i];
@@ -138,20 +330,23 @@ impl Renderer {
                 }
             }
             for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
-                let reaches_view = shadow_candidate_reaches_visible_cell(
-                    light,
-                    full.shadow_candidate_influences.get(i),
-                    reachable_cell_aabbs,
-                );
-                if !reaches_view {
+                if full
+                    .shadow_candidate_animated_baked_indices
+                    .get(i)
+                    .and_then(|index| *index)
+                    .is_some_and(|index| index >= MAX_ANIMATED_BAKED_LIGHTS)
+                {
+                    // Pass B has no compose-weight entry for this raw roster
+                    // row. It must remain fully baked and may not consume a
+                    // shared pool slot that could produce a forward-only term.
                     continue;
                 }
-                if full
-                    .shadow_candidate_selection_indices
-                    .get(i)
-                    .and_then(|selection| *selection)
-                    .is_some()
-                {
+                let is_promoted_baked = shadow_candidate_is_promoted_baked(
+                    &full.shadow_candidate_selection_indices,
+                    &full.shadow_candidate_animated_baked_indices,
+                    i,
+                );
+                if is_promoted_baked {
                     let has_shadow_mesh = selected_static_light_has_shadow_entity(
                         light,
                         full.shadow_candidate_influences.get(i),
@@ -162,24 +357,31 @@ impl Renderer {
                         full.shadow_candidate_influences.get(i),
                         &full.mover_occluder_aabbs,
                     );
+                    promoted_baked_has_shadow_receiver[i] = has_shadow_mesh || has_shadow_mover;
                     if !has_shadow_mesh && !has_shadow_mover {
                         continue;
                     }
                 }
-                // Brightness suppression is indexed by `level_lights` (the
-                // forward / scripted-bridge index space). For candidates not in
-                // `level_lights` we have no per-frame brightness — treat as 1.0.
-                let b = full
-                    .shadow_candidate_source_indices
-                    .get(i)
-                    .and_then(|&source_index| {
-                        level_brightness_for_candidate_indexed(
-                            &level_light_index_lookup,
-                            source_index,
-                            effective_brightness,
-                        )
-                    })
-                    .unwrap_or(1.0);
+                let reaches_view = shadow_candidate_reaches_visible_cell(
+                    light,
+                    full.shadow_candidate_influences.get(i),
+                    reachable_cell_aabbs,
+                );
+                if !reaches_view {
+                    continue;
+                }
+                // Dynamic and animated-baked candidates intentionally read
+                // different keyed channels. The latter must never fall through
+                // to a dynamic-tier default of 1.0: it has no `level_lights`
+                // entry, and its window max is the actual promotion signal.
+                let b = candidate_gate_brightness(
+                    &full.shadow_candidate_source_indices,
+                    &full.shadow_candidate_animated_baked_indices,
+                    i,
+                    &level_light_index_lookup,
+                    effective_brightness,
+                    animated_window_brightness,
+                );
                 if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                     continue;
                 }
@@ -187,56 +389,98 @@ impl Renderer {
             }
         }
 
-        let mut slot_assignment = assign_shadow_pool_slots_with_promoted_static(
+        let frame_dt = {
+            let full = self.full_mut();
+            let previous = full.promoted_baked_last_update_time.replace(now_seconds);
+            previous
+                .map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32)
+                .unwrap_or(1.0 / 60.0)
+        };
+        let promotion_candidate_lookup = {
+            let full = self.full();
+            build_promotion_candidate_lookup(
+                &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
+                full.promoted_static_states.len(),
+                full.promoted_animated_states.len(),
+            )
+        };
+        {
+            let full = self.full_mut();
+            release_promoted_baked_incumbents_before_ranking(
+                &mut full.promoted_static_states,
+                &mut full.promoted_animated_states,
+                &promotion_candidate_lookup,
+                &visible_lights,
+                &promoted_baked_has_shadow_receiver,
+                frame_dt,
+            );
+        }
+
+        let mut slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
             self.full(),
-            PromotedShadowPoolKind::Spot,
-            camera_position,
-            camera_near_clip,
-            &visible_lights,
-            crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-            MAX_PROMOTED_SPOT,
+            ShadowPoolSlotAssignmentInputs {
+                pool_kind: PromotedShadowPoolKind::Spot,
+                camera_position,
+                camera_near_clip,
+                eligible_lights: &visible_lights,
+                capacity: crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
+                promoted_cap: MAX_PROMOTED_SPOT,
+                promotion_candidate_lookup: &promotion_candidate_lookup,
+            },
         );
 
-        // Rank dynamic POINT lights into the cube pool and upload their per-face
-        // matrices. Returns the candidate-indexed cube slot assignment (empty
-        // when the pool is disabled), which is patched into the light buffer
-        // below alongside the spot slots. Runs before the patch block so both
-        // slot fields land in one upload.
+        // Rank point candidates, including promoted animated-baked lights, into
+        // the cube pool and upload their per-face matrices. Returns the
+        // candidate-indexed assignment (empty when the pool is disabled),
+        // which is patched into the light buffer below alongside spot slots.
         let stride = self.full().shadow_vs_stride as usize;
         let mut cube_slot_assignment = self.update_cube_light_slots(
             camera_position,
             camera_near_clip,
             &visible_lights,
             stride,
+            &promotion_candidate_lookup,
         );
-
-        let frame_dt = {
-            let full = self.full_mut();
-            let previous = full.promoted_static_last_update_time.replace(now_seconds);
-            previous
-                .map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32)
-                .unwrap_or(1.0 / 60.0)
-        };
-        self.update_promoted_static_weights_and_records(
+        self.update_promoted_baked_weights_and_records(
             &slot_assignment,
             &cube_slot_assignment,
             &visible_lights,
+            &promoted_baked_has_shadow_receiver,
             camera_position,
             camera_near_clip,
             frame_dt,
+            &promotion_candidate_lookup,
         );
         {
             let full = self.full();
             clear_zero_weight_promoted_assignments(
                 &full.shadow_candidate_selection_indices,
                 &full.promoted_static_weights,
+                &full.shadow_candidate_animated_baked_indices,
+                &full.promoted_animated_states,
                 &mut slot_assignment,
             );
             clear_zero_weight_promoted_assignments(
                 &full.shadow_candidate_selection_indices,
                 &full.promoted_static_weights,
+                &full.shadow_candidate_animated_baked_indices,
+                &full.promoted_animated_states,
                 &mut cube_slot_assignment,
             );
+        }
+        {
+            // Capture pins the already-assigned state before either arm is
+            // packed: Pass B reads `(1 - w)` from this state, while the light
+            // upload below writes forward `color * w` and the matching slot.
+            // Ranking and cache/slot lifecycles retain their natural result;
+            // windowed frames always supply an empty override slice.
+            let full = self.full_mut();
+            apply_capture_animated_promotion_weights(
+                &mut full.promoted_animated_states,
+                &mut full.promoted_baked_records,
+                capture_animated_promotion_weights,
+            )?;
         }
         if !cube_slot_assignment.is_empty() {
             if let Some(pool) = self.full_mut().cube_shadow_pool.as_mut() {
@@ -307,14 +551,15 @@ impl Renderer {
         }
         full.lights_pack_scratch = scratch;
 
-        // The bridge owns the complete dynamic influence prefix, including
-        // runtime-spawned lights. Promotion appends its static tail after the
-        // current dynamic count. Gate the combined re-upload on promoted records;
-        // without promotion the bridge's prefix upload is already complete.
+        // The bridge owns the complete dynamic prefix plus one raw section-45
+        // influence per animated-baked tail record. Selected-static promotion
+        // appends after both. A promoted animated record also needs its raw
+        // metadata cache-layer prefix, so every surviving cache record enters
+        // this combined re-upload.
         // The `entity_shadow_light_influences` vector is raw-length N and
         // index-parallel to the selection index, so `[selection_index]` is a
         // direct aligned lookup for every promoted record.
-        if !full.promoted_static_records.is_empty() {
+        if !full.promoted_baked_records.is_empty() {
             debug_assert_eq!(
                 full.entity_shadow_light_influences.len(),
                 full.promoted_static_states.len(),
@@ -323,23 +568,35 @@ impl Renderer {
             let mut influence_bytes = std::mem::take(&mut full.influence_pack_scratch);
             influence_bytes.clear();
             let dynamic_bytes = full.light_count as usize * 16;
-            if full.last_influence_upload.len() >= dynamic_bytes {
-                influence_bytes.extend_from_slice(&full.last_influence_upload[..dynamic_bytes]);
+            let forward_prefix_bytes =
+                dynamic_bytes + full.animated_baked_light_count * LIGHT_INFLUENCE_SIZE;
+            if full.last_influence_upload.len() >= forward_prefix_bytes {
+                influence_bytes
+                    .extend_from_slice(&full.last_influence_upload[..forward_prefix_bytes]);
             } else {
                 influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
                 influence_bytes.resize(dynamic_bytes, 0);
+                influence_bytes.resize(forward_prefix_bytes, 0);
             }
-            for record in &full.promoted_static_records {
-                let influence =
-                    &full.entity_shadow_light_influences[record.selection_index as usize];
+            for record in full
+                .promoted_baked_records
+                .iter()
+                .filter(|record| record.source.selected_static_index().is_some())
+            {
+                let selection_index = record
+                    .source
+                    .selected_static_index()
+                    .expect("selected-static record filter");
+                let influence = &full.entity_shadow_light_influences[selection_index];
                 influence::pack_influence_into(
                     &mut influence_bytes,
                     std::slice::from_ref(influence),
                 );
             }
             shadowmask::pack_forward_shadowmask_metadata(
-                &full.promoted_static_records,
-                &full.promoted_static_cache_layers,
+                full.animated_baked_light_count,
+                &full.promoted_baked_records,
+                &full.promoted_baked_cache_layers,
                 &full.entity_shadow_spec_light_indices,
                 &full.shadowmask_channels,
                 full.shadowmask_present,
@@ -388,13 +645,13 @@ impl Renderer {
             // shadow-depth loop draws skinned meshes and rigid movers into the slot only when
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
-            let promoted_static = full
-                .shadow_candidate_selection_indices
-                .get(light_idx)
-                .and_then(|selection| *selection)
-                .is_some();
+            let promoted_baked = shadow_candidate_is_promoted_baked(
+                &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
+                light_idx,
+            );
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
-                postretro_lighting::entity_occluder_eligible(candidate, promoted_static);
+                postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -426,7 +683,11 @@ impl Renderer {
         let mut spot_count = 0;
         for (candidate_index, &slot) in full.spot_shadow_pool.slot_assignment.iter().enumerate() {
             if slot == NO_SHADOW_SLOT
-                || full.shadow_candidate_selection_indices[candidate_index].is_some()
+                || shadow_candidate_is_promoted_baked(
+                    &full.shadow_candidate_selection_indices,
+                    &full.shadow_candidate_animated_baked_indices,
+                    candidate_index,
+                )
             {
                 continue;
             }
@@ -444,7 +705,11 @@ impl Renderer {
         if let Some(pool) = &full.cube_shadow_pool {
             for (candidate_index, &slot) in pool.slot_assignment.iter().enumerate() {
                 if slot == NO_SHADOW_SLOT
-                    || full.shadow_candidate_selection_indices[candidate_index].is_some()
+                    || shadow_candidate_is_promoted_baked(
+                        &full.shadow_candidate_selection_indices,
+                        &full.shadow_candidate_animated_baked_indices,
+                        candidate_index,
+                    )
                 {
                     continue;
                 }
@@ -473,6 +738,7 @@ impl Renderer {
             .state
             .plan_frame(&spot_inputs[..spot_count], &cube_inputs[..cube_count]);
         full.dynamic_depth_cache_frame_plan = plan;
+        Ok(())
     }
 
     /// Env-gated shadow-pipeline diagnostics (`POSTRETRO_SHADOW_DEBUG=1`).
@@ -481,8 +747,9 @@ impl Renderer {
     /// which one flips as the camera pitches down until an entity shadow vanishes.
     /// It changes no culling/selection state — it re-reads the values
     /// `update_dynamic_light_slots` just computed (the pool's `slot_assignment`,
-    /// the candidate lights, the live `effective_brightness`, and the mesh
-    /// visibility split) and renders them human-readable.
+    /// the candidate lights, the dynamic `effective_brightness`, animated
+    /// lookahead brightness, and the mesh visibility split) and renders them
+    /// human-readable.
     ///
     /// Throttled: emits the full per-light table only when the decision
     /// fingerprint changes (spot/cube slot occupancy or the mesh visibility split),
@@ -500,7 +767,8 @@ impl Renderer {
     ///   cell is in the portal-reachable set — NO LONGER the eligibility criterion,
     ///   kept for diagnosis), `reach` (THE criterion: its runtime
     ///   `LightInfluence` sphere reaches a fog/light-reachable cell), `bright`
-    ///   (live animated brightness), `elig`
+    ///   (dynamic current effective brightness, or animated-baked lookahead
+    ///   promotion-gate brightness), `elig`
     ///   (passed
     ///   the reach+brightness gate feeding the spot/point shadow rankers), and
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
@@ -509,8 +777,9 @@ impl Renderer {
     ///   these read candidates refreshed from the current dynamic GPU upload.
     /// - `casters`: `forward` vs `non_forward` collected mesh draw inputs.
     ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
-    ///   broader promoted-static shadow-relevance set; `forward` is a mesh-pass
+    ///   broader promoted-baked shadow-relevance set; `forward` is a mesh-pass
     ///   classification, not a raw PVS count.
+    #[allow(clippy::too_many_arguments)] // Mirrors the shadow-slot diagnostics inputs.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,
@@ -518,6 +787,7 @@ impl Renderer {
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
         effective_brightness: &[f32],
+        animated_window_brightness: &[f32],
         camera_cell: Option<u32>,
     ) {
         use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
@@ -584,18 +854,14 @@ impl Renderer {
                 self.full().shadow_candidate_influences.get(i),
                 reachable_cell_aabbs,
             );
-            let bright = self
-                .full()
-                .shadow_candidate_source_indices
-                .get(i)
-                .and_then(|&source_index| {
-                    level_brightness_for_candidate_indexed(
-                        &level_light_index_lookup,
-                        source_index,
-                        effective_brightness,
-                    )
-                })
-                .unwrap_or(1.0);
+            let bright = candidate_gate_brightness(
+                &self.full().shadow_candidate_source_indices,
+                &self.full().shadow_candidate_animated_baked_indices,
+                i,
+                &level_light_index_lookup,
+                effective_brightness,
+                animated_window_brightness,
+            );
             let is_spot = light.light_type == LightType::Spot;
             let is_point = light.light_type == LightType::Point;
             let elig = reach && bright >= BRIGHTNESS_SUPPRESSION_THRESHOLD;
@@ -648,14 +914,13 @@ impl Renderer {
                         if (cslot as usize) < 128 {
                             cube_occupancy |= 1u128 << cslot;
                         }
-                        let promoted_static = self
-                            .full()
-                            .shadow_candidate_selection_indices
-                            .get(i)
-                            .and_then(|selection| *selection)
-                            .is_some();
+                        let promoted_baked = shadow_candidate_is_promoted_baked(
+                            &self.full().shadow_candidate_selection_indices,
+                            &self.full().shadow_candidate_animated_baked_indices,
+                            i,
+                        );
                         let ent_ok =
-                            postretro_lighting::entity_occluder_eligible(light, promoted_static);
+                            postretro_lighting::entity_occluder_eligible(light, promoted_baked);
                         format!("cube={cslot}{}", if ent_ok { "" } else { "(no_ent)" })
                     } else if !light.is_dynamic {
                         "NONE:baked".to_string()
@@ -697,7 +962,7 @@ impl Renderer {
         }
 
         // Mesh presentation split. Non-forward inputs include explicit
-        // shadow-only casters and the broader promoted-static relevance set;
+        // shadow-only casters and the broader promoted-baked relevance set;
         // `forward_visible` intentionally is not a raw PVS signal.
         let forward_visible = self
             .full()
@@ -782,6 +1047,7 @@ impl Renderer {
         camera_near_clip: f32,
         visible_lights: &[bool],
         stride: usize,
+        promotion_candidate_lookup: &PromotionCandidateLookup,
     ) -> Vec<u32> {
         use crate::lighting::cube_shadow;
 
@@ -794,14 +1060,17 @@ impl Renderer {
             return Vec::new();
         }
 
-        let slot_assignment = assign_shadow_pool_slots_with_promoted_static(
+        let slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
             full,
-            PromotedShadowPoolKind::Cube,
-            camera_position,
-            camera_near_clip,
-            visible_lights,
-            cube_shadow::CUBE_COUNT,
-            MAX_PROMOTED_CUBE,
+            ShadowPoolSlotAssignmentInputs {
+                pool_kind: PromotedShadowPoolKind::Cube,
+                camera_position,
+                camera_near_clip,
+                eligible_lights: visible_lights,
+                capacity: cube_shadow::CUBE_COUNT,
+                promoted_cap: MAX_PROMOTED_CUBE,
+                promotion_candidate_lookup,
+            },
         );
 
         let pool = full
@@ -832,13 +1101,13 @@ impl Renderer {
             // `slot_entity_eligible` gates only whether skinned ENTITY
             // occluders are additionally drawn into the faces — the same
             // occluder split as the spot path.
-            let promoted_static = full
-                .shadow_candidate_selection_indices
-                .get(light_idx)
-                .and_then(|selection| *selection)
-                .is_some();
+            let promoted_baked = shadow_candidate_is_promoted_baked(
+                &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
+                light_idx,
+            );
             pool.slot_entity_eligible[slot as usize] =
-                postretro_lighting::entity_occluder_eligible(candidate, promoted_static);
+                postretro_lighting::entity_occluder_eligible(candidate, promoted_baked);
             let face_mats = cube_shadow::cube_face_matrices(candidate);
             for (face, m) in face_mats.iter().enumerate() {
                 let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
@@ -858,25 +1127,24 @@ impl Renderer {
         slot_assignment
     }
 
-    fn update_promoted_static_weights_and_records(
+    #[allow(clippy::too_many_arguments)] // Keeps shared pool assignments and lifecycle inputs explicit.
+    fn update_promoted_baked_weights_and_records(
         &mut self,
         spot_assignment: &[u32],
         cube_assignment: &[u32],
         visible_lights: &[bool],
+        promoted_baked_has_shadow_receiver: &[bool],
         camera_position: Vec3,
         camera_near_clip: f32,
         frame_dt: f32,
+        promotion_candidate_lookup: &PromotionCandidateLookup,
     ) {
-        const PROMOTE_SECONDS: f32 = 0.3;
-        const STICKY_SECONDS: f32 = 0.5;
-        const DEMOTE_SECONDS: f32 = 0.3;
-
         let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
 
-        full.promoted_static_records.clear();
+        full.promoted_baked_records.clear();
         if full.promoted_static_weights.len() != full.promoted_static_states.len() {
             full.promoted_static_weights
                 .resize(full.promoted_static_states.len(), 0.0);
@@ -892,10 +1160,11 @@ impl Renderer {
         );
 
         for (selection_index, state) in full.promoted_static_states.iter_mut().enumerate() {
-            let candidate_index = full
-                .shadow_candidate_selection_indices
-                .iter()
-                .position(|idx| *idx == Some(selection_index));
+            let candidate_index = promotion_candidate_lookup
+                .selected_static
+                .get(selection_index)
+                .copied()
+                .flatten();
 
             let assigned = candidate_index.and_then(|candidate_index| {
                 let spot = spot_assignment
@@ -916,52 +1185,135 @@ impl Renderer {
                 ))
             });
 
-            if let Some((pool_kind, slot, candidate_index)) = assigned {
-                state.pool_kind = Some(pool_kind);
-                state.slot = slot;
-                if let Some(light) = full.shadow_candidate_lights.get(candidate_index) {
-                    state.last_score =
-                        candidate_slot_score(light, camera_position, camera_near_clip);
-                }
-                let gate_passed = visible_lights.get(candidate_index).copied().unwrap_or(true);
-                if gate_passed {
-                    state.sticky_remaining = STICKY_SECONDS;
-                    state.weight = step_toward(state.weight, 1.0, frame_dt / PROMOTE_SECONDS);
-                } else if state.sticky_remaining > 0.0 {
-                    state.sticky_remaining = (state.sticky_remaining - frame_dt).max(0.0);
-                } else {
-                    state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
-                }
-                if state.weight > 0.0 {
-                    let global_light_index =
-                        full.entity_shadow_light_source_indices[selection_index];
-                    full.promoted_static_records
-                        .push(PromotedStaticLightRecord {
-                            global_light_index: global_light_index as u32,
-                            selection_index: selection_index as u32,
-                            pool_kind,
-                            slot,
-                            weight: state.weight.clamp(0.0, 1.0),
-                        });
-                }
-            } else {
-                state.pool_kind = None;
-                state.sticky_remaining = 0.0;
-                state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+            let assigned = assigned.map(|(pool_kind, slot, candidate_index)| {
+                let score = full
+                    .shadow_candidate_lights
+                    .get(candidate_index)
+                    .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
+                    .unwrap_or(state.last_score);
+                (
+                    pool_kind,
+                    slot,
+                    score,
+                    visible_lights.get(candidate_index).copied().unwrap_or(true),
+                )
+            });
+            advance_selected_static_promoted_baked_state(state, assigned, frame_dt);
+            if state.weight > 0.0
+                && let Some(pool_kind) = state.pool_kind
+            {
+                let global_light_index = full.entity_shadow_light_source_indices[selection_index];
+                full.promoted_baked_records.push(PromotedBakedLightRecord {
+                    global_light_index: global_light_index as u32,
+                    pool_kind,
+                    slot: state.slot,
+                    weight: state.weight.clamp(0.0, 1.0),
+                    source: PromotedBakedLightSource::SelectedStatic {
+                        selection_index: selection_index as u32,
+                    },
+                });
             }
 
             full.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
         }
 
-        let record_count_before_cache_layers = full.promoted_static_records.len();
+        // Section-45 animated lights own an equally-shaped ramp state, but in
+        // their independent `AnimatedBakedLights` namespace. The forward and
+        // compose paths consume this state; the lookahead and sticky window
+        // keep a short dark strobe from churning a shared-pool slot every frame.
+        for (animated_index, state) in full.promoted_animated_states.iter_mut().enumerate() {
+            if animated_index >= MAX_ANIMATED_BAKED_LIGHTS {
+                *state = PromotedBakedLightState::default();
+                continue;
+            }
+            let candidate_index = promotion_candidate_lookup
+                .animated_baked
+                .get(animated_index)
+                .copied()
+                .flatten();
+
+            let has_shadow_receiver = candidate_index
+                .and_then(|candidate_index| {
+                    promoted_baked_has_shadow_receiver
+                        .get(candidate_index)
+                        .copied()
+                })
+                .unwrap_or(false);
+            if reset_animated_promotion_without_receiver(state, has_shadow_receiver) {
+                continue;
+            }
+
+            let assigned = candidate_index.and_then(|candidate_index| {
+                let spot = spot_assignment
+                    .get(candidate_index)
+                    .copied()
+                    .unwrap_or(postretro_lighting::NO_SHADOW_SLOT);
+                if spot != postretro_lighting::NO_SHADOW_SLOT {
+                    return Some((PromotedShadowPoolKind::Spot, spot, candidate_index));
+                }
+                let cube = cube_assignment
+                    .get(candidate_index)
+                    .copied()
+                    .unwrap_or(postretro_lighting::NO_SHADOW_SLOT);
+                (cube != postretro_lighting::NO_SHADOW_SLOT).then_some((
+                    PromotedShadowPoolKind::Cube,
+                    cube,
+                    candidate_index,
+                ))
+            });
+
+            let assigned = assigned.map(|(pool_kind, slot, candidate_index)| {
+                let score = full
+                    .shadow_candidate_lights
+                    .get(candidate_index)
+                    .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
+                    .unwrap_or(state.last_score);
+                (
+                    pool_kind,
+                    slot,
+                    score,
+                    visible_lights
+                        .get(candidate_index)
+                        .copied()
+                        .unwrap_or(false),
+                )
+            });
+            advance_animated_promoted_baked_state(state, assigned, frame_dt);
+
+            // The animated forward record already lives at this raw section-45
+            // index. This cache record supplies its fixed world-depth layer;
+            // it never appends a duplicate light record or aliases an
+            // EntityShadowLights selection index.
+            if state.weight > 0.0 {
+                if let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
+                {
+                    if let Some(&global_light_index) =
+                        full.shadow_candidate_source_indices.get(candidate_index)
+                    {
+                        full.promoted_baked_records.push(PromotedBakedLightRecord {
+                            global_light_index: global_light_index as u32,
+                            pool_kind,
+                            slot: state.slot,
+                            weight: state.weight.clamp(0.0, 1.0),
+                            source: PromotedBakedLightSource::AnimatedBaked {
+                                animated_baked_index: animated_index as u32,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        let record_count_before_cache_layers = full.promoted_baked_records.len();
         if let Some(cache) = &mut full.promoted_depth_cache {
-            let mut plan = cache.plan_frame(&full.promoted_static_records);
-            full.promoted_static_cache_layers = apply_promoted_cache_layers(
-                &mut full.promoted_static_records,
+            let mut plan = cache.plan_frame(&full.promoted_baked_records);
+            full.promoted_baked_cache_layers = apply_promoted_cache_layers(
+                &mut full.promoted_baked_records,
                 &mut full.promoted_static_weights,
+                &mut full.promoted_animated_states,
                 &mut plan,
             );
-            if full.promoted_static_records.len() != record_count_before_cache_layers
+            if full.promoted_baked_records.len() != record_count_before_cache_layers
                 && !full.promoted_depth_cache_missing_layer_warned
             {
                 log::warn!(
@@ -977,10 +1329,10 @@ impl Renderer {
             full.promoted_depth_cache_frame_plan = plan;
         } else {
             assert!(
-                full.promoted_static_records.is_empty(),
+                full.promoted_baked_records.is_empty(),
                 "promoted records require a promoted depth cache"
             );
-            full.promoted_static_cache_layers.clear();
+            full.promoted_baked_cache_layers.clear();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
@@ -1005,8 +1357,59 @@ impl Renderer {
             0,
             &full.promoted_static_weight_scratch,
         );
-        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
+        full.total_light_count = forward_light_count(full)
+            + selected_static_record_count(&full.promoted_baked_records) as u32;
     }
+}
+
+/// Pin already-assigned animated-baked promotion records for one frame. This
+/// runs after ranking/cache allocation but before forward-tail packing, so the
+/// state is the single source for both forward `w` and compose `(1 - w)`.
+fn apply_capture_animated_promotion_weights(
+    animated_states: &mut [PromotedBakedLightState],
+    promoted_records: &mut [PromotedBakedLightRecord],
+    overrides: &[(usize, f32)],
+) -> Result<()> {
+    // Validate the complete override batch first. A malformed later row must
+    // not leave earlier compose/forward weights partially pinned.
+    for &(animated_baked_index, weight) in overrides {
+        let (pool_kind, slot) = animated_states
+            .get(animated_baked_index)
+            .and_then(|state| state.pool_kind.map(|pool_kind| (pool_kind, state.slot)))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "capture promotion row {animated_baked_index} did not win a shadow-pool slot"
+                )
+            })?;
+        let record = promoted_records
+            .iter()
+            .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "capture promotion row {animated_baked_index} has no promoted depth-cache record"
+                )
+            })?;
+        if record.pool_kind != pool_kind || record.slot != slot {
+            anyhow::bail!(
+                "capture promotion row {animated_baked_index} disagrees with its shadow-pool record"
+            );
+        }
+        if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+            anyhow::bail!(
+                "capture promotion row {animated_baked_index} has invalid weight {weight}"
+            );
+        }
+    }
+    for &(animated_baked_index, weight) in overrides {
+        let record = promoted_records
+            .iter_mut()
+            .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
+            .expect("validated capture override record");
+        let weight = weight.clamp(0.0, 1.0);
+        record.weight = weight;
+        animated_states[animated_baked_index].weight = weight;
+    }
+    Ok(())
 }
 
 /// Associate each promoted record with its static-depth cache layer before the
@@ -1015,8 +1418,9 @@ impl Renderer {
 /// weight so every downstream count and tail starts from the same surviving set.
 ///
 fn apply_promoted_cache_layers(
-    records: &mut Vec<PromotedStaticLightRecord>,
-    weights: &mut [f32],
+    records: &mut Vec<PromotedBakedLightRecord>,
+    selected_static_weights: &mut [f32],
+    animated_states: &mut [PromotedBakedLightState],
     plan: &mut PromotedDepthCacheFramePlan,
 ) -> Vec<i32> {
     let mut cache_layers = Vec::with_capacity(records.len());
@@ -1030,8 +1434,23 @@ fn apply_promoted_cache_layers(
             }),
         };
         let Some(layer) = layer else {
-            if let Some(weight) = weights.get_mut(record.selection_index as usize) {
-                *weight = 0.0;
+            match record.source {
+                PromotedBakedLightSource::SelectedStatic { selection_index } => {
+                    if let Some(weight) = selected_static_weights.get_mut(selection_index as usize)
+                    {
+                        *weight = 0.0;
+                    }
+                }
+                PromotedBakedLightSource::AnimatedBaked {
+                    animated_baked_index,
+                } => {
+                    // Reset the raw AnimatedBakedLights state in the same drop
+                    // pass that removes its runtime cache record; otherwise
+                    // compose would retain `(1 - w)` with no replacement term.
+                    if let Some(state) = animated_states.get_mut(animated_baked_index as usize) {
+                        *state = PromotedBakedLightState::default();
+                    }
+                }
             }
             return false;
         };
@@ -1056,73 +1475,69 @@ fn candidate_slot_score(light: &MapLight, camera_position: Vec3, camera_near_cli
 }
 
 /// Eviction hysteresis margin: a challenger takes an incumbent's slot only when
-/// it out-scores the incumbent by this factor. Renderer-owned tuning policy fed
-/// to the wgpu-free ranker (see the static-light-entity-shadows plan, Task 4).
+/// it out-scores the incumbent by this factor.
 const EVICTION_MARGIN: f32 = 1.25;
 
-/// Rank this pool's lights (dynamic-tier + promoted-static) into slots through
+/// Rank this pool's lights (dynamic-tier + promoted-baked) into slots through
 /// the shared [`postretro_lighting::shadow_ranking`] core. The renderer-specific
-/// state — which lights are promoted-static, and each slot's prior occupant for
+/// state — which lights are promoted-baked, and each slot's prior occupant for
 /// hysteresis — is assembled here; the pure score sort, cap enforcement, and
 /// tier-neutral eviction live in the lighting crate so the spot and cube pools
 /// cannot drift and no scoring/assignment formula is duplicated.
-fn assign_shadow_pool_slots_with_promoted_static(
+fn assign_shadow_pool_slots_with_promoted_baked(
     full: &FullRenderer,
-    pool_kind: PromotedShadowPoolKind,
-    camera_position: Vec3,
-    camera_near_clip: f32,
-    eligible_lights: &[bool],
-    capacity: usize,
-    promoted_cap: usize,
+    inputs: ShadowPoolSlotAssignmentInputs<'_>,
 ) -> Vec<u32> {
-    let light_type = match pool_kind {
+    let light_type = match inputs.pool_kind {
         PromotedShadowPoolKind::Spot => postretro_level_loader::LightType::Spot,
         PromotedShadowPoolKind::Cube => postretro_level_loader::LightType::Point,
     };
 
-    // Unified candidate set: every eligible light of this pool's type competes on
-    // score alone — no tier is reserved ahead of the sort (Resolution 2).
+    // Unified candidate set: every eligible light of this pool's type competes
+    // on score alone; no tier is reserved ahead of the sort.
     let mut candidates = Vec::new();
     for (candidate_index, light) in full.shadow_candidate_lights.iter().enumerate() {
         if light.light_type != light_type {
             continue;
         }
-        if eligible_lights
+        if inputs
+            .eligible_lights
             .get(candidate_index)
             .is_some_and(|eligible| !eligible)
         {
             continue;
         }
-        let is_promoted_static = full
-            .shadow_candidate_selection_indices
-            .get(candidate_index)
-            .and_then(|selection| *selection)
-            .is_some();
+        let is_promoted_baked = shadow_candidate_is_promoted_baked(
+            &full.shadow_candidate_selection_indices,
+            &full.shadow_candidate_animated_baked_indices,
+            candidate_index,
+        );
         // A baked, non-selected light never earns a runtime slot.
-        if !is_promoted_static && !light.is_dynamic {
+        if !is_promoted_baked && !light.is_dynamic {
             continue;
         }
         candidates.push(postretro_lighting::shadow_ranking::SlotCandidate {
             candidate_index,
-            score: candidate_slot_score(light, camera_position, camera_near_clip),
-            is_promoted_static,
+            score: candidate_slot_score(light, inputs.camera_position, inputs.camera_near_clip),
+            is_promoted_baked,
         });
     }
 
     let incumbents = build_slot_incumbents(
         full,
-        pool_kind,
-        capacity,
-        camera_position,
-        camera_near_clip,
-        eligible_lights,
+        inputs.pool_kind,
+        inputs.capacity,
+        inputs.camera_position,
+        inputs.camera_near_clip,
+        inputs.eligible_lights,
+        inputs.promotion_candidate_lookup,
     );
 
     postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
         &candidates,
         &incumbents,
-        capacity,
-        promoted_cap,
+        inputs.capacity,
+        inputs.promoted_cap,
         full.shadow_candidate_lights.len(),
         EVICTION_MARGIN,
     )
@@ -1143,11 +1558,12 @@ fn build_slot_incumbents(
     camera_position: Vec3,
     camera_near_clip: f32,
     eligible_lights: &[bool],
+    promotion_candidate_lookup: &PromotionCandidateLookup,
 ) -> Vec<postretro_lighting::shadow_ranking::SlotIncumbent> {
     use postretro_lighting::shadow_ranking::SlotIncumbent;
     let mut incumbents = Vec::new();
 
-    // Static incumbents: the promoted-static weight state owns their slot and
+    // Selected-static incumbents: their dedicated weight state owns the slot and
     // sticky window, independent of this frame's eligibility.
     for (selection_index, state) in full.promoted_static_states.iter().enumerate() {
         if state.pool_kind != Some(pool_kind) || state.weight <= 0.0 {
@@ -1157,10 +1573,11 @@ fn build_slot_incumbents(
         if slot >= capacity {
             continue;
         }
-        let Some(candidate_index) = full
-            .shadow_candidate_selection_indices
-            .iter()
-            .position(|idx| *idx == Some(selection_index))
+        let Some(candidate_index) = promotion_candidate_lookup
+            .selected_static
+            .get(selection_index)
+            .copied()
+            .flatten()
         else {
             continue;
         };
@@ -1174,7 +1591,40 @@ fn build_slot_incumbents(
             slot,
             candidate_index,
             score,
-            is_promoted_static: true,
+            is_promoted_baked: true,
+        });
+    }
+
+    // Animated-baked incumbents use the same shared ranker and sticky ramp as
+    // selected statics, but their state index is the section-45
+    // `AnimatedBakedLights` index rather than an `EntityShadowLights` index.
+    for (animated_index, state) in full.promoted_animated_states.iter().enumerate() {
+        if state.pool_kind != Some(pool_kind) || state.weight <= 0.0 {
+            continue;
+        }
+        let slot = state.slot as usize;
+        if slot >= capacity {
+            continue;
+        }
+        let Some(candidate_index) = promotion_candidate_lookup
+            .animated_baked
+            .get(animated_index)
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        let score = full
+            .shadow_candidate_lights
+            .get(candidate_index)
+            .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
+            .unwrap_or(state.last_score)
+            .max(0.0);
+        incumbents.push(SlotIncumbent {
+            slot,
+            candidate_index,
+            score,
+            is_promoted_baked: true,
         });
     }
 
@@ -1196,12 +1646,12 @@ fn build_slot_incumbents(
         if slot >= capacity {
             continue;
         }
-        let is_promoted_static = full
-            .shadow_candidate_selection_indices
-            .get(candidate_index)
-            .and_then(|selection| *selection)
-            .is_some();
-        if is_promoted_static {
+        let is_promoted_baked = shadow_candidate_is_promoted_baked(
+            &full.shadow_candidate_selection_indices,
+            &full.shadow_candidate_animated_baked_indices,
+            candidate_index,
+        );
+        if is_promoted_baked {
             // Statics come from the weight state above; skip so a slot is not
             // seeded twice.
             continue;
@@ -1223,31 +1673,98 @@ fn build_slot_incumbents(
             slot,
             candidate_index,
             score: candidate_slot_score(light, camera_position, camera_near_clip).max(0.0),
-            is_promoted_static: false,
+            is_promoted_baked: false,
         });
     }
 
     incumbents
 }
 
+/// Drop incumbents that cannot contribute after this frame's lifecycle step.
+/// Ranking must see the released slot immediately; clearing its assignment only
+/// after ranking would leave a one-frame hole that no challenger can fill.
+fn release_promoted_baked_incumbents_before_ranking(
+    selected_static_states: &mut [PromotedBakedLightState],
+    animated_baked_states: &mut [PromotedBakedLightState],
+    promotion_candidate_lookup: &PromotionCandidateLookup,
+    visible_lights: &[bool],
+    promoted_baked_has_shadow_receiver: &[bool],
+    frame_dt: f32,
+) {
+    for (selection_index, state) in selected_static_states.iter_mut().enumerate() {
+        let Some(candidate_index) = promotion_candidate_lookup
+            .selected_static
+            .get(selection_index)
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        let gate_passed = visible_lights.get(candidate_index).copied().unwrap_or(true);
+        if promoted_incumbent_reaches_zero(state, gate_passed, frame_dt) {
+            *state = PromotedBakedLightState::default();
+        }
+    }
+
+    for (animated_index, state) in animated_baked_states.iter_mut().enumerate() {
+        let candidate_index = promotion_candidate_lookup
+            .animated_baked
+            .get(animated_index)
+            .copied()
+            .flatten();
+        let has_shadow_receiver = candidate_index
+            .and_then(|candidate_index| {
+                promoted_baked_has_shadow_receiver
+                    .get(candidate_index)
+                    .copied()
+            })
+            .unwrap_or(false);
+        if reset_animated_promotion_without_receiver(state, has_shadow_receiver) {
+            continue;
+        }
+        let gate_passed = candidate_index
+            .and_then(|candidate_index| visible_lights.get(candidate_index).copied())
+            .unwrap_or(false);
+        if promoted_incumbent_reaches_zero(state, gate_passed, frame_dt) {
+            *state = PromotedBakedLightState::default();
+        }
+    }
+}
+
+fn promoted_incumbent_reaches_zero(
+    state: &PromotedBakedLightState,
+    gate_passed: bool,
+    frame_dt: f32,
+) -> bool {
+    state.pool_kind.is_some()
+        && !gate_passed
+        && state.sticky_remaining <= 0.0
+        && step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS) <= 0.0
+}
+
 fn clear_zero_weight_promoted_assignments(
     selection_indices: &[Option<usize>],
     weights: &[f32],
+    animated_baked_indices: &[Option<usize>],
+    animated_states: &[PromotedBakedLightState],
     assignment: &mut [u32],
 ) {
     for (candidate_index, slot) in assignment.iter_mut().enumerate() {
         if *slot == postretro_lighting::NO_SHADOW_SLOT {
             continue;
         }
-        let Some(selection_index) = selection_indices
+        let static_weight = selection_indices
             .get(candidate_index)
             .and_then(|selection_index| *selection_index)
-        else {
-            continue;
-        };
-        if weights
-            .get(selection_index)
-            .is_none_or(|weight| *weight <= 0.0)
+            .and_then(|selection_index| weights.get(selection_index).copied());
+        let animated_weight = animated_baked_indices
+            .get(candidate_index)
+            .and_then(|animated_index| *animated_index)
+            .and_then(|animated_index| animated_states.get(animated_index))
+            .map(|state| state.weight);
+        if static_weight
+            .or(animated_weight)
+            .is_some_and(|weight| weight <= 0.0)
         {
             *slot = postretro_lighting::NO_SHADOW_SLOT;
         }
@@ -1264,6 +1781,79 @@ fn step_toward(value: f32, target: f32, step: f32) -> f32 {
         (value - step).max(target)
     }
     .clamp(0.0, 1.0)
+}
+
+/// Advance the sticky promote/demote lifecycle while the candidate
+/// retains its assignment. The wrapper below handles resource loss first.
+fn advance_promoted_baked_state(
+    state: &mut PromotedBakedLightState,
+    assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
+    frame_dt: f32,
+) {
+    if let Some((pool_kind, slot, score, gate_passed)) = assigned {
+        state.pool_kind = Some(pool_kind);
+        state.slot = slot;
+        state.last_score = score;
+        if gate_passed {
+            state.sticky_remaining = STICKY_SECONDS;
+            state.weight = step_toward(state.weight, 1.0, frame_dt / PROMOTE_SECONDS);
+        } else if state.sticky_remaining > 0.0 {
+            state.sticky_remaining = (state.sticky_remaining - frame_dt).max(0.0);
+        } else {
+            state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+        }
+    } else {
+        state.pool_kind = None;
+        state.sticky_remaining = 0.0;
+        state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+    }
+}
+
+/// A selected-static fade is valid only while the pool assignment keeps its
+/// forward replacement record alive. Ordinary visibility loss retains the
+/// incumbent slot and can demote smoothly; eviction by a shared challenger
+/// restores the full baked delta atomically.
+fn advance_selected_static_promoted_baked_state(
+    state: &mut PromotedBakedLightState,
+    assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
+    frame_dt: f32,
+) {
+    if assigned.is_none() {
+        *state = PromotedBakedLightState::default();
+        return;
+    }
+    advance_promoted_baked_state(state, assigned, frame_dt);
+}
+
+/// Animated promotion can fade only while it still owns a shadow slot. A pool
+/// eviction has no runtime resource to support a partial forward arm, so it
+/// falls back atomically to the full baked delta.
+fn advance_animated_promoted_baked_state(
+    state: &mut PromotedBakedLightState,
+    assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
+    frame_dt: f32,
+) {
+    if assigned.is_none() {
+        *state = PromotedBakedLightState::default();
+        return;
+    }
+    advance_promoted_baked_state(state, assigned, frame_dt);
+}
+
+/// Unlike a normal eligibility or brightness miss (which participates in the
+/// sticky crossfade), no receiver means no
+/// runtime shadow term exists to cover a partially reduced baked delta. Clear
+/// the raw AnimatedBakedLights state in one step; the caller then drops its
+/// cache record and slot assignment in the same frame.
+fn reset_animated_promotion_without_receiver(
+    state: &mut PromotedBakedLightState,
+    has_shadow_receiver: bool,
+) -> bool {
+    if has_shadow_receiver {
+        return false;
+    }
+    *state = PromotedBakedLightState::default();
+    true
 }
 
 fn selected_static_light_has_shadow_entity(
@@ -1332,8 +1922,10 @@ fn build_count_split_light_upload(
 ) {
     bytes.clear();
     let dynamic_bytes = full.light_count as usize * postretro_lighting::GPU_LIGHT_SIZE;
-    if full.last_lights_upload.len() >= dynamic_bytes && dynamic_bytes > 0 {
-        bytes.extend_from_slice(&full.last_lights_upload[..dynamic_bytes]);
+    let animated_tail_bytes = full.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE;
+    let forward_prefix_bytes = dynamic_bytes + animated_tail_bytes;
+    if full.last_lights_upload.len() >= forward_prefix_bytes && forward_prefix_bytes > 0 {
+        bytes.extend_from_slice(&full.last_lights_upload[..forward_prefix_bytes]);
         postretro_lighting::patch_shadow_slots(bytes, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
     } else if !full.level_lights.is_empty() {
@@ -1341,6 +1933,20 @@ fn build_count_split_light_upload(
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
         bytes.resize(dynamic_bytes, 0);
     }
+
+    // Section-45 tail records are authored/unweighted when the bridge uploads
+    // them. Apply the exact same `state.weight` that Pass B converts into its
+    // `(1 - w)` compose factor, then patch the shadow-pool slot selected this
+    // frame. Tail records at/above the fixed uniform cap remain unpromotable.
+    if bytes.len() < forward_prefix_bytes {
+        bytes.resize(forward_prefix_bytes, 0);
+    }
+    patch_animated_promotion_tail_records(
+        bytes,
+        full.light_count as usize,
+        full.animated_baked_light_count,
+        &full.promoted_animated_states,
+    );
 
     // `entity_shadow_lights` is raw-length N and index-parallel to the selection
     // index, so `[selection_index]` is a direct aligned lookup for every promoted
@@ -1352,8 +1958,16 @@ fn build_count_split_light_upload(
         full.promoted_static_states.len(),
         "selected-static light vector must be raw-length N, index-parallel to selection index",
     );
-    for record in &full.promoted_static_records {
-        let light = &full.entity_shadow_lights[record.selection_index as usize];
+    for record in full
+        .promoted_baked_records
+        .iter()
+        .filter(|record| record.source.selected_static_index().is_some())
+    {
+        let selection_index = record
+            .source
+            .selected_static_index()
+            .expect("selected-static record filter");
+        let light = &full.entity_shadow_lights[selection_index];
         let mut weighted = light.clone();
         weighted.intensity *= record.weight.clamp(0.0, 1.0);
         let spot_slot = match record.pool_kind {
@@ -1372,6 +1986,55 @@ fn build_count_split_light_upload(
     if bytes.is_empty() {
         bytes.resize(postretro_lighting::GPU_LIGHT_SIZE, 0);
     }
+}
+
+fn patch_animated_promotion_tail_records(
+    bytes: &mut [u8],
+    dynamic_light_count: usize,
+    animated_baked_light_count: usize,
+    states: &[PromotedBakedLightState],
+) {
+    let dynamic_bytes = dynamic_light_count * postretro_lighting::GPU_LIGHT_SIZE;
+    let default_state = PromotedBakedLightState::default();
+    for animated_baked_index in 0..animated_baked_light_count {
+        let start = dynamic_bytes + animated_baked_index * postretro_lighting::GPU_LIGHT_SIZE;
+        let end = start + postretro_lighting::GPU_LIGHT_SIZE;
+        let Some(record) = bytes.get_mut(start..end) else {
+            continue;
+        };
+        let state = states.get(animated_baked_index).unwrap_or(&default_state);
+        apply_animated_promotion_to_tail_record(record, animated_baked_index, state);
+    }
+}
+
+/// Turn one authored bridge tail record into its mover-only runtime term.
+/// `w` is deliberately read once and supplies both its RGB multiplier and the
+/// slot enable. The compose uploader derives the complementary `(1 - w)` from
+/// that same state in `AnimatedDirectShDebugOverride::bytes`.
+fn apply_animated_promotion_to_tail_record(
+    record: &mut [u8],
+    animated_baked_index: usize,
+    state: &PromotedBakedLightState,
+) {
+    debug_assert_eq!(record.len(), postretro_lighting::GPU_LIGHT_SIZE);
+    let weight = animated_baked_promotion_weight(animated_baked_index, Some(state));
+    for offset in [16, 20, 24] {
+        let color = read_light_float(record, offset);
+        record[offset..offset + 4].copy_from_slice(&(color * weight).to_ne_bytes());
+    }
+
+    let spot_slot = if weight > 0.0 && state.pool_kind == Some(PromotedShadowPoolKind::Spot) {
+        state.slot
+    } else {
+        postretro_lighting::NO_SHADOW_SLOT
+    };
+    let cube_slot = if weight > 0.0 && state.pool_kind == Some(PromotedShadowPoolKind::Cube) {
+        state.slot
+    } else {
+        postretro_lighting::NO_SHADOW_SLOT
+    };
+    postretro_lighting::patch_shadow_slots(record, &[spot_slot]);
+    postretro_lighting::patch_cube_slots(record, &[cube_slot]);
 }
 
 #[cfg(test)]
@@ -1512,41 +2175,61 @@ mod tests {
     }
 
     #[test]
-    fn promoted_static_record_schema_carries_task4_contract_fields() {
-        let record = PromotedStaticLightRecord {
+    fn promoted_baked_record_carries_pool_assignment_and_weight() {
+        let record = PromotedBakedLightRecord {
             global_light_index: 42,
-            selection_index: 3,
             pool_kind: PromotedShadowPoolKind::Cube,
             slot: 1,
             weight: 0.75,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 3 },
         };
 
         assert_eq!(record.global_light_index, 42);
-        assert_eq!(record.selection_index, 3);
+        assert_eq!(record.source.selected_static_index(), Some(3));
+        assert_eq!(record.source.animated_baked_index(), None);
         assert_eq!(record.pool_kind, PromotedShadowPoolKind::Cube);
         assert_eq!(record.slot, 1);
         assert!((0.0..=1.0).contains(&record.weight));
     }
 
     #[test]
-    fn promoted_static_caps_match_task4_budget() {
+    fn promoted_baked_caps_match_pool_budget() {
         assert_eq!(MAX_PROMOTED_SPOT, 8);
         assert_eq!(MAX_PROMOTED_CUBE, 2);
     }
 
     #[test]
+    fn promotion_candidate_lookup_preserves_both_index_namespaces() {
+        let lookup = build_promotion_candidate_lookup(
+            &[None, Some(1), Some(0), None],
+            &[Some(1), None, None, Some(0)],
+            2,
+            2,
+        );
+
+        assert_eq!(lookup.selected_static, [Some(2), Some(1)]);
+        assert_eq!(lookup.animated_baked, [Some(3), Some(0)]);
+    }
+
+    #[test]
     fn missing_cache_plan_layer_drops_record_and_zeros_weight_before_metadata_pack() {
-        let mut records = vec![PromotedStaticLightRecord {
+        let mut records = vec![PromotedBakedLightRecord {
             global_light_index: 42,
-            selection_index: 0,
             pool_kind: PromotedShadowPoolKind::Spot,
             slot: 3,
             weight: 0.75,
+            source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
         }];
         let mut weights = [0.75];
+        let mut animated_states = [];
         let mut plan = PromotedDepthCacheFramePlan::default();
 
-        let cache_layers = apply_promoted_cache_layers(&mut records, &mut weights, &mut plan);
+        let cache_layers = apply_promoted_cache_layers(
+            &mut records,
+            &mut weights,
+            &mut animated_states,
+            &mut plan,
+        );
 
         assert!(
             records.is_empty(),
@@ -1565,6 +2248,202 @@ mod tests {
     }
 
     #[test]
+    fn missing_cache_layer_drops_animated_record_at_raw_index_and_restores_full_delta() {
+        let mut records = vec![PromotedBakedLightRecord {
+            global_light_index: 42,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 3,
+            weight: 0.75,
+            // Deliberately distinct from the static selection index so an
+            // animated roster index cannot zero `promoted_static_weights[0]`.
+            source: PromotedBakedLightSource::AnimatedBaked {
+                animated_baked_index: 2,
+            },
+        }];
+        let mut selected_static_weights = [0.4];
+        let mut animated_states = vec![
+            PromotedBakedLightState {
+                weight: 0.1,
+                ..PromotedBakedLightState::default()
+            },
+            PromotedBakedLightState {
+                weight: 0.2,
+                ..PromotedBakedLightState::default()
+            },
+            PromotedBakedLightState {
+                weight: 0.75,
+                pool_kind: Some(PromotedShadowPoolKind::Spot),
+                slot: 3,
+                ..PromotedBakedLightState::default()
+            },
+        ];
+        let mut plan = PromotedDepthCacheFramePlan::default();
+
+        let cache_layers = apply_promoted_cache_layers(
+            &mut records,
+            &mut selected_static_weights,
+            &mut animated_states,
+            &mut plan,
+        );
+
+        assert!(records.is_empty());
+        assert!(cache_layers.is_empty());
+        assert_eq!(
+            selected_static_weights,
+            [0.4],
+            "an AnimatedBakedLights index must not alias into static weights"
+        );
+        assert_eq!(
+            animated_baked_promotion_weight(2, animated_states.get(2)),
+            0.0,
+            "dropping the runtime cache record restores compose's full (1-w) delta"
+        );
+        assert_eq!(animated_states[0].weight, 0.1);
+        assert_eq!(animated_states[1].weight, 0.2);
+        assert_eq!(plan.counters.promoted_count, 0);
+    }
+
+    #[test]
+    fn receiver_despawn_resets_animated_state_and_full_delta_compose_factor() {
+        let mut state = PromotedBakedLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Cube),
+            slot: 1,
+            last_score: 4.0,
+        };
+
+        assert!(reset_animated_promotion_without_receiver(&mut state, false));
+        assert_eq!(
+            animated_baked_promotion_weight(5, Some(&state)),
+            0.0,
+            "a despawned receiver restores compose's full `(1 - w)` delta"
+        );
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.sticky_remaining, 0.0);
+
+        let mut retained = PromotedBakedLightState {
+            weight: 0.75,
+            ..PromotedBakedLightState::default()
+        };
+        assert!(!reset_animated_promotion_without_receiver(
+            &mut retained,
+            true
+        ));
+        assert_eq!(retained.weight, 0.75);
+    }
+
+    #[test]
+    fn terminal_incumbents_release_before_ranking() {
+        let lookup = build_promotion_candidate_lookup(
+            &[Some(0), Some(1), None, None],
+            &[None, None, Some(0), Some(1)],
+            2,
+            2,
+        );
+        let incumbent = |weight| PromotedBakedLightState {
+            weight,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 1,
+            ..PromotedBakedLightState::default()
+        };
+        let mut selected_static_states = vec![incumbent(0.05), incumbent(0.5)];
+        let mut animated_baked_states = vec![incumbent(0.5), incumbent(0.05)];
+        let visible_lights = [false; 4];
+        let has_shadow_receiver = [true, true, false, true];
+
+        release_promoted_baked_incumbents_before_ranking(
+            &mut selected_static_states,
+            &mut animated_baked_states,
+            &lookup,
+            &visible_lights,
+            &has_shadow_receiver,
+            0.03,
+        );
+
+        assert_eq!(selected_static_states[0].pool_kind, None);
+        assert_eq!(selected_static_states[0].weight, 0.0);
+        assert_eq!(selected_static_states[1].weight, 0.5);
+        assert_eq!(animated_baked_states[0].pool_kind, None);
+        assert_eq!(animated_baked_states[0].weight, 0.0);
+        assert_eq!(animated_baked_states[1].pool_kind, None);
+        assert_eq!(animated_baked_states[1].weight, 0.0);
+    }
+
+    #[test]
+    fn shared_pool_eviction_atomically_restores_full_delta_and_zeros_forward_tail() {
+        let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let mut state = PromotedBakedLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            last_score: 4.0,
+        };
+
+        advance_animated_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+
+        assert_eq!(
+            animated_baked_promotion_weight(0, Some(&state)),
+            0.0,
+            "an evicted light cannot retain a forward share without a shadow slot",
+        );
+        assert_eq!(1.0 - animated_baked_promotion_weight(0, Some(&state)), 1.0);
+        let mut tail = postretro_lighting::pack_light(&source);
+        apply_animated_promotion_to_tail_record(&mut tail, 0, &state);
+        for offset in [16, 20, 24] {
+            assert_eq!(read_light_float(&tail, offset), 0.0);
+        }
+        assert_eq!(
+            u32::from_ne_bytes(
+                tail[postretro_lighting::SHADOW_SLOT_BYTE_OFFSET
+                    ..postretro_lighting::SHADOW_SLOT_BYTE_OFFSET + 4]
+                    .try_into()
+                    .unwrap(),
+            ),
+            postretro_lighting::NO_SHADOW_SLOT,
+        );
+        assert_eq!(state.weight, 0.0);
+        assert_eq!(state.sticky_remaining, 0.0);
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.last_score, 0.0);
+    }
+
+    // Regression: selected-static promotion kept a partial compose subtraction
+    // after a shared-pool challenger removed the only forward shadow record.
+    #[test]
+    fn selected_static_visibility_fade_keeps_its_slot_but_challenger_eviction_resets_weight() {
+        let mut state = PromotedBakedLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 2,
+            last_score: 4.0,
+        };
+
+        let visibility_loss = Some((PromotedShadowPoolKind::Spot, 2, 2.0, false));
+        advance_selected_static_promoted_baked_state(&mut state, visibility_loss, 1.0 / 60.0);
+        assert_eq!(state.pool_kind, Some(PromotedShadowPoolKind::Spot));
+        assert_eq!(
+            state.weight, 0.75,
+            "visibility loss demotes only while the incumbent slot can still emit the forward arm",
+        );
+
+        advance_selected_static_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.sticky_remaining, 0.0);
+        assert_eq!(state.last_score, 0.0);
+        assert_eq!(
+            1.0 - state.weight,
+            1.0,
+            "challenger eviction must atomically restore the complete baked contribution",
+        );
+    }
+
+    #[test]
     fn promoted_weight_step_is_reversible_and_clamped() {
         let w = step_toward(0.0, 1.0, 0.5);
         assert!((w - 0.5).abs() < 1.0e-6);
@@ -1574,7 +2453,187 @@ mod tests {
         assert_eq!(step_toward(0.05, 0.0, 0.2), 0.0);
     }
 
-    // The pure score sort, promoted-static cap, and tier-neutral eviction
+    #[test]
+    fn animated_tail_uses_one_state_weight_without_cross_light_bleed() {
+        let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let mut first = postretro_lighting::pack_light(&source);
+        let mut second = postretro_lighting::pack_light(&source);
+        let mut unpromoted = postretro_lighting::pack_light(&source);
+        let mut overflow = postretro_lighting::pack_light(&source);
+        let first_state = PromotedBakedLightState {
+            weight: 0.25,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            ..PromotedBakedLightState::default()
+        };
+        let second_state = PromotedBakedLightState {
+            weight: 0.75,
+            pool_kind: Some(PromotedShadowPoolKind::Cube),
+            slot: 1,
+            ..PromotedBakedLightState::default()
+        };
+
+        apply_animated_promotion_to_tail_record(&mut first, 0, &first_state);
+        apply_animated_promotion_to_tail_record(&mut second, 1, &second_state);
+        apply_animated_promotion_to_tail_record(
+            &mut unpromoted,
+            2,
+            &PromotedBakedLightState::default(),
+        );
+        // The cap is keyed by raw AnimatedBakedLights index, not batch
+        // position. An over-cap state cannot affect a prior valid tail.
+        apply_animated_promotion_to_tail_record(
+            &mut overflow,
+            MAX_ANIMATED_BAKED_LIGHTS,
+            &PromotedBakedLightState {
+                weight: 1.0,
+                pool_kind: Some(PromotedShadowPoolKind::Spot),
+                slot: 0,
+                ..PromotedBakedLightState::default()
+            },
+        );
+
+        let read_rgb = |record: &[u8]| [16, 20, 24].map(|offset| read_light_float(record, offset));
+        assert_eq!(read_rgb(&first), [0.25, 0.25, 0.25]);
+        assert_eq!(read_rgb(&second), [0.75, 0.75, 0.75]);
+        assert_eq!(
+            read_rgb(&unpromoted),
+            [0.0, 0.0, 0.0],
+            "w=0 leaves the reserved runtime tail byte-identical to no runtime radiance",
+        );
+        assert_eq!(read_rgb(&overflow), [0.0, 0.0, 0.0]);
+        assert_eq!(
+            animated_baked_promotion_weight(0, Some(&first_state))
+                + (1.0 - animated_baked_promotion_weight(0, Some(&first_state))),
+            1.0,
+            "forward w and compose (1-w) derive from the identical state entry",
+        );
+    }
+
+    // Regression: an all-non-promotable sparse roster took the empty-candidate
+    // return after resetting w, leaving authored RGB live in retained tail rows.
+    #[test]
+    fn empty_candidate_sparse_roster_zeros_every_retained_animated_tail_row() {
+        let dynamic = dynamic_shadow_light(postretro_level_loader::LightType::Point);
+        let animated = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let dynamic_record = postretro_lighting::pack_light(&dynamic);
+        let mut bytes = dynamic_record.to_vec();
+        bytes.resize(
+            dynamic_record.len() + 3 * postretro_lighting::GPU_LIGHT_SIZE,
+            0,
+        );
+        let authored = postretro_lighting::pack_light_with_slot(&animated, 4);
+        let row_one = 2 * postretro_lighting::GPU_LIGHT_SIZE;
+        let row_two = 3 * postretro_lighting::GPU_LIGHT_SIZE;
+        bytes[row_one..row_one + postretro_lighting::GPU_LIGHT_SIZE].copy_from_slice(&authored);
+        bytes[row_two..row_two + postretro_lighting::GPU_LIGHT_SIZE].copy_from_slice(&authored);
+        let retained_len = bytes.len();
+        let states = vec![PromotedBakedLightState::default(); 3];
+
+        patch_animated_promotion_tail_records(&mut bytes, 1, 3, &states);
+
+        assert_eq!(
+            bytes.len(),
+            retained_len,
+            "raw roster count must stay stable"
+        );
+        assert_eq!(
+            &bytes[..postretro_lighting::GPU_LIGHT_SIZE],
+            &dynamic_record
+        );
+        for animated_baked_index in 0..3 {
+            let start = (1 + animated_baked_index) * postretro_lighting::GPU_LIGHT_SIZE;
+            let record = &bytes[start..start + postretro_lighting::GPU_LIGHT_SIZE];
+            for offset in [16, 20, 24] {
+                assert_eq!(read_light_float(record, offset), 0.0);
+            }
+            assert_eq!(
+                u32::from_ne_bytes(
+                    record[postretro_lighting::SHADOW_SLOT_BYTE_OFFSET
+                        ..postretro_lighting::SHADOW_SLOT_BYTE_OFFSET + 4]
+                        .try_into()
+                        .unwrap(),
+                ),
+                postretro_lighting::NO_SHADOW_SLOT,
+            );
+            assert_eq!(
+                u32::from_ne_bytes(
+                    record[postretro_lighting::CUBE_SLOT_BYTE_OFFSET
+                        ..postretro_lighting::CUBE_SLOT_BYTE_OFFSET + 4]
+                        .try_into()
+                        .unwrap(),
+                ),
+                postretro_lighting::NO_SHADOW_SLOT,
+            );
+        }
+    }
+
+    // Regression: capture changed Pass B's state after the forward tail had
+    // already been packed and uploaded with the natural ramp weight.
+    #[test]
+    fn capture_promotion_override_controls_compose_and_forward_tail_radiance() {
+        let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
+        let mut animated_states = [PromotedBakedLightState {
+            weight: 0.5,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 3,
+            ..PromotedBakedLightState::default()
+        }];
+        let mut promoted_records = [PromotedBakedLightRecord {
+            global_light_index: 7,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 3,
+            weight: 0.5,
+            source: PromotedBakedLightSource::AnimatedBaked {
+                animated_baked_index: 0,
+            },
+        }];
+        let read_rgb = |record: &[u8]| [16, 20, 24].map(|offset| read_light_float(record, offset));
+        let read_slot = |record: &[u8]| {
+            u32::from_ne_bytes(
+                record[postretro_lighting::SHADOW_SLOT_BYTE_OFFSET
+                    ..postretro_lighting::SHADOW_SLOT_BYTE_OFFSET + 4]
+                    .try_into()
+                    .expect("GpuLight shadow-slot bytes"),
+            )
+        };
+
+        apply_capture_animated_promotion_weights(
+            &mut animated_states,
+            &mut promoted_records,
+            &[(0, 0.0)],
+        )
+        .expect("assigned animated promotion accepts capture override");
+        let mut zero_weight_tail = postretro_lighting::pack_light(&source);
+        apply_animated_promotion_to_tail_record(&mut zero_weight_tail, 0, &animated_states[0]);
+        assert_eq!(1.0 - animated_states[0].weight, 1.0);
+        assert_eq!(promoted_records[0].weight, 0.0);
+        assert_eq!(read_rgb(&zero_weight_tail), [0.0; 3]);
+        assert_eq!(
+            read_slot(&zero_weight_tail),
+            postretro_lighting::NO_SHADOW_SLOT,
+            "w=0 removes the forward radiance and disables its shadow slot",
+        );
+
+        apply_capture_animated_promotion_weights(
+            &mut animated_states,
+            &mut promoted_records,
+            &[(0, 1.0)],
+        )
+        .expect("assigned animated promotion accepts capture override");
+        let mut full_weight_tail = postretro_lighting::pack_light(&source);
+        apply_animated_promotion_to_tail_record(&mut full_weight_tail, 0, &animated_states[0]);
+        assert_eq!(1.0 - animated_states[0].weight, 0.0);
+        assert_eq!(promoted_records[0].weight, 1.0);
+        assert_eq!(read_rgb(&full_weight_tail), [1.0; 3]);
+        assert_eq!(
+            read_slot(&full_weight_tail),
+            3,
+            "w=1 keeps the authored forward radiance and assigned shadow slot",
+        );
+    }
+
+    // The pure score sort, promoted-baked cap, and tier-neutral eviction
     // hysteresis now live in `postretro_lighting::shadow_ranking` — their
     // regression tests (cap-full static swap, dynamic⇄static eviction, the 1.25x
     // margin) moved there with the code. This module keeps the renderer-owned
@@ -1586,11 +2645,144 @@ mod tests {
         let weights = [0.0, 0.25];
         let mut assignment = [2, 3, 4];
 
-        clear_zero_weight_promoted_assignments(&selection_indices, &weights, &mut assignment);
+        clear_zero_weight_promoted_assignments(
+            &selection_indices,
+            &weights,
+            &[None, None, None],
+            &[],
+            &mut assignment,
+        );
 
         assert_eq!(assignment[0], postretro_lighting::NO_SHADOW_SLOT);
         assert_eq!(assignment[1], 3, "dynamic assignments are not touched");
         assert_eq!(assignment[2], 4, "nonzero promoted assignments survive");
+    }
+
+    #[test]
+    fn animated_baked_state_holds_a_short_dark_strobe_then_releases_a_long_one() {
+        let mut state = PromotedBakedLightState::default();
+        let spot = Some((PromotedShadowPoolKind::Spot, 0, 1.0, true));
+
+        // While lookahead sees the imminent bright interval, a single frame
+        // ramp reaches full weight and arms the sticky hold.
+        advance_promoted_baked_state(&mut state, spot, PROMOTE_SECONDS);
+        assert_eq!(state.weight, 1.0);
+        assert_eq!(state.sticky_remaining, STICKY_SECONDS);
+
+        // A dark trough shorter than STICKY_SECONDS holds the existing slot
+        // and fades neither side of the baked/runtime handoff.
+        let dark = Some((PromotedShadowPoolKind::Spot, 0, 1.0, false));
+        advance_promoted_baked_state(&mut state, dark, STICKY_SECONDS - 0.01);
+        assert_eq!(state.weight, 1.0);
+        advance_promoted_baked_state(&mut state, dark, 0.01);
+        assert_eq!(state.weight, 1.0);
+
+        // P6b: a sustained dark pulse exhausts sticky time then demotes all
+        // the way to zero, returning the shared-pool budget to challengers.
+        advance_promoted_baked_state(&mut state, dark, DEMOTE_SECONDS);
+        assert_eq!(state.weight, 0.0);
+        let mut assignment = [0];
+        clear_zero_weight_promoted_assignments(&[None], &[], &[Some(0)], &[state], &mut assignment);
+        assert_eq!(assignment, [postretro_lighting::NO_SHADOW_SLOT]);
+
+        // Under a free budget the next bright window can claim a slot and
+        // restart its ramp, rather than leaving the animated state latched off.
+        advance_promoted_baked_state(&mut state, spot, PROMOTE_SECONDS);
+        assert_eq!(state.weight, 1.0);
+        assert_eq!(state.pool_kind, Some(PromotedShadowPoolKind::Spot));
+    }
+
+    #[test]
+    fn released_animated_candidate_can_lose_the_shared_pool_to_a_higher_score_dynamic() {
+        // `is_promoted_baked` is only the shared cap accounting flag. After a
+        // release it does not reserve the slot ahead of a stronger
+        // dynamic candidate.
+        let candidates = [
+            postretro_lighting::shadow_ranking::SlotCandidate {
+                candidate_index: 0,
+                score: 1.0,
+                is_promoted_baked: true,
+            },
+            postretro_lighting::shadow_ranking::SlotCandidate {
+                candidate_index: 1,
+                score: 3.0,
+                is_promoted_baked: false,
+            },
+        ];
+        let assignment = postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
+            &candidates,
+            &[],
+            1,
+            1,
+            2,
+            EVICTION_MARGIN,
+        );
+        assert_eq!(assignment[0], postretro_lighting::NO_SHADOW_SLOT);
+        assert_eq!(assignment[1], 0);
+    }
+
+    #[test]
+    fn animated_candidates_share_budget_with_deterministic_ties_including_empty_roster() {
+        // Candidate index is the deterministic final tie-break, including
+        // animated roster index order. The shared promoted cap applies before
+        // any distinct animated reservation could be created.
+        let candidates = (0..3)
+            .map(
+                |candidate_index| postretro_lighting::shadow_ranking::SlotCandidate {
+                    candidate_index,
+                    score: 1.0,
+                    is_promoted_baked: true,
+                },
+            )
+            .collect::<Vec<_>>();
+        let assignment = postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
+            &candidates,
+            &[],
+            2,
+            2,
+            3,
+            EVICTION_MARGIN,
+        );
+        assert_eq!(assignment, vec![0, 1, postretro_lighting::NO_SHADOW_SLOT]);
+
+        let empty = postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
+            &[],
+            &[],
+            2,
+            2,
+            0,
+            EVICTION_MARGIN,
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn animated_candidate_gate_reads_its_own_roster_brightness_not_dynamic_space() {
+        // The dynamic prefix deliberately has a conflicting value at index 0.
+        // Only the AnimatedBakedLights roster value at index 1 may gate the
+        // animated candidate; a short/missing animated vector fails closed.
+        assert_eq!(
+            candidate_gate_brightness(
+                &[10, 11],
+                &[None, Some(1)],
+                1,
+                &[Some(0), Some(1)],
+                &[0.95, 0.25],
+                &[0.1, 0.8],
+            ),
+            0.8
+        );
+        assert_eq!(
+            candidate_gate_brightness(
+                &[10, 11],
+                &[None, Some(1)],
+                1,
+                &[Some(0), Some(1)],
+                &[0.95, 0.25],
+                &[0.1],
+            ),
+            0.0
+        );
     }
 
     #[test]

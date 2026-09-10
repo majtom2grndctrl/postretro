@@ -139,6 +139,11 @@ pub(crate) use renderer_geometry::{
     build_default_view_projection, build_line_indices_from_triangles, bytemuck_cast_slice_u32,
     cast_world_vertices_to_bytes,
 };
+/// Time the baked-light promotion ramp takes to reach full runtime shadow
+/// contribution. The game-side light bridge uses the same duration as its
+/// animated-light brightness lookahead window, so a candidate starts ramping
+/// before its next bright interval.
+pub use renderer_light_slots::PROMOTE_SECONDS;
 pub(crate) use renderer_lighting::*;
 #[cfg(feature = "dev-tools")]
 pub use renderer_types::AgentOverlayState;

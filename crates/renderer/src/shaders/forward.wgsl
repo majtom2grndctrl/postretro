@@ -55,6 +55,8 @@ struct Uniforms {
     // 2 composed animated. Forward does not read it; the field preserves the
     // shared 128-byte ABI.
     has_scatter: u32,
+    // Bit 0: baked DIRECT SH present. Bits 1..31: raw section-45
+    // AnimatedBakedLights tail count for receiver-only runtime records.
     has_direct: u32,
     total_light_count: u32,
     // Dev toggle: force static-light shadowmask visibility to 1.0 for the
@@ -71,6 +73,10 @@ struct GpuLight {
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+fn animated_baked_light_tail_count() -> u32 {
+    return uniforms.has_direct >> 1u;
+}
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 // Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
@@ -756,17 +762,21 @@ fn shadowmask_union_subtraction(
     out.subtraction = vec3<f32>(0.0);
     // White means no eligible promoted light covers this receiver.
     out.raw_pool_visibility = 1.0;
-    if uniforms.total_light_count <= uniforms.light_count {
+    let promoted_start = min(
+        uniforms.light_count + animated_baked_light_tail_count(),
+        uniforms.total_light_count,
+    );
+    if uniforms.total_light_count <= promoted_start {
         return out;
     }
     // Hoisted because every promoted light shares this fragment's lightmap
     // UV/layer.
     let mask = sample_shadowmask_atlas(lightmap_uv, lightmap_layer);
-    let promoted_count = uniforms.total_light_count - uniforms.light_count;
+    let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
     for (var p: u32 = 0u; p < promoted_count; p = p + 1u) {
-        let influence_index = uniforms.light_count + p;
+        let influence_index = promoted_start + p;
         if influence_index >= influence_len {
             break;
         }
@@ -779,7 +789,9 @@ fn shadowmask_union_subtraction(
             }
         }
 
-        let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;
+        let meta_index = uniforms.total_light_count
+            + animated_baked_light_tail_count() * SHADOWMASK_META_VEC4S_PER_RECORD
+            + p * SHADOWMASK_META_VEC4S_PER_RECORD;
         if meta_index + 1u >= influence_len {
             break;
         }
@@ -1117,10 +1129,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
-        // Scripted per-light animation. `is_active == 0` is the sentinel path:
-        // effective_color and effective_aim stay as the static GpuLight values.
-        // Active descriptors override brightness, color, and (for spots) aim
-        // from Catmull-Rom curves on the shared anim_samples buffer.
+        // Scripted per-light animation. The all-zero descriptor is the
+        // no-animation sentinel; a present inactive descriptor emits zero in
+        // lockstep with compose. Active descriptors override brightness,
+        // color, and (for spots) aim from the shared Catmull-Rom samples.
         let scripted_desc = scripted_light_descriptors[i];
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
@@ -1172,6 +1184,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if light_type == 1u && scripted_desc.direction_count > 0u {
                 effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
             }
+        } else if light_eval_scripted_descriptor_present(scripted_desc) {
+            effective_color = vec3<f32>(0.0);
         }
 
         var L: vec3<f32>;

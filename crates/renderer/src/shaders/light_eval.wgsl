@@ -51,3 +51,14 @@ fn light_eval_scripted_intensity_scalar(premultiplied_color: vec3<f32>, base_col
     }
     return premultiplied_channel / color_channel;
 }
+
+// The all-zero descriptor is the no-animation sentinel and leaves the packed
+// GpuLight unchanged. An authored inactive descriptor remains present, but its
+// runtime arm must emit zero just like the compose arm.
+fn light_eval_scripted_descriptor_present(desc: AnimationDescriptor) -> bool {
+    return desc.period != 0.0
+        || desc.phase != 0.0
+        || desc.brightness_count != 0u
+        || desc.color_count != 0u
+        || desc.direction_count != 0u;
+}

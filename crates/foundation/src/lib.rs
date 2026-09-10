@@ -44,7 +44,7 @@ pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use presentation::{
     MAX_PENDING_PRESENTATION_SPAWNS, PresentationEasing, PresentationFact, PresentationFacts,
     PresentationFade, PresentationMotion, PresentationPresenter, PresentationSpawn,
-    PresentationTemplateHandle,
+    PresentationTemplateHandle, WorldPointPresentationSpawn,
 };
 pub use seat::Seat;
 pub use value_types::{EulerDegrees, Vec3Lit};

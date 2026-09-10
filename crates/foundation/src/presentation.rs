@@ -113,3 +113,18 @@ pub struct PresentationSpawn {
     /// applied by the app-side pool when the instance enters its live bounded ring.
     pub scatter_radius: f32,
 }
+
+/// One built-in world-point presentation event crossing from fixed-tick game
+/// logic to the host's remote-presentation router. Unlike [`PresentationSpawn`],
+/// this carries no template or presenter identity: its recipient policy is
+/// world-point-specific and the client recognizes the built-in effect directly.
+///
+/// `owner_pawn` is the opaque packed entity id of the projectile owner. The
+/// foundation crate deliberately cannot name the registry type; the engine
+/// reconstructs it only to exclude that owner's connected client from a
+/// duplicate predicted explosion.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WorldPointPresentationSpawn {
+    pub world_anchor: Vec3,
+    pub owner_pawn: u32,
+}

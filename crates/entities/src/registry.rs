@@ -29,7 +29,9 @@ use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
-use postretro_foundation::{MAX_PENDING_PRESENTATION_SPAWNS, PresentationSpawn, Seat};
+use postretro_foundation::{
+    MAX_PENDING_PRESENTATION_SPAWNS, PresentationSpawn, Seat, WorldPointPresentationSpawn,
+};
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -754,6 +756,11 @@ pub struct EntityRegistry {
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
     /// state.
     presentation_spawns: Vec<PresentationSpawn>,
+    /// Built-in world-point transient requests. These stay distinct from
+    /// presenter-keyed [`PresentationSpawn`] intake because their recipient set
+    /// is selected from a world point and projectile ownership, not a widget
+    /// presenter.
+    world_point_presentation_spawns: Vec<WorldPointPresentationSpawn>,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
     /// Ownership returns here after every tick so the allocation is reused.
     active_deferred_effects: Vec<EntityId>,
@@ -782,6 +789,7 @@ impl EntityRegistry {
             pawn_seats: HashMap::new(),
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
+            world_point_presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -1143,6 +1151,33 @@ impl EntityRegistry {
     /// fixed-tick intake.
     pub fn clear_presentation_spawns(&mut self) {
         self.presentation_spawns.clear();
+        self.world_point_presentation_spawns.clear();
+    }
+
+    /// Publish one built-in world-point transient for host-side remote routing.
+    /// This is intentionally separate from [`Self::push_presentation_spawn`]:
+    /// a presenter-keyed template spawn stays host-local when it has no remote
+    /// presenter, whereas a world-point effect may target every observer.
+    pub fn push_world_point_presentation_spawn(&mut self, spawn: WorldPointPresentationSpawn) {
+        if self.world_point_presentation_spawns.len() < MAX_PENDING_PRESENTATION_SPAWNS {
+            self.world_point_presentation_spawns.push(spawn);
+        }
+    }
+
+    /// Drain world-point presentation requests once after host simulation.
+    /// The queue retains its bounded allocation for the next frame.
+    pub fn take_world_point_presentation_spawns(&mut self) -> Vec<WorldPointPresentationSpawn> {
+        let mut spawns = Vec::with_capacity(self.world_point_presentation_spawns.len());
+        spawns.append(&mut self.world_point_presentation_spawns);
+        spawns
+    }
+
+    /// Discard world-point work when this process has no host presentation
+    /// route. Single-player has already materialized the local impact effect,
+    /// so retaining an observer-only request would only consume the bounded
+    /// intake until level unload.
+    pub fn clear_world_point_presentation_spawns(&mut self) {
+        self.world_point_presentation_spawns.clear();
     }
 
     /// Mutable access to the engine-managed deferred-effect storage.
@@ -1241,6 +1276,7 @@ impl EntityRegistry {
         }
         self.impact_dispatches.clear();
         self.presentation_spawns.clear();
+        self.world_point_presentation_spawns.clear();
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1586,6 +1622,32 @@ mod tests {
         assert_eq!(drained[0].template.0, "first");
         assert_eq!(drained[1].template.0, "second");
         assert!(registry.take_presentation_spawns().is_empty());
+    }
+
+    #[test]
+    fn world_point_presentation_intake_drains_separately_from_template_spawns() {
+        let mut registry = EntityRegistry::new();
+        registry.push_presentation_spawn(PresentationSpawn {
+            world_anchor: Vec3::ZERO,
+            template: "damage-number".into(),
+            facts: BTreeMap::new(),
+            presenter: None,
+            lifetime_seconds: 1.0,
+            motion: PresentationMotion::default(),
+            fade: PresentationFade::default(),
+            scatter_radius: 0.0,
+        });
+        registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+            world_anchor: Vec3::new(1.0, 2.0, 3.0),
+            owner_pawn: 17,
+        });
+
+        let world_points = registry.take_world_point_presentation_spawns();
+        assert_eq!(world_points.len(), 1);
+        assert_eq!(world_points[0].world_anchor, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(world_points[0].owner_pawn, 17);
+        assert_eq!(registry.take_presentation_spawns().len(), 1);
+        assert!(registry.take_world_point_presentation_spawns().is_empty());
     }
 
     // Regression: moving the queue with `mem::take` discarded its fixed

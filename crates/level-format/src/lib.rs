@@ -71,6 +71,19 @@ pub enum FormatError {
     #[error("truncated section table: need {needed} bytes, got {available}")]
     TruncatedSectionTable { needed: usize, available: usize },
 
+    #[error("section count {count} exceeds the PRL container maximum {max}")]
+    TooManySections { count: usize, max: usize },
+
+    #[error("PRL container size overflow")]
+    ContainerSizeOverflow,
+
+    #[error("section {section_id} offset {offset} + size {size} overflows the PRL container")]
+    SectionOffsetOverflow {
+        section_id: u32,
+        offset: u64,
+        size: u64,
+    },
+
     #[error("section offset {offset} + size {size} exceeds file length {file_len}")]
     SectionOutOfBounds {
         offset: u64,
@@ -391,20 +404,41 @@ pub fn write_prl_header_and_table<W: Write>(
     writer: &mut W,
     sections: &[SectionDescriptor],
 ) -> Result<()> {
-    let section_count = sections.len() as u16;
+    let section_count =
+        u16::try_from(sections.len()).map_err(|_| FormatError::TooManySections {
+            count: sections.len(),
+            max: usize::from(u16::MAX),
+        })?;
+    let table_size = sections
+        .len()
+        .checked_mul(SECTION_ENTRY_SIZE)
+        .ok_or(FormatError::ContainerSizeOverflow)?;
+    let data_start = HEADER_SIZE
+        .checked_add(table_size)
+        .ok_or(FormatError::ContainerSizeOverflow)?;
+    let mut current_offset =
+        u64::try_from(data_start).map_err(|_| FormatError::ContainerSizeOverflow)?;
+    let mut section_offsets = Vec::with_capacity(sections.len());
+    for section in sections {
+        section_offsets.push(current_offset);
+        current_offset = current_offset.checked_add(section.byte_len).ok_or(
+            FormatError::SectionOffsetOverflow {
+                section_id: section.section_id,
+                offset: current_offset,
+                size: section.byte_len,
+            },
+        )?;
+    }
 
     writer.write_all(&MAGIC)?;
     writer.write_all(&CURRENT_VERSION.to_le_bytes())?;
     writer.write_all(&section_count.to_le_bytes())?;
 
-    let data_start = HEADER_SIZE + (sections.len() * SECTION_ENTRY_SIZE);
-    let mut current_offset = data_start as u64;
-    for section in sections {
+    for (section, offset) in sections.iter().zip(section_offsets) {
         writer.write_all(&section.section_id.to_le_bytes())?;
-        writer.write_all(&current_offset.to_le_bytes())?;
+        writer.write_all(&offset.to_le_bytes())?;
         writer.write_all(&section.byte_len.to_le_bytes())?;
         writer.write_all(&section.version.to_le_bytes())?;
-        current_offset += section.byte_len;
     }
 
     Ok(())
@@ -414,12 +448,15 @@ pub fn write_prl_header_and_table<W: Write>(
 pub fn write_prl<W: Write>(writer: &mut W, sections: &[SectionBlob]) -> Result<()> {
     let descriptors: Vec<_> = sections
         .iter()
-        .map(|blob| SectionDescriptor {
-            section_id: blob.section_id,
-            version: blob.version,
-            byte_len: blob.data.len() as u64,
+        .map(|blob| {
+            Ok(SectionDescriptor {
+                section_id: blob.section_id,
+                version: blob.version,
+                byte_len: u64::try_from(blob.data.len())
+                    .map_err(|_| FormatError::ContainerSizeOverflow)?,
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     write_prl_header_and_table(writer, &descriptors)?;
 
     for blob in sections {
@@ -574,7 +611,15 @@ pub fn read_section_data<R: Read + Seek>(
     };
 
     let file_len = reader.seek(SeekFrom::End(0))?;
-    if entry.offset + entry.size > file_len {
+    let end = entry
+        .offset
+        .checked_add(entry.size)
+        .ok_or(FormatError::SectionOutOfBounds {
+            offset: entry.offset,
+            size: entry.size,
+            file_len,
+        })?;
+    if end > file_len {
         return Err(FormatError::SectionOutOfBounds {
             offset: entry.offset,
             size: entry.size,
@@ -582,8 +627,20 @@ pub fn read_section_data<R: Read + Seek>(
         });
     }
 
+    let size = usize::try_from(entry.size).map_err(|_| FormatError::SectionOutOfBounds {
+        offset: entry.offset,
+        size: entry.size,
+        file_len,
+    })?;
     reader.seek(SeekFrom::Start(entry.offset))?;
-    let mut buf = vec![0u8; entry.size as usize];
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(size)
+        .map_err(|_| FormatError::SectionOutOfBounds {
+            offset: entry.offset,
+            size: entry.size,
+            file_len,
+        })?;
+    buf.resize(size, 0);
     reader.read_exact(&mut buf)?;
     Ok(Some(buf))
 }
@@ -606,6 +663,27 @@ fn read_exact_or_short<R: Read>(reader: &mut R, buf: &mut [u8]) -> io::Result<us
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    struct MaxLengthReader;
+
+    impl Read for MaxLengthReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Seek for MaxLengthReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            match position {
+                SeekFrom::End(0) => Ok(u64::MAX),
+                SeekFrom::Start(offset) => Ok(offset),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported test seek",
+                )),
+            }
+        }
+    }
 
     fn make_test_sections() -> Vec<SectionBlob> {
         vec![
@@ -669,6 +747,81 @@ mod tests {
         }
 
         assert_eq!(table_first, complete);
+    }
+
+    #[test]
+    fn write_prl_preserves_legacy_container_bytes() {
+        let mut actual = Vec::new();
+        write_prl(&mut actual, &make_test_sections()).unwrap();
+
+        let expected = [
+            0x50, 0x52, 0x4c, 0x00, 0x04, 0x00, 0x02, 0x00, // Header.
+            0x11, 0x00, 0x00, 0x00, // Geometry id.
+            0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Geometry offset.
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Geometry size.
+            0x01, 0x00, // Geometry version.
+            0x0f, 0x00, 0x00, 0x00, // Portals id.
+            0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Portals offset.
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Portals size.
+            0x01, 0x00, // Portals version.
+            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe,
+        ];
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn table_writer_rejects_65_536_sections_before_writing() {
+        let descriptors = vec![
+            SectionDescriptor {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                byte_len: 0,
+            };
+            usize::from(u16::MAX) + 1
+        ];
+        let mut output = Vec::new();
+
+        let error = write_prl_header_and_table(&mut output, &descriptors)
+            .expect_err("the u16 section count must not truncate");
+
+        assert!(matches!(
+            error,
+            FormatError::TooManySections {
+                count: 65_536,
+                max: 65_535,
+            }
+        ));
+        assert!(
+            output.is_empty(),
+            "validation must precede the header write"
+        );
+    }
+
+    #[test]
+    fn table_writer_rejects_section_offset_overflow_before_writing() {
+        let descriptors = [SectionDescriptor {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            byte_len: u64::MAX,
+        }];
+        let mut output = Vec::new();
+
+        let error = write_prl_header_and_table(&mut output, &descriptors)
+            .expect_err("the section end must not wrap around u64");
+
+        assert!(matches!(
+            error,
+            FormatError::SectionOffsetOverflow {
+                section_id,
+                offset: 30,
+                size: u64::MAX,
+            } if section_id == SectionId::Geometry as u32
+        ));
+        assert!(
+            output.is_empty(),
+            "validation must precede the header write"
+        );
     }
 
     #[test]
@@ -793,6 +946,75 @@ mod tests {
 
         let err = read_section_data(&mut cursor, &meta, SectionId::Geometry as u32).unwrap_err();
         assert!(matches!(err, FormatError::SectionOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn section_readers_reject_offset_plus_size_overflow() {
+        let meta = ContainerMeta {
+            header: Header {
+                version: CURRENT_VERSION,
+                section_count: 1,
+            },
+            sections: vec![SectionEntry {
+                section_id: SectionId::Geometry as u32,
+                offset: u64::MAX,
+                size: 1,
+                version: 1,
+            }],
+        };
+        let file_data = [];
+
+        let borrowed_error = section_data_from_bytes(&file_data, &meta, SectionId::Geometry as u32)
+            .expect_err("borrowed section bounds must reject overflow");
+        let mut cursor = Cursor::new(file_data);
+        let owned_error = read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)
+            .expect_err("owned section bounds must reject overflow");
+
+        assert!(matches!(
+            borrowed_error,
+            FormatError::SectionOutOfBounds {
+                offset: u64::MAX,
+                size: 1,
+                file_len: 0,
+            }
+        ));
+        assert!(matches!(
+            owned_error,
+            FormatError::SectionOutOfBounds {
+                offset: u64::MAX,
+                size: 1,
+                file_len: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn owned_section_reader_rejects_unallocatable_u64_size() {
+        let meta = ContainerMeta {
+            header: Header {
+                version: CURRENT_VERSION,
+                section_count: 1,
+            },
+            sections: vec![SectionEntry {
+                section_id: SectionId::Geometry as u32,
+                offset: 0,
+                size: u64::MAX,
+                version: 1,
+            }],
+        };
+        let mut reader = MaxLengthReader;
+
+        let error = read_section_data(&mut reader, &meta, SectionId::Geometry as u32)
+            .expect_err("an unrepresentable or unallocatable section size must be rejected");
+
+        assert!(matches!(
+            error,
+            FormatError::SectionOutOfBounds {
+                offset: 0,
+                size: u64::MAX,
+                file_len: u64::MAX,
+            }
+        ));
     }
 
     #[test]

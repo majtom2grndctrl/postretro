@@ -3,7 +3,7 @@
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
@@ -1096,11 +1096,7 @@ fn write_and_validate_sections(
     let file_name = output
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
-    let temporary_output = output.with_file_name(format!(
-        ".{}.pack-{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id(),
-    ));
+    let temporary_output = pack_temporary_path(output, file_name);
     let write_result = (|| -> anyhow::Result<u64> {
         let mut file = File::create(&temporary_output)?;
         write_prl_header_and_table(&mut file, &descriptors)?;
@@ -1133,19 +1129,175 @@ fn write_and_validate_sections(
     let total_size = match write_result {
         Ok(total_size) => total_size,
         Err(error) => {
-            let _ = fs::remove_file(&temporary_output);
+            if let Err(cleanup_error) = remove_publish_artifact(&temporary_output) {
+                return Err(error.context(format!(
+                    "also failed to remove temporary PRL {}: {cleanup_error}",
+                    temporary_output.display(),
+                )));
+            }
             return Err(error);
         }
     };
-    // `rename` does not replace an existing destination on Windows, whereas the
-    // previous direct write did. Remove only the validated output target before
-    // publishing the temporary file to preserve that overwrite behavior.
-    if output.exists() {
-        fs::remove_file(output)?;
-    }
-    fs::rename(&temporary_output, output)?;
+    publish_validated_output(&temporary_output, output, file_name)?;
     log::info!("Wrote {} ({} bytes)", output.display(), total_size);
     log::info!("Read-back validation passed.");
+
+    Ok(())
+}
+
+fn pack_temporary_path(output: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    output.with_file_name(format!(
+        ".{}.pack-{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+    ))
+}
+
+fn pack_backup_path(output: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    output.with_file_name(format!(
+        ".{}.pack-{}.bak",
+        file_name.to_string_lossy(),
+        std::process::id(),
+    ))
+}
+
+fn remove_publish_artifact(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Publish a validated temporary PRL without exposing a missing final output.
+///
+/// Windows cannot rename over an existing file. Move the old output aside,
+/// publish the temporary file, then remove the backup. If publishing fails,
+/// restore the old output before returning the error.
+fn publish_validated_output(
+    temporary_output: &Path,
+    output: &Path,
+    file_name: &std::ffi::OsStr,
+) -> anyhow::Result<()> {
+    match fs::symlink_metadata(output) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match fs::rename(temporary_output, output) {
+                Ok(()) => Ok(()),
+                Err(publish_error) => {
+                    if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+                        Err(anyhow::anyhow!(
+                            "failed to publish temporary PRL {} to {}: {publish_error}; also failed to remove temporary PRL: {cleanup_error}",
+                            temporary_output.display(),
+                            output.display(),
+                        ))
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "failed to publish temporary PRL {} to {}: {publish_error}",
+                            temporary_output.display(),
+                            output.display(),
+                        ))
+                    }
+                }
+            };
+        }
+        Err(error) => {
+            if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+                return Err(anyhow::anyhow!(
+                    "failed to inspect existing output {}: {error}; also failed to remove temporary PRL {}: {cleanup_error}",
+                    output.display(),
+                    temporary_output.display(),
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "failed to inspect existing output {}: {error}",
+                output.display(),
+            ));
+        }
+    }
+
+    let backup_output = pack_backup_path(output, file_name);
+    match fs::symlink_metadata(&backup_output) {
+        Ok(_) => {
+            if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+                return Err(anyhow::anyhow!(
+                    "refusing to overwrite existing PRL backup {}; also failed to remove temporary PRL {}: {cleanup_error}",
+                    backup_output.display(),
+                    temporary_output.display(),
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "refusing to overwrite existing PRL backup {}",
+                backup_output.display(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+                return Err(anyhow::anyhow!(
+                    "failed to inspect PRL backup path {}: {error}; also failed to remove temporary PRL {}: {cleanup_error}",
+                    backup_output.display(),
+                    temporary_output.display(),
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "failed to inspect PRL backup path {}: {error}",
+                backup_output.display(),
+            ));
+        }
+    }
+    if let Err(error) = fs::rename(output, &backup_output) {
+        if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+            return Err(anyhow::anyhow!(
+                "failed to back up existing output {} to {}: {error}; also failed to remove temporary PRL {}: {cleanup_error}",
+                output.display(),
+                backup_output.display(),
+                temporary_output.display(),
+            ));
+        }
+        return Err(anyhow::anyhow!(
+            "failed to back up existing output {} to {}: {error}",
+            output.display(),
+            backup_output.display(),
+        ));
+    }
+
+    if let Err(publish_error) = fs::rename(temporary_output, output) {
+        let rollback = fs::rename(&backup_output, output);
+        let cleanup = remove_publish_artifact(temporary_output);
+        return match (rollback, cleanup) {
+            (Ok(()), Ok(())) => Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; restored the previous output",
+                temporary_output.display(),
+                output.display(),
+            )),
+            (Ok(()), Err(cleanup_error)) => Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; restored the previous output, but failed to remove temporary PRL: {cleanup_error}",
+                temporary_output.display(),
+                output.display(),
+            )),
+            (Err(rollback_error), Ok(())) => Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; failed to restore previous output from {}: {rollback_error}",
+                temporary_output.display(),
+                output.display(),
+                backup_output.display(),
+            )),
+            (Err(rollback_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; failed to restore previous output from {}: {rollback_error}; also failed to remove temporary PRL: {cleanup_error}",
+                temporary_output.display(),
+                output.display(),
+                backup_output.display(),
+            )),
+        };
+    }
+
+    if let Err(cleanup_error) = remove_publish_artifact(&backup_output) {
+        return Err(anyhow::anyhow!(
+            "published PRL to {}, but failed to remove backup {}: {cleanup_error}",
+            output.display(),
+            backup_output.display(),
+        ));
+    }
 
     Ok(())
 }
@@ -1288,6 +1440,82 @@ mod tests {
         assert!(
             !output.exists(),
             "a declared-length mismatch must not leave a malformed final PRL"
+        );
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn streamed_write_replaces_existing_output_without_publish_artifacts() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-replace-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&output, b"previous valid PRL").expect("should create previous output");
+        let file_name = output.file_name().expect("test output has a file name");
+        let temporary_output = pack_temporary_path(&output, file_name);
+        let backup_output = pack_backup_path(&output, file_name);
+
+        write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02, 0x03]),
+            )],
+        )
+        .expect("streamed PRL should replace the previous output");
+
+        assert_ne!(
+            std::fs::read(&output).expect("replacement output must exist"),
+            b"previous valid PRL"
+        );
+        assert!(
+            !temporary_output.exists() && !backup_output.exists(),
+            "a successful publish must not leave temporary or backup files"
+        );
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn streamed_write_failure_preserves_existing_output_and_removes_temporary_file() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-preserve-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let previous_bytes = b"previous valid PRL";
+        std::fs::write(&output, previous_bytes).expect("should create previous output");
+        let temporary_output = pack_temporary_path(
+            &output,
+            output.file_name().expect("test output has a file name"),
+        );
+
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02]),
+            )],
+        )
+        .expect_err("writer must reject a declared length mismatch");
+
+        assert!(
+            error
+                .to_string()
+                .contains("wrote 2 bytes but its table declares 3")
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("previous output must remain readable"),
+            previous_bytes,
+            "a write failure must not replace the previous output"
+        );
+        assert!(
+            !temporary_output.exists(),
+            "a write failure must not leave its temporary PRL behind"
         );
         let _ = std::fs::remove_file(output);
     }

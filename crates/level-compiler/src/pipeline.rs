@@ -366,19 +366,23 @@ impl fmt::Display for DeltaWorkingSetGateError {
 
 impl std::error::Error for DeltaWorkingSetGateError {}
 
-fn delta_working_set_copy_chain_factor(sh_analyze: bool) -> u64 {
-    if sh_analyze {
+fn delta_working_set_copy_chain_factor(retains_analysis_clone: bool) -> u64 {
+    if retains_analysis_clone {
         DELTA_WORKING_SET_ANALYZE_COPY_FACTOR
     } else {
         DELTA_WORKING_SET_COPY_FACTOR
     }
 }
 
+fn retains_sh_analyze_dense_deltas(sh_analyze: bool, sh_coarsening_enabled: bool) -> bool {
+    sh_analyze && sh_coarsening_enabled
+}
+
 /// Project and gate the three delta bakes before any dense f16 payload exists.
 ///
 /// The cumulative estimate deliberately treats all three dense payloads as
 /// co-resident through compaction. The copy-chain factor covers the dense and
-/// compaction buffers, plus the additional `--sh-analyze` clone when enabled.
+/// compaction buffers, plus the `--sh-analyze` clone retained during coarsening.
 fn gate_delta_working_set(
     bakes: [DeltaCsrProjectionInput<'_>; 3],
     subblock_f16_len: usize,
@@ -563,6 +567,8 @@ fn run_after_parsing(
     timings.push((StageId::Parsing.label(), parsing_elapsed));
     reporter.finish_stage(StageId::Parsing);
     let sh_coarsening_enabled = !map_data.uniform_grid_optout;
+    let retain_sh_analyze_dense_deltas =
+        retains_sh_analyze_dense_deltas(args.sh_analyze, sh_coarsening_enabled);
     if !sh_coarsening_enabled {
         log::info!(
             "[sh-coarsen] disabled by worldspawn `_sh_coarsen \"0\"`; id 41 remains uniform L0"
@@ -1293,7 +1299,7 @@ fn run_after_parsing(
         ],
         subblock_f16_len,
         args.delta_section_config.max_working_set_bytes,
-        delta_working_set_copy_chain_factor(args.sh_analyze),
+        delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     ) {
         Ok(projection) => projection,
         Err(error @ DeltaWorkingSetGateError::BudgetExceeded(_)) => {
@@ -1547,7 +1553,7 @@ fn run_after_parsing(
     // their post-drop dense source. Retain this measurement-only snapshot only
     // for an explicit coarsened analysis; normal and uniform-L0 bakes do not
     // pay the additional memory cost.
-    let sh_analyze_dense_deltas = (args.sh_analyze && sh_coarsening_enabled).then(|| {
+    let sh_analyze_dense_deltas = retain_sh_analyze_dense_deltas.then(|| {
         (
             delta_sections.indirect.clone(),
             delta_sections.direct.clone(),
@@ -2534,7 +2540,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_working_set_gate_applies_the_sh_analyze_copy_factor() {
+    fn delta_working_set_gate_applies_analysis_factor_only_when_coarsening_retains_clone() {
         let one = [0];
         let inputs = || {
             [
@@ -2556,13 +2562,26 @@ mod tests {
             ]
         };
 
-        let normal =
-            gate_delta_working_set(inputs(), 1, 15, delta_working_set_copy_chain_factor(false))
-                .expect("two copies fit the selected budget");
+        let normal_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(false, true));
+        let normal = gate_delta_working_set(inputs(), 1, 15, normal_factor)
+            .expect("two copies fit the selected budget");
         assert_eq!(normal.estimated_peak_bytes, 12);
-        let error =
-            gate_delta_working_set(inputs(), 1, 15, delta_working_set_copy_chain_factor(true))
-                .expect_err("the --sh-analyze clone makes three copies exceed the budget");
+        let uniform_l0_analysis_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, false));
+        let uniform_l0_analysis =
+            gate_delta_working_set(inputs(), 1, 15, uniform_l0_analysis_factor)
+                .expect("--sh-analyze without coarsening retains no dense clone");
+        assert_eq!(
+            uniform_l0_analysis.copy_chain_factor,
+            DELTA_WORKING_SET_COPY_FACTOR
+        );
+        assert_eq!(uniform_l0_analysis.estimated_peak_bytes, 12);
+
+        let coarsened_analysis_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, true));
+        let error = gate_delta_working_set(inputs(), 1, 15, coarsened_analysis_factor)
+            .expect_err("the retained --sh-analyze clone makes three copies exceed the budget");
         let DeltaWorkingSetGateError::BudgetExceeded(analyze) = error else {
             panic!("the analysis factor must be the only rejection cause");
         };

@@ -1106,13 +1106,22 @@ fn write_and_validate_sections(
         write_prl_header_and_table(&mut file, &descriptors)?;
         for section in sections {
             let bytes = (section.encode)()?;
-            anyhow::ensure!(
-                bytes.len() as u64 == section.descriptor.byte_len,
-                "section {} wrote {} bytes but its table declares {} bytes",
-                section.descriptor.section_id,
-                bytes.len(),
-                section.descriptor.byte_len,
-            );
+            if bytes.len() as u64 != section.descriptor.byte_len {
+                match SectionId::from_u32(section.descriptor.section_id) {
+                    Some(section_id) => anyhow::bail!(
+                        "section {section_id:?} (id {}) wrote {} bytes but its table declares {} bytes",
+                        section.descriptor.section_id,
+                        bytes.len(),
+                        section.descriptor.byte_len,
+                    ),
+                    None => anyhow::bail!(
+                        "unknown section {} wrote {} bytes but its table declares {} bytes",
+                        section.descriptor.section_id,
+                        bytes.len(),
+                        section.descriptor.byte_len,
+                    ),
+                }
+            }
             file.write_all(&bytes)?;
         }
         file.flush()?;
@@ -1262,14 +1271,19 @@ mod tests {
         ));
         let error = write_and_validate_sections(
             &output,
-            vec![PlannedSection::new(999, 1, 3, || Ok(vec![0x01, 0x02]))],
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02]),
+            )],
         )
         .expect_err("writer must reject a declared length mismatch");
 
         assert!(
             error
                 .to_string()
-                .contains("section 999 wrote 2 bytes but its table declares 3")
+                .contains("section Geometry (id 17) wrote 2 bytes but its table declares 3")
         );
         assert!(
             !output.exists(),

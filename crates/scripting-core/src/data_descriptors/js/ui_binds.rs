@@ -249,8 +249,23 @@ pub fn text_bind_from_js<'js>(
     Ok(Some(TextBind {
         source: bind_source_from_js(&bind_obj)?,
         format: get_optional_string_js(&bind_obj, "format")?,
+        decimal_places: decimal_places_from_js(&bind_obj)?,
         tween: text_tween_from_js(ctx, &bind_obj)?,
     }))
+}
+
+/// Read text-display precision at the descriptor boundary so scripts receive a
+/// useful shape error instead of relying on a later serde narrowing failure.
+fn decimal_places_from_js<'js>(obj: &Object<'js>) -> Result<Option<u8>, DescriptorError> {
+    let Some(places) = get_optional_f32_js(obj, "decimalPlaces")? else {
+        return Ok(None);
+    };
+    if !places.is_finite() || places.fract() != 0.0 || !(0.0..=6.0).contains(&places) {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`decimalPlaces` must be an integer between 0 and 6".to_string(),
+        });
+    }
+    Ok(Some(places as u8))
 }
 
 pub fn panel_bind_from_js<'js>(

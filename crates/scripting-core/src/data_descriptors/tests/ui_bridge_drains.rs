@@ -51,6 +51,41 @@ fn presentation_template_wire_round_trips_for_js_and_luau() {
     );
 }
 
+// Regression: an author template could claim the engine-owned splash id and
+// silently materialize the built-in impact burst before template lookup.
+#[test]
+fn presentation_templates_reject_engine_owned_ids_in_js_and_luau() {
+    let js_error = eval_js(
+        r#"({
+            id: "postretro.builtin.splash-impact", lifetimeMs: 10,
+            root: { kind: "text", content: "x", fontSize: 12, color: [1, 1, 1, 1] },
+            motion: { rise: 0, easing: "linear" }, fade: { startMs: 0 },
+            spawnScatter: { radius: 0 }
+        })"#,
+        |ctx, value| presentation_template_from_js(ctx, value).unwrap_err(),
+    );
+    assert!(
+        js_error
+            .to_string()
+            .contains("must not use reserved engine namespace `postretro.builtin.`")
+    );
+
+    let lua_error = eval_lua(
+        r#"return {
+            id = "postretro.builtin.splash-impact", lifetimeMs = 10,
+            root = { kind = "text", content = "x", fontSize = 12, color = {1, 1, 1, 1} },
+            motion = { rise = 0, easing = "linear" }, fade = { startMs = 0 },
+            spawnScatter = { radius = 0 },
+        }"#,
+        |value| presentation_template_from_lua(value).unwrap_err(),
+    );
+    assert!(
+        lua_error
+            .to_string()
+            .contains("must not use reserved engine namespace `postretro.builtin.`")
+    );
+}
+
 #[test]
 fn luau_presentation_fact_builder_survives_template_bridge() {
     const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");

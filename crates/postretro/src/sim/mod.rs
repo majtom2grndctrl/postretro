@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 mod projectile_stage;
+pub(crate) mod splash;
 pub(crate) mod touch;
 
 use std::borrow::Cow;
@@ -58,6 +59,7 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub(crate) use projectile_stage::advance;
 pub(crate) use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
+    projectile_splash_occlusion_origin, resolve_projectile_impact,
 };
 pub(crate) use weapon_stage::{projectile_model_body_rotation, spawn_projectile};
 
@@ -752,6 +754,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         remote_pawn_commands,
         descriptors,
         default_weapon_placement,
+        collision_world,
+        hit_zone_store,
+        anim_time,
         tick_dt,
     );
     let own_pawn = {
@@ -1779,6 +1784,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -1812,6 +1818,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,

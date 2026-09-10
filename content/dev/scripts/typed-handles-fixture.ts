@@ -90,6 +90,7 @@ const _formattedHealth = Text({
   content: "HP",
   bind: bindState(gameState.player.health, {
     format: "HP {}",
+    decimalPlaces: 0,
     tween: { durationMs: 120, easing: "easeOut" },
   }),
 });

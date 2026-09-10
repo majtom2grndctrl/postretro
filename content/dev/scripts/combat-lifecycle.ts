@@ -39,9 +39,10 @@ const FINISHER_OVERSHOOT = -3;
 
 export const combatDummyLifecycle = defineImpactEvent(
   "combat-dummy-lifecycle",
-  // `target_dummy` is currently exclusive to combat-demo. Do not use a
-  // catalog-level filter here: direct CLI map loads intentionally have no
-  // catalog tags, and the walkthrough must work through that normal dev path.
+  // Scope this lifecycle to combat-demo's `dummy` tag, not the reusable
+  // `target_dummy` descriptor: splash-damage-demo gives its dummies distinct
+  // `splash_*` tags. Do not use a catalog-level filter here, because direct CLI
+  // map loads intentionally have no catalog tags and must still run this policy.
   { tag: "dummy" },
   (impact) => {
     const target = impact.target;

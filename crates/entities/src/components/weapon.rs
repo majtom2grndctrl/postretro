@@ -9,7 +9,8 @@ use std::sync::Once;
 
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
-    FireMode, ProjectileDescriptor, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
+    FireMode, ProjectileDescriptor, ReloadStyle, ResolutionMode, SplashDescriptor,
+    WeaponDescriptor, WeaponResource,
 };
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
@@ -38,6 +39,7 @@ pub struct EffectiveStats<'a> {
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
     pub projectile: Option<&'a ProjectileDescriptor>,
+    pub splash: Option<&'a SplashDescriptor>,
     /// Model-local projectile origin authored on this weapon.
     pub muzzle_offset: Option<Vec3>,
     pub lower_ms: u32,
@@ -282,6 +284,8 @@ pub struct WeaponComponent {
     pub resolution: ResolutionMode,
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
+    #[serde(default)]
+    pub splash: Option<SplashDescriptor>,
     /// Model-local projectile origin authored on this weapon.
     #[serde(default)]
     pub muzzle_offset: Option<Vec3>,
@@ -357,6 +361,7 @@ impl WeaponComponent {
             fire_mode: desc.fire_mode,
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
+            splash: desc.splash.clone(),
             muzzle_offset: desc.muzzle_offset.map(Vec3::from_array),
             lower_ms: desc.lower_ms,
             raise_ms: desc.raise_ms,
@@ -389,6 +394,7 @@ impl WeaponComponent {
             fire_mode: self.fire_mode,
             resolution: self.resolution,
             projectile: self.projectile.as_ref(),
+            splash: self.splash.as_ref(),
             muzzle_offset: self.muzzle_offset,
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
@@ -449,6 +455,7 @@ impl WeaponComponent {
         self.fire_mode = desc.fire_mode;
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
+        self.splash = desc.splash.clone();
         self.muzzle_offset = desc.muzzle_offset.map(Vec3::from_array);
         self.lower_ms = desc.lower_ms;
         self.raise_ms = desc.raise_ms;
@@ -617,6 +624,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -1189,6 +1197,26 @@ mod tests {
         let component = WeaponComponent::from_descriptor(&descriptor(10.0, 20.0, 100.0));
 
         assert_eq!(component.credit_source, UNKNOWN_WEAPON_CREDIT_SOURCE);
+    }
+
+    #[test]
+    fn descriptor_and_refresh_preserve_splash_tuning_in_effective_stats() {
+        let mut descriptor = descriptor(10.0, 20.0, 100.0);
+        descriptor.splash = Some(SplashDescriptor {
+            radius: 8.0,
+            min_fraction: 0.25,
+            self_damage: false,
+        });
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+        assert_eq!(component.effective().splash, descriptor.splash.as_ref());
+
+        descriptor.splash = Some(SplashDescriptor {
+            radius: 16.0,
+            min_fraction: 0.5,
+            self_damage: true,
+        });
+        component.refresh_from_descriptor(&descriptor);
+        assert_eq!(component.effective().splash, descriptor.splash.as_ref());
     }
 
     #[test]

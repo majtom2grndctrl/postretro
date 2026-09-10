@@ -1038,7 +1038,7 @@ export type AnnouncePriority = "polite" | "assertive"
 --- State binding for a `Text` widget. Stamped facts are accepted only inside
 --- `definePresentationTemplate`; ordinary UI trees reject them during manifest
 --- validation. `format` is a one-placeholder string such as `"HP {}"`.
-export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, tween: NumberTween? }
+export type TextBindProp = (ComputedRef<ScalarStateValue> | LocalBindRef | FactBindRef) & { format: string?, decimalPlaces: number?, tween: NumberTween? }
 --- State binding for a `Panel` fill color. The source resolves to a numeric RGBA
 --- array; `tween` eases the displayed color and never writes back to state.
 export type PanelBindProp = (ComputedRef<NumericArrayStateValue> | LocalBindRef) & { tween: ColorTween? }
@@ -1186,7 +1186,7 @@ export type UiTreeRegistration = ModUiTree
 declare function defineUiTree(registration: UiTreeRegistrationProps): UiTreeRegistration
 
 --- Bind-only options for number refs (text/bar/slider-compatible number shape).
-export type NumberStateBindOptions = { format: string?, tween: NumberTween? }
+export type NumberStateBindOptions = { format: string?, decimalPlaces: number?, tween: NumberTween? }
 --- Bind-only options for numeric-array refs (panel color shape).
 export type NumericArrayStateBindOptions = { tween: ColorTween? }
 --- Bind-only options for string/boolean scalar refs (text format only).

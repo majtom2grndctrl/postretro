@@ -262,8 +262,22 @@ pub fn text_bind_from_lua(table: &Table) -> Result<Option<TextBind>, DescriptorE
     Ok(Some(TextBind {
         source: bind_source_from_lua(&bind)?,
         format: get_optional_string_lua(&bind, "format")?,
+        decimal_places: decimal_places_from_lua(&bind)?,
         tween: text_tween_from_lua(&bind)?,
     }))
+}
+
+/// Luau twin of [`decimal_places_from_js`].
+fn decimal_places_from_lua(table: &Table) -> Result<Option<u8>, DescriptorError> {
+    let Some(places) = get_optional_f32_lua(table, "decimalPlaces")? else {
+        return Ok(None);
+    };
+    if !places.is_finite() || places.fract() != 0.0 || !(0.0..=6.0).contains(&places) {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`decimalPlaces` must be an integer between 0 and 6".to_string(),
+        });
+    }
+    Ok(Some(places as u8))
 }
 
 pub fn panel_bind_from_lua(table: &Table) -> Result<Option<PanelBind>, DescriptorError> {

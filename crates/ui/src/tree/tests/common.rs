@@ -145,6 +145,7 @@ pub fn tweened_text(content: &str, slot: &str, format: Option<&str>, tween: Text
         bind: Some(TextBind {
             source: BindSource::Slot { slot: slot.into() },
             format: format.map(str::to_string),
+            decimal_places: None,
             tween: Some(tween),
         }),
         style_ranges: None,
@@ -197,6 +198,7 @@ pub fn bound_text(content: &str, slot: &str, format: Option<&str>) -> Widget {
         bind: Some(TextBind {
             source: BindSource::Slot { slot: slot.into() },
             format: format.map(str::to_string),
+            decimal_places: None,
             tween: None,
         }),
         style_ranges: None,

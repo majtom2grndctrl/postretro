@@ -11,7 +11,7 @@ use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
     BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType,
-    ProjectileDescriptor, ResolutionMode, bind,
+    ProjectileDescriptor, ResolutionMode, SplashDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
@@ -31,6 +31,7 @@ pub(crate) struct ResolvedProjectileAttack {
     cooldown_ms: f32,
     credit_source: Option<String>,
     projectile: ProjectileDescriptor,
+    splash: Option<SplashDescriptor>,
 }
 
 impl ResolvedProjectileAttack {
@@ -56,6 +57,10 @@ impl ResolvedProjectileAttack {
 
     pub(crate) fn projectile(&self) -> &ProjectileDescriptor {
         &self.projectile
+    }
+
+    pub(crate) fn splash(&self) -> Option<&SplashDescriptor> {
+        self.splash.as_ref()
     }
 }
 
@@ -261,6 +266,7 @@ fn resolve_projectile_attacks(
                     cooldown_ms: weapon.cooldown_ms,
                     credit_source: weapon.credit_source.clone(),
                     projectile: projectile.clone(),
+                    splash: weapon.splash.clone(),
                 })
             });
 
@@ -533,6 +539,7 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Projectile,
                 projectile: Some(projectile_descriptor()),
+                splash: None,
                 credit_source: Some("enemy.rifle".to_string()),
                 third_person_model: None,
                 viewmodel: None,

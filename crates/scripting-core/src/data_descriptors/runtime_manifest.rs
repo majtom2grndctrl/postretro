@@ -1,7 +1,10 @@
 // Runtime-side manifest types that embed render::ui descriptor data.
 // See: context/lib/scripting.md §13 (Crate Architecture)
 
-use postretro_foundation::{IrNode, PresentationEasing};
+use postretro_foundation::{
+    BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX, IrNode, PresentationEasing,
+    is_builtin_presentation_template_id,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::descriptor::{
@@ -54,6 +57,11 @@ impl PresentationTemplate {
     pub fn validate(&self) -> Result<(), String> {
         if self.id.is_empty() {
             return Err("presentation template `id` must be nonempty".to_string());
+        }
+        if is_builtin_presentation_template_id(&self.id) {
+            return Err(format!(
+                "presentation template `id` must not use reserved engine namespace `{BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX}`"
+            ));
         }
         if !self.motion.rise.is_finite() {
             return Err("presentation template `motion.rise` must be finite".to_string());
@@ -117,6 +125,9 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
         Widget::Text(text) => {
             if let Some(bind) = &text.bind {
                 source(&bind.source, "bind")?;
+                if bind.decimal_places.is_some_and(|places| places > 6) {
+                    return Err(format!("{path}.bind.decimalPlaces must be between 0 and 6"));
+                }
             }
             predicate(&text.visible_when, "visibleWhen")
         }

@@ -3,11 +3,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use postretro_foundation::ProjectileImpactLight;
+use postretro_foundation::{ProjectileImpactLight, SplashDescriptor};
 
 use crate::registry::EntityId;
 
-/// Engine-owned state for one direct-impact projectile.
+/// Engine-owned state for one projectile's resolved impact damage.
 ///
 /// The spawn path validates the descriptor before constructing this component;
 /// retaining all hit-time inputs here lets a projectile outlive its firing pawn
@@ -48,6 +48,10 @@ pub struct ProjectileComponent {
     /// replication, so a projectile can flash after its owner weapon despawns.
     #[serde(default)]
     pub impact_light: Option<ProjectileImpactLight>,
+    /// Descriptor-resolved splash tuning retained at spawn. The authoritative
+    /// impact path uses this snapshot rather than consulting the live weapon.
+    #[serde(default)]
+    pub splash: Option<SplashDescriptor>,
 }
 
 /// Presentation-only timing for a projectile replicated as a visual entity.

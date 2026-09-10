@@ -662,7 +662,7 @@
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; decimalPlaces?: number; tween?: NumberTween };
   /** State binding for a `Panel` fill color. The source resolves to a numeric RGBA array; `tween` eases the displayed color and never writes back to state. */
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   /** State binding for a writable numeric `Slider`. Engine refs must be writable; local cells are valid. The optional number tween controls displayed thumb movement only. */
@@ -765,7 +765,7 @@
 
   /** Options accepted by `bindState` for each state value type. Numbers may format and tween, numeric arrays may color-tween, and scalar strings/booleans may format. */
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends number ? { format?: string; decimalPlaces?: number; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
     T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
     T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;

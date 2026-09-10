@@ -2133,6 +2133,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 elapsed_flight_age: 0.0,
                 flipbook_active: false,
                 impact_light: None,
+                splash: None,
             },
         )
         .expect("active crossfire projectile attaches");
@@ -2282,6 +2283,12 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
             range: 20.0,
             pellet_count: 1,
             credit_source: "test.crossfire.remote".to_string(),
+            splash: None,
+            projectile_radius: None,
+            projectile_direction: None,
+            projectile_speed: None,
+            projectile_lifetime_seconds: None,
+            projectile_tick_seconds: None,
             is_projectile: false,
             fire_origin: Vec3::new(10.0, 0.5, 0.0),
             timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
@@ -2373,6 +2380,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
             let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
                 registry,
                 &world,
+                &hit_zones,
                 &allocator,
                 &owners,
                 &mut open_shots,
@@ -9856,6 +9864,7 @@ fn projectile_weapon_descriptor(
                     impact_light: None,
                 },
             }),
+            splash: None,
             credit_source: Some("enemy.rifle".to_string()),
             third_person_model: None,
             viewmodel: None,

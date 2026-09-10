@@ -758,7 +758,7 @@ fn run_after_parsing(
     reporter.declare_progress(StageId::CellVisibility, cell_visibility_progress.clone());
     let cell_visibility_control =
         BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
-    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake_cached(
+    let cell_visibility_section = cell_visibility_bake::cell_visibility_bake_cached(
         &result.tree,
         &generated_portals,
         stage_cache.as_ref(),
@@ -777,11 +777,10 @@ fn run_after_parsing(
     // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
     // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
     // zero-leaf maps; emission is independent of portal presence.
-    let cell_draw_index_bytes = cell_draw_index_bake::bake_cell_draw_index(
+    let cell_draw_index_section = cell_draw_index_bake::bake_cell_draw_index(
         &bvh_section.leaves,
         &vis_result.leaves_section.leaves,
-    )
-    .map(|section| section.to_bytes());
+    );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::NavMesh);
     // Walkable navigation graph baked from the extracted geometry's triangles
@@ -2157,8 +2156,8 @@ fn run_after_parsing(
         navmesh_section.as_ref(),
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
-        cell_draw_index_bytes,
-        Some(cell_visibility_bytes),
+        cell_draw_index_section.as_ref(),
+        Some(&cell_visibility_section),
         delta_sections.animated_direct.as_ref(),
         billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes_section.as_ref(),

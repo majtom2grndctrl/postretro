@@ -25,6 +25,10 @@ pub struct TextureCacheKeysSection {
 }
 
 impl TextureCacheKeysSection {
+    pub fn byte_len(&self) -> usize {
+        4 + self.keys.len() * 32
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.keys.len() as u32;
         let size = 4 + self.keys.len() * 32;
@@ -71,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip() {
+    fn byte_len_matches_texture_cache_key_payload() {
         let section = TextureCacheKeysSection {
             keys: vec![[0u8; 32], [0xAB; 32], {
                 let mut k = [0u8; 32];
@@ -82,6 +86,7 @@ mod tests {
             }],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = TextureCacheKeysSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

@@ -128,6 +128,10 @@ pub fn derive_bucket_ranges(leaves: &[BvhLeaf]) -> Vec<BucketRange> {
 }
 
 impl BvhSection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE + self.nodes.len() * NODE_STRIDE + self.leaves.len() * LEAF_STRIDE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let node_count = self.nodes.len() as u32;
         let leaf_count = self.leaves.len() as u32;
@@ -484,9 +488,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_byte_identical() {
+    fn byte_len_matches_bvh_payload() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = BvhSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
 

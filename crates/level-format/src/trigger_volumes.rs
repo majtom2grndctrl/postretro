@@ -29,6 +29,32 @@ pub struct TriggerVolumeRecord {
 }
 
 impl TriggerVolumesSection {
+    pub fn byte_len(&self) -> usize {
+        6 + self
+            .triggers
+            .iter()
+            .map(|trigger| {
+                4 + trigger.name.len()
+                    + 4
+                    + trigger.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
+                    + 24
+                    + 1
+                    + 4
+                    + trigger.target_tag.len()
+                    + 1
+                    + 4
+                    + trigger.command_arg.len()
+                    + 1
+                    + 4
+                    + 1
+                    + 4
+                    + trigger.on_fire.len()
+                    + 4
+                    + trigger.on_exit.len()
+            })
+            .sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&TRIGGER_VOLUMES_VERSION.to_le_bytes());
@@ -261,8 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_persistent_field_order() {
+    fn byte_len_matches_v2_trigger_volume_payload() {
         let section = sample();
+        assert_eq!(section.byte_len(), section.to_bytes().len());
         assert_eq!(
             TriggerVolumesSection::from_bytes(&section.to_bytes()).unwrap(),
             section

@@ -90,6 +90,21 @@ impl AnimatedDirectShDeltaVolumesSection {
         )
     }
 
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate_wire_contract()?;
+        Ok(1 + 1
+            + 12
+            + 4
+            + 4
+            + 4
+            + self.animation_descriptor_indices.len() * 4
+            + self.valid_probe_masks.len() * 8
+            + self.cell_levels.len()
+            + self.affinity_offsets.len() * 4
+            + self.affinity_lights.len() * 4
+            + self.delta_subblocks.len() * 2)
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("AnimatedDirectShDeltaVolumesSection must satisfy its wire contract")
@@ -528,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn animated_direct_sh_delta_volumes_round_trip() {
+    fn byte_len_matches_animated_direct_sh_delta_payload() {
         let mut delta_subblocks = sample_subblock(1);
         delta_subblocks.extend(sample_subblock(100));
         let section = AnimatedDirectShDeltaVolumesSection {
@@ -543,6 +558,10 @@ mod tests {
             affinity_lights: vec![0, 1],
             delta_subblocks,
         };
+        assert_eq!(
+            section.try_byte_len().unwrap(),
+            section.try_to_bytes().unwrap().len()
+        );
 
         let restored = AnimatedDirectShDeltaVolumesSection::from_bytes(&section.to_bytes())
             .expect("valid animated direct deltas must decode");

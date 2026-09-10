@@ -147,6 +147,20 @@ impl DeltaShVolumesSection {
         )
     }
 
+    pub fn byte_len(&self) -> usize {
+        1 + 1
+            + 12
+            + 4
+            + 4
+            + 4
+            + self.animation_descriptor_indices.len() * 4
+            + self.valid_probe_masks.len() * 8
+            + self.cell_levels.len()
+            + self.affinity_offsets.len() * 4
+            + self.affinity_lights.len() * 4
+            + self.delta_subblocks.len() * 2
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
         debug_assert_eq!(self.valid_probe_masks.len(), self.affinity_cell_count());
@@ -558,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_single_light_single_cell() {
+    fn byte_len_matches_single_light_delta_payload() {
         // One affinity cell, one animated light touching it.
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
@@ -573,6 +587,7 @@ mod tests {
             delta_subblocks: sample_subblock(100),
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = DeltaShVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
         assert_eq!(

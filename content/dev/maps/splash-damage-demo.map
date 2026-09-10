@@ -1,0 +1,122 @@
+// Game: Postretro
+// Format: Standard
+// E16 rocket splash-damage reference fixture.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/splash-damage-demo.map -o content/dev/maps/splash-damage-demo.prl
+// Run: cargo run -p xtask -- run content/dev/maps/splash-damage-demo.prl
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// Floor: this is static world geometry, not a brush entity.
+{
+( 0 512 -16 ) ( 0 0 0 ) ( 0 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 640 0 0 ) ( 640 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 640 512 -16 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 640 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 640 512 -16 ) ( 0 512 0 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 -16 ) ( 640 512 0 ) ( 640 512 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// Seal the compact test chamber. The ceiling and four perimeter walls keep the
+// fixture in the ordinary interior-world path rather than the exterior fallback.
+{
+( 0 512 192 ) ( 0 0 208 ) ( 0 0 192 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 192 ) ( 640 0 208 ) ( 640 0 192 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 192 ) ( 640 512 192 ) ( 0 512 192 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 208 ) ( 640 0 208 ) ( 0 0 208 ) concrete_pavement_036 0 0 0 1 1
+( 640 512 192 ) ( 0 512 208 ) ( 0 512 192 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 192 ) ( 640 512 208 ) ( 640 512 192 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 512 0 ) ( 0 0 192 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 16 0 192 ) ( 16 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 16 512 0 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 192 ) ( 16 0 192 ) ( 0 0 192 ) concrete_pavement_036 0 0 0 1 1
+( 16 512 0 ) ( 0 512 192 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 16 0 0 ) ( 16 512 192 ) ( 16 512 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 624 512 0 ) ( 624 0 192 ) ( 624 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 624 0 0 ) ( 640 0 192 ) ( 640 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 624 0 0 ) ( 640 512 0 ) ( 624 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 624 512 192 ) ( 640 0 192 ) ( 624 0 192 ) concrete_pavement_036 0 0 0 1 1
+( 640 512 0 ) ( 624 512 192 ) ( 624 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 512 192 ) ( 640 512 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 16 0 ) ( 0 0 192 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 640 0 192 ) ( 640 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 640 16 0 ) ( 0 16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 16 192 ) ( 640 0 192 ) ( 0 0 192 ) concrete_pavement_036 0 0 0 1 1
+( 640 16 0 ) ( 0 16 192 ) ( 0 16 0 ) concrete_pavement_036 0 0 0 1 1
+( 640 0 0 ) ( 640 16 192 ) ( 640 16 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 528 0 ) ( 0 512 192 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 640 512 192 ) ( 640 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 640 528 0 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 192 ) ( 640 512 192 ) ( 0 512 192 ) concrete_pavement_036 0 0 0 1 1
+( 640 528 0 ) ( 0 528 192 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 640 512 0 ) ( 640 528 192 ) ( 640 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// Static-world occluder. It must remain in worldspawn: a kinematic mover or
+// other brush entity does not participate in splash line-of-sight.
+{
+( 416 400 0 ) ( 416 288 128 ) ( 416 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 432 288 0 ) ( 432 288 128 ) ( 432 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 416 288 0 ) ( 432 288 0 ) ( 416 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 416 400 128 ) ( 432 400 0 ) ( 416 288 128 ) concrete_pavement_036 0 0 0 1 1
+( 416 400 0 ) ( 432 400 128 ) ( 432 400 0 ) concrete_pavement_036 0 0 0 1 1
+( 416 288 0 ) ( 432 288 128 ) ( 432 288 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "96 256 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+// Aim east at the direct target. The player is close enough to demonstrate
+// self damage; choose the reference rocket from the normal dev loadout.
+{
+"classname" "target_dummy"
+"origin" "352 256 0"
+"angles" "0 180 0"
+"_tags" "splash_direct"
+}
+// Clear clustered targets progress from near to far from that fixed aim point.
+{
+"classname" "target_dummy"
+"origin" "384 256 0"
+"angles" "0 180 0"
+"_tags" "splash_near"
+}
+{
+"classname" "target_dummy"
+"origin" "432 208 0"
+"angles" "0 180 0"
+"_tags" "splash_mid"
+}
+{
+"classname" "target_dummy"
+"origin" "480 160 0"
+"angles" "0 180 0"
+"_tags" "splash_clear_far"
+}
+// Same blast radius, but the worldspawn brush blocks the direct target-to-blast
+// segment. Its damage should remain unchanged.
+{
+"classname" "target_dummy"
+"origin" "480 352 0"
+"angles" "0 180 0"
+"_tags" "splash_shadowed"
+}
+{
+"classname" "light"
+"origin" "320 256 160"
+"light" "300"
+"_falloff_range" "500"
+"_color" "255 203 157"
+"style" "0"
+}

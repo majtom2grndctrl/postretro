@@ -653,6 +653,19 @@ mod tests {
         }
     }
 
+    fn wall_at_x(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -4.0, -4.0),
+            Point::new(x, 4.0, -4.0),
+            Point::new(x, 4.0, 4.0),
+            Point::new(x, -4.0, 4.0),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
+    }
+
     #[test]
     fn impact_flash_spawns_at_contact_point_expands_and_schedules_despawn() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -874,6 +887,154 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert!(queued[0].world_anchor.is_finite());
         assert_eq!(queued[0].owner_pawn, owner_pawn);
+    }
+
+    #[test]
+    fn reference_rocket_cluster_applies_falloff_spares_static_world_shadow_and_harms_owner() {
+        // This is the headless counterpart of content/dev/maps/splash-damage-demo.map:
+        // a rocket strikes the direct target, with a static wall shadowing one
+        // grouped target while the owner is point-blank inside the blast.
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let direct = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let near = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let clear = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, 2.25),
+            Vec3::splat(0.1),
+        );
+        let shadowed = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(3.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        {
+            let mut registry = registry.borrow_mut();
+            for target in [direct, near, clear, shadowed] {
+                let mut health = registry
+                    .get_component::<HealthComponent>(target)
+                    .expect("fixture target starts with health")
+                    .clone();
+                // Keep every target alive after the blast so their remaining
+                // HP exposes the three distinct falloff amounts directly.
+                health.max = 100.0;
+                health.current = 100.0;
+                registry
+                    .set_component(target, health)
+                    .expect("fixture target health updates");
+            }
+        }
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 36.0);
+
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("reference rocket carries projectile state")
+            .clone();
+        let owner = component.owner_pawn;
+        component.credit_source = "player.reference-rocket:primary".to_string();
+        component.splash = Some(SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.2,
+            self_damage: true,
+        });
+        registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("reference rocket carries its splash tuning at launch");
+        registry
+            .borrow_mut()
+            .set_component(
+                owner,
+                Transform {
+                    // The projectile hits the direct target's front face here;
+                    // this owner volume contains that point, exercising the
+                    // zero-length line-of-sight and self-damage path together.
+                    position: Vec3::new(0.0, 0.0, -0.65),
+                    ..Transform::default()
+                },
+            )
+            .expect("owner takes the fixture player's point-blank position");
+        registry
+            .borrow_mut()
+            .set_component(
+                owner,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.2),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("owner is a live damageable player fixture");
+
+        let world = wall_at_x(1.5);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        // A launch consumes its grace tick before advancing and detonating.
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let registry = registry.borrow();
+        let current = |entity| {
+            registry
+                .get_component::<HealthComponent>(entity)
+                .expect("fixture target remains addressable until the death sweep")
+                .current
+        };
+        assert!(
+            current(direct) < current(near) && current(near) < current(clear),
+            "nearest-volume falloff must make clustered damage strictly decrease"
+        );
+        assert!(
+            current(clear) < 100.0,
+            "the clear ranged target takes splash"
+        );
+        assert!(
+            (current(shadowed) - 100.0).abs() <= f32::EPSILON,
+            "the static-world wall spares its shadowed target"
+        );
+        assert!(
+            current(owner) < 100.0,
+            "the point-blank owner takes self damage"
+        );
+
+        for target in [direct, near, clear, owner] {
+            let health = registry
+                .get_component::<HealthComponent>(target)
+                .expect("damaged target keeps health through the assertion");
+            assert_eq!(
+                health.contributor_ledger.total_recorded_hits(),
+                1,
+                "each splash target reaches the damage chokepoint exactly once"
+            );
+            assert_eq!(
+                health
+                    .contributor_ledger
+                    .entries()
+                    .first()
+                    .expect("damage chokepoint records the rocket contributor")
+                    .source_id,
+                "player.reference-rocket:primary"
+            );
+        }
+        let shadowed_health = registry
+            .get_component::<HealthComponent>(shadowed)
+            .expect("shadowed target remains live");
+        assert!(shadowed_health.contributor_ledger.entries().is_empty());
     }
 
     #[test]

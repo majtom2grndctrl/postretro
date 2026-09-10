@@ -13,7 +13,7 @@ use postretro_foundation::{
     FireMode, ProjectileDescriptor, ResolutionMode, SplashDescriptor, WeaponPlacementDescriptor,
 };
 
-use crate::collision::{CollisionWorld, cast_ray};
+use crate::collision::{CollisionWorld, cast_ray, cast_sphere_exact};
 #[cfg(test)]
 use crate::scripting_systems::hit_zones::nearest_entity_hit;
 use crate::scripting_systems::hit_zones::{
@@ -466,6 +466,9 @@ pub(crate) fn tick_resolved_component(
                     command.aim_direction,
                     placement,
                     muzzle_offset,
+                    projectile
+                        .as_ref()
+                        .map_or(0.0, |projectile| projectile.radius),
                     collision_world,
                     registry,
                     hit_zone_store,
@@ -727,6 +730,7 @@ pub(crate) fn resolve_client_fire(
                 aim_direction,
                 placement,
                 muzzle_offset,
+                projectile.radius,
                 collision_world,
                 registry,
                 hit_zone_store,
@@ -904,12 +908,13 @@ fn resolve_client_hitscan(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_projectile_launch_pose(
+pub(crate) fn resolve_projectile_launch_pose(
     owner_pawn: Option<EntityId>,
     aim_origin: Vec3,
     aim_direction: Vec3,
     placement: &WeaponPlacementDescriptor,
     muzzle_offset: Option<Vec3>,
+    projectile_radius: f32,
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -921,32 +926,114 @@ fn resolve_projectile_launch_pose(
         return (aim_origin, aim_direction);
     };
 
-    let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
-    let convergence = resolve_nearest_hit(NearestHitQuery {
-        owner_pawn,
-        origin: aim_origin,
-        direction: aim_direction,
+    let launch_origin = resolve_muzzle_launch_origin(
+        aim_origin,
+        aim_direction,
+        placement,
+        muzzle_local,
+        projectile_radius,
         collision_world,
-        registry,
-        hit_zone_store,
-        anim_time,
         range,
-    })
+    );
+    if launch_origin.obstructed {
+        // A composed muzzle can cross nearby world geometry. Launch from the
+        // valid eye ray rather than letting spawn grace strand the projectile
+        // beyond the first world contact.
+        return (aim_origin, aim_direction);
+    }
+
+    let convergence = resolve_nearest_hit_with_world(
+        NearestHitQuery {
+            owner_pawn,
+            origin: aim_origin,
+            direction: aim_direction,
+            collision_world,
+            registry,
+            hit_zone_store,
+            anim_time,
+            range,
+        },
+        launch_origin.eye_world_hit.filter(|hit| hit.toi <= range),
+    )
     .map_or(aim_origin + aim_direction * range, |hit| match hit {
         NearestHit::World(hit) => hit.point,
         NearestHit::Entity(hit) => hit.point,
     });
-    let muzzle_to_convergence = convergence - muzzle;
+    let muzzle_to_convergence = convergence - launch_origin.origin;
     let length_squared = muzzle_to_convergence.length_squared();
     if !muzzle_to_convergence.is_finite()
         || !length_squared.is_finite()
         || length_squared <= MUZZLE_DIRECTION_EPSILON_SQUARED
         || muzzle_to_convergence.dot(aim_direction) <= 0.0
     {
-        return (muzzle, aim_direction);
+        return (launch_origin.origin, aim_direction);
     }
 
-    (muzzle, muzzle_to_convergence / length_squared.sqrt())
+    (
+        launch_origin.origin,
+        muzzle_to_convergence / length_squared.sqrt(),
+    )
+}
+
+struct ProjectileLaunchOrigin {
+    origin: Vec3,
+    eye_world_hit: Option<WorldHit>,
+    obstructed: bool,
+}
+
+fn resolve_muzzle_launch_origin(
+    aim_origin: Vec3,
+    aim_direction: Vec3,
+    placement: &WeaponPlacementDescriptor,
+    muzzle_local: Vec3,
+    projectile_radius: f32,
+    collision_world: &CollisionWorld,
+    range: f32,
+) -> ProjectileLaunchOrigin {
+    let muzzle = muzzle_world_origin(aim_origin, aim_direction, placement, muzzle_local);
+    let muzzle_forward_distance = (muzzle - aim_origin).dot(aim_direction).max(0.0);
+    let eye_world_hit = resolve_world_hit(
+        aim_origin,
+        aim_direction,
+        collision_world,
+        range.max(muzzle_forward_distance),
+    );
+    let muzzle_segment = muzzle - aim_origin;
+    let muzzle_segment_length_squared = muzzle_segment.length_squared();
+    let muzzle_segment_length = muzzle_segment_length_squared.sqrt();
+    let valid_muzzle_segment = muzzle_segment.is_finite()
+        && muzzle_segment_length_squared.is_finite()
+        && muzzle_segment_length_squared > MUZZLE_DIRECTION_EPSILON_SQUARED;
+    let muzzle_segment_obstructed = valid_muzzle_segment
+        && if projectile_radius > 0.0 {
+            cast_sphere_exact(
+                collision_world,
+                Point::new(aim_origin.x, aim_origin.y, aim_origin.z),
+                projectile_radius,
+                Vector::new(
+                    muzzle_segment.x / muzzle_segment_length,
+                    muzzle_segment.y / muzzle_segment_length,
+                    muzzle_segment.z / muzzle_segment_length,
+                ),
+                muzzle_segment_length,
+            )
+            .is_some()
+        } else {
+            resolve_world_hit(
+                aim_origin,
+                muzzle_segment / muzzle_segment_length,
+                collision_world,
+                muzzle_segment_length,
+            )
+            .is_some()
+        };
+    let obstructed = muzzle_segment_obstructed
+        || eye_world_hit.is_some_and(|hit| hit.toi <= muzzle_forward_distance);
+    ProjectileLaunchOrigin {
+        origin: if obstructed { aim_origin } else { muzzle },
+        eye_world_hit,
+        obstructed,
+    }
 }
 
 /// The deterministic pellet salt chooses a canonical descriptor identity first,
@@ -1011,18 +1098,22 @@ struct NearestHitQuery<'a> {
 }
 
 fn resolve_nearest_hit(query: NearestHitQuery<'_>) -> Option<NearestHit> {
-    let NearestHitQuery {
-        owner_pawn,
-        origin,
-        direction,
-        collision_world,
-        registry,
-        hit_zone_store,
-        anim_time,
-        range,
-    } = query;
-    // World geometry hit — parry returns the nearest triangle intersection.
-    let world_hit = cast_ray(
+    let world_hit = resolve_world_hit(
+        query.origin,
+        query.direction,
+        query.collision_world,
+        query.range,
+    );
+    resolve_nearest_hit_with_world(query, world_hit)
+}
+
+fn resolve_world_hit(
+    origin: Vec3,
+    direction: Vec3,
+    collision_world: &CollisionWorld,
+    range: f32,
+) -> Option<WorldHit> {
+    cast_ray(
         collision_world,
         Point::new(origin.x, origin.y, origin.z),
         Vector::new(direction.x, direction.y, direction.z),
@@ -1032,7 +1123,23 @@ fn resolve_nearest_hit(query: NearestHitQuery<'_>) -> Option<NearestHit> {
         toi: hit.time_of_impact,
         point: origin + direction * hit.time_of_impact,
         normal: Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
-    });
+    })
+}
+
+fn resolve_nearest_hit_with_world(
+    query: NearestHitQuery<'_>,
+    world_hit: Option<WorldHit>,
+) -> Option<NearestHit> {
+    let NearestHitQuery {
+        owner_pawn,
+        origin,
+        direction,
+        collision_world: _,
+        registry,
+        hit_zone_store,
+        anim_time,
+        range,
+    } = query;
 
     // Nearest entity hit (authored AABB or bone-posed capsule), resolved entirely
     // by the standalone hit-zone facility.
@@ -1301,11 +1408,43 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn wall_world() -> CollisionWorld {
+        wall_world_at(-5.0)
+    }
+
+    pub(crate) fn wall_world_at(z: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(-1.0, -1.0, -5.0),
-            Point::new(1.0, -1.0, -5.0),
-            Point::new(1.0, 1.0, -5.0),
-            Point::new(-1.0, 1.0, -5.0),
+            Point::new(-1.0, -1.0, z),
+            Point::new(1.0, -1.0, z),
+            Point::new(1.0, 1.0, z),
+            Point::new(-1.0, 1.0, z),
+        ];
+        let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn lateral_wall_world_at(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -1.0, -1.0),
+            Point::new(x, -1.0, 1.0),
+            Point::new(x, 1.0, 1.0),
+            Point::new(x, 1.0, -1.0),
+        ];
+        let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn ground_world() -> CollisionWorld {
+        let points = vec![
+            Point::new(-2.0, 0.0, -2.0),
+            Point::new(2.0, 0.0, -2.0),
+            Point::new(2.0, 0.0, 2.0),
+            Point::new(-2.0, 0.0, 2.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
         CollisionWorld {
@@ -1387,6 +1526,7 @@ pub(crate) mod tests {
             Vec3::NEG_Z,
             &placement,
             muzzle,
+            0.0,
             &CollisionWorld::new(),
             &registry,
             &zones,
@@ -1405,6 +1545,7 @@ pub(crate) mod tests {
             Vec3::NEG_Z,
             &placement,
             muzzle,
+            0.0,
             &wall_world(),
             &registry,
             &zones,
@@ -1419,26 +1560,111 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn projectile_launch_pose_keeps_aim_when_convergence_is_behind_or_degenerate() {
+    fn projectile_launch_pose_uses_eye_when_short_range_ends_before_obstructed_muzzle() {
+        // Regression: the obstruction guard stopped at projectile range and
+        // missed a wall that was still between the eye and a farther muzzle.
         let placement = WeaponPlacementDescriptor::default();
         let registry = EntityRegistry::new();
         let zones = HitZoneStore::new();
-        for muzzle in [Vec3::new(0.0, 0.0, -6.0), Vec3::new(0.0, 0.0, -5.0)] {
-            let (origin, direction) = resolve_projectile_launch_pose(
-                None,
-                Vec3::ZERO,
-                Vec3::NEG_Z,
-                &placement,
-                Some(muzzle),
-                &wall_world(),
-                &registry,
-                &zones,
-                0.0,
-                10.0,
-            );
-            assert_vec3_approx(origin, muzzle);
-            assert_vec3_approx(direction, Vec3::NEG_Z);
-        }
+        let range = 0.25;
+        let muzzle = Vec3::new(0.0, 0.0, -0.8);
+        assert!(
+            range < -muzzle.z,
+            "the muzzle must extend beyond flight range"
+        );
+        let (origin, direction) = resolve_projectile_launch_pose(
+            None,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            &placement,
+            Some(muzzle),
+            0.0,
+            &wall_world_at(-0.5),
+            &registry,
+            &zones,
+            0.0,
+            range,
+        );
+
+        assert_vec3_approx(origin, Vec3::ZERO);
+        assert_vec3_approx(direction, Vec3::NEG_Z);
+    }
+
+    #[test]
+    fn projectile_launch_pose_uses_eye_when_lateral_wall_intersects_muzzle_sweep() {
+        // Regression: a laterally offset muzzle could put the projectile volume
+        // through a side wall the crosshair ray never touched.
+        let eye = Vec3::ZERO;
+        let aim = Vec3::NEG_Z;
+        let muzzle = Vec3::new(0.5, 0.0, -0.8);
+        let projectile_radius = 0.2;
+        let wall = lateral_wall_world_at(0.6);
+        assert!(
+            resolve_world_hit(eye, aim, &wall, 10.0).is_none(),
+            "the crosshair ray must miss the lateral wall"
+        );
+        assert!(
+            muzzle.x < 0.6 && muzzle.x + projectile_radius > 0.6,
+            "the muzzle center stops short while its projectile volume crosses the wall"
+        );
+        let (origin, direction) = resolve_projectile_launch_pose(
+            None,
+            eye,
+            aim,
+            &WeaponPlacementDescriptor::default(),
+            Some(muzzle),
+            projectile_radius,
+            &wall,
+            &EntityRegistry::new(),
+            &HitZoneStore::new(),
+            0.0,
+            10.0,
+        );
+
+        assert_vec3_approx(origin, eye);
+        assert_vec3_approx(direction, aim);
+    }
+
+    #[test]
+    fn projectile_launch_pose_uses_eye_when_downward_rocket_muzzle_is_below_ground() {
+        // Regression: the reference rocket's composed muzzle could spawn below
+        // the floor at steep downward pitch and miss its splash impact entirely.
+        let eye = Vec3::new(0.0, 0.5, 0.0);
+        let placement = WeaponPlacementDescriptor {
+            offset: postretro_foundation::PlacementOffset {
+                right: 0.4,
+                up: -0.45,
+                forward: 0.75,
+            },
+            rotation: postretro_foundation::PlacementRotation {
+                yaw: -4.0,
+                pitch: 1.0,
+                roll: -2.0,
+            },
+        };
+        let muzzle = Vec3::new(0.0, -0.05, -0.834);
+        let composed_muzzle = muzzle_world_origin(eye, Vec3::NEG_Y, &placement, muzzle);
+        assert!(
+            composed_muzzle.y < 0.0,
+            "the fixture must place the rocket muzzle below the ground"
+        );
+
+        let (origin, direction) = resolve_projectile_launch_pose(
+            None,
+            eye,
+            Vec3::NEG_Y,
+            &placement,
+            Some(muzzle),
+            0.0,
+            &ground_world(),
+            &EntityRegistry::new(),
+            &HitZoneStore::new(),
+            0.0,
+            128.0,
+        );
+
+        assert_vec3_approx(origin, eye);
+        assert_vec3_approx(direction, Vec3::NEG_Y);
     }
 
     #[test]

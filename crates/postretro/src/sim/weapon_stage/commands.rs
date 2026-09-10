@@ -89,11 +89,15 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
     Some(direction / length_squared.sqrt())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::sim) fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
     remote_pawn_commands: &[RemotePawnCommand],
     descriptors: &[EntityTypeDescriptor],
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
     tick_dt: f32,
 ) -> RemoteWeaponCommandResult {
     let mut registry = registry.borrow_mut();
@@ -233,17 +237,27 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     authored_placement,
                     None,
                 );
-                // A projectile's host authorization and its observer launch
-                // must share this exact fire-time point.
-                let fire_origin = muzzle_offset.map_or(eye, |muzzle_local| {
-                    weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local)
-                });
+                // Authorization, observer presentation, and host replay freeze
+                // the pose reconstructed from the same authored rules as prediction.
+                let (fire_origin, projectile_direction) = weapon::resolve_projectile_launch_pose(
+                    Some(remote.pawn),
+                    eye,
+                    direction,
+                    &placement,
+                    muzzle_offset,
+                    projectile.radius,
+                    collision_world,
+                    &registry,
+                    hit_zone_store,
+                    anim_time,
+                    range,
+                );
                 let projectile_presentation =
                     (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
                         owner_client_id: remote.owner_client_id,
                         shot_id,
                         origin: fire_origin,
-                        direction,
+                        direction: projectile_direction,
                         range,
                         descriptor_class,
                         projectile: projectile.clone(),
@@ -251,7 +265,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 (
                     true,
                     fire_origin,
-                    Some(direction),
+                    Some(projectile_direction),
                     crate::netcode::projectile_timeout_budget_ticks(
                         range,
                         projectile.speed,

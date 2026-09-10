@@ -18,7 +18,7 @@ export const damageNumber = definePresentationTemplate("dev.damageNumber", {
     content: "0",
     fontSize: 20.0,
     color: [1.0, 0.83, 0.24, 1.0],
-    bind: fact.number("value", { format: "{}" }),
+    bind: fact.number("value", { format: "{}", decimalPlaces: 0 }),
   }),
   lifetimeMs: 750,
   motion: { rise: 0.45, easing: "easeOut" },

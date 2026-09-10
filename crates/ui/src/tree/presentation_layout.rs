@@ -477,6 +477,7 @@ mod tests {
                     fact: name.to_string(),
                 },
                 format: None,
+                decimal_places: None,
                 tween: None,
             }),
             style_ranges: None,

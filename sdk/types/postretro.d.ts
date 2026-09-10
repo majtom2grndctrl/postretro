@@ -2147,7 +2147,7 @@ declare module "postretro/ui" {
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; decimalPlaces?: number; tween?: NumberTween };
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
@@ -2199,7 +2199,7 @@ declare module "postretro/ui" {
     template: string;
     maxVisible: number;
   }>;
-  export type NumberFactOptions = { format?: string; tween?: NumberTween };
+  export type NumberFactOptions = { format?: string; decimalPlaces?: number; tween?: NumberTween };
   export type ScalarFactOptions = { format?: string };
   export type PresentationFactApi = Readonly<{
     number(name: string, options?: NumberFactOptions): FactBindRef<number> & NumberFactOptions;
@@ -2285,7 +2285,7 @@ declare module "postretro/ui" {
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends number ? { format?: string; decimalPlaces?: number; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
     T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
     T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;

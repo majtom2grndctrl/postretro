@@ -52,7 +52,7 @@ mod tests {
     };
     use crate::sprite_collection::derive_collection_id;
     use crate::weapon::tests::{
-        ammo_weapon_component as gate_ammo_weapon_component, wall_world,
+        ammo_weapon_component as gate_ammo_weapon_component, wall_world, wall_world_at,
         weapon_component as gate_weapon_component,
     };
     use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
@@ -2086,6 +2086,9 @@ mod tests {
                 placement.clone(),
             )],
             Some(&mod_default),
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
             1.0 / 60.0,
         );
 
@@ -2113,7 +2116,17 @@ mod tests {
             Some(&splash),
             "remote FIRE freezes splash tuning for later host contact resolution"
         );
-        assert_eq!(authorized.shot.projectile_direction, Some(direction));
+        let expected_direction =
+            (eye + direction * authorized.shot.range - local_origin).normalize();
+        assert!(
+            authorized
+                .shot
+                .projectile_direction
+                .expect("projectile authorization freezes a direction")
+                .distance(expected_direction)
+                <= 1.0e-6,
+            "remote FIRE converges from the muzzle to the eye ray's range endpoint"
+        );
         assert_eq!(
             authorized.shot.projectile_speed,
             Some(presentation.projectile.speed),
@@ -2132,8 +2145,462 @@ mod tests {
             "the observer launch reuses the authorization's exact muzzle point"
         );
         assert!(
-            presentation.direction.distance(direction) <= 1.0e-6,
-            "remote presentation continues along the reconstructed aim without convergence"
+            presentation.direction.distance(expected_direction) <= 1.0e-6,
+            "remote presentation reuses the authorization's converged direction"
+        );
+    }
+
+    // Regression: an obstructed client muzzle fell back to the eye while the
+    // host froze the buried muzzle, so host splash replay missed the wall.
+    #[test]
+    fn connected_obstructed_muzzle_declaration_replays_host_splash_from_eye() {
+        let collision_world = wall_world_at(-0.5);
+        let canonical_name = "weapon.test.obstructed-remote-muzzle";
+        let muzzle_offset = Vec3::new(0.0, 0.0, -0.8);
+        let eye = Vec3::new(0.0, 0.5, 0.0);
+        let placement = WeaponPlacementDescriptor::default();
+        let splash = SplashDescriptor {
+            radius: 1.0,
+            min_fraction: 0.2,
+            self_damage: false,
+        };
+        let host_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (host_pawn, host_weapon, splash_target) = {
+            let mut registry = host_registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("remote pawn carries eye-height movement");
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component(canonical_name);
+            component.range = 2.0;
+            component.muzzle_offset = Some(muzzle_offset);
+            component.splash = Some(splash.clone());
+            component
+                .projectile
+                .as_mut()
+                .expect("projectile fixture has flight tuning")
+                .speed = 60.0;
+            registry
+                .set_component(weapon, component)
+                .expect("remote projectile weapon attaches");
+            registry
+                .set_component(weapon, weapon_provenance(canonical_name))
+                .expect("weapon has its canonical archetype");
+            let target = registry.spawn(Transform {
+                position: Vec3::new(0.4, 0.5, -0.2),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: Some(Hitbox {
+                            half_extents: Vec3::splat(0.1),
+                            offset: Vec3::ZERO,
+                        }),
+                        death_handled: false,
+                        pending_kill_credit: None,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .expect("splash target has health");
+            (pawn, weapon, target)
+        };
+
+        let host_fire = run_remote_weapon_commands(
+            &host_registry,
+            &[remote_command(
+                host_pawn,
+                Some(host_weapon),
+                42,
+                9,
+                true,
+                false,
+            )],
+            &[projectile_weapon_descriptor(
+                canonical_name,
+                placement.clone(),
+            )],
+            None,
+            &collision_world,
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+        );
+        let [authorized] = host_fire.authorized_shots.as_slice() else {
+            panic!("accepted remote projectile fire mints one authorization");
+        };
+        let [presentation] = host_fire.projectile_presentation_launches.as_slice() else {
+            panic!("accepted remote projectile fire emits one observer launch");
+        };
+        assert!(authorized.shot.fire_origin.distance(eye) <= 1.0e-6);
+        assert!(presentation.origin.distance(eye) <= 1.0e-6);
+
+        let client_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (client_pawn, client_weapon) = {
+            let mut registry = client_registry.borrow_mut();
+            (
+                registry.spawn(Transform::default()),
+                registry.spawn(Transform::default()),
+            )
+        };
+        let mut client_weapon_component = projectile_weapon_component(canonical_name);
+        client_weapon_component.range = 2.0;
+        client_weapon_component.splash = Some(splash);
+        client_weapon_component
+            .projectile
+            .as_mut()
+            .expect("projectile fixture has flight tuning")
+            .speed = 60.0;
+        let launch = weapon::resolve_client_fire(
+            Some(client_pawn),
+            &mut client_weapon_component,
+            canonical_name,
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            eye,
+            Vec3::NEG_Z,
+            &placement,
+            Some(muzzle_offset),
+            9,
+            &[0.0],
+            &[],
+            &collision_world,
+            &client_registry.borrow(),
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+        )
+        .expect("connected client accepts its local fire intent")
+        .projectile_launch
+        .expect("projectile fire creates a predicted launch");
+        assert!(launch.origin.distance(authorized.shot.fire_origin) <= 1.0e-6);
+        let projectile = spawn_projectile(
+            &mut client_registry.borrow_mut(),
+            client_pawn,
+            client_weapon,
+            launch,
+            Some(authorized.shot.shot_id.raw()),
+        )
+        .expect("connected client materializes its predicted projectile");
+        assert!(client_registry.borrow().exists(projectile));
+
+        let mut resolutions = Vec::new();
+        advance_predicted(
+            &client_registry,
+            &collision_world,
+            &HitZoneStore::new(),
+            0.0,
+            0.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        advance_predicted(
+            &client_registry,
+            &collision_world,
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        let [PredictedProjectileResolution::Impact { shot_id, impact }] = resolutions.as_slice()
+        else {
+            panic!("predicted projectile must declare the close wall contact");
+        };
+        assert_eq!(*shot_id, authorized.shot.shot_id.raw());
+        assert_eq!(impact.target, None);
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(host_pawn);
+        let mut owners = MovementOwners::new();
+        owners.set(host_pawn, 7);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(authorized.shot.clone(), authorized.owner_client_id);
+        let declaration = HitDeclaration {
+            shot_id: *shot_id,
+            records: vec![HitRecord {
+                target: u32::MAX,
+                point: impact.point.to_array(),
+                zone: None,
+            }],
+        };
+        let bytes = wire::encode(&ClientMessage::HitDeclaration(declaration));
+        let ClientMessage::HitDeclaration(delivered) =
+            wire::decode(&bytes).expect("declaration survives input-wire encoding")
+        else {
+            panic!("encoded declaration retains its input message variant");
+        };
+        let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+            &mut host_registry.borrow_mut(),
+            &collision_world,
+            &HitZoneStore::new(),
+            &allocator,
+            &owners,
+            &mut open_shots,
+            7,
+            &delivered,
+        );
+        assert!(fire_accepted);
+        assert!(hit_accepted);
+        assert!(
+            host_registry
+                .borrow()
+                .get_component::<HealthComponent>(splash_target)
+                .expect("splash target remains live")
+                .current
+                < 100.0,
+            "host replay from the eye must hit the wall and apply splash"
+        );
+    }
+
+    // Regression: host authorization froze raw eye aim while client prediction
+    // converged a lateral muzzle on the crosshair target, so splash replay missed.
+    #[test]
+    fn connected_lateral_muzzle_convergence_matches_host_splash_replay() {
+        fn populate(
+            registry: &mut EntityRegistry,
+            canonical_name: &str,
+            muzzle_offset: Vec3,
+            splash: &SplashDescriptor,
+        ) -> (EntityId, EntityId, EntityId, EntityId) {
+            let pawn = registry.spawn(Transform::default());
+            registry
+                .set_component(pawn, trigger_movement())
+                .expect("projectile owner carries eye-height movement");
+
+            let weapon = registry.spawn(Transform::default());
+            let mut component = projectile_weapon_component(canonical_name);
+            component.range = 6.0;
+            component.muzzle_offset = Some(muzzle_offset);
+            component.splash = Some(splash.clone());
+            component
+                .projectile
+                .as_mut()
+                .expect("projectile fixture has flight tuning")
+                .speed = 360.0;
+            registry
+                .set_component(weapon, component)
+                .expect("projectile weapon attaches");
+            registry
+                .set_component(weapon, weapon_provenance(canonical_name))
+                .expect("weapon has its canonical archetype");
+
+            let crosshair_target = registry.spawn(Transform {
+                position: Vec3::new(0.0, 0.5, -4.0),
+                ..Transform::default()
+            });
+            let splash_target = registry.spawn(Transform {
+                position: Vec3::new(0.75, 0.5, -3.8),
+                ..Transform::default()
+            });
+            for (target, half_extents) in [
+                (crosshair_target, Vec3::splat(0.2)),
+                (splash_target, Vec3::splat(0.1)),
+            ] {
+                registry
+                    .set_component(
+                        target,
+                        HealthComponent {
+                            max: 100.0,
+                            current: 100.0,
+                            hitbox: Some(Hitbox {
+                                half_extents,
+                                offset: Vec3::ZERO,
+                            }),
+                            death_handled: false,
+                            pending_kill_credit: None,
+                            zone_multipliers: Default::default(),
+                            contributor_ledger: Default::default(),
+                        },
+                    )
+                    .expect("convergence fixture target has health");
+            }
+            (pawn, weapon, crosshair_target, splash_target)
+        }
+
+        let collision_world = CollisionWorld::new();
+        let canonical_name = "weapon.test.lateral-muzzle-convergence";
+        let placement = WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right: 0.25,
+                up: 0.0,
+                forward: 0.0,
+            },
+            rotation: PlacementRotation::default(),
+        };
+        let muzzle_offset = Vec3::new(1.0, 0.0, -0.5);
+        let splash = SplashDescriptor {
+            radius: 1.0,
+            min_fraction: 1.0,
+            self_damage: false,
+        };
+
+        let host_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (host_pawn, host_weapon, host_crosshair_target, host_splash_target) = populate(
+            &mut host_registry.borrow_mut(),
+            canonical_name,
+            muzzle_offset,
+            &splash,
+        );
+        let hit_zone_store = HitZoneStore::new();
+        let host_fire = run_remote_weapon_commands(
+            &host_registry,
+            &[remote_command(
+                host_pawn,
+                Some(host_weapon),
+                42,
+                9,
+                true,
+                false,
+            )],
+            &[projectile_weapon_descriptor(
+                canonical_name,
+                placement.clone(),
+            )],
+            None,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            1.0 / 60.0,
+        );
+        let [authorized] = host_fire.authorized_shots.as_slice() else {
+            panic!("accepted remote projectile fire mints one authorization");
+        };
+        let [presentation] = host_fire.projectile_presentation_launches.as_slice() else {
+            panic!("accepted remote projectile fire emits one observer launch");
+        };
+
+        let client_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (client_pawn, client_weapon, client_crosshair_target, _) = populate(
+            &mut client_registry.borrow_mut(),
+            canonical_name,
+            muzzle_offset,
+            &splash,
+        );
+        let mut client_weapon_component = client_registry
+            .borrow()
+            .get_component::<WeaponComponent>(client_weapon)
+            .expect("client fixture weapon exists")
+            .clone();
+        let launch = weapon::resolve_client_fire(
+            Some(client_pawn),
+            &mut client_weapon_component,
+            canonical_name,
+            0,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::new(0.0, 0.5, 0.0),
+            Vec3::NEG_Z,
+            &placement,
+            Some(muzzle_offset),
+            9,
+            &[0.0],
+            &[],
+            &collision_world,
+            &client_registry.borrow(),
+            &hit_zone_store,
+            0.0,
+            0.0,
+        )
+        .expect("connected client accepts its local fire intent")
+        .projectile_launch
+        .expect("projectile fire creates a predicted launch");
+        let authorized_direction = authorized
+            .shot
+            .projectile_direction
+            .expect("projectile authorization freezes its launch direction");
+        assert!(launch.origin.distance(authorized.shot.fire_origin) <= 1.0e-6);
+        assert!(launch.direction.distance(authorized_direction) <= 1.0e-6);
+        assert!(presentation.origin.distance(launch.origin) <= 1.0e-6);
+        assert!(presentation.direction.distance(launch.direction) <= 1.0e-6);
+        assert!(
+            launch.direction.distance(Vec3::NEG_Z) > 0.1,
+            "the lateral muzzle fixture must require crosshair convergence"
+        );
+
+        spawn_projectile(
+            &mut client_registry.borrow_mut(),
+            client_pawn,
+            client_weapon,
+            launch,
+            Some(authorized.shot.shot_id.raw()),
+        )
+        .expect("connected client materializes its predicted projectile");
+        let mut resolutions = Vec::new();
+        advance_predicted(
+            &client_registry,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            0.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        advance_predicted(
+            &client_registry,
+            &collision_world,
+            &hit_zone_store,
+            0.0,
+            1.0 / 60.0,
+            &mut |resolution| resolutions.push(resolution),
+        );
+        let [PredictedProjectileResolution::Impact { shot_id, impact }] = resolutions.as_slice()
+        else {
+            panic!("predicted converged projectile must hit the crosshair target");
+        };
+        assert_eq!(*shot_id, authorized.shot.shot_id.raw());
+        assert_eq!(impact.target, Some(client_crosshair_target));
+
+        let mut allocator = NetworkIdAllocator::new();
+        allocator.stamp(host_pawn);
+        let target_network_id = allocator.stamp(host_crosshair_target);
+        let mut owners = MovementOwners::new();
+        owners.set(host_pawn, 7);
+        let mut open_shots = OpenAuthorizedShots::new();
+        open_shots.record(authorized.shot.clone(), authorized.owner_client_id);
+        let declaration = HitDeclaration {
+            shot_id: *shot_id,
+            records: vec![HitRecord {
+                target: target_network_id.0,
+                point: impact.point.to_array(),
+                zone: None,
+            }],
+        };
+        let bytes = wire::encode(&ClientMessage::HitDeclaration(declaration));
+        let ClientMessage::HitDeclaration(delivered) =
+            wire::decode(&bytes).expect("declaration survives input-wire encoding")
+        else {
+            panic!("encoded declaration retains its input message variant");
+        };
+        let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
+            &mut host_registry.borrow_mut(),
+            &collision_world,
+            &hit_zone_store,
+            &allocator,
+            &owners,
+            &mut open_shots,
+            7,
+            &delivered,
+        );
+        assert!(fire_accepted);
+        assert!(hit_accepted);
+        assert!(
+            (host_registry
+                .borrow()
+                .get_component::<HealthComponent>(host_splash_target)
+                .expect("host splash target remains live")
+                .current
+                - 90.0)
+                .abs()
+                <= 1.0e-6,
+            "host replay must detonate at the same converged contact as prediction"
         );
     }
 
@@ -2169,6 +2636,9 @@ mod tests {
                 WeaponPlacementDescriptor::default(),
             )],
             None,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
             1.0 / 60.0,
         );
         let [authorized] = result.authorized_shots.as_slice() else {

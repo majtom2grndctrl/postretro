@@ -159,6 +159,12 @@ local function validateEasing(value: any, field: string, factory: string)
   end
 end
 
+local function requireDecimalPlaces(value: any, field: string, factory: string)
+  if not finite(value) or value % 1 ~= 0 or value < 0 or value > 6 then
+    error(`{factory}: \`{field}\` must be an integer between 0 and 6`)
+  end
+end
+
 -- Resolve a bind prop to its wire source table. `slot`, `local`, and `fact` are
 -- checked in descriptor precedence order. `kind` selects optional members:
 -- text accepts `format`; panel's
@@ -188,6 +194,10 @@ local function buildBind(bind: any, factory: string, kind: string): any?
   if kind == "text" and bind.format ~= nil then
     requireString(bind.format, "bind.format", factory)
     out.format = bind.format
+  end
+  if kind == "text" and bind.decimalPlaces ~= nil then
+    requireDecimalPlaces(bind.decimalPlaces, "bind.decimalPlaces", factory)
+    out.decimalPlaces = bind.decimalPlaces
   end
 
   if bind.tween ~= nil then

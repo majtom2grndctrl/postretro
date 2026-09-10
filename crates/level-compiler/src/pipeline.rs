@@ -1270,12 +1270,8 @@ fn run_after_parsing(
     } else {
         (DeltaCsrPlan::empty(), Vec::new())
     };
-    let subblock_f16_len = usize::try_from(PROBES_PER_CELL)
-        .map_err(|_| anyhow::anyhow!("delta probes-per-cell does not fit usize"))?
-        .checked_mul(
-            usize::try_from(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
-                .map_err(|_| anyhow::anyhow!("delta probe f16 stride does not fit usize"))?,
-        )
+    let subblock_f16_len = PROBES_PER_CELL
+        .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
         .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
     let delta_working_set_projection = match gate_delta_working_set(
         [

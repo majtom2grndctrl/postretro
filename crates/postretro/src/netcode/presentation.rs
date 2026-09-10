@@ -1392,6 +1392,7 @@ mod tests {
                     min_fraction: 0.2,
                     self_damage: true,
                 }),
+                projectile_radius: None,
                 is_projectile: true,
                 fire_origin: Vec3::new(0.0, 0.0, -1.0),
                 timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,

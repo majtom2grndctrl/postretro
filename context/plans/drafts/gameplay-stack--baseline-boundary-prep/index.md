@@ -18,7 +18,8 @@ behavior-preserving and low-risk, before any large module moves.
 ### In scope
 - A baseline + dev Cargo-config harness and a committed `baseline.md`, mirroring
   `context/plans/done/E19--baseline-and-cargo-config/`.
-- New crate `postretro-combat-model` (leaf over `entities`/`foundation`, `glam`).
+- New crate `postretro-combat-model` (leaf below the sim/scripting cluster; deps
+  pinned in Task 2).
 - Sinking the **shot-authority** family out of `netcode` into `postretro-combat-model`
   and re-pointing every consumer.
 - Sinking the **carried-loadout** family out of `netcode` into
@@ -43,8 +44,9 @@ isolated. The cause is two-fold — no gameplay crate boundary, and a
 into `netcode` for types that are really combat-model domain; sinking them into a leaf
 below all three both removes those edges and creates the first extractable crate.
 
-**Prior commitments.** `development_guide.md` §Target shape names the
-`postretro-combat-model` crate; this spec creates it, ahead of its full stat/damage
+**Prior commitments.** `development_guide.md` §Target shape calls for a combat-model
+crate (domain logic off the registry); this spec creates it as `postretro-combat-model`,
+ahead of its full stat/damage
 role, as the cycle-break sink (hub Decision 1). E19 established the extraction
 conventions (`workspace.package` inheritance, `cargo tree` isolation gate,
 behavior-preservation, `layering_invariants_hold`) this spec follows. Divergence from
@@ -109,10 +111,14 @@ Create `crates/combat-model/` with a `Cargo.toml` (package `postretro-combat-mod
 `version.workspace = true` + the rest of the `[workspace.package]` inheritance, a
 `description`) and `src/lib.rs`. Follow the inheritance *structure* of a minimal leaf
 precedent (`crates/render-data/Cargo.toml`), not its dep set: this crate's deps are
-`glam.workspace = true` (the shot-authority `fire_origin: Vec3`), plus
-`postretro-foundation` and `postretro-entities` as the moved types require (confirm
-the exact set against the types' fields at build — e.g. an `EntityId`/component
-handle pulls `entities`). Add `"crates/combat-model"` to the workspace-root `members`
+`glam.workspace = true` (`AuthorizedShot.fire_origin: Vec3`), `serde.workspace = true`
+(`TuningPayload` and `WieldableTuningPayload` derive `Serialize`/`Deserialize`),
+`postretro-net` (`ShotId::from_parts` takes a `NetworkId`, declared in `postretro-net` —
+a method signature, not a struct field, so a fields-only scan misses it), plus
+`postretro-foundation` and `postretro-entities` (the moved fields name `EntityId`,
+`AmmoReserve`, `WeaponPlacementDescriptor`, `WIELDABLE_SLOT_CAPACITY`). Confirm the final
+set with `cargo build --workspace`; all four are clean down-edges below the cluster and
+none is a `cargo tree` forbidden crate. Add `"crates/combat-model"` to the workspace-root `members`
 array, add `postretro-combat-model = { path = "crates/combat-model" }` to
 `[workspace.dependencies]`, and add `postretro-combat-model = { workspace = true }` to
 the `postretro` binary's `[dependencies]`. `lib.rs` starts empty (module decls added
@@ -122,27 +128,35 @@ by Tasks 3–4). Blocks Tasks 3 and 4.
 Move `AuthorizedShot`, `OpenAuthorizedShot`, `ShotId`, `HIT_RANGE_TOLERANCE`,
 `MAX_OPEN_SHOT_AGE_TICKS`, and the timeout-budget helpers (declared in
 `crates/postretro/src/netcode/mod.rs`, ~`:456`–`:542`) into `postretro-combat-model`,
-widening each moved item to `pub`. Keep `OpenAuthorizedShots` (the container, `mod.rs:542`)
-netcode-side unless it too is named outside netcode — `sim/mod.rs:23` imports only
-`AuthorizedShot`, `OpenAuthorizedShot`, `ShotId`, so the container likely stays; move
+widening each moved item to `pub`. Keep `OpenAuthorizedShots` (the container in
+`netcode/mod.rs`) netcode-side unless it too is named outside netcode — `sim/mod.rs`'s
+`use crate::netcode` imports only `AuthorizedShot`, `OpenAuthorizedShot`, `ShotId`, so
+the container likely stays; move
 it only if a re-point requires it. Discover every consumer with bare-symbol greps
 (`rg '\bAuthorizedShot\b'`, etc.) as well as `crate::netcode::`-qualified ones, and
-re-point them to `postretro_combat_model::` — the known site is `sim/mod.rs:23`;
+re-point them to `postretro_combat_model::` — the known site is `sim/mod.rs`'s `use crate::netcode`;
 `netcode`'s own uses become down-edges into combat-model. Do not change any field or
 value. If `AuthorizedShot` or `ShotId` derives a replication codec (bitcode/serde),
 the derive and field order move verbatim (Invariant 1). Lean on `cargo build
 --workspace` as the completion gate, not grep alone.
 
 ### Task 4: Sink the carried-loadout family
-Move `CarriedState`, `TuningPayload`, `WieldableTuningPayload` (declared in `netcode`)
-into `postretro-combat-model`, widening each to `pub`. The production consumers are
-`crates/postretro/src/scripting/builtins/{net_descriptor.rs:20, data_archetype.rs,
-wieldable_inventory.rs:17}` (they `use crate::netcode::{…}` today) plus `netcode`'s own
-`lifecycle.rs`/`remote_materialize.rs`; re-point all to `postretro_combat_model::`.
+Move `CarriedState` (`netcode/seat.rs`), `TuningPayload` and `WieldableTuningPayload`
+(`netcode/tuning_payload.rs`) into `postretro-combat-model`, widening each to `pub`.
+`TuningPayload`'s inherent impl travels with it: its private `epoch` field,
+`TuningPayload::new`, and the `TUNING_PAYLOAD_EPOCH` const `new` reads must all move
+together — otherwise `new` reaches up into `netcode`, an illegal up-edge. Widen `new`
+and any method `netcode` calls to `pub`; `epoch` stays private inside combat-model. The
+JSON codec (`encode_tuning_payload`/`decode_tuning_payload`, `TuningPayloadError`) stays
+in `netcode`, reading the moved types down. The production consumers are
+`crates/postretro/src/scripting/builtins/{net_descriptor.rs, data_archetype.rs,
+wieldable_inventory.rs}` (some via `use crate::netcode::{…}`, most fully-qualified as
+`crate::netcode::CarriedState` etc.) plus `netcode`'s own
+`lifecycle.rs`/`remote_materialize.rs`; re-point every form to `postretro_combat_model::`.
 `descriptor_class` appears in `scripting` only in a doc comment
-(`data_archetype.rs:276`) — do not move it. Decide `restore_carried_health`'s home:
-it is behavior over the registry consumed at `net_descriptor.rs:94` and
-`data_archetype.rs:1022` — move it to `postretro-combat-model` with the structs if it
+(a doc comment in `data_archetype.rs`) — do not move it. Decide `restore_carried_health`'s
+home: it is behavior over the registry, consumed in `net_descriptor.rs` and
+`data_archetype.rs` — move it to `postretro-combat-model` with the structs if it
 names only combat-model/`entities` types, else leave it in `netcode` reading the
 structs down; state which in the PR. No field or value change; preserve any
 replication derive and layout (Invariant 1). `cargo build --workspace` is the
@@ -160,21 +174,26 @@ its own consumers and relies on `cargo build --workspace` to surface any missed 
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| 1. Replication wire layout of any sunk type is unchanged | pre-existing codec derives on the moved types | Task 3 / Task 4 relocate the type — a dropped or re-ordered `Encode`/`Decode` derive silently changes the wire | AC "behavior-preserving": netcode replication + sim determinism tests pass; PR confirms which sunk types cross the wire |
+| 1. Replication wire layout of any sunk type is unchanged | the `serde` `Serialize`/`Deserialize` derives on `TuningPayload`/`WieldableTuningPayload` (their host tuning payload, carried opaquely as JSON by `postretro-net`) | Task 3 / Task 4 relocate a type — dropping a `serde` derive silently breaks that payload; no sunk type derives bitcode `Encode`/`Decode`, and `AuthorizedShot` is documented as never crossing the wire | AC "behavior-preserving": netcode replication + sim determinism tests pass; PR confirms which sunk types cross the wire |
 
 ## Rough sketch
 
 `postretro-combat-model/src/lib.rs` declares two modules — `shot_authority` and
 `carried_loadout` — re-exporting the moved types at the crate root so consumers write
 `postretro_combat_model::AuthorizedShot`. The crate is a pure type leaf: no VM, no
-wgpu, no netcode/sim dependency (it sits below them). `fire_origin: Vec3` fixes the
-`glam` dep; the loadout/authority types' fields fix whether `entities`/`foundation`
-are needed. This mirrors `E19--render-data` (a leaf that sank shared types — `Aabb`,
+wgpu, and no dependency on the binary's `netcode`/`sim` modules (it sits below them).
+Its deps are pinned by the moved types, not guessed — `glam`, `serde`, `postretro-net`,
+`postretro-entities`, `postretro-foundation` (Task 2), all clean down-edges. This
+mirrors `E19--render-data` (a leaf that sank shared types — `Aabb`,
 `LightInfluence` — below the crates that had reached across for them).
 
 ## Open questions
 
 - `restore_carried_health` placement (Task 4) — resolved at build by whether it names
   only combat-model/`entities` types. Recorded in the hub's open questions.
-- Whether any carried-loadout or shot-authority type crosses the replication wire —
-  confirmed at build; drives Invariant 1's scope. Recorded in the hub's open questions.
+- Whether any sunk type crosses the replication wire — resolved from source.
+  `TuningPayload` and `WieldableTuningPayload` derive `serde` `Serialize`/`Deserialize`
+  and cross the wire as an opaque JSON payload, so the move preserves both derives;
+  `CarriedState` and every shot-authority type derive no codec (`AuthorizedShot` is
+  documented as never crossing the wire). This fixes Invariant 1's scope; the hub's
+  open questions record the same resolution.

@@ -129,8 +129,9 @@ lives inside `postretro-sim`.
   runtime; this is expected, not a firewall breach (mirrors E19 Decision 13).
   `postretro-combat-model` carries neither VM nor wgpu.
 - [ ] Behavior-preserving: no runtime, wire, scripting-semantics, or SDK-typedef
-  change. Any type that crosses the replication wire keeps its `Encode`/`Decode`
-  derive and field layout (`networking.md`).
+  change. Any type that crosses the replication wire keeps its codec derive (bitcode
+  `Encode`/`Decode`, or serde `Serialize`/`Deserialize` for JSON payloads) and field
+  layout (`networking.md`).
 - [ ] No net-new `unsafe` (pre-existing `unsafe` travels with moved code).
 - [ ] Each extraction PR quotes before/after warm-edit timings vs. the
   `gameplay-stack--baseline-boundary-prep` baseline for its targeted loop. A split
@@ -233,9 +234,11 @@ AI is inseparable from the scripting runtime until the M4 decomposition.
 - **`restore_carried_health` placement.** The struct sinks to combat-model (M1); the
   function is behavior over the registry — decide at M1 build whether it travels with
   the struct or stays netcode-side reading down.
-- **Carried-loadout wire status.** Confirm at M1 build whether any of `CarriedState`
-  / `TuningPayload` / `WieldableTuningPayload` derives bitcode/serde for replication;
-  if so the move preserves the derive and layout (global AC).
+- **Carried-loadout wire status.** Resolved from source (M1): `TuningPayload` and
+  `WieldableTuningPayload` derive serde `Serialize`/`Deserialize` and cross as an opaque
+  JSON payload — the move preserves both derives; `CarriedState` and every shot-authority
+  type derive no codec. As later milestones move more wire types, confirm each per-type
+  against the global AC.
 - **`fx`-reactions placement** (M2). Move the emitter/fog reaction registrars into
   `postretro-sim`, or sink the `fx` presentation data below it. Affects whether
   `postretro-sim` grows an `fx` dependency.

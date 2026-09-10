@@ -28,8 +28,8 @@ behavior-preserving and low-risk, before any large module moves.
 - Moving any large module (`sim`, `netcode`, `scripting`) — those are M2–M4.
 - Severing the binary-only up-edges (`TICK_DURATION`, `InputMode`, `render` mover
   structs, `session`/`App`, `fx`-reactions) — M2 boundary-prep (hub `research.md`).
-- Any combat *feature* math in `postretro-combat-model` — it holds only the sunk
-  types now; Epic 16 grows it later.
+- Any combat-model-domain math in `postretro-combat-model`, or relocating existing
+  combat logic into it — it holds only the sunk types now.
 - Behavior, wire, or scripting-semantics change. Type relocation only.
 
 ## Direction

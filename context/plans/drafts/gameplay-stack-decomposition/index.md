@@ -56,9 +56,10 @@ large module moves. The end-state graph below is committed; the large extraction
 ### Out of scope
 - Runtime/behavior changes, PRL wire-format changes, scripting-semantics or
   SDK-typedef changes. Extractions are behavior-preserving.
-- Combat *feature* work (roadmap Epic 16). This epic builds the crate the combat
-  features will land in; it does not add stat/augment/damage-type systems. M4's
-  `postretro-combat-model` growth is a home, not new gameplay.
+- Combat *feature* work, and consolidating the combat logic already spread across the
+  binary (roadmap Epic 16 — largely shipped) into `postretro-combat-model`. This epic
+  sinks only the two cycle-break type families; it adds no gameplay and relocates no
+  existing combat logic. Future consolidation into the leaf is a separate effort.
 - Removing mlua/rquickjs from supported builds. The VM host stays; the sim/ai crates
   legitimately carry it (they are the runtime). `cpu-only` is not claimed for them.
 - A dedicated-server entry point. The `simulate` seam is already headless
@@ -102,8 +103,10 @@ lives inside `postretro-sim`.
 
 - **`postretro-combat-model*`** — new leaf over `entities`/`foundation`. Holds the
   shot-authority and carried-loadout types sunk out of `netcode` (the cycle-break),
-  and is the home Epic 16's stat/resource/augment/damage math grows into — keeping
-  combat-balance churn out of both the `entities` chokepoint and the sim crate.
+  and is the natural home for combat-model-domain math (stat/resource/augment/damage
+  taxonomy) to consolidate into over time — off both the `entities` chokepoint and the
+  sim crate. Relocating the combat logic already spread across the binary is out of
+  scope here (see Scope); the crate is justified by the cycle-break alone.
 - **`postretro-sim*`** — the fused fixed-tick core plus collision. The
   `scripting ↔ sim` half of the cycle and every fixed-tick ↔ collision/nav edge
   become intra-crate. Carries the scripting host + systems (AI included, through M3).
@@ -184,11 +187,12 @@ guesses the earlier cuts will falsify.
 
 ## Decisions
 
-1. **`postretro-combat-model` is the cycle-break sink and the Epic 16 home.** The
-   shot-authority and carried-loadout families sink here (both are damage/loadout
-   authority, both carry `Vec3`/gameplay types so `net` is out). Principle: the
-   lowest common leaf both sides depend down on, sited where the combat-feature math
-   will grow — off the `entities` chokepoint. (M1.)
+1. **`postretro-combat-model` is the cycle-break sink.** The shot-authority and
+   carried-loadout families sink here (both are damage/loadout authority, both carry
+   `Vec3`/gameplay types so `net` is out). Principle: the lowest common leaf both sides
+   depend down on, off the `entities` chokepoint and VM-free — and the natural home for
+   combat-model-domain math to consolidate into later. Justified by the cycle-break
+   alone; the consolidation is a separate, out-of-scope effort. (M1.)
 2. **AI stays inside `postretro-sim` through M3; carved out at M4.** AI is fused to
    the VM runtime and to `sim::spawn_projectile` (`research.md`); a leaf AI crate
    needs the VM decomposition. Co-location resolves the `sim ↔ ai` cycle for free

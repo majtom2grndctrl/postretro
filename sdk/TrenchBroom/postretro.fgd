@@ -117,8 +117,9 @@
     // reaches the light derives the same reservation during the level bake.
     // Script-animated baked lights also reach kinematic movers, skinned meshes,
     // and billboards through the composed direct-SH atlas. When a mover or
-    // mesh enters their influence, they can promote into the shared runtime
-    // shadow pool for self-shadowing while fading out that baked delta; their
+    // mesh enters their influence, lights with runtime direct-light support can
+    // promote into the shared runtime shadow pool for self-shadowing while
+    // fading out that baked delta; their
     // position and spot direction stay at the authored rest pose.
     // Set this only when there is no such map-script step (for example, a
     // mod-global reaction), or when reserving the slot deliberately. Valid on

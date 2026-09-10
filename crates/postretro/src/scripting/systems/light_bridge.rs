@@ -36,6 +36,10 @@ pub(crate) struct LightSnapshot {
     pub(crate) component: LightComponent,
     pub(crate) animation_start_time: Option<f32>,
     pub(crate) animation_cycle_index: u32,
+    /// Final emitted radiance of a completed finite animation. The animation
+    /// itself has been cleared, so this preserves the terminal brightness gate
+    /// instead of making a settled black light look like an unanimated 1.0.
+    pub(crate) settled_eligibility_radiance: Option<f32>,
 }
 
 /// Borrowed payload handed back to the renderer after `update`. The slices
@@ -172,6 +176,10 @@ struct MapLightShape {
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
     /// without re-querying the source.
     animated_slot: Option<u32>,
+    /// Level-authored cone used by section-45's baked delta and promoted depth
+    /// cache. Direction curves may animate other paths, but must never mutate
+    /// this rest cone for an animated-baked raw-tail record.
+    authored_rest_direction: [f32; 3],
     /// Raw section-45 rows joined to this authored map light. Built once when
     /// the promotion roster is installed so per-frame packing never scans it.
     animated_baked_raw_indices: Vec<usize>,
@@ -267,6 +275,13 @@ impl LightBridge {
         self.animated_baked_descriptor_indices
             .extend_from_slice(animation_descriptor_indices);
         self.rebuild_animated_baked_map_join();
+    }
+
+    /// Re-emit the last coherent bridge payload after the renderer rejects an
+    /// upload. Rejection leaves the renderer's prior snapshot active, so the
+    /// bridge must not consider its staged mutation committed.
+    pub(crate) fn retry_snapshot_upload(&mut self) {
+        self.dirty = true;
     }
 
     fn rebuild_animated_baked_map_join(&mut self) {
@@ -424,6 +439,7 @@ impl LightBridge {
                 is_dynamic: light.is_dynamic,
                 cell_index: light.cell_index,
                 animated_slot: light.animated_slot,
+                authored_rest_direction: light.cone_direction,
                 animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             });
@@ -446,6 +462,7 @@ impl LightBridge {
                         component,
                         animation_start_time: None,
                         animation_cycle_index: 0,
+                        settled_eligibility_radiance: None,
                     },
                 );
                 self.preserve_baked_descriptors.insert(id);
@@ -539,6 +556,7 @@ impl LightBridge {
                 // Script-spawned dynamic lights have no baked slot; the
                 // bridge routes them via the legacy forward path.
                 animated_slot: None,
+                authored_rest_direction: [0.0, 0.0, 0.0],
                 animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             };
@@ -646,9 +664,13 @@ impl LightBridge {
                 None => true,
             };
 
-            if let Some(settled_component) =
-                check_play_count_completion(current, snapshot, current_time)
-            {
+            if let Some(settled_component) = check_play_count_completion(
+                current,
+                snapshot,
+                current_time,
+                (!shape.animated_baked_raw_indices.is_empty())
+                    .then_some(shape.authored_rest_direction),
+            ) {
                 let had_radius_animation = current
                     .animation
                     .as_ref()
@@ -688,7 +710,8 @@ impl LightBridge {
                     snapshot.and_then(|snapshot| snapshot.animation_start_time)
                 };
                 if let Some(anim) = &current.animation
-                    && anim.play_count.is_some()
+                    && anim.play_count.is_some_and(|count| count > 0)
+                    && anim.start_active.unwrap_or(true)
                     && changed
                 {
                     // Record start time so completion can fire on a future frame.
@@ -701,6 +724,7 @@ impl LightBridge {
                         component: current.clone(),
                         animation_start_time: new_start,
                         animation_cycle_index: cycle_index,
+                        settled_eligibility_radiance: None,
                     },
                 );
             }
@@ -718,12 +742,14 @@ impl LightBridge {
                 // radius paired with the settled `GpuLight` range.
                 self.cached_influences[map_idx].radius = settled_component.falloff_range;
             }
+            let settled_eligibility_radiance = settled_radiance(&settled_component);
             self.snapshots.insert(
                 id,
                 LightSnapshot {
                     component: settled_component,
                     animation_start_time: None,
                     animation_cycle_index: 0,
+                    settled_eligibility_radiance: Some(settled_eligibility_radiance),
                 },
             );
             self.dirty = true;
@@ -742,7 +768,11 @@ impl LightBridge {
             let brightness = registry
                 .get_component::<LightComponent>(id)
                 .map(|component| {
-                    eval_effective_brightness(component, self.snapshots.get(&id), current_time)
+                    eval_shadow_eligibility_brightness(
+                        component,
+                        self.snapshots.get(&id),
+                        current_time,
+                    )
                 })
                 .unwrap_or(0.0);
             self.staged_effective_brightness.push(brightness);
@@ -843,6 +873,21 @@ impl LightBridge {
             if let Some(radius) = sampled_radius {
                 map_light.falloff_range = radius;
             }
+            if !self.shape[map_idx].animated_baked_raw_indices.is_empty() {
+                map_light.cone_direction = self.shape[map_idx].authored_rest_direction;
+            }
+            // A color curve replaces authored hue. Preserve intensity in the
+            // forward record even when the authored base color is black; the
+            // renderer later multiplies this record by promotion weight `w`.
+            let mut forward_map_light = map_light.clone();
+            if component
+                .animation
+                .as_ref()
+                .and_then(|animation| animation.color.as_ref())
+                .is_some_and(|samples| !samples.is_empty())
+            {
+                forward_map_light.color = [1.0; 3];
+            }
             let light_base =
                 self.fgd_sample_float_count + (map_idx as u32) * (SCRIPTED_FLOATS_PER_LIGHT as u32);
             let brightness_offset = light_base;
@@ -878,7 +923,7 @@ impl LightBridge {
             if self.shape[map_idx].is_dynamic {
                 let light_start = dynamic_record_index * GPU_LIGHT_SIZE;
                 self.staged_lights_bytes[light_start..light_start + GPU_LIGHT_SIZE]
-                    .copy_from_slice(&pack_light(&map_light));
+                    .copy_from_slice(&pack_light(&forward_map_light));
                 let descriptor_start = dynamic_record_index * ANIMATION_DESCRIPTOR_SIZE;
                 self.staged_descriptor_bytes
                     [descriptor_start..descriptor_start + ANIMATION_DESCRIPTOR_SIZE]
@@ -908,7 +953,7 @@ impl LightBridge {
                 if let Some(radius) = sampled_radius {
                     influence.radius = radius;
                 }
-                let packed_light = pack_light(&map_light);
+                let packed_light = pack_light(&forward_map_light);
                 for &raw_index in &self.shape[map_idx].animated_baked_raw_indices {
                     let forward_index = dynamic_light_count + raw_index;
                     let light_start = forward_index * GPU_LIGHT_SIZE;
@@ -1247,6 +1292,9 @@ fn finite_animation_cycle_index(
     let Some(anim) = component.animation.as_ref() else {
         return 0;
     };
+    if !anim.start_active.unwrap_or(true) {
+        return 0;
+    }
     let Some(play_count) = anim.play_count.filter(|&count| count > 0) else {
         return 0;
     };
@@ -1285,6 +1333,19 @@ fn eval_effective_brightness(
     }
 }
 
+fn eval_shadow_eligibility_brightness(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> f32 {
+    if component.animation.is_none() {
+        return snapshot
+            .and_then(|snapshot| snapshot.settled_eligibility_radiance)
+            .unwrap_or(1.0);
+    }
+    eval_effective_brightness(component, snapshot, current_time)
+}
+
 /// Maximum brightness the animated-baked promotion gate can expect during its
 /// fade-in window. The renderer ramps for [`PROMOTE_SECONDS`], so looking ahead
 /// by that exact real-time duration lets `w` reach one before a bright curve
@@ -1296,7 +1357,9 @@ fn animated_promotion_window_max(
     current_time: f32,
 ) -> f32 {
     let Some(animation) = component.animation.as_ref() else {
-        return 1.0;
+        return snapshot
+            .and_then(|snapshot| snapshot.settled_eligibility_radiance)
+            .unwrap_or(1.0);
     };
     if animation.start_active == Some(false) {
         return 0.0;
@@ -1333,25 +1396,37 @@ fn animated_promotion_window_max(
     closed_curve_window_max(samples, start_t, window_t)
 }
 
-/// Scan a closed Catmull-Rom curve's window boundaries and every authored
-/// sample knot it contains. Each knot is sampled through the existing CPU/WGSL
-/// mirror rather than a second curve evaluator; `window_t >= 1` visits the
-/// complete period once. This bounded loop catches a bright authored peak even
-/// when no frame lands on it.
+/// Find the closed Catmull-Rom maximum over a normalized forward window.
+/// Besides boundaries and knots, each intersected cubic contributes any
+/// interior derivative roots. This matters because Catmull-Rom can overshoot
+/// above every authored sample between two equal bright knots.
 fn closed_curve_window_max(samples: &[f32], start_t: f32, window_t: f32) -> f32 {
     if samples.len() <= 1 || window_t >= 1.0 {
         return closed_curve_full_max(samples);
     }
-    let count = samples.len() as f32;
+    let segment_count = samples.len();
+    let count = segment_count as f32;
     let start = start_t.rem_euclid(1.0);
     let end = start + window_t.max(0.0);
-    let mut max_brightness = sample_brightness_at(samples, start);
-    max_brightness = max_brightness.max(sample_brightness_at(samples, end.rem_euclid(1.0)));
-
-    let first_knot = (start * count).ceil() as usize;
-    let last_knot = (end * count).floor() as usize;
-    for knot in first_knot..=last_knot {
-        max_brightness = max_brightness.max(sample_brightness_at(samples, knot as f32 / count));
+    let scaled_start = start * count;
+    let scaled_end = end * count;
+    let first_segment = scaled_start.floor() as usize;
+    let last_segment = scaled_end.floor() as usize;
+    let mut max_brightness = f32::NEG_INFINITY;
+    for unwrapped_segment in first_segment..=last_segment {
+        let segment = unwrapped_segment % segment_count;
+        let min_f = if unwrapped_segment == first_segment {
+            scaled_start - first_segment as f32
+        } else {
+            0.0
+        };
+        let max_f = if unwrapped_segment == last_segment {
+            scaled_end - last_segment as f32
+        } else {
+            1.0
+        };
+        max_brightness =
+            max_brightness.max(closed_catmull_segment_max(samples, segment, min_f, max_f));
     }
     max_brightness
 }
@@ -1360,9 +1435,8 @@ fn closed_curve_full_max(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 1.0;
     }
-    let count = samples.len() as f32;
     (0..samples.len())
-        .map(|knot| sample_brightness_at(samples, knot as f32 / count))
+        .map(|segment| closed_catmull_segment_max(samples, segment, 0.0, 1.0))
         .fold(f32::NEG_INFINITY, f32::max)
 }
 
@@ -1374,18 +1448,86 @@ fn open_curve_window_max(samples: &[f32], start_t: f32, end_t: f32) -> f32 {
     }
     let start = start_t.clamp(0.0, 1.0);
     let end = end_t.clamp(start, 1.0);
-    let segment_count = (samples.len() - 1) as f32;
-    let mut max_brightness = sample_brightness_at_open(samples, start);
-    max_brightness = max_brightness.max(sample_brightness_at_open(samples, end));
-    let first_knot = (start * segment_count).ceil() as usize;
-    let last_knot = (end * segment_count).floor() as usize;
-    for knot in first_knot..=last_knot {
-        max_brightness = max_brightness.max(sample_brightness_at_open(
-            samples,
-            knot as f32 / segment_count,
-        ));
+    let segment_count = samples.len() - 1;
+    let scaled_start = start * segment_count as f32;
+    let scaled_end = end * segment_count as f32;
+    let first_segment = (scaled_start.floor() as usize).min(segment_count - 1);
+    let last_segment = (scaled_end.floor() as usize).min(segment_count - 1);
+    let mut max_brightness = f32::NEG_INFINITY;
+    for segment in first_segment..=last_segment {
+        let min_f = if segment == first_segment {
+            scaled_start - segment as f32
+        } else {
+            0.0
+        };
+        let max_f = if segment == last_segment {
+            scaled_end - segment as f32
+        } else {
+            1.0
+        };
+        max_brightness =
+            max_brightness.max(open_catmull_segment_max(samples, segment, min_f, max_f));
     }
     max_brightness
+}
+
+fn closed_catmull_segment_max(samples: &[f32], segment: usize, min_f: f32, max_f: f32) -> f32 {
+    let count = samples.len();
+    catmull_segment_max(
+        samples[(segment + count - 1) % count],
+        samples[segment],
+        samples[(segment + 1) % count],
+        samples[(segment + 2) % count],
+        min_f,
+        max_f,
+    )
+}
+
+fn open_catmull_segment_max(samples: &[f32], segment: usize, min_f: f32, max_f: f32) -> f32 {
+    let last = samples.len() - 1;
+    catmull_segment_max(
+        samples[segment.saturating_sub(1)],
+        samples[segment],
+        samples[(segment + 1).min(last)],
+        samples[(segment + 2).min(last)],
+        min_f,
+        max_f,
+    )
+}
+
+fn catmull_segment_max(p0: f32, p1: f32, p2: f32, p3: f32, min_f: f32, max_f: f32) -> f32 {
+    let min_f = min_f.clamp(0.0, 1.0);
+    let max_f = max_f.clamp(min_f, 1.0);
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    let sample = |f: f32| ((a * f + b) * f + c) * f + p1;
+    let mut maximum = sample(min_f).max(sample(max_f));
+    let derivative_a = 3.0 * a;
+    let derivative_b = 2.0 * b;
+    if derivative_a.abs() <= f32::EPSILON {
+        if derivative_b.abs() > f32::EPSILON {
+            let root = -c / derivative_b;
+            if root >= min_f && root <= max_f {
+                maximum = maximum.max(sample(root));
+            }
+        }
+        return maximum;
+    }
+    let discriminant = derivative_b * derivative_b - 4.0 * derivative_a * c;
+    if discriminant < 0.0 {
+        return maximum;
+    }
+    let sqrt_discriminant = discriminant.sqrt();
+    for root in [
+        (-derivative_b - sqrt_discriminant) / (2.0 * derivative_a),
+        (-derivative_b + sqrt_discriminant) / (2.0 * derivative_a),
+    ] {
+        if root >= min_f && root <= max_f {
+            maximum = maximum.max(sample(root));
+        }
+    }
+    maximum
 }
 
 /// Current sampled falloff range, when an animation owns the radius channel.
@@ -1457,11 +1599,21 @@ fn pack_forward_animation_descriptor(
     brightness_offset: u32,
     color_offset: u32,
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
+    let base_color = if component
+        .animation
+        .as_ref()
+        .and_then(|animation| animation.color.as_ref())
+        .is_some_and(|samples| !samples.is_empty())
+    {
+        [1.0; 3]
+    } else {
+        component.color
+    };
     pack_animation_descriptor(
         component,
         brightness_offset,
         color_offset,
-        component.color,
+        base_color,
         false,
         snapshot,
     )
@@ -1573,8 +1725,12 @@ fn check_play_count_completion(
     current: &LightComponent,
     snapshot: Option<&LightSnapshot>,
     current_time: f32,
+    baked_rest_direction: Option<[f32; 3]>,
 ) -> Option<LightComponent> {
     let anim = current.animation.as_ref()?;
+    if !anim.start_active.unwrap_or(true) {
+        return None;
+    }
     let play_count = anim.play_count?;
     // play_count == 0 is nonsensical; treat as "never completes".
     if play_count == 0 || anim.period_ms <= 0.0 {
@@ -1597,7 +1753,9 @@ fn check_play_count_completion(
     {
         settled.color = final_color.as_f32_3();
     }
-    if let Some(direction) = &anim.direction
+    if let Some(rest_direction) = baked_rest_direction {
+        settled.cone_direction = Some(rest_direction);
+    } else if let Some(direction) = &anim.direction
         && let Some(final_direction) = direction.last()
     {
         settled.cone_direction = Some(final_direction.as_f32_3());
@@ -1609,6 +1767,14 @@ fn check_play_count_completion(
     }
     settled.animation = None;
     Some(settled)
+}
+
+fn settled_radiance(component: &LightComponent) -> f32 {
+    component
+        .color
+        .into_iter()
+        .map(|channel| (channel * component.intensity).max(0.0))
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -2848,6 +3014,73 @@ mod tests {
             [0.0, 0.0, 0.375],
             "forward record must settle to the same final radiance"
         );
+    }
+
+    // Regression: an inactive finite animation armed its play-count clock and
+    // revived as the final static keyframe when that dormant clock expired.
+    #[test]
+    fn inactive_finite_animation_stays_dark_after_its_nominal_period_expires() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let initial_intensity = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .intensity;
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 100.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: Some(false),
+            brightness: Some(vec![0.0, 1.0]),
+            color: None,
+            direction: None,
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let started = bridge.update(&mut registry, 1.0, 0.0).unwrap();
+        assert_eq!(started.effective_brightness, [0.0]);
+        assert_eq!(
+            bridge.snapshots.get(&id).unwrap().animation_start_time,
+            None,
+            "start_active:false must not arm the finite completion clock",
+        );
+
+        let expired = bridge.update(&mut registry, 2.0, 0.0).unwrap();
+        let dormant = registry.get_component::<LightComponent>(id).unwrap();
+        assert!(
+            dormant.animation.is_some(),
+            "nominal period expiry must not settle an animation that never started",
+        );
+        assert_eq!(dormant.intensity, initial_intensity);
+        assert_eq!(expired.effective_brightness, [0.0]);
+    }
+
+    #[test]
+    fn rejected_snapshot_is_reemitted_on_the_next_unchanged_update() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let first = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert!(first.has_dirty_data);
+        bridge.retry_snapshot_upload();
+
+        let retry = bridge.update(&mut registry, 0.1, 0.0).unwrap();
+        assert!(
+            retry.has_dirty_data,
+            "renderer rejection must keep the bridge payload dirty until a later commit",
+        );
+        assert_eq!(retry.lights_bytes.len(), GPU_LIGHT_SIZE);
+        assert_eq!(retry.descriptor_bytes.len(), ANIMATION_DESCRIPTOR_SIZE);
     }
 
     #[test]
@@ -4240,6 +4473,7 @@ mod tests {
             component: component.clone(),
             animation_start_time: Some(0.0),
             animation_cycle_index: 0,
+            settled_eligibility_radiance: None,
         };
 
         assert!(
@@ -4461,5 +4695,141 @@ mod tests {
             staging_addresses,
             "steady animated-tail updates must reuse every renderer-facing staging allocation",
         );
+    }
+
+    #[test]
+    fn promotion_window_includes_catmull_rom_interior_overshoot() {
+        let samples = [0.0, 1.0, 1.0, 0.0];
+        let closed = closed_curve_window_max(&samples, 0.25, 0.25);
+        let open = open_curve_window_max(&samples, 1.0 / 3.0, 2.0 / 3.0);
+
+        assert!((closed - 1.125).abs() < 1.0e-6, "closed max was {closed}");
+        assert!((open - 1.125).abs() < 1.0e-6, "open max was {open}");
+    }
+
+    #[test]
+    fn finite_baked_direction_completion_retains_rest_cone_and_terminal_dark_gate() {
+        let mut baked = sample_spot_light();
+        baked.is_dynamic = false;
+        baked.animated_slot = Some(7);
+        let rest = baked.cone_direction;
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 100.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: Some(true),
+            brightness: Some(vec![1.0, 0.0]),
+            color: None,
+            direction: Some(vec![Vec3Lit(rest), Vec3Lit([1.0, 0.0, 0.0])]),
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let completed = bridge.update(&mut registry, 0.11, 0.0).unwrap();
+
+        assert_eq!(
+            registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .cone_direction,
+            Some(rest)
+        );
+        assert!(
+            packed_dynamic_direction(completed.lights_bytes).distance(glam::Vec3::from_array(rest))
+                < 1.0e-6
+        );
+        assert_eq!(completed.animated_window_brightness, [0.0]);
+    }
+
+    #[test]
+    fn finite_dynamic_completion_reports_bright_and_black_terminal_radiance() {
+        let lights = [sample_dynamic_point_light(), sample_dynamic_point_light()];
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&lights, &mut registry, 0);
+        for index in 0..2 {
+            let id = bridge.entity_for_map_index(index).unwrap();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.animation = Some(LightAnimation {
+                period_ms: 100.0,
+                phase: None,
+                play_count: Some(1),
+                start_active: Some(true),
+                brightness: Some(vec![1.0, 0.5]),
+                color: (index == 1).then(|| vec![Vec3Lit([1.0; 3]), Vec3Lit([0.0; 3])]),
+                direction: None,
+                radius: None,
+            });
+            registry.set_component(id, component).unwrap();
+        }
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let completed = bridge.update(&mut registry, 0.11, 0.0).unwrap();
+
+        assert!((completed.effective_brightness[0] - 0.75).abs() < 1.0e-6);
+        assert_eq!(completed.effective_brightness[1], 0.0);
+    }
+
+    #[test]
+    fn black_base_color_curve_preserves_compose_forward_energy_at_all_weights() {
+        let mut baked = sample_point_light();
+        baked.intensity = 2.0;
+        baked.color = [0.0; 3];
+        baked.animated_slot = Some(0);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[0]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(vec![1.0]),
+            color: Some(vec![Vec3Lit([1.0, 0.25, 0.0])]),
+            direction: None,
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        let packed = [16, 20, 24].map(|offset| {
+            f32::from_ne_bytes(update.lights_bytes[offset..offset + 4].try_into().unwrap())
+        });
+        let forward_base = [16, 20, 24].map(|offset| {
+            f32::from_ne_bytes(
+                update.descriptor_bytes[offset..offset + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        });
+        let compose = &update.compose_descriptor_writes[0].1;
+        let compose_base = [16, 20, 24]
+            .map(|offset| f32::from_ne_bytes(compose[offset..offset + 4].try_into().unwrap()));
+        assert_eq!(packed, [2.0; 3]);
+        assert_eq!(forward_base, [1.0; 3]);
+        assert_eq!(compose_base, [2.0; 3]);
+        let sample = [1.0, 0.25, 0.0];
+        for weight in [0.0, 0.5, 1.0] {
+            let total = sample.map(|channel| {
+                channel * compose_base[0] * (1.0 - weight) + channel * packed[0] * weight
+            });
+            assert_eq!(total, [2.0, 0.5, 0.0]);
+        }
     }
 }

@@ -408,7 +408,11 @@ impl Renderer {
                 animated_billboard_direct_scatter_delta: geometry
                     .animated_billboard_direct_scatter_delta_volumes,
             },
-            scripted_light_capacity(level_light_count, animated_baked_descriptor_indices),
+            scripted_light_capacity(
+                geometry.lights.len(),
+                level_light_count,
+                animated_baked_descriptor_indices,
+            ),
             full.probe_occlusion_enabled,
         );
 

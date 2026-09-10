@@ -265,6 +265,8 @@ fn accumulate_dynamic_direct(
                 if light_type == 1u && scripted_desc.direction_count > 0u {
                     effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
                 }
+            } else if light_eval_scripted_descriptor_present(scripted_desc) {
+                effective_color = vec3<f32>(0.0);
             }
         }
 

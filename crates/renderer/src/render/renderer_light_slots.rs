@@ -35,6 +35,70 @@ fn selected_static_record_count(records: &[PromotedBakedLightRecord]) -> usize {
         .count()
 }
 
+/// Reverse maps from each promotion-state namespace to the shared candidate
+/// index. The candidate-side tag vectors remain the identity source; building
+/// this once per frame avoids rescanning them for every state and pool.
+struct PromotionCandidateLookup {
+    selected_static: Vec<Option<usize>>,
+    animated_baked: Vec<Option<usize>>,
+}
+
+/// Per-pool inputs for shadow-slot assignment. These values travel together:
+/// they describe one frame's candidate eligibility and the pool competing for
+/// those candidates.
+struct ShadowPoolSlotAssignmentInputs<'a> {
+    pool_kind: PromotedShadowPoolKind,
+    camera_position: Vec3,
+    camera_near_clip: f32,
+    eligible_lights: &'a [bool],
+    capacity: usize,
+    promoted_cap: usize,
+    promotion_candidate_lookup: &'a PromotionCandidateLookup,
+}
+
+fn build_promotion_candidate_lookup(
+    selection_indices: &[Option<usize>],
+    animated_baked_indices: &[Option<usize>],
+    selected_static_count: usize,
+    animated_baked_count: usize,
+) -> PromotionCandidateLookup {
+    let mut lookup = PromotionCandidateLookup {
+        selected_static: vec![None; selected_static_count],
+        animated_baked: vec![None; animated_baked_count],
+    };
+    for candidate_index in 0..selection_indices.len().max(animated_baked_indices.len()) {
+        let selection_index = selection_indices.get(candidate_index).copied().flatten();
+        let animated_index = animated_baked_indices
+            .get(candidate_index)
+            .copied()
+            .flatten();
+        debug_assert!(
+            selection_index.is_none() || animated_index.is_none(),
+            "one shadow candidate cannot occupy both promotion namespaces",
+        );
+        if let Some(slot) = selection_index.and_then(|index| lookup.selected_static.get_mut(index))
+        {
+            debug_assert!(
+                slot.is_none(),
+                "selected-static candidate identity must be unique"
+            );
+            if slot.is_none() {
+                *slot = Some(candidate_index);
+            }
+        }
+        if let Some(slot) = animated_index.and_then(|index| lookup.animated_baked.get_mut(index)) {
+            debug_assert!(
+                slot.is_none(),
+                "animated-baked candidate identity must be unique"
+            );
+            if slot.is_none() {
+                *slot = Some(candidate_index);
+            }
+        }
+    }
+    lookup
+}
+
 // Read the renderer's CPU mirror of the exact dynamic GPU record. The live
 // bridge can move attached lights and animate their radius; level-load
 // MapLights are therefore not a valid source for shadow projections.
@@ -93,7 +157,9 @@ impl Renderer {
     // shared-pool owner because their same-frame order is load-bearing:
     // assign slot -> advance state -> validate cache -> encode both w arms.
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
-    /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
+    /// Short/empty dynamic `effective_brightness` defaults to 1.0 for the
+    /// pre-bridge frame. Missing animated-baked lookahead data defaults to 0.0
+    /// and fails closed; the two vectors use unrelated index spaces.
     ///
     /// `reachable_cell_aabbs` are the AABBs of the fog/light-reachable cells —
     /// the WIDER portal-reachable set (same source as `light_reachable_cell_mask`)
@@ -323,29 +389,6 @@ impl Renderer {
             }
         }
 
-        let mut slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
-            self.full(),
-            PromotedShadowPoolKind::Spot,
-            camera_position,
-            camera_near_clip,
-            &visible_lights,
-            crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-            MAX_PROMOTED_SPOT,
-        );
-
-        // Rank dynamic POINT lights into the cube pool and upload their per-face
-        // matrices. Returns the candidate-indexed cube slot assignment (empty
-        // when the pool is disabled), which is patched into the light buffer
-        // below alongside the spot slots. Runs before the patch block so both
-        // slot fields land in one upload.
-        let stride = self.full().shadow_vs_stride as usize;
-        let mut cube_slot_assignment = self.update_cube_light_slots(
-            camera_position,
-            camera_near_clip,
-            &visible_lights,
-            stride,
-        );
-
         let frame_dt = {
             let full = self.full_mut();
             let previous = full.promoted_baked_last_update_time.replace(now_seconds);
@@ -353,6 +396,52 @@ impl Renderer {
                 .map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32)
                 .unwrap_or(1.0 / 60.0)
         };
+        let promotion_candidate_lookup = {
+            let full = self.full();
+            build_promotion_candidate_lookup(
+                &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
+                full.promoted_static_states.len(),
+                full.promoted_animated_states.len(),
+            )
+        };
+        {
+            let full = self.full_mut();
+            release_promoted_baked_incumbents_before_ranking(
+                &mut full.promoted_static_states,
+                &mut full.promoted_animated_states,
+                &promotion_candidate_lookup,
+                &visible_lights,
+                &promoted_baked_has_shadow_receiver,
+                frame_dt,
+            );
+        }
+
+        let mut slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
+            self.full(),
+            ShadowPoolSlotAssignmentInputs {
+                pool_kind: PromotedShadowPoolKind::Spot,
+                camera_position,
+                camera_near_clip,
+                eligible_lights: &visible_lights,
+                capacity: crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
+                promoted_cap: MAX_PROMOTED_SPOT,
+                promotion_candidate_lookup: &promotion_candidate_lookup,
+            },
+        );
+
+        // Rank point candidates, including promoted animated-baked lights, into
+        // the cube pool and upload their per-face matrices. Returns the
+        // candidate-indexed assignment (empty when the pool is disabled),
+        // which is patched into the light buffer below alongside spot slots.
+        let stride = self.full().shadow_vs_stride as usize;
+        let mut cube_slot_assignment = self.update_cube_light_slots(
+            camera_position,
+            camera_near_clip,
+            &visible_lights,
+            stride,
+            &promotion_candidate_lookup,
+        );
         self.update_promoted_baked_weights_and_records(
             &slot_assignment,
             &cube_slot_assignment,
@@ -361,6 +450,7 @@ impl Renderer {
             camera_position,
             camera_near_clip,
             frame_dt,
+            &promotion_candidate_lookup,
         );
         {
             let full = self.full();
@@ -657,8 +747,9 @@ impl Renderer {
     /// which one flips as the camera pitches down until an entity shadow vanishes.
     /// It changes no culling/selection state — it re-reads the values
     /// `update_dynamic_light_slots` just computed (the pool's `slot_assignment`,
-    /// the candidate lights, the live `effective_brightness`, and the mesh
-    /// visibility split) and renders them human-readable.
+    /// the candidate lights, the dynamic `effective_brightness`, animated
+    /// lookahead brightness, and the mesh visibility split) and renders them
+    /// human-readable.
     ///
     /// Throttled: emits the full per-light table only when the decision
     /// fingerprint changes (spot/cube slot occupancy or the mesh visibility split),
@@ -676,7 +767,8 @@ impl Renderer {
     ///   cell is in the portal-reachable set — NO LONGER the eligibility criterion,
     ///   kept for diagnosis), `reach` (THE criterion: its runtime
     ///   `LightInfluence` sphere reaches a fog/light-reachable cell), `bright`
-    ///   (live animated brightness), `elig`
+    ///   (dynamic current effective brightness, or animated-baked lookahead
+    ///   promotion-gate brightness), `elig`
     ///   (passed
     ///   the reach+brightness gate feeding the spot/point shadow rankers), and
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
@@ -955,6 +1047,7 @@ impl Renderer {
         camera_near_clip: f32,
         visible_lights: &[bool],
         stride: usize,
+        promotion_candidate_lookup: &PromotionCandidateLookup,
     ) -> Vec<u32> {
         use crate::lighting::cube_shadow;
 
@@ -969,12 +1062,15 @@ impl Renderer {
 
         let slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
             full,
-            PromotedShadowPoolKind::Cube,
-            camera_position,
-            camera_near_clip,
-            visible_lights,
-            cube_shadow::CUBE_COUNT,
-            MAX_PROMOTED_CUBE,
+            ShadowPoolSlotAssignmentInputs {
+                pool_kind: PromotedShadowPoolKind::Cube,
+                camera_position,
+                camera_near_clip,
+                eligible_lights: visible_lights,
+                capacity: cube_shadow::CUBE_COUNT,
+                promoted_cap: MAX_PROMOTED_CUBE,
+                promotion_candidate_lookup,
+            },
         );
 
         let pool = full
@@ -1041,6 +1137,7 @@ impl Renderer {
         camera_position: Vec3,
         camera_near_clip: f32,
         frame_dt: f32,
+        promotion_candidate_lookup: &PromotionCandidateLookup,
     ) {
         let Self { queue, full, .. } = self;
         let full = full
@@ -1063,10 +1160,11 @@ impl Renderer {
         );
 
         for (selection_index, state) in full.promoted_static_states.iter_mut().enumerate() {
-            let candidate_index = full
-                .shadow_candidate_selection_indices
-                .iter()
-                .position(|idx| *idx == Some(selection_index));
+            let candidate_index = promotion_candidate_lookup
+                .selected_static
+                .get(selection_index)
+                .copied()
+                .flatten();
 
             let assigned = candidate_index.and_then(|candidate_index| {
                 let spot = spot_assignment
@@ -1087,39 +1185,33 @@ impl Renderer {
                 ))
             });
 
-            if let Some((pool_kind, slot, candidate_index)) = assigned {
-                state.pool_kind = Some(pool_kind);
-                state.slot = slot;
-                if let Some(light) = full.shadow_candidate_lights.get(candidate_index) {
-                    state.last_score =
-                        candidate_slot_score(light, camera_position, camera_near_clip);
-                }
-                let gate_passed = visible_lights.get(candidate_index).copied().unwrap_or(true);
-                if gate_passed {
-                    state.sticky_remaining = STICKY_SECONDS;
-                    state.weight = step_toward(state.weight, 1.0, frame_dt / PROMOTE_SECONDS);
-                } else if state.sticky_remaining > 0.0 {
-                    state.sticky_remaining = (state.sticky_remaining - frame_dt).max(0.0);
-                } else {
-                    state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
-                }
-                if state.weight > 0.0 {
-                    let global_light_index =
-                        full.entity_shadow_light_source_indices[selection_index];
-                    full.promoted_baked_records.push(PromotedBakedLightRecord {
-                        global_light_index: global_light_index as u32,
-                        pool_kind,
-                        slot,
-                        weight: state.weight.clamp(0.0, 1.0),
-                        source: PromotedBakedLightSource::SelectedStatic {
-                            selection_index: selection_index as u32,
-                        },
-                    });
-                }
-            } else {
-                state.pool_kind = None;
-                state.sticky_remaining = 0.0;
-                state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+            let assigned = assigned.map(|(pool_kind, slot, candidate_index)| {
+                let score = full
+                    .shadow_candidate_lights
+                    .get(candidate_index)
+                    .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
+                    .unwrap_or(state.last_score);
+                (
+                    pool_kind,
+                    slot,
+                    score,
+                    visible_lights.get(candidate_index).copied().unwrap_or(true),
+                )
+            });
+            advance_selected_static_promoted_baked_state(state, assigned, frame_dt);
+            if state.weight > 0.0
+                && let Some(pool_kind) = state.pool_kind
+            {
+                let global_light_index = full.entity_shadow_light_source_indices[selection_index];
+                full.promoted_baked_records.push(PromotedBakedLightRecord {
+                    global_light_index: global_light_index as u32,
+                    pool_kind,
+                    slot: state.slot,
+                    weight: state.weight.clamp(0.0, 1.0),
+                    source: PromotedBakedLightSource::SelectedStatic {
+                        selection_index: selection_index as u32,
+                    },
+                });
             }
 
             full.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
@@ -1134,10 +1226,11 @@ impl Renderer {
                 *state = PromotedBakedLightState::default();
                 continue;
             }
-            let candidate_index = full
-                .shadow_candidate_animated_baked_indices
-                .iter()
-                .position(|idx| *idx == Some(animated_index));
+            let candidate_index = promotion_candidate_lookup
+                .animated_baked
+                .get(animated_index)
+                .copied()
+                .flatten();
 
             let has_shadow_receiver = candidate_index
                 .and_then(|candidate_index| {
@@ -1192,10 +1285,6 @@ impl Renderer {
             // it never appends a duplicate light record or aliases an
             // EntityShadowLights selection index.
             if state.weight > 0.0 {
-                let candidate_index = full
-                    .shadow_candidate_animated_baked_indices
-                    .iter()
-                    .position(|idx| *idx == Some(animated_index));
                 if let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
                 {
                     if let Some(&global_light_index) =
@@ -1281,6 +1370,8 @@ fn apply_capture_animated_promotion_weights(
     promoted_records: &mut [PromotedBakedLightRecord],
     overrides: &[(usize, f32)],
 ) -> Result<()> {
+    // Validate the complete override batch first. A malformed later row must
+    // not leave earlier compose/forward weights partially pinned.
     for &(animated_baked_index, weight) in overrides {
         let (pool_kind, slot) = animated_states
             .get(animated_baked_index)
@@ -1291,7 +1382,7 @@ fn apply_capture_animated_promotion_weights(
                 )
             })?;
         let record = promoted_records
-            .iter_mut()
+            .iter()
             .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1303,6 +1394,17 @@ fn apply_capture_animated_promotion_weights(
                 "capture promotion row {animated_baked_index} disagrees with its shadow-pool record"
             );
         }
+        if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+            anyhow::bail!(
+                "capture promotion row {animated_baked_index} has invalid weight {weight}"
+            );
+        }
+    }
+    for &(animated_baked_index, weight) in overrides {
+        let record = promoted_records
+            .iter_mut()
+            .find(|record| record.source.animated_baked_index() == Some(animated_baked_index))
+            .expect("validated capture override record");
         let weight = weight.clamp(0.0, 1.0);
         record.weight = weight;
         animated_states[animated_baked_index].weight = weight;
@@ -1384,14 +1486,9 @@ const EVICTION_MARGIN: f32 = 1.25;
 /// cannot drift and no scoring/assignment formula is duplicated.
 fn assign_shadow_pool_slots_with_promoted_baked(
     full: &FullRenderer,
-    pool_kind: PromotedShadowPoolKind,
-    camera_position: Vec3,
-    camera_near_clip: f32,
-    eligible_lights: &[bool],
-    capacity: usize,
-    promoted_cap: usize,
+    inputs: ShadowPoolSlotAssignmentInputs<'_>,
 ) -> Vec<u32> {
-    let light_type = match pool_kind {
+    let light_type = match inputs.pool_kind {
         PromotedShadowPoolKind::Spot => postretro_level_loader::LightType::Spot,
         PromotedShadowPoolKind::Cube => postretro_level_loader::LightType::Point,
     };
@@ -1403,7 +1500,8 @@ fn assign_shadow_pool_slots_with_promoted_baked(
         if light.light_type != light_type {
             continue;
         }
-        if eligible_lights
+        if inputs
+            .eligible_lights
             .get(candidate_index)
             .is_some_and(|eligible| !eligible)
         {
@@ -1420,25 +1518,26 @@ fn assign_shadow_pool_slots_with_promoted_baked(
         }
         candidates.push(postretro_lighting::shadow_ranking::SlotCandidate {
             candidate_index,
-            score: candidate_slot_score(light, camera_position, camera_near_clip),
+            score: candidate_slot_score(light, inputs.camera_position, inputs.camera_near_clip),
             is_promoted_baked,
         });
     }
 
     let incumbents = build_slot_incumbents(
         full,
-        pool_kind,
-        capacity,
-        camera_position,
-        camera_near_clip,
-        eligible_lights,
+        inputs.pool_kind,
+        inputs.capacity,
+        inputs.camera_position,
+        inputs.camera_near_clip,
+        inputs.eligible_lights,
+        inputs.promotion_candidate_lookup,
     );
 
     postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
         &candidates,
         &incumbents,
-        capacity,
-        promoted_cap,
+        inputs.capacity,
+        inputs.promoted_cap,
         full.shadow_candidate_lights.len(),
         EVICTION_MARGIN,
     )
@@ -1459,6 +1558,7 @@ fn build_slot_incumbents(
     camera_position: Vec3,
     camera_near_clip: f32,
     eligible_lights: &[bool],
+    promotion_candidate_lookup: &PromotionCandidateLookup,
 ) -> Vec<postretro_lighting::shadow_ranking::SlotIncumbent> {
     use postretro_lighting::shadow_ranking::SlotIncumbent;
     let mut incumbents = Vec::new();
@@ -1473,10 +1573,11 @@ fn build_slot_incumbents(
         if slot >= capacity {
             continue;
         }
-        let Some(candidate_index) = full
-            .shadow_candidate_selection_indices
-            .iter()
-            .position(|idx| *idx == Some(selection_index))
+        let Some(candidate_index) = promotion_candidate_lookup
+            .selected_static
+            .get(selection_index)
+            .copied()
+            .flatten()
         else {
             continue;
         };
@@ -1505,10 +1606,11 @@ fn build_slot_incumbents(
         if slot >= capacity {
             continue;
         }
-        let Some(candidate_index) = full
-            .shadow_candidate_animated_baked_indices
-            .iter()
-            .position(|idx| *idx == Some(animated_index))
+        let Some(candidate_index) = promotion_candidate_lookup
+            .animated_baked
+            .get(animated_index)
+            .copied()
+            .flatten()
         else {
             continue;
         };
@@ -1578,6 +1680,68 @@ fn build_slot_incumbents(
     incumbents
 }
 
+/// Drop incumbents that cannot contribute after this frame's lifecycle step.
+/// Ranking must see the released slot immediately; clearing its assignment only
+/// after ranking would leave a one-frame hole that no challenger can fill.
+fn release_promoted_baked_incumbents_before_ranking(
+    selected_static_states: &mut [PromotedBakedLightState],
+    animated_baked_states: &mut [PromotedBakedLightState],
+    promotion_candidate_lookup: &PromotionCandidateLookup,
+    visible_lights: &[bool],
+    promoted_baked_has_shadow_receiver: &[bool],
+    frame_dt: f32,
+) {
+    for (selection_index, state) in selected_static_states.iter_mut().enumerate() {
+        let Some(candidate_index) = promotion_candidate_lookup
+            .selected_static
+            .get(selection_index)
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        let gate_passed = visible_lights.get(candidate_index).copied().unwrap_or(true);
+        if promoted_incumbent_reaches_zero(state, gate_passed, frame_dt) {
+            *state = PromotedBakedLightState::default();
+        }
+    }
+
+    for (animated_index, state) in animated_baked_states.iter_mut().enumerate() {
+        let candidate_index = promotion_candidate_lookup
+            .animated_baked
+            .get(animated_index)
+            .copied()
+            .flatten();
+        let has_shadow_receiver = candidate_index
+            .and_then(|candidate_index| {
+                promoted_baked_has_shadow_receiver
+                    .get(candidate_index)
+                    .copied()
+            })
+            .unwrap_or(false);
+        if reset_animated_promotion_without_receiver(state, has_shadow_receiver) {
+            continue;
+        }
+        let gate_passed = candidate_index
+            .and_then(|candidate_index| visible_lights.get(candidate_index).copied())
+            .unwrap_or(false);
+        if promoted_incumbent_reaches_zero(state, gate_passed, frame_dt) {
+            *state = PromotedBakedLightState::default();
+        }
+    }
+}
+
+fn promoted_incumbent_reaches_zero(
+    state: &PromotedBakedLightState,
+    gate_passed: bool,
+    frame_dt: f32,
+) -> bool {
+    state.pool_kind.is_some()
+        && !gate_passed
+        && state.sticky_remaining <= 0.0
+        && step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS) <= 0.0
+}
+
 fn clear_zero_weight_promoted_assignments(
     selection_indices: &[Option<usize>],
     weights: &[f32],
@@ -1619,7 +1783,7 @@ fn step_toward(value: f32, target: f32, step: f32) -> f32 {
     .clamp(0.0, 1.0)
 }
 
-/// Advance the animated sticky promote/demote lifecycle while the candidate
+/// Advance the sticky promote/demote lifecycle while the candidate
 /// retains its assignment. The wrapper below handles resource loss first.
 fn advance_promoted_baked_state(
     state: &mut PromotedBakedLightState,
@@ -1643,6 +1807,22 @@ fn advance_promoted_baked_state(
         state.sticky_remaining = 0.0;
         state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
     }
+}
+
+/// A selected-static fade is valid only while the pool assignment keeps its
+/// forward replacement record alive. Ordinary visibility loss retains the
+/// incumbent slot and can demote smoothly; eviction by a shared challenger
+/// restores the full baked delta atomically.
+fn advance_selected_static_promoted_baked_state(
+    state: &mut PromotedBakedLightState,
+    assigned: Option<(PromotedShadowPoolKind, u32, f32, bool)>,
+    frame_dt: f32,
+) {
+    if assigned.is_none() {
+        *state = PromotedBakedLightState::default();
+        return;
+    }
+    advance_promoted_baked_state(state, assigned, frame_dt);
 }
 
 /// Animated promotion can fade only while it still owns a shadow slot. A pool
@@ -2019,6 +2199,19 @@ mod tests {
     }
 
     #[test]
+    fn promotion_candidate_lookup_preserves_both_index_namespaces() {
+        let lookup = build_promotion_candidate_lookup(
+            &[None, Some(1), Some(0), None],
+            &[Some(1), None, None, Some(0)],
+            2,
+            2,
+        );
+
+        assert_eq!(lookup.selected_static, [Some(2), Some(1)]);
+        assert_eq!(lookup.animated_baked, [Some(3), Some(0)]);
+    }
+
+    #[test]
     fn missing_cache_plan_layer_drops_record_and_zeros_weight_before_metadata_pack() {
         let mut records = vec![PromotedBakedLightRecord {
             global_light_index: 42,
@@ -2142,6 +2335,43 @@ mod tests {
     }
 
     #[test]
+    fn terminal_incumbents_release_before_ranking() {
+        let lookup = build_promotion_candidate_lookup(
+            &[Some(0), Some(1), None, None],
+            &[None, None, Some(0), Some(1)],
+            2,
+            2,
+        );
+        let incumbent = |weight| PromotedBakedLightState {
+            weight,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 1,
+            ..PromotedBakedLightState::default()
+        };
+        let mut selected_static_states = vec![incumbent(0.05), incumbent(0.5)];
+        let mut animated_baked_states = vec![incumbent(0.5), incumbent(0.05)];
+        let visible_lights = [false; 4];
+        let has_shadow_receiver = [true, true, false, true];
+
+        release_promoted_baked_incumbents_before_ranking(
+            &mut selected_static_states,
+            &mut animated_baked_states,
+            &lookup,
+            &visible_lights,
+            &has_shadow_receiver,
+            0.03,
+        );
+
+        assert_eq!(selected_static_states[0].pool_kind, None);
+        assert_eq!(selected_static_states[0].weight, 0.0);
+        assert_eq!(selected_static_states[1].weight, 0.5);
+        assert_eq!(animated_baked_states[0].pool_kind, None);
+        assert_eq!(animated_baked_states[0].weight, 0.0);
+        assert_eq!(animated_baked_states[1].pool_kind, None);
+        assert_eq!(animated_baked_states[1].weight, 0.0);
+    }
+
+    #[test]
     fn shared_pool_eviction_atomically_restores_full_delta_and_zeros_forward_tail() {
         let source = dynamic_shadow_light(postretro_level_loader::LightType::Spot);
         let mut state = PromotedBakedLightState {
@@ -2179,6 +2409,38 @@ mod tests {
         assert_eq!(state.pool_kind, None);
         assert_eq!(state.slot, 0);
         assert_eq!(state.last_score, 0.0);
+    }
+
+    // Regression: selected-static promotion kept a partial compose subtraction
+    // after a shared-pool challenger removed the only forward shadow record.
+    #[test]
+    fn selected_static_visibility_fade_keeps_its_slot_but_challenger_eviction_resets_weight() {
+        let mut state = PromotedBakedLightState {
+            weight: 0.75,
+            sticky_remaining: STICKY_SECONDS,
+            pool_kind: Some(PromotedShadowPoolKind::Spot),
+            slot: 2,
+            last_score: 4.0,
+        };
+
+        let visibility_loss = Some((PromotedShadowPoolKind::Spot, 2, 2.0, false));
+        advance_selected_static_promoted_baked_state(&mut state, visibility_loss, 1.0 / 60.0);
+        assert_eq!(state.pool_kind, Some(PromotedShadowPoolKind::Spot));
+        assert_eq!(
+            state.weight, 0.75,
+            "visibility loss demotes only while the incumbent slot can still emit the forward arm",
+        );
+
+        advance_selected_static_promoted_baked_state(&mut state, None, 1.0 / 60.0);
+        assert_eq!(state.pool_kind, None);
+        assert_eq!(state.slot, 0);
+        assert_eq!(state.sticky_remaining, 0.0);
+        assert_eq!(state.last_score, 0.0);
+        assert_eq!(
+            1.0 - state.weight,
+            1.0,
+            "challenger eviction must atomically restore the complete baked contribution",
+        );
     }
 
     #[test]

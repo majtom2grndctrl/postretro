@@ -24,10 +24,12 @@ fn array_layers_sufficient(limit: u32) -> bool {
 /// buffers. The bridge emits every raw section-45 roster row, including holes
 /// and duplicate descriptor indices, after the compact dynamic prefix.
 pub(crate) fn scripted_light_capacity(
+    authored_light_count: usize,
     dynamic_light_count: usize,
     animated_baked_descriptor_indices: &[u32],
 ) -> usize {
-    dynamic_light_count + RUNTIME_DYNAMIC_LIGHT_RESERVE + animated_baked_descriptor_indices.len()
+    authored_light_count.max(dynamic_light_count + animated_baked_descriptor_indices.len())
+        + RUNTIME_DYNAMIC_LIGHT_RESERVE
 }
 
 /// GPU timing uses pass-descriptor timestamps for individual render/compute
@@ -716,7 +718,7 @@ mod tests {
         let mut animated_roster = vec![u32::MAX; 129];
         animated_roster.extend(std::iter::repeat_n(7, 128));
 
-        let capacity = scripted_light_capacity(3, &animated_roster);
+        let capacity = scripted_light_capacity(4, 3, &animated_roster);
 
         assert_eq!(animated_roster.len(), 257);
         assert_eq!(capacity, 3 + RUNTIME_DYNAMIC_LIGHT_RESERVE + 257);
@@ -724,5 +726,11 @@ mod tests {
             capacity > 4 + RUNTIME_DYNAMIC_LIGHT_RESERVE,
             "capacity must follow raw tail cardinality, not authored map-light count",
         );
+    }
+    #[test]
+    fn scripted_capacity_retains_static_authored_sample_slots() {
+        let capacity = scripted_light_capacity(12, 2, &[7]);
+
+        assert_eq!(capacity, 12 + RUNTIME_DYNAMIC_LIGHT_RESERVE);
     }
 }

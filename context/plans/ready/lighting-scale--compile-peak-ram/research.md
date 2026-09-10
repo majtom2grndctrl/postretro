@@ -55,10 +55,30 @@ Peak host residency is a chain of whole-payload contiguous buffers, each
 | Serialize | `pack.rs` `to_bytes()` (byte image) → `.clone()` into `SectionBlob` → concat into one `file_buf` for the whole `.prl` → `Cursor` readback | ~3–4 further whole-payload copies |
 | `--sh-analyze` (opt-in) | `pipeline.rs` clones the entire post-drop dense sections | doubles dense residency in that mode |
 
-`write_prl` (`level-format/src/lib.rs`) is already generic over `W: Write` and
-writes section-by-section; a section-table entry carries `blob.data.len()`. The
-compiler feeds it an in-memory `file_buf` accumulator rather than the output
-file — so the streaming capability exists and is unused.
+**What is actually co-resident, and across how many bakes.** Within one bake the peak
+is the dense buffer plus the compaction buffer it is rewritten into (≈2×); the
+exact-zero drop rebuild is an *earlier* transient, freed before compaction allocates,
+not a third simultaneous copy. Across the compile, `pipeline.rs` runs three delta
+bakes (in run order: indirect id27, animated-direct id45, direct id41), assembles all
+three into `PostBakeDeltaSections`, and holds every dense payload from its bake through
+the single
+shared compaction — so the real peak scales with the **sum** of the three dense
+payloads, and `--sh-analyze` clones all three at once (≈3× the sum). The gate's budget
+must bound the cumulative dense across the three bakes, not one bake in isolation
+(Task 1). The gate is scoped to the three delta bakes (owner-locked); the base id34/id35
+whole-volume dense buffers that `pipeline.rs` clones and holds co-resident between the
+delta bakes (`sh_analyze_base_indirect` / `sh_analyze_base_direct`) are *not* counted by
+it, so the conservative copy-chain factor must leave headroom for them — a peak dominated
+by a base clone rather than a delta payload is outside this gate's reach.
+
+`write_prl` (`level-format/src/lib.rs`) is generic over `W: Write`, but it writes the
+**whole section table — every section's offset and length — before any payload byte**,
+and today the compiler pre-serializes every section into eager `*_bytes` locals and
+feeds an in-memory `file_buf` accumulator rather than the output file. So a bare writer
+redirect removes the whole-`.prl` accumulator but still holds every section's bytes at
+once: streaming to one-section residency additionally needs a payload-free length query
+per section (so the table can be written without the payloads resident) and per-section
+serialization moved into the write loop. See Task 2.
 
 ## The blocker: the dense payload cannot be streamed away
 
@@ -124,8 +144,9 @@ stateDiagram-v2
         Pre-bake gate must fire BEFORE this state.
     end note
     note right of Serialize
-        Streamable: write_prl is W: Write.
-        Free each section after writing it.
+        write_prl writes the section table (all lengths) first.
+        One-section residency needs a payload-free length query
+        per section + per-section serialize in the write loop.
     end note
 ```
 
@@ -141,15 +162,18 @@ stateDiagram-v2
 
 ## Prior commitments touched
 
-- `warm-cache--delta-sh-and-graph-bakes` (in-progress, commits on main): built
+- `warm-cache--delta-sh-and-graph-bakes` (landed, `done/`): built
   the shared per-entry helper `bake_or_load_delta_subblocks` and routes all
   three delta bakes through it. Its contract is byte-identical output and a
-  reassemble-then-drop seam; the pre-bake gate lives at that helper, so this
-  work sequences after it.
+  reassemble-then-drop seam; the pre-bake gate sits at that helper's call sites
+  (before the sub-block loop), so the helper's signature stays untouched. Landed,
+  so no ordering constraint remains.
 - `lighting-scale--lightmap-bake-incremental-flush` (draft): the same
   peak-RAM/allocation-lifecycle pattern for the lightmap bake; explicitly scopes
-  out "The SH storage-buffer / delta footprint problem … separate spec." This is
-  that spec. Sibling track under the epic.
+  out "The SH storage-buffer / delta footprint problem … separate spec." That note
+  defers a *runtime* GPU storage-buffer footprint — which this compile-time
+  host-RAM spec also excludes — not this bake's host memory. Sibling track under
+  the epic, not a hand-off.
 - `lighting-scale--sh-adaptive-coarsening-v2` (done) locked the cap regime
   (256 MiB aggregate bake cap + 128 MiB per-section loader floor, 2026-08-28). This
   spec leaves it untouched — the emitted cap is out of scope.

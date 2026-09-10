@@ -15,24 +15,159 @@ fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Opti
     (count <= capacity).then_some(count)
 }
 
-/// Validate the bridge upload that fills the compact dynamic descriptor prefix.
-/// Promoted static records are appended to the light buffer but have no descriptor
-/// slots, so an upload must end at `dynamic_light_count` rather than their total
-/// forward-light count.
-fn dynamic_descriptor_prefix_len(
+/// The bridge writes a dynamic prefix followed by one raw section-45 forward
+/// record per `AnimatedBakedLights` row. Validate the two regions without
+/// compacting roster holes into the dynamic namespace.
+fn bridge_dynamic_prefix_count(
+    bytes_len: usize,
+    stride: usize,
+    dynamic_capacity: usize,
+    animated_baked_count: usize,
+) -> Option<usize> {
+    let total_count = bytes_len.checked_div(stride)?;
+    if bytes_len % stride != 0 || total_count < animated_baked_count {
+        return None;
+    }
+    let dynamic_count = total_count - animated_baked_count;
+    (dynamic_count <= dynamic_capacity).then_some(dynamic_count)
+}
+
+/// Validate the bridge upload that fills all forward descriptors: the compact
+/// dynamic prefix plus the raw animated-baked tail. Promoted static records
+/// append later and deliberately have no descriptors.
+fn forward_descriptor_prefix_len(
     descriptor_bytes_len: usize,
     dynamic_light_count: u32,
     dynamic_light_capacity: usize,
+    animated_baked_count: usize,
 ) -> Option<usize> {
-    let expected = dynamic_light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+    let expected = (dynamic_light_count as usize + animated_baked_count)
+        * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
     (descriptor_bytes_len == expected
         && bridge_record_count(
             descriptor_bytes_len,
             sh_volume::ANIMATION_DESCRIPTOR_SIZE,
-            dynamic_light_capacity,
+            dynamic_light_capacity + animated_baked_count,
         )
         .is_some())
     .then_some(expected)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BridgeSnapshotLayout {
+    dynamic_light_count: usize,
+    descriptor_prefix_len: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_bridge_snapshot(
+    lights_bytes_len: usize,
+    influence_bytes_len: usize,
+    descriptor_bytes: &[u8],
+    samples_bytes_len: usize,
+    effective_brightness_len: usize,
+    animated_window_brightness_len: usize,
+    compose_descriptor_writes: &[(u32, [u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE])],
+    dynamic_light_capacity: usize,
+    animated_baked_count: usize,
+    scripted_light_capacity: usize,
+    scripted_sample_float_offset: usize,
+    compose_descriptor_count: u32,
+) -> Option<BridgeSnapshotLayout> {
+    let dynamic_light_count = bridge_dynamic_prefix_count(
+        lights_bytes_len,
+        GPU_LIGHT_SIZE,
+        dynamic_light_capacity,
+        animated_baked_count,
+    )?;
+    let influence_dynamic_count = bridge_dynamic_prefix_count(
+        influence_bytes_len,
+        LIGHT_INFLUENCE_SIZE,
+        dynamic_light_capacity,
+        animated_baked_count,
+    )?;
+    if influence_dynamic_count != dynamic_light_count {
+        return None;
+    }
+    let descriptor_prefix_len = forward_descriptor_prefix_len(
+        descriptor_bytes.len(),
+        dynamic_light_count as u32,
+        dynamic_light_capacity,
+        animated_baked_count,
+    )?;
+    let forward_record_count = dynamic_light_count + animated_baked_count;
+    if forward_record_count > scripted_light_capacity {
+        return None;
+    }
+    let sample_slot_bytes =
+        postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT * std::mem::size_of::<f32>();
+    if samples_bytes_len % sample_slot_bytes != 0
+        || samples_bytes_len > scripted_light_capacity * sample_slot_bytes
+        || !bridge_descriptors_fit_produced_samples(
+            descriptor_bytes,
+            compose_descriptor_writes,
+            scripted_sample_float_offset,
+            samples_bytes_len / std::mem::size_of::<f32>(),
+        )
+        || effective_brightness_len != dynamic_light_count
+        || animated_window_brightness_len != animated_baked_count
+        || compose_descriptor_writes
+            .iter()
+            .any(|(slot, _)| *slot >= compose_descriptor_count)
+    {
+        return None;
+    }
+    Some(BridgeSnapshotLayout {
+        dynamic_light_count,
+        descriptor_prefix_len,
+    })
+}
+
+/// Bridge descriptors use absolute indices into the shared authored+scripted
+/// sample buffer. A short but slot-aligned upload is safe only when every
+/// descriptor supplied by the same transaction stays inside the newly
+/// produced scripted extent; otherwise an accepted snapshot could read stale
+/// samples left by a prior, longer bridge payload.
+fn bridge_descriptors_fit_produced_samples(
+    forward_descriptors: &[u8],
+    compose_descriptor_writes: &[(u32, [u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE])],
+    scripted_sample_float_offset: usize,
+    produced_sample_float_count: usize,
+) -> bool {
+    let produced_end = match scripted_sample_float_offset.checked_add(produced_sample_float_count) {
+        Some(end) => end,
+        None => return false,
+    };
+    let descriptor_fits = |descriptor: &[u8]| {
+        let read_u32 = |offset: usize| {
+            u32::from_ne_bytes(
+                descriptor[offset..offset + 4]
+                    .try_into()
+                    .expect("validated animation descriptor stride"),
+            ) as usize
+        };
+        let range_fits = |offset: usize, count: usize, floats_per_sample: usize| {
+            if count == 0 {
+                return true;
+            }
+            offset >= scripted_sample_float_offset
+                && count
+                    .checked_mul(floats_per_sample)
+                    .and_then(|len| offset.checked_add(len))
+                    .is_some_and(|end| end <= produced_end)
+        };
+
+        range_fits(read_u32(8), read_u32(12), 1)
+            && range_fits(read_u32(28), read_u32(32), 3)
+            && range_fits(read_u32(40), read_u32(44), 3)
+    };
+
+    forward_descriptors
+        .chunks_exact(sh_volume::ANIMATION_DESCRIPTOR_SIZE)
+        .all(descriptor_fits)
+        && compose_descriptor_writes
+            .iter()
+            .all(|(_, descriptor)| descriptor_fits(descriptor))
 }
 
 /// Pack the SH grid metadata the SDF shadow pass needs for its open-space
@@ -92,9 +227,25 @@ pub(crate) struct FilteredShadowCandidates {
     pub influences: Vec<LightInfluence>,
     /// Original index into the full level-light list for each candidate.
     pub source_indices: Vec<usize>,
-    /// Selection index for selected static lights; `None` for dynamic-tier
-    /// candidates.
+    /// Selection index for selected static lights; `None` for dynamic-tier and
+    /// animated-baked candidates.
     pub selection_indices: Vec<Option<usize>>,
+    /// `AnimatedBakedLights` index for section-45 animated-baked candidates.
+    /// This deliberately does not reuse `MapLight::animated_slot` or a compose
+    /// descriptor index: section 45's affinity entries, promotion weights, and
+    /// depth-cache keys all use this independent namespace.
+    pub animated_baked_indices: Vec<Option<usize>>,
+}
+
+/// Runtime data for one section-45 animated-baked candidate. The roster is
+/// explicitly assembled at level load because it is neither part of the
+/// dynamic tier nor of `EntityShadowLights`.
+#[derive(Debug, Clone)]
+pub(crate) struct AnimatedBakedShadowCandidate {
+    pub source_index: usize,
+    pub animated_baked_index: usize,
+    pub light: MapLight,
+    pub influence: LightInfluence,
 }
 
 /// Shadow candidate reachability uses the runtime influence volume, not the
@@ -149,21 +300,22 @@ pub(crate) fn filter_dynamic_lights(
 /// whether moving-ENTITY occluders are drawn into the already-allocated slot
 /// (`entity_occluder_eligible`), not whether the slot exists.
 ///
-/// Ranking runs downstream in `assign_shadow_pool_slots_with_promoted_static`
+/// Ranking runs downstream in `assign_shadow_pool_slots_with_promoted_baked`
 /// (renderer_light_slots.rs): it scores this candidate slice and competes the
-/// dynamic and promoted-static lights for the pool's slots.
+/// dynamic and promoted-baked lights for the pool's slots.
 #[cfg(test)]
 pub(crate) fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
 ) -> FilteredShadowCandidates {
-    filter_entity_shadow_candidates_with_selection(lights, influences, &[])
+    filter_entity_shadow_candidates_with_selection(lights, influences, &[], &[])
 }
 
 pub(crate) fn filter_entity_shadow_candidates_with_selection(
     lights: &[MapLight],
     influences: &[LightInfluence],
     entity_shadow_lights: &[u32],
+    animated_baked_lights: &[AnimatedBakedShadowCandidate],
 ) -> FilteredShadowCandidates {
     let mut filtered = FilteredShadowCandidates::default();
     for (i, l) in lights.iter().enumerate().filter(|(_, l)| l.is_dynamic) {
@@ -175,6 +327,7 @@ pub(crate) fn filter_entity_shadow_candidates_with_selection(
         filtered.influences.push(inf);
         filtered.source_indices.push(i);
         filtered.selection_indices.push(None);
+        filtered.animated_baked_indices.push(None);
     }
     // Compacted: a skipped selected-static entry is simply not a candidate. The
     // stamped `selection_index` is the RAW position in `entity_shadow_lights`,
@@ -189,8 +342,84 @@ pub(crate) fn filter_entity_shadow_candidates_with_selection(
         filtered.influences.push(inf);
         filtered.source_indices.push(source_index);
         filtered.selection_indices.push(Some(selection_index));
+        filtered.animated_baked_indices.push(None);
+    }
+    for animated in animated_baked_lights {
+        filtered.lights.push(animated.light.clone());
+        filtered.influences.push(animated.influence.clone());
+        filtered.source_indices.push(animated.source_index);
+        filtered.selection_indices.push(None);
+        filtered
+            .animated_baked_indices
+            .push(Some(animated.animated_baked_index));
     }
     filtered
+}
+
+/// Assemble the section-45 candidate roster in `AnimatedBakedLights` order.
+///
+/// `MapLight::animated_slot` establishes only that a loaded map light belongs
+/// to the baked-animation roster. The index retained on each output row is the
+/// roster position, never that map-light slot or the section's descriptor-table
+/// value. This keeps promotion keyed to the same namespace as section 45's
+/// `affinity_lights` entries even if descriptor routing changes later.
+pub(crate) fn animated_baked_shadow_candidates_with_direct_delta(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+    animation_descriptor_indices: &[u32],
+    affinity_lights: &[u32],
+) -> Vec<AnimatedBakedShadowCandidate> {
+    animation_descriptor_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(animated_baked_index, &descriptor_index)| {
+            let animated_baked_index_u32 = u32::try_from(animated_baked_index).ok()?;
+            // A section-45 descriptor row alone does not prove a light owns a
+            // delta block. `affinity_lights` is the sparse direct-delta
+            // membership set, so only rows appearing there are eligible for
+            // runtime promotion.
+            if !affinity_lights.contains(&animated_baked_index_u32) {
+                return None;
+            }
+            // `animation_descriptor_indices` is the explicit section-45
+            // AnimatedBakedLights roster. `animated_slot` only joins its
+            // descriptor identity to a runtime MapLight; it must not become
+            // the candidate's index. Looking up each roster row also leaves a
+            // missing/bake-only MapLight as a hole instead of shifting every
+            // later AnimatedBakedLights index down by one.
+            let (source_index, light) = lights.iter().enumerate().find(|(_, light)| {
+                !light.is_dynamic && light.animated_slot == Some(descriptor_index)
+            })?;
+            Some(AnimatedBakedShadowCandidate {
+                source_index,
+                animated_baked_index,
+                light: light.clone(),
+                influence: influences
+                    .get(source_index)
+                    .cloned()
+                    .unwrap_or_else(uncullable_light_influence),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn shadow_candidate_is_animated_baked(
+    animated_baked_indices: &[Option<usize>],
+    candidate_index: usize,
+) -> bool {
+    animated_baked_indices
+        .get(candidate_index)
+        .and_then(|index| *index)
+        .is_some()
+}
+
+pub(crate) fn shadow_candidate_is_promoted_baked(
+    selection_indices: &[Option<usize>],
+    animated_baked_indices: &[Option<usize>],
+    candidate_index: usize,
+) -> bool {
+    shadow_candidate_is_promoted_static(selection_indices, candidate_index)
+        || shadow_candidate_is_animated_baked(animated_baked_indices, candidate_index)
 }
 
 /// Build the selected-static light/influence/source-index vectors index-parallel
@@ -393,6 +622,98 @@ impl Renderer {
             .write_descriptor(slot as usize, bytes);
     }
 
+    /// Commit one coherent scripting-light snapshot. Every count and capacity
+    /// is validated before the first GPU or CPU-mirror write; rejection leaves
+    /// the previous lights, influences, descriptors, samples, compose records,
+    /// and eligibility gates intact.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use = "a rejected snapshot leaves the previous renderer state active"]
+    pub fn upload_light_bridge_snapshot(
+        &mut self,
+        lights_bytes: &[u8],
+        influence_bytes: &[u8],
+        descriptor_bytes: &[u8],
+        samples_bytes: &[u8],
+        effective_brightness: &[f32],
+        animated_window_brightness: &[f32],
+        compose_descriptor_writes: &[(u32, [u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE])],
+    ) -> bool {
+        let validation = {
+            let full = self.full();
+            validate_bridge_snapshot(
+                lights_bytes.len(),
+                influence_bytes.len(),
+                descriptor_bytes,
+                samples_bytes.len(),
+                effective_brightness.len(),
+                animated_window_brightness.len(),
+                compose_descriptor_writes,
+                full.dynamic_light_capacity,
+                full.animated_baked_light_count,
+                full.sh_volume_resources.scripted_light_count as usize,
+                full.sh_volume_resources.scripted_sample_byte_offset / std::mem::size_of::<f32>(),
+                full.sh_volume_resources.animation.animated_light_count(),
+            )
+        };
+        let Some(layout) = validation else {
+            log::warn!(
+                "[Renderer] rejected incomplete light-bridge snapshot; retaining the previous coherent snapshot"
+            );
+            return false;
+        };
+
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        if !lights_bytes.is_empty() {
+            queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
+        }
+        if !influence_bytes.is_empty() {
+            queue.write_buffer(&full.influence_buffer, 0, influence_bytes);
+        }
+        if layout.descriptor_prefix_len != 0 {
+            queue.write_buffer(
+                &full.sh_volume_resources.scripted_light_descriptors,
+                0,
+                &descriptor_bytes[..layout.descriptor_prefix_len],
+            );
+        }
+        if !samples_bytes.is_empty() {
+            queue.write_buffer(
+                &full.sh_volume_resources.animation.anim_samples,
+                full.sh_volume_resources.scripted_sample_byte_offset as u64,
+                samples_bytes,
+            );
+        }
+
+        full.light_count = layout.dynamic_light_count as u32;
+        full.total_light_count = full.light_count
+            + full.animated_baked_light_count as u32
+            + full
+                .promoted_baked_records
+                .iter()
+                .filter(|record| record.source.selected_static_index().is_some())
+                .count() as u32;
+        full.last_lights_upload.clear();
+        full.last_lights_upload.extend_from_slice(lights_bytes);
+        full.last_influence_upload.clear();
+        full.last_influence_upload
+            .extend_from_slice(influence_bytes);
+        for (slot, bytes) in compose_descriptor_writes {
+            full.sh_volume_resources
+                .animation
+                .write_descriptor(*slot as usize, bytes);
+        }
+        full.light_effective_brightness.clear();
+        full.light_effective_brightness
+            .extend_from_slice(effective_brightness);
+        full.animated_light_window_brightness.clear();
+        full.animated_light_window_brightness
+            .extend_from_slice(animated_window_brightness);
+        true
+    }
+
     /// Must run before `update_dynamic_light_slots` — slot assignment reads
     /// then patches this buffer. If the order is reversed, `update_dynamic_light_slots`
     /// runs first and seeds `last_lights_upload` with static bytes; the subsequent
@@ -404,16 +725,18 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let Some(light_count) = bridge_record_count(
+        let Some(light_count) = bridge_dynamic_prefix_count(
             lights_bytes.len(),
             GPU_LIGHT_SIZE,
             full.dynamic_light_capacity,
+            full.animated_baked_light_count,
         ) else {
             log::warn!(
                 "[Renderer] upload_bridge_lights: bridge produced {} bytes; expected a multiple \
-                 of {} within the {}-record dynamic-light capacity. Skipping upload.",
+                 of {} with its {}-record animated-baked tail inside the {}-record dynamic capacity. Skipping upload.",
                 lights_bytes.len(),
                 GPU_LIGHT_SIZE,
+                full.animated_baked_light_count,
                 full.dynamic_light_capacity,
             );
             return;
@@ -422,7 +745,13 @@ impl Renderer {
             queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
         }
         full.light_count = light_count as u32;
-        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
+        full.total_light_count = full.light_count
+            + full.animated_baked_light_count as u32
+            + full
+                .promoted_baked_records
+                .iter()
+                .filter(|record| record.source.selected_static_index().is_some())
+                .count() as u32;
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool
         // (`update_dynamic_light_slots`) then patches the real slot field onto
@@ -442,18 +771,20 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected = full.light_count as usize * LIGHT_INFLUENCE_SIZE;
+        let expected =
+            (full.light_count as usize + full.animated_baked_light_count) * LIGHT_INFLUENCE_SIZE;
         if influence_bytes.len() != expected
-            || bridge_record_count(
+            || bridge_dynamic_prefix_count(
                 influence_bytes.len(),
                 LIGHT_INFLUENCE_SIZE,
                 full.dynamic_light_capacity,
+                full.animated_baked_light_count,
             )
             .is_none()
         {
             log::warn!(
                 "[Renderer] upload_bridge_influences: bridge produced {} bytes; expected {} \
-                 dynamic records × {} = {}. Skipping upload.",
+                 dynamic-plus-animated-forward records × {} = {}. Skipping upload.",
                 influence_bytes.len(),
                 full.light_count,
                 LIGHT_INFLUENCE_SIZE,
@@ -470,17 +801,22 @@ impl Renderer {
     }
 
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
-    pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
+    /// Returns whether the forward descriptor upload committed so callers can
+    /// keep the paired compose descriptor writes transactional with it.
+    #[must_use = "paired compose descriptor writes require a committed forward upload"]
+    pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) -> bool {
         let Self { queue, full, .. } = self;
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
-        let Some(prefix_len) = dynamic_descriptor_prefix_len(
+        let Some(prefix_len) = forward_descriptor_prefix_len(
             descriptor_bytes.len(),
             full.light_count,
             full.dynamic_light_capacity,
+            full.animated_baked_light_count,
         ) else {
-            let expected = full.light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+            let expected = (full.light_count as usize + full.animated_baked_light_count)
+                * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
@@ -489,16 +825,17 @@ impl Renderer {
                 sh_volume::ANIMATION_DESCRIPTOR_SIZE,
                 expected,
             );
-            return;
+            return false;
         };
         if prefix_len == 0 {
-            return;
+            return true;
         }
         queue.write_buffer(
             &full.sh_volume_resources.scripted_light_descriptors,
             0,
             &descriptor_bytes[..prefix_len],
         );
+        true
     }
 
     /// Writes at scripted-region offset (after FGD samples).
@@ -566,8 +903,9 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            if shadow_candidate_is_promoted_static(
+            if shadow_candidate_is_promoted_baked(
                 &full.shadow_candidate_selection_indices,
+                &full.shadow_candidate_animated_baked_indices,
                 light_idx,
             ) {
                 continue;
@@ -738,6 +1076,30 @@ impl Renderer {
             .extend(effective_brightness.iter().copied().take(expected));
         full.light_effective_brightness.resize(expected, 1.0);
     }
+
+    /// Install the animated-baked lookahead brightness gate. This vector is
+    /// keyed exclusively by `AnimatedBakedLights` index; it is intentionally a
+    /// separate API from dynamic `effective_brightness`, whose compact index
+    /// space excludes baked animated lights.
+    pub fn set_animated_light_window_brightness(&mut self, brightness: &[f32]) {
+        let full = self.full_mut();
+        let expected = full.promoted_animated_states.len();
+        if brightness.len() != expected {
+            log::warn!(
+                "[Renderer] animated lookahead brightness count {} does not match section-45 animated-light count {}; \\
+                 missing entries default to dark and excess entries are ignored.",
+                brightness.len(),
+                expected,
+            );
+        }
+        full.animated_light_window_brightness.clear();
+        full.animated_light_window_brightness
+            .extend(brightness.iter().copied().take(expected));
+        // Absent bridge data must fail closed: treating a baked animated light
+        // as fully bright here would recreate the dynamic-index-space accident
+        // this channel exists to avoid.
+        full.animated_light_window_brightness.resize(expected, 0.0);
+    }
 }
 
 #[cfg(test)]
@@ -769,29 +1131,180 @@ mod bridge_contract_tests {
     }
 
     // Regression: a dynamic-light despawn contracts the descriptor upload from
-    // K+1 records to K, while promoted static records may occupy the stale K tail.
+    // K+1 to K dynamic records, but its raw section-45 tail remains in place
+    // and selected-static records may occupy the stale suffix after it.
     #[test]
-    fn dynamic_descriptor_prefix_contraction_excludes_stale_promoted_tail() {
+    fn forward_descriptor_prefix_keeps_raw_animated_tail_and_excludes_static_suffix() {
         let stride = sh_volume::ANIMATION_DESCRIPTOR_SIZE;
-        let mut gpu_bytes = vec![0u8; 3 * stride];
-        gpu_bytes[stride..2 * stride].fill(0xAB); // Previous dynamic descriptor K.
+        let animated_baked_count = 2;
+        let mut gpu_bytes = vec![0u8; 4 * stride];
+        gpu_bytes[3 * stride..4 * stride].fill(0xAB); // Stale selected-static suffix.
 
         let dynamic_count_after_despawn = 1u32;
-        let uploaded_prefix = dynamic_descriptor_prefix_len(stride, dynamic_count_after_despawn, 3)
-            .expect("one live dynamic descriptor should fill exactly its prefix");
+        let uploaded_prefix = forward_descriptor_prefix_len(
+            3 * stride,
+            dynamic_count_after_despawn,
+            3,
+            animated_baked_count,
+        )
+        .expect(
+            "one live dynamic plus two raw animated descriptors should fill exactly its prefix",
+        );
         gpu_bytes[..uploaded_prefix].fill(0xCD);
 
-        assert_eq!(uploaded_prefix, stride);
+        assert_eq!(uploaded_prefix, 3 * stride);
         assert!(
-            gpu_bytes[stride..2 * stride]
+            gpu_bytes[3 * stride..4 * stride]
                 .iter()
                 .all(|&byte| byte == 0xAB),
-            "the uploader intentionally leaves the old dynamic tail intact",
+            "the uploader intentionally leaves the selected-static suffix intact",
         );
         assert_eq!(
-            dynamic_descriptor_prefix_len(2 * stride, dynamic_count_after_despawn, 3),
+            forward_descriptor_prefix_len(
+                2 * stride,
+                dynamic_count_after_despawn,
+                3,
+                animated_baked_count,
+            ),
             None,
-            "a promoted record after the contracted prefix must never gain a descriptor slot",
+            "every raw animated tail record must retain its descriptor slot",
+        );
+    }
+
+    // Regression: a short forward descriptor upload retained the old GPU
+    // descriptor while callers still committed its new compose-side partner.
+    #[test]
+    fn short_forward_descriptor_batch_is_rejected_before_compose_commit() {
+        let stride = sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+
+        assert_eq!(
+            forward_descriptor_prefix_len(stride, 1, 4, 1),
+            None,
+            "one dynamic plus one animated-tail descriptor is the atomic prefix",
+        );
+        assert_eq!(
+            forward_descriptor_prefix_len(2 * stride, 1, 4, 1),
+            Some(2 * stride),
+        );
+    }
+
+    #[test]
+    fn bridge_snapshot_rejects_partial_influence_and_gate_batches() {
+        let descriptor = vec![0; sh_volume::ANIMATION_DESCRIPTOR_SIZE];
+        assert_eq!(
+            validate_bridge_snapshot(GPU_LIGHT_SIZE, 0, &descriptor, 0, 0, 1, &[], 2, 1, 2, 0, 0,),
+            None,
+            "the raw animated tail cannot commit without its influence",
+        );
+        assert_eq!(
+            validate_bridge_snapshot(
+                GPU_LIGHT_SIZE,
+                LIGHT_INFLUENCE_SIZE,
+                &descriptor,
+                0,
+                1,
+                1,
+                &[],
+                2,
+                1,
+                2,
+                0,
+                0,
+            ),
+            None,
+            "dynamic eligibility cannot partially accompany a static-only tail",
+        );
+    }
+
+    #[test]
+    fn bridge_dynamic_prefix_count_preserves_raw_animated_tail_at_every_roster_size() {
+        assert_eq!(
+            bridge_dynamic_prefix_count(5 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4, 3),
+            Some(2),
+            "two dynamic records plus three raw animated entries stay index-parallel",
+        );
+        assert_eq!(
+            bridge_dynamic_prefix_count(2 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4, 3),
+            None,
+            "a partial raw tail must not be reinterpreted as compact dynamic records",
+        );
+    }
+
+    #[test]
+    fn bridge_snapshot_rejects_static_sample_capacity_shortfall_as_one_batch() {
+        let descriptor = [0u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE];
+        let compose = [(0, descriptor)];
+        let sample_slot_bytes = postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT * 4;
+
+        assert_eq!(
+            validate_bridge_snapshot(
+                GPU_LIGHT_SIZE,
+                LIGHT_INFLUENCE_SIZE,
+                &descriptor,
+                3 * sample_slot_bytes,
+                0,
+                1,
+                &compose,
+                4,
+                1,
+                2,
+                0,
+                1,
+            ),
+            None,
+            "a complete animated tail must not commit when static authored sample slots exceed capacity",
+        );
+    }
+
+    // Regression: slot-aligned sample bytes were accepted even when a paired
+    // descriptor reached into a stale slot left by an earlier, longer upload.
+    #[test]
+    fn bridge_snapshot_rejects_descriptor_reference_beyond_produced_samples() {
+        let sample_slot_floats = postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT;
+        let sample_slot_bytes = sample_slot_floats * std::mem::size_of::<f32>();
+        let scripted_sample_float_offset = 7;
+        let mut descriptor = [0u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE];
+        let stale_slot_offset = scripted_sample_float_offset + sample_slot_floats;
+        descriptor[8..12].copy_from_slice(&(stale_slot_offset as u32).to_ne_bytes());
+        descriptor[12..16].copy_from_slice(&1u32.to_ne_bytes());
+
+        assert_eq!(
+            validate_bridge_snapshot(
+                GPU_LIGHT_SIZE,
+                LIGHT_INFLUENCE_SIZE,
+                &descriptor,
+                sample_slot_bytes,
+                0,
+                1,
+                &[],
+                4,
+                1,
+                2,
+                scripted_sample_float_offset,
+                0,
+            ),
+            None,
+            "an aligned one-slot upload cannot expose a descriptor that references slot two",
+        );
+
+        descriptor[8..12].copy_from_slice(&(scripted_sample_float_offset as u32).to_ne_bytes());
+        assert!(
+            validate_bridge_snapshot(
+                GPU_LIGHT_SIZE,
+                LIGHT_INFLUENCE_SIZE,
+                &descriptor,
+                sample_slot_bytes,
+                0,
+                1,
+                &[],
+                4,
+                1,
+                2,
+                scripted_sample_float_offset,
+                0,
+            )
+            .is_some(),
+            "the same transaction is valid once its descriptor stays inside the produced extent",
         );
     }
 }

@@ -65,6 +65,7 @@ impl Renderer {
             camera_cell,
             view_proj,
             particle_collections,
+            &[],
             now_seconds,
             clear_color,
             render_world,
@@ -91,6 +92,7 @@ impl Renderer {
         view_proj: Mat4,
         camera_position: Vec3,
         particle_collections: &[(&str, &[u8])],
+        capture_animated_promotion_weights: &[(usize, f32)],
         clear_color: ClearColor,
         render_world: bool,
     ) -> Result<Vec<u8>> {
@@ -112,6 +114,7 @@ impl Renderer {
             camera_cell,
             view_proj,
             particle_collections,
+            capture_animated_promotion_weights,
             0.0,
             clear_color,
             render_world,
@@ -148,6 +151,7 @@ impl Renderer {
         camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
+        capture_animated_promotion_weights: &[(usize, f32)],
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
@@ -179,12 +183,15 @@ impl Renderer {
             let full = self.full();
             full.shadow_candidate_lights
                 .iter()
-                .zip(&full.shadow_candidate_selection_indices)
-                .any(|(light, selection)| {
-                    selection.is_some()
-                        && (light.light_type == postretro_level_loader::LightType::Spot
-                            || (light.light_type == postretro_level_loader::LightType::Point
-                                && full.cube_shadow_pool.is_some()))
+                .enumerate()
+                .any(|(candidate_index, light)| {
+                    shadow_candidate_is_promoted_baked(
+                        &full.shadow_candidate_selection_indices,
+                        &full.shadow_candidate_animated_baked_indices,
+                        candidate_index,
+                    ) && (light.light_type == postretro_level_loader::LightType::Spot
+                        || (light.light_type == postretro_level_loader::LightType::Point
+                            && full.cube_shadow_pool.is_some()))
                 })
         } else {
             false
@@ -211,15 +218,19 @@ impl Renderer {
             // mem::take avoids a simultaneous borrow of self; returned after call
             // to reuse the allocation.
             let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
+            let animated_window_brightness =
+                std::mem::take(&mut self.full_mut().animated_light_window_brightness);
             let last_camera_position = self.full().last_camera_position;
-            self.update_dynamic_light_slots(
+            self.update_dynamic_light_slots_with_capture_overrides(
                 last_camera_position,
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
+                &animated_window_brightness,
                 reachable_cell_aabbs,
                 now_seconds,
                 promotion_mesh_frame_plan,
-            );
+                capture_animated_promotion_weights,
+            )?;
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
             // effect on culling/selection. Skipped entirely when disabled.
@@ -230,10 +241,12 @@ impl Renderer {
                     light_reachable_cell_mask,
                     reachable_cell_aabbs,
                     &eff_brightness,
+                    &animated_window_brightness,
                     camera_cell,
                 );
             }
             self.full_mut().light_effective_brightness = eff_brightness;
+            self.full_mut().animated_light_window_brightness = animated_window_brightness;
 
             #[cfg(feature = "dev-tools")]
             let direct_sh_debug_override = self.full().direct_sh_debug_override;
@@ -248,6 +261,10 @@ impl Renderer {
                 .promoted_static_weights
                 .iter()
                 .any(|weight| *weight > 0.0)
+                || full
+                    .promoted_animated_states
+                    .iter()
+                    .any(|state| state.weight > 0.0)
                 || full
                     .sh_volume_resources
                     .direct
@@ -290,6 +307,7 @@ impl Renderer {
                             promotion: direct_sh_debug_override,
                             animated: animated_direct_sh_debug_override,
                         },
+                        animated_promotion_states: &full.promoted_animated_states,
                         timestamp_writes: DirectShComposeTimestampWrites {
                             promotion: direct_sh_ts,
                             animated: animated_direct_sh_ts,
@@ -501,6 +519,7 @@ impl Renderer {
                     queue,
                     full.total_light_count,
                     full.light_count,
+                    full.light_count + full.animated_baked_light_count as u32,
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
@@ -563,6 +582,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.light_count,
+                        full.light_count + full.animated_baked_light_count as u32,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,
@@ -800,6 +820,7 @@ impl Renderer {
                         queue,
                         full.total_light_count,
                         full.light_count,
+                        full.light_count + full.animated_baked_light_count as u32,
                         full.mesh_dynamic_time,
                         frame_light_term_mask.bits(),
                         full.ambient_floor,

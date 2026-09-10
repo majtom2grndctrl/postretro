@@ -16,6 +16,7 @@ use super::animated_direct_sh_compose::{
     build_animated_direct_pass,
 };
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
+use super::renderer_types::PromotedBakedLightState;
 use super::sh_indirection::{WGSL_DECODE_HELPER, probe_indirection_storage_bytes};
 use super::sh_volume::AnimatedLightBuffers;
 
@@ -83,6 +84,10 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
     pub(super) active: bool,
     pub(super) light_term_mask: LightTermMask,
     pub(super) debug_overrides: DirectShComposeDebugOverrides,
+    /// Raw `AnimatedBakedLights` states. Binding 26 packs their complementary
+    /// effective promotion factors without ever compacting the namespace;
+    /// detached states retain the full baked delta.
+    pub(super) animated_promotion_states: &'a [PromotedBakedLightState],
     pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
 }
 
@@ -305,6 +310,7 @@ impl DirectShComposeResources {
             active,
             light_term_mask: frame_light_term_mask,
             debug_overrides,
+            animated_promotion_states,
             timestamp_writes,
         } = frame;
         let Some(pipeline) = self.pipeline.as_mut() else {
@@ -317,14 +323,15 @@ impl DirectShComposeResources {
             pipeline.last_debug_override_bytes = debug_bytes;
         }
         if let Some(animated_add) = pipeline.animated_add.as_mut() {
-            let animated_debug_bytes = debug_overrides.animated.bytes();
-            if animated_debug_bytes != animated_add.last_debug_override_bytes {
+            let animated_light_scale_bytes =
+                debug_overrides.animated.bytes(animated_promotion_states);
+            if animated_light_scale_bytes != animated_add.last_animated_light_scale_bytes {
                 queue.write_buffer(
-                    &animated_add.debug_override_buffer,
+                    &animated_add.animated_light_scale_buffer,
                     0,
-                    &animated_debug_bytes,
+                    &animated_light_scale_bytes,
                 );
-                animated_add.last_debug_override_bytes = animated_debug_bytes;
+                animated_add.last_animated_light_scale_bytes = animated_light_scale_bytes;
             }
         }
 
@@ -986,7 +993,7 @@ mod tests {
         assert!(
             source.contains("let output_is_stored = stored_slot.write;")
                 && source.contains("@group(0) @binding(30) var<storage, read> probe_indirection"),
-            "Pass A must derive stored-slot writes from Task 3's id-34 indirection"
+            "direct SH compose must derive stored-slot writes from id-34 indirection"
         );
         assert!(
             !source.contains("enable f16"),

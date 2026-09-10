@@ -59,6 +59,12 @@ pub const DEFAULT_DYNAMIC_DIRECT_SCALE: f32 = 1.0;
 /// game layer can append lights without reallocating or rebinding GPU state.
 pub const RUNTIME_DYNAMIC_LIGHT_RESERVE: usize = 256;
 
+/// Fixed number of section-45 animated-baked lights that may crossfade into
+/// the forward shadow-pool path. Pass B carries the matching `(1 - w)` values
+/// in binding 26's fixed-size uniform; entries at and above this cap retain
+/// their full baked delta and are never promotion candidates.
+pub(crate) const MAX_ANIMATED_BAKED_LIGHTS: usize = 256;
+
 pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
 }
@@ -426,15 +432,42 @@ pub(crate) enum PromotedShadowPoolKind {
     Cube,
 }
 
-/// One static light promoted into a shadow pool slot this frame. Pinned Task-4
-/// contract (see the static-light-entity-shadows plan); consumed by Tasks 5-6.
+/// The raw index namespace a promoted depth-cache record belongs to. The two
+/// namespaces intentionally remain distinct: selected-static records key the
+/// shadowmask/`EntityShadowLights` arrays, while section-45 animated records
+/// key the `AnimatedBakedLights` roster and its compose-weight state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PromotedBakedLightSource {
+    SelectedStatic { selection_index: u32 },
+    AnimatedBaked { animated_baked_index: u32 },
+}
+
+impl PromotedBakedLightSource {
+    pub(crate) fn selected_static_index(self) -> Option<usize> {
+        match self {
+            Self::SelectedStatic { selection_index } => Some(selection_index as usize),
+            Self::AnimatedBaked { .. } => None,
+        }
+    }
+
+    pub(crate) fn animated_baked_index(self) -> Option<usize> {
+        match self {
+            Self::SelectedStatic { .. } => None,
+            Self::AnimatedBaked {
+                animated_baked_index,
+            } => Some(animated_baked_index as usize),
+        }
+    }
+}
+
+/// One baked light promoted into a shadow pool slot this frame. Selected-static
+/// records append a forward light record; animated-baked records instead point
+/// at their already-reserved section-45 forward tail. Both use the same static
+/// world-depth cache because their light projections are fixed for the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PromotedStaticLightRecord {
+pub(crate) struct PromotedBakedLightRecord {
     /// Index into the level's full light array.
     pub global_light_index: u32,
-    /// 0-based position in `EntityShadowLights` order — the space the delta
-    /// `affinity_lights` and the per-selected-light weight buffer are indexed by.
-    pub selection_index: u32,
     /// Which shadow pool (spot or cube) the light is promoted into.
     pub pool_kind: PromotedShadowPoolKind,
     /// Slot index within that pool.
@@ -442,17 +475,38 @@ pub(crate) struct PromotedStaticLightRecord {
     /// Promotion crossfade weight w ∈ [0,1] — 0 is fully baked SH, 1 is fully
     /// the runtime pool term (see rendering_pipeline.md §4 "Promoted static lights").
     pub weight: f32,
+    /// Source variant carries the correctly typed raw roster index.
+    pub source: PromotedBakedLightSource,
 }
 
 /// Per-candidate-light promotion tracking across frames: current weight,
 /// sticky hold-over time, and which pool slot (if any) the light occupies.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct PromotedStaticLightState {
+pub(crate) struct PromotedBakedLightState {
     pub weight: f32,
     pub sticky_remaining: f32,
     pub pool_kind: Option<PromotedShadowPoolKind>,
     pub slot: u32,
     pub last_score: f32,
+}
+
+/// The one CPU seam for an animated-baked promotion's runtime share. Both the
+/// forward tail encoder and binding-26's complementary compose array call this
+/// against the same raw `AnimatedBakedLights` state entry. A detached state has
+/// no shadow resource and therefore contributes no runtime share. Capped
+/// overflow is never promoted and stays fully baked in Pass B.
+pub(super) fn animated_baked_promotion_weight(
+    animated_baked_index: usize,
+    state: Option<&PromotedBakedLightState>,
+) -> f32 {
+    if animated_baked_index >= MAX_ANIMATED_BAKED_LIGHTS {
+        return 0.0;
+    }
+    state
+        .filter(|state| state.pool_kind.is_some())
+        .map(|state| state.weight)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
 }
 
 /// Renderer GPU state. Windowed construction begins with a boot splash before
@@ -567,9 +621,14 @@ pub(super) struct FullRenderer {
     /// Promoted static records occupy a separate reserved tail.
     pub(super) dynamic_light_capacity: usize,
     pub(super) light_count: u32,
-    /// Dynamic-tier records plus promoted static records appended for entity
-    /// consumers this frame. Forward world rendering continues to use
-    /// `light_count`; mesh/billboard use this total.
+    /// Raw `AnimatedBakedLights` roster length. Every row reserves a forward
+    /// record after the dynamic prefix, including holes and entries above the
+    /// fixed Pass-B compose-weight cap, so the per-row identity never compacts.
+    pub(super) animated_baked_light_count: usize,
+    /// Dynamic tier, raw animated-baked tail, then promoted static records.
+    /// World and billboards recover the static suffix from the packed tail
+    /// count in the stable frame-uniform ABI; mesh/kinematic receivers consume
+    /// the complete count through their dedicated params uniforms.
     pub(super) total_light_count: u32,
     /// The frame's forward `Uniforms.time` value, cached by
     /// `update_per_frame_uniforms` so the skinned-mesh group-2 params uniform
@@ -669,9 +728,9 @@ pub(super) struct FullRenderer {
     /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
     /// redundant `queue.write_buffer` when the packed bytes are unchanged.
     pub(super) last_lights_upload: Vec<u8>,
-    /// Dynamic-prefix mirror of `influence_buffer`, index-parallel to
-    /// `last_lights_upload`. Promoted static influences and metadata append
-    /// after this prefix during shadow-slot updates.
+    /// Cached dynamic influences plus the raw animated-baked tail, index-parallel
+    /// to `last_lights_upload`. Shadow-slot updates preserve both before appending
+    /// selected-static influences and shadowmask metadata.
     pub(super) last_influence_upload: Vec<u8>,
     /// Scratch buffer for the fallback full-repack path. Used only when
     /// `last_lights_upload` is not yet sized to the current light set
@@ -679,9 +738,9 @@ pub(super) struct FullRenderer {
     /// `last_lights_upload` in place via `patch_shadow_slots` — scratch
     /// is not touched in that branch.
     pub(super) lights_pack_scratch: Vec<u8>,
-    /// Scratch buffer for per-frame influence upload. Dynamic influences are
-    /// followed by promoted static influences, matching the count-split light
-    /// buffer without allocating in the render hot path.
+    /// Scratch buffer for per-frame influence upload: dynamic influences, raw
+    /// animated-baked tail, selected-static influences, then shadowmask metadata.
+    /// Matches the count-split light buffer without render-hot-path allocation.
     pub(super) influence_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     pub(super) level_lights: Vec<MapLight>,
@@ -706,8 +765,12 @@ pub(super) struct FullRenderer {
     pub(super) shadow_candidate_lights: Vec<MapLight>,
     /// Original full level-light index for each `shadow_candidate_lights` entry.
     pub(super) shadow_candidate_source_indices: Vec<usize>,
-    /// Selection index for a shadow candidate. `None` means dynamic-tier.
+    /// Selection index for a selected-static shadow candidate. Animated baked
+    /// candidates use `shadow_candidate_animated_baked_indices` instead.
     pub(super) shadow_candidate_selection_indices: Vec<Option<usize>>,
+    /// `AnimatedBakedLights` index for a section-45 candidate. Kept separate
+    /// from both selected-static selection and `MapLight::animated_slot`.
+    pub(super) shadow_candidate_animated_baked_indices: Vec<Option<usize>>,
     /// Candidate-indexed influence volumes paired with `shadow_candidate_lights`.
     /// Missing/short PRL influence data is represented by an uncullable sentinel
     /// so shadow eligibility follows the same degradation contract as forward
@@ -715,6 +778,10 @@ pub(super) struct FullRenderer {
     pub(super) shadow_candidate_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     pub(super) light_effective_brightness: Vec<f32>,
+    /// Forward-lookahead brightness maxima keyed by `AnimatedBakedLights`
+    /// index. Animated candidates must never read the dynamic-tier
+    /// `light_effective_brightness` index space.
+    pub(super) animated_light_window_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     pub(super) last_camera_position: Vec3,
     /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
@@ -728,18 +795,21 @@ pub(super) struct FullRenderer {
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
     pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
-    pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
-    pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
-    /// Cache-layer metadata parallel to `promoted_static_records`; packed into
+    pub(super) promoted_static_states: Vec<PromotedBakedLightState>,
+    /// Promotion ramp state keyed by `AnimatedBakedLights` index. Keeping this
+    /// state separate prevents collisions with `EntityShadowLights` indices.
+    pub(super) promoted_animated_states: Vec<PromotedBakedLightState>,
+    pub(super) promoted_baked_records: Vec<PromotedBakedLightRecord>,
+    /// Cache-layer metadata parallel to `promoted_baked_records`; packed into
     /// the forward shadowmask metadata tail's `meta1.w` lane.
-    pub(super) promoted_static_cache_layers: Vec<i32>,
+    pub(super) promoted_baked_cache_layers: Vec<i32>,
     pub(super) promoted_static_weights: Vec<f32>,
     pub(super) promoted_static_weight_buffer: wgpu::Buffer,
     pub(super) promoted_static_weight_scratch: Vec<u8>,
-    pub(super) promoted_static_last_update_time: Option<f64>,
-    /// `None` for maps with an empty/absent `EntityShadowLights` selection —
-    /// no light can ever promote, so the ~44 MiB spot/cube depth cache arrays
-    /// are never allocated. `Some` only when the selection is non-empty.
+    pub(super) promoted_baked_last_update_time: Option<f64>,
+    /// `None` only when a map has neither selected-static nor section-45
+    /// animated-baked promotion candidates. Either source can use the same
+    /// static world-depth cache, so an animated-only map still allocates it.
     pub(super) promoted_depth_cache: Option<PromotedDepthCache>,
     /// Missing cache-plan entries are defensive degradation, warned once per
     /// installed level rather than once per rendered frame.

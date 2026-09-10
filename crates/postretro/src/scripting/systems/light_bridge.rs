@@ -12,7 +12,7 @@ use postretro_render_cpu::sh_volume::{
     SCRIPTED_FLOATS_PER_LIGHT,
 };
 use postretro_render_data::influence::LightInfluence;
-use postretro_renderer::RUNTIME_DYNAMIC_LIGHT_RESERVE;
+use postretro_renderer::{PROMOTE_SECONDS, RUNTIME_DYNAMIC_LIGHT_RESERVE};
 
 use postretro_entities::Transform;
 use postretro_entities::components::light::LightAnimation;
@@ -36,45 +36,62 @@ pub(crate) struct LightSnapshot {
     pub(crate) component: LightComponent,
     pub(crate) animation_start_time: Option<f32>,
     pub(crate) animation_cycle_index: u32,
+    /// Final emitted radiance of a completed finite animation. The animation
+    /// itself has been cleared, so this preserves the terminal brightness gate
+    /// instead of making a settled black light look like an unanimated 1.0.
+    pub(crate) settled_eligibility_radiance: Option<f32>,
 }
 
-/// Payload handed back to the renderer after `update`.
+/// Borrowed payload handed back to the renderer after `update`. The slices
+/// remain valid until the next mutable bridge call; this lets the bridge retain
+/// and reuse every staging allocation across render frames.
 ///
 /// GPU buffer fields (`lights_bytes`, `descriptor_bytes`, `samples_bytes`) are
-/// only populated when `has_dirty_data` is true; callers skip `write_buffer`
-/// otherwise. `effective_brightness` is always populated — it is time-varying
-/// and must be re-evaluated every frame for correct shadow-slot ranking.
+/// populated when `has_dirty_data` is true. A section-45 roster keeps that
+/// flag true every frame: its forward tail must be restored to authored base
+/// bytes before the renderer applies the current promotion weight.
+/// `effective_brightness` is always populated — it is time-varying and must be
+/// re-evaluated every frame for correct shadow-slot ranking.
 ///
-/// - `lights_bytes` — packed `GpuLight` records for dynamic lights only, in
-///   their stable filtered-authored order. Baked lights never enter the direct
-///   forward buffer.
-/// - `descriptor_bytes` — one `AnimationDescriptor` per dynamic light, same
-///   order as `lights_bytes`. Lights without an animation get the sentinel
-///   descriptor (all counts zero) so `forward.wgsl` falls back to the static path.
+/// - `lights_bytes` — packed `GpuLight` records for dynamic lights followed by
+///   one section-45 animated-baked tail record per raw `AnimatedBakedLights`
+///   roster row. The renderer multiplies every tail color by that row's current
+///   promotion weight, so this bridge-owned copy deliberately remains authored
+///   and unweighted.
+/// - `descriptor_bytes` — one `AnimationDescriptor` per record in
+///   `lights_bytes`. Animated-baked tail descriptors carry brightness/color
+///   curves but deliberately omit direction curves so the runtime cone remains
+///   at its authored rest direction.
 /// - `samples_bytes` — packed f32 samples for the scripted-animation region
 ///   of `anim_samples`. The map-authored prefix uses full authored order, one
 ///   `SCRIPTED_FLOATS_PER_LIGHT`-wide slot per light; written at
 ///   `scripted_sample_byte_offset` by `Renderer::upload_bridge_samples`.
-/// - `influence_bytes` — one packed influence sphere per dynamic light, same
-///   compact order as `lights_bytes`.
+/// - `influence_bytes` — one packed influence sphere per record in
+///   `lights_bytes`, in the same compact-plus-raw-roster order.
 #[derive(Debug)]
-pub(crate) struct LightBridgeUpdate {
+pub(crate) struct LightBridgeUpdate<'a> {
     pub(crate) has_dirty_data: bool,
-    pub(crate) lights_bytes: Vec<u8>,
-    pub(crate) descriptor_bytes: Vec<u8>,
-    pub(crate) influence_bytes: Vec<u8>,
-    pub(crate) samples_bytes: Vec<u8>,
+    pub(crate) lights_bytes: &'a [u8],
+    pub(crate) descriptor_bytes: &'a [u8],
+    pub(crate) influence_bytes: &'a [u8],
+    pub(crate) samples_bytes: &'a [u8],
     /// One f32 per dynamic light (stable filtered-authored order). Always
     /// evaluated at the current frame time regardless of dirty state —
     /// shadow-slot suppression must track the live animation curve every frame.
     /// Color-only animations report `1.0`; `start_active: Some(false)` reports `0.0`.
-    pub(crate) effective_brightness: Vec<f32>,
+    pub(crate) effective_brightness: &'a [f32],
+    /// One forward-lookahead brightness maximum per animated baked light, in
+    /// `AnimatedBakedLights` roster order. This is separate from
+    /// `effective_brightness`: baked animated lights do not appear in the
+    /// compact dynamic-light array, and promotion must never index them through
+    /// that unrelated namespace.
+    pub(crate) animated_window_brightness: &'a [f32],
     /// Compose-side descriptor writes for `_animated` (and other slot-bearing)
     /// lights. Each entry is `(animated_slot, 48-byte ANIMATION_DESCRIPTOR
     /// bytes)` — the renderer overwrites the compose descriptor buffer at the
     /// slot. Populated only when the bridge is dirty AND the affected light
     /// has a cached `animated_slot`. Empty otherwise.
-    pub(crate) compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])>,
+    pub(crate) compose_descriptor_writes: &'a [(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])],
 }
 
 /// State carried across frames. Owned by the game layer so the renderer never
@@ -99,6 +116,14 @@ pub(crate) struct LightBridge {
     preserve_baked_descriptors: HashSet<EntityId>,
     /// Shape metadata needed to re-pack. Parallels `entity_ids`.
     shape: Vec<MapLightShape>,
+    /// Section-45 `AnimatedBakedLights` roster, expressed as the descriptor
+    /// slot that resolves each roster row to its MapLight entity. The vector's
+    /// position is the only promotion identity; descriptor slots are lookup
+    /// keys and can be sparse or reordered.
+    animated_baked_descriptor_indices: Vec<u32>,
+    /// Cached raw `AnimatedBakedLights` row -> authored map-light index join.
+    /// `None` preserves a sparse or bake-only roster row as a dark hole.
+    animated_baked_map_indices: Vec<Option<usize>>,
     /// Static, slotless map lights for which the animation diagnostic has
     /// already been emitted. Map-light indices are stable for the level, so
     /// this avoids tying author-facing diagnostics to runtime `EntityId`s.
@@ -120,6 +145,17 @@ pub(crate) struct LightBridge {
     /// CPU mirror of the scripted-animation region in `anim_samples`. The
     /// map-authored prefix preserves full authored order.
     scripted_sample_buf: Vec<f32>,
+    /// Reused output storage. `update` returns borrowed views so steady-state
+    /// animated-baked frames can restore their raw forward tail without
+    /// allocating or transferring these buffers away from the bridge.
+    staged_lights_bytes: Vec<u8>,
+    staged_descriptor_bytes: Vec<u8>,
+    staged_influences: Vec<LightInfluence>,
+    staged_influence_bytes: Vec<u8>,
+    staged_samples_bytes: Vec<u8>,
+    staged_effective_brightness: Vec<f32>,
+    staged_animated_window_brightness: Vec<f32>,
+    staged_compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])>,
     runtime_capacity_warned: bool,
     /// Last Light-column membership stamp examined by enrollment. Existing light
     /// mutations do not change it, so connected-client render frames with no spawn
@@ -140,6 +176,13 @@ struct MapLightShape {
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
     /// without re-querying the source.
     animated_slot: Option<u32>,
+    /// Level-authored cone used by section-45's baked delta and promoted depth
+    /// cache. Direction curves may animate other paths, but must never mutate
+    /// this rest cone for an animated-baked raw-tail record.
+    authored_rest_direction: [f32; 3],
+    /// Raw section-45 rows joined to this authored map light. Built once when
+    /// the promotion roster is installed so per-frame packing never scans it.
+    animated_baked_raw_indices: Vec<usize>,
     /// Runtime tombstones are reclaimed exactly once after their entity
     /// disappears. Reuse resets this marker for the new entity.
     reclaimed: bool,
@@ -154,6 +197,8 @@ impl LightBridge {
             snapshots: HashMap::new(),
             preserve_baked_descriptors: HashSet::new(),
             shape: Vec::new(),
+            animated_baked_descriptor_indices: Vec::new(),
+            animated_baked_map_indices: Vec::new(),
             warned_slotless_animation_indices: std::collections::HashSet::new(),
             dirty: false,
             cached_origins_f64: Vec::new(),
@@ -161,6 +206,14 @@ impl LightBridge {
             cached_follow_positions: Vec::new(),
             fgd_sample_float_count: 0,
             scripted_sample_buf: Vec::new(),
+            staged_lights_bytes: Vec::new(),
+            staged_descriptor_bytes: Vec::new(),
+            staged_influences: Vec::new(),
+            staged_influence_bytes: Vec::new(),
+            staged_samples_bytes: Vec::new(),
+            staged_effective_brightness: Vec::new(),
+            staged_animated_window_brightness: Vec::new(),
+            staged_compose_descriptor_writes: Vec::new(),
             runtime_capacity_warned: false,
             observed_light_membership_generation: u64::MAX,
             #[cfg(test)]
@@ -175,6 +228,8 @@ impl LightBridge {
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
+        self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_map_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.dirty = false;
         self.cached_origins_f64.clear();
@@ -182,6 +237,14 @@ impl LightBridge {
         self.cached_follow_positions.clear();
         self.fgd_sample_float_count = 0;
         self.scripted_sample_buf.clear();
+        self.staged_lights_bytes.clear();
+        self.staged_descriptor_bytes.clear();
+        self.staged_influences.clear();
+        self.staged_influence_bytes.clear();
+        self.staged_samples_bytes.clear();
+        self.staged_effective_brightness.clear();
+        self.staged_animated_window_brightness.clear();
+        self.staged_compose_descriptor_writes.clear();
         self.runtime_capacity_warned = false;
         self.observed_light_membership_generation = u64::MAX;
         #[cfg(test)]
@@ -198,6 +261,64 @@ impl LightBridge {
     #[allow(dead_code)]
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
         self.entity_ids.get(map_index).copied()
+    }
+
+    /// Set the section-45 roster used by animated shadow-promotion gating.
+    /// Each input value is a compose descriptor slot used only to locate the
+    /// corresponding map-light entity; the output brightness vector is always
+    /// indexed by this slice's *position* (`AnimatedBakedLights` index).
+    pub(crate) fn set_animated_baked_promotion_roster(
+        &mut self,
+        animation_descriptor_indices: &[u32],
+    ) {
+        self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_descriptor_indices
+            .extend_from_slice(animation_descriptor_indices);
+        self.rebuild_animated_baked_map_join();
+    }
+
+    /// Re-emit the last coherent bridge payload after the renderer rejects an
+    /// upload. Rejection leaves the renderer's prior snapshot active, so the
+    /// bridge must not consider its staged mutation committed.
+    pub(crate) fn retry_snapshot_upload(&mut self) {
+        self.dirty = true;
+    }
+
+    fn rebuild_animated_baked_map_join(&mut self) {
+        for shape in &mut self.shape {
+            shape.animated_baked_raw_indices.clear();
+        }
+
+        let mut descriptor_to_map_index = HashMap::new();
+        for (map_index, shape) in self.shape.iter().enumerate() {
+            if !shape.is_dynamic
+                && let Some(descriptor_index) = shape.animated_slot
+            {
+                // Match the former linear search: the first authored map light
+                // wins if malformed input repeats a descriptor slot.
+                descriptor_to_map_index
+                    .entry(descriptor_index)
+                    .or_insert(map_index);
+            }
+        }
+
+        self.animated_baked_map_indices.clear();
+        self.animated_baked_map_indices
+            .reserve(self.animated_baked_descriptor_indices.len());
+        for (raw_index, descriptor_index) in self
+            .animated_baked_descriptor_indices
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let map_index = descriptor_to_map_index.get(&descriptor_index).copied();
+            self.animated_baked_map_indices.push(map_index);
+            if let Some(map_index) = map_index {
+                self.shape[map_index]
+                    .animated_baked_raw_indices
+                    .push(raw_index);
+            }
+        }
     }
 
     /// Collect all tracked lights (FGD map-authored + descriptor-spawned dynamic)
@@ -280,6 +401,8 @@ impl LightBridge {
         self.snapshots.clear();
         self.preserve_baked_descriptors.clear();
         self.shape.clear();
+        self.animated_baked_descriptor_indices.clear();
+        self.animated_baked_map_indices.clear();
         self.warned_slotless_animation_indices.clear();
         self.cached_origins_f64.clear();
         self.cached_influences.clear();
@@ -316,6 +439,8 @@ impl LightBridge {
                 is_dynamic: light.is_dynamic,
                 cell_index: light.cell_index,
                 animated_slot: light.animated_slot,
+                authored_rest_direction: light.cone_direction,
+                animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             });
             self.cached_origins_f64.push(light.origin);
@@ -337,6 +462,7 @@ impl LightBridge {
                         component,
                         animation_start_time: None,
                         animation_cycle_index: 0,
+                        settled_eligibility_radiance: None,
                     },
                 );
                 self.preserve_baked_descriptors.insert(id);
@@ -430,6 +556,8 @@ impl LightBridge {
                 // Script-spawned dynamic lights have no baked slot; the
                 // bridge routes them via the legacy forward path.
                 animated_slot: None,
+                authored_rest_direction: [0.0, 0.0, 0.0],
+                animated_baked_raw_indices: Vec::new(),
                 reclaimed: false,
             };
             if let Some(slot) = self.free_slots.pop() {
@@ -486,7 +614,7 @@ impl LightBridge {
         registry: &mut EntityRegistry,
         current_time: f32,
         alpha: f32,
-    ) -> Option<LightBridgeUpdate> {
+    ) -> Option<LightBridgeUpdate<'_>> {
         if self.entity_ids.is_empty() {
             return None;
         }
@@ -536,9 +664,13 @@ impl LightBridge {
                 None => true,
             };
 
-            if let Some(settled_component) =
-                check_play_count_completion(current, snapshot, current_time)
-            {
+            if let Some(settled_component) = check_play_count_completion(
+                current,
+                snapshot,
+                current_time,
+                (!shape.animated_baked_raw_indices.is_empty())
+                    .then_some(shape.authored_rest_direction),
+            ) {
                 let had_radius_animation = current
                     .animation
                     .as_ref()
@@ -578,7 +710,8 @@ impl LightBridge {
                     snapshot.and_then(|snapshot| snapshot.animation_start_time)
                 };
                 if let Some(anim) = &current.animation
-                    && anim.play_count.is_some()
+                    && anim.play_count.is_some_and(|count| count > 0)
+                    && anim.start_active.unwrap_or(true)
                     && changed
                 {
                     // Record start time so completion can fire on a future frame.
@@ -591,6 +724,7 @@ impl LightBridge {
                         component: current.clone(),
                         animation_start_time: new_start,
                         animation_cycle_index: cycle_index,
+                        settled_eligibility_radiance: None,
                     },
                 );
             }
@@ -608,12 +742,14 @@ impl LightBridge {
                 // radius paired with the settled `GpuLight` range.
                 self.cached_influences[map_idx].radius = settled_component.falloff_range;
             }
+            let settled_eligibility_radiance = settled_radiance(&settled_component);
             self.snapshots.insert(
                 id,
                 LightSnapshot {
                     component: settled_component,
                     animation_start_time: None,
                     animation_cycle_index: 0,
+                    settled_eligibility_radiance: Some(settled_eligibility_radiance),
                 },
             );
             self.dirty = true;
@@ -624,38 +760,84 @@ impl LightBridge {
         // check must track the same curve every frame so shadow slots are gained
         // and lost promptly. Previously frozen at the dirty frame, which locked
         // shadow slot assignment to the state at levelLoad animation time.
-        let effective_brightness: Vec<f32> = self
-            .entity_ids
-            .iter()
-            .zip(&self.shape)
-            .filter(|(_, shape)| shape.is_dynamic)
-            .map(|(&id, _)| {
-                let Ok(component) = registry.get_component::<LightComponent>(id) else {
-                    return 0.0;
-                };
-                eval_effective_brightness(component, self.snapshots.get(&id), current_time)
-            })
-            .collect();
+        self.staged_effective_brightness.clear();
+        for (&id, shape) in self.entity_ids.iter().zip(&self.shape) {
+            if !shape.is_dynamic {
+                continue;
+            }
+            let brightness = registry
+                .get_component::<LightComponent>(id)
+                .map(|component| {
+                    eval_shadow_eligibility_brightness(
+                        component,
+                        self.snapshots.get(&id),
+                        current_time,
+                    )
+                })
+                .unwrap_or(0.0);
+            self.staged_effective_brightness.push(brightness);
+        }
 
-        if !self.dirty {
-            return Some(LightBridgeUpdate {
-                has_dirty_data: false,
-                lights_bytes: Vec::new(),
-                descriptor_bytes: Vec::new(),
-                influence_bytes: Vec::new(),
-                samples_bytes: Vec::new(),
-                effective_brightness,
-                compose_descriptor_writes: Vec::new(),
-            });
+        // This is intentionally a separate roster from the dynamic vector
+        // above. Its index is the explicit section-45 `AnimatedBakedLights`
+        // roster order. `animated_slot` is only a descriptor lookup key, so a
+        // missing/bake-only map light leaves a dark hole rather than shifting
+        // every later AnimatedBakedLights index into the wrong brightness row.
+        self.staged_animated_window_brightness.clear();
+        for &map_index in &self.animated_baked_map_indices {
+            let brightness = map_index
+                .and_then(|map_index| self.entity_ids.get(map_index))
+                .and_then(|id| {
+                    registry
+                        .get_component::<LightComponent>(*id)
+                        .ok()
+                        .map(|component| {
+                            animated_promotion_window_max(
+                                component,
+                                self.snapshots.get(id),
+                                current_time,
+                            )
+                        })
+                })
+                .unwrap_or(0.0);
+            self.staged_animated_window_brightness.push(brightness);
+        }
+
+        // Section-45 forward records are patched with a renderer-owned weight
+        // after bridge upload. Re-emit their authored base bytes each frame so
+        // a prior frame's `color × w` cannot compound into the next frame.
+        let emit_animated_forward_tail = !self.animated_baked_descriptor_indices.is_empty();
+        if !self.dirty && !emit_animated_forward_tail {
+            self.clear_staged_gpu_data();
+            return Some(self.staged_update(false));
         }
         self.dirty = false;
 
         let dynamic_light_count = self.shape.iter().filter(|shape| shape.is_dynamic).count();
-        let mut lights_bytes: Vec<u8> = Vec::with_capacity(dynamic_light_count * GPU_LIGHT_SIZE);
-        let mut descriptor_bytes: Vec<u8> =
-            Vec::with_capacity(dynamic_light_count * ANIMATION_DESCRIPTOR_SIZE);
-        let mut influences = Vec::with_capacity(dynamic_light_count);
-        let mut compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])> = Vec::new();
+        let animated_baked_count = self.animated_baked_descriptor_indices.len();
+        let forward_count = dynamic_light_count + animated_baked_count;
+        // Allocate the final compact-prefix + raw-roster layout up front. Raw
+        // section-45 position is the promotion identity, so unmatched rows
+        // remain zeroed holes rather than compacting later entries.
+        self.staged_lights_bytes
+            .resize(forward_count * GPU_LIGHT_SIZE, 0);
+        self.staged_lights_bytes.fill(0);
+        self.staged_descriptor_bytes
+            .resize(forward_count * ANIMATION_DESCRIPTOR_SIZE, 0);
+        self.staged_descriptor_bytes.fill(0);
+        self.staged_influences.resize(
+            forward_count,
+            LightInfluence {
+                center: glam::Vec3::ZERO,
+                radius: 0.0,
+            },
+        );
+        self.staged_influences.fill(LightInfluence {
+            center: glam::Vec3::ZERO,
+            radius: 0.0,
+        });
+        self.staged_compose_descriptor_writes.clear();
+        let mut dynamic_record_index = 0usize;
 
         self.scripted_sample_buf.fill(0.0);
 
@@ -666,12 +848,13 @@ impl LightBridge {
                 // an explicit compose tombstone or its last baked delta stays
                 // active indefinitely.
                 if self.shape[map_idx].is_dynamic {
-                    lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
-                    descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
-                    influences.push(self.cached_influences[map_idx].clone());
+                    self.staged_influences[dynamic_record_index] =
+                        self.cached_influences[map_idx].clone();
+                    dynamic_record_index += 1;
                 }
                 if let Some(slot) = self.shape[map_idx].animated_slot {
-                    compose_descriptor_writes.push((slot, [0u8; ANIMATION_DESCRIPTOR_SIZE]));
+                    self.staged_compose_descriptor_writes
+                        .push((slot, [0u8; ANIMATION_DESCRIPTOR_SIZE]));
                 }
                 continue;
             };
@@ -689,6 +872,21 @@ impl LightBridge {
             );
             if let Some(radius) = sampled_radius {
                 map_light.falloff_range = radius;
+            }
+            if !self.shape[map_idx].animated_baked_raw_indices.is_empty() {
+                map_light.cone_direction = self.shape[map_idx].authored_rest_direction;
+            }
+            // A color curve replaces authored hue. Preserve intensity in the
+            // forward record even when the authored base color is black; the
+            // renderer later multiplies this record by promotion weight `w`.
+            let mut forward_map_light = map_light.clone();
+            if component
+                .animation
+                .as_ref()
+                .and_then(|animation| animation.color.as_ref())
+                .is_some_and(|samples| !samples.is_empty())
+            {
+                forward_map_light.color = [1.0; 3];
             }
             let light_base =
                 self.fgd_sample_float_count + (map_idx as u32) * (SCRIPTED_FLOATS_PER_LIGHT as u32);
@@ -723,8 +921,13 @@ impl LightBridge {
                 color_offset,
             );
             if self.shape[map_idx].is_dynamic {
-                lights_bytes.extend_from_slice(&pack_light(&map_light));
-                descriptor_bytes.extend_from_slice(&forward_desc);
+                let light_start = dynamic_record_index * GPU_LIGHT_SIZE;
+                self.staged_lights_bytes[light_start..light_start + GPU_LIGHT_SIZE]
+                    .copy_from_slice(&pack_light(&forward_map_light));
+                let descriptor_start = dynamic_record_index * ANIMATION_DESCRIPTOR_SIZE;
+                self.staged_descriptor_bytes
+                    [descriptor_start..descriptor_start + ANIMATION_DESCRIPTOR_SIZE]
+                    .copy_from_slice(&forward_desc);
                 let mut influence = self.cached_influences[map_idx].clone();
                 if let Some(position) = followed_position {
                     influence.center = position;
@@ -732,7 +935,36 @@ impl LightBridge {
                 if let Some(radius) = sampled_radius {
                     influence.radius = radius;
                 }
-                influences.push(influence);
+                self.staged_influences[dynamic_record_index] = influence;
+                dynamic_record_index += 1;
+            }
+
+            // A baked animated record is always present in the forward tail,
+            // even while unpromoted. Its base color is intentionally unweighted
+            // here; `update_dynamic_light_slots` applies the same state.weight
+            // that Pass B converts to `(1 - w)`. Direction animation is not
+            // packed by `pack_forward_animation_descriptor`, so `map_light`'s
+            // authored rest cone is the only runtime direction.
+            if !self.shape[map_idx].is_dynamic {
+                let mut influence = self.cached_influences[map_idx].clone();
+                if let Some(position) = followed_position {
+                    influence.center = position;
+                }
+                if let Some(radius) = sampled_radius {
+                    influence.radius = radius;
+                }
+                let packed_light = pack_light(&forward_map_light);
+                for &raw_index in &self.shape[map_idx].animated_baked_raw_indices {
+                    let forward_index = dynamic_light_count + raw_index;
+                    let light_start = forward_index * GPU_LIGHT_SIZE;
+                    self.staged_lights_bytes[light_start..light_start + GPU_LIGHT_SIZE]
+                        .copy_from_slice(&packed_light);
+                    let descriptor_start = forward_index * ANIMATION_DESCRIPTOR_SIZE;
+                    self.staged_descriptor_bytes
+                        [descriptor_start..descriptor_start + ANIMATION_DESCRIPTOR_SIZE]
+                        .copy_from_slice(&forward_desc);
+                    self.staged_influences[forward_index] = influence.clone();
+                }
             }
 
             // For `_animated` (and other slot-bearing) lights, also queue a
@@ -743,7 +975,7 @@ impl LightBridge {
             // region, which both the forward and compose paths sample.
             if let Some(slot) = self.shape[map_idx].animated_slot {
                 if !self.preserve_baked_descriptors.contains(&id) {
-                    compose_descriptor_writes.push((
+                    self.staged_compose_descriptor_writes.push((
                         slot,
                         pack_compose_animation_descriptor(
                             component,
@@ -756,23 +988,45 @@ impl LightBridge {
             }
         }
 
-        // Matches `postretro_render_cpu::sh_volume` sample packing: native-endian f32 bytes.
-        let samples_bytes = self
-            .scripted_sample_buf
-            .iter()
-            .flat_map(|&v| v.to_ne_bytes())
-            .collect();
-        let influence_bytes = postretro_lighting::influence::pack_influence(&influences);
+        debug_assert_eq!(dynamic_record_index, dynamic_light_count);
 
-        Some(LightBridgeUpdate {
-            has_dirty_data: true,
-            lights_bytes,
-            descriptor_bytes,
-            influence_bytes,
-            samples_bytes,
-            effective_brightness,
-            compose_descriptor_writes,
-        })
+        // Matches `postretro_render_cpu::sh_volume` sample packing: native-endian f32 bytes.
+        self.staged_samples_bytes.clear();
+        self.staged_samples_bytes
+            .reserve(self.scripted_sample_buf.len() * size_of::<f32>());
+        for &sample in &self.scripted_sample_buf {
+            self.staged_samples_bytes
+                .extend_from_slice(&sample.to_ne_bytes());
+        }
+        self.staged_influence_bytes.clear();
+        postretro_lighting::influence::pack_influence_into(
+            &mut self.staged_influence_bytes,
+            &self.staged_influences,
+        );
+
+        Some(self.staged_update(true))
+    }
+
+    fn clear_staged_gpu_data(&mut self) {
+        self.staged_lights_bytes.clear();
+        self.staged_descriptor_bytes.clear();
+        self.staged_influences.clear();
+        self.staged_influence_bytes.clear();
+        self.staged_samples_bytes.clear();
+        self.staged_compose_descriptor_writes.clear();
+    }
+
+    fn staged_update(&self, has_dirty_data: bool) -> LightBridgeUpdate<'_> {
+        LightBridgeUpdate {
+            has_dirty_data,
+            lights_bytes: &self.staged_lights_bytes,
+            descriptor_bytes: &self.staged_descriptor_bytes,
+            influence_bytes: &self.staged_influence_bytes,
+            samples_bytes: &self.staged_samples_bytes,
+            effective_brightness: &self.staged_effective_brightness,
+            animated_window_brightness: &self.staged_animated_window_brightness,
+            compose_descriptor_writes: &self.staged_compose_descriptor_writes,
+        }
     }
 }
 
@@ -1038,6 +1292,9 @@ fn finite_animation_cycle_index(
     let Some(anim) = component.animation.as_ref() else {
         return 0;
     };
+    if !anim.start_active.unwrap_or(true) {
+        return 0;
+    }
     let Some(play_count) = anim.play_count.filter(|&count| count > 0) else {
         return 0;
     };
@@ -1074,6 +1331,203 @@ fn eval_effective_brightness(
             }
         }
     }
+}
+
+fn eval_shadow_eligibility_brightness(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> f32 {
+    if component.animation.is_none() {
+        return snapshot
+            .and_then(|snapshot| snapshot.settled_eligibility_radiance)
+            .unwrap_or(1.0);
+    }
+    eval_effective_brightness(component, snapshot, current_time)
+}
+
+/// Maximum brightness the animated-baked promotion gate can expect during its
+/// fade-in window. The renderer ramps for [`PROMOTE_SECONDS`], so looking ahead
+/// by that exact real-time duration lets `w` reach one before a bright curve
+/// interval begins. This is an eligibility signal only; GPU curve evaluation
+/// remains the radiance source for both compose and forward paths.
+fn animated_promotion_window_max(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> f32 {
+    let Some(animation) = component.animation.as_ref() else {
+        return snapshot
+            .and_then(|snapshot| snapshot.settled_eligibility_radiance)
+            .unwrap_or(1.0);
+    };
+    if animation.start_active == Some(false) {
+        return 0.0;
+    }
+    let Some(samples) = animation
+        .brightness
+        .as_deref()
+        .filter(|samples| !samples.is_empty())
+    else {
+        return 1.0;
+    };
+
+    let period_s = animation.period_ms / 1000.0;
+    // Degenerate animated periods freeze at the first curve value in the
+    // runtime sampler. Reading that exact value prevents both dark lights
+    // retaining a slot and bright lights being accidentally suppressed.
+    if period_s <= 0.0 {
+        return sample_brightness_at(samples, 0.0);
+    }
+
+    let phase = animation.phase.unwrap_or(0.0).rem_euclid(1.0);
+    if animation.play_count.is_some_and(|count| count > 0)
+        && let Some(snapshot) = snapshot
+        && let Some(start) = snapshot.animation_start_time
+    {
+        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
+        let start_t = phase + ((current_time - cycle_start) / period_s) * (1.0 - phase);
+        let end_t = start_t + PROMOTE_SECONDS * (1.0 - phase) / period_s;
+        return open_curve_window_max(samples, start_t, end_t);
+    }
+
+    let start_t = (current_time / period_s + phase).rem_euclid(1.0);
+    let window_t = PROMOTE_SECONDS / period_s;
+    closed_curve_window_max(samples, start_t, window_t)
+}
+
+/// Find the closed Catmull-Rom maximum over a normalized forward window.
+/// Besides boundaries and knots, each intersected cubic contributes any
+/// interior derivative roots. This matters because Catmull-Rom can overshoot
+/// above every authored sample between two equal bright knots.
+fn closed_curve_window_max(samples: &[f32], start_t: f32, window_t: f32) -> f32 {
+    if samples.len() <= 1 || window_t >= 1.0 {
+        return closed_curve_full_max(samples);
+    }
+    let segment_count = samples.len();
+    let count = segment_count as f32;
+    let start = start_t.rem_euclid(1.0);
+    let end = start + window_t.max(0.0);
+    let scaled_start = start * count;
+    let scaled_end = end * count;
+    let first_segment = scaled_start.floor() as usize;
+    let last_segment = scaled_end.floor() as usize;
+    let mut max_brightness = f32::NEG_INFINITY;
+    for unwrapped_segment in first_segment..=last_segment {
+        let segment = unwrapped_segment % segment_count;
+        let min_f = if unwrapped_segment == first_segment {
+            scaled_start - first_segment as f32
+        } else {
+            0.0
+        };
+        let max_f = if unwrapped_segment == last_segment {
+            scaled_end - last_segment as f32
+        } else {
+            1.0
+        };
+        max_brightness =
+            max_brightness.max(closed_catmull_segment_max(samples, segment, min_f, max_f));
+    }
+    max_brightness
+}
+
+fn closed_curve_full_max(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 1.0;
+    }
+    (0..samples.len())
+        .map(|segment| closed_catmull_segment_max(samples, segment, 0.0, 1.0))
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// Endpoint-clamped equivalent of [`closed_curve_window_max`] for a finite
+/// animation. The window cannot wrap past its final keyframe.
+fn open_curve_window_max(samples: &[f32], start_t: f32, end_t: f32) -> f32 {
+    if samples.len() <= 1 {
+        return sample_brightness_at_open(samples, start_t);
+    }
+    let start = start_t.clamp(0.0, 1.0);
+    let end = end_t.clamp(start, 1.0);
+    let segment_count = samples.len() - 1;
+    let scaled_start = start * segment_count as f32;
+    let scaled_end = end * segment_count as f32;
+    let first_segment = (scaled_start.floor() as usize).min(segment_count - 1);
+    let last_segment = (scaled_end.floor() as usize).min(segment_count - 1);
+    let mut max_brightness = f32::NEG_INFINITY;
+    for segment in first_segment..=last_segment {
+        let min_f = if segment == first_segment {
+            scaled_start - segment as f32
+        } else {
+            0.0
+        };
+        let max_f = if segment == last_segment {
+            scaled_end - segment as f32
+        } else {
+            1.0
+        };
+        max_brightness =
+            max_brightness.max(open_catmull_segment_max(samples, segment, min_f, max_f));
+    }
+    max_brightness
+}
+
+fn closed_catmull_segment_max(samples: &[f32], segment: usize, min_f: f32, max_f: f32) -> f32 {
+    let count = samples.len();
+    catmull_segment_max(
+        samples[(segment + count - 1) % count],
+        samples[segment],
+        samples[(segment + 1) % count],
+        samples[(segment + 2) % count],
+        min_f,
+        max_f,
+    )
+}
+
+fn open_catmull_segment_max(samples: &[f32], segment: usize, min_f: f32, max_f: f32) -> f32 {
+    let last = samples.len() - 1;
+    catmull_segment_max(
+        samples[segment.saturating_sub(1)],
+        samples[segment],
+        samples[(segment + 1).min(last)],
+        samples[(segment + 2).min(last)],
+        min_f,
+        max_f,
+    )
+}
+
+fn catmull_segment_max(p0: f32, p1: f32, p2: f32, p3: f32, min_f: f32, max_f: f32) -> f32 {
+    let min_f = min_f.clamp(0.0, 1.0);
+    let max_f = max_f.clamp(min_f, 1.0);
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    let sample = |f: f32| ((a * f + b) * f + c) * f + p1;
+    let mut maximum = sample(min_f).max(sample(max_f));
+    let derivative_a = 3.0 * a;
+    let derivative_b = 2.0 * b;
+    if derivative_a.abs() <= f32::EPSILON {
+        if derivative_b.abs() > f32::EPSILON {
+            let root = -c / derivative_b;
+            if root >= min_f && root <= max_f {
+                maximum = maximum.max(sample(root));
+            }
+        }
+        return maximum;
+    }
+    let discriminant = derivative_b * derivative_b - 4.0 * derivative_a * c;
+    if discriminant < 0.0 {
+        return maximum;
+    }
+    let sqrt_discriminant = discriminant.sqrt();
+    for root in [
+        (-derivative_b - sqrt_discriminant) / (2.0 * derivative_a),
+        (-derivative_b + sqrt_discriminant) / (2.0 * derivative_a),
+    ] {
+        if root >= min_f && root <= max_f {
+            maximum = maximum.max(sample(root));
+        }
+    }
+    maximum
 }
 
 /// Current sampled falloff range, when an animation owns the radius channel.
@@ -1145,11 +1599,21 @@ fn pack_forward_animation_descriptor(
     brightness_offset: u32,
     color_offset: u32,
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
+    let base_color = if component
+        .animation
+        .as_ref()
+        .and_then(|animation| animation.color.as_ref())
+        .is_some_and(|samples| !samples.is_empty())
+    {
+        [1.0; 3]
+    } else {
+        component.color
+    };
     pack_animation_descriptor(
         component,
         brightness_offset,
         color_offset,
-        component.color,
+        base_color,
         false,
         snapshot,
     )
@@ -1261,8 +1725,12 @@ fn check_play_count_completion(
     current: &LightComponent,
     snapshot: Option<&LightSnapshot>,
     current_time: f32,
+    baked_rest_direction: Option<[f32; 3]>,
 ) -> Option<LightComponent> {
     let anim = current.animation.as_ref()?;
+    if !anim.start_active.unwrap_or(true) {
+        return None;
+    }
     let play_count = anim.play_count?;
     // play_count == 0 is nonsensical; treat as "never completes".
     if play_count == 0 || anim.period_ms <= 0.0 {
@@ -1285,7 +1753,9 @@ fn check_play_count_completion(
     {
         settled.color = final_color.as_f32_3();
     }
-    if let Some(direction) = &anim.direction
+    if let Some(rest_direction) = baked_rest_direction {
+        settled.cone_direction = Some(rest_direction);
+    } else if let Some(direction) = &anim.direction
         && let Some(final_direction) = direction.last()
     {
         settled.cone_direction = Some(final_direction.as_f32_3());
@@ -1297,6 +1767,14 @@ fn check_play_count_completion(
     }
     settled.animation = None;
     Some(settled)
+}
+
+fn settled_radiance(component: &LightComponent) -> f32 {
+    component
+        .color
+        .into_iter()
+        .map(|channel| (channel * component.intensity).max(0.0))
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]
@@ -1389,7 +1867,7 @@ mod tests {
         bridge.entity_ids.len() - bridge.authored_light_count - bridge.free_slots.len()
     }
 
-    fn packed_dynamic_range(update: &LightBridgeUpdate) -> f32 {
+    fn packed_dynamic_range(update: &LightBridgeUpdate<'_>) -> f32 {
         f32::from_ne_bytes(update.lights_bytes[44..48].try_into().unwrap())
     }
 
@@ -1417,11 +1895,11 @@ mod tests {
         )
     }
 
-    fn packed_dynamic_influence_radius(update: &LightBridgeUpdate) -> f32 {
+    fn packed_dynamic_influence_radius(update: &LightBridgeUpdate<'_>) -> f32 {
         f32::from_ne_bytes(update.influence_bytes[12..16].try_into().unwrap())
     }
 
-    fn assert_packed_radius_in_lockstep(update: &LightBridgeUpdate, expected: f32) {
+    fn assert_packed_radius_in_lockstep(update: &LightBridgeUpdate<'_>, expected: f32) {
         let packed_range = packed_dynamic_range(update);
         let influence_radius = packed_dynamic_influence_radius(update);
         assert!(
@@ -2319,6 +2797,8 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
         let static_update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        let static_lights_bytes = static_update.lights_bytes.to_vec();
+        let static_influence_bytes = static_update.influence_bytes.to_vec();
 
         let id = bridge.entity_for_map_index(0).unwrap();
         let mut component = registry
@@ -2338,12 +2818,9 @@ mod tests {
         registry.set_component(id, component).unwrap();
 
         let animated_without_radius = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(animated_without_radius.lights_bytes, static_lights_bytes);
         assert_eq!(
-            animated_without_radius.lights_bytes,
-            static_update.lights_bytes
-        );
-        assert_eq!(
-            animated_without_radius.influence_bytes, static_update.influence_bytes,
+            animated_without_radius.influence_bytes, static_influence_bytes,
             "a missing radius curve must retain the existing culling volume byte-for-byte"
         );
     }
@@ -2537,6 +3014,73 @@ mod tests {
             [0.0, 0.0, 0.375],
             "forward record must settle to the same final radiance"
         );
+    }
+
+    // Regression: an inactive finite animation armed its play-count clock and
+    // revived as the final static keyframe when that dormant clock expired.
+    #[test]
+    fn inactive_finite_animation_stays_dark_after_its_nominal_period_expires() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let initial_intensity = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .intensity;
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 100.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: Some(false),
+            brightness: Some(vec![0.0, 1.0]),
+            color: None,
+            direction: None,
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let started = bridge.update(&mut registry, 1.0, 0.0).unwrap();
+        assert_eq!(started.effective_brightness, [0.0]);
+        assert_eq!(
+            bridge.snapshots.get(&id).unwrap().animation_start_time,
+            None,
+            "start_active:false must not arm the finite completion clock",
+        );
+
+        let expired = bridge.update(&mut registry, 2.0, 0.0).unwrap();
+        let dormant = registry.get_component::<LightComponent>(id).unwrap();
+        assert!(
+            dormant.animation.is_some(),
+            "nominal period expiry must not settle an animation that never started",
+        );
+        assert_eq!(dormant.intensity, initial_intensity);
+        assert_eq!(expired.effective_brightness, [0.0]);
+    }
+
+    #[test]
+    fn rejected_snapshot_is_reemitted_on_the_next_unchanged_update() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[sample_dynamic_point_light()], &mut registry, 0);
+
+        let first = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert!(first.has_dirty_data);
+        bridge.retry_snapshot_upload();
+
+        let retry = bridge.update(&mut registry, 0.1, 0.0).unwrap();
+        assert!(
+            retry.has_dirty_data,
+            "renderer rejection must keep the bridge payload dirty until a later commit",
+        );
+        assert_eq!(retry.lights_bytes.len(), GPU_LIGHT_SIZE);
+        assert_eq!(retry.descriptor_bytes.len(), ANIMATION_DESCRIPTOR_SIZE);
     }
 
     #[test]
@@ -2963,15 +3507,14 @@ mod tests {
         component.animation = Some(sample_animation());
         registry.set_component(static_id, component).unwrap();
 
-        let update = bridge
-            .update(&mut registry, 0.0, 0.0)
-            .expect("initial dirty");
-
         assert_eq!(
             bridge.light_count(),
             2,
             "both authored lights stay queryable"
         );
+        let update = bridge
+            .update(&mut registry, 0.0, 0.0)
+            .expect("initial dirty");
         assert_eq!(
             update.lights_bytes.len(),
             GPU_LIGHT_SIZE,
@@ -3193,14 +3736,16 @@ mod tests {
 
         crate::sim::advance_client_presentation_effects(&mut registry, 0.020);
         crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |_, _| {});
-        let update = bridge
+        let lights_bytes = bridge
             .update(&mut registry, 0.020, 0.0)
-            .expect("client-side despawns dirty the bridge");
+            .expect("client-side despawns dirty the bridge")
+            .lights_bytes
+            .to_vec();
 
         assert_eq!(registry.iter_with_kind(ComponentKind::Light).count(), 0);
         assert_eq!(live_runtime_count(&bridge), 0);
         assert_eq!(bridge.free_slots.len(), 2);
-        assert_eq!(update.lights_bytes, vec![0; 2 * GPU_LIGHT_SIZE]);
+        assert_eq!(lights_bytes, vec![0; 2 * GPU_LIGHT_SIZE]);
     }
 
     // Regression: slot-bearing baked lights have no dynamic-forward record.
@@ -3454,8 +3999,8 @@ mod tests {
         let mut bridge = LightBridge::new();
         bridge.populate_from_level(&[authored_dynamic, static_slot_light], &mut registry, 0);
         let initial = bridge.update(&mut registry, 0.0, 0.0).unwrap();
-        let authored_forward = initial.lights_bytes.clone();
-        let authored_compose = initial.compose_descriptor_writes.clone();
+        let authored_forward = initial.lights_bytes.to_vec();
+        let authored_compose = initial.compose_descriptor_writes.to_vec();
 
         let first =
             spawn_runtime_light(&mut registry, runtime_component([4.0, 5.0, 6.0], 7.0, None));
@@ -3513,7 +4058,14 @@ mod tests {
         let new_component = runtime_component([-4.0, 5.0, -6.0], 3.5, None);
         let new = spawn_runtime_light(&mut registry, new_component.clone());
         bridge.absorb_dynamic_lights(&registry);
-        let reused = bridge.update(&mut registry, 0.3, 0.0).unwrap();
+        let (reused_lights_bytes, reused_influence_bytes, reused_samples_bytes) = {
+            let reused = bridge.update(&mut registry, 0.3, 0.0).unwrap();
+            (
+                reused.lights_bytes.to_vec(),
+                reused.influence_bytes.to_vec(),
+                reused.samples_bytes.to_vec(),
+            )
+        };
         let runtime_slot = bridge.authored_light_count;
 
         assert_eq!(bridge.entity_ids[runtime_slot], new);
@@ -3530,14 +4082,14 @@ mod tests {
         );
         assert!((bridge.cached_influences[runtime_slot].radius - 3.5).abs() < 1e-6);
         let expected = component_to_map_light(&new_component, [-4.0, 5.0, -6.0], true, u32::MAX);
-        assert_eq!(reused.lights_bytes, pack_light(&expected).to_vec());
+        assert_eq!(reused_lights_bytes, pack_light(&expected).to_vec());
         assert_eq!(
-            reused.influence_bytes,
+            reused_influence_bytes,
             postretro_lighting::influence::pack_influence(&[component_to_influence(
                 &new_component
             )])
         );
-        assert!(reused.samples_bytes.iter().all(|&byte| byte == 0));
+        assert!(reused_samples_bytes.iter().all(|&byte| byte == 0));
     }
 
     #[test]
@@ -3814,14 +4366,21 @@ mod tests {
         assert_eq!(bridge.authored_light_count, 1);
         assert_eq!(bridge.entity_ids.len(), 1);
 
-        let authored = bridge.update(&mut replacement_registry, 0.5, 0.0).unwrap();
-        let authored_forward = authored.lights_bytes.clone();
+        let authored_forward = bridge
+            .update(&mut replacement_registry, 0.5, 0.0)
+            .unwrap()
+            .lights_bytes
+            .to_vec();
         let final_runtime = spawn_runtime_light(
             &mut replacement_registry,
             runtime_component([3.0, 0.0, 0.0], 6.0, None),
         );
         bridge.absorb_dynamic_lights(&replacement_registry);
-        let with_runtime = bridge.update(&mut replacement_registry, 0.6, 0.0).unwrap();
+        let with_runtime_lights_bytes = bridge
+            .update(&mut replacement_registry, 0.6, 0.0)
+            .unwrap()
+            .lights_bytes
+            .to_vec();
         let runtime_slot = bridge
             .entity_ids
             .iter()
@@ -3829,8 +4388,448 @@ mod tests {
             .expect("final runtime light is enrolled");
         assert!(runtime_slot >= bridge.authored_light_count);
         assert_eq!(
-            &with_runtime.lights_bytes[..bridge.authored_light_count * GPU_LIGHT_SIZE],
+            &with_runtime_lights_bytes[..bridge.authored_light_count * GPU_LIGHT_SIZE],
             authored_forward.as_slice()
         );
+    }
+
+    fn promotion_brightness_animation(period_ms: f32, samples: Vec<f32>) -> LightAnimation {
+        LightAnimation {
+            period_ms,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(samples),
+            color: None,
+            direction: None,
+            radius: None,
+        }
+    }
+
+    #[test]
+    fn animated_promotion_window_looks_ahead_for_strobes_and_narrow_peaks() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        component.animation = Some(promotion_brightness_animation(
+            1000.0,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ));
+
+        // The instant at t=.8 is dark, but its 0.3s promotion window
+        // wraps through the bright knot at t=1.0, so the bridge keeps the
+        // candidate eligible before the bright interval starts.
+        assert!(
+            eval_effective_brightness(&component, None, 0.8) < 0.01,
+            "instantaneous strobe sample should be dark"
+        );
+        assert!(
+            animated_promotion_window_max(&component, None, 0.8) > 0.99,
+            "lookahead must retain a strobe slot across a short dark trough"
+        );
+
+        // P6b: a long all-dark interval has no bright knot in its window and
+        // therefore lets the sticky/demote lifecycle release shared capacity.
+        assert!(
+            animated_promotion_window_max(&component, None, 0.3) < 0.01,
+            "a long dark pulse must not remain eligible forever"
+        );
+
+        // Scan authored knots as well as endpoints; otherwise this
+        // narrow peak is missed when no rendered frame lands on t=.375.
+        component.animation = Some(promotion_brightness_animation(
+            1000.0,
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        ));
+        assert!(
+            animated_promotion_window_max(&component, None, 0.1) > 0.99,
+            "lookahead must include a bright authored knot inside the window"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_degenerate_period_reads_first_brightness_sample() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        component.animation = Some(promotion_brightness_animation(0.0, vec![0.0, 1.0]));
+        assert_eq!(
+            animated_promotion_window_max(&component, None, 42.0),
+            0.0,
+            "a degenerate dark animation must not borrow a later sample"
+        );
+
+        component.animation = Some(promotion_brightness_animation(-10.0, vec![0.75, 0.0]));
+        assert_eq!(
+            animated_promotion_window_max(&component, None, 42.0),
+            0.75,
+            "a degenerate bright animation reads brightness[0]"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_window_uses_open_sampler_for_finite_animation() {
+        let mut component = map_light_to_component(&sample_point_light(), None);
+        let mut animation = promotion_brightness_animation(1000.0, vec![0.0, 0.0, 1.0]);
+        animation.play_count = Some(1);
+        component.animation = Some(animation);
+        let snapshot = LightSnapshot {
+            component: component.clone(),
+            animation_start_time: Some(0.0),
+            animation_cycle_index: 0,
+            settled_eligibility_radiance: None,
+        };
+
+        assert!(
+            animated_promotion_window_max(&component, Some(&snapshot), 0.9) > 0.99,
+            "finite animation windows must endpoint-clamp onto their final bright key"
+        );
+    }
+
+    #[test]
+    fn bridge_keys_animated_promotion_brightness_by_section_45_roster_position() {
+        let mut descriptor_two = sample_point_light();
+        descriptor_two.animated_slot = Some(2);
+        let mut descriptor_seven = sample_point_light();
+        descriptor_seven.animated_slot = Some(7);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[descriptor_two, descriptor_seven], &mut registry, 0);
+        // This intentionally disagrees with both authored order and descriptor
+        // slot order. The result must remain keyed [section45 index 0, 1].
+        bridge.set_animated_baked_promotion_roster(&[7, 2]);
+
+        for (map_index, brightness) in [(0, 0.2), (1, 0.8)] {
+            let id = bridge.entity_for_map_index(map_index).unwrap();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.animation = Some(promotion_brightness_animation(0.0, vec![brightness]));
+            registry.set_component(id, component).unwrap();
+        }
+
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(update.animated_window_brightness, vec![0.8, 0.2]);
+
+        bridge.clear();
+        assert!(
+            bridge.animated_baked_descriptor_indices.is_empty(),
+            "level unload clears the section-45 promotion roster"
+        );
+        assert!(
+            bridge.animated_baked_map_indices.is_empty(),
+            "level unload clears the cached section-45 map-light join"
+        );
+    }
+
+    #[test]
+    fn animated_promotion_roster_preserves_sparse_rows_and_duplicate_joins() {
+        let mut baked = sample_point_light();
+        baked.animated_slot = Some(7);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[99, 7, 7]);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(promotion_brightness_animation(0.0, vec![0.6]));
+        registry.set_component(id, component).unwrap();
+
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(update.animated_window_brightness, vec![0.0, 0.6, 0.6]);
+        let records: Vec<&[u8]> = update.lights_bytes.chunks_exact(GPU_LIGHT_SIZE).collect();
+        assert_eq!(records.len(), 3);
+        assert!(records[0].iter().all(|&byte| byte == 0));
+        assert_eq!(records[1], records[2]);
+    }
+
+    // Regression: the animated-baked tail made the render-frame bridge rebuild
+    // fresh Vecs on every update, and reused storage must still clear tombstones.
+    #[test]
+    fn animated_forward_tail_reuses_staging_and_clears_stale_dynamic_prefix_fields() {
+        let dynamic = sample_dynamic_point_light();
+        let mut baked = sample_point_light();
+        baked.animated_slot = Some(7);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[dynamic, baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+        let dynamic_id = bridge.entity_for_map_index(0).unwrap();
+        let mut dynamic_component = registry
+            .get_component::<LightComponent>(dynamic_id)
+            .unwrap()
+            .clone();
+        dynamic_component.animation = Some(sample_animation());
+        registry
+            .set_component(dynamic_id, dynamic_component)
+            .unwrap();
+
+        let first = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert_eq!(first.lights_bytes.len(), 2 * GPU_LIGHT_SIZE);
+        assert_eq!(first.effective_brightness.len(), 1);
+        assert!(
+            first.descriptor_bytes[..ANIMATION_DESCRIPTOR_SIZE]
+                .iter()
+                .any(|&byte| byte != 0)
+                && first.samples_bytes[..SCRIPTED_FLOATS_PER_LIGHT * size_of::<f32>()]
+                    .iter()
+                    .any(|&byte| byte != 0),
+            "the fixture must populate dynamic animation fields before testing their tombstones",
+        );
+        let baked_tail = first.lights_bytes[GPU_LIGHT_SIZE..].to_vec();
+        let staging_addresses = [
+            first.lights_bytes.as_ptr() as usize,
+            first.descriptor_bytes.as_ptr() as usize,
+            first.influence_bytes.as_ptr() as usize,
+            first.samples_bytes.as_ptr() as usize,
+            first.effective_brightness.as_ptr() as usize,
+            first.animated_window_brightness.as_ptr() as usize,
+            first.compose_descriptor_writes.as_ptr() as usize,
+        ];
+
+        registry.despawn(dynamic_id).unwrap();
+        let second = bridge.update(&mut registry, 0.1, 0.0).unwrap();
+        assert!(
+            second.lights_bytes[..GPU_LIGHT_SIZE]
+                .iter()
+                .all(|&byte| byte == 0),
+            "a disappeared dynamic prefix record must not retain any prior packed field",
+        );
+        assert!(
+            second.descriptor_bytes[..ANIMATION_DESCRIPTOR_SIZE]
+                .iter()
+                .all(|&byte| byte == 0)
+                && second.samples_bytes[..SCRIPTED_FLOATS_PER_LIGHT * size_of::<f32>()]
+                    .iter()
+                    .all(|&byte| byte == 0),
+            "descriptor and sample staging must clear every disappeared dynamic field",
+        );
+        assert_eq!(second.lights_bytes[GPU_LIGHT_SIZE..], baked_tail);
+        assert_eq!(second.effective_brightness, [0.0]);
+        assert_eq!(
+            [
+                second.lights_bytes.as_ptr() as usize,
+                second.descriptor_bytes.as_ptr() as usize,
+                second.influence_bytes.as_ptr() as usize,
+                second.samples_bytes.as_ptr() as usize,
+                second.effective_brightness.as_ptr() as usize,
+                second.animated_window_brightness.as_ptr() as usize,
+                second.compose_descriptor_writes.as_ptr() as usize,
+            ],
+            staging_addresses,
+            "steady bridge updates must retain every staging allocation",
+        );
+    }
+
+    #[test]
+    fn animated_forward_tail_uses_rest_cone_and_reemits_authored_base_every_frame() {
+        let mut baked_spot = sample_spot_light();
+        baked_spot.is_dynamic = false;
+        baked_spot.animated_slot = Some(7);
+        let authored_rest_direction = glam::Vec3::from_array(baked_spot.cone_direction);
+
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked_spot], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: Some(0.0),
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(vec![0.25, 1.0]),
+            color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 1.0, 0.0])]),
+            // This curve affects neither the injected GpuLight direction nor
+            // its forward descriptor, so static-world depth can be cached
+            // against the authored rest cone.
+            direction: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let first = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        assert!(first.has_dirty_data);
+        assert_eq!(first.lights_bytes.len(), GPU_LIGHT_SIZE);
+        assert!(
+            packed_dynamic_direction(&first.lights_bytes).distance(authored_rest_direction)
+                <= 1.0e-6,
+            "the injected promoted light must hold its authored rest direction",
+        );
+        assert!(
+            first.descriptor_bytes[40..48].iter().all(|&byte| byte == 0),
+            "forward tail descriptors omit direction curves",
+        );
+        let authored_lights = first.lights_bytes.to_vec();
+        let staging_addresses = [
+            first.lights_bytes.as_ptr() as usize,
+            first.descriptor_bytes.as_ptr() as usize,
+            first.influence_bytes.as_ptr() as usize,
+            first.samples_bytes.as_ptr() as usize,
+            first.animated_window_brightness.as_ptr() as usize,
+        ];
+
+        let second = bridge.update(&mut registry, 0.1, 0.0).unwrap();
+        assert!(
+            second.has_dirty_data,
+            "the tail must overwrite prior color×w every frame"
+        );
+        assert_eq!(
+            second.lights_bytes, authored_lights,
+            "the bridge reemits the same unweighted authored base before renderer-side weighting",
+        );
+        assert_eq!(
+            [
+                second.lights_bytes.as_ptr() as usize,
+                second.descriptor_bytes.as_ptr() as usize,
+                second.influence_bytes.as_ptr() as usize,
+                second.samples_bytes.as_ptr() as usize,
+                second.animated_window_brightness.as_ptr() as usize,
+            ],
+            staging_addresses,
+            "steady animated-tail updates must reuse every renderer-facing staging allocation",
+        );
+    }
+
+    #[test]
+    fn promotion_window_includes_catmull_rom_interior_overshoot() {
+        let samples = [0.0, 1.0, 1.0, 0.0];
+        let closed = closed_curve_window_max(&samples, 0.25, 0.25);
+        let open = open_curve_window_max(&samples, 1.0 / 3.0, 2.0 / 3.0);
+
+        assert!((closed - 1.125).abs() < 1.0e-6, "closed max was {closed}");
+        assert!((open - 1.125).abs() < 1.0e-6, "open max was {open}");
+    }
+
+    #[test]
+    fn finite_baked_direction_completion_retains_rest_cone_and_terminal_dark_gate() {
+        let mut baked = sample_spot_light();
+        baked.is_dynamic = false;
+        baked.animated_slot = Some(7);
+        let rest = baked.cone_direction;
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[7]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 100.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: Some(true),
+            brightness: Some(vec![1.0, 0.0]),
+            color: None,
+            direction: Some(vec![Vec3Lit(rest), Vec3Lit([1.0, 0.0, 0.0])]),
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let completed = bridge.update(&mut registry, 0.11, 0.0).unwrap();
+
+        assert_eq!(
+            registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .cone_direction,
+            Some(rest)
+        );
+        assert!(
+            packed_dynamic_direction(completed.lights_bytes).distance(glam::Vec3::from_array(rest))
+                < 1.0e-6
+        );
+        assert_eq!(completed.animated_window_brightness, [0.0]);
+    }
+
+    #[test]
+    fn finite_dynamic_completion_reports_bright_and_black_terminal_radiance() {
+        let lights = [sample_dynamic_point_light(), sample_dynamic_point_light()];
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&lights, &mut registry, 0);
+        for index in 0..2 {
+            let id = bridge.entity_for_map_index(index).unwrap();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.animation = Some(LightAnimation {
+                period_ms: 100.0,
+                phase: None,
+                play_count: Some(1),
+                start_active: Some(true),
+                brightness: Some(vec![1.0, 0.5]),
+                color: (index == 1).then(|| vec![Vec3Lit([1.0; 3]), Vec3Lit([0.0; 3])]),
+                direction: None,
+                radius: None,
+            });
+            registry.set_component(id, component).unwrap();
+        }
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let completed = bridge.update(&mut registry, 0.11, 0.0).unwrap();
+
+        assert!((completed.effective_brightness[0] - 0.75).abs() < 1.0e-6);
+        assert_eq!(completed.effective_brightness[1], 0.0);
+    }
+
+    #[test]
+    fn black_base_color_curve_preserves_compose_forward_energy_at_all_weights() {
+        let mut baked = sample_point_light();
+        baked.intensity = 2.0;
+        baked.color = [0.0; 3];
+        baked.animated_slot = Some(0);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[baked], &mut registry, 0);
+        bridge.set_animated_baked_promotion_roster(&[0]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: None,
+            start_active: Some(true),
+            brightness: Some(vec![1.0]),
+            color: Some(vec![Vec3Lit([1.0, 0.25, 0.0])]),
+            direction: None,
+            radius: None,
+        });
+        registry.set_component(id, component).unwrap();
+        let update = bridge.update(&mut registry, 0.0, 0.0).unwrap();
+        let packed = [16, 20, 24].map(|offset| {
+            f32::from_ne_bytes(update.lights_bytes[offset..offset + 4].try_into().unwrap())
+        });
+        let forward_base = [16, 20, 24].map(|offset| {
+            f32::from_ne_bytes(
+                update.descriptor_bytes[offset..offset + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        });
+        let compose = &update.compose_descriptor_writes[0].1;
+        let compose_base = [16, 20, 24]
+            .map(|offset| f32::from_ne_bytes(compose[offset..offset + 4].try_into().unwrap()));
+        assert_eq!(packed, [2.0; 3]);
+        assert_eq!(forward_base, [1.0; 3]);
+        assert_eq!(compose_base, [2.0; 3]);
+        let sample = [1.0, 0.25, 0.0];
+        for weight in [0.0, 0.5, 1.0] {
+            let total = sample.map(|channel| {
+                channel * compose_base[0] * (1.0 - weight) + channel * packed[0] * weight
+            });
+            assert_eq!(total, [2.0, 0.5, 0.0]);
+        }
     }
 }

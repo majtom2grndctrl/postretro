@@ -3889,18 +3889,31 @@ impl ApplicationHandler for App {
                             self.script_time as f32,
                             frame_result.alpha,
                         ) {
-                            if update.has_dirty_data {
-                                renderer.upload_bridge_lights(&update.lights_bytes);
-                                renderer.upload_bridge_influences(&update.influence_bytes);
-                                renderer.upload_bridge_descriptors(&update.descriptor_bytes);
-                                renderer.upload_bridge_samples(&update.samples_bytes);
-                                // Fan out `_animated` descriptor updates to
-                                // the animated-compose buffer.
-                                for (slot, bytes) in &update.compose_descriptor_writes {
-                                    renderer.write_animated_compose_descriptor(*slot, bytes);
-                                }
+                            let snapshot_committed = if update.has_dirty_data {
+                                renderer.upload_light_bridge_snapshot(
+                                    update.lights_bytes,
+                                    update.influence_bytes,
+                                    update.descriptor_bytes,
+                                    update.samples_bytes,
+                                    update.effective_brightness,
+                                    update.animated_window_brightness,
+                                    update.compose_descriptor_writes,
+                                )
+                            } else {
+                                renderer
+                                    .set_light_effective_brightness(update.effective_brightness);
+                                renderer.set_animated_light_window_brightness(
+                                    update.animated_window_brightness,
+                                );
+                                true
+                            };
+                            if !snapshot_committed {
+                                // Renderer retained its prior coherent GPU and
+                                // promotion-gate state. Retry the entire bridge
+                                // transaction next frame instead of advancing
+                                // only the CPU-side dirty generation.
+                                session.light_bridge.retry_snapshot_upload();
                             }
-                            renderer.set_light_effective_brightness(&update.effective_brightness);
                         }
                     }
 

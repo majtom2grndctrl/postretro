@@ -136,56 +136,55 @@ fn rank_candidates(
         .collect()
 }
 
-/// A shadow-slot candidate in the unified (dynamic + promoted-static) ranking.
+/// A shadow-slot candidate in the unified (dynamic + promoted-baked) ranking.
 /// `candidate_index` indexes the renderer's shadow-candidate light list;
-/// `is_promoted_static` marks a compiler-selected static light competing for a
-/// promoted slot (subject to `promoted_cap`) — a dynamic-tier light has it
-/// `false`. Both tiers score through [`slot_score`] and compete on that score
-/// alone; no tier is reserved ahead of the sort.
+/// `is_promoted_baked` marks a baked light competing for a promoted slot
+/// (subject to `promoted_cap`) — a dynamic-tier light has it `false`. Both
+/// tiers score through [`slot_score`] and compete on that score alone; no tier
+/// is reserved ahead of the sort.
 #[derive(Clone, Copy, Debug)]
 pub struct SlotCandidate {
     pub candidate_index: usize,
     pub score: f32,
-    pub is_promoted_static: bool,
+    pub is_promoted_baked: bool,
 }
 
 /// The previous frame's occupant of a shadow slot, supplied so eviction
 /// hysteresis is tier-neutral: a challenger takes a held slot only when it
 /// out-scores the incumbent by the eviction margin, in BOTH directions
-/// (dynamic⇄static and dynamic⇄dynamic). Static incumbents are the promoted
+/// (dynamic⇄baked and dynamic⇄dynamic). Baked incumbents are the promoted
 /// lights still holding a slot with weight `w > 0` (including the demote sticky
-/// window, when the light is no longer a candidate); dynamic incumbents are the
-/// still-eligible lights that held a slot last frame. `score` is the incumbent's
-/// CURRENT-frame score so a camera jump is reflected before the comparison.
+/// window, when the light is no longer a candidate); dynamic incumbents are
+/// the still-eligible lights that held a slot last frame. `score` is the
+/// incumbent's current-frame score.
 #[derive(Clone, Copy, Debug)]
 pub struct SlotIncumbent {
     pub slot: usize,
     pub candidate_index: usize,
     pub score: f32,
-    pub is_promoted_static: bool,
+    pub is_promoted_baked: bool,
 }
 
 #[derive(Clone, Copy)]
 struct SlotOccupant {
     candidate_index: usize,
     score: f32,
-    is_promoted_static: bool,
+    is_promoted_baked: bool,
 }
 
 /// Assign shadow-pool slots from a unified candidate set with tier-neutral
-/// eviction hysteresis and a promoted-static cap.
+/// eviction hysteresis and a promoted-baked cap.
 ///
-/// Dynamic and promoted-static candidates compete on `score` alone — the
-/// pre-emptive static reservation is gone, so a weaker static no longer beats a
-/// stronger dynamic for a slot. Prior-frame `incumbents` seed the slots: a held
+/// Dynamic and promoted-baked candidates compete on `score` alone. Prior-frame
+/// `incumbents` seed the slots: a held
 /// slot stays the incumbent's until a challenger out-scores its occupant by
 /// `eviction_margin`, applied regardless of tier and in both directions.
-/// `promoted_cap` bounds how many promoted-static lights may occupy the pool at
-/// once — a static challenger already at the cap may only swap into a slot
-/// another static holds, never grow the static population by taking a free or
-/// dynamic-held slot, so statics keep their budget even when they win on score.
+/// `promoted_cap` bounds how many promoted-baked lights may occupy the pool at
+/// once. A baked challenger already at the cap may only swap into another
+/// baked light's slot, never grow the promoted population through a free or
+/// dynamic-held slot.
 ///
-/// The handoff errs dark: an evicted static simply loses its slot here; its
+/// The handoff errs dark: an evicted baked light simply loses its slot here; its
 /// weight ramp-down (the SH-delta subtraction) is the renderer's job.
 ///
 /// Returns a `candidate_count`-length Vec indexed by candidate index: each entry
@@ -203,7 +202,7 @@ pub fn assign_slots_with_hysteresis(
     let mut promoted_count = 0usize;
 
     // Seed prior-frame occupants. A held slot is the incumbent's until a stronger
-    // challenger displaces it — this is the hysteresis. Static sticky-window
+    // challenger displaces it — this is the hysteresis. Baked sticky-window
     // incumbents that are no longer candidates hold their slot here too (their
     // weight ramps down while the slot stays assigned).
     for inc in incumbents {
@@ -213,18 +212,18 @@ pub fn assign_slots_with_hysteresis(
         if slots[inc.slot].is_some() || assignment[inc.candidate_index] != NO_SHADOW_SLOT {
             continue;
         }
-        if inc.is_promoted_static && promoted_count >= promoted_cap {
+        if inc.is_promoted_baked && promoted_count >= promoted_cap {
             // Defensive: a prior frame already honoured the cap, so this should
-            // not fire — but never seed more statics than the budget.
+            // not fire — but never seed more baked lights than the budget.
             continue;
         }
         slots[inc.slot] = Some(SlotOccupant {
             candidate_index: inc.candidate_index,
             score: inc.score,
-            is_promoted_static: inc.is_promoted_static,
+            is_promoted_baked: inc.is_promoted_baked,
         });
         assignment[inc.candidate_index] = inc.slot as u32;
-        if inc.is_promoted_static {
+        if inc.is_promoted_baked {
             promoted_count += 1;
         }
     }
@@ -239,20 +238,20 @@ pub fn assign_slots_with_hysteresis(
             // Already holds a slot (an incumbent) — hysteresis keeps it.
             continue;
         }
-        let cand_static = cand.is_promoted_static;
-        // A static already at the cap may not grow the static population; it can
-        // only swap into another static's slot below.
-        let may_grow_static = !cand_static || promoted_count < promoted_cap;
+        let cand_baked = cand.is_promoted_baked;
+        // A baked light already at the cap may not grow the promoted population;
+        // it can only swap into another baked light's slot below.
+        let may_grow_promoted = !cand_baked || promoted_count < promoted_cap;
 
-        if may_grow_static {
+        if may_grow_promoted {
             if let Some(free) = slots.iter().position(|slot| slot.is_none()) {
                 slots[free] = Some(SlotOccupant {
                     candidate_index: cand.candidate_index,
                     score: cand.score,
-                    is_promoted_static: cand_static,
+                    is_promoted_baked: cand_baked,
                 });
                 assignment[cand.candidate_index] = free as u32;
-                if cand_static {
+                if cand_baked {
                     promoted_count += 1;
                 }
                 continue;
@@ -260,15 +259,15 @@ pub fn assign_slots_with_hysteresis(
         }
 
         // No free slot the candidate may take — try to evict the weakest
-        // incumbent it is allowed to displace. A capped static may only take a
-        // slot another static holds (swap; net count unchanged); every other
+        // incumbent it is allowed to displace. A capped baked light may only
+        // take a slot another baked light holds (swap; net count unchanged); every other
         // candidate may evict any tier.
-        let static_only = cand_static && promoted_count >= promoted_cap;
+        let promoted_only = cand_baked && promoted_count >= promoted_cap;
         let target = slots
             .iter()
             .enumerate()
             .filter_map(|(slot, occ)| occ.as_ref().map(|occ| (slot, *occ)))
-            .filter(|(_, occ)| !static_only || occ.is_promoted_static)
+            .filter(|(_, occ)| !promoted_only || occ.is_promoted_baked)
             .min_by(|(_, a), (_, b)| {
                 a.score
                     .partial_cmp(&b.score)
@@ -277,16 +276,16 @@ pub fn assign_slots_with_hysteresis(
         if let Some((slot, occ)) = target {
             if challenger_can_evict(cand.score, occ.score, eviction_margin) {
                 assignment[occ.candidate_index] = NO_SHADOW_SLOT;
-                if occ.is_promoted_static {
+                if occ.is_promoted_baked {
                     promoted_count -= 1;
                 }
                 slots[slot] = Some(SlotOccupant {
                     candidate_index: cand.candidate_index,
                     score: cand.score,
-                    is_promoted_static: cand_static,
+                    is_promoted_baked: cand_baked,
                 });
                 assignment[cand.candidate_index] = slot as u32;
-                if cand_static {
+                if cand_baked {
                     promoted_count += 1;
                 }
             }
@@ -638,7 +637,7 @@ mod tests {
         SlotCandidate {
             candidate_index,
             score,
-            is_promoted_static: false,
+            is_promoted_baked: false,
         }
     }
 
@@ -646,7 +645,7 @@ mod tests {
         SlotCandidate {
             candidate_index,
             score,
-            is_promoted_static: true,
+            is_promoted_baked: true,
         }
     }
 
@@ -666,7 +665,7 @@ mod tests {
             slot: 0,
             candidate_index: 0,
             score: 1.0,
-            is_promoted_static: true,
+            is_promoted_baked: true,
         }];
         let challengers = [static_candidate(1, 1.251)];
 
@@ -687,7 +686,7 @@ mod tests {
             slot: 0,
             candidate_index: 0,
             score: 1.0,
-            is_promoted_static: true,
+            is_promoted_baked: true,
         }];
         let challengers = [dynamic_candidate(1, 1.251)];
 
@@ -706,7 +705,7 @@ mod tests {
             slot: 0,
             candidate_index: 0,
             score: 1.0,
-            is_promoted_static: false,
+            is_promoted_baked: false,
         }];
         let challengers = [static_candidate(1, 1.251)];
 
@@ -726,7 +725,7 @@ mod tests {
             slot: 0,
             candidate_index: 0,
             score: 1.0,
-            is_promoted_static: false,
+            is_promoted_baked: false,
         }];
         let challengers = [dynamic_candidate(1, 1.1)];
 
@@ -750,13 +749,13 @@ mod tests {
                 slot: 0,
                 candidate_index: 0,
                 score: 1.0,
-                is_promoted_static: true,
+                is_promoted_baked: true,
             },
             SlotIncumbent {
                 slot: 1,
                 candidate_index: 1,
                 score: 0.5,
-                is_promoted_static: false,
+                is_promoted_baked: false,
             },
         ];
         let challengers = [static_candidate(2, 5.0)];

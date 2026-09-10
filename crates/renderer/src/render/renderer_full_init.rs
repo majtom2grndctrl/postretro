@@ -2,7 +2,7 @@
 // built from boot state (the boot phase lives in `renderer_init.rs`).
 // See: context/lib/rendering_pipeline.md
 
-use super::renderer_types::{FullRenderer, PromotedStaticLightState};
+use super::renderer_types::{FullRenderer, PromotedBakedLightState};
 use super::*;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from
@@ -53,6 +53,20 @@ pub(crate) fn build_full_renderer(
     let dynamic_influences = filtered_level_lights.influences;
     let level_light_source_indices = filtered_level_lights.source_indices;
     let entity_shadow_indices = geometry.map(|g| g.entity_shadow_lights).unwrap_or(&[]);
+    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) = geometry
+        .and_then(|g| g.animated_direct_sh_delta_volumes)
+        .map_or((&[][..], &[][..]), |section| {
+            (
+                section.animation_descriptor_indices.as_slice(),
+                section.affinity_lights.as_slice(),
+            )
+        });
+    let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
+        full_lights,
+        full_influences,
+        animated_baked_descriptor_indices,
+        animated_baked_affinity_lights,
+    );
     let selected_static = filter_selected_static_entity_shadow_lights(
         full_lights,
         full_influences,
@@ -62,11 +76,13 @@ pub(crate) fn build_full_renderer(
         full_lights,
         full_influences,
         entity_shadow_indices,
+        &animated_baked_candidates,
     );
     let shadow_candidate_lights = filtered_shadow_candidates.lights;
     let shadow_candidate_influences = filtered_shadow_candidates.influences;
     let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
     let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
+    let shadow_candidate_animated_baked_indices = filtered_shadow_candidates.animated_baked_indices;
     let light_count = level_lights.len() as u32;
     let ambient_floor = DEFAULT_AMBIENT_FLOOR;
     let sh_fast_env = std::env::var("POSTRETRO_SH_FAST").ok();
@@ -200,7 +216,11 @@ pub(crate) fn build_full_renderer(
         bloom_render_profile,
     );
 
-    let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
+    let scripted_light_capacity = scripted_light_capacity(
+        full_lights.len(),
+        level_lights.len(),
+        animated_baked_descriptor_indices,
+    );
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
@@ -353,12 +373,13 @@ pub(crate) fn build_full_renderer(
         &depth_view,
         cube_sampling_view,
     );
-    // Only allocate the promoted-slot cache when the map has a non-empty
-    // entity-shadow selection; an empty/absent selection can never promote a
-    // light. Construction precedes mesh/kinematic bind-group wiring so their
-    // new sampleable cache bindings can reference it immediately.
-    let promoted_depth_cache = (!entity_shadow_indices.is_empty())
-        .then(|| PromotedDepthCache::new(device, cube_array_supported));
+    // Both selected-static and section-45 animated-baked candidates use the
+    // fixed-projection promoted cache. Construction precedes mesh/kinematic
+    // bind-group wiring so their sampleable cache bindings are valid even for
+    // an animated-only map.
+    let promoted_depth_cache = (!entity_shadow_indices.is_empty()
+        || !animated_baked_candidates.is_empty())
+    .then(|| PromotedDepthCache::new(device, cube_array_supported));
     let dynamic_depth_cache = DynamicDepthCacheGpu::new(
         device,
         dynamic_depth_cache::DynamicCacheAllocation::for_lights(
@@ -589,6 +610,7 @@ pub(crate) fn build_full_renderer(
         influence_buffer,
         dynamic_light_capacity: level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
         light_count,
+        animated_baked_light_count: animated_baked_descriptor_indices.len(),
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         frame_light_term_mask: LightTermMask::ALL,
@@ -640,8 +662,12 @@ pub(crate) fn build_full_renderer(
         shadow_candidate_lights,
         shadow_candidate_source_indices,
         shadow_candidate_selection_indices,
+        shadow_candidate_animated_baked_indices,
         shadow_candidate_influences,
         light_effective_brightness: Vec::new(),
+        // Fail closed until the bridge supplies the current section-45 window
+        // maxima; raw roster length preserves holes in AnimatedBakedLights.
+        animated_light_window_brightness: vec![0.0; animated_baked_descriptor_indices.len()],
         last_camera_position: Vec3::ZERO,
         last_view_proj: Mat4::IDENTITY,
         spot_shadow_pool,
@@ -649,15 +675,22 @@ pub(crate) fn build_full_renderer(
         kinematic_brush,
         rigid_occluder_depth,
         promoted_static_states: vec![
-            PromotedStaticLightState::default();
+            PromotedBakedLightState::default();
             entity_shadow_indices.len()
         ],
-        promoted_static_records: Vec::new(),
-        promoted_static_cache_layers: Vec::new(),
+        // Raw section-45 length, not compact candidate count: an unavailable
+        // bake-only MapLight leaves a hole but later candidates keep their
+        // AnimatedBakedLights index for the promotion weight and depth cache.
+        promoted_animated_states: vec![
+            PromotedBakedLightState::default();
+            animated_baked_descriptor_indices.len()
+        ],
+        promoted_baked_records: Vec::new(),
+        promoted_baked_cache_layers: Vec::new(),
         promoted_static_weights: vec![0.0; entity_shadow_indices.len()],
         promoted_static_weight_buffer,
         promoted_static_weight_scratch: Vec::new(),
-        promoted_static_last_update_time: None,
+        promoted_baked_last_update_time: None,
         promoted_depth_cache,
         promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),

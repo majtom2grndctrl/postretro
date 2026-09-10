@@ -20,6 +20,18 @@ fn array_layers_sufficient(limit: u32) -> bool {
     limit >= REQUIRED_MAX_TEXTURE_ARRAY_LAYERS
 }
 
+/// Capacity shared by the forward animation-descriptor and scripted-sample
+/// buffers. The bridge emits every raw section-45 roster row, including holes
+/// and duplicate descriptor indices, after the compact dynamic prefix.
+pub(crate) fn scripted_light_capacity(
+    authored_light_count: usize,
+    dynamic_light_count: usize,
+    animated_baked_descriptor_indices: &[u32],
+) -> usize {
+    authored_light_count.max(dynamic_light_count + animated_baked_descriptor_indices.len())
+        + RUNTIME_DYNAMIC_LIGHT_RESERVE
+}
+
 /// GPU timing uses pass-descriptor timestamps for individual render/compute
 /// passes and encoder-level timestamps for spans containing copies or several
 /// passes. wgpu exposes those operations as separate device features.
@@ -316,8 +328,13 @@ pub(crate) fn build_lighting_bind_group(
     let promoted_capacity = geometry
         .map(|g| g.entity_shadow_lights.len())
         .unwrap_or_default();
+    let animated_baked_capacity = geometry
+        .and_then(|g| g.animated_direct_sh_delta_volumes)
+        .map(|section| section.animation_descriptor_indices.len())
+        .unwrap_or_default();
     let dynamic_light_capacity = level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
-    let light_record_capacity = (dynamic_light_capacity + promoted_capacity).max(1);
+    let light_record_capacity =
+        (dynamic_light_capacity + animated_baked_capacity + promoted_capacity).max(1);
     // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
     let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
     if !level_lights.is_empty() {
@@ -333,6 +350,7 @@ pub(crate) fn build_lighting_bind_group(
     // Influence volume buffer — same dummy strategy as lights.
     let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
         dynamic_light_capacity,
+        animated_baked_capacity,
         promoted_capacity,
     );
     let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
@@ -624,6 +642,7 @@ pub(crate) fn build_initial_uniform_data(
         // No level loaded yet — `has_direct` reflects the direct SH section
         // once geometry installs (see `update_per_frame_uniforms`).
         has_direct: false,
+        animated_baked_light_count: 0,
         spec_shadowmask_force_one: false,
     })
 }
@@ -692,5 +711,26 @@ mod tests {
             array_layers_sufficient(2048),
             "well above the floor must be accepted",
         );
+    }
+
+    #[test]
+    fn scripted_capacity_counts_sparse_duplicate_raw_tail_past_runtime_reserve() {
+        let mut animated_roster = vec![u32::MAX; 129];
+        animated_roster.extend(std::iter::repeat_n(7, 128));
+
+        let capacity = scripted_light_capacity(4, 3, &animated_roster);
+
+        assert_eq!(animated_roster.len(), 257);
+        assert_eq!(capacity, 3 + RUNTIME_DYNAMIC_LIGHT_RESERVE + 257);
+        assert!(
+            capacity > 4 + RUNTIME_DYNAMIC_LIGHT_RESERVE,
+            "capacity must follow raw tail cardinality, not authored map-light count",
+        );
+    }
+    #[test]
+    fn scripted_capacity_retains_static_authored_sample_slots() {
+        let capacity = scripted_light_capacity(12, 2, &[7]);
+
+        assert_eq!(capacity, 12 + RUNTIME_DYNAMIC_LIGHT_RESERVE);
     }
 }

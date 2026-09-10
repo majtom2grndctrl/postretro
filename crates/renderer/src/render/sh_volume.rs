@@ -100,9 +100,9 @@ pub struct ShVolumeResources {
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
-    /// Fixed-capacity, zero-initialized forward descriptor buffer. Authored
-    /// lights plus the runtime-spawn reserve fit without a GPU rebind. The
-    /// dynamic-direct loop reads only its compact `light_count` prefix.
+    /// Fixed-capacity, zero-initialized forward descriptor buffer. The compact
+    /// dynamic prefix, raw animated-baked tail, and runtime-spawn reserve fit
+    /// without a GPU rebind.
     pub scripted_light_descriptors: wgpu::Buffer,
     #[allow(dead_code)]
     pub scripted_light_count: u32,
@@ -470,9 +470,9 @@ impl ShVolumeResources {
         let (anim_descriptor_bytes, mut anim_sample_bytes, animated_light_count) =
             build_animation_buffers(usable);
 
-        // Append the scripted-animation region: one slot per map light.
-        // FGD samples occupy [0, scripted_sample_byte_offset); scripted samples
-        // follow. The LightBridge writes into this region at runtime.
+        // Append the scripted-animation region: one slot per forward descriptor
+        // record, including every raw animated-baked tail row. FGD samples occupy
+        // [0, scripted_sample_byte_offset); scripted samples follow.
         let scripted_sample_byte_offset = anim_sample_bytes.len();
         let scripted_region_bytes = scripted_light_capacity * SCRIPTED_FLOATS_PER_LIGHT * 4;
         anim_sample_bytes.extend(std::iter::repeat_n(0u8, scripted_region_bytes));

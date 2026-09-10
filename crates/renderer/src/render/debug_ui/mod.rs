@@ -142,7 +142,6 @@ pub struct DiagnosticsState {
     pub direct_sh_override_weight: f32,
     pub animated_direct_sh_override_enabled: bool,
     pub animated_direct_sh_override_light_index: u32,
-    pub animated_direct_sh_override_weight: f32,
     // SDF and fog controls are seeded from live renderer values on first draw;
     // see the `seeded` flag below.
     pub sdf_max_march_steps: u32,
@@ -180,7 +179,6 @@ impl Default for DiagnosticsState {
             direct_sh_override_weight: 0.0,
             animated_direct_sh_override_enabled: false,
             animated_direct_sh_override_light_index: 0,
-            animated_direct_sh_override_weight: 0.0,
             // Placeholder values overwritten by the seed-from-renderer pass on
             // first draw (see `draw_diagnostics_panel`). Match the SDF /
             // fog defaults so the struct is still legible in isolation.
@@ -285,7 +283,6 @@ pub fn draw_diagnostics_panel(
         let animated_direct_override = renderer.animated_direct_sh_debug_override();
         state.animated_direct_sh_override_enabled = animated_direct_override.enabled;
         state.animated_direct_sh_override_light_index = animated_direct_override.light_index;
-        state.animated_direct_sh_override_weight = animated_direct_override.weight;
         // Pull live SDF and fog tuning so sliders open at the engine's current
         // values, not the struct-default placeholders.
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
@@ -448,17 +445,6 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                     animated_direct_changed = true;
                 }
             });
-            ui.label("Animated Direct SH Delta Weight");
-            if ui
-                .add(egui::Slider::new(
-                    &mut state.animated_direct_sh_override_weight,
-                    0.0_f32..=1.0,
-                ))
-                .changed()
-            {
-                animated_direct_override.weight = state.animated_direct_sh_override_weight;
-                animated_direct_changed = true;
-            }
             if animated_direct_changed {
                 renderer.set_animated_direct_sh_debug_override(animated_direct_override);
             }

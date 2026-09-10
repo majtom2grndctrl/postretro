@@ -1293,41 +1293,11 @@
 }
 // entity 11
 {
-"classname" "kinematic_mover"
-"name" "campaign_plus_bridge_crusher"
-"path" "campaign_plus_bridge_crusher_up"
-"speed" "0.8"
-"wait_ms" "1250"
-"move_mode" "ping_pong"
-"start_on_spawn" "0"
-"block_policy" "crush"
-"crush_damage" "15"
-"crush_interval_ms" "500"
-"_tags" "campaign_e17 campaign_plus_bridge_crusher"
-// brush 0
-{
-( 1760 576 400 ) ( 1760 448 448 ) ( 1760 448 400 ) metal/metal_rough_046a 0 0 0 1 1
-( 1760 448 400 ) ( 1888 448 448 ) ( 1888 448 400 ) metal/metal_rough_046a 0 0 0 1 1
-( 1760 448 400 ) ( 1888 576 400 ) ( 1760 576 400 ) metal/metal_rough_046a 0 0 0 1 1
-( 1760 576 448 ) ( 1888 448 448 ) ( 1760 448 448 ) metal/metal_rough_046a 0 0 0 1 1
-( 1888 576 400 ) ( 1760 576 448 ) ( 1760 576 400 ) metal/metal_rough_046a 0 0 0 1 1
-( 1888 448 400 ) ( 1888 576 448 ) ( 1888 576 400 ) metal/metal_rough_046a 0 0 0 1 1
-}
-}
-// entity 12
-{
-"classname" "kinematic_waypoint"
-"name" "campaign_plus_bridge_crusher_up"
-"next" "campaign_plus_bridge_crusher_down"
-"origin" "1824 512 424"
-}
-// entity 13
-{
 "classname" "kinematic_waypoint"
 "name" "campaign_plus_bridge_crusher_down"
 "origin" "1824 528 56"
 }
-// entity 14
+// entity 12
 {
 "classname" "trigger_volume"
 "name" "campaign_plus_bridge_crusher_start_pad"
@@ -1348,13 +1318,13 @@
 ( 1888 448 0 ) ( 1888 576 96 ) ( 1888 576 0 ) debug_ceiling_grey 0 0 0 1 1
 }
 }
-// entity 15
+// entity 13
 {
 "classname" "player_spawn"
 "origin" "1808 2592 72"
 "angle" "90"
 }
-// entity 16
+// entity 14
 {
 "classname" "light"
 "origin" "1824 2080 440"
@@ -1365,7 +1335,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 17
+// entity 15
 {
 "classname" "light_dynamic_spot"
 "origin" "112 960 300"
@@ -1376,17 +1346,21 @@
 "angles" "-15 -38.7 0"
 "_light_radius" "800"
 }
-// entity 18
+// entity 16
 {
-"classname" "light"
-"origin" "1824 512 400"
+"classname" "light_spot"
+"origin" "1824 512 448"
 "light" "400"
 "_color" "255 150 100"
 "_falloff_range" "1024"
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
+"angles" "-90 0 0"
+"_cone2" "80"
+"_cone" "30"
+"_tags" "crusher_pulse_light"
 }
-// entity 19
+// entity 17
 {
 "classname" "light"
 "origin" "-1184 2080 432"
@@ -1396,7 +1370,7 @@
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
-// entity 20
+// entity 18
 {
 "classname" "light_dynamic_spot"
 "origin" "424 968 300"
@@ -1407,7 +1381,7 @@
 "angles" "-15 -60.6 0"
 "_light_radius" "800"
 }
-// entity 21
+// entity 19
 {
 "classname" "light_dynamic_spot"
 "origin" "968 952 300"
@@ -1418,7 +1392,7 @@
 "angles" "-15 -130.6 0"
 "_light_radius" "800"
 }
-// entity 22
+// entity 20
 {
 "classname" "light_dynamic_spot"
 "origin" "768 960 300"
@@ -1429,7 +1403,7 @@
 "angles" "-15 -100.3 0"
 "_light_radius" "800"
 }
-// entity 23
+// entity 21
 {
 "classname" "light_dynamic_spot"
 "origin" "936 664 300"
@@ -1440,7 +1414,7 @@
 "angles" "-15 -154.7 0"
 "_light_radius" "800"
 }
-// entity 24
+// entity 22
 {
 "classname" "light_dynamic_spot"
 "origin" "936 408 300"
@@ -1451,7 +1425,7 @@
 "angles" "-15 159.6 0"
 "_light_radius" "800"
 }
-// entity 25
+// entity 23
 {
 "classname" "light_dynamic_spot"
 "origin" "920 136 300"
@@ -1462,7 +1436,7 @@
 "angles" "-15 131.7 0"
 "_light_radius" "800"
 }
-// entity 26
+// entity 24
 {
 "classname" "light_dynamic_spot"
 "origin" "120 88 300"
@@ -1473,7 +1447,7 @@
 "angles" "-15 44.0 0"
 "_light_radius" "800"
 }
-// entity 27
+// entity 25
 {
 "classname" "light_dynamic_spot"
 "origin" "448 64 300"
@@ -1484,7 +1458,7 @@
 "angles" "-15 66.5 0"
 "_light_radius" "800"
 }
-// entity 28
+// entity 26
 {
 "classname" "light_dynamic_spot"
 "origin" "744 72 300"
@@ -1495,7 +1469,7 @@
 "angles" "-15 106.1 0"
 "_light_radius" "800"
 }
-// entity 29
+// entity 27
 {
 "classname" "light_spot"
 "origin" "-600 2408 104"
@@ -1508,19 +1482,19 @@
 "_cone2" "25"
 "_shadow_type" "static_light_map"
 }
-// entity 30
+// entity 28
 {
 "classname" "game_rotator_driver"
 "origin" "640 384 96"
 "_tags" "rotatorDriver"
 }
-// entity 31
+// entity 29
 {
 "classname" "game_damage_source"
 "origin" "384 384 96"
 "_tags" "damageSource"
 }
-// entity 32
+// entity 30
 {
 "classname" "light"
 "origin" "1248 2576 440"
@@ -1531,7 +1505,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 33
+// entity 31
 {
 "classname" "light"
 "origin" "2400 2656 552"
@@ -1542,7 +1516,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 34
+// entity 32
 {
 "classname" "light"
 "origin" "2416 1488 552"
@@ -1553,7 +1527,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 35
+// entity 33
 {
 "classname" "light"
 "origin" "1248 1568 440"
@@ -1564,7 +1538,7 @@
 "light" "150"
 "_shadow_type" "static_light_map"
 }
-// entity 36
+// entity 34
 {
 "classname" "fog_volume"
 "edge_softness" "0.25"
@@ -1579,13 +1553,13 @@
 ( 1639.7645019878214 1522.7451660040651 138.98066401624388 ) ( 1639.7645019878214 1522.7451660040651 629.0193359837575 ) ( 1813.0193359837601 1696 384 ) concrete_stone_022 0.52801514 0.47320557 54.735603 1.1722113 1.1722113
 }
 }
-// entity 37
+// entity 35
 {
 "classname" "fog_lamp"
 "origin" "1832 2088 440"
 "_tags" "pulse_fog"
 }
-// entity 38
+// entity 36
 {
 "classname" "fog_volume"
 "_tags" ""
@@ -1605,7 +1579,7 @@
 ( -752 1440 608 ) ( -752 2720 608 ) ( -752 2720 240 ) concrete_stone_030 0 -0.14284897 0 5 7
 }
 }
-// entity 39
+// entity 37
 {
 "classname" "light_spot"
 "origin" "-1184 2080 272"
@@ -1618,7 +1592,7 @@
 "_cone2" "60"
 "s" "static_light_map"
 }
-// entity 40
+// entity 38
 {
 "classname" "func_group"
 "_tb_type" "_tb_group"
@@ -1627,7 +1601,7 @@
 "_tb_linked_group_id" "{6bd87f46-d2bc-42bd-93d0-f0a29282d027}"
 "_tb_transformation" "1 0 0 0 0 1 0 0 0 0 1 48 0 0 0 1"
 }
-// entity 41
+// entity 39
 {
 "classname" "light"
 "origin" "-1800 1896 188"
@@ -1639,7 +1613,7 @@
 "_shadow_type" "static_light_map"
 "_tb_group" "2"
 }
-// entity 42
+// entity 40
 {
 "classname" "light"
 "origin" "-1800 2296 188"
@@ -1651,7 +1625,7 @@
 "_shadow_type" "static_light_map"
 "_tb_group" "2"
 }
-// entity 43
+// entity 41
 {
 "classname" "light"
 "origin" "-1368 2616 188"
@@ -1663,7 +1637,7 @@
 "_shadow_type" "static_light_map"
 "_tb_group" "2"
 }
-// entity 44
+// entity 42
 {
 "classname" "light"
 "origin" "-1336 1560 188"
@@ -1675,7 +1649,7 @@
 "_shadow_type" "static_light_map"
 "_tb_group" "2"
 }
-// entity 45
+// entity 43
 {
 "classname" "func_group"
 "_tb_type" "_tb_group"
@@ -1683,7 +1657,7 @@
 "_tb_id" "4"
 "_tb_linked_group_id" "{ac370c0e-154f-4c8f-8070-a19493a39f7a}"
 }
-// entity 46
+// entity 44
 {
 "classname" "light_dynamic"
 "origin" "-208 2288 268"
@@ -1693,7 +1667,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 47
+// entity 45
 {
 "classname" "light_dynamic"
 "origin" "-176 2416 140"
@@ -1703,7 +1677,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 48
+// entity 46
 {
 "classname" "light_dynamic"
 "origin" "-208 2048 284"
@@ -1713,7 +1687,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 49
+// entity 47
 {
 "classname" "light_dynamic"
 "origin" "-224 1792 284"
@@ -1723,7 +1697,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 50
+// entity 48
 {
 "classname" "light_dynamic"
 "origin" "-176 1648 172"
@@ -1733,7 +1707,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 51
+// entity 49
 {
 "classname" "light_dynamic"
 "origin" "-176 1904 172"
@@ -1743,7 +1717,7 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 52
+// entity 50
 {
 "classname" "light_dynamic"
 "origin" "-176 2160 172"
@@ -1753,24 +1727,24 @@
 "_tags" "arena_wave_2"
 "_tb_group" "4"
 }
-// entity 53
+// entity 51
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1720 2344 72"
 "angles" "0 180 0"
 }
-// entity 54
+// entity 52
 {
 "classname" "sci_fi_trooper_m"
 "origin" "472 504 72"
 }
-// entity 55
+// entity 53
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1240 2136 88"
 "angles" "0 180 0"
 }
-// entity 56
+// entity 54
 {
 "classname" "func_group"
 "_tb_type" "_tb_group"
@@ -1779,7 +1753,7 @@
 "_tb_linked_group_id" "{fe6a80e4-da44-40d8-9f01-454fe730a201}"
 "_tb_transformation" "1 0 0 0 0 1 0 0 0 0 1 -64 0 0 0 1"
 }
-// entity 57
+// entity 55
 {
 "classname" "billboard_emitter"
 "origin" "-1272 2440 -24"
@@ -1793,7 +1767,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 58
+// entity 56
 {
 "classname" "billboard_emitter"
 "origin" "-1320 2296 -24"
@@ -1807,7 +1781,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 59
+// entity 57
 {
 "classname" "billboard_emitter"
 "origin" "-1416 2120 -8"
@@ -1821,7 +1795,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 60
+// entity 58
 {
 "classname" "billboard_emitter"
 "origin" "-1112 2312 -24"
@@ -1835,7 +1809,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 61
+// entity 59
 {
 "classname" "billboard_emitter"
 "origin" "-1560 1944 -8"
@@ -1849,7 +1823,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 62
+// entity 60
 {
 "classname" "billboard_emitter"
 "origin" "-1352 1848 -24"
@@ -1863,7 +1837,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 63
+// entity 61
 {
 "classname" "billboard_emitter"
 "origin" "-1192 1720 -24"
@@ -1877,7 +1851,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 64
+// entity 62
 {
 "classname" "billboard_emitter"
 "origin" "-1192 1752 -8"
@@ -1891,7 +1865,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 65
+// entity 63
 {
 "classname" "billboard_emitter"
 "origin" "-1464 1992 -8"
@@ -1905,7 +1879,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 66
+// entity 64
 {
 "classname" "billboard_emitter"
 "origin" "-1624 2120 -8"
@@ -1919,7 +1893,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 67
+// entity 65
 {
 "classname" "billboard_emitter"
 "origin" "-1416 2024 -8"
@@ -1933,7 +1907,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 68
+// entity 66
 {
 "classname" "billboard_emitter"
 "origin" "-1304 1784 -8"
@@ -1947,7 +1921,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 69
+// entity 67
 {
 "classname" "billboard_emitter"
 "origin" "-1256 2248 -40"
@@ -1961,7 +1935,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 70
+// entity 68
 {
 "classname" "billboard_emitter"
 "origin" "-1512 2216 -8"
@@ -1975,7 +1949,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 71
+// entity 69
 {
 "classname" "billboard_emitter"
 "origin" "-1560 2072 -8"
@@ -1989,7 +1963,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 72
+// entity 70
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1944 -24"
@@ -2003,7 +1977,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 73
+// entity 71
 {
 "classname" "billboard_emitter"
 "origin" "-1272 1832 -24"
@@ -2017,7 +1991,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 74
+// entity 72
 {
 "classname" "billboard_emitter"
 "origin" "-1160 1800 -24"
@@ -2031,7 +2005,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 75
+// entity 73
 {
 "classname" "billboard_emitter"
 "origin" "-1208 1656 -24"
@@ -2045,7 +2019,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 76
+// entity 74
 {
 "classname" "billboard_emitter"
 "origin" "-1256 2536 -24"
@@ -2059,7 +2033,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 77
+// entity 75
 {
 "classname" "billboard_emitter"
 "origin" "-1144 2504 -24"
@@ -2073,7 +2047,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 78
+// entity 76
 {
 "classname" "billboard_emitter"
 "origin" "-1192 2360 -24"
@@ -2087,7 +2061,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 79
+// entity 77
 {
 "classname" "billboard_emitter"
 "origin" "-1032 2440 -24"
@@ -2101,7 +2075,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 80
+// entity 78
 {
 "classname" "billboard_emitter"
 "origin" "-920 2408 -24"
@@ -2115,7 +2089,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 81
+// entity 79
 {
 "classname" "billboard_emitter"
 "origin" "-968 2264 -24"
@@ -2129,7 +2103,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 82
+// entity 80
 {
 "classname" "billboard_emitter"
 "origin" "-984 2664 -24"
@@ -2143,7 +2117,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 83
+// entity 81
 {
 "classname" "billboard_emitter"
 "origin" "-872 2632 -24"
@@ -2157,7 +2131,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 84
+// entity 82
 {
 "classname" "billboard_emitter"
 "origin" "-920 2488 -24"
@@ -2171,7 +2145,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 85
+// entity 83
 {
 "classname" "billboard_emitter"
 "origin" "-1080 2456 -24"
@@ -2185,7 +2159,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 86
+// entity 84
 {
 "classname" "billboard_emitter"
 "origin" "-968 2424 -24"
@@ -2199,7 +2173,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 87
+// entity 85
 {
 "classname" "billboard_emitter"
 "origin" "-1016 2280 -24"
@@ -2213,7 +2187,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 88
+// entity 86
 {
 "classname" "billboard_emitter"
 "origin" "-728 2408 -40"
@@ -2227,7 +2201,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 89
+// entity 87
 {
 "classname" "billboard_emitter"
 "origin" "-776 2264 -40"
@@ -2241,7 +2215,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 90
+// entity 88
 {
 "classname" "billboard_emitter"
 "origin" "-664 1832 -56"
@@ -2255,7 +2229,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 91
+// entity 89
 {
 "classname" "billboard_emitter"
 "origin" "-552 1800 -56"
@@ -2269,7 +2243,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 92
+// entity 90
 {
 "classname" "billboard_emitter"
 "origin" "-600 1656 -56"
@@ -2283,7 +2257,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 93
+// entity 91
 {
 "classname" "billboard_emitter"
 "origin" "-904 1880 -56"
@@ -2297,7 +2271,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 94
+// entity 92
 {
 "classname" "billboard_emitter"
 "origin" "-792 1848 -56"
@@ -2311,7 +2285,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 95
+// entity 93
 {
 "classname" "billboard_emitter"
 "origin" "-840 1704 -56"
@@ -2325,7 +2299,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 96
+// entity 94
 {
 "classname" "billboard_emitter"
 "origin" "-616 2232 -56"
@@ -2339,7 +2313,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 97
+// entity 95
 {
 "classname" "billboard_emitter"
 "origin" "-504 2200 -56"
@@ -2353,7 +2327,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 98
+// entity 96
 {
 "classname" "billboard_emitter"
 "origin" "-552 2056 -56"
@@ -2367,7 +2341,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 99
+// entity 97
 {
 "classname" "billboard_emitter"
 "origin" "-664 2296 -40"
@@ -2381,7 +2355,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 100
+// entity 98
 {
 "classname" "billboard_emitter"
 "origin" "-552 2264 -40"
@@ -2395,7 +2369,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 101
+// entity 99
 {
 "classname" "billboard_emitter"
 "origin" "-600 2120 -40"
@@ -2409,7 +2383,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 102
+// entity 100
 {
 "classname" "billboard_emitter"
 "origin" "-872 2104 8"
@@ -2423,7 +2397,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 103
+// entity 101
 {
 "classname" "billboard_emitter"
 "origin" "-760 2072 -40"
@@ -2437,7 +2411,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 104
+// entity 102
 {
 "classname" "billboard_emitter"
 "origin" "-808 1928 8"
@@ -2451,7 +2425,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 105
+// entity 103
 {
 "classname" "billboard_emitter"
 "origin" "-664 2024 -40"
@@ -2465,7 +2439,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 106
+// entity 104
 {
 "classname" "billboard_emitter"
 "origin" "-552 1992 -40"
@@ -2479,7 +2453,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 107
+// entity 105
 {
 "classname" "billboard_emitter"
 "origin" "-600 1848 -40"
@@ -2493,7 +2467,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 108
+// entity 106
 {
 "classname" "billboard_emitter"
 "origin" "-648 2008 -40"
@@ -2507,7 +2481,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 109
+// entity 107
 {
 "classname" "billboard_emitter"
 "origin" "-536 1976 8"
@@ -2521,7 +2495,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 110
+// entity 108
 {
 "classname" "billboard_emitter"
 "origin" "-584 1832 -40"
@@ -2535,7 +2509,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 111
+// entity 109
 {
 "classname" "billboard_emitter"
 "origin" "-776 1816 -40"
@@ -2549,7 +2523,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 112
+// entity 110
 {
 "classname" "billboard_emitter"
 "origin" "-664 1784 -40"
@@ -2563,7 +2537,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 113
+// entity 111
 {
 "classname" "billboard_emitter"
 "origin" "-712 1640 -40"
@@ -2577,7 +2551,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 114
+// entity 112
 {
 "classname" "billboard_emitter"
 "origin" "-1032 1672 -24"
@@ -2591,7 +2565,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 115
+// entity 113
 {
 "classname" "billboard_emitter"
 "origin" "-920 1640 -24"
@@ -2605,7 +2579,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 116
+// entity 114
 {
 "classname" "billboard_emitter"
 "origin" "-968 1496 -24"
@@ -2619,7 +2593,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 117
+// entity 115
 {
 "classname" "billboard_emitter"
 "origin" "-1080 1880 -24"
@@ -2633,7 +2607,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 118
+// entity 116
 {
 "classname" "billboard_emitter"
 "origin" "-968 1848 -24"
@@ -2647,7 +2621,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 119
+// entity 117
 {
 "classname" "billboard_emitter"
 "origin" "-1016 1704 -24"
@@ -2661,7 +2635,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 120
+// entity 118
 {
 "classname" "billboard_emitter"
 "origin" "-1064 1640 -24"
@@ -2675,7 +2649,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 121
+// entity 119
 {
 "classname" "billboard_emitter"
 "origin" "-952 1608 -24"
@@ -2689,7 +2663,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 122
+// entity 120
 {
 "classname" "billboard_emitter"
 "origin" "-1000 1464 -24"
@@ -2703,7 +2677,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 123
+// entity 121
 {
 "classname" "billboard_emitter"
 "origin" "-1096 1832 -8"
@@ -2717,7 +2691,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 124
+// entity 122
 {
 "classname" "billboard_emitter"
 "origin" "-1592 2056 -56"
@@ -2731,7 +2705,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 125
+// entity 123
 {
 "classname" "billboard_emitter"
 "origin" "-1480 2024 -56"
@@ -2745,7 +2719,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 126
+// entity 124
 {
 "classname" "billboard_emitter"
 "origin" "-1528 1880 -56"
@@ -2759,7 +2733,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 127
+// entity 125
 {
 "classname" "billboard_emitter"
 "origin" "-1512 1976 -56"
@@ -2773,7 +2747,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 128
+// entity 126
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1944 -56"
@@ -2787,7 +2761,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 129
+// entity 127
 {
 "classname" "billboard_emitter"
 "origin" "-1448 1800 -56"
@@ -2801,7 +2775,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 130
+// entity 128
 {
 "classname" "billboard_emitter"
 "origin" "-1336 2712 -56"
@@ -2815,7 +2789,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 131
+// entity 129
 {
 "classname" "billboard_emitter"
 "origin" "-1224 2680 -56"
@@ -2829,7 +2803,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 132
+// entity 130
 {
 "classname" "billboard_emitter"
 "origin" "-1272 2536 -56"
@@ -2843,7 +2817,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 133
+// entity 131
 {
 "classname" "billboard_emitter"
 "origin" "-1704 2008 -8"
@@ -2857,7 +2831,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 134
+// entity 132
 {
 "classname" "billboard_emitter"
 "origin" "-1592 1976 -8"
@@ -2871,7 +2845,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 135
+// entity 133
 {
 "classname" "billboard_emitter"
 "origin" "-1640 1832 -8"
@@ -2885,7 +2859,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 136
+// entity 134
 {
 "classname" "billboard_emitter"
 "origin" "-1464 2232 -24"
@@ -2899,7 +2873,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 137
+// entity 135
 {
 "classname" "billboard_emitter"
 "origin" "-1320 2280 -24"
@@ -2913,7 +2887,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 138
+// entity 136
 {
 "classname" "billboard_emitter"
 "origin" "-1400 2056 -8"
@@ -2927,7 +2901,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 139
+// entity 137
 {
 "classname" "billboard_emitter"
 "origin" "-1464 2600 -24"
@@ -2941,7 +2915,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 140
+// entity 138
 {
 "classname" "billboard_emitter"
 "origin" "-1352 2568 -24"
@@ -2955,7 +2929,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 141
+// entity 139
 {
 "classname" "billboard_emitter"
 "origin" "-1400 2424 -24"
@@ -2969,7 +2943,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 142
+// entity 140
 {
 "classname" "billboard_emitter"
 "origin" "-1576 2520 -24"
@@ -2983,7 +2957,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 143
+// entity 141
 {
 "classname" "billboard_emitter"
 "origin" "-1464 2488 -24"
@@ -2997,7 +2971,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 144
+// entity 142
 {
 "classname" "billboard_emitter"
 "origin" "-1512 2344 -8"
@@ -3011,7 +2985,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 145
+// entity 143
 {
 "classname" "billboard_emitter"
 "origin" "-1480 2440 -8"
@@ -3025,7 +2999,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 146
+// entity 144
 {
 "classname" "billboard_emitter"
 "origin" "-1528 2296 -8"
@@ -3039,7 +3013,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 147
+// entity 145
 {
 "classname" "billboard_emitter"
 "origin" "-1624 2120 8"
@@ -3053,7 +3027,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 148
+// entity 146
 {
 "classname" "billboard_emitter"
 "origin" "-1320 2312 -8"
@@ -3067,7 +3041,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 149
+// entity 147
 {
 "classname" "billboard_emitter"
 "origin" "-1768 1944 8"
@@ -3081,7 +3055,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 150
+// entity 148
 {
 "classname" "billboard_emitter"
 "origin" "-1560 1848 -8"
@@ -3095,7 +3069,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 151
+// entity 149
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1720 -8"
@@ -3109,7 +3083,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 152
+// entity 150
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1752 8"
@@ -3123,7 +3097,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 153
+// entity 151
 {
 "classname" "billboard_emitter"
 "origin" "-1672 1992 8"
@@ -3137,7 +3111,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 154
+// entity 152
 {
 "classname" "billboard_emitter"
 "origin" "-1832 2120 8"
@@ -3151,7 +3125,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 155
+// entity 153
 {
 "classname" "billboard_emitter"
 "origin" "-1624 2024 8"
@@ -3165,7 +3139,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 156
+// entity 154
 {
 "classname" "billboard_emitter"
 "origin" "-1512 1784 8"
@@ -3179,7 +3153,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 157
+// entity 155
 {
 "classname" "billboard_emitter"
 "origin" "-1464 2248 -24"
@@ -3193,7 +3167,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 158
+// entity 156
 {
 "classname" "billboard_emitter"
 "origin" "-1720 2216 8"
@@ -3207,7 +3181,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 159
+// entity 157
 {
 "classname" "billboard_emitter"
 "origin" "-1768 2072 8"
@@ -3221,7 +3195,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 160
+// entity 158
 {
 "classname" "billboard_emitter"
 "origin" "-1608 1944 -8"
@@ -3235,7 +3209,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 161
+// entity 159
 {
 "classname" "billboard_emitter"
 "origin" "-1480 1832 -8"
@@ -3249,7 +3223,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 162
+// entity 160
 {
 "classname" "billboard_emitter"
 "origin" "-1368 1800 -8"
@@ -3263,7 +3237,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 163
+// entity 161
 {
 "classname" "billboard_emitter"
 "origin" "-1416 1656 -8"
@@ -3277,7 +3251,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 164
+// entity 162
 {
 "classname" "billboard_emitter"
 "origin" "-1464 2536 -8"
@@ -3291,7 +3265,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 165
+// entity 163
 {
 "classname" "billboard_emitter"
 "origin" "-1352 2504 -8"
@@ -3305,7 +3279,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 166
+// entity 164
 {
 "classname" "billboard_emitter"
 "origin" "-1400 2360 -8"
@@ -3319,7 +3293,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 167
+// entity 165
 {
 "classname" "billboard_emitter"
 "origin" "-1240 2440 -8"
@@ -3333,7 +3307,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 168
+// entity 166
 {
 "classname" "billboard_emitter"
 "origin" "-1128 2408 -8"
@@ -3347,7 +3321,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 169
+// entity 167
 {
 "classname" "billboard_emitter"
 "origin" "-1176 2264 -8"
@@ -3361,7 +3335,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 170
+// entity 168
 {
 "classname" "billboard_emitter"
 "origin" "-1192 2664 -8"
@@ -3375,7 +3349,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 171
+// entity 169
 {
 "classname" "billboard_emitter"
 "origin" "-1080 2632 -8"
@@ -3389,7 +3363,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 172
+// entity 170
 {
 "classname" "billboard_emitter"
 "origin" "-1128 2488 -8"
@@ -3403,7 +3377,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 173
+// entity 171
 {
 "classname" "billboard_emitter"
 "origin" "-1288 2456 -8"
@@ -3417,7 +3391,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 174
+// entity 172
 {
 "classname" "billboard_emitter"
 "origin" "-1176 2424 -8"
@@ -3431,7 +3405,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 175
+// entity 173
 {
 "classname" "billboard_emitter"
 "origin" "-1224 2280 -8"
@@ -3445,7 +3419,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 176
+// entity 174
 {
 "classname" "billboard_emitter"
 "origin" "-936 2408 -24"
@@ -3459,7 +3433,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 177
+// entity 175
 {
 "classname" "billboard_emitter"
 "origin" "-984 2264 -24"
@@ -3473,7 +3447,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 178
+// entity 176
 {
 "classname" "billboard_emitter"
 "origin" "-872 1832 -40"
@@ -3487,7 +3461,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 179
+// entity 177
 {
 "classname" "billboard_emitter"
 "origin" "-760 1800 -40"
@@ -3501,7 +3475,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 180
+// entity 178
 {
 "classname" "billboard_emitter"
 "origin" "-808 1656 -40"
@@ -3515,7 +3489,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 181
+// entity 179
 {
 "classname" "billboard_emitter"
 "origin" "-1112 1880 -40"
@@ -3529,7 +3503,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 182
+// entity 180
 {
 "classname" "billboard_emitter"
 "origin" "-1000 1848 -40"
@@ -3543,7 +3517,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 183
+// entity 181
 {
 "classname" "billboard_emitter"
 "origin" "-1048 1704 -40"
@@ -3557,7 +3531,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 184
+// entity 182
 {
 "classname" "billboard_emitter"
 "origin" "-824 2232 -40"
@@ -3571,7 +3545,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 185
+// entity 183
 {
 "classname" "billboard_emitter"
 "origin" "-712 2200 -40"
@@ -3585,7 +3559,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 186
+// entity 184
 {
 "classname" "billboard_emitter"
 "origin" "-760 2056 -40"
@@ -3599,7 +3573,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 187
+// entity 185
 {
 "classname" "billboard_emitter"
 "origin" "-872 2296 -24"
@@ -3613,7 +3587,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 188
+// entity 186
 {
 "classname" "billboard_emitter"
 "origin" "-760 2264 -24"
@@ -3627,7 +3601,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 189
+// entity 187
 {
 "classname" "billboard_emitter"
 "origin" "-808 2120 -24"
@@ -3641,7 +3615,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 190
+// entity 188
 {
 "classname" "billboard_emitter"
 "origin" "-1080 2104 24"
@@ -3655,7 +3629,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 191
+// entity 189
 {
 "classname" "billboard_emitter"
 "origin" "-968 2072 -24"
@@ -3669,7 +3643,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 192
+// entity 190
 {
 "classname" "billboard_emitter"
 "origin" "-1016 1928 24"
@@ -3683,7 +3657,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 193
+// entity 191
 {
 "classname" "billboard_emitter"
 "origin" "-872 2024 -24"
@@ -3697,7 +3671,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 194
+// entity 192
 {
 "classname" "billboard_emitter"
 "origin" "-760 1992 -24"
@@ -3711,7 +3685,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 195
+// entity 193
 {
 "classname" "billboard_emitter"
 "origin" "-808 1848 -24"
@@ -3725,7 +3699,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 196
+// entity 194
 {
 "classname" "billboard_emitter"
 "origin" "-856 2008 -24"
@@ -3739,7 +3713,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 197
+// entity 195
 {
 "classname" "billboard_emitter"
 "origin" "-744 1976 24"
@@ -3753,7 +3727,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 198
+// entity 196
 {
 "classname" "billboard_emitter"
 "origin" "-792 1832 -24"
@@ -3767,7 +3741,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 199
+// entity 197
 {
 "classname" "billboard_emitter"
 "origin" "-984 1816 -24"
@@ -3781,7 +3755,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 200
+// entity 198
 {
 "classname" "billboard_emitter"
 "origin" "-872 1784 -24"
@@ -3795,7 +3769,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 201
+// entity 199
 {
 "classname" "billboard_emitter"
 "origin" "-920 1640 -24"
@@ -3809,7 +3783,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 202
+// entity 200
 {
 "classname" "billboard_emitter"
 "origin" "-1240 1672 -8"
@@ -3823,7 +3797,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 203
+// entity 201
 {
 "classname" "billboard_emitter"
 "origin" "-1128 1640 -8"
@@ -3837,7 +3811,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 204
+// entity 202
 {
 "classname" "billboard_emitter"
 "origin" "-1176 1496 -8"
@@ -3851,7 +3825,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 205
+// entity 203
 {
 "classname" "billboard_emitter"
 "origin" "-1288 1880 -8"
@@ -3865,7 +3839,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 206
+// entity 204
 {
 "classname" "billboard_emitter"
 "origin" "-1176 1848 -8"
@@ -3879,7 +3853,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 207
+// entity 205
 {
 "classname" "billboard_emitter"
 "origin" "-1224 1704 -8"
@@ -3893,7 +3867,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 208
+// entity 206
 {
 "classname" "billboard_emitter"
 "origin" "-1272 1640 -8"
@@ -3907,7 +3881,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 209
+// entity 207
 {
 "classname" "billboard_emitter"
 "origin" "-1160 1608 -8"
@@ -3921,7 +3895,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 210
+// entity 208
 {
 "classname" "billboard_emitter"
 "origin" "-1208 1464 -8"
@@ -3935,7 +3909,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 211
+// entity 209
 {
 "classname" "billboard_emitter"
 "origin" "-1304 1832 8"
@@ -3949,7 +3923,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 212
+// entity 210
 {
 "classname" "billboard_emitter"
 "origin" "-1800 2056 -40"
@@ -3963,7 +3937,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 213
+// entity 211
 {
 "classname" "billboard_emitter"
 "origin" "-1688 2024 -40"
@@ -3977,7 +3951,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 214
+// entity 212
 {
 "classname" "billboard_emitter"
 "origin" "-1736 1880 -40"
@@ -3991,7 +3965,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 215
+// entity 213
 {
 "classname" "billboard_emitter"
 "origin" "-1720 1976 -40"
@@ -4005,7 +3979,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 216
+// entity 214
 {
 "classname" "billboard_emitter"
 "origin" "-1608 1944 -40"
@@ -4019,7 +3993,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 217
+// entity 215
 {
 "classname" "billboard_emitter"
 "origin" "-1656 1800 -40"
@@ -4033,7 +4007,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 218
+// entity 216
 {
 "classname" "billboard_emitter"
 "origin" "-1544 2712 -40"
@@ -4047,7 +4021,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 219
+// entity 217
 {
 "classname" "billboard_emitter"
 "origin" "-1432 2680 -40"
@@ -4061,7 +4035,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 220
+// entity 218
 {
 "classname" "billboard_emitter"
 "origin" "-1480 2536 -40"
@@ -4075,7 +4049,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 221
+// entity 219
 {
 "classname" "billboard_emitter"
 "origin" "-1912 2008 8"
@@ -4089,7 +4063,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 222
+// entity 220
 {
 "classname" "billboard_emitter"
 "origin" "-1800 1976 8"
@@ -4103,7 +4077,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 223
+// entity 221
 {
 "classname" "billboard_emitter"
 "origin" "-1848 1832 8"
@@ -4117,7 +4091,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 224
+// entity 222
 {
 "classname" "billboard_emitter"
 "origin" "-1672 2232 -8"
@@ -4131,7 +4105,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 225
+// entity 223
 {
 "classname" "billboard_emitter"
 "origin" "-1528 2280 -8"
@@ -4145,7 +4119,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 226
+// entity 224
 {
 "classname" "billboard_emitter"
 "origin" "-1608 2056 8"
@@ -4159,7 +4133,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 227
+// entity 225
 {
 "classname" "billboard_emitter"
 "origin" "-1672 2600 -8"
@@ -4173,7 +4147,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 228
+// entity 226
 {
 "classname" "billboard_emitter"
 "origin" "-1560 2568 -8"
@@ -4187,7 +4161,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 229
+// entity 227
 {
 "classname" "billboard_emitter"
 "origin" "-1608 2424 -8"
@@ -4201,7 +4175,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 230
+// entity 228
 {
 "classname" "billboard_emitter"
 "origin" "-1784 2520 -8"
@@ -4215,7 +4189,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 231
+// entity 229
 {
 "classname" "billboard_emitter"
 "origin" "-1672 2488 -8"
@@ -4229,7 +4203,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 232
+// entity 230
 {
 "classname" "billboard_emitter"
 "origin" "-1720 2344 8"
@@ -4243,7 +4217,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 233
+// entity 231
 {
 "classname" "billboard_emitter"
 "origin" "-1416 1976 -40"
@@ -4257,7 +4231,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 234
+// entity 232
 {
 "classname" "billboard_emitter"
 "origin" "-1464 1832 -40"
@@ -4271,7 +4245,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 235
+// entity 233
 {
 "classname" "billboard_emitter"
 "origin" "-1560 1656 -24"
@@ -4285,7 +4259,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 236
+// entity 234
 {
 "classname" "billboard_emitter"
 "origin" "-1256 1848 -40"
@@ -4299,7 +4273,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 237
+// entity 235
 {
 "classname" "billboard_emitter"
 "origin" "-1704 1480 -24"
@@ -4313,7 +4287,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 238
+// entity 236
 {
 "classname" "billboard_emitter"
 "origin" "-1496 1384 -40"
@@ -4327,7 +4301,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 239
+// entity 237
 {
 "classname" "billboard_emitter"
 "origin" "-1496 1672 -40"
@@ -4341,7 +4315,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 240
+// entity 238
 {
 "classname" "billboard_emitter"
 "origin" "-808 2536 -24"
@@ -4355,7 +4329,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 241
+// entity 239
 {
 "classname" "billboard_emitter"
 "origin" "-1608 1528 -24"
@@ -4369,7 +4343,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 242
+// entity 240
 {
 "classname" "billboard_emitter"
 "origin" "-1768 1656 -24"
@@ -4383,7 +4357,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 243
+// entity 241
 {
 "classname" "billboard_emitter"
 "origin" "-1560 1560 -24"
@@ -4397,7 +4371,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 244
+// entity 242
 {
 "classname" "billboard_emitter"
 "origin" "-1608 1736 -24"
@@ -4411,7 +4385,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 245
+// entity 243
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1784 -56"
@@ -4425,7 +4399,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 246
+// entity 244
 {
 "classname" "billboard_emitter"
 "origin" "-1656 1752 -24"
@@ -4439,7 +4413,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 247
+// entity 245
 {
 "classname" "billboard_emitter"
 "origin" "-1704 1608 -24"
@@ -4453,7 +4427,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 248
+// entity 246
 {
 "classname" "billboard_emitter"
 "origin" "-1544 1480 -40"
@@ -4467,7 +4441,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 249
+// entity 247
 {
 "classname" "billboard_emitter"
 "origin" "-1576 1784 -40"
@@ -4481,7 +4455,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 250
+// entity 248
 {
 "classname" "billboard_emitter"
 "origin" "-1464 1752 -40"
@@ -4495,7 +4469,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 251
+// entity 249
 {
 "classname" "billboard_emitter"
 "origin" "-1512 1608 -40"
@@ -4509,7 +4483,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 252
+// entity 250
 {
 "classname" "billboard_emitter"
 "origin" "-1400 2072 -40"
@@ -4523,7 +4497,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 253
+// entity 251
 {
 "classname" "billboard_emitter"
 "origin" "-1288 2040 -40"
@@ -4537,7 +4511,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 254
+// entity 252
 {
 "classname" "billboard_emitter"
 "origin" "-1336 1896 -40"
@@ -4551,7 +4525,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 255
+// entity 253
 {
 "classname" "billboard_emitter"
 "origin" "-1176 1976 -40"
@@ -4565,7 +4539,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 256
+// entity 254
 {
 "classname" "billboard_emitter"
 "origin" "-1064 1944 -40"
@@ -4579,7 +4553,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 257
+// entity 255
 {
 "classname" "billboard_emitter"
 "origin" "-1112 1800 -40"
@@ -4593,7 +4567,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 258
+// entity 256
 {
 "classname" "billboard_emitter"
 "origin" "-1128 2200 -40"
@@ -4607,7 +4581,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 259
+// entity 257
 {
 "classname" "billboard_emitter"
 "origin" "-1016 2168 -40"
@@ -4621,7 +4595,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 260
+// entity 258
 {
 "classname" "billboard_emitter"
 "origin" "-1064 2024 -40"
@@ -4635,7 +4609,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 261
+// entity 259
 {
 "classname" "billboard_emitter"
 "origin" "-1224 1992 -40"
@@ -4649,7 +4623,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 262
+// entity 260
 {
 "classname" "billboard_emitter"
 "origin" "-1112 1960 -40"
@@ -4663,7 +4637,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 263
+// entity 261
 {
 "classname" "billboard_emitter"
 "origin" "-1160 1816 -40"
@@ -4677,7 +4651,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 264
+// entity 262
 {
 "classname" "billboard_emitter"
 "origin" "-872 1944 -56"
@@ -4691,7 +4665,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 265
+// entity 263
 {
 "classname" "billboard_emitter"
 "origin" "-920 1800 -56"
@@ -4705,7 +4679,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 266
+// entity 264
 {
 "classname" "billboard_emitter"
 "origin" "-1560 2648 -40"
@@ -4719,7 +4693,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 267
+// entity 265
 {
 "classname" "billboard_emitter"
 "origin" "-1448 2616 -40"
@@ -4733,7 +4707,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 268
+// entity 266
 {
 "classname" "billboard_emitter"
 "origin" "-904 1608 -72"
@@ -4747,7 +4721,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 269
+// entity 267
 {
 "classname" "billboard_emitter"
 "origin" "-1208 1832 -72"
@@ -4761,7 +4735,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 270
+// entity 268
 {
 "classname" "billboard_emitter"
 "origin" "-1096 1800 -72"
@@ -4775,7 +4749,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 271
+// entity 269
 {
 "classname" "billboard_emitter"
 "origin" "-984 1240 -72"
@@ -4789,7 +4763,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 272
+// entity 270
 {
 "classname" "billboard_emitter"
 "origin" "-760 1768 -72"
@@ -4803,7 +4777,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 273
+// entity 271
 {
 "classname" "billboard_emitter"
 "origin" "-648 1736 -72"
@@ -4817,7 +4791,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 274
+// entity 272
 {
 "classname" "billboard_emitter"
 "origin" "-696 1592 -72"
@@ -4831,7 +4805,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 275
+// entity 273
 {
 "classname" "billboard_emitter"
 "origin" "-808 1832 -56"
@@ -4845,7 +4819,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 276
+// entity 274
 {
 "classname" "billboard_emitter"
 "origin" "-696 1800 -56"
@@ -4859,7 +4833,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 277
+// entity 275
 {
 "classname" "billboard_emitter"
 "origin" "-744 1656 -56"
@@ -4873,7 +4847,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 278
+// entity 276
 {
 "classname" "billboard_emitter"
 "origin" "-1016 1640 -8"
@@ -4887,7 +4861,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 279
+// entity 277
 {
 "classname" "billboard_emitter"
 "origin" "-904 1608 -56"
@@ -4901,7 +4875,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 280
+// entity 278
 {
 "classname" "billboard_emitter"
 "origin" "-952 1464 -8"
@@ -4915,7 +4889,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 281
+// entity 279
 {
 "classname" "billboard_emitter"
 "origin" "-808 1560 -56"
@@ -4929,7 +4903,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 282
+// entity 280
 {
 "classname" "billboard_emitter"
 "origin" "-696 1528 -56"
@@ -4943,7 +4917,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 283
+// entity 281
 {
 "classname" "billboard_emitter"
 "origin" "-1496 2664 -24"
@@ -4957,7 +4931,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 284
+// entity 282
 {
 "classname" "billboard_emitter"
 "origin" "-792 1544 -56"
@@ -4971,7 +4945,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 285
+// entity 283
 {
 "classname" "billboard_emitter"
 "origin" "-680 1512 -8"
@@ -4985,7 +4959,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 286
+// entity 284
 {
 "classname" "billboard_emitter"
 "origin" "-1480 2648 -24"
@@ -4999,7 +4973,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 287
+// entity 285
 {
 "classname" "billboard_emitter"
 "origin" "-1080 1768 -56"
@@ -5013,7 +4987,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 288
+// entity 286
 {
 "classname" "billboard_emitter"
 "origin" "-1560 2600 -24"
@@ -5027,7 +5001,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 289
+// entity 287
 {
 "classname" "billboard_emitter"
 "origin" "-1016 1592 -56"
@@ -5041,7 +5015,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 290
+// entity 288
 {
 "classname" "billboard_emitter"
 "origin" "-648 2456 -40"
@@ -5055,7 +5029,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 291
+// entity 289
 {
 "classname" "billboard_emitter"
 "origin" "-1064 1176 -40"
@@ -5069,7 +5043,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 292
+// entity 290
 {
 "classname" "billboard_emitter"
 "origin" "-1112 1032 -40"
@@ -5083,7 +5057,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 293
+// entity 291
 {
 "classname" "billboard_emitter"
 "origin" "-696 2664 -40"
@@ -5097,7 +5071,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 294
+// entity 292
 {
 "classname" "billboard_emitter"
 "origin" "-1272 1800 -40"
@@ -5111,7 +5085,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 295
+// entity 293
 {
 "classname" "billboard_emitter"
 "origin" "-632 2488 -40"
@@ -5125,7 +5099,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 296
+// entity 294
 {
 "classname" "billboard_emitter"
 "origin" "-1368 1592 -40"
@@ -5139,7 +5113,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 297
+// entity 295
 {
 "classname" "billboard_emitter"
 "origin" "-1256 1560 -40"
@@ -5153,7 +5127,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 298
+// entity 296
 {
 "classname" "billboard_emitter"
 "origin" "-776 2664 -40"
@@ -5167,7 +5141,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 299
+// entity 297
 {
 "classname" "billboard_emitter"
 "origin" "-1400 1784 -24"
@@ -5181,7 +5155,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 300
+// entity 298
 {
 "classname" "billboard_emitter"
 "origin" "-1736 1592 -72"
@@ -5195,7 +5169,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 301
+// entity 299
 {
 "classname" "billboard_emitter"
 "origin" "-1624 1560 -72"
@@ -5209,7 +5183,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 302
+// entity 300
 {
 "classname" "billboard_emitter"
 "origin" "-1832 1832 -72"
@@ -5223,7 +5197,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 303
+// entity 301
 {
 "classname" "billboard_emitter"
 "origin" "-1656 1512 -72"
@@ -5237,7 +5211,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 304
+// entity 302
 {
 "classname" "billboard_emitter"
 "origin" "-1544 1480 -72"
@@ -5251,7 +5225,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 305
+// entity 303
 {
 "classname" "billboard_emitter"
 "origin" "-1752 1752 -72"
@@ -5265,7 +5239,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 306
+// entity 304
 {
 "classname" "billboard_emitter"
 "origin" "-1480 2248 -72"
@@ -5279,7 +5253,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 307
+// entity 305
 {
 "classname" "billboard_emitter"
 "origin" "-1368 2216 -72"
@@ -5293,7 +5267,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 308
+// entity 306
 {
 "classname" "billboard_emitter"
 "origin" "-1416 2072 -72"
@@ -5307,7 +5281,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 309
+// entity 307
 {
 "classname" "billboard_emitter"
 "origin" "-1848 1544 -24"
@@ -5321,7 +5295,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 310
+// entity 308
 {
 "classname" "billboard_emitter"
 "origin" "-1736 1512 -24"
@@ -5335,7 +5309,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 311
+// entity 309
 {
 "classname" "billboard_emitter"
 "origin" "-1784 1368 -24"
@@ -5349,7 +5323,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 312
+// entity 310
 {
 "classname" "billboard_emitter"
 "origin" "-1608 1768 -40"
@@ -5363,7 +5337,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 313
+// entity 311
 {
 "classname" "billboard_emitter"
 "origin" "-1464 1816 -40"
@@ -5377,7 +5351,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 314
+// entity 312
 {
 "classname" "billboard_emitter"
 "origin" "-1544 1592 -24"
@@ -5391,7 +5365,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 315
+// entity 313
 {
 "classname" "billboard_emitter"
 "origin" "-1608 2136 -40"
@@ -5405,7 +5379,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 316
+// entity 314
 {
 "classname" "billboard_emitter"
 "origin" "-1496 2104 -40"
@@ -5419,7 +5393,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 317
+// entity 315
 {
 "classname" "billboard_emitter"
 "origin" "-1544 1960 -40"
@@ -5433,7 +5407,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 318
+// entity 316
 {
 "classname" "billboard_emitter"
 "origin" "-1720 2056 -40"
@@ -5447,7 +5421,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 319
+// entity 317
 {
 "classname" "billboard_emitter"
 "origin" "-1608 2024 -40"
@@ -5461,7 +5435,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 320
+// entity 318
 {
 "classname" "billboard_emitter"
 "origin" "-1656 1880 -24"
@@ -5475,7 +5449,7 @@
 "drag" "0.6"
 "_tb_group" "5"
 }
-// entity 321
+// entity 319
 {
 "classname" "fog_volume"
 "_tags" ""
@@ -5494,25 +5468,25 @@
 ( -320 1440 64 ) ( -320 2720 64 ) ( -320 2720 -16 ) concrete_stone_030 0 -0.14285755 0 5 1.75
 }
 }
-// entity 322
+// entity 320
 {
 "classname" "sci_fi_trooper_m"
 "origin" "-1240 2024 88"
 "angles" "0 180 0"
 }
-// entity 323
+// entity 321
 {
 "classname" "sci_fi_trooper_m"
 "origin" "-1128 2136 88"
 "angles" "0 180 0"
 }
-// entity 324
+// entity 322
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1128 2024 88"
 "angles" "0 180 0"
 }
-// entity 325
+// entity 323
 {
 "classname" "light_dynamic_spot"
 "origin" "496 2176 192"
@@ -5524,35 +5498,35 @@
 "_cone" "20"
 "_cone2" "60"
 }
-// entity 326
+// entity 324
 {
 "classname" "prop_mesh"
 "origin" "440 2232 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 "angles" "0 180 0"
 }
-// entity 327
+// entity 325
 {
 "classname" "prop_mesh"
 "origin" "440 2120 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 "angles" "0 180 0"
 }
-// entity 328
+// entity 326
 {
 "classname" "prop_mesh"
 "origin" "552 2120 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 "angles" "0 180 0"
 }
-// entity 329
+// entity 327
 {
 "classname" "prop_mesh"
 "origin" "552 2232 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 "angles" "0 180 0"
 }
-// entity 330
+// entity 328
 {
 "classname" "fog_volume"
 "_tags" "pulse_fog"
@@ -5565,4 +5539,45 @@
 ( 2080 768 -192 ) ( 1568 768 -176 ) ( 1568 768 -192 ) default_dirt_011 0 0 0 1 1
 ( 2080 256 -192 ) ( 2080 768 -176 ) ( 2080 768 -192 ) default_dirt_011 0 0 0 1 1
 }
+}
+// entity 329
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "bridge_crusher"
+"_tb_id" "6"
+"_tb_linked_group_id" "e5d79d7c-3c1a-4db2-9c4a-6a2f03d3dc0b"
+"_tb_transformation" "1 0 0 0 0 1 0 0 0 0 1 -160 0 0 0 1"
+}
+// entity 330
+{
+"classname" "kinematic_mover"
+"name" "campaign_plus_bridge_crusher"
+"path" "campaign_plus_bridge_crusher_up"
+"speed" "0.8"
+"wait_ms" "1250"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"block_policy" "crush"
+"crush_damage" "15"
+"crush_interval_ms" "500"
+"_tags" "campaign_e17 campaign_plus_bridge_crusher"
+"_tb_group" "6"
+// brush 0
+{
+( 1760 576 240 ) ( 1760 448 288 ) ( 1760 448 240 ) metal/metal_rough_046a 0 -160 0 1 1
+( 1760 448 240 ) ( 1888 448 288 ) ( 1888 448 240 ) metal/metal_rough_046a 0 -160 0 1 1
+( 1760 448 240 ) ( 1888 576 240 ) ( 1760 576 240 ) metal/metal_rough_046a 0 0 0 1 1
+( 1760 576 288 ) ( 1888 448 288 ) ( 1760 448 288 ) metal/metal_rough_046a 0 0 0 1 1
+( 1888 576 240 ) ( 1760 576 288 ) ( 1760 576 240 ) metal/metal_rough_046a 0 -160 0 1 1
+( 1888 448 240 ) ( 1888 576 288 ) ( 1888 576 240 ) metal/metal_rough_046a 0 -160 0 1 1
+}
+}
+// entity 331
+{
+"classname" "kinematic_waypoint"
+"name" "campaign_plus_bridge_crusher_up"
+"next" "campaign_plus_bridge_crusher_down"
+"origin" "1824 512 264"
+"_tb_group" "6"
 }

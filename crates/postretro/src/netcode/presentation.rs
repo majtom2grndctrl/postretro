@@ -8,7 +8,7 @@ use postretro_entities::{
     EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
     PresentationSpawn, PresentationTemplateHandle, WorldPointPresentationSpawn,
 };
-use postretro_foundation::NavAgentParams;
+use postretro_foundation::{BUILTIN_SPLASH_IMPACT_TEMPLATE_ID, NavAgentParams};
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
     NetworkId, PresentationFact as WirePresentationFact, ServerPresentationMessage,
@@ -38,11 +38,6 @@ const CLIENT_OVERLAY_TERMINAL_TTL_SECONDS: f64 = 0.5;
 /// its entity mapping. Retain that already-received fact only across the same
 /// short reorder horizon; this is not a retransmit or reliable event queue.
 const CLIENT_OVERLAY_PENDING_TTL_SECONDS: f64 = 0.5;
-/// Reserved existing `Spawn` template id for a built-in projectile splash
-/// explosion. This is not a script `PresentationTemplate`: receiving clients
-/// branch before template lookup and materialize the normal impact effect.
-const BUILTIN_SPLASH_IMPACT_TEMPLATE_ID: &str = "postretro.builtin.splash-impact";
-
 /// A decoded overlay fact separated from the wire envelope so the adverse-order
 /// behavior is directly testable without transport or registry setup.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -444,7 +439,14 @@ pub(crate) fn route_host_world_point_presentation_spawns(
     server: &mut NetServer,
     owners: &MovementOwners,
 ) {
-    for spawn in registry.take_world_point_presentation_spawns() {
+    let spawns = registry.take_world_point_presentation_spawns();
+    let dropped = registry.take_world_point_presentation_spawn_overflow();
+    if dropped > 0 {
+        log::warn!(
+            "[Netcode] world-point presentation queue reached its bounded capacity; dropped {dropped} newest observer event(s)"
+        );
+    }
+    for spawn in spawns {
         let message = world_point_presentation_message(&spawn);
         let recipients: Vec<_> =
             recipients_for_world_point(server, spawn.world_anchor, spawn.owner_pawn, owners)
@@ -485,6 +487,12 @@ pub(crate) fn ingest_client_presentation_messages(
                 value,
                 facts,
             } => {
+                if !anchor.iter().all(|component| component.is_finite()) {
+                    log::warn!(
+                        "[Netcode] dropped presentation spawn `{template_id}` with a non-finite world anchor"
+                    );
+                    continue;
+                }
                 let anchor = Vec3::from_array(anchor);
                 if template_id == BUILTIN_SPLASH_IMPACT_TEMPLATE_ID {
                     // The wire intentionally carries no blast tuning or normal:
@@ -917,6 +925,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use log::Level;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -931,6 +940,7 @@ mod tests {
         HealthDescriptor, PresentationTemplateFade, PresentationTemplateMotion,
         PresentationTemplateSpawnScatter, PresentationWorldAnchor,
     };
+    use postretro_test_log_capture::LogCapture;
 
     const FLOAT_EPSILON: f32 = 1.0e-5;
     const PREDICTED_OWNER_CLIENT: u64 = 41;
@@ -1288,6 +1298,41 @@ mod tests {
         );
     }
 
+    // Regression: a burst above the bounded world-point queue capacity dropped
+    // valid remote explosions without surfacing the overload.
+    #[test]
+    fn world_point_queue_overflow_is_reported_at_host_drain() {
+        let server_socket =
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind presentation server");
+        let server_addr = server_socket
+            .local_addr()
+            .expect("read presentation server address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 1, Duration::from_secs(1), None)
+                .expect("construct presentation server");
+        let mut registry = EntityRegistry::new();
+        for index in 0..(postretro_foundation::MAX_PENDING_PRESENTATION_SPAWNS + 2) {
+            registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+                world_anchor: Vec3::new(index as f32, 0.0, 0.0),
+                owner_pawn: 0,
+            });
+        }
+
+        let capture = LogCapture::start();
+        route_host_world_point_presentation_spawns(
+            &mut registry,
+            &mut server,
+            &MovementOwners::new(),
+        );
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "world-point presentation queue reached its bounded capacity; dropped 2 newest observer event(s)",
+        );
+        assert!(registry.take_world_point_presentation_spawns().is_empty());
+        assert_eq!(registry.take_world_point_presentation_spawn_overflow(), 0);
+    }
+
     #[test]
     fn world_point_splash_reaches_remote_observer_but_not_predicted_owner_over_conditioned_link() {
         let server_socket =
@@ -1346,10 +1391,10 @@ mod tests {
         );
     }
 
-    // Regression: a connected shooter's authorized projectile lost its splash
-    // snapshot before host HIT intake and fell back to single-target damage.
+    // Regression: remote splash lost frozen authority state and omitted the
+    // listen host's local impact burst.
     #[test]
-    fn remote_splash_contact_resolves_host_damage_and_one_observer_burst_over_conditioned_links() {
+    fn remote_splash_contact_resolves_damage_host_burst_and_one_observer_burst() {
         let server_socket =
             UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind splash authority server");
         let server_addr = server_socket
@@ -1367,8 +1412,8 @@ mod tests {
             connect_presentation_client(&mut server, server_addr, REMOTE_OBSERVER_CLIENT);
 
         let mut registry = EntityRegistry::new();
-        let owner = damageable_at(&mut registry, Vec3::new(-1.25, 0.0, 0.0));
-        let clear_victim = damageable_at(&mut registry, Vec3::new(0.0, 0.0, 2.25));
+        let owner = damageable_at(&mut registry, Vec3::new(-0.25, 0.0, 0.0));
+        let clear_victim = damageable_at(&mut registry, Vec3::new(1.0, 0.0, 2.25));
         let wall_hidden = damageable_at(&mut registry, Vec3::new(2.25, 0.0, 0.0));
         let weapon = registry.spawn(Transform::default());
         let mut owners = MovementOwners::new();
@@ -1392,9 +1437,13 @@ mod tests {
                     min_fraction: 0.2,
                     self_damage: true,
                 }),
-                projectile_radius: None,
+                projectile_radius: Some(0.0),
+                projectile_direction: Some(Vec3::X),
+                projectile_speed: Some(60.0),
+                projectile_lifetime_seconds: Some(10.0),
+                projectile_tick_seconds: Some(1.0 / 60.0),
                 is_projectile: true,
-                fire_origin: Vec3::new(0.0, 0.0, -1.0),
+                fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
             },
             PREDICTED_OWNER_CLIENT,
@@ -1405,7 +1454,7 @@ mod tests {
                 shot_id: shot_id.raw(),
                 records: vec![postretro_net::wire::HitRecord {
                     target: crate::netcode::PROJECTILE_PRESENTATION_CONTACT_TARGET,
-                    point: Vec3::ZERO.to_array(),
+                    point: Vec3::new(4.0, 0.0, 0.0).to_array(),
                     zone: None,
                 }],
             },
@@ -1434,6 +1483,8 @@ mod tests {
                 allocator: &allocator,
                 owners: &owners,
                 open_shots: &mut open_shots,
+                current_tick: 10,
+                anim_time: 0.0,
             },
             PREDICTED_OWNER_CLIENT,
             &delivered,
@@ -1453,7 +1504,7 @@ mod tests {
 
         assert!(result.fire_accepted);
         assert!(result.hit_accepted);
-        assert_eq!(result.projectile_contact, Some(Vec3::ZERO));
+        assert_eq!(result.projectile_contact, Some(Vec3::X));
         let (owner_at_drain, victim_at_drain) =
             health_at_impact_drain.expect("one post-blast impact drain observes settled Health");
         assert!((owner_at_drain - 20.0).abs() <= FLOAT_EPSILON);
@@ -1480,6 +1531,13 @@ mod tests {
         assert_eq!(victim_credit.last_attacker, Some(owner));
         assert_eq!(victim_credit.last_weapon, Some(weapon));
         assert_eq!(victim_credit.source_id, "weapon.test.remote-splash");
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .count(),
+            9,
+            "the listen host materializes exactly one local impact burst for the remote detonation",
+        );
 
         route_host_world_point_presentation_spawns(&mut registry, &mut server, &owners);
         let mut owner_link = PacketConditioner::new(perfect_link(0xe16_0304));
@@ -1501,11 +1559,16 @@ mod tests {
             &mut observer_link,
         );
         assert_eq!(observer_messages.len(), 1);
-        let ServerPresentationPayload::Spawn { template_id, .. } = &observer_messages[0].payload
+        let ServerPresentationPayload::Spawn {
+            template_id,
+            anchor,
+            ..
+        } = &observer_messages[0].payload
         else {
             panic!("remote splash uses the existing Spawn payload");
         };
         assert_eq!(template_id, BUILTIN_SPLASH_IMPACT_TEMPLATE_ID);
+        assert_eq!(*anchor, Vec3::X.to_array());
     }
 
     #[test]
@@ -1547,6 +1610,50 @@ mod tests {
             registry.take_presentation_spawns().is_empty(),
             "the built-in explosion never falls through to template-widget intake"
         );
+    }
+
+    // Regression: a non-finite built-in anchor reached particle transforms and
+    // poisoned later simulation and render math.
+    #[test]
+    fn client_builtin_splash_rejects_non_finite_anchor_before_spawning_particles() {
+        let mut registry = EntityRegistry::new();
+        let mut overlay_state = ClientOverlayFactState::default();
+        let replication = ClientReplication::new();
+        let mut pool = PresentationPool::new(1);
+        let hit_zones = HitZoneStore::new();
+        let message = ServerPresentationMessage {
+            payload: ServerPresentationPayload::Spawn {
+                template_id: BUILTIN_SPLASH_IMPACT_TEMPLATE_ID.to_string(),
+                anchor: [f32::NAN, 2.0, 3.0],
+                value: 0.0,
+                facts: BTreeMap::new(),
+            },
+        };
+
+        let capture = LogCapture::start();
+        ingest_client_presentation_messages(
+            &mut registry,
+            vec![message],
+            &[],
+            &HashMap::new(),
+            &mut overlay_state,
+            &replication,
+            &mut pool,
+            None,
+            &hit_zones,
+            None,
+            0.0,
+            0.0,
+        );
+
+        capture.assert_logged_once(Level::Warn, "with a non-finite world anchor");
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .count(),
+            0
+        );
+        assert!(registry.take_presentation_spawns().is_empty());
     }
 
     #[test]

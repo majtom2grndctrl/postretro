@@ -59,6 +59,7 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub(crate) use projectile_stage::advance;
 pub(crate) use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
+    projectile_splash_occlusion_origin, resolve_projectile_impact,
 };
 pub(crate) use weapon_stage::{projectile_model_body_rotation, spawn_projectile};
 

@@ -139,8 +139,6 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
-use parry3d::math::{Point, Vector};
-
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
@@ -483,12 +481,6 @@ pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
 /// room for a delayed rendered-frame declaration after projectile travel.
 const PROJECTILE_RTT_MARGIN_TICKS: u32 = 120;
 const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
-/// Matches the local authoritative projectile path's offset. A client contact
-/// declaration has no static-triangle normal, so its straight-line fire origin
-/// supplies the projectile-side direction for a world contact.
-const PROJECTILE_WORLD_CONTACT_OCCLUSION_EPSILON: f32 = 1.0e-3;
-const PROJECTILE_CONTACT_MATCH_EPSILON: f32 = 1.0e-4;
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthorizedShot {
     pub(crate) shot_id: ShotId,
@@ -503,8 +495,15 @@ pub(crate) struct AuthorizedShot {
     /// must not reread a weapon that may have changed or despawned in flight.
     pub(crate) splash: Option<SplashDescriptor>,
     /// Collision radius captured with the projectile launch. It is host-only
-    /// authority data used to reproduce the exact static-contact geometry.
+    /// authority data used to reproduce the local swept-contact geometry.
     pub(crate) projectile_radius: Option<f32>,
+    /// Frozen projectile flight facts. Splash intake replays this ray only as
+    /// far as host time, range, and lifetime permit; the client's point never
+    /// selects the detonation position.
+    pub(crate) projectile_direction: Option<Vec3>,
+    pub(crate) projectile_speed: Option<f32>,
+    pub(crate) projectile_lifetime_seconds: Option<f32>,
+    pub(crate) projectile_tick_seconds: Option<f32>,
     /// Frozen at FIRE because the weapon may be switched or despawned before a
     /// later projectile declaration arrives. This authority data never crosses
     /// the wire.
@@ -1868,6 +1867,8 @@ struct HostHitIngestContext<'a> {
     allocator: &'a NetworkIdAllocator,
     owners: &'a MovementOwners,
     open_shots: &'a mut OpenAuthorizedShots,
+    current_tick: u32,
+    anim_time: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -1880,7 +1881,6 @@ struct HitDeclarationResult {
 #[derive(Debug, Clone, Copy)]
 struct ProjectileContact {
     point: Vec3,
-    declared_target: NetworkId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1895,6 +1895,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
     current_tick: u32,
+    anim_time: f64,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
 ) -> bool {
@@ -1912,6 +1913,8 @@ pub(crate) fn host_flush_pending_hit_declarations(
         allocator,
         owners,
         open_shots,
+        current_tick,
+        anim_time,
         ready,
         &mut on_impact,
         &mut on_projectile_contact,
@@ -1937,6 +1940,8 @@ pub(crate) fn host_ingest_ready_hit_declarations(
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     open_shots: &mut OpenAuthorizedShots,
+    current_tick: u32,
+    anim_time: f64,
     ready: Vec<PendingHitDeclaration>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
     mut on_projectile_contact: impl FnMut(ShotId, Vec3),
@@ -1951,6 +1956,8 @@ pub(crate) fn host_ingest_ready_hit_declarations(
                 allocator,
                 owners,
                 open_shots: &mut *open_shots,
+                current_tick,
+                anim_time,
             },
             pending.client_id,
             &pending.declaration,
@@ -2081,30 +2088,30 @@ fn ingest_hit_declaration(
         };
     }
 
-    // Contact presentation is independent of damage-target validation. A real
-    // entity may despawn before declaration intake, and world contacts use the
-    // reserved target sentinel; either still keeps its finite in-range endpoint.
-    let projectile_contact = if open.shot.is_projectile {
-        declaration
-            .records
-            .iter()
-            .take(pellet_count)
-            .find_map(|record| valid_projectile_contact(&open.shot, record))
-    } else {
-        None
-    };
-
     if open.shot.is_projectile
         && let Some(splash) = open.shot.splash.as_ref()
     {
-        let Some(contact) = projectile_contact else {
+        let declared_contact = declaration
+            .records
+            .iter()
+            .take(pellet_count)
+            .any(|record| valid_projectile_contact(&open.shot, record).is_some());
+        if !declared_contact {
+            return HitDeclarationResult {
+                fire_accepted: true,
+                hit_accepted: false,
+                projectile_contact: None,
+            };
+        }
+        let Some(impact) = resolve_authorized_splash_projectile_impact(&context, &open.shot) else {
             return HitDeclarationResult {
                 fire_accepted: true,
                 hit_accepted: false,
                 projectile_contact: None,
             };
         };
-        let point = contact.point;
+        let point = impact.point;
+        weapon::spawn_impact_effect_at(context.registry, point, impact.normal);
         context
             .registry
             .push_world_point_presentation_spawn(WorldPointPresentationSpawn {
@@ -2116,13 +2123,11 @@ fn ingest_hit_declaration(
             context.hit_zone_store,
             context.collision_world,
             point,
-            projectile_contact_occlusion_origin(
-                context.registry,
-                context.collision_world,
-                context.hit_zone_store,
-                context.allocator,
-                &open.shot,
-                contact,
+            crate::sim::projectile_splash_occlusion_origin(
+                open.shot
+                    .projectile_radius
+                    .expect("resolved projectile impact has a frozen radius"),
+                &impact,
             ),
             splash,
             open.shot.damage,
@@ -2137,6 +2142,18 @@ fn ingest_hit_declaration(
             projectile_contact: Some(point),
         };
     }
+
+    // Non-splash projectile contact presentation keeps the existing declared
+    // endpoint contract. Splash is stricter because its point is a damage origin.
+    let projectile_contact = if open.shot.is_projectile {
+        declaration
+            .records
+            .iter()
+            .take(pellet_count)
+            .find_map(|record| valid_projectile_contact(&open.shot, record))
+    } else {
+        None
+    };
 
     let mut hit_accepted = false;
     for record in declaration.records.iter().take(pellet_count) {
@@ -2172,102 +2189,56 @@ fn valid_projectile_contact(
         return None;
     }
     let max_range = shot.range * HIT_RANGE_TOLERANCE;
-    (max_range.is_finite() && shot.fire_origin.distance(point) <= max_range).then_some(
-        ProjectileContact {
-            point,
-            declared_target: NetworkId(record.target),
-        },
-    )
+    (max_range.is_finite() && shot.fire_origin.distance(point) <= max_range)
+        .then_some(ProjectileContact { point })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn projectile_contact_occlusion_origin(
-    registry: &EntityRegistry,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-    allocator: &NetworkIdAllocator,
+fn resolve_authorized_splash_projectile_impact(
+    context: &HostHitIngestContext<'_>,
     shot: &AuthorizedShot,
-    contact: ProjectileContact,
-) -> Vec3 {
-    if shot.projectile_radius != Some(0.0)
-        || !is_static_projectile_contact(
-            registry,
-            collision_world,
-            hit_zone_store,
-            allocator,
-            shot,
-            contact,
-        )
+) -> Option<WeaponImpact> {
+    let direction = shot.projectile_direction?;
+    let speed = shot.projectile_speed?;
+    let lifetime_seconds = shot.projectile_lifetime_seconds?;
+    let tick_seconds = shot.projectile_tick_seconds?;
+    let radius = shot.projectile_radius?;
+    if !shot.fire_origin.is_finite()
+        || !direction.is_finite()
+        || (direction.length_squared() - 1.0).abs() > 1.0e-3
+        || !speed.is_finite()
+        || speed <= 0.0
+        || !lifetime_seconds.is_finite()
+        || lifetime_seconds < 0.0
+        || !tick_seconds.is_finite()
+        || tick_seconds <= 0.0
+        || !radius.is_finite()
+        || radius < 0.0
+        || !shot.range.is_finite()
+        || shot.range < 0.0
     {
-        return contact.point;
+        return None;
+    }
+    let elapsed_ticks = context.current_tick.wrapping_sub(shot.fire_tick);
+    let elapsed_seconds =
+        (f64::from(elapsed_ticks) * f64::from(tick_seconds)).min(f64::from(lifetime_seconds));
+    let travel_distance = (f64::from(speed) * elapsed_seconds).min(f64::from(shot.range)) as f32;
+    if !travel_distance.is_finite() || travel_distance <= 0.0 {
+        return None;
     }
 
-    let Some(projectile_side) = (shot.fire_origin - contact.point).try_normalize() else {
-        return contact.point;
-    };
-    let origin = contact.point + projectile_side * PROJECTILE_WORLD_CONTACT_OCCLUSION_EPSILON;
-    if origin.is_finite() {
-        origin
-    } else {
-        contact.point
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn is_static_projectile_contact(
-    registry: &EntityRegistry,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
-    allocator: &NetworkIdAllocator,
-    shot: &AuthorizedShot,
-    contact: ProjectileContact,
-) -> bool {
-    // A resolved network entity is definitively an entity contact. The sentinel
-    // is not enough to prove world geometry: presentation also uses it when a
-    // hit entity has no NetworkId.
-    if allocator
-        .entity_for_network_id(contact.declared_target)
-        .is_some()
-    {
-        return false;
-    }
-
-    let Some(radius) = shot.projectile_radius else {
-        return false;
-    };
-    if !radius.is_finite() || radius < 0.0 {
-        return false;
-    }
-    let travel = contact.point - shot.fire_origin;
-    let distance = travel.length();
-    let Some(direction) = travel.try_normalize() else {
-        return false;
-    };
-
-    let Some(world_hit) = collision::cast_sphere_exact(
-        collision_world,
-        Point::new(shot.fire_origin.x, shot.fire_origin.y, shot.fire_origin.z),
-        radius,
-        Vector::new(direction.x, direction.y, direction.z),
-        distance + PROJECTILE_CONTACT_MATCH_EPSILON,
-    ) else {
-        return false;
-    };
-    if (world_hit.time_of_impact - distance).abs() > PROJECTILE_CONTACT_MATCH_EPSILON {
-        return false;
-    }
-
-    let entity_hit = crate::scripting_systems::hit_zones::nearest_entity_hit_ignoring(
-        registry,
-        hit_zone_store,
-        0.0,
+    crate::sim::resolve_projectile_impact(
+        context.collision_world,
+        context.registry,
+        context.hit_zone_store,
+        context.anim_time,
         shot.fire_origin,
         direction,
-        distance + PROJECTILE_CONTACT_MATCH_EPSILON,
+        travel_distance,
         radius,
-        |entity| entity == shot.pawn,
-    );
-    entity_hit.is_none_or(|hit| hit.toi >= world_hit.time_of_impact)
+        None,
+        shot.pawn,
+        shot.damage,
+    )
 }
 
 /// Test-only bridge for cross-stage projectile coverage. Production intake reaches the
@@ -2284,6 +2255,9 @@ pub(crate) fn ingest_hit_declaration_for_test(
     client_id: u64,
     declaration: &wire::HitDeclaration,
 ) -> (bool, bool) {
+    let current_tick = open_shots
+        .get(ShotId::from_raw(declaration.shot_id))
+        .map_or(0, |open| open.shot.fire_tick.wrapping_add(1));
     let result = ingest_hit_declaration(
         HostHitIngestContext {
             registry,
@@ -2292,6 +2266,8 @@ pub(crate) fn ingest_hit_declaration_for_test(
             allocator,
             owners,
             open_shots,
+            current_tick,
+            anim_time: 0.0,
         },
         client_id,
         declaration,
@@ -3622,6 +3598,10 @@ mod tests {
             credit_source: "weapon.test.net".to_string(),
             splash: None,
             projectile_radius: None,
+            projectile_direction: None,
+            projectile_speed: None,
+            projectile_lifetime_seconds: None,
+            projectile_tick_seconds: None,
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -3812,6 +3792,8 @@ mod tests {
                     allocator: &self.allocator,
                     owners: &self.owners,
                     open_shots: &mut self.open_shots,
+                    current_tick: 100,
+                    anim_time: 0.0,
                 },
                 client_id,
                 declaration,
@@ -3842,6 +3824,10 @@ mod tests {
                     credit_source: stats.credit_source.to_string(),
                     splash: None,
                     projectile_radius: None,
+                    projectile_direction: None,
+                    projectile_speed: None,
+                    projectile_lifetime_seconds: None,
+                    projectile_tick_seconds: None,
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -3876,6 +3862,10 @@ mod tests {
                 .shot;
             shot.is_projectile = true;
             shot.projectile_radius = Some(radius);
+            shot.projectile_direction = Some(Vec3::X);
+            shot.projectile_speed = Some(60.0);
+            shot.projectile_lifetime_seconds = Some(10.0);
+            shot.projectile_tick_seconds = Some(1.0 / 60.0);
             shot.fire_origin = Vec3::ZERO;
             shot.damage = 100.0;
             shot.splash = Some(SplashDescriptor {
@@ -4335,6 +4325,8 @@ mod tests {
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,
+                current_tick: 100,
+                anim_time: 0.0,
             },
             7,
             &declaration,
@@ -4383,6 +4375,8 @@ mod tests {
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,
+                current_tick: 100,
+                anim_time: 0.0,
             },
             7,
             &declaration,
@@ -4657,91 +4651,179 @@ mod tests {
         );
     }
 
+    // Regression: a client could detonate splash at any finite in-range point,
+    // including before the frozen projectile had time to reach a collision.
     #[test]
-    fn unmapped_entity_sentinel_contact_keeps_exact_splash_occlusion_origin() {
-        let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
-        let entity = fixture.spawn_splash_target(Vec3::new(0.5, 0.0, 0.0));
+    fn remote_splash_rejects_contact_before_host_travel_reaches_any_collision() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let future_target = fixture.spawn_splash_target(Vec3::new(4.0, 0.0, 0.0));
         fixture.configure_projectile_splash(0.0);
-        let contact = ProjectileContact {
-            point: Vec3::new(0.4, 0.0, 0.0),
-            declared_target: NetworkId(PROJECTILE_PRESENTATION_CONTACT_TARGET),
-        };
-        let shot = fixture
-            .open_shots
-            .get(fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot;
-
-        assert!(
-            !is_static_projectile_contact(
-                &fixture.registry,
-                &fixture.collision_world,
-                &fixture.hit_zone_store,
-                &fixture.allocator,
-                &shot,
-                contact,
-            ),
-            "the sentinel can name an unmapped entity, not only static world",
-        );
-        assert!(
-            projectile_contact_occlusion_origin(
-                &fixture.registry,
-                &fixture.collision_world,
-                &fixture.hit_zone_store,
-                &fixture.allocator,
-                &shot,
-                contact,
-            )
-            .distance(contact.point)
-                <= EPSILON,
-            "an unmapped entity contact keeps its exact splash LoS origin",
-        );
-
         let declaration = fixture.declaration(vec![wire::HitRecord {
             target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
-            point: contact.point.to_array(),
+            point: Vec3::new(9.0, 0.0, 0.0).to_array(),
             zone: None,
         }]);
-        assert!(fixture.ingest(7, &declaration));
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert_eq!(result.projectile_contact, None);
+        assert!(fixture.open_shots.get(fixture.shot_id).is_none());
+        assert!(
+            fixture
+                .registry
+                .take_world_point_presentation_spawns()
+                .is_empty()
+        );
         assert_eq!(
             fixture
                 .registry
-                .get_component::<HealthComponent>(entity)
-                .expect("unmapped entity remains live")
+                .get_component::<HealthComponent>(future_target)
+                .expect("future target remains live")
                 .current,
-            0.0,
-            "the actual host splash intake still resolves the sentinel entity contact",
+            100.0,
         );
     }
 
+    // Regression: splash contact validation ignored the projectile lifetime.
     #[test]
-    fn normal_radius_world_contact_keeps_exact_splash_occlusion_origin() {
+    fn remote_splash_rejects_contact_beyond_frozen_projectile_lifetime() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(0.5));
+        fixture.configure_projectile_splash(0.0);
+        fixture
+            .open_shots
+            .shots
+            .get_mut(&fixture.shot_id)
+            .expect("fixture shot remains open")
+            .shot
+            .projectile_lifetime_seconds = Some(0.005);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            point: Vec3::new(0.5, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert_eq!(result.projectile_contact, None);
+    }
+
+    // Regression: a declared point beyond an earlier entity collision selected
+    // the blast center instead of the host's first-contact ordering.
+    #[test]
+    fn remote_splash_uses_first_host_entity_contact_before_declared_point() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let struck = fixture.spawn_splash_target(Vec3::new(0.5, 0.0, 0.0));
+        let struck_net = fixture.allocator.stamp(struck);
+        fixture.configure_projectile_splash(0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: struck_net.0,
+            point: Vec3::new(9.0, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        let point = result
+            .projectile_contact
+            .expect("host resolves entity contact");
+        assert!((point.x - 0.4).abs() <= EPSILON);
+        assert!(point.distance(Vec3::new(9.0, 0.0, 0.0)) > 8.0);
+        assert_eq!(
+            fixture
+                .registry
+                .get_component::<HealthComponent>(struck)
+                .expect("struck entity remains allocated")
+                .current,
+            0.0,
+        );
+    }
+
+    // Regression: a forged point beyond a wall bypassed the first static
+    // collision and used the far-side point as the splash center.
+    #[test]
+    fn remote_splash_uses_first_host_static_contact_before_through_wall_point() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+        let near_side = fixture.spawn_splash_target(Vec3::new(0.5, 0.0, 0.75));
+        let far_side = fixture.spawn_splash_target(Vec3::new(1.5, 0.0, 0.75));
+        fixture.configure_projectile_splash(0.0);
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            point: Vec3::new(4.0, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        let point = result
+            .projectile_contact
+            .expect("host resolves wall contact");
+        assert!((point.x - 1.0).abs() <= EPSILON);
+        assert!(
+            fixture
+                .registry
+                .get_component::<HealthComponent>(near_side)
+                .expect("near-side entity remains live")
+                .current
+                < 100.0,
+        );
+        assert_eq!(
+            fixture
+                .registry
+                .get_component::<HealthComponent>(far_side)
+                .expect("far-side entity remains live")
+                .current,
+            100.0,
+        );
+    }
+
+    // Regression: remote splash replay must preserve the local authoritative
+    // projectile stage's swept-radius contact instead of trusting the client point.
+    #[test]
+    fn remote_splash_static_contact_preserves_projectile_radius_semantics() {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
         fixture.configure_projectile_splash(0.25);
-        let contact = ProjectileContact {
-            // The sphere center reaches x=0.75 when its 0.25m radius touches
-            // the x=1 wall.
-            point: Vec3::new(0.75, 0.0, 0.0),
-            declared_target: NetworkId(PROJECTILE_PRESENTATION_CONTACT_TARGET),
-        };
-        let shot = fixture
-            .open_shots
-            .get(fixture.shot_id)
-            .expect("fixture shot remains open")
-            .shot;
+        let local_impact = crate::sim::resolve_projectile_impact(
+            &fixture.collision_world,
+            &fixture.registry,
+            &fixture.hit_zone_store,
+            0.0,
+            Vec3::ZERO,
+            Vec3::X,
+            1.0,
+            0.25,
+            None,
+            fixture.pawn,
+            100.0,
+        )
+        .expect("the local authoritative sweep reaches the wall");
+        assert!(local_impact.target.is_none());
+        let declaration = fixture.declaration(vec![wire::HitRecord {
+            target: PROJECTILE_PRESENTATION_CONTACT_TARGET,
+            point: Vec3::new(4.0, 0.0, 0.0).to_array(),
+            zone: None,
+        }]);
 
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        let point = result
+            .projectile_contact
+            .expect("host resolves swept sphere contact");
         assert!(
-            projectile_contact_occlusion_origin(
-                &fixture.registry,
-                &fixture.collision_world,
-                &fixture.hit_zone_store,
-                &fixture.allocator,
-                &shot,
-                contact,
-            )
-            .distance(contact.point)
-                <= EPSILON,
-            "normal-radius world contacts keep their former exact-center LoS origin",
+            point.distance(local_impact.point) <= EPSILON,
+            "remote replay must expose the same contact point as local authoritative flight",
+        );
+        assert!(
+            point.x < 0.9,
+            "the projectile radius must contact before its center reaches the wall",
         );
     }
 

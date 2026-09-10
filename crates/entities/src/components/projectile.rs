@@ -7,7 +7,7 @@ use postretro_foundation::{ProjectileImpactLight, SplashDescriptor};
 
 use crate::registry::EntityId;
 
-/// Engine-owned state for one direct-impact projectile.
+/// Engine-owned state for one projectile's resolved impact damage.
 ///
 /// The spawn path validates the descriptor before constructing this component;
 /// retaining all hit-time inputs here lets a projectile outlive its firing pawn

@@ -130,7 +130,7 @@ pub(crate) fn advance(
                     hit_zone_store,
                     collision_world,
                     impact.point,
-                    splash_occlusion_origin(component, impact),
+                    projectile_splash_occlusion_origin(component.radius, impact),
                     splash,
                     component.damage,
                     component.owner_weapon,
@@ -167,8 +167,11 @@ pub(crate) fn advance(
 /// Return the origin for a splash static-world sightline. `WorldHit::normal`
 /// comes from parry's second shape (the static trimesh), so its outward normal
 /// points to the projectile side at a non-penetrating contact.
-fn splash_occlusion_origin(component: &ProjectileComponent, impact: &WeaponImpact) -> Vec3 {
-    if component.radius != 0.0 || impact.target.is_some() {
+pub(crate) fn projectile_splash_occlusion_origin(
+    projectile_radius: f32,
+    impact: &WeaponImpact,
+) -> Vec3 {
+    if projectile_radius != 0.0 || impact.target.is_some() {
         return impact.point;
     }
 
@@ -322,7 +325,7 @@ fn advance_matching(
             || component.remaining_range <= 0.0
             || component.remaining_lifetime <= 0.0;
 
-        if let Some(hit) = nearest_projectile_hit(
+        if let Some(impact) = resolve_projectile_impact(
             collision_world,
             &registry.borrow(),
             hit_zone_store,
@@ -331,29 +334,10 @@ fn advance_matching(
             direction,
             segment_length,
             component.radius,
-            projectile_id,
+            Some(projectile_id),
             component.owner_pawn,
+            component.damage,
         ) {
-            let impact = match hit {
-                NearestProjectileHit::World(world) => WeaponImpact {
-                    point: world.point,
-                    normal: world.normal,
-                    target: None,
-                    zone: None,
-                    outcome: ActivationOutcome::Hit(DamagePayload {
-                        amount: component.damage,
-                    }),
-                },
-                NearestProjectileHit::Entity(entity) => WeaponImpact {
-                    point: entity.point,
-                    normal: entity.normal,
-                    target: Some(entity.target),
-                    zone: entity.zone,
-                    outcome: ActivationOutcome::Hit(DamagePayload {
-                        amount: component.damage,
-                    }),
-                },
-            };
             pending.push(PendingProjectileAction::Impact {
                 projectile: projectile_id,
                 component,
@@ -444,6 +428,50 @@ fn advance_matching(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_projectile_impact(
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    origin: Vec3,
+    direction: Vec3,
+    range: f32,
+    radius: f32,
+    active_projectile: Option<EntityId>,
+    owner_pawn: EntityId,
+    damage: f32,
+) -> Option<WeaponImpact> {
+    nearest_projectile_hit(
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        origin,
+        direction,
+        range,
+        radius,
+        active_projectile,
+        owner_pawn,
+    )
+    .map(|hit| match hit {
+        NearestProjectileHit::World(world) => WeaponImpact {
+            point: world.point,
+            normal: world.normal,
+            target: None,
+            zone: None,
+            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+        },
+        NearestProjectileHit::Entity(entity) => WeaponImpact {
+            point: entity.point,
+            normal: entity.normal,
+            target: Some(entity.target),
+            zone: entity.zone,
+            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn nearest_projectile_hit(
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
@@ -453,7 +481,7 @@ fn nearest_projectile_hit(
     direction: Vec3,
     range: f32,
     radius: f32,
-    projectile_id: EntityId,
+    active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
 ) -> Option<NearestProjectileHit> {
     let world_hit = cast_sphere_exact(
@@ -476,7 +504,7 @@ fn nearest_projectile_hit(
         direction,
         range,
         radius,
-        |id| projectile_collision_excludes(registry, projectile_id, owner_pawn, id),
+        |id| projectile_collision_excludes(registry, active_projectile, owner_pawn, id),
     );
 
     match (world_hit, entity_hit) {
@@ -491,12 +519,12 @@ fn nearest_projectile_hit(
 
 fn projectile_collision_excludes(
     registry: &EntityRegistry,
-    active_projectile: EntityId,
+    active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
     candidate: EntityId,
 ) -> bool {
     if candidate == owner_pawn
-        || candidate == active_projectile
+        || active_projectile == Some(candidate)
         || registry
             .has_component_kind(candidate, ComponentKind::Projectile)
             .unwrap_or(false)
@@ -1404,17 +1432,26 @@ mod tests {
             .expect("intentional mesh target attaches");
 
         assert!(projectile_collision_excludes(
-            &registry, active, owner, active,
+            &registry,
+            Some(active),
+            owner,
+            active,
         ));
         assert!(projectile_collision_excludes(
-            &registry, active, owner, owner,
+            &registry,
+            Some(active),
+            owner,
+            owner,
         ));
         assert!(projectile_collision_excludes(
-            &registry, active, owner, observer,
+            &registry,
+            Some(active),
+            owner,
+            observer,
         ));
         assert!(!projectile_collision_excludes(
             &registry,
-            active,
+            Some(active),
             owner,
             intentional_mesh_target,
         ));

@@ -252,7 +252,7 @@ export type TouchMode =
 export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"
-  --- Launch a straight-line projectile that resolves a direct impact on a later simulation pass.
+  --- Launch a straight-line projectile that resolves contact on a later simulation pass. Without `splash`, contact applies one direct hit; with `splash`, contact anchors radial damage and applies no separate direct hit.
   | "projectile"
 
 --- Settings for a projectile that travels in a straight line and hits later. This block is required when the weapon's `resolution` is `projectile`; it controls the projectile itself, not map placement.
@@ -442,7 +442,7 @@ export type WeaponPlacementDescriptor = {
 
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
-  --- Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.
+  --- Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.
   damage: number,
   --- Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.
   pelletCount: number?,

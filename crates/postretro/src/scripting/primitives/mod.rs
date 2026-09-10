@@ -300,7 +300,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .variant(
             "projectile",
-            "Launch a straight-line projectile that resolves a direct impact on a later simulation pass.",
+            "Launch a straight-line projectile that resolves contact on a later simulation pass. Without `splash`, contact applies one direct hit; with `splash`, contact anchors radial damage and applies no separate direct hit.",
         )
         .finish();
     registry
@@ -441,7 +441,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
-        .field("damage", "f32", "Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0.")
+        .field("damage", "f32", "Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.")
         .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
         .field("bloomPerShotDegrees?", "f32", "Hitscan-only sustained-fire bloom added after each resolved hitscan shell, in degrees. Range: 0..=45; defaults to 0.")

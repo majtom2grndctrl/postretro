@@ -180,82 +180,88 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let Some(shot_id) = remote.shot_id else {
             continue;
         };
-        let (is_projectile, fire_origin, timeout_budget_ticks, projectile_presentation) =
-            match resolution {
-                ResolutionMode::Hitscan => (
-                    false,
-                    Vec3::ZERO,
-                    crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
-                    None,
-                ),
-                ResolutionMode::Projectile => {
-                    let Some(projectile) = projectile.as_ref() else {
-                        log::warn!(
-                            "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
-                        );
-                        rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                            owner_client_id: remote.owner_client_id,
-                            shot_id,
-                        });
-                        continue;
-                    };
-                    let Some((eye, direction)) = remote_projectile_aim(&registry, remote) else {
-                        log::warn!(
-                            "[Net] remote projectile fire has no valid live pawn aim; dropping shot"
-                        );
-                        rejected_projectile_fires.push(RemoteProjectileFireRejection {
-                            owner_client_id: remote.owner_client_id,
-                            shot_id,
-                        });
-                        continue;
-                    };
-                    let descriptor_class = registry
-                        .get_component::<DescriptorProvenance>(weapon)
-                        .ok()
-                        .map(|provenance| provenance.canonical_name.clone())
-                        .unwrap_or_default();
-                    let authored_placement = descriptors
-                        .iter()
-                        .find(|descriptor| {
-                            descriptor.canonical_name.as_deref() == Some(descriptor_class.as_str())
-                        })
-                        .and_then(|descriptor| descriptor.weapon.as_ref())
-                        .and_then(|weapon| weapon.placement.as_ref());
-                    let placement = crate::resolve_weapon_placement(
-                        default_weapon_placement,
-                        None,
-                        authored_placement,
-                        None,
+        let (
+            is_projectile,
+            fire_origin,
+            projectile_direction,
+            timeout_budget_ticks,
+            projectile_presentation,
+        ) = match resolution {
+            ResolutionMode::Hitscan => (
+                false,
+                Vec3::ZERO,
+                None,
+                crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                None,
+            ),
+            ResolutionMode::Projectile => {
+                let Some(projectile) = projectile.as_ref() else {
+                    log::warn!(
+                        "[Net] authorized projectile weapon has no projectile descriptor; dropping shot"
                     );
-                    // A projectile's host authorization and its observer launch
-                    // must share this exact fire-time point.
-                    let fire_origin = muzzle_offset.map_or(eye, |muzzle_local| {
-                        weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local)
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
                     });
-                    let projectile_presentation = (!descriptor_class.is_empty()).then_some(
-                        RemoteProjectilePresentationLaunch {
-                            owner_client_id: remote.owner_client_id,
-                            shot_id,
-                            origin: fire_origin,
-                            direction,
-                            range,
-                            descriptor_class,
-                            projectile: projectile.clone(),
-                        },
+                    continue;
+                };
+                let Some((eye, direction)) = remote_projectile_aim(&registry, remote) else {
+                    log::warn!(
+                        "[Net] remote projectile fire has no valid live pawn aim; dropping shot"
                     );
-                    (
-                        true,
-                        fire_origin,
-                        crate::netcode::projectile_timeout_budget_ticks(
-                            range,
-                            projectile.speed,
-                            projectile.lifetime_ms / 1000.0,
-                            tick_dt,
-                        ),
-                        projectile_presentation,
-                    )
-                }
-            };
+                    rejected_projectile_fires.push(RemoteProjectileFireRejection {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                    });
+                    continue;
+                };
+                let descriptor_class = registry
+                    .get_component::<DescriptorProvenance>(weapon)
+                    .ok()
+                    .map(|provenance| provenance.canonical_name.clone())
+                    .unwrap_or_default();
+                let authored_placement = descriptors
+                    .iter()
+                    .find(|descriptor| {
+                        descriptor.canonical_name.as_deref() == Some(descriptor_class.as_str())
+                    })
+                    .and_then(|descriptor| descriptor.weapon.as_ref())
+                    .and_then(|weapon| weapon.placement.as_ref());
+                let placement = crate::resolve_weapon_placement(
+                    default_weapon_placement,
+                    None,
+                    authored_placement,
+                    None,
+                );
+                // A projectile's host authorization and its observer launch
+                // must share this exact fire-time point.
+                let fire_origin = muzzle_offset.map_or(eye, |muzzle_local| {
+                    weapon::muzzle_world_origin(eye, direction, &placement, muzzle_local)
+                });
+                let projectile_presentation =
+                    (!descriptor_class.is_empty()).then_some(RemoteProjectilePresentationLaunch {
+                        owner_client_id: remote.owner_client_id,
+                        shot_id,
+                        origin: fire_origin,
+                        direction,
+                        range,
+                        descriptor_class,
+                        projectile: projectile.clone(),
+                    });
+                (
+                    true,
+                    fire_origin,
+                    Some(direction),
+                    crate::netcode::projectile_timeout_budget_ticks(
+                        range,
+                        projectile.speed,
+                        projectile.lifetime_ms / 1000.0,
+                        tick_dt,
+                    ),
+                    projectile_presentation,
+                )
+            }
+        };
         let projectile_radius = if is_projectile {
             projectile.as_ref().map(|projectile| projectile.radius)
         } else {
@@ -273,6 +279,12 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 credit_source,
                 splash,
                 projectile_radius,
+                projectile_direction,
+                projectile_speed: projectile.as_ref().map(|projectile| projectile.speed),
+                projectile_lifetime_seconds: projectile
+                    .as_ref()
+                    .map(|projectile| projectile.lifetime_ms / 1_000.0),
+                projectile_tick_seconds: is_projectile.then_some(tick_dt),
                 is_projectile,
                 fire_origin,
                 timeout_budget_ticks,

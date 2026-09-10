@@ -761,6 +761,10 @@ pub struct EntityRegistry {
     /// is selected from a world point and projectile ownership, not a widget
     /// presenter.
     world_point_presentation_spawns: Vec<WorldPointPresentationSpawn>,
+    /// Number of newest world-point transients dropped since the previous host
+    /// drain. The queue stays bounded, while the router can report overload
+    /// instead of silently violating its best-effort observer contract.
+    world_point_presentation_spawn_overflow: usize,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
     /// Ownership returns here after every tick so the allocation is reused.
     active_deferred_effects: Vec<EntityId>,
@@ -790,6 +794,7 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             world_point_presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
+            world_point_presentation_spawn_overflow: 0,
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -1152,6 +1157,7 @@ impl EntityRegistry {
     pub fn clear_presentation_spawns(&mut self) {
         self.presentation_spawns.clear();
         self.world_point_presentation_spawns.clear();
+        self.world_point_presentation_spawn_overflow = 0;
     }
 
     /// Publish one built-in world-point transient for host-side remote routing.
@@ -1161,6 +1167,10 @@ impl EntityRegistry {
     pub fn push_world_point_presentation_spawn(&mut self, spawn: WorldPointPresentationSpawn) {
         if self.world_point_presentation_spawns.len() < MAX_PENDING_PRESENTATION_SPAWNS {
             self.world_point_presentation_spawns.push(spawn);
+        } else {
+            self.world_point_presentation_spawn_overflow = self
+                .world_point_presentation_spawn_overflow
+                .saturating_add(1);
         }
     }
 
@@ -1172,12 +1182,19 @@ impl EntityRegistry {
         spawns
     }
 
+    /// Return and reset the number of world-point requests rejected by the
+    /// bounded queue since the previous host drain.
+    pub fn take_world_point_presentation_spawn_overflow(&mut self) -> usize {
+        std::mem::take(&mut self.world_point_presentation_spawn_overflow)
+    }
+
     /// Discard world-point work when this process has no host presentation
     /// route. Single-player has already materialized the local impact effect,
     /// so retaining an observer-only request would only consume the bounded
     /// intake until level unload.
     pub fn clear_world_point_presentation_spawns(&mut self) {
         self.world_point_presentation_spawns.clear();
+        self.world_point_presentation_spawn_overflow = 0;
     }
 
     /// Mutable access to the engine-managed deferred-effect storage.
@@ -1277,6 +1294,7 @@ impl EntityRegistry {
         self.impact_dispatches.clear();
         self.presentation_spawns.clear();
         self.world_point_presentation_spawns.clear();
+        self.world_point_presentation_spawn_overflow = 0;
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1711,6 +1729,29 @@ mod tests {
             drained.last().unwrap().template.0,
             format!("template-{}", MAX_PENDING_PRESENTATION_SPAWNS - 1)
         );
+    }
+
+    // Regression: world-point explosion overflow was silently discarded after
+    // the first 128 events in a burst.
+    #[test]
+    fn world_point_presentation_overflow_is_bounded_and_reported_once() {
+        let mut registry = EntityRegistry::new();
+        for index in 0..(MAX_PENDING_PRESENTATION_SPAWNS + 3) {
+            registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+                world_anchor: Vec3::new(index as f32, 0.0, 0.0),
+                owner_pawn: index as u32,
+            });
+        }
+
+        let drained = registry.take_world_point_presentation_spawns();
+        assert_eq!(drained.len(), MAX_PENDING_PRESENTATION_SPAWNS);
+        assert_eq!(drained.first().unwrap().owner_pawn, 0);
+        assert_eq!(
+            drained.last().unwrap().owner_pawn,
+            (MAX_PENDING_PRESENTATION_SPAWNS - 1) as u32
+        );
+        assert_eq!(registry.take_world_point_presentation_spawn_overflow(), 3);
+        assert_eq!(registry.take_world_point_presentation_spawn_overflow(), 0);
     }
 
     // Regression: level unload left a fixed-tick presentation spawn queued for

@@ -100,6 +100,7 @@ pub(crate) fn splash_damage_amount(
         || !radius.is_finite()
         || radius <= 0.0
         || !min_fraction.is_finite()
+        || !(0.0..=1.0).contains(&min_fraction)
         || !distance.is_finite()
     {
         return 0.0;
@@ -266,6 +267,13 @@ mod tests {
         assert!((splash_damage_amount(100.0, 10.0, 0.2, 10.0) - 20.0).abs() <= 1.0e-5);
     }
 
+    // Regression: directly constructed splash components could produce negative or amplified edge damage.
+    #[test]
+    fn splash_damage_amount_rejects_out_of_range_min_fraction() {
+        assert!(splash_damage_amount(100.0, 10.0, -0.1, 10.0).abs() <= 1.0e-6);
+        assert!(splash_damage_amount(100.0, 10.0, 1.1, 10.0).abs() <= 1.0e-6);
+    }
+
     #[test]
     fn splash_emitter_routes_each_nonzero_target_through_credit_and_one_post_blast_drain() {
         let mut registry = EntityRegistry::new();
@@ -316,7 +324,7 @@ mod tests {
         let edge_health = registry
             .get_component::<HealthComponent>(edge)
             .expect("edge target remains live");
-        assert_eq!(edge_health.current, 100.0);
+        assert!((edge_health.current - 100.0).abs() <= 1.0e-6);
         assert!(edge_health.contributor_ledger.entries().is_empty());
     }
 
@@ -356,7 +364,10 @@ mod tests {
         let clear_health = registry
             .get_component::<HealthComponent>(clear)
             .expect("clear target remains live");
-        assert_eq!(hidden_health.current, 100.0, "the wall blocks splash");
+        assert!(
+            (hidden_health.current - 100.0).abs() <= 1.0e-6,
+            "the wall blocks splash"
+        );
         assert!(
             (clear_health.current - 75.0).abs() <= 1.0e-6,
             "the clear target is at the same 3.75m nearest-point distance"
@@ -395,8 +406,8 @@ mod tests {
         let health = registry
             .get_component::<HealthComponent>(enclosing)
             .expect("enclosing target remains live");
-        assert_eq!(
-            health.current, 0.0,
+        assert!(
+            health.current.abs() <= 1.0e-6,
             "zero-length splash is clear and full damage"
         );
     }
@@ -447,8 +458,8 @@ mod tests {
 
         assert!((enabled_owner - 50.0).abs() <= 1.0e-6);
         assert!((enabled_other - 50.0).abs() <= 1.0e-6);
-        assert_eq!(
-            disabled_owner, 100.0,
+        assert!(
+            (disabled_owner - 100.0).abs() <= 1.0e-6,
             "selfDamage false excludes only the owner"
         );
         assert!((disabled_other - 50.0).abs() <= 1.0e-6);

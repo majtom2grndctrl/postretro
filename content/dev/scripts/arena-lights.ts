@@ -120,6 +120,31 @@ export function setupLevel(_ctx: unknown) {
     reactions.push(defineReaction("levelLoad", { sequence: steps }));
   }
 
+  // Crusher room: a single baked spotlight pulses slowly enough to inspect the
+  // crusher and bridge-door self-shadow handoff while the mover ping-pongs.
+  const crusherPulseLights = world.query({
+    component: "light",
+    tag: "crusher_pulse_light",
+  });
+  if (crusherPulseLights.length > 0) {
+    const brightness = [0.12, 0.18, 0.35, 0.62, 0.88, 1.0, 0.88, 0.62, 0.35, 0.18];
+    const steps = crusherPulseLights.map((light) => ({
+      id: light.id,
+      primitive: "setLightAnimation" as const,
+      args: {
+        periodMs: 3000,
+        phase: null,
+        playCount: null,
+        startActive: true,
+        brightness,
+        color: null,
+        direction: null,
+      },
+    }));
+
+    reactions.push(defineReaction("levelLoad", { sequence: steps }));
+  }
+
   // Fog demo: both fog entity types in the map carry the "pulse_fog" tag,
   // so the tag-targeted scatter primitive and the per-id fog.pulse sequence
   // both demonstrate cross-subtype dispatch (fog_volume + fog_lamp hit together).

@@ -2,6 +2,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 mod projectile_stage;
+mod splash;
 pub(crate) mod touch;
 
 use std::borrow::Cow;
@@ -1779,6 +1780,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,
@@ -1812,6 +1814,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: Some(credit_source.to_string()),
             third_person_model: None,
             viewmodel: None,

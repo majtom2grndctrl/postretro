@@ -43,6 +43,27 @@ pub struct ProjectileDescriptor {
     pub visual: ProjectileVisual,
 }
 
+/// Descriptor-owned radial damage tuning composed onto a weapon impact.
+///
+/// This is deliberately a peer of [`ProjectileDescriptor`]: any resolution
+/// that locates an impact point can use the same radial effect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplashDescriptor {
+    /// Radius of the blast sphere in metres.
+    pub radius: f32,
+    /// Fraction of base damage applied at the blast edge.
+    #[serde(default)]
+    pub min_fraction: f32,
+    /// Whether the firing pawn is eligible for its own blast.
+    #[serde(default = "default_splash_self_damage")]
+    pub self_damage: bool,
+}
+
+const fn default_splash_self_damage() -> bool {
+    true
+}
+
 /// Presentation attached to a projectile at spawn. It is descriptor data only:
 /// rendering never decides whether the projectile hits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -355,6 +376,9 @@ pub struct WeaponDescriptor {
     /// resolution modes so existing hitscan descriptors remain unchanged.
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
+    /// Optional radial damage applied at the resolution's impact point.
+    #[serde(default)]
+    pub splash: Option<SplashDescriptor>,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
     /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
@@ -491,6 +515,9 @@ impl WeaponDescriptor {
             }
             (ResolutionMode::Hitscan, None) => {}
         }
+        if let Some(splash) = self.splash.as_ref() {
+            validate_splash_descriptor(splash)?;
+        }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
         }
@@ -540,6 +567,26 @@ impl WeaponDescriptor {
         }
         Ok(self)
     }
+}
+
+fn validate_splash_descriptor(splash: &SplashDescriptor) -> Result<(), DescriptorError> {
+    if !splash.radius.is_finite() || splash.radius <= 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.weapon.splash.radius` must be a finite value > 0.0, got {}",
+                splash.radius
+            ),
+        });
+    }
+    if !splash.min_fraction.is_finite() || !(0.0..=1.0).contains(&splash.min_fraction) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.weapon.splash.minFraction` must be a finite value in 0.0..=1.0, got {}",
+                splash.min_fraction
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn validate_projectile_descriptor(
@@ -952,6 +999,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: credit_source.map(str::to_string),
             third_person_model: None,
             viewmodel: None,
@@ -1015,6 +1063,48 @@ mod tests {
             panic!("expected InvalidShape");
         };
         assert!(reason.contains("components.weapon.projectile"), "{reason}");
+    }
+
+    #[test]
+    fn splash_descriptor_uses_camel_case_defaults_and_validates_falloff_inputs() {
+        let parsed: SplashDescriptor = serde_json::from_value(serde_json::json!({
+            "radius": 12.0,
+        }))
+        .expect("minimal splash descriptor deserializes");
+        assert_eq!(parsed.radius, 12.0);
+        assert_eq!(parsed.min_fraction, 0.0);
+        assert!(parsed.self_damage);
+
+        let authored: SplashDescriptor = serde_json::from_value(serde_json::json!({
+            "radius": 12.0,
+            "minFraction": 0.25,
+            "selfDamage": false,
+        }))
+        .expect("camel-case splash fields deserialize");
+        assert_eq!(authored.min_fraction, 0.25);
+        assert!(!authored.self_damage);
+
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.splash = Some(parsed.clone());
+        assert!(descriptor.clone().validate().is_ok());
+
+        for (field, radius, min_fraction) in [
+            ("radius", 0.0, 0.0),
+            ("radius", f32::NAN, 0.0),
+            ("radius", f32::INFINITY, 0.0),
+            ("minFraction", 12.0, -0.01),
+            ("minFraction", 12.0, 1.01),
+            ("minFraction", 12.0, f32::INFINITY),
+        ] {
+            let mut invalid = descriptor.clone();
+            invalid.splash = Some(SplashDescriptor {
+                radius,
+                min_fraction,
+                self_damage: true,
+            });
+            let error = invalid.validate().expect_err("invalid splash rejects");
+            assert!(error.to_string().contains(field), "{error}");
+        }
     }
 
     #[test]

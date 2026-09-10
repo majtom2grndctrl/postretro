@@ -848,7 +848,14 @@ pub(crate) fn nearest_entity_hit_ignoring(
     nearest
 }
 
-fn for_each_hittable_candidate(registry: &EntityRegistry, mut visit: impl FnMut(EntityId)) {
+/// Visit the broad candidate set shared by weapon-agnostic entity queries.
+///
+/// The mesh walk intentionally includes health-less presentation entries; each
+/// caller applies its own liveness/damageability gate before acting on them.
+pub(crate) fn for_each_hittable_candidate(
+    registry: &EntityRegistry,
+    mut visit: impl FnMut(EntityId),
+) {
     for (id, _) in registry.iter_with_kind(ComponentKind::Health) {
         visit(id);
     }
@@ -857,6 +864,38 @@ fn for_each_hittable_candidate(registry: &EntityRegistry, mut visit: impl FnMut(
             visit(id);
         }
     }
+}
+
+/// Return an entity's world-space damageable broad-phase volume.
+///
+/// Zone-bearing models use their conservative derived bound; other targets use
+/// the authored health hitbox. A non-finite model transform degrades to the
+/// authored hitbox when available, matching the ray query's coarse fallback.
+pub(crate) fn damageable_volume(
+    registry: &EntityRegistry,
+    store: &HitZoneStore,
+    id: EntityId,
+) -> Option<Aabb> {
+    let transform = registry.get_component::<Transform>(id).ok()?;
+    let hitbox = registry
+        .get_component::<HealthComponent>(id)
+        .ok()
+        .and_then(|health| health.hitbox.as_ref());
+
+    if let Some(zoned) = zone_bearing_entry(registry, store, id)
+        && let Some(model_to_world) = model_matrix(transform, zoned.origin_offset)
+        && let Some(bound) = transformed_zone_bound(zoned.zones, &model_to_world, transform)
+    {
+        return Some(bound);
+    }
+
+    hitbox.map(|hitbox| {
+        let center = transform.position + hitbox.offset;
+        Aabb {
+            min: center - hitbox.half_extents,
+            max: center + hitbox.half_extents,
+        }
+    })
 }
 
 struct ZoneBearingEntry<'a> {
@@ -1181,7 +1220,7 @@ fn radius_scale(transform: &Transform) -> f32 {
 
 /// Transform a model-local derived bound to world space and pad it for the
 /// conservative non-uniform-scale capsule radius used by the narrow phase.
-fn transformed_zone_bound(
+pub(crate) fn transformed_zone_bound(
     zones: &ModelHitZones,
     model_to_world: &Mat4,
     transform: &Transform,

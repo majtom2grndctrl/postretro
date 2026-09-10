@@ -231,9 +231,9 @@ AI is inseparable from the scripting runtime until the M4 decomposition.
   (`combat-model`, `scripting-core`, or a new seam crate), and how much of
   `primitives::store` / reaction dispatch sinks to `scripting-core`. Deferred to M4
   re-grounding by design (Execution model).
-- **`restore_carried_health` placement.** The struct sinks to combat-model (M1); the
-  function is behavior over the registry — decide at M1 build whether it travels with
-  the struct or stays netcode-side reading down.
+- **`restore_carried_health` placement.** Resolved from source (M1): it names only
+  `CarriedState`/`EntityRegistry`/`EntityId` + entities' `set_health_absolute`, so it
+  travels with the structs into combat-model and the netcode seat re-export drops it.
 - **Carried-loadout wire status.** Resolved from source (M1): `TuningPayload` and
   `WieldableTuningPayload` derive serde `Serialize`/`Deserialize` and cross as an opaque
   JSON payload — the move preserves both derives; `CarriedState` and every shot-authority

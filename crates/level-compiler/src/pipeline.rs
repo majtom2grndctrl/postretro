@@ -233,8 +233,16 @@ fn planned_stages_for_sdf(needs_sdf: bool) -> Vec<StageDescriptor> {
         .collect()
 }
 
-const DELTA_WORKING_SET_COPY_FACTOR: u64 = 2;
-const DELTA_WORKING_SET_ANALYZE_COPY_FACTOR: u64 = 3;
+const DELTA_WORKING_SET_DENSE_AND_COMPACTION_FACTOR: u64 = 2;
+// Reserve another cumulative-delta-sized share for the co-resident id 34/id 35
+// originals and clones. Base-dominated maps remain outside this delta gate, but
+// a delta-dominated admission no longer spends the entire budget on deltas.
+const DELTA_WORKING_SET_BASE_COPY_HEADROOM_FACTOR: u64 = 1;
+const DELTA_WORKING_SET_ANALYSIS_CLONE_FACTOR: u64 = 1;
+const DELTA_WORKING_SET_COPY_FACTOR: u64 =
+    DELTA_WORKING_SET_DENSE_AND_COMPACTION_FACTOR + DELTA_WORKING_SET_BASE_COPY_HEADROOM_FACTOR;
+const DELTA_WORKING_SET_ANALYZE_COPY_FACTOR: u64 =
+    DELTA_WORKING_SET_COPY_FACTOR + DELTA_WORKING_SET_ANALYSIS_CLONE_FACTOR;
 const DELTA_WORKING_SET_HISTOGRAM_ROWS: usize = 10;
 
 /// Cheap plan-phase CSR data. Its dense f16 payload remains intentionally absent.
@@ -382,7 +390,8 @@ fn retains_sh_analyze_dense_deltas(sh_analyze: bool, sh_coarsening_enabled: bool
 ///
 /// The cumulative estimate deliberately treats all three dense payloads as
 /// co-resident through compaction. The copy-chain factor covers the dense and
-/// compaction buffers, plus the `--sh-analyze` clone retained during coarsening.
+/// compaction buffers, reserves headroom for the co-resident base-volume
+/// originals and clones, and adds the `--sh-analyze` clone when retained.
 fn gate_delta_working_set(
     bakes: [DeltaCsrProjectionInput<'_>; 3],
     subblock_f16_len: usize,
@@ -2424,9 +2433,9 @@ mod tests {
 
     #[test]
     fn delta_working_set_gate_refuses_three_cumulative_40_percent_bakes() {
-        let indirect = vec![0, 1, 0, 1];
-        let direct = vec![0, 1, 0, 1];
-        let animated_direct = vec![0, 1, 0, 1];
+        let indirect = vec![0, 1];
+        let direct = vec![0, 1];
+        let animated_direct = vec![0, 1];
 
         let error = gate_delta_working_set(
             [
@@ -2447,7 +2456,7 @@ mod tests {
                 },
             ],
             5,
-            200,
+            150,
             DELTA_WORKING_SET_COPY_FACTOR,
         )
         .expect_err("three 40%-sized dense bakes must be gated cumulatively");
@@ -2455,13 +2464,56 @@ mod tests {
         let DeltaWorkingSetGateError::BudgetExceeded(projection) = error else {
             panic!("only the budget should reject this bounded projection");
         };
-        assert_eq!(projection.cumulative_dense_bytes, 120);
-        assert_eq!(projection.estimated_peak_bytes, 240);
+        assert_eq!(projection.cumulative_dense_bytes, 60);
+        assert_eq!(projection.estimated_peak_bytes, 180);
         assert_eq!(projection.bakes.len(), 3);
         assert!(
-            projection.bakes.iter().all(|bake| bake.dense_bytes == 40),
+            projection.bakes.iter().all(|bake| bake.dense_bytes == 20),
             "each individual bake fits the budget; only the co-resident sum refuses"
         );
+    }
+
+    #[test]
+    fn delta_working_set_gate_reserves_base_headroom_at_all_valid_compaction_boundary() {
+        let all_valid_dense = vec![0; 10];
+        let empty = [];
+        let inputs = || {
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &all_valid_dense,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+            ]
+        };
+
+        // Regression: all-valid L0 compaction needs a second 100-byte delta
+        // buffer. The former 2x estimate admitted at 200 bytes and left no room
+        // for the id 34/id 35 originals and clones that remain live here.
+        let error =
+            gate_delta_working_set(inputs(), 5, 200, delta_working_set_copy_chain_factor(false))
+                .expect_err("the exact delta-only compaction boundary must retain base headroom");
+        let DeltaWorkingSetGateError::BudgetExceeded(projection) = error else {
+            panic!("only the budget should reject this bounded projection");
+        };
+        assert_eq!(projection.cumulative_dense_bytes, 100);
+        assert_eq!(projection.copy_chain_factor, 3);
+        assert_eq!(projection.estimated_peak_bytes, 300);
+
+        let admitted =
+            gate_delta_working_set(inputs(), 5, 300, delta_working_set_copy_chain_factor(false))
+                .expect("the conservative projection remains inclusive at its own boundary");
+        assert_eq!(admitted.estimated_peak_bytes, 300);
     }
 
     #[test]
@@ -2564,24 +2616,24 @@ mod tests {
 
         let normal_factor =
             delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(false, true));
-        let normal = gate_delta_working_set(inputs(), 1, 15, normal_factor)
-            .expect("two copies fit the selected budget");
-        assert_eq!(normal.estimated_peak_bytes, 12);
+        let normal = gate_delta_working_set(inputs(), 1, 21, normal_factor)
+            .expect("two delta copies plus base-copy headroom fit the selected budget");
+        assert_eq!(normal.estimated_peak_bytes, 18);
         let uniform_l0_analysis_factor =
             delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, false));
         let uniform_l0_analysis =
-            gate_delta_working_set(inputs(), 1, 15, uniform_l0_analysis_factor)
+            gate_delta_working_set(inputs(), 1, 21, uniform_l0_analysis_factor)
                 .expect("--sh-analyze without coarsening retains no dense clone");
         assert_eq!(
             uniform_l0_analysis.copy_chain_factor,
             DELTA_WORKING_SET_COPY_FACTOR
         );
-        assert_eq!(uniform_l0_analysis.estimated_peak_bytes, 12);
+        assert_eq!(uniform_l0_analysis.estimated_peak_bytes, 18);
 
         let coarsened_analysis_factor =
             delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, true));
-        let error = gate_delta_working_set(inputs(), 1, 15, coarsened_analysis_factor)
-            .expect_err("the retained --sh-analyze clone makes three copies exceed the budget");
+        let error = gate_delta_working_set(inputs(), 1, 21, coarsened_analysis_factor)
+            .expect_err("the retained --sh-analyze clone makes four shares exceed the budget");
         let DeltaWorkingSetGateError::BudgetExceeded(analyze) = error else {
             panic!("the analysis factor must be the only rejection cause");
         };
@@ -2589,7 +2641,7 @@ mod tests {
             analyze.copy_chain_factor,
             DELTA_WORKING_SET_ANALYZE_COPY_FACTOR
         );
-        assert_eq!(analyze.estimated_peak_bytes, 18);
+        assert_eq!(analyze.estimated_peak_bytes, 24);
     }
 
     #[test]

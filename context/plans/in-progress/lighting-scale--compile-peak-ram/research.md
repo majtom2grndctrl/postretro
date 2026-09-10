@@ -47,29 +47,31 @@ The working-set gate was measured with the compiler's default map settings,
 `--no-cache`, `--no-tui`, and a zero working-set budget. Zero deliberately
 causes a refusal immediately after the plan CSRs are built, so the diagnostic
 reports the exact pre-bake projection without allocating a dense delta payload.
-The table gives the dense sum and its normal (non-`--sh-analyze`) 2x peak
-projection:
+The table gives the dense sum and its normal (non-`--sh-analyze`) 3x host-RAM
+projection. Two shares cover delta dense-plus-compaction residency. The third is
+reserved for the co-resident id 34/id 35 originals and clones:
 
-| Map | Cumulative dense bytes | 2x projected peak bytes |
+| Map | Cumulative dense bytes | 3x projected peak bytes |
 |---|---:|---:|
-| `campaign-test` | 74,907,648 | 149,815,296 |
-| `gate-heavily-lit` | 9,289,728 | 18,579,456 |
-| `kinematic-platform` | 40,200,192 | 80,400,384 |
+| `campaign-test` | 74,907,648 | 224,722,944 |
+| `gate-heavily-lit` | 9,289,728 | 27,869,184 |
+| `kinematic-platform` | 40,200,192 | 120,600,576 |
 
 `campaign-test` is the heaviest measured dev map. The observed
 `stress-warren-hallway-inspection` direct-delta CSR alone is exactly
 12,163,350,528 dense bytes (the decomposition above), so its normal projected
-peak is at least 24,326,701,056 bytes before adding ids 27 and 45. A fresh
+peak is at least 36,490,051,584 bytes before adding ids 27 and 45. A fresh
 attempt to reach the warren plan phase was stopped safely during its unrelated
 lightmap stage, which projected roughly 35 minutes; it did not reach SH and did
 not allocate a delta payload. Therefore the warren figure here is a
 conservative lower bound, not a newly measured cumulative total.
 
-The shipped `--sh-delta-working-set-max-size` default is 16 GiB
-(17,179,869,184 bytes). It is 17,030,053,888 bytes above the heaviest measured
-dev-map peak and 7,146,831,872 bytes below the warren direct-delta lower-bound
+The shipped `--sh-delta-working-set-max-size` default remains 16 GiB
+(17,179,869,184 bytes). It is 16,955,146,240 bytes above the heaviest measured
+dev-map peak and 19,310,182,400 bytes below the warren direct-delta lower-bound
 peak, leaving a measured separation even before the warren's other delta bakes
-are counted. `--sh-analyze` uses the documented 3x factor instead.
+are counted. `--sh-analyze` with coarsening enabled uses the documented 4x factor
+instead. Analysis without coarsening retains no dense clone and stays at 3x.
 
 For an admitted fixture, `campaign-test` was built twice with an initially
 empty temporary cache directory (first run cold, second run warm), with outputs
@@ -89,7 +91,8 @@ Peak host residency is a chain of whole-payload contiguous buffers, each
 | Exact-zero drop | `delta_drop_policy.rs::rebuild_csr_indexed` (`retained_payload = Vec::with_capacity(payload.len())`) | a second dense copy |
 | Coarsening / envelope | `sh_runtime_envelope.rs` fix-point; runs a full `compact_direct_valid_probes` internally | transient compaction copy per iteration |
 | Valid-probe compaction | `delta_sections.rs::compact_dense_valid_probe_payload` (`Vec::with_capacity(capacity)`) | **the buffer that OOM'd** |
-| Serialize | `pack.rs` `to_bytes()` (byte image) → `.clone()` into `SectionBlob` → concat into one `file_buf` for the whole `.prl` → `Cursor` readback | ~3–4 further whole-payload copies |
+| Serialize (before Task 2) | `pack.rs` `to_bytes()` (byte image) → `.clone()` into `SectionBlob` → concat into one `file_buf` for the whole `.prl` → `Cursor` readback | ~3–4 further whole-payload copies; historical measurement context |
+| Serialize (current) | `pack.rs` plans descriptors from payload-free lengths, writes the table and one encoded payload at a time to a temporary file, then reopens that file for validation | one serialized payload at a time; no whole-`.prl` accumulator or in-memory readback |
 | `--sh-analyze` (opt-in) | `pipeline.rs` clones the entire post-drop dense sections | doubles dense residency in that mode |
 
 **What is actually co-resident, and across how many bakes.** Within one bake the peak
@@ -100,22 +103,30 @@ bakes (in run order: indirect id27, animated-direct id45, direct id41), assemble
 three into `PostBakeDeltaSections`, and holds every dense payload from its bake through
 the single
 shared compaction — so the real peak scales with the **sum** of the three dense
-payloads, and `--sh-analyze` clones all three at once (≈3× the sum). The gate's budget
+payloads, and `--sh-analyze` clones all three at once. The gate charges 3× normally:
+2× for the delta chain plus one cumulative-delta-sized base-copy reserve. Coarsened
+`--sh-analyze` charges 4× by adding its simultaneous delta clone. The gate's budget
 must bound the cumulative dense across the three bakes, not one bake in isolation
 (Task 1). The gate is scoped to the three delta bakes (owner-locked); the base id34/id35
 whole-volume dense buffers that `pipeline.rs` clones and holds co-resident between the
 delta bakes (`sh_analyze_base_indirect` / `sh_analyze_base_direct`) are *not* counted by
-it, so the conservative copy-chain factor must leave headroom for them — a peak dominated
-by a base clone rather than a delta payload is outside this gate's reach.
+it directly. One full factor is reserved as headroom for those copies, so a
+delta-dominated admission cannot spend the entire budget on the exact delta-only peak.
+A peak dominated by a base clone remains outside this delta gate's reach.
 
-`write_prl` (`level-format/src/lib.rs`) is generic over `W: Write`, but it writes the
-**whole section table — every section's offset and length — before any payload byte**,
-and today the compiler pre-serializes every section into eager `*_bytes` locals and
-feeds an in-memory `file_buf` accumulator rather than the output file. So a bare writer
-redirect removes the whole-`.prl` accumulator but still holds every section's bytes at
-once: streaming to one-section residency additionally needs a payload-free length query
-per section (so the table can be written without the payloads resident) and per-section
-serialization moved into the write loop. See Task 2.
+Before Task 2, `write_prl` (`level-format/src/lib.rs`) wrote the **whole section
+table — every section's offset and length — before any payload byte**. The compiler
+therefore pre-serialized eager `*_bytes` locals and accumulated an in-memory `file_buf`.
+A bare writer redirect would have removed only the whole-`.prl` accumulator, not the
+co-resident section payloads. That design required payload-free length queries and
+per-section serialization in the write loop.
+
+Task 2 now plans each section's descriptor from its byte length, writes the header and
+full table to a temporary output file, then encodes and writes one payload at a time.
+The writer rejects a payload whose encoded length differs from its table entry. After it
+flushes and closes the file, readback reopens the temporary file and validates every
+section before publication. This removes the eager large-payload locals, whole-file
+accumulator, and in-memory `Cursor` readback while preserving the serialized bytes.
 
 ## The blocker: the dense payload cannot be streamed away
 
@@ -174,8 +185,8 @@ stateDiagram-v2
     DenseResident --> Coarsen: whole-section fix-point (dense required)
     Coarsen --> Compact: cell_levels decided → Vec::with_capacity(compact) ← OOM here
     Compact --> Cap: enforce_payload_cap (reads length only — too late)
-    Cap --> Serialize: to_bytes → clone → file_buf → readback
-    Serialize --> [*]: fs::write
+    Cap --> Serialize: planned lengths → one temp-file payload at a time → reopened readback
+    Serialize --> [*]: publish validated file
     note right of DenseResident
         Dense payload pinned here through Coarsen.
         Pre-bake gate must fire BEFORE this state.

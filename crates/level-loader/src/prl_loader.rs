@@ -3381,6 +3381,7 @@ mod tests {
     };
     use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
     use postretro_test_log_capture::LogCapture;
+    use std::io::Cursor;
 
     #[test]
     fn cell_visibility_section_round_trips_through_runtime_lowering() {
@@ -3675,7 +3676,6 @@ mod tests {
     // Regression: valid over-floor payloads must retain the established degradation path.
     #[test]
     fn binding_floor_degrades_each_valid_oversized_delta_section_after_borrowing() {
-        let file_data = [0_u8; 2];
         for (section_id, name) in [
             (SectionId::DeltaShVolumes, "DeltaShVolumes"),
             (SectionId::DirectShDeltaVolumes, "DirectShDeltaVolumes"),
@@ -3684,18 +3684,19 @@ mod tests {
                 "AnimatedDirectShDeltaVolumes",
             ),
         ] {
-            let meta = prl_format::ContainerMeta {
-                header: prl_format::Header {
-                    version: prl_format::CURRENT_VERSION,
-                    section_count: 1,
-                },
-                sections: vec![prl_format::SectionEntry {
+            let mut file_data = Vec::new();
+            prl_format::write_prl(
+                &mut file_data,
+                &[prl_format::SectionBlob {
                     section_id: section_id as u32,
-                    offset: 0,
-                    size: file_data.len() as u64,
                     version: 1,
+                    data: vec![0_u8; 2],
                 }],
-            };
+            )
+            .expect("fixture container should serialize");
+            let mut cursor = Cursor::new(&file_data);
+            let meta = prl_format::read_container(&mut cursor)
+                .expect("fixture container metadata should parse");
 
             let outcome =
                 read_bounded_delta_section_data_with_limit(&file_data, &meta, section_id, name, 1)

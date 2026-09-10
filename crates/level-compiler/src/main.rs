@@ -2519,6 +2519,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_sh_delta_working_set_max_size_rejects_u64_overflow() {
+        for value in ["18446744073709551616B", "16777216TiB"] {
+            assert!(
+                parse_args_from(
+                    ["input.map", "--sh-delta-working-set-max-size", value]
+                        .into_iter()
+                        .map(str::to_owned),
+                )
+                .is_err(),
+                "{value} must not saturate into an admitted u64 budget",
+            );
+        }
+    }
+
+    #[test]
     fn parse_args_release_flag() {
         let args = vec!["input.map".to_string(), "--release".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();

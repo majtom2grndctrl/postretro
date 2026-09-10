@@ -34,7 +34,38 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
         }
     };
 
-    Ok((value * multiplier as f64) as u64)
+    if number.bytes().all(|byte| byte.is_ascii_digit()) {
+        let significant_digits = number.trim_start_matches('0');
+        if significant_digits.is_empty() {
+            return Ok(0);
+        }
+        let value: u128 = significant_digits
+            .parse()
+            .map_err(|_| anyhow::anyhow!("{option} exceeds the maximum supported size"))?;
+        let scaled = value
+            .checked_mul(u128::from(multiplier))
+            .ok_or_else(|| anyhow::anyhow!("{option} exceeds the maximum supported size"))?;
+        if scaled > u128::from(u64::MAX) {
+            anyhow::bail!(
+                "{option} exceeds the maximum supported size of {} bytes",
+                u64::MAX
+            );
+        }
+        return Ok(scaled as u64);
+    }
+
+    let scaled = value * multiplier as f64;
+    // `u64::MAX` rounds up to 2^64 as f64, so compare against the first
+    // unrepresentable integer rather than converting the limit to f64.
+    const U64_EXCLUSIVE_UPPER_BOUND: f64 = 18_446_744_073_709_551_616.0;
+    if !scaled.is_finite() || scaled >= U64_EXCLUSIVE_UPPER_BOUND {
+        anyhow::bail!(
+            "{option} exceeds the maximum supported size of {} bytes",
+            u64::MAX
+        );
+    }
+
+    Ok(scaled as u64)
 }
 
 /// Render a byte budget with the largest exact binary unit for compiler help.
@@ -91,6 +122,22 @@ mod tests {
         assert!(parse_size("--cache-max-size", "abc").is_err());
         assert!(parse_size("--cache-max-size", "12XB").is_err());
         assert!(parse_size("--cache-max-size", "-5GiB").is_err());
+    }
+
+    #[test]
+    fn parse_size_rejects_bare_and_unit_scaled_u64_overflow() {
+        // Regression: f64-to-u64 conversion saturated these values to u64::MAX.
+        assert!(parse_size("--sh-delta-working-set-max-size", "18446744073709551616B").is_err());
+        assert!(parse_size("--sh-delta-working-set-max-size", "16777216TiB").is_err());
+        assert!(parse_size("--sh-delta-working-set-max-size", "16777216.0TiB").is_err());
+    }
+
+    #[test]
+    fn parse_size_accepts_largest_bare_byte_value() {
+        assert_eq!(
+            parse_size("--sh-delta-working-set-max-size", "18446744073709551615B").unwrap(),
+            u64::MAX
+        );
     }
 
     #[test]

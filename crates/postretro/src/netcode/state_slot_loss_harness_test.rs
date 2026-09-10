@@ -165,6 +165,7 @@ fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (E
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -556,6 +557,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
                     impact_light: None,
                 },
             },
+            splash: None,
         },
         None,
     )

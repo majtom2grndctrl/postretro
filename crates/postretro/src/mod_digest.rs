@@ -473,6 +473,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: postretro_entities::ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,

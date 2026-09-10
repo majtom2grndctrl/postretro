@@ -267,6 +267,16 @@ export type ProjectileDescriptor = {
   visual: ProjectileVisual,
 }
 
+--- Radial damage applied at a weapon resolution's impact point. This is a peer of `projectile`, so a future non-projectile resolution can use the same blast tuning.
+export type SplashDescriptor = {
+  --- Blast radius in metres. Must be finite and greater than 0.
+  radius: number,
+  --- Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0.
+  minFraction: number?,
+  --- Whether the firing pawn can be damaged by its own blast. Defaults to true.
+  selfDamage: boolean?,
+}
+
 --- The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation.
 export type ProjectileVisual = {
   --- The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.
@@ -460,6 +470,8 @@ export type WeaponDescriptor = {
   resolution: ResolutionMode,
   --- Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.
   projectile: ProjectileDescriptor?,
+  --- Optional radial damage applied at the resolution's impact point. It is a peer of `projectile`, not projectile travel tuning; `radius` must be finite and greater than 0.
+  splash: SplashDescriptor?,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
   --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.

@@ -2133,6 +2133,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 elapsed_flight_age: 0.0,
                 flipbook_active: false,
                 impact_light: None,
+                splash: None,
             },
         )
         .expect("active crossfire projectile attaches");
@@ -9856,6 +9857,7 @@ fn projectile_weapon_descriptor(
                     impact_light: None,
                 },
             }),
+            splash: None,
             credit_source: Some("enemy.rifle".to_string()),
             third_person_model: None,
             viewmodel: None,

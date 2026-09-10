@@ -1577,6 +1577,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: third_person_model.map(str::to_string),
             viewmodel: viewmodel.map(str::to_string),

@@ -107,22 +107,39 @@ pub(crate) fn advance(
                 weapon::spawn_projectile_impact_light(registry, impact.point, config);
             }
 
-            let target_is_damage_eligible = impact.target.is_none_or(|target| {
-                crate::scripting_systems::health::is_damage_target_eligible(registry, target)
-            });
-            if target_is_damage_eligible && let ActivationOutcome::Hit(payload) = &impact.outcome {
-                let attacker = registry
-                    .exists(component.owner_pawn)
-                    .then_some(component.owner_pawn);
-                apply_authorized_weapon_impact_damage(
+            if let Some(splash) = component.splash.as_ref() {
+                crate::sim::splash::emit_splash_damage(
                     registry,
+                    hit_zone_store,
+                    collision_world,
+                    impact.point,
+                    splash,
+                    component.damage,
                     component.owner_weapon,
-                    attacker,
-                    impact,
+                    component.owner_pawn,
                     component.credit_source.clone(),
-                    payload.amount,
+                    on_impact,
                 );
-                on_impact(registry);
+            } else {
+                let target_is_damage_eligible = impact.target.is_none_or(|target| {
+                    crate::scripting_systems::health::is_damage_target_eligible(registry, target)
+                });
+                if target_is_damage_eligible
+                    && let ActivationOutcome::Hit(payload) = &impact.outcome
+                {
+                    let attacker = registry
+                        .exists(component.owner_pawn)
+                        .then_some(component.owner_pawn);
+                    apply_authorized_weapon_impact_damage(
+                        registry,
+                        component.owner_weapon,
+                        attacker,
+                        impact,
+                        component.credit_source.clone(),
+                        payload.amount,
+                    );
+                    on_impact(registry);
+                }
             }
         },
     );
@@ -469,7 +486,7 @@ mod tests {
     use postretro_entities::components::light::LightComponent;
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-    use postretro_foundation::ProjectileImpactLight;
+    use postretro_foundation::{ProjectileImpactLight, SplashDescriptor};
 
     fn spawn_target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> EntityId {
         let target = registry.spawn(Transform {
@@ -523,6 +540,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .expect("projectile component attaches");
@@ -750,6 +768,95 @@ mod tests {
             .first()
             .expect("projectile damage uses the shared credit ledger");
         assert_eq!(credit.source_id, "test.projectile");
+    }
+
+    #[test]
+    fn projectile_impact_uses_splash_without_direct_damage_and_keeps_unsplashed_direct_path() {
+        let direct_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let direct_target = spawn_target(
+            &mut direct_registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let direct_neighbor = spawn_target(
+            &mut direct_registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        spawn_projectile(&mut direct_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        advance_once(&direct_registry, 1.0);
+        advance_once(&direct_registry, 1.0);
+        assert!(
+            (direct_registry
+                .borrow()
+                .get_component::<HealthComponent>(direct_target)
+                .unwrap()
+                .current
+                - 15.0)
+                .abs()
+                <= f32::EPSILON
+        );
+        assert!(
+            (direct_registry
+                .borrow()
+                .get_component::<HealthComponent>(direct_neighbor)
+                .unwrap()
+                .current
+                - 20.0)
+                .abs()
+                <= f32::EPSILON
+        );
+
+        let splash_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let splash_target = spawn_target(
+            &mut splash_registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let splash_neighbor = spawn_target(
+            &mut splash_registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut splash_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let mut component = splash_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
+        splash_registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("splash snapshot attaches to projectile");
+        advance_once(&splash_registry, 1.0);
+        advance_once(&splash_registry, 1.0);
+
+        let splash_target_health = splash_registry
+            .borrow()
+            .get_component::<HealthComponent>(splash_target)
+            .expect("struck target remains live")
+            .clone();
+        assert!((splash_target_health.current - 15.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            splash_target_health
+                .contributor_ledger
+                .total_recorded_hits(),
+            1
+        );
+        assert!(
+            splash_registry
+                .borrow()
+                .get_component::<HealthComponent>(splash_neighbor)
+                .expect("neighbor remains live")
+                .current
+                < 20.0,
+            "a splash projectile damages radial neighbors while the direct branch does not",
+        );
     }
 
     #[test]

@@ -608,6 +608,7 @@ pub(crate) fn spawn_projectile(
             }
         ),
         impact_light,
+        splash: launch.splash,
     };
     let _ = registry.set_component(projectile_id, component);
 
@@ -845,7 +846,7 @@ mod projectile_spawn_tests {
     use super::*;
     use postretro_foundation::{
         ProjectileBodyVisual, ProjectileDescriptor, ProjectileImpactLight, ProjectileLight,
-        ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual,
+        ProjectileTrailSpinAnimation, ProjectileTrailVisual, ProjectileVisual, SplashDescriptor,
     };
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
@@ -864,6 +865,7 @@ mod projectile_spawn_tests {
                 lifetime_ms: 2000.0,
                 visual,
             },
+            splash: None,
         }
     }
 
@@ -1027,15 +1029,27 @@ mod projectile_spawn_tests {
             impact_light: Some(impact_light.clone()),
         };
 
-        let projectile = spawn_projectile(&mut registry, pawn, weapon, launch(visual), None)
+        let splash = SplashDescriptor {
+            radius: 8.0,
+            min_fraction: 0.25,
+            self_damage: true,
+        };
+        let mut resolved_launch = launch(visual);
+        resolved_launch.splash = Some(splash.clone());
+        let projectile = spawn_projectile(&mut registry, pawn, weapon, resolved_launch, None)
             .expect("projectile spawns");
+        let component = registry
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile state survives body materialization");
         assert_eq!(
-            registry
-                .get_component::<ProjectileComponent>(projectile)
-                .expect("projectile state survives body materialization")
-                .impact_light,
+            component.impact_light,
             Some(impact_light),
             "the later contact path never has to resolve the owner weapon"
+        );
+        assert_eq!(
+            component.splash,
+            Some(splash),
+            "the later contact path snapshots splash tuning instead of rereading the weapon"
         );
     }
 

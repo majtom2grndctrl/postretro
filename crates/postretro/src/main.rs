@@ -9580,6 +9580,7 @@ mod tests {
                 fire_mode: postretro_foundation::FireMode::Semi,
                 resolution: postretro_foundation::ResolutionMode::Hitscan,
                 projectile: None,
+                splash: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: viewmodel.map(str::to_owned),

@@ -10,7 +10,7 @@ use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, Weapo
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
-    FireMode, ProjectileDescriptor, ResolutionMode, WeaponPlacementDescriptor,
+    FireMode, ProjectileDescriptor, ResolutionMode, SplashDescriptor, WeaponPlacementDescriptor,
 };
 
 use crate::collision::{CollisionWorld, cast_ray};
@@ -273,6 +273,9 @@ pub(crate) struct ProjectileLaunch {
     pub(crate) damage: f32,
     pub(crate) credit_source: String,
     pub(crate) descriptor: ProjectileDescriptor,
+    /// Impact-composed radial damage snapshot, independent from projectile
+    /// travel tuning and retained by the spawned projectile.
+    pub(crate) splash: Option<SplashDescriptor>,
 }
 
 const MUZZLE_DIRECTION_EPSILON_SQUARED: f32 = 1.0e-12;
@@ -441,6 +444,7 @@ pub(crate) fn tick_resolved_component(
     let range = stats.range;
     let resolution = stats.resolution;
     let projectile = stats.projectile.cloned();
+    let splash = stats.splash.cloned();
     let muzzle_offset = stats.muzzle_offset;
     let credit_source = stats.credit_source.to_string();
     match fire {
@@ -485,6 +489,7 @@ pub(crate) fn tick_resolved_component(
                 range,
                 resolution,
                 projectile.as_ref(),
+                splash.as_ref(),
                 &credit_source,
                 shell_counter,
                 pellet_salt_name,
@@ -547,6 +552,7 @@ fn fire_hitscan(
     range: f32,
     resolution: ResolutionMode,
     projectile: Option<&ProjectileDescriptor>,
+    splash: Option<&SplashDescriptor>,
     credit_source: &str,
     shell_counter: u32,
     pellet_salt_name: &str,
@@ -614,6 +620,7 @@ fn fire_hitscan(
                 damage,
                 credit_source: credit_source.to_string(),
                 descriptor: projectile.clone(),
+                splash: splash.cloned(),
             });
         }
     }
@@ -652,7 +659,7 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (cooldown_ms, pellet_count, range, resolution, projectile, damage, credit_source) = {
+    let (cooldown_ms, pellet_count, range, resolution, projectile, splash, damage, credit_source) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
@@ -660,6 +667,7 @@ pub(crate) fn resolve_client_fire(
             stats.range,
             stats.resolution,
             stats.projectile.cloned(),
+            stats.splash.cloned(),
             stats.damage,
             stats.credit_source.to_string(),
         )
@@ -737,6 +745,7 @@ pub(crate) fn resolve_client_fire(
                     damage,
                     credit_source,
                     descriptor: projectile,
+                    splash,
                 }),
             )
         }
@@ -1123,6 +1132,7 @@ pub(crate) mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -1169,6 +1179,7 @@ pub(crate) mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             projectile: None,
+            splash: None,
             credit_source: None,
             third_person_model: None,
             viewmodel: None,
@@ -2778,6 +2789,7 @@ pub(crate) mod tests {
                         elapsed_flight_age: 0.0,
                         flipbook_active: false,
                         impact_light: None,
+                        splash: None,
                     },
                 )
                 .expect("predicted projectile state attaches");

@@ -312,6 +312,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("visual", "ProjectileVisual", "What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.")
         .finish();
     registry
+        .register_type("SplashDescriptor")
+        .doc("Radial damage applied at a weapon resolution's impact point. This is a peer of `projectile`, so a future non-projectile resolution can use the same blast tuning.")
+        .field("radius", "f32", "Blast radius in metres. Must be finite and greater than 0.")
+        .field("minFraction?", "f32", "Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0.")
+        .field("selfDamage?", "bool", "Whether the firing pawn can be damaged by its own blast. Defaults to true.")
+        .finish();
+    registry
         .register_type("ProjectileVisual")
         .doc("The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation.")
         .field("body", "ProjectileBodyVisual", "The main thing players see: choose either a camera-facing `sprite` or a rigid 3D `model` by setting its `kind`.")
@@ -448,6 +455,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.")
         .field("projectile?", "ProjectileDescriptor", "Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.")
+        .field("splash?", "SplashDescriptor", "Optional radial damage applied at the resolution's impact point. It is a peer of `projectile`, not projectile travel tuning; `radius` must be finite and greater than 0.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")

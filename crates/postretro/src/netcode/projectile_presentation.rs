@@ -754,6 +754,7 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Projectile,
                 projectile: Some(descriptor()),
+                splash: None,
                 credit_source: None,
                 third_person_model: None,
                 viewmodel: None,
@@ -834,6 +835,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -1040,6 +1042,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .expect("gameplay projectile accepts the common component");
@@ -1505,6 +1508,7 @@ mod tests {
                 damage: 10.0,
                 credit_source: "weapon.test.remote".to_string(),
                 descriptor: projectile.clone(),
+                splash: None,
             },
             None,
         )
@@ -2145,6 +2149,7 @@ mod tests {
                 elapsed_flight_age: 0.0,
                 flipbook_active: false,
                 impact_light: Some(impact_light),
+                splash: None,
             },
         );
         let mut allocator = NetworkIdAllocator::new();
@@ -2281,6 +2286,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .unwrap();

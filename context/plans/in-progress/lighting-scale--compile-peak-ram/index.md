@@ -148,11 +148,13 @@ this spec does not touch them. No divergence from a prior commitment.
   delta bakes — which `pipeline.rs` assembles and holds co-resident from their bakes
   through the shared compaction — times a documented factor that upper-bounds peak
   co-residency: the dense buffers plus the compaction buffer they are rewritten into
-  (≈2×), plus the persistent `--sh-analyze` clone of all three when that mode runs with
-  coarsening enabled (≈3×). The exact-zero drop rebuild is a separate earlier equal-size
-  transient the same factor bounds. So an admitted map does not OOM one copy — or one
-  sibling bake — past the gate on delta payload (base id34/id35 clones are uncounted; the
-  factor carries headroom — see `research.md`).
+  (≈2×), plus one cumulative-delta-sized share reserved for the co-resident base id34/id35
+  originals and clones (≈3× normally), plus the persistent `--sh-analyze` clone of all
+  three when that mode runs with coarsening enabled (≈4×). The exact-zero drop rebuild is
+  a separate earlier equal-size transient the same factor bounds. So an admitted map does
+  not OOM one copy — or one sibling bake — past the gate on delta payload. A base-dominated
+  map remains outside this delta gate's reach; the reserved share prevents a
+  delta-dominated admission from consuming the whole host-RAM budget (see `research.md`).
 - [ ] The shipped default budget admits every current dev map (`campaign-test`,
   `gate-heavily-lit`, `kinematic-platform`) and rejects
   `stress-warren-hallway-inspection`; `research.md` records the four maps' measured
@@ -203,10 +205,11 @@ delta_probe_f16_stride(TILE_DIMENSION)` — uniform across the three bakes (the 
 stride constants are aliases, 18,432 bytes/entry), so only `entry_count` varies. Estimate **peak** as the cumulative dense bytes summed across the three delta bakes
 (which `pipeline.rs` assembles and holds co-resident from their bakes through the
 shared compaction) times a documented copy-chain factor: the dense buffers plus the
-compaction buffer they are rewritten into (≈2×), plus the persistent `--sh-analyze`
-clone of all three when that mode runs with coarsening enabled (≈3×); the exact-zero
-drop rebuild is a separate earlier equal-size transient the same factor bounds (see
-`research.md`). A single gate check in `pipeline.rs` compares the cumulative projection ×
+compaction buffer they are rewritten into (≈2×), one cumulative-delta-sized share of
+headroom for the co-resident base id34/id35 originals and clones (≈3× normally), plus
+the persistent `--sh-analyze` clone of all three when that mode runs with coarsening
+enabled (≈4×); the exact-zero drop rebuild is a separate earlier equal-size transient
+the same factor bounds (see `research.md`). A single gate check in `pipeline.rs` compares the cumulative projection ×
 factor against the budget — weighing the whole delta demand at once, not one bake in
 isolation (a per-bake check in isolation would admit three bakes at 40% budget each and
 OOM at 120% downstream). On refusal the compile returns an error before any delta dense
@@ -243,8 +246,8 @@ reject-warren AC — set from those maps' measured cumulative-dense projections,
 CLI-overridable per invocation. The copy-chain factor is a deliberately conservative
 upper bound (it may reject a delta-dominated map that would just fit, and never admits
 one that OOMs on delta payload — but the base id34/id35 clones `pipeline.rs` holds
-between the delta bakes are uncounted, see `research.md`, so the factor must carry
-headroom for them); if measurement shows it too coarse, the budget knob is the interim
+between the delta bakes are uncounted, see `research.md`, so one full factor is reserved
+as headroom for them); if measurement shows it too coarse, the budget knob is the interim
 lever and tightening the factor is a follow-up. This is the thin slice: CLI → plan-phase
 gate → refusal diagnostic, crossing every seam, and it alone prevents the observed OOM.
 
@@ -316,7 +319,7 @@ ordering constraint.
 |---|---|---|---|
 | Emitted `.prl` bytes byte-identical for any map the gate admits (lifetime + pre-bake-refusal only; no payload value/order/format change) | Task 1, Task 2 | Streaming that reorders/truncates section bytes; a gate that alters the bake for an admitted map | AC "byte-identical", AC "serialize holds at most one large section" |
 | The gate fires in the plan phase, before any delta dense materialization; no delta dense payload is allocated on refusal | Task 1 | Computing the estimate after a dense bake, or inside the helper's `collect` | AC "gate refuses", AC "no OOM" (gate placement — plan phase, ahead of the execute-phase bakes — verified by review; warren's before-multi-GB-alloc exit is the observable proxy) |
-| The gate estimate upper-bounds real peak (cumulative dense across the three bakes × copy-chain factor), so an admitted map does not OOM downstream on delta payload (base id34/id35 clones are uncounted — the factor carries headroom) | Task 1 | A per-bake estimate that ignores the sibling bakes' co-resident dense, or a single-buffer factor that ignores the compaction / `--sh-analyze` copies | AC "estimate accounts for the copy-chain" |
+| The gate estimate upper-bounds the delta-dominated peak (cumulative dense across the three bakes × copy-chain factor), so an admitted map does not OOM downstream on delta payload (base id34/id35 copies are uncounted; one full factor is reserved as headroom) | Task 1 | A per-bake estimate that ignores the sibling bakes' co-resident dense, an exact delta-only factor with no base headroom, or a single-buffer factor that ignores the compaction / `--sh-analyze` copies | AC "estimate accounts for the copy-chain" |
 
 ## Pinned scenarios
 
@@ -326,7 +329,7 @@ the task that delivers it and the AC or invariant it reinforces.
 | ID | Scenario | Ordering | Expected outcome | Kind | Task (covered?) | Reinforces |
 |---|---|---|---|---|---|---|
 | P1 | Three delta sections, each ≈40% of budget | Plan phase builds all three CSRs → cumulative projection ≈120% of budget × factor, checked once | Gate refuses in the plan phase before any delta dense bake; no delta dense allocated | refuse | Task 1 — covered (single upfront gate over all three projections) | Invariant "admitted map does not OOM downstream"; AC "gate admits" |
-| P2 | `--sh-analyze` on a map near budget | Three deltas baked; `pipeline.rs` clones all three at once after baking, held through compaction | Budget bounds ≈3× the cumulative dense (≈2× base plus the simultaneous clone); refuse if exceeded | refuse | Task 1 — covered (factor applied to the cumulative sum, ≈3× under `--sh-analyze`) | AC "estimate accounts for the copy-chain" |
+| P2 | `--sh-analyze` on a map near budget | Three deltas baked; `pipeline.rs` clones all three at once after baking, held through compaction | Budget bounds ≈4× the cumulative dense (≈2× delta residency, one share of base-copy headroom, plus the simultaneous analysis clone); refuse if exceeded | refuse | Task 1 — covered (factor applied to the cumulative sum, ≈4× under `--sh-analyze`) | AC "estimate accounts for the copy-chain" |
 | P3 | All lights culled → `affinity_lights` empty (N=0) | Plan phase builds the CSR → empty `affinity_lights` → projected dense 0 | Estimate 0, admits; histogram empty; no divide-by-zero; section produced/omitted exactly as today | admit | Task 1 — pinned here (paragraph does not special-case N=0) | AC "gate admits" |
 | P4 | Near-budget map, warm cache hit | Plan-phase projection is CSR-derived and computed before any dense bake; warm vs cold changes only the execute-phase bake path | Gate decision identical warm vs cold (admit→admit, refuse→refuse); byte-identical output on the admit side | invariant | Task 1 — pinned here (cache-independence otherwise unstated) | AC "byte-identical (cold and warm cache)" |
 | P5 | Streamed write of a large delta section | `write_prl` writes the full section table (all offsets + lengths) before the first payload byte | Each large section's length comes from a payload-free length query (bit-exact with `to_bytes().len()`); no large section's `to_bytes` image is materialized before its own streamed write; at most one large section's byte image resident (small sections may be serialized eagerly to fill the table) | invariant | Task 2 — covered (payload-free length query for large sections; small eager) | AC "holds at most one large section's serialized payload" |

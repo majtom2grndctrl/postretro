@@ -91,6 +91,18 @@ pub enum FormatError {
         file_len: u64,
     },
 
+    #[error(
+        "section {section_id} offset {offset} points before the end of the container metadata at {table_end}"
+    )]
+    SectionOverlapsContainerMetadata {
+        section_id: u32,
+        offset: u64,
+        table_end: u64,
+    },
+
+    #[error("failed to allocate {size} bytes for section {section_id}")]
+    SectionAllocationFailed { section_id: u32, size: u64 },
+
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -568,21 +580,7 @@ pub fn section_data_from_bytes<'a>(
     };
 
     let file_len = file_data.len() as u64;
-    let end = entry
-        .offset
-        .checked_add(entry.size)
-        .ok_or(FormatError::SectionOutOfBounds {
-            offset: entry.offset,
-            size: entry.size,
-            file_len,
-        })?;
-    if end > file_len {
-        return Err(FormatError::SectionOutOfBounds {
-            offset: entry.offset,
-            size: entry.size,
-            file_len,
-        });
-    }
+    let end = validate_section_bounds(meta, entry, file_len)?;
 
     let start = usize::try_from(entry.offset).map_err(|_| FormatError::SectionOutOfBounds {
         offset: entry.offset,
@@ -611,6 +609,39 @@ pub fn read_section_data<R: Read + Seek>(
     };
 
     let file_len = reader.seek(SeekFrom::End(0))?;
+    validate_section_bounds(meta, entry, file_len)?;
+
+    let size = usize::try_from(entry.size).map_err(|_| FormatError::SectionAllocationFailed {
+        section_id: entry.section_id,
+        size: entry.size,
+    })?;
+    reader.seek(SeekFrom::Start(entry.offset))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(size)
+        .map_err(|_| FormatError::SectionAllocationFailed {
+            section_id: entry.section_id,
+            size: entry.size,
+        })?;
+    buf.resize(size, 0);
+    reader.read_exact(&mut buf)?;
+    Ok(Some(buf))
+}
+
+fn validate_section_bounds(
+    meta: &ContainerMeta,
+    entry: &SectionEntry,
+    file_len: u64,
+) -> Result<u64> {
+    let table_end =
+        HEADER_SIZE as u64 + u64::from(meta.header.section_count) * SECTION_ENTRY_SIZE as u64;
+    if entry.offset < table_end {
+        return Err(FormatError::SectionOverlapsContainerMetadata {
+            section_id: entry.section_id,
+            offset: entry.offset,
+            table_end,
+        });
+    }
+
     let end = entry
         .offset
         .checked_add(entry.size)
@@ -627,22 +658,7 @@ pub fn read_section_data<R: Read + Seek>(
         });
     }
 
-    let size = usize::try_from(entry.size).map_err(|_| FormatError::SectionOutOfBounds {
-        offset: entry.offset,
-        size: entry.size,
-        file_len,
-    })?;
-    reader.seek(SeekFrom::Start(entry.offset))?;
-    let mut buf = Vec::new();
-    buf.try_reserve_exact(size)
-        .map_err(|_| FormatError::SectionOutOfBounds {
-            offset: entry.offset,
-            size: entry.size,
-            file_len,
-        })?;
-    buf.resize(size, 0);
-    reader.read_exact(&mut buf)?;
-    Ok(Some(buf))
+    Ok(end)
 }
 
 /// Read into buf, returning actual bytes read instead of erroring on EOF.
@@ -988,8 +1004,48 @@ mod tests {
         ));
     }
 
+    // Regression: an in-file section offset could point back into the header or table.
+    #[test]
+    fn section_readers_reject_payloads_inside_container_metadata() {
+        let sections = make_test_sections();
+        let mut file_data = Vec::new();
+        write_prl(&mut file_data, &sections).unwrap();
+        file_data[12..20].copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+
+        let mut cursor = Cursor::new(&file_data);
+        let meta = read_container(&mut cursor).unwrap();
+
+        let borrowed_error = section_data_from_bytes(&file_data, &meta, SectionId::Geometry as u32)
+            .expect_err("borrowed reads must reject payloads inside the section table");
+        let owned_error = read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)
+            .expect_err("owned reads must reject payloads inside the section table");
+        let expected_table_end = (HEADER_SIZE + sections.len() * SECTION_ENTRY_SIZE) as u64;
+
+        assert!(matches!(
+            borrowed_error,
+            FormatError::SectionOverlapsContainerMetadata {
+                section_id,
+                offset,
+                table_end,
+            } if section_id == SectionId::Geometry as u32
+                && offset == HEADER_SIZE as u64
+                && table_end == expected_table_end
+        ));
+        assert!(matches!(
+            owned_error,
+            FormatError::SectionOverlapsContainerMetadata {
+                section_id,
+                offset,
+                table_end,
+            } if section_id == SectionId::Geometry as u32
+                && offset == HEADER_SIZE as u64
+                && table_end == expected_table_end
+        ));
+    }
+
     #[test]
     fn owned_section_reader_rejects_unallocatable_u64_size() {
+        let offset = (HEADER_SIZE + SECTION_ENTRY_SIZE) as u64;
         let meta = ContainerMeta {
             header: Header {
                 version: CURRENT_VERSION,
@@ -997,8 +1053,8 @@ mod tests {
             },
             sections: vec![SectionEntry {
                 section_id: SectionId::Geometry as u32,
-                offset: 0,
-                size: u64::MAX,
+                offset,
+                size: u64::MAX - offset,
                 version: 1,
             }],
         };
@@ -1009,11 +1065,8 @@ mod tests {
 
         assert!(matches!(
             error,
-            FormatError::SectionOutOfBounds {
-                offset: 0,
-                size: u64::MAX,
-                file_len: u64::MAX,
-            }
+            FormatError::SectionAllocationFailed { section_id, size }
+                if section_id == SectionId::Geometry as u32 && size == u64::MAX - offset
         ));
     }
 

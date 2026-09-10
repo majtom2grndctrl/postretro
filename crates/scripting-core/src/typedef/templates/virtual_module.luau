@@ -38,7 +38,7 @@ export type PostretroUiModule = {
   definePresentationTemplate: (id: string, props: PresentationTemplateProps) -> PresentationTemplate,
   --- Bind producer-stamped per-instance values inside a presentation template.
   fact: {
-    number: (name: string, options: { format: string?, tween: NumberTween? }?) -> FactBindRef & { format: string?, tween: NumberTween? },
+    number: (name: string, options: { format: string?, decimalPlaces: number?, tween: NumberTween? }?) -> FactBindRef & { format: string?, decimalPlaces: number?, tween: NumberTween? },
     text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
     bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
   },

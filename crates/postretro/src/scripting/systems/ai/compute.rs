@@ -545,6 +545,7 @@ pub(super) fn evaluate(
                                     damage: resolved.damage(),
                                     credit_source,
                                     descriptor: resolved.projectile().clone(),
+                                    splash: resolved.splash().cloned(),
                                 }),
                                 descriptor_class: resolved.canonical_weapon_name().to_string(),
                             },

@@ -159,6 +159,49 @@ fn presentation_fact_bind_requires_template_and_parses_there_in_both_runtimes() 
 }
 
 #[test]
+fn numeric_text_decimal_places_are_preserved_and_range_checked_in_both_runtimes() {
+    let js_tree = r#"({
+        anchor: "center", offset: [0, 0],
+        root: { kind: "text", content: "0", fontSize: 18, color: [1,1,1,1],
+          bind: { slot: "player.health", decimalPlaces: 1 } }
+    })"#;
+    let lua_tree = r#"return {
+        anchor = "center", offset = {0, 0},
+        root = { kind = "text", content = "0", fontSize = 18, color = {1,1,1,1},
+          bind = { slot = "player.health", decimalPlaces = 1 } }
+    }"#;
+
+    for decimal_places in [
+        eval_js(js_tree, |ctx, value| {
+            anchored_tree_from_js_value(ctx, value)
+                .expect("valid JS precision")
+                .root
+        }),
+        eval_lua(lua_tree, |value| {
+            anchored_tree_from_lua_value(value)
+                .expect("valid Luau precision")
+                .root
+        }),
+    ] {
+        let Widget::Text(text) = decimal_places else {
+            panic!("fixture root is text");
+        };
+        assert_eq!(text.bind.and_then(|bind| bind.decimal_places), Some(1));
+    }
+
+    let js_error = eval_js(
+        r#"({ anchor: "center", offset: [0,0], root: { kind: "text", content: "0", fontSize: 18, color: [1,1,1,1], bind: { slot: "player.health", decimalPlaces: 1.5 } } })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value).unwrap_err(),
+    );
+    let lua_error = eval_lua(
+        r#"return { anchor = "center", offset = {0,0}, root = { kind = "text", content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health", decimalPlaces = 7 } } }"#,
+        |value| anchored_tree_from_lua_value(value).unwrap_err(),
+    );
+    assert!(js_error.to_string().contains("integer between 0 and 6"));
+    assert!(lua_error.to_string().contains("integer between 0 and 6"));
+}
+
+#[test]
 fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes() {
     let valid_js = r#"({
         anchor: "center", offset: [0.0, 0.0],

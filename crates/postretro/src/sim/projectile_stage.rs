@@ -7,7 +7,9 @@ use std::rc::Rc;
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::components::projectile::ProjectileComponent;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform, WorldPointPresentationSpawn,
+};
 
 use crate::collision::{CollisionWorld, cast_sphere_exact};
 use crate::scripting_systems::hit_zones::{
@@ -62,6 +64,13 @@ struct WorldHit {
     normal: Vec3,
 }
 
+/// A zero-radius sphere reaches an exact static-triangle contact, so a splash
+/// sightline starting at that point immediately re-hits the same triangle.
+/// This moves only that sightline origin, by less than a millimetre, toward the
+/// projectile side of the contact. Damage and falloff remain centered exactly
+/// at the impact point.
+const WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON: f32 = 1.0e-3;
+
 enum NearestProjectileHit {
     World(WorldHit),
     Entity(EntityRayHit),
@@ -107,26 +116,74 @@ pub(crate) fn advance(
                 weapon::spawn_projectile_impact_light(registry, impact.point, config);
             }
 
-            let target_is_damage_eligible = impact.target.is_none_or(|target| {
-                crate::scripting_systems::health::is_damage_target_eligible(registry, target)
-            });
-            if target_is_damage_eligible && let ActivationOutcome::Hit(payload) = &impact.outcome {
-                let attacker = registry
-                    .exists(component.owner_pawn)
-                    .then_some(component.owner_pawn);
-                apply_authorized_weapon_impact_damage(
+            if let Some(splash) = component.splash.as_ref() {
+                // The host has already materialized its local impact burst. Keep
+                // remote observers on their own world-point route: scripted
+                // presentation intake is keyed by a presenter, while this blast
+                // must exclude the predicted projectile owner's client.
+                registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+                    world_anchor: impact.point,
+                    owner_pawn: component.owner_pawn.to_raw(),
+                });
+                crate::sim::splash::emit_splash_damage(
                     registry,
+                    hit_zone_store,
+                    collision_world,
+                    impact.point,
+                    projectile_splash_occlusion_origin(component.radius, impact),
+                    splash,
+                    component.damage,
                     component.owner_weapon,
-                    attacker,
-                    impact,
+                    component.owner_pawn,
                     component.credit_source.clone(),
-                    payload.amount,
+                    on_impact,
                 );
-                on_impact(registry);
+            } else {
+                let target_is_damage_eligible = impact.target.is_none_or(|target| {
+                    crate::scripting_systems::health::is_damage_target_eligible(registry, target)
+                });
+                if target_is_damage_eligible
+                    && let ActivationOutcome::Hit(payload) = &impact.outcome
+                {
+                    let attacker = registry
+                        .exists(component.owner_pawn)
+                        .then_some(component.owner_pawn);
+                    apply_authorized_weapon_impact_damage(
+                        registry,
+                        component.owner_weapon,
+                        attacker,
+                        impact,
+                        component.credit_source.clone(),
+                        payload.amount,
+                    );
+                    on_impact(registry);
+                }
             }
         },
     );
     contacts
+}
+
+/// Return the origin for a splash static-world sightline. `WorldHit::normal`
+/// comes from parry's second shape (the static trimesh), so its outward normal
+/// points to the projectile side at a non-penetrating contact.
+pub(crate) fn projectile_splash_occlusion_origin(
+    projectile_radius: f32,
+    impact: &WeaponImpact,
+) -> Vec3 {
+    if projectile_radius != 0.0 || impact.target.is_some() {
+        return impact.point;
+    }
+
+    let Some(normal) = impact.normal.try_normalize() else {
+        return impact.point;
+    };
+    let origin = impact.point + normal * WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON;
+    if origin.is_finite() {
+        origin
+    } else {
+        impact.point
+    }
 }
 
 /// Close the fire tick for projectiles created after [`advance`] ran.
@@ -268,7 +325,7 @@ fn advance_matching(
             || component.remaining_range <= 0.0
             || component.remaining_lifetime <= 0.0;
 
-        if let Some(hit) = nearest_projectile_hit(
+        if let Some(impact) = resolve_projectile_impact(
             collision_world,
             &registry.borrow(),
             hit_zone_store,
@@ -277,29 +334,10 @@ fn advance_matching(
             direction,
             segment_length,
             component.radius,
-            projectile_id,
+            Some(projectile_id),
             component.owner_pawn,
+            component.damage,
         ) {
-            let impact = match hit {
-                NearestProjectileHit::World(world) => WeaponImpact {
-                    point: world.point,
-                    normal: world.normal,
-                    target: None,
-                    zone: None,
-                    outcome: ActivationOutcome::Hit(DamagePayload {
-                        amount: component.damage,
-                    }),
-                },
-                NearestProjectileHit::Entity(entity) => WeaponImpact {
-                    point: entity.point,
-                    normal: entity.normal,
-                    target: Some(entity.target),
-                    zone: entity.zone,
-                    outcome: ActivationOutcome::Hit(DamagePayload {
-                        amount: component.damage,
-                    }),
-                },
-            };
             pending.push(PendingProjectileAction::Impact {
                 projectile: projectile_id,
                 component,
@@ -390,6 +428,50 @@ fn advance_matching(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_projectile_impact(
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    origin: Vec3,
+    direction: Vec3,
+    range: f32,
+    radius: f32,
+    active_projectile: Option<EntityId>,
+    owner_pawn: EntityId,
+    damage: f32,
+) -> Option<WeaponImpact> {
+    nearest_projectile_hit(
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        origin,
+        direction,
+        range,
+        radius,
+        active_projectile,
+        owner_pawn,
+    )
+    .map(|hit| match hit {
+        NearestProjectileHit::World(world) => WeaponImpact {
+            point: world.point,
+            normal: world.normal,
+            target: None,
+            zone: None,
+            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+        },
+        NearestProjectileHit::Entity(entity) => WeaponImpact {
+            point: entity.point,
+            normal: entity.normal,
+            target: Some(entity.target),
+            zone: entity.zone,
+            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn nearest_projectile_hit(
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
@@ -399,7 +481,7 @@ fn nearest_projectile_hit(
     direction: Vec3,
     range: f32,
     radius: f32,
-    projectile_id: EntityId,
+    active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
 ) -> Option<NearestProjectileHit> {
     let world_hit = cast_sphere_exact(
@@ -422,7 +504,7 @@ fn nearest_projectile_hit(
         direction,
         range,
         radius,
-        |id| projectile_collision_excludes(registry, projectile_id, owner_pawn, id),
+        |id| projectile_collision_excludes(registry, active_projectile, owner_pawn, id),
     );
 
     match (world_hit, entity_hit) {
@@ -437,12 +519,12 @@ fn nearest_projectile_hit(
 
 fn projectile_collision_excludes(
     registry: &EntityRegistry,
-    active_projectile: EntityId,
+    active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
     candidate: EntityId,
 ) -> bool {
     if candidate == owner_pawn
-        || candidate == active_projectile
+        || active_projectile == Some(candidate)
         || registry
             .has_component_kind(candidate, ComponentKind::Projectile)
             .unwrap_or(false)
@@ -469,7 +551,7 @@ mod tests {
     use postretro_entities::components::light::LightComponent;
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-    use postretro_foundation::ProjectileImpactLight;
+    use postretro_foundation::{ProjectileImpactLight, SplashDescriptor};
 
     fn spawn_target(registry: &mut EntityRegistry, position: Vec3, half_extents: Vec3) -> EntityId {
         let target = registry.spawn(Transform {
@@ -523,6 +605,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .expect("projectile component attaches");
@@ -618,6 +701,19 @@ mod tests {
             Point::new(1.0, -1.0, z),
             Point::new(1.0, 1.0, z),
             Point::new(-1.0, 1.0, z),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn wall_at_x(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -4.0, -4.0),
+            Point::new(x, 4.0, -4.0),
+            Point::new(x, 4.0, 4.0),
+            Point::new(x, -4.0, 4.0),
         ];
         CollisionWorld {
             mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
@@ -750,6 +846,308 @@ mod tests {
             .first()
             .expect("projectile damage uses the shared credit ledger");
         assert_eq!(credit.source_id, "test.projectile");
+    }
+
+    #[test]
+    fn projectile_impact_uses_splash_without_direct_damage_and_keeps_unsplashed_direct_path() {
+        let direct_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let direct_target = spawn_target(
+            &mut direct_registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let direct_neighbor = spawn_target(
+            &mut direct_registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        spawn_projectile(&mut direct_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        advance_once(&direct_registry, 1.0);
+        advance_once(&direct_registry, 1.0);
+        assert!(
+            (direct_registry
+                .borrow()
+                .get_component::<HealthComponent>(direct_target)
+                .unwrap()
+                .current
+                - 15.0)
+                .abs()
+                <= f32::EPSILON
+        );
+        assert!(
+            (direct_registry
+                .borrow()
+                .get_component::<HealthComponent>(direct_neighbor)
+                .unwrap()
+                .current
+                - 20.0)
+                .abs()
+                <= f32::EPSILON
+        );
+
+        let splash_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let splash_target = spawn_target(
+            &mut splash_registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let splash_neighbor = spawn_target(
+            &mut splash_registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut splash_registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let mut component = splash_registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
+        let owner_pawn = component.owner_pawn.to_raw();
+        splash_registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("splash snapshot attaches to projectile");
+        advance_once(&splash_registry, 1.0);
+        advance_once(&splash_registry, 1.0);
+
+        let splash_target_health = splash_registry
+            .borrow()
+            .get_component::<HealthComponent>(splash_target)
+            .expect("struck target remains live")
+            .clone();
+        assert!((splash_target_health.current - 15.0).abs() <= f32::EPSILON);
+        assert_eq!(
+            splash_target_health
+                .contributor_ledger
+                .total_recorded_hits(),
+            1
+        );
+        assert!(
+            splash_registry
+                .borrow()
+                .get_component::<HealthComponent>(splash_neighbor)
+                .expect("neighbor remains live")
+                .current
+                < 20.0,
+            "a splash projectile damages radial neighbors while the direct branch does not",
+        );
+        let queued = splash_registry
+            .borrow_mut()
+            .take_world_point_presentation_spawns();
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].world_anchor.is_finite());
+        assert_eq!(queued[0].owner_pawn, owner_pawn);
+    }
+
+    // Regression: a zero-radius world impact began its splash LoS ray on the
+    // contacted triangle, falsely occluding every nonzero-distance target.
+    #[test]
+    fn zero_radius_world_impact_splash_hits_projectile_side_and_blocks_far_side() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let near_side = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.5),
+            Vec3::splat(0.1),
+        );
+        let far_side = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -1.5),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
+        registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("splash snapshot attaches to projectile");
+
+        let world = wall_at_z(-1.0);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        // The launch consumes its grace tick before the zero-radius flight
+        // reaches the static-world wall.
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let registry = registry.borrow();
+        assert!(
+            registry
+                .get_component::<HealthComponent>(near_side)
+                .expect("near-side target remains live")
+                .current
+                < 20.0,
+            "the projectile-side target has a clear splash sightline",
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(far_side)
+                .expect("far-side target remains live")
+                .current,
+            20.0,
+            "the same static wall still occludes the far-side target",
+        );
+    }
+
+    #[test]
+    fn reference_rocket_cluster_applies_falloff_spares_static_world_shadow_and_harms_owner() {
+        // This is the headless counterpart of content/dev/maps/splash-damage-demo.map:
+        // a rocket strikes the direct target, with a static wall shadowing one
+        // grouped target while the owner is point-blank inside the blast.
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let direct = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let near = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let clear = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, 2.25),
+            Vec3::splat(0.1),
+        );
+        let shadowed = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(3.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        {
+            let mut registry = registry.borrow_mut();
+            for target in [direct, near, clear, shadowed] {
+                let mut health = registry
+                    .get_component::<HealthComponent>(target)
+                    .expect("fixture target starts with health")
+                    .clone();
+                // Keep every target alive after the blast so their remaining
+                // HP exposes the three distinct falloff amounts directly.
+                health.max = 100.0;
+                health.current = 100.0;
+                registry
+                    .set_component(target, health)
+                    .expect("fixture target health updates");
+            }
+        }
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 36.0);
+
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("reference rocket carries projectile state")
+            .clone();
+        let owner = component.owner_pawn;
+        component.credit_source = "player.reference-rocket:primary".to_string();
+        component.splash = Some(SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.2,
+            self_damage: true,
+        });
+        registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("reference rocket carries its splash tuning at launch");
+        registry
+            .borrow_mut()
+            .set_component(
+                owner,
+                Transform {
+                    // The projectile hits the direct target's front face here;
+                    // this owner volume contains that point, exercising the
+                    // zero-length line-of-sight and self-damage path together.
+                    position: Vec3::new(0.0, 0.0, -0.65),
+                    ..Transform::default()
+                },
+            )
+            .expect("owner takes the fixture player's point-blank position");
+        registry
+            .borrow_mut()
+            .set_component(
+                owner,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.2),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("owner is a live damageable player fixture");
+
+        let world = wall_at_x(1.5);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        // A launch consumes its grace tick before advancing and detonating.
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let registry = registry.borrow();
+        let current = |entity| {
+            registry
+                .get_component::<HealthComponent>(entity)
+                .expect("fixture target remains addressable until the death sweep")
+                .current
+        };
+        assert!(
+            current(direct) < current(near) && current(near) < current(clear),
+            "nearest-volume falloff must make clustered damage strictly decrease"
+        );
+        assert!(
+            current(clear) < 100.0,
+            "the clear ranged target takes splash"
+        );
+        assert!(
+            (current(shadowed) - 100.0).abs() <= f32::EPSILON,
+            "the static-world wall spares its shadowed target"
+        );
+        assert!(
+            current(owner) < 100.0,
+            "the point-blank owner takes self damage"
+        );
+
+        for target in [direct, near, clear, owner] {
+            let health = registry
+                .get_component::<HealthComponent>(target)
+                .expect("damaged target keeps health through the assertion");
+            assert_eq!(
+                health.contributor_ledger.total_recorded_hits(),
+                1,
+                "each splash target reaches the damage chokepoint exactly once"
+            );
+            assert_eq!(
+                health
+                    .contributor_ledger
+                    .entries()
+                    .first()
+                    .expect("damage chokepoint records the rocket contributor")
+                    .source_id,
+                "player.reference-rocket:primary"
+            );
+        }
+        let shadowed_health = registry
+            .get_component::<HealthComponent>(shadowed)
+            .expect("shadowed target remains live");
+        assert!(shadowed_health.contributor_ledger.entries().is_empty());
     }
 
     #[test]
@@ -1034,17 +1432,26 @@ mod tests {
             .expect("intentional mesh target attaches");
 
         assert!(projectile_collision_excludes(
-            &registry, active, owner, active,
+            &registry,
+            Some(active),
+            owner,
+            active,
         ));
         assert!(projectile_collision_excludes(
-            &registry, active, owner, owner,
+            &registry,
+            Some(active),
+            owner,
+            owner,
         ));
         assert!(projectile_collision_excludes(
-            &registry, active, owner, observer,
+            &registry,
+            Some(active),
+            owner,
+            observer,
         ));
         assert!(!projectile_collision_excludes(
             &registry,
-            active,
+            Some(active),
             owner,
             intentional_mesh_target,
         ));
@@ -1240,6 +1647,11 @@ mod tests {
             .clone();
         component.predicted_shot_id = Some(0);
         component.impact_light = Some(impact_light());
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
         registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -1283,6 +1695,13 @@ mod tests {
             impact_lights(&registry.borrow()).len(),
             1,
             "the predicted contact still produces its local presentation flash"
+        );
+        assert!(
+            registry
+                .borrow_mut()
+                .take_world_point_presentation_spawns()
+                .is_empty(),
+            "predicted projectile flight never enqueues host-only splash presentation"
         );
     }
 

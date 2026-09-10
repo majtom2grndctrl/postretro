@@ -253,7 +253,7 @@ declare module "postretro" {
   export type ResolutionMode =
     /** Resolve instantly against the static-world collision ray. */
     | "hitscan"
-    /** Launch a straight-line projectile that resolves a direct impact on a later simulation pass. */
+    /** Launch a straight-line projectile that resolves contact on a later simulation pass. Without `splash`, contact applies one direct hit; with `splash`, contact anchors radial damage and applies no separate direct hit. */
     | "projectile";
 
   /** Settings for a projectile that travels in a straight line and hits later. This block is required when the weapon's `resolution` is `projectile`; it controls the projectile itself, not map placement. */
@@ -266,6 +266,16 @@ declare module "postretro" {
     lifetimeMs: number;
     /** What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection. */
     visual: ProjectileVisual;
+  };
+
+  /** Radial damage applied at a projectile impact point. The block is a peer of `projectile`, but current engine behavior accepts it only on projectile weapons. */
+  export type SplashDescriptor = {
+    /** Blast radius in metres. Must be finite and greater than 0. */
+    radius: number;
+    /** Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0. */
+    minFraction?: number;
+    /** Whether the firing pawn can be damaged by its own blast. Defaults to true. */
+    selfDamage?: boolean;
   };
 
   /** The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation. */
@@ -433,7 +443,7 @@ declare module "postretro" {
 
   /** Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor. */
   export type WeaponDescriptor = {
-    /** Base direct-impact damage; hitscan shells apply it per pellet. Must be finite and ≥ 0. */
+    /** Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0. */
     damage: number;
     /** Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1. */
     pelletCount?: number;
@@ -461,6 +471,8 @@ declare module "postretro" {
     resolution: ResolutionMode;
     /** Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP. */
     projectile?: ProjectileDescriptor;
+    /** Optional radial damage applied at projectile impact. It is a peer of `projectile`, not projectile travel tuning, and must be omitted for hitscan weapons; `radius` must be finite and greater than 0. */
+    splash?: SplashDescriptor;
     /** Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn. */
     creditSource?: string;
     /** Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal. */
@@ -2135,7 +2147,7 @@ declare module "postretro/ui" {
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; tween?: NumberTween };
+  export type TextBindProp = ((ComputedRef<ScalarStateValue> & { local?: never }) | LocalBindRef | FactBindRef<ScalarStateValue>) & { format?: string; decimalPlaces?: number; tween?: NumberTween };
   export type PanelBindProp = ((ComputedRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
   export type SliderBindProp = ((Ref<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
@@ -2187,7 +2199,7 @@ declare module "postretro/ui" {
     template: string;
     maxVisible: number;
   }>;
-  export type NumberFactOptions = { format?: string; tween?: NumberTween };
+  export type NumberFactOptions = { format?: string; decimalPlaces?: number; tween?: NumberTween };
   export type ScalarFactOptions = { format?: string };
   export type PresentationFactApi = Readonly<{
     number(name: string, options?: NumberFactOptions): FactBindRef<number> & NumberFactOptions;
@@ -2273,7 +2285,7 @@ declare module "postretro/ui" {
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
 
   export type StateBindOptionsFor<T> =
-    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+    T extends number ? { format?: string; decimalPlaces?: number; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
     T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
     T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
     never;

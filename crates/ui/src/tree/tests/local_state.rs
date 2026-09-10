@@ -39,6 +39,7 @@ fn scoped_local_tree(scope_id: &str, cell: &str) -> AnchoredTree {
                 bind: Some(TextBind {
                     source: BindSource::Local { local: cell.into() },
                     format: None,
+                    decimal_places: None,
                     tween: None,
                 }),
                 style_ranges: None,
@@ -185,6 +186,7 @@ fn local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build() {
                     local: "orphan".into(),
                 },
                 format: None,
+                decimal_places: None,
                 tween: None,
             }),
             style_ranges: None,

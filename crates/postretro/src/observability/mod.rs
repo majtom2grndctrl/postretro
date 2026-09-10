@@ -299,6 +299,7 @@ mod tests {
                     fire_mode: FireMode::Semi,
                     resolution: ResolutionMode::Hitscan,
                     projectile: None,
+                    splash: None,
                     credit_source: None,
                     third_person_model: None,
                     viewmodel: None,
@@ -432,6 +433,7 @@ mod tests {
                 elapsed_flight_age: 0.0,
                 flipbook_active: false,
                 impact_light: None,
+                splash: None,
             }),
         }
     }

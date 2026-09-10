@@ -11,6 +11,20 @@ use serde::{Deserialize, Serialize};
 /// side of the bridge can grow without bound.
 pub const MAX_PENDING_PRESENTATION_SPAWNS: usize = 128;
 
+/// Engine-owned presentation identifiers live below this prefix. Author
+/// templates must never enter this namespace because presentation ingest may
+/// dispatch these identifiers before author-template lookup.
+pub const BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX: &str = "postretro.builtin.";
+
+/// Wire identifier for the engine-owned projectile splash impact burst.
+pub const BUILTIN_SPLASH_IMPACT_TEMPLATE_ID: &str = "postretro.builtin.splash-impact";
+
+/// Whether an author-facing presentation template id collides with the
+/// engine-owned presentation namespace.
+pub fn is_builtin_presentation_template_id(id: &str) -> bool {
+    id.starts_with(BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX)
+}
+
 /// Stable handle for a presentation template registered by the script authoring
 /// surface. The registry carries the handle but never resolves it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -112,4 +126,37 @@ pub struct PresentationSpawn {
     /// Maximum deterministic device-pixel screen-space horizontal scatter
     /// applied by the app-side pool when the instance enters its live bounded ring.
     pub scatter_radius: f32,
+}
+
+/// One built-in world-point presentation event crossing from fixed-tick game
+/// logic to the host's remote-presentation router. Unlike [`PresentationSpawn`],
+/// this carries no template or presenter identity: its recipient policy is
+/// world-point-specific and the client recognizes the built-in effect directly.
+///
+/// `owner_pawn` is the opaque packed entity id of the projectile owner. The
+/// foundation crate deliberately cannot name the registry type; the engine
+/// reconstructs it only to exclude that owner's connected client from a
+/// duplicate predicted explosion.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WorldPointPresentationSpawn {
+    pub world_anchor: Vec3,
+    pub owner_pawn: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: an author template could claim the built-in splash id and
+    // silently render as the engine impact burst before template lookup.
+    #[test]
+    fn builtin_presentation_namespace_is_reserved_for_engine_effects() {
+        assert!(is_builtin_presentation_template_id(
+            BUILTIN_SPLASH_IMPACT_TEMPLATE_ID
+        ));
+        assert!(is_builtin_presentation_template_id(
+            "postretro.builtin.future-effect"
+        ));
+        assert!(!is_builtin_presentation_template_id("damage-number"));
+    }
 }

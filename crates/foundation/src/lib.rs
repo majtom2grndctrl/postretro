@@ -42,9 +42,10 @@ pub use movement::{
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use presentation::{
+    BUILTIN_PRESENTATION_TEMPLATE_ID_PREFIX, BUILTIN_SPLASH_IMPACT_TEMPLATE_ID,
     MAX_PENDING_PRESENTATION_SPAWNS, PresentationEasing, PresentationFact, PresentationFacts,
     PresentationFade, PresentationMotion, PresentationPresenter, PresentationSpawn,
-    PresentationTemplateHandle,
+    PresentationTemplateHandle, WorldPointPresentationSpawn, is_builtin_presentation_template_id,
 };
 pub use seat::Seat;
 pub use value_types::{EulerDegrees, Vec3Lit};

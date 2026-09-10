@@ -51,7 +51,7 @@ const status = Text({
   color: color.hud.text,
   font: font.hud.status,
   fontSize: 24.0,
-  bind: bindState(player.health, { format: "HP {}" }),
+  bind: bindState(player.health, { format: "HP {}", decimalPlaces: 0 }),
 });
 
 const ammo = Text({

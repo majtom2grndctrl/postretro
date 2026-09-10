@@ -263,6 +263,7 @@ fn build_slider(
     let bind = TextBind {
         source: slider.bind.source.clone(),
         format: Some(format),
+        decimal_places: None,
         tween: slider.bind.tween.clone(),
     };
     let bind_scope = match &bind.source {

@@ -88,6 +88,37 @@ fn bound_text_without_format_renders_bare_value() {
 }
 
 #[test]
+fn bound_number_decimal_places_rounds_display_without_changing_slot_value() {
+    let mut root = bound_text("0", "player.health", Some("HP {}"));
+    let Widget::Text(text) = &mut root else {
+        panic!("bound_text creates a text widget");
+    };
+    text.bind
+        .as_mut()
+        .expect("bound text carries a bind")
+        .decimal_places = Some(0);
+    let tree = AnchoredTree {
+        anchor: Anchor::TopLeft,
+        offset: [0.0, 0.0],
+        root,
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    };
+    let mut slots = HashMap::new();
+    slots.insert("player.health".to_string(), SlotValue::Number(87.36));
+
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+    let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
+
+    assert_eq!(data.texts[0].content, "HP 87");
+    assert_eq!(slots["player.health"], SlotValue::Number(87.36));
+}
+
+#[test]
 fn bound_text_falls_back_to_literal_when_slot_absent() {
     // The slot is not present in the snapshot (not written this frame): the
     // node renders its literal `content` fallback rather than panicking.

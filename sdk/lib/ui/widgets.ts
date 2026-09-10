@@ -131,7 +131,8 @@ export type AnnouncePriority = "polite" | "assertive";
 /**
  * State binding for a `text` widget. The source is a store slot, local cell, or
  * stamped presentation fact;
- * `format` is an optional one-`{}` template; `tween` eases the resolved numeric
+ * `format` is an optional one-`{}` template; `decimalPlaces` rounds numeric
+ * display text without changing its source; `tween` eases the resolved numeric
  * value. Mirrors `descriptor.rs` `TextBind`.
  */
 export type TextBindProp = (
@@ -140,6 +141,7 @@ export type TextBindProp = (
   | FactBindRef<ScalarStateValue>
 ) & {
   format?: string;
+  decimalPlaces?: number;
   tween?: NumberTween;
 };
 
@@ -373,6 +375,12 @@ function validateEasing(value: unknown, field: string, factory: string): void {
   }
 }
 
+function requireDecimalPlaces(value: unknown, field: string, factory: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 6) {
+    throw new Error(`${factory}: \`${field}\` must be an integer between 0 and 6`);
+  }
+}
+
 /**
  * Resolve a bind prop to its wire source form. Values may come from an
  * authoritative slot, retained local cell, or stamped presentation fact.
@@ -384,7 +392,7 @@ function buildBind(
   bind: unknown,
   factory: string,
   kind: "text" | "panel" | "slider" | "scalar",
-): { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown } | undefined {
+): { slot?: string; local?: string; fact?: string; format?: string; decimalPlaces?: number; tween?: unknown } | undefined {
   if (bind === undefined) return undefined;
   if (bind === null || typeof bind !== "object") {
     throw new Error(`${factory}: \`bind\` must be an object`);
@@ -392,7 +400,7 @@ function buildBind(
   const b = bind as Record<string, unknown>;
   // Source precedence matches the descriptor bridge. Authored SDK refs carry
   // exactly one source key.
-  let out: { slot?: string; local?: string; fact?: string; format?: string; tween?: unknown };
+  let out: { slot?: string; local?: string; fact?: string; format?: string; decimalPlaces?: number; tween?: unknown };
   if (b.slot !== undefined) {
     requireNonemptyString(b.slot, "bind.slot", factory);
     out = { slot: b.slot as string };
@@ -410,6 +418,10 @@ function buildBind(
   if (kind === "text" && b.format !== undefined) {
     requireString(b.format, "bind.format", factory);
     out.format = b.format as string;
+  }
+  if (kind === "text" && b.decimalPlaces !== undefined) {
+    requireDecimalPlaces(b.decimalPlaces, "bind.decimalPlaces", factory);
+    out.decimalPlaces = b.decimalPlaces;
   }
 
   if (b.tween !== undefined) {

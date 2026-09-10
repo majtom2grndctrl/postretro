@@ -223,6 +223,7 @@ mod tests {
                             local: "count".into(),
                         },
                         format: None,
+                        decimal_places: None,
                         tween: None,
                     }),
                     style_ranges: None,

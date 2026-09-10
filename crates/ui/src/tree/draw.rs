@@ -462,7 +462,7 @@ pub fn resolve_text(
     let Some(value) = lookup_bound(&bind.source, bind_scope, slot_values, cell_values) else {
         return fallback.to_string();
     };
-    let rendered = slot_value_string(value);
+    let rendered = slot_value_string(value, bind.decimal_places);
     match &bind.format {
         // Single-placeholder substitution; multi-value templates are out of
         // scope, so only the first `{}` is replaced.
@@ -471,15 +471,18 @@ pub fn resolve_text(
     }
 }
 
-/// A `SlotValue`'s natural string form for text binding. `Number` formats
-/// cleanly: an integral value prints with no decimals (`42`, not `42.0`), a
-/// fractional value keeps its default float form (`12.5`). `Boolean`/`String`/
-/// `Enum` print their natural representation. `Array` has no text rendering (it
-/// is the panel-color shape), so it formats to an empty string — a text widget
-/// should not bind an array slot.
-fn slot_value_string(value: &SlotValue) -> String {
+/// A `SlotValue`'s text form. A numeric `decimal_places` setting takes precedence
+/// and renders fixed precision; otherwise an integral value prints with no
+/// decimals (`42`, not `42.0`) and a fractional value keeps its default float
+/// form (`12.5`). `Boolean`/`String`/`Enum` print their natural representation.
+/// `Array` has no text rendering (it is the panel-color shape), so it formats to
+/// an empty string — a text widget should not bind an array slot.
+pub(crate) fn slot_value_string(value: &SlotValue, decimal_places: Option<u8>) -> String {
     match value {
         SlotValue::Number(n) => {
+            if let Some(decimal_places) = decimal_places {
+                return format!("{n:.precision$}", precision = usize::from(decimal_places));
+            }
             if n.fract() == 0.0 && n.is_finite() {
                 format!("{}", *n as i64)
             } else {

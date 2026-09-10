@@ -12,6 +12,7 @@ use postretro_entities::SlotValue;
 use super::CellValues;
 use super::draw::{
     bar_max_value, bar_slot_value, bind_target_name, resolve_panel_fill, resolve_text,
+    slot_value_string,
 };
 use super::node_context::RingScalar;
 use super::predicate::lookup_bound;
@@ -83,14 +84,14 @@ pub fn drive_text_binding(
     let rendered = match lookup_bound(&bind.source, bind_scope, slot_values, cell_values) {
         Some(SlotValue::Number(n)) => {
             // Tweenable: the number is the eased target. Advance the display value
-            // and render the rounded integer through the format template.
+            // and apply the bind's display precision through the format template.
             let target = *n;
             let display =
                 drive_tween_f32(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now);
-            let integral = display.round() as i64;
+            let display = slot_value_string(&SlotValue::Number(display), bind.decimal_places);
             match &bind.format {
-                Some(template) => template.replacen("{}", &integral.to_string(), 1),
-                None => integral.to_string(),
+                Some(template) => template.replacen("{}", &display, 1),
+                None => display,
             }
         }
         _ => {

@@ -514,6 +514,7 @@ mod tests {
                     elapsed_flight_age: 0.0,
                     flipbook_active: false,
                     impact_light: None,
+                    splash: None,
                 },
             )
             .unwrap();

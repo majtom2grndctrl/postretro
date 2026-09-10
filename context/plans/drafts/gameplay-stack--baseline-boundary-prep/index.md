@@ -153,8 +153,8 @@ in `netcode`, reading the moved types down. The production consumers are
 wieldable_inventory.rs}` (some via `use crate::netcode::{…}`, most fully-qualified as
 `crate::netcode::CarriedState` etc.) plus `netcode`'s own
 `lifecycle.rs`/`remote_materialize.rs`; re-point every form to `postretro_combat_model::`.
-`descriptor_class` appears in `scripting` only in a doc comment
-(a doc comment in `data_archetype.rs`) — do not move it. Decide `restore_carried_health`'s
+`descriptor_class` appears in `scripting` only in a doc comment in `data_archetype.rs`
+— do not move it. Decide `restore_carried_health`'s
 home: it is behavior over the registry, consumed in `net_descriptor.rs` and
 `data_archetype.rs` — move it to `postretro-combat-model` with the structs if it
 names only combat-model/`entities` types, else leave it in `netcode` reading the

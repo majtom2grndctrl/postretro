@@ -64,6 +64,13 @@ struct WorldHit {
     normal: Vec3,
 }
 
+/// A zero-radius sphere reaches an exact static-triangle contact, so a splash
+/// sightline starting at that point immediately re-hits the same triangle.
+/// This moves only that sightline origin, by less than a millimetre, toward the
+/// projectile side of the contact. Damage and falloff remain centered exactly
+/// at the impact point.
+const WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON: f32 = 1.0e-3;
+
 enum NearestProjectileHit {
     World(WorldHit),
     Entity(EntityRayHit),
@@ -123,6 +130,7 @@ pub(crate) fn advance(
                     hit_zone_store,
                     collision_world,
                     impact.point,
+                    splash_occlusion_origin(component, impact),
                     splash,
                     component.damage,
                     component.owner_weapon,
@@ -154,6 +162,25 @@ pub(crate) fn advance(
         },
     );
     contacts
+}
+
+/// Return the origin for a splash static-world sightline. `WorldHit::normal`
+/// comes from parry's second shape (the static trimesh), so its outward normal
+/// points to the projectile side at a non-penetrating contact.
+fn splash_occlusion_origin(component: &ProjectileComponent, impact: &WeaponImpact) -> Vec3 {
+    if component.radius != 0.0 || impact.target.is_some() {
+        return impact.point;
+    }
+
+    let Some(normal) = impact.normal.try_normalize() else {
+        return impact.point;
+    };
+    let origin = impact.point + normal * WORLD_IMPACT_SPLASH_OCCLUSION_EPSILON;
+    if origin.is_finite() {
+        origin
+    } else {
+        impact.point
+    }
 }
 
 /// Close the fire tick for projectiles created after [`advance`] ran.
@@ -887,6 +914,64 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert!(queued[0].world_anchor.is_finite());
         assert_eq!(queued[0].owner_pawn, owner_pawn);
+    }
+
+    // Regression: a zero-radius world impact began its splash LoS ray on the
+    // contacted triangle, falsely occluding every nonzero-distance target.
+    #[test]
+    fn zero_radius_world_impact_splash_hits_projectile_side_and_blocks_far_side() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let near_side = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -0.5),
+            Vec3::splat(0.1),
+        );
+        let far_side = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(1.0, 0.0, -1.5),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let mut component = registry
+            .borrow()
+            .get_component::<ProjectileComponent>(projectile)
+            .expect("projectile component attaches")
+            .clone();
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
+        registry
+            .borrow_mut()
+            .set_component(projectile, component)
+            .expect("splash snapshot attaches to projectile");
+
+        let world = wall_at_z(-1.0);
+        let zones = HitZoneStore::new();
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
+        // The launch consumes its grace tick before the zero-radius flight
+        // reaches the static-world wall.
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+        advance(&registry, &world, &zones, 0.0, 1.0, &mut ignore_impact);
+
+        let registry = registry.borrow();
+        assert!(
+            registry
+                .get_component::<HealthComponent>(near_side)
+                .expect("near-side target remains live")
+                .current
+                < 20.0,
+            "the projectile-side target has a clear splash sightline",
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(far_side)
+                .expect("far-side target remains live")
+                .current,
+            20.0,
+            "the same static wall still occludes the far-side target",
+        );
     }
 
     #[test]

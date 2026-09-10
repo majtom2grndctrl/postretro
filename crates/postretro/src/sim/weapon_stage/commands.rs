@@ -256,6 +256,11 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     )
                 }
             };
+        let projectile_radius = if is_projectile {
+            projectile.as_ref().map(|projectile| projectile.radius)
+        } else {
+            None
+        };
         authorized.push(OpenAuthorizedShot {
             shot: super::super::AuthorizedShot {
                 shot_id,
@@ -267,6 +272,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 pellet_count,
                 credit_source,
                 splash,
+                projectile_radius,
                 is_projectile,
                 fire_origin,
                 timeout_budget_ticks,

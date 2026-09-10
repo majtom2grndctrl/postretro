@@ -33,7 +33,9 @@ pub(crate) struct SphereEntity {
 const ZERO_LENGTH_OCCLUSION_EPSILON: f32 = 1.0e-5;
 
 /// Return every live, non-excluded damageable entity whose broad-phase volume
-/// intersects the sphere at `center`.
+/// intersects the sphere at `center`. `occlusion_origin` affects only the
+/// static-world sightline; it never changes the overlap sphere, falloff center,
+/// or returned nearest-point distance.
 ///
 /// When `occlude` is present, static-world geometry can remove candidates
 /// hidden from the blast center. Dynamic movers and entities do not participate
@@ -45,8 +47,10 @@ pub(crate) fn entities_in_sphere(
     radius: f32,
     exclude: impl Fn(EntityId) -> bool,
     occlude: Option<&CollisionWorld>,
+    occlusion_origin: Vec3,
 ) -> Vec<SphereEntity> {
-    if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
+    if !center.is_finite() || !radius.is_finite() || radius <= 0.0 || !occlusion_origin.is_finite()
+    {
         return Vec::new();
     }
 
@@ -63,7 +67,7 @@ pub(crate) fn entities_in_sphere(
         if distance <= radius {
             let blocked_by_static_world = occlude.is_some_and(|world| {
                 distance > ZERO_LENGTH_OCCLUSION_EPSILON
-                    && !line_of_sight(center, nearest_point, world)
+                    && !line_of_sight(occlusion_origin, nearest_point, world)
             });
             if blocked_by_static_world {
                 return;
@@ -107,13 +111,16 @@ pub(crate) fn splash_damage_amount(
 /// Apply one complete blast through the ordinary weapon-impact damage
 /// chokepoint. Candidate collection happens before any damage so one target's
 /// health change cannot alter the membership or falloff of another target in
-/// the same blast. Returns whether at least one target received nonzero damage.
+/// the same blast. `occlusion_origin` may differ from `center` solely to start
+/// the static-world sightline clear of a contacted world triangle. Returns
+/// whether at least one target received nonzero damage.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_splash_damage(
     registry: &mut EntityRegistry,
     hit_zone_store: &HitZoneStore,
     collision_world: &CollisionWorld,
     center: Vec3,
+    occlusion_origin: Vec3,
     splash: &SplashDescriptor,
     damage: f32,
     owner_weapon: EntityId,
@@ -128,6 +135,7 @@ pub(crate) fn emit_splash_damage(
         splash.radius,
         |entity| !splash.self_damage && entity == owner_pawn,
         Some(collision_world),
+        occlusion_origin,
     );
     let attacker = registry.exists(owner_pawn).then_some(owner_pawn);
     let mut dispatched = false;
@@ -219,7 +227,15 @@ mod tests {
         let outside = spawn_target(&mut registry, Vec3::new(5.26, 0.0, 0.0), Vec3::splat(0.25));
         let zones = HitZoneStore::new();
 
-        let hits = entities_in_sphere(&registry, &zones, Vec3::ZERO, 5.0, |_| false, None);
+        let hits = entities_in_sphere(
+            &registry,
+            &zones,
+            Vec3::ZERO,
+            5.0,
+            |_| false,
+            None,
+            Vec3::ZERO,
+        );
         assert_eq!(hits.len(), 2);
         assert!(
             hits.iter()
@@ -238,6 +254,7 @@ mod tests {
             1.0,
             |_| false,
             None,
+            Vec3::new(50.0, 0.0, 0.0),
         );
         assert!(empty.is_empty());
     }
@@ -270,6 +287,7 @@ mod tests {
             &mut registry,
             &zones,
             &world,
+            Vec3::ZERO,
             Vec3::ZERO,
             &splash,
             100.0,
@@ -323,6 +341,7 @@ mod tests {
             &zones,
             &world,
             Vec3::ZERO,
+            Vec3::ZERO,
             &splash,
             100.0,
             weapon,
@@ -364,6 +383,7 @@ mod tests {
             &zones,
             &world,
             Vec3::ZERO,
+            Vec3::ZERO,
             &splash,
             100.0,
             weapon,
@@ -399,6 +419,7 @@ mod tests {
             &mut registry,
             &zones,
             &world,
+            Vec3::ZERO,
             Vec3::ZERO,
             &splash,
             100.0,

@@ -2284,6 +2284,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
             pellet_count: 1,
             credit_source: "test.crossfire.remote".to_string(),
             splash: None,
+            projectile_radius: None,
             is_projectile: false,
             fire_origin: Vec3::new(10.0, 0.5, 0.0),
             timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,

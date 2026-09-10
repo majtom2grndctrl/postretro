@@ -315,7 +315,7 @@ mod tests {
         };
         let zones = HitZoneStore::new();
         let world = wall_at_x(2.0);
-        let mut ignore_impact = |_| {};
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
 
         emit_splash_damage(
             &mut registry,
@@ -356,7 +356,7 @@ mod tests {
         };
         let zones = HitZoneStore::new();
         let world = wall_at_x(1.0);
-        let mut ignore_impact = |_| {};
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
 
         emit_splash_damage(
             &mut registry,
@@ -392,7 +392,7 @@ mod tests {
         };
         let zones = HitZoneStore::new();
         let world = CollisionWorld::default();
-        let mut ignore_impact = |_| {};
+        let mut ignore_impact = |_: &mut EntityRegistry| {};
 
         emit_splash_damage(
             &mut registry,

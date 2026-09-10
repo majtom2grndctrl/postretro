@@ -41,6 +41,43 @@ sub-block is computed — the SH math is done. The fatal allocation is a *later*
 stage assembling the finished result. Compute was never the constraint;
 materialization of the finished payload is.
 
+## Task 1 calibration (2026-09-10)
+
+The working-set gate was measured with the compiler's default map settings,
+`--no-cache`, `--no-tui`, and a zero working-set budget. Zero deliberately
+causes a refusal immediately after the plan CSRs are built, so the diagnostic
+reports the exact pre-bake projection without allocating a dense delta payload.
+The table gives the dense sum and its normal (non-`--sh-analyze`) 2x peak
+projection:
+
+| Map | Cumulative dense bytes | 2x projected peak bytes |
+|---|---:|---:|
+| `campaign-test` | 74,907,648 | 149,815,296 |
+| `gate-heavily-lit` | 9,289,728 | 18,579,456 |
+| `kinematic-platform` | 40,200,192 | 80,400,384 |
+
+`campaign-test` is the heaviest measured dev map. The observed
+`stress-warren-hallway-inspection` direct-delta CSR alone is exactly
+12,163,350,528 dense bytes (the decomposition above), so its normal projected
+peak is at least 24,326,701,056 bytes before adding ids 27 and 45. A fresh
+attempt to reach the warren plan phase was stopped safely during its unrelated
+lightmap stage, which projected roughly 35 minutes; it did not reach SH and did
+not allocate a delta payload. Therefore the warren figure here is a
+conservative lower bound, not a newly measured cumulative total.
+
+The shipped `--sh-delta-working-set-max-size` default is 16 GiB
+(17,179,869,184 bytes). It is 17,030,053,888 bytes above the heaviest measured
+dev-map peak and 7,146,831,872 bytes below the warren direct-delta lower-bound
+peak, leaving a measured separation even before the warren's other delta bakes
+are counted. `--sh-analyze` uses the documented 3x factor instead.
+
+For an admitted fixture, `campaign-test` was built twice with an initially
+empty temporary cache directory (first run cold, second run warm), with outputs
+outside the workspace. Both complete PRLs have SHA-256
+`04b29d910f1ac6df04137f8c4b290cbf21a3822b85f4f367ee9ed93b0c865965`.
+This exercises ids 27, 41, and 45 and confirms that the plan-phase gate leaves
+the admitted cold/warm artifact bytes unchanged.
+
 ## The copy chain — the payload is materialized whole, several times over
 
 Peak host residency is a chain of whole-payload contiguous buffers, each

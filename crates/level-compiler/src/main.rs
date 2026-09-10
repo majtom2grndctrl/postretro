@@ -674,9 +674,9 @@ pub struct Args {
     /// this at build start (oldest-used entries first). Defaults to
     /// `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
-    /// Maximum aggregate raw payload size for the three baked delta sections.
-    /// This compiler-only setting is enforced by the post-bake delta policy;
-    /// it has no PRL, FGD, loader, or runtime representation.
+    /// Compiler-only limits for the three baked delta sections. The raw-payload
+    /// cap is enforced after compaction; the working-set cap refuses the dense
+    /// pre-bake plan. Neither has a PRL, FGD, loader, or runtime representation.
     delta_section_config: delta_sections::DeltaSectionConfig,
     /// When true, bypass cache reads and writes entirely.
     no_cache: bool,
@@ -749,6 +749,7 @@ fn help_text() -> String {
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
+         --sh-delta-working-set-max-size <SIZE> Peak host-RAM budget for dense ids 27, 41, and 45 before baking; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
@@ -765,6 +766,8 @@ fn help_text() -> String {
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
         cache_max = size_options::format_size_for_help(cache::DEFAULT_MAX_BYTES),
         delta_max = size_options::format_size_for_help(delta_sections::DEFAULT_MAX_PAYLOAD_BYTES),
+        delta_working_set_max =
+            size_options::format_size_for_help(delta_sections::DEFAULT_MAX_WORKING_SET_BYTES),
         jobs = default_jobs(),
     )
 }
@@ -929,6 +932,13 @@ where
                 delta_section_config.max_payload_bytes =
                     size_options::parse_size("--sh-delta-max-size", &size_str)?;
             }
+            "--sh-delta-working-set-max-size" => {
+                let size_str = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--sh-delta-working-set-max-size requires a value")
+                })?;
+                delta_section_config.max_working_set_bytes =
+                    size_options::parse_size("--sh-delta-working-set-max-size", &size_str)?;
+            }
             "--no-cache" => {
                 no_cache = true;
                 quality_flag_supplied = true;
@@ -982,7 +992,7 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -1840,6 +1850,10 @@ mod tests {
             parsed.delta_section_config.max_payload_bytes,
             delta_sections::DEFAULT_MAX_PAYLOAD_BYTES
         );
+        assert_eq!(
+            parsed.delta_section_config.max_working_set_bytes,
+            delta_sections::DEFAULT_MAX_WORKING_SET_BYTES
+        );
         assert_eq!(parsed.jobs, default_jobs());
         assert_eq!(parsed.tui, TuiPreference::Auto);
     }
@@ -2452,6 +2466,51 @@ mod tests {
         assert!(
             parse_args_from(
                 ["input.map", "--sh-delta-max-size", "12XB"]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_args_sh_delta_working_set_max_size_defaults_to_16_gib() {
+        let parsed = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
+
+        assert_eq!(
+            parsed.delta_section_config.max_working_set_bytes,
+            16 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn parse_args_sh_delta_working_set_max_size_accepts_existing_size_syntax() {
+        let parsed = parse_args_from(
+            ["input.map", "--sh-delta-working-set-max-size", "24GiB"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.delta_section_config.max_working_set_bytes,
+            24 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn parse_args_sh_delta_working_set_max_size_requires_a_valid_value() {
+        assert!(
+            parse_args_from(
+                ["input.map", "--sh-delta-working-set-max-size"]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .is_err()
+        );
+        assert!(
+            parse_args_from(
+                ["input.map", "--sh-delta-working-set-max-size", "12XB"]
                     .into_iter()
                     .map(str::to_owned),
             )

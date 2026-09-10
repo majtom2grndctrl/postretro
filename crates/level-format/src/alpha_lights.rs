@@ -159,6 +159,10 @@ pub struct AlphaLightsSection {
 }
 
 impl AlphaLightsSection {
+    pub fn byte_len(&self) -> usize {
+        8 + self.lights.len() * ALPHA_LIGHT_RECORD_SIZE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.lights.len() as u32;
         let mut buf = Vec::with_capacity(8 + self.lights.len() * ALPHA_LIGHT_RECORD_SIZE);
@@ -334,11 +338,12 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_single_record() {
+    fn byte_len_matches_single_record_payload() {
         let section = AlphaLightsSection {
             lights: vec![sample_record()],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         assert_eq!(bytes.len(), 8 + ALPHA_LIGHT_RECORD_SIZE);
         let restored = AlphaLightsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);

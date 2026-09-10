@@ -216,6 +216,26 @@ impl OctahedralShVolumeSection {
             .expect("OctahedralShVolumeSection must satisfy its wire contract")
     }
 
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate_wire_contract()?;
+        let total_probes = checked_total_probe_count(self.grid_dimensions)?;
+        let descriptor_bytes = self
+            .animation_descriptors
+            .iter()
+            .map(|descriptor| {
+                36 + descriptor.brightness.len() * 4
+                    + descriptor.color.len() * 12
+                    + descriptor.direction.len() * 12
+            })
+            .sum::<usize>();
+        Ok(Self::HEADER_SIZE
+            + total_probes * OCTAHEDRAL_PROBE_STRIDE as usize
+            + self.compact_atlas.len()
+            + descriptor_bytes
+            + 4
+            + self.slot_for_map_light.len() * 4)
+    }
+
     /// Encode only a canonical section whose stored payload fits the v10
     /// `u32` byte-length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
@@ -1030,13 +1050,14 @@ mod tests {
     }
 
     #[test]
-    fn octahedral_round_trip_preserves_stored_metadata_and_bc6h_atlas() {
+    fn byte_len_matches_octahedral_sh_volume_payload() {
         let section = oct_section([2, 2, 1]);
         assert_eq!(section.layer_count, 1);
         assert_eq!(section.atlas_dimensions, [12, 6]);
         assert_eq!(section.tiles_per_layer, 2);
         assert_eq!(section.atlas_tiles_per_row, 2);
         let bytes = section.to_bytes();
+        assert_eq!(section.try_byte_len().unwrap(), bytes.len());
         assert_eq!(
             &bytes[64..68],
             section.atlas_tiles_per_row.to_le_bytes().as_slice()

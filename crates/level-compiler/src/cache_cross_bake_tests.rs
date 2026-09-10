@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::DVec3;
 use log::Level;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -494,13 +493,7 @@ fn p1_p2_cell_visibility_portal_edit_misses_while_light_only_edit_hits() {
     assert_ne!(baseline_key.as_filename(), narrow_key.as_filename());
     let rebaked = cell_visibility_bake_cached(&tree, &narrow, Some(&cache), &control())
         .expect("structural CellVisibility miss");
-    let baseline_section =
-        CellVisibilitySection::from_bytes(&baseline, 2).expect("decode baseline");
-    let rebaked_section = CellVisibilitySection::from_bytes(&rebaked, 2).expect("decode rebake");
-    assert_ne!(
-        baseline_section.coupled_pairs,
-        rebaked_section.coupled_pairs
-    );
+    assert_ne!(baseline.coupled_pairs, rebaked.coupled_pairs);
     let _ = std::fs::remove_dir_all(dir);
 }
 

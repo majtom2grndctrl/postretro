@@ -54,6 +54,13 @@ impl BillboardDirectScatterVolumeSection {
             .checked_mul(BILLBOARD_DIRECT_SCATTER_RGBA_F16_COUNT)
     }
 
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate_wire_contract()?;
+        HEADER_SIZE
+            .checked_add(self.scatter_rgba.len() * std::mem::size_of::<u16>())
+            .ok_or_else(|| invalid_data("billboard direct scatter section length overflows usize"))
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("BillboardDirectScatterVolumeSection must satisfy its wire contract")
@@ -251,8 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn billboard_direct_scatter_volume_round_trips_dense_x_fastest_grid() {
+    fn byte_len_matches_billboard_direct_scatter_dense_payload() {
         let section = sample_section();
+        assert_eq!(
+            section.try_byte_len().unwrap(),
+            section.try_to_bytes().unwrap().len()
+        );
         let restored = BillboardDirectScatterVolumeSection::from_bytes(&section.to_bytes())
             .expect("valid billboard scatter section must decode");
 

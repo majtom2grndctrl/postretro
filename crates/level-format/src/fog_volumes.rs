@@ -174,6 +174,17 @@ impl Default for FogVolumesSection {
 }
 
 impl FogVolumesSection {
+    pub fn byte_len(&self) -> usize {
+        12 + self
+            .volumes
+            .iter()
+            .map(|volume| {
+                112 + volume.planes.len() * 16
+                    + volume.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
+            })
+            .sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.pixel_scale.to_le_bytes());
@@ -432,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_two_volumes_one_with_tags_one_without() {
+    fn byte_len_matches_tagged_fog_volume_payload() {
         let section = FogVolumesSection {
             pixel_scale: 8,
             initial_gravity: -9.81,
@@ -482,6 +493,7 @@ mod tests {
             ],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

@@ -27,6 +27,10 @@ pub struct DataScriptSection {
 }
 
 impl DataScriptSection {
+    pub fn byte_len(&self) -> usize {
+        8 + self.source_path.len() + self.compiled_bytes.len()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let path_bytes = self.source_path.as_bytes();
         let mut buf = Vec::with_capacity(8 + path_bytes.len() + self.compiled_bytes.len());
@@ -100,12 +104,13 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_populated() {
+    fn byte_len_matches_populated_data_script_payload() {
         let section = DataScriptSection {
             compiled_bytes: b"globalThis.foo = 1;\n".to_vec(),
             source_path: "/abs/path/to/level-data.ts".to_string(),
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = DataScriptSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

@@ -208,6 +208,17 @@ impl LightmapSection {
         }
     }
 
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE
+            + self.irradiance.len()
+            + self.direction.len()
+            + if self.mode == LightmapMode::Shadowed {
+                0
+            } else {
+                8
+            }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let irr_total_bytes = self.irradiance.len() as u32;
         let dir_total_bytes = self.direction.len() as u32;
@@ -436,9 +447,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip_placeholder() {
+    fn byte_len_matches_shadowed_lightmap_payload() {
         let section = LightmapSection::placeholder();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }
@@ -538,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn unshadowed_mode_round_trips_via_trailer_multi_layer() {
+    fn byte_len_matches_unshadowed_lightmap_payload() {
         // Multi-layer section so the trailer offset lands past concatenated
         // layer-major blobs, not just a single layer.
         let layer_count = 2u32;
@@ -572,6 +584,7 @@ mod tests {
             mode: LightmapMode::Unshadowed,
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(restored.mode, LightmapMode::Unshadowed);
         assert_eq!(section, restored);

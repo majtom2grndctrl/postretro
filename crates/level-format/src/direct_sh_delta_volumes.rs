@@ -79,6 +79,18 @@ impl DirectShDeltaVolumesSection {
         )
     }
 
+    pub fn byte_len(&self) -> usize {
+        1 + 1
+            + 12
+            + 4
+            + 4
+            + self.valid_probe_masks.len() * 8
+            + self.cell_levels.len()
+            + self.affinity_offsets.len() * 4
+            + self.affinity_lights.len() * 4
+            + self.delta_subblocks.len() * 2
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
         debug_assert_eq!(self.valid_probe_masks.len(), self.affinity_cell_count());
@@ -371,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_sh_delta_volumes_round_trips_multiple_cells() {
+    fn byte_len_matches_direct_sh_delta_payload() {
         let mut delta_subblocks = sample_subblock(1);
         delta_subblocks.extend(sample_subblock(100));
 
@@ -386,6 +398,7 @@ mod tests {
             affinity_lights: vec![0, 1],
             delta_subblocks,
         };
+        assert_eq!(section.byte_len(), section.to_bytes().len());
 
         let restored = DirectShDeltaVolumesSection::from_bytes(&section.to_bytes()).unwrap();
 

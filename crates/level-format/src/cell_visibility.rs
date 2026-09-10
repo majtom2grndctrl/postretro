@@ -44,6 +44,12 @@ pub struct CellVisibilitySection {
 }
 
 impl CellVisibilitySection {
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate()?;
+        let pair_count = checked_pair_count(self.coupled_pairs.len())?;
+        checked_section_len(self.cell_count, pair_count)
+    }
+
     /// Serialize the complete version-one layout.
     ///
     /// Count and byte-size conversions are checked before allocating so an
@@ -373,9 +379,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_fixed_layout() {
+    fn byte_len_matches_cell_visibility_payload() {
         let section = valid_section();
         let bytes = section.to_bytes().unwrap();
+        assert_eq!(section.try_byte_len().unwrap(), bytes.len());
         assert_eq!(
             CellVisibilitySection::from_bytes(&bytes, 4).unwrap(),
             section

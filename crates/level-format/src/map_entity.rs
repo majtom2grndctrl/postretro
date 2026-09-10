@@ -45,6 +45,25 @@ pub struct MapEntitySection {
 }
 
 impl MapEntitySection {
+    pub fn byte_len(&self) -> usize {
+        4 + self
+            .entries
+            .iter()
+            .map(|entry| {
+                4 + entry.classname.len()
+                    + 24
+                    + 4
+                    + entry
+                        .key_values
+                        .iter()
+                        .map(|(key, value)| 8 + key.len() + value.len())
+                        .sum::<usize>()
+                    + 4
+                    + entry.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
+            })
+            .sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
@@ -229,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_with_kvps_and_tags() {
+    fn byte_len_matches_map_entities_with_kvps_and_tags() {
         let section = MapEntitySection {
             entries: vec![
                 MapEntityRecord {
@@ -252,6 +271,7 @@ mod tests {
             ],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = MapEntitySection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

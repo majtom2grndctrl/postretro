@@ -374,29 +374,54 @@ pub struct SectionBlob {
     pub data: Vec<u8>,
 }
 
-/// Write a complete PRL file: header, section table, then section data blobs.
-pub fn write_prl<W: Write>(writer: &mut W, sections: &[SectionBlob]) -> Result<()> {
+/// Section metadata used to write a PRL container header and table before its
+/// payloads are available. The table's payload lengths must exactly match the
+/// bytes subsequently written by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionDescriptor {
+    pub section_id: u32,
+    pub version: u16,
+    pub byte_len: u64,
+}
+
+/// Write a PRL header and complete section table, leaving the writer positioned
+/// at the first section payload. This supports callers that serialize each
+/// payload incrementally after all table lengths are known.
+pub fn write_prl_header_and_table<W: Write>(
+    writer: &mut W,
+    sections: &[SectionDescriptor],
+) -> Result<()> {
     let section_count = sections.len() as u16;
 
-    // Header
     writer.write_all(&MAGIC)?;
     writer.write_all(&CURRENT_VERSION.to_le_bytes())?;
     writer.write_all(&section_count.to_le_bytes())?;
 
-    // Compute offsets: data starts after header + section table
     let data_start = HEADER_SIZE + (sections.len() * SECTION_ENTRY_SIZE);
     let mut current_offset = data_start as u64;
-
-    // Section table
-    for blob in sections {
-        writer.write_all(&blob.section_id.to_le_bytes())?;
+    for section in sections {
+        writer.write_all(&section.section_id.to_le_bytes())?;
         writer.write_all(&current_offset.to_le_bytes())?;
-        writer.write_all(&(blob.data.len() as u64).to_le_bytes())?;
-        writer.write_all(&blob.version.to_le_bytes())?;
-        current_offset += blob.data.len() as u64;
+        writer.write_all(&section.byte_len.to_le_bytes())?;
+        writer.write_all(&section.version.to_le_bytes())?;
+        current_offset += section.byte_len;
     }
 
-    // Section data
+    Ok(())
+}
+
+/// Write a complete PRL file: header, section table, then section data blobs.
+pub fn write_prl<W: Write>(writer: &mut W, sections: &[SectionBlob]) -> Result<()> {
+    let descriptors: Vec<_> = sections
+        .iter()
+        .map(|blob| SectionDescriptor {
+            section_id: blob.section_id,
+            version: blob.version,
+            byte_len: blob.data.len() as u64,
+        })
+        .collect();
+    write_prl_header_and_table(writer, &descriptors)?;
+
     for blob in sections {
         writer.write_all(&blob.data)?;
     }
@@ -621,6 +646,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(portals, vec![0xCA, 0xFE]);
+    }
+
+    #[test]
+    fn table_first_write_matches_complete_writer_bytes() {
+        let sections = make_test_sections();
+        let mut complete = Vec::new();
+        write_prl(&mut complete, &sections).unwrap();
+
+        let descriptors: Vec<_> = sections
+            .iter()
+            .map(|section| SectionDescriptor {
+                section_id: section.section_id,
+                version: section.version,
+                byte_len: section.data.len() as u64,
+            })
+            .collect();
+        let mut table_first = Vec::new();
+        write_prl_header_and_table(&mut table_first, &descriptors).unwrap();
+        for section in &sections {
+            table_first.extend_from_slice(&section.data);
+        }
+
+        assert_eq!(table_first, complete);
     }
 
     #[test]

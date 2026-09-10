@@ -40,6 +40,10 @@ pub struct CellLocatorSection {
 }
 
 impl CellLocatorSection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE + self.nodes.len() * NODE_RECORD_SIZE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(HEADER_SIZE + self.nodes.len() * NODE_RECORD_SIZE);
         let (root_kind, root_index) = self.root.kind_index();
@@ -302,9 +306,10 @@ mod tests {
     }
 
     #[test]
-    fn cell_locator_round_trip_valid_section() {
+    fn byte_len_matches_cell_locator_payload() {
         let section = valid_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = CellLocatorSection::from_bytes(&bytes, 3).unwrap();
         assert_eq!(section, restored);
         assert_eq!(restored.to_bytes(), bytes);

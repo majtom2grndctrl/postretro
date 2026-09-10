@@ -12,6 +12,7 @@ fn styled_text(base: [f32; 4], slot: &str, ranges: StyleRanges) -> Widget {
         bind: Some(TextBind {
             source: BindSource::Slot { slot: slot.into() },
             format: None,
+            decimal_places: None,
             tween: None,
         }),
         style_ranges: Some(ranges),
@@ -197,6 +198,7 @@ fn style_ranges_evaluate_the_eased_display_value_mid_tween() {
                     slot: "player.health".into(),
                 },
                 format: None,
+                decimal_places: None,
                 tween: Some(TextTween {
                     duration_ms: 1000.0,
                     easing: Easing::Linear,

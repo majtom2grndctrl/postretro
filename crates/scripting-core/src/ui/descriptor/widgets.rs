@@ -107,9 +107,11 @@ pub struct TextWidget {
 /// State binding for a `text` widget. The bind source is either a `{ slot }`
 /// store binding (a dotted slot name like `"player.health"`) or a `{ local }`
 /// presentation-cell binding, flattened into the bind object as a sibling of
-/// `format`/`tween`. `format` is an optional template with a single `{}`
-/// placeholder substituted by the resolved value's string form; with `format`
-/// absent, the value's default string form is drawn. One `{}` max.
+/// `format`/`decimalPlaces`/`tween`. `format` is an optional template with a
+/// single `{}` placeholder substituted by the resolved value's string form;
+/// with `format` absent, the value's default string form is drawn. One `{}`
+/// max. `decimalPlaces` applies only to numeric values and rounds the displayed
+/// value without changing the bound state. One `{}` max.
 //
 // `deny_unknown_fields` is omitted: it is incompatible with `#[serde(flatten)]`,
 // which the `source` alternative requires to keep `slot`/`local` flat siblings
@@ -121,6 +123,11 @@ pub struct TextBind {
     pub source: BindSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// Optional fixed decimal precision for numeric text. The renderer rounds
+    /// only the display string; bars and the authoritative slot retain their
+    /// original `f32` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimal_places: Option<u8>,
     /// Optional value-tweening config (M13 UI Value-Tweening). When present, the
     /// tween runtime eases the resolved numeric value toward each new target
     /// over `duration_ms` using `easing` instead of snapping. Absent on every

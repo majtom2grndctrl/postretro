@@ -7,7 +7,7 @@ import type { RuntimeValue } from "postretro";
 import { runtime } from "../runtime";
 import type { FactBindRef, NumberTween, WidgetDescriptor, WidgetEasing } from "./widgets";
 
-export type NumberFactOptions = { format?: string; tween?: NumberTween };
+export type NumberFactOptions = { format?: string; decimalPlaces?: number; tween?: NumberTween };
 export type ScalarFactOptions = { format?: string };
 
 export type PresentationFactApi = Readonly<{
@@ -94,13 +94,23 @@ function requireFiniteFact(value: unknown, field: string): asserts value is numb
 function factRef(
   name: string,
   options: NumberFactOptions | ScalarFactOptions = {},
-): Readonly<{ fact: string; format?: string; tween?: NumberTween }> {
+  numeric = false,
+): Readonly<{ fact: string; format?: string; decimalPlaces?: number; tween?: NumberTween }> {
   requireFactName(name);
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("fact: options must be an object");
   }
   if (options.format !== undefined && typeof options.format !== "string") {
     throw new TypeError("fact: `format` must be a string");
+  }
+  if ("decimalPlaces" in options && !numeric) {
+    throw new TypeError("fact: `decimalPlaces` is only valid for numeric facts");
+  }
+  if (numeric && (options as NumberFactOptions).decimalPlaces !== undefined) {
+    const decimalPlaces = (options as NumberFactOptions).decimalPlaces;
+    if (!Number.isInteger(decimalPlaces) || decimalPlaces < 0 || decimalPlaces > 6) {
+      throw new TypeError("fact: `decimalPlaces` must be an integer between 0 and 6");
+    }
   }
   const tween = (options as NumberFactOptions).tween;
   if (tween !== undefined) {
@@ -119,6 +129,9 @@ function factRef(
   return Object.freeze({
     fact: name,
     ...(options.format === undefined ? {} : { format: options.format }),
+    ...(numeric && (options as NumberFactOptions).decimalPlaces !== undefined
+      ? { decimalPlaces: (options as NumberFactOptions).decimalPlaces }
+      : {}),
     ...(tween === undefined
       ? {}
       : {
@@ -134,7 +147,7 @@ function factRef(
 /** Bind producer-stamped per-instance values inside a presentation template. */
 export const fact: PresentationFactApi = Object.freeze({
   number(name: string, options?: NumberFactOptions) {
-    return factRef(name, options) as FactBindRef<number> & NumberFactOptions;
+    return factRef(name, options, true) as FactBindRef<number> & NumberFactOptions;
   },
   text(name: string, options?: ScalarFactOptions) {
     return factRef(name, options) as FactBindRef<string> & ScalarFactOptions;

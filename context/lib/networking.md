@@ -462,11 +462,15 @@ composed through the authored placement — eye ∘ placement ∘ muzzle_local,
 steady placement, no view-feel. The muzzle point is per-weapon content like a
 hit zone, replicated beside placement in the tuning payload; a connected client
 predicts from that host value, never from the client-local viewmodel mesh (the
-host holds no remote viewmodel). The spawned projectile origin equals the
-validated fire origin — they never diverge — and its direction converges on the
-crosshair target. An omitted offset preserves the historical camera-eye origin.
-The observer's third-person muzzle, posed by the avatar socket rather than
-placement, is a separate presentation vantage, deferred.
+host holds no remote viewmodel). Within each peer's path, the spawned projectile
+origin equals its validated fire origin. If the projectile's exact radius contacts
+static world along the eye-to-muzzle sweep, or the eye ray contacts world at or before
+the muzzle's forward plane, that peer uses the eye origin so the projectile cannot
+spawn through nearby geometry. The eye-ray query reaches through the muzzle plane
+even when projectile range is shorter. Otherwise its direction converges on the
+crosshair target. An omitted offset preserves the historical camera-eye origin. The
+observer's third-person muzzle, posed by the avatar socket rather than placement,
+is a separate presentation vantage, deferred.
 
 ## Combat authority: FIRE vs HIT
 
@@ -477,11 +481,22 @@ lag-compensation history window (see *Non-goals*).
 **FIRE is host-authoritative; cooldown is client-predicted.** Cooldown and ammo — how
 often and how many shots — are the damage-integrity surface. The host validates fire
 legitimacy, consumes the magazine, owns timed reload progression and reserve transfer,
-advances cooldown, and mints an authorized shot; it never casts a ray. The firing client
-predicts its own cooldown and reconciles against an owner-private cooldown fact, the same
-pattern movement prediction uses. Client-side ammo and reload prediction/reconciliation
-remain out of scope. Owner-private state-slot projection supplies each owner with the
-host's authoritative magazine, reserve, reload progress, and reload-active state.
+advances cooldown, and mints an authorized shot. It never applies target or damage from
+this path. Projectile FIRE resolves the eye ray against static world and live targetable
+entities to reconstruct an obstruction-safe origin and
+crosshair-converged direction. The firing client predicts its own cooldown and reconciles
+against an owner-private cooldown fact, the same pattern movement prediction uses.
+Client-side ammo and reload prediction/reconciliation remain out of scope. Owner-private
+state-slot projection supplies each owner with the host's authoritative magazine,
+reserve, reload progress, and reload-active state.
+
+Projectile launch prediction is not rewind-synchronized. The firing client launches from
+its rendered local camera and rendered target state; the host later reconstructs from the
+live authoritative pawn and target state plus the transmitted aim and shared tuning.
+Ordinary latency may therefore produce slightly different origin, direction, or contact.
+`ShotVerdict` reconciles fire acceptance, cooldown, muzzle FX, and hitmarker state; it does
+not correct the predicted projectile transform. This is the accepted no-rewind co-op
+tradeoff. Exact launch-pose reconciliation requires a separate protocol design.
 
 **HIT is client-authoritative declaration.** The client casts its own ray against the
 world it renders and declares the result; the host validates cheaply and applies damage.

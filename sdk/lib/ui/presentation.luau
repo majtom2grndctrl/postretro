@@ -43,9 +43,9 @@ export type PresentationOverlay = {
   template: string,
   maxVisible: number,
 }
-export type NumberFactOptions = { format: string?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
+export type NumberFactOptions = { format: string?, decimalPlaces: number?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
 export type ScalarFactOptions = { format: string? }
-export type FactBindRef = { fact: string, format: string?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
+export type FactBindRef = { fact: string, format: string?, decimalPlaces: number?, tween: { durationMs: number, easing: WidgetEasing, from: number? }? }
 
 local PresentationSdk = {}
 local MAX_OVERLAY_VISIBLE = 64
@@ -72,7 +72,7 @@ local function requireStoredU32(value: any, field: string, factory: string)
   end
 end
 
-local function factRef(name: string, options: any?): FactBindRef
+local function factRef(name: string, options: any?, numeric: boolean?): FactBindRef
   if type(name) ~= "string" or #name == 0 then
     error("fact: name must be nonempty", 3)
   end
@@ -82,6 +82,14 @@ local function factRef(name: string, options: any?): FactBindRef
   local source = options or {}
   if source.format ~= nil and type(source.format) ~= "string" then
     error("fact: `format` must be a string", 3)
+  end
+  if source.decimalPlaces ~= nil then
+    if not numeric then
+      error("fact: `decimalPlaces` is only valid for numeric facts", 3)
+    end
+    if not finite(source.decimalPlaces) or source.decimalPlaces % 1 ~= 0 or source.decimalPlaces < 0 or source.decimalPlaces > 6 then
+      error("fact: `decimalPlaces` must be an integer between 0 and 6", 3)
+    end
   end
   if source.tween ~= nil then
     local tween = source.tween
@@ -97,6 +105,7 @@ local function factRef(name: string, options: any?): FactBindRef
   end
   local out: any = { fact = name }
   if source.format ~= nil then out.format = source.format end
+  if source.decimalPlaces ~= nil then out.decimalPlaces = source.decimalPlaces end
   if source.tween ~= nil then
     local tween = source.tween
     local cloned: any = { durationMs = tween.durationMs, easing = tween.easing }
@@ -108,7 +117,7 @@ end
 
 PresentationSdk.fact = table.freeze({
   number = function(name: string, options: NumberFactOptions?): FactBindRef
-    return factRef(name, options)
+    return factRef(name, options, true)
   end,
   text = function(name: string, options: ScalarFactOptions?): FactBindRef
     return factRef(name, options)

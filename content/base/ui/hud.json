@@ -18,7 +18,8 @@
         "font": "mono",
         "bind": {
           "slot": "player.health",
-          "format": "FALLBACK HUD HP {}"
+          "format": "FALLBACK HUD HP {}",
+          "decimalPlaces": 0
         }
       },
       {

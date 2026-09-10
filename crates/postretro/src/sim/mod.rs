@@ -754,6 +754,9 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         remote_pawn_commands,
         descriptors,
         default_weapon_placement,
+        collision_world,
+        hit_zone_store,
+        anim_time,
         tick_dt,
     );
     let own_pawn = {

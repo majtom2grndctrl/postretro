@@ -125,6 +125,9 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
         Widget::Text(text) => {
             if let Some(bind) = &text.bind {
                 source(&bind.source, "bind")?;
+                if bind.decimal_places.is_some_and(|places| places > 6) {
+                    return Err(format!("{path}.bind.decimalPlaces must be between 0 and 6"));
+                }
             }
             predicate(&text.visible_when, "visibleWhen")
         }

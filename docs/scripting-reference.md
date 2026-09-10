@@ -2387,6 +2387,12 @@ Color props accept a color token from `getDesignTokens(theme)` or an inline
 literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font
 props accept font tokens only.
 
+For numeric `Text` bindings, `decimalPlaces` rounds only the displayed text to
+that many fixed decimal places (`0` through `6`); it never alters the bound
+state or a paired `Bar`. For example,
+`bindState(player.health, { format: "HP {}", decimalPlaces: 0 })` displays
+`HP 87` while the health bar still uses the full-precision value.
+
 Token leaves are SDK-authenticated records. TypeScript gives exact path
 completion for a concrete theme; Luau exposes an open token tree for category
 checking, but runtime still verifies that each record came from

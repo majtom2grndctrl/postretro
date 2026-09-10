@@ -16,7 +16,7 @@ import type {
 } from "./widgets";
 
 export type StateBindOptionsFor<T> =
-  T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
+  T extends number ? { format?: string; decimalPlaces?: number; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
   T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never; kind?: never } :
   T extends ScalarStateValue ? { format?: string; slot?: never; local?: never; kind?: never } :
   never;

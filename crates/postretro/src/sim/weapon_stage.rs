@@ -2113,6 +2113,20 @@ mod tests {
             Some(&splash),
             "remote FIRE freezes splash tuning for later host contact resolution"
         );
+        assert_eq!(authorized.shot.projectile_direction, Some(direction));
+        assert_eq!(
+            authorized.shot.projectile_speed,
+            Some(presentation.projectile.speed),
+        );
+        assert_eq!(
+            authorized.shot.projectile_lifetime_seconds,
+            Some(presentation.projectile.lifetime_ms / 1_000.0),
+        );
+        assert_eq!(authorized.shot.projectile_tick_seconds, Some(1.0 / 60.0));
+        assert_eq!(
+            authorized.shot.projectile_radius,
+            Some(presentation.projectile.radius),
+        );
         assert!(
             presentation.origin.distance(local_origin) <= 1.0e-6,
             "the observer launch reuses the authorization's exact muzzle point"

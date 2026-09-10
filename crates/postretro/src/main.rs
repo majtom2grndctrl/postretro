@@ -3052,6 +3052,7 @@ impl ApplicationHandler for App {
                                     owners,
                                     open_shots,
                                     projectile_presentations,
+                                    tick,
                                     ..
                                 }) = net_endpoint.as_mut()
                                 else {
@@ -3065,6 +3066,8 @@ impl ApplicationHandler for App {
                                     allocator,
                                     owners,
                                     open_shots,
+                                    *tick,
+                                    frame_anim_time,
                                     std::mem::take(&mut ready_hit_declarations),
                                     |registry| on_impact(registry),
                                     |shot_id, point| {
@@ -3124,7 +3127,7 @@ impl ApplicationHandler for App {
                         self.host_note_local_projectile_contacts(
                             &tick_events.local_projectile_contacts,
                         );
-                        if self.host_flush_pending_hit_declarations() {
+                        if self.host_flush_pending_hit_declarations(frame_anim_time) {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
                         }
                         self.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
@@ -7702,7 +7705,7 @@ impl App {
         }
     }
 
-    fn host_flush_pending_hit_declarations(&mut self) -> bool {
+    fn host_flush_pending_hit_declarations(&mut self, anim_time: f64) -> bool {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -7742,6 +7745,7 @@ impl App {
             open_shots,
             pending_hit_declarations,
             *tick,
+            anim_time,
             |registry| scripting.evaluate_pending_in_tick_impacts(registry),
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
         )

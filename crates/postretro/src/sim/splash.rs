@@ -1,5 +1,5 @@
 // Caller-agnostic radial damage query and impact-composed splash emission.
-// See: context/lib/entity_model.md §7 · context/plans/in-progress/E16--aoe-splash-damage
+// See: context/lib/entity_model.md §7
 
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry};
@@ -19,8 +19,8 @@ use crate::weapon::{ActivationOutcome, DamagePayload, WeaponImpact};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SphereEntity {
     pub(crate) entity: EntityId,
-    /// Nearest point on the candidate's damageable volume. Task 2 uses this as
-    /// the static-world occlusion segment endpoint.
+    /// Nearest point on the candidate's damageable volume, used as the
+    /// static-world occlusion segment endpoint.
     pub(crate) nearest_point: Vec3,
     pub(crate) distance: f32,
 }
@@ -107,7 +107,7 @@ pub(crate) fn splash_damage_amount(
 /// Apply one complete blast through the ordinary weapon-impact damage
 /// chokepoint. Candidate collection happens before any damage so one target's
 /// health change cannot alter the membership or falloff of another target in
-/// the same blast.
+/// the same blast. Returns whether at least one target received nonzero damage.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_splash_damage(
     registry: &mut EntityRegistry,
@@ -120,7 +120,7 @@ pub(crate) fn emit_splash_damage(
     owner_pawn: EntityId,
     credit_source: String,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-) {
+) -> bool {
     let targets = entities_in_sphere(
         registry,
         hit_zone_store,
@@ -162,6 +162,7 @@ pub(crate) fn emit_splash_damage(
     if dispatched {
         on_impact(registry);
     }
+    dispatched
 }
 
 #[cfg(test)]

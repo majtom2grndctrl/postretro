@@ -313,7 +313,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("SplashDescriptor")
-        .doc("Radial damage applied at a weapon resolution's impact point. This is a peer of `projectile`, so a future non-projectile resolution can use the same blast tuning.")
+        .doc("Radial damage applied at a projectile impact point. The block is a peer of `projectile`, but current engine behavior accepts it only on projectile weapons.")
         .field("radius", "f32", "Blast radius in metres. Must be finite and greater than 0.")
         .field("minFraction?", "f32", "Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0.")
         .field("selfDamage?", "bool", "Whether the firing pawn can be damaged by its own blast. Defaults to true.")
@@ -455,7 +455,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. `projectile` requires the descriptor-owned `projectile` block.")
         .field("projectile?", "ProjectileDescriptor", "Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP.")
-        .field("splash?", "SplashDescriptor", "Optional radial damage applied at the resolution's impact point. It is a peer of `projectile`, not projectile travel tuning; `radius` must be finite and greater than 0.")
+        .field("splash?", "SplashDescriptor", "Optional radial damage applied at projectile impact. It is a peer of `projectile`, not projectile travel tuning, and must be omitted for hitscan weapons; `radius` must be finite and greater than 0.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")

@@ -268,7 +268,7 @@ declare module "postretro" {
     visual: ProjectileVisual;
   };
 
-  /** Radial damage applied at a weapon resolution's impact point. This is a peer of `projectile`, so a future non-projectile resolution can use the same blast tuning. */
+  /** Radial damage applied at a projectile impact point. The block is a peer of `projectile`, but current engine behavior accepts it only on projectile weapons. */
   export type SplashDescriptor = {
     /** Blast radius in metres. Must be finite and greater than 0. */
     radius: number;
@@ -471,7 +471,7 @@ declare module "postretro" {
     resolution: ResolutionMode;
     /** Required exactly when `resolution` is `projectile`; omit for hitscan. Projectile tuning is descriptor-owned and never an FGD KVP. */
     projectile?: ProjectileDescriptor;
-    /** Optional radial damage applied at the resolution's impact point. It is a peer of `projectile`, not projectile travel tuning; `radius` must be finite and greater than 0. */
+    /** Optional radial damage applied at projectile impact. It is a peer of `projectile`, not projectile travel tuning, and must be omitted for hitscan weapons; `radius` must be finite and greater than 0. */
     splash?: SplashDescriptor;
     /** Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn. */
     creditSource?: string;

@@ -917,10 +917,13 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use parry3d::math::{Isometry, Point};
+    use parry3d::shape::TriMesh;
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::{
         ComponentKind, PresentationPresenter, PresentationTemplateHandle, Transform,
     };
-    use postretro_foundation::PresentationEasing;
+    use postretro_foundation::{PresentationEasing, SplashDescriptor};
     use postretro_net::harness::{LinkConfig, PacketConditioner};
     use postretro_net::transport::NetClient;
     use postretro_net::wire::{ComponentPayload, EntityRecord, SnapshotMessage, WireTransform};
@@ -939,6 +942,46 @@ mod tests {
             jitter: 0,
             loss_probability: 0.0,
             seed,
+        }
+    }
+
+    fn damageable_at(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+        let entity = registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                entity,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: Some(Hitbox {
+                        half_extents: Vec3::splat(0.25),
+                        offset: Vec3::ZERO,
+                    }),
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .expect("test damageable accepts Health");
+        entity
+    }
+
+    fn splash_wall_at_x(x: f32) -> crate::collision::CollisionWorld {
+        crate::collision::CollisionWorld {
+            mesh: TriMesh::new(
+                vec![
+                    Point::new(x, -2.0, -2.0),
+                    Point::new(x, 2.0, -2.0),
+                    Point::new(x, 2.0, 2.0),
+                    Point::new(x, -2.0, 2.0),
+                ],
+                vec![[0, 1, 2], [0, 2, 3]],
+            ),
+            isometry: Isometry::identity(),
         }
     }
 
@@ -1301,6 +1344,167 @@ mod tests {
             )],
             "a remote observer receives the authoritative explosion over Presentation"
         );
+    }
+
+    // Regression: a connected shooter's authorized projectile lost its splash
+    // snapshot before host HIT intake and fell back to single-target damage.
+    #[test]
+    fn remote_splash_contact_resolves_host_damage_and_one_observer_burst_over_conditioned_links() {
+        let server_socket =
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind splash authority server");
+        let server_addr = server_socket
+            .local_addr()
+            .expect("read splash authority server address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 8, Duration::from_secs(1), None)
+                .expect("construct splash authority server");
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let mut predicted_owner =
+            connect_presentation_client(&mut server, server_addr, PREDICTED_OWNER_CLIENT);
+        let mut observer =
+            connect_presentation_client(&mut server, server_addr, REMOTE_OBSERVER_CLIENT);
+
+        let mut registry = EntityRegistry::new();
+        let owner = damageable_at(&mut registry, Vec3::new(-1.25, 0.0, 0.0));
+        let clear_victim = damageable_at(&mut registry, Vec3::new(0.0, 0.0, 2.25));
+        let wall_hidden = damageable_at(&mut registry, Vec3::new(2.25, 0.0, 0.0));
+        let weapon = registry.spawn(Transform::default());
+        let mut owners = MovementOwners::new();
+        owners.set(owner, PREDICTED_OWNER_CLIENT);
+        let mut allocator = NetworkIdAllocator::new();
+        let owner_network_id = allocator.stamp(owner);
+        let shot_id = crate::netcode::ShotId::from_parts(owner_network_id, 17);
+        let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
+        open_shots.record(
+            crate::netcode::AuthorizedShot {
+                shot_id,
+                pawn: owner,
+                weapon,
+                fire_tick: 9,
+                damage: 100.0,
+                range: 20.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.remote-splash".to_string(),
+                splash: Some(SplashDescriptor {
+                    radius: 4.0,
+                    min_fraction: 0.2,
+                    self_damage: true,
+                }),
+                is_projectile: true,
+                fire_origin: Vec3::new(0.0, 0.0, -1.0),
+                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+            },
+            PREDICTED_OWNER_CLIENT,
+        );
+
+        let declaration = postretro_net::wire::ClientMessage::HitDeclaration(
+            postretro_net::wire::HitDeclaration {
+                shot_id: shot_id.raw(),
+                records: vec![postretro_net::wire::HitRecord {
+                    target: crate::netcode::PROJECTILE_PRESENTATION_CONTACT_TARGET,
+                    point: Vec3::ZERO.to_array(),
+                    zone: None,
+                }],
+            },
+        );
+        let mut declaration_link = PacketConditioner::new(perfect_link(0xe16_0303));
+        declaration_link.enqueue(postretro_net::wire::encode(&declaration));
+        declaration_link.advance(16);
+        let declaration_packets = declaration_link.take_ready();
+        let [packet] = declaration_packets.as_slice() else {
+            panic!("conditioned client declaration reaches the host once");
+        };
+        let postretro_net::wire::ClientMessage::HitDeclaration(delivered) =
+            postretro_net::wire::decode(packet).expect("decode conditioned declaration")
+        else {
+            panic!("conditioned packet retains HitDeclaration");
+        };
+
+        let collision_world = splash_wall_at_x(1.0);
+        let hit_zones = HitZoneStore::new();
+        let mut health_at_impact_drain = None;
+        let result = crate::netcode::ingest_hit_declaration(
+            crate::netcode::HostHitIngestContext {
+                registry: &mut registry,
+                collision_world: &collision_world,
+                hit_zone_store: &hit_zones,
+                allocator: &allocator,
+                owners: &owners,
+                open_shots: &mut open_shots,
+            },
+            PREDICTED_OWNER_CLIENT,
+            &delivered,
+            |registry| {
+                health_at_impact_drain = Some((
+                    registry
+                        .get_component::<HealthComponent>(owner)
+                        .expect("owner remains live during impact drain")
+                        .current,
+                    registry
+                        .get_component::<HealthComponent>(clear_victim)
+                        .expect("victim remains live during impact drain")
+                        .current,
+                ));
+            },
+        );
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(result.projectile_contact, Some(Vec3::ZERO));
+        let (owner_at_drain, victim_at_drain) =
+            health_at_impact_drain.expect("one post-blast impact drain observes settled Health");
+        assert!((owner_at_drain - 20.0).abs() <= FLOAT_EPSILON);
+        assert!((victim_at_drain - 40.0).abs() <= FLOAT_EPSILON);
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(wall_hidden)
+                .expect("occluded target remains live")
+                .current,
+            100.0,
+            "static world geometry occludes remote splash"
+        );
+        let victim_health = registry
+            .get_component::<HealthComponent>(clear_victim)
+            .expect("clear victim remains live");
+        assert!(
+            (victim_health.current - 40.0).abs() <= FLOAT_EPSILON,
+            "a static-world contact damages the nearby victim through splash"
+        );
+        let [victim_credit] = victim_health.contributor_ledger.entries() else {
+            panic!("victim records exactly one splash contribution");
+        };
+        assert_eq!(victim_credit.hit_count, 1, "splash reaches the victim once");
+        assert_eq!(victim_credit.last_attacker, Some(owner));
+        assert_eq!(victim_credit.last_weapon, Some(weapon));
+        assert_eq!(victim_credit.source_id, "weapon.test.remote-splash");
+
+        route_host_world_point_presentation_spawns(&mut registry, &mut server, &owners);
+        let mut owner_link = PacketConditioner::new(perfect_link(0xe16_0304));
+        let mut observer_link = PacketConditioner::new(perfect_link(0xe16_0305));
+        assert!(
+            relay_server_presentation(
+                &mut server,
+                &mut predicted_owner,
+                PREDICTED_OWNER_CLIENT,
+                &mut owner_link,
+            )
+            .is_empty(),
+            "the predicted owner is excluded from its authoritative burst"
+        );
+        let observer_messages = relay_server_presentation(
+            &mut server,
+            &mut observer,
+            REMOTE_OBSERVER_CLIENT,
+            &mut observer_link,
+        );
+        assert_eq!(observer_messages.len(), 1);
+        let ServerPresentationPayload::Spawn { template_id, .. } = &observer_messages[0].payload
+        else {
+            panic!("remote splash uses the existing Spawn payload");
+        };
+        assert_eq!(template_id, BUILTIN_SPLASH_IMPACT_TEMPLATE_ID);
     }
 
     #[test]

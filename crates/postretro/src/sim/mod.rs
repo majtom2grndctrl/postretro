@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 mod projectile_stage;
-mod splash;
+pub(crate) mod splash;
 pub(crate) mod touch;
 
 use std::borrow::Cow;

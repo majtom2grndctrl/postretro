@@ -74,7 +74,7 @@ mod tests {
     };
     use postretro_foundation::{
         FireMode, PlacementOffset, PlacementRotation, ProjectileBodyVisual, ProjectileDescriptor,
-        ProjectileVisual, WeaponPlacementDescriptor,
+        ProjectileVisual, SplashDescriptor, WeaponPlacementDescriptor,
     };
     use postretro_net::wire::{self, ClientMessage, HitDeclaration, HitRecord, NetworkId};
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -2048,6 +2048,11 @@ mod tests {
             rotation: PlacementRotation::default(),
         };
         let muzzle_local = Vec3::new(0.15, -0.1, -0.8);
+        let splash = SplashDescriptor {
+            radius: 6.0,
+            min_fraction: 0.2,
+            self_damage: true,
+        };
         let (pawn, weapon) = {
             let mut registry = registry.borrow_mut();
             let pawn = registry.spawn(Transform {
@@ -2060,6 +2065,7 @@ mod tests {
             let weapon = registry.spawn(Transform::default());
             let mut component = projectile_weapon_component(canonical_name);
             component.muzzle_offset = Some(muzzle_local);
+            component.splash = Some(splash.clone());
             registry
                 .set_component(weapon, component)
                 .expect("remote projectile weapon attaches");
@@ -2101,6 +2107,11 @@ mod tests {
         assert!(
             authorized.shot.fire_origin.distance(local_origin) <= 1.0e-6,
             "identical remote and local muzzle inputs compose to the same origin"
+        );
+        assert_eq!(
+            authorized.shot.splash.as_ref(),
+            Some(&splash),
+            "remote FIRE freezes splash tuning for later host contact resolution"
         );
         assert!(
             presentation.origin.distance(local_origin) <= 1.0e-6,
@@ -2176,6 +2187,7 @@ mod tests {
         let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
             &mut registry.borrow_mut(),
             &CollisionWorld::new(),
+            &HitZoneStore::new(),
             &allocator,
             &owners,
             &mut open_shots,
@@ -2278,6 +2290,7 @@ mod tests {
         let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
             &mut registry.borrow_mut(),
             &CollisionWorld::new(),
+            &HitZoneStore::new(),
             &allocator,
             &owners,
             &mut open_shots,
@@ -2490,6 +2503,7 @@ mod tests {
         let (fire_accepted, hit_accepted) = ingest_hit_declaration_for_test(
             &mut host_registry.borrow_mut(),
             &CollisionWorld::new(),
+            &HitZoneStore::new(),
             &allocator,
             &owners,
             &mut open_shots,

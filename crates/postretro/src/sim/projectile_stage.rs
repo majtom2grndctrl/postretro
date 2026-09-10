@@ -7,7 +7,9 @@ use std::rc::Rc;
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::components::projectile::ProjectileComponent;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform, WorldPointPresentationSpawn,
+};
 
 use crate::collision::{CollisionWorld, cast_sphere_exact};
 use crate::scripting_systems::hit_zones::{
@@ -108,6 +110,14 @@ pub(crate) fn advance(
             }
 
             if let Some(splash) = component.splash.as_ref() {
+                // The host has already materialized its local impact burst. Keep
+                // remote observers on their own world-point route: scripted
+                // presentation intake is keyed by a presenter, while this blast
+                // must exclude the predicted projectile owner's client.
+                registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+                    world_anchor: impact.point,
+                    owner_pawn: component.owner_pawn.to_raw(),
+                });
                 crate::sim::splash::emit_splash_damage(
                     registry,
                     hit_zone_store,
@@ -829,6 +839,7 @@ mod tests {
             min_fraction: 0.0,
             self_damage: true,
         });
+        let owner_pawn = component.owner_pawn.to_raw();
         splash_registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -857,6 +868,12 @@ mod tests {
                 < 20.0,
             "a splash projectile damages radial neighbors while the direct branch does not",
         );
+        let queued = splash_registry
+            .borrow_mut()
+            .take_world_point_presentation_spawns();
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].world_anchor.is_finite());
+        assert_eq!(queued[0].owner_pawn, owner_pawn);
     }
 
     #[test]
@@ -1347,6 +1364,11 @@ mod tests {
             .clone();
         component.predicted_shot_id = Some(0);
         component.impact_light = Some(impact_light());
+        component.splash = Some(SplashDescriptor {
+            radius: 2.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        });
         registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -1390,6 +1412,13 @@ mod tests {
             impact_lights(&registry.borrow()).len(),
             1,
             "the predicted contact still produces its local presentation flash"
+        );
+        assert!(
+            registry
+                .borrow_mut()
+                .take_world_point_presentation_spawns()
+                .is_empty(),
+            "predicted projectile flight never enqueues host-only splash presentation"
         );
     }
 

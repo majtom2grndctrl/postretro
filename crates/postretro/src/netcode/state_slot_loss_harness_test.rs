@@ -36,7 +36,8 @@ use postretro_entities::{
 };
 use postretro_foundation::{
     AmmoResource, FireMode, HealthDescriptor, IrNode, ProjectileBodyVisual, ProjectileDescriptor,
-    ProjectileVisual, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
+    ProjectileVisual, ReloadStyle, ResolutionMode, SplashDescriptor, WeaponDescriptor,
+    WeaponResource,
 };
 use postretro_scripting_core::StoreIdentityLedger;
 
@@ -629,6 +630,138 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
     assert_eq!(
         h.hit_declarations_received, 0,
         "the host-side enemy impact did not require a client HitDeclaration"
+    );
+}
+
+// E16 Task 3: splash remains host-authoritative under co-op. The client owns
+// the damaged pawn but never mutates local Health during projectile prediction;
+// its UI-visible health arrives through the ordinary conditioned state-slot
+// replication path after the host resolves the splash at the chokepoint.
+#[test]
+fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replication() {
+    let direct = LinkConfig {
+        delay: 0,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0xe16_0303,
+    };
+    let mut h = StateSlotHarness::new(CLIENT_A, direct, direct);
+    let mut target_transform = *h
+        .registry
+        .get_component::<Transform>(h.owner_pawn)
+        .expect("connected pawn has a transform");
+    target_transform.position = Vec3::X;
+    h.registry
+        .set_component(h.owner_pawn, target_transform)
+        .expect("connected pawn remains live");
+    let mut target_health = h
+        .registry
+        .get_component::<HealthComponent>(h.owner_pawn)
+        .expect("connected pawn has health")
+        .clone();
+    target_health.hitbox = Some(Hitbox {
+        half_extents: Vec3::splat(0.25),
+        offset: Vec3::ZERO,
+    });
+    h.registry
+        .set_component(h.owner_pawn, target_health)
+        .expect("connected pawn accepts its host hitbox");
+
+    let enemy = h.registry.spawn(Transform::default());
+    crate::sim::spawn_projectile(
+        &mut h.registry,
+        enemy,
+        enemy,
+        ProjectileLaunch {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+            speed: 4.0,
+            radius: 0.1,
+            range: 8.0,
+            lifetime: 2.0,
+            damage: 10.0,
+            credit_source: "enemy.rocket".to_string(),
+            descriptor: ProjectileDescriptor {
+                speed: 4.0,
+                radius: 0.1,
+                lifetime_ms: 2_000.0,
+                visual: ProjectileVisual {
+                    body: ProjectileBodyVisual::Sprite {
+                        sprite: "sprites/projectiles/enemy-rocket.png".to_string(),
+                        size: 0.2,
+                        opacity: 1.0,
+                        rotation: 0.0,
+                        tint: [1.0, 0.2, 0.1],
+                        emissive: 0.0,
+                        frame_duration_ms: None,
+                    },
+                    trail: None,
+                    light: None,
+                    impact_light: None,
+                },
+            },
+            splash: Some(SplashDescriptor {
+                radius: 2.0,
+                min_fraction: 0.0,
+                self_damage: true,
+            }),
+        },
+        None,
+    )
+    .expect("host enemy splash projectile has capacity to spawn");
+
+    let registry = Rc::new(RefCell::new(std::mem::replace(
+        &mut h.registry,
+        EntityRegistry::new(),
+    )));
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut ignored_impact_effects = |_: &mut EntityRegistry| {};
+    let _ = crate::sim::advance(
+        &registry,
+        &world,
+        &hit_zones,
+        0.0,
+        1.0 / 60.0,
+        &mut ignored_impact_effects,
+    );
+    let contacts = crate::sim::advance(
+        &registry,
+        &world,
+        &hit_zones,
+        0.0,
+        1.0,
+        &mut ignored_impact_effects,
+    );
+    assert_eq!(contacts.len(), 1, "host resolves the splash impact once");
+    h.registry = Rc::into_inner(registry)
+        .expect("the host projectile stage releases its registry")
+        .into_inner();
+
+    let host_health = h
+        .registry
+        .get_component::<HealthComponent>(h.owner_pawn)
+        .expect("connected pawn remains host-owned after impact")
+        .current;
+    assert!(
+        host_health < 100.0,
+        "only the host splash path changes the connected pawn's Health"
+    );
+    assert_eq!(
+        h.registry.take_world_point_presentation_spawns().len(),
+        1,
+        "the host records one world-point explosion for remote presentation routing"
+    );
+
+    h.step();
+    assert_eq!(
+        h.client_value("player.health"),
+        Some(SlotValue::Number(host_health)),
+        "the existing owner-private Health projection converges after host splash damage"
+    );
+    assert_eq!(
+        h.hit_declarations_received, 0,
+        "host-authoritative splash needs no client-authored hit declaration"
     );
 }
 

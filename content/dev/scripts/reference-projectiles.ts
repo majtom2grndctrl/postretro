@@ -113,6 +113,15 @@ export const referenceRocketEntity = defineEntity({
           },
         },
       },
+      // A five-metre blast reaches the clustered targets in
+      // splash-damage-demo while still leaving a meaningful falloff ramp.
+      // This is a peer of `projectile`: the projectile finds the detonation
+      // point; splash applies the impact-composed radial damage there.
+      splash: {
+        radius: 5.0,
+        minFraction: 0.2,
+        selfDamage: true,
+      },
       creditSource: "player.reference-rocket:primary",
     },
     mesh: { model: ROCKET_LAUNCHER_MODEL },

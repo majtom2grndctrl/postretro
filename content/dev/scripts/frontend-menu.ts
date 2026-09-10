@@ -37,6 +37,12 @@ export const mapCatalog = defineMapCatalog([
     name: "Combat + Emissive Test",
     tags: ["combat", "emissive", "recommended"],
   },
+  {
+    id: "splash-damage-demo",
+    path: "maps/splash-damage-demo.prl",
+    name: "Rocket Splash Damage Test",
+    tags: ["combat", "test"],
+  },
 ]);
 
 function hasTag(entry: ModMapEntry, tag: string): boolean {

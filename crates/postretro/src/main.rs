@@ -3061,6 +3061,7 @@ impl ApplicationHandler for App {
                                     server,
                                     registry,
                                     collision_world,
+                                    hit_zone_store,
                                     allocator,
                                     owners,
                                     open_shots,
@@ -7713,6 +7714,7 @@ impl App {
             return false;
         };
         let scripting = &mut session.scripting;
+        let hit_zone_store = &session.hit_zone_store;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -7733,6 +7735,7 @@ impl App {
             server,
             &mut registry,
             &self.collision_world,
+            hit_zone_store,
             allocator,
             owners,
             command_queues,

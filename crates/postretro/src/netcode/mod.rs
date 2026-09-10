@@ -146,9 +146,11 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
-    Transform,
+    Transform, WorldPointPresentationSpawn,
 };
-use postretro_foundation::{NavAgentParams, PlayerMovementComponent, WeaponPlacementDescriptor};
+use postretro_foundation::{
+    NavAgentParams, PlayerMovementComponent, SplashDescriptor, WeaponPlacementDescriptor,
+};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -491,6 +493,9 @@ pub(crate) struct AuthorizedShot {
     pub(crate) range: f32,
     pub(crate) pellet_count: usize,
     pub(crate) credit_source: String,
+    /// Immutable projectile-impact tuning captured at FIRE. Host hit intake
+    /// must not reread a weapon that may have changed or despawned in flight.
+    pub(crate) splash: Option<SplashDescriptor>,
     /// Frozen at FIRE because the weapon may be switched or despawned before a
     /// later projectile declaration arrives. This authority data never crosses
     /// the wire.
@@ -1850,6 +1855,7 @@ pub(crate) fn host_handle_client_message(
 struct HostHitIngestContext<'a> {
     registry: &'a mut EntityRegistry,
     collision_world: &'a CollisionWorld,
+    hit_zone_store: &'a crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &'a NetworkIdAllocator,
     owners: &'a MovementOwners,
     open_shots: &'a mut OpenAuthorizedShots,
@@ -1867,6 +1873,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
     server: &mut NetServer,
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
@@ -1886,6 +1893,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
         server,
         registry,
         collision_world,
+        hit_zone_store,
         allocator,
         owners,
         open_shots,
@@ -1910,6 +1918,7 @@ pub(crate) fn host_ingest_ready_hit_declarations(
     server: &mut NetServer,
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     open_shots: &mut OpenAuthorizedShots,
@@ -1923,6 +1932,7 @@ pub(crate) fn host_ingest_ready_hit_declarations(
             HostHitIngestContext {
                 registry: &mut *registry,
                 collision_world,
+                hit_zone_store,
                 allocator,
                 owners,
                 open_shots: &mut *open_shots,
@@ -2069,6 +2079,41 @@ fn ingest_hit_declaration(
         None
     };
 
+    if open.shot.is_projectile
+        && let Some(splash) = open.shot.splash.as_ref()
+    {
+        let Some(point) = projectile_contact else {
+            return HitDeclarationResult {
+                fire_accepted: true,
+                hit_accepted: false,
+                projectile_contact: None,
+            };
+        };
+        context
+            .registry
+            .push_world_point_presentation_spawn(WorldPointPresentationSpawn {
+                world_anchor: point,
+                owner_pawn: open.shot.pawn.to_raw(),
+            });
+        let hit_accepted = crate::sim::splash::emit_splash_damage(
+            context.registry,
+            context.hit_zone_store,
+            context.collision_world,
+            point,
+            splash,
+            open.shot.damage,
+            open.shot.weapon,
+            open.shot.pawn,
+            open.shot.credit_source.clone(),
+            &mut on_impact,
+        );
+        return HitDeclarationResult {
+            fire_accepted: true,
+            hit_accepted,
+            projectile_contact,
+        };
+    }
+
     let mut hit_accepted = false;
     for record in declaration.records.iter().take(pellet_count) {
         let accepted = apply_valid_hit_record(
@@ -2110,6 +2155,7 @@ fn valid_projectile_contact_point(shot: &AuthorizedShot, record: &wire::HitRecor
 pub(crate) fn ingest_hit_declaration_for_test(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     open_shots: &mut OpenAuthorizedShots,
@@ -2120,6 +2166,7 @@ pub(crate) fn ingest_hit_declaration_for_test(
         HostHitIngestContext {
             registry,
             collision_world,
+            hit_zone_store,
             allocator,
             owners,
             open_shots,
@@ -3450,6 +3497,7 @@ mod tests {
             range,
             pellet_count: 1,
             credit_source: "weapon.test.net".to_string(),
+            splash: None,
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -3543,6 +3591,7 @@ mod tests {
         owners: MovementOwners,
         open_shots: OpenAuthorizedShots,
         collision_world: CollisionWorld,
+        hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
         pawn: EntityId,
         weapon: EntityId,
         target: EntityId,
@@ -3602,6 +3651,7 @@ mod tests {
                 owners,
                 open_shots,
                 collision_world,
+                hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore::new(),
                 pawn,
                 weapon,
                 target,
@@ -3634,6 +3684,7 @@ mod tests {
                 HostHitIngestContext {
                     registry: &mut self.registry,
                     collision_world: &self.collision_world,
+                    hit_zone_store: &self.hit_zone_store,
                     allocator: &self.allocator,
                     owners: &self.owners,
                     open_shots: &mut self.open_shots,
@@ -3665,6 +3716,7 @@ mod tests {
                     range: stats.range,
                     pellet_count: stats.pellet_count as usize,
                     credit_source: stats.credit_source.to_string(),
+                    splash: None,
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
@@ -4111,6 +4163,7 @@ mod tests {
             HostHitIngestContext {
                 registry: &mut fixture.registry,
                 collision_world: &fixture.collision_world,
+                hit_zone_store: &fixture.hit_zone_store,
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,
@@ -4158,6 +4211,7 @@ mod tests {
             HostHitIngestContext {
                 registry: &mut fixture.registry,
                 collision_world: &fixture.collision_world,
+                hit_zone_store: &fixture.hit_zone_store,
                 allocator: &fixture.allocator,
                 owners: &fixture.owners,
                 open_shots: &mut fixture.open_shots,

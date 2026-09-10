@@ -73,44 +73,44 @@
 }
 {
 "classname" "player_spawn"
-"origin" "96 256 24"
+"origin" "288 256 24"
 "angles" "0 0 0"
 "_tags" "player"
 }
-// Aim east at the direct target. The player is close enough to demonstrate
-// self damage; choose the reference rocket from the normal dev loadout.
+// Aim east at the direct target. The 64-unit (1.63 m) lane is point-blank,
+// so the blast demonstrates owner self damage with the reference rocket.
 {
 "classname" "target_dummy"
 "origin" "352 256 0"
 "angles" "0 180 0"
-"_tags" "splash_direct"
+"_tags" "dummy splash_direct"
 }
 // Clear clustered targets progress from near to far from that fixed aim point.
 {
 "classname" "target_dummy"
 "origin" "384 256 0"
 "angles" "0 180 0"
-"_tags" "splash_near"
+"_tags" "dummy splash_near"
 }
 {
 "classname" "target_dummy"
 "origin" "432 208 0"
 "angles" "0 180 0"
-"_tags" "splash_mid"
+"_tags" "dummy splash_mid"
 }
 {
 "classname" "target_dummy"
 "origin" "480 160 0"
 "angles" "0 180 0"
-"_tags" "splash_clear_far"
+"_tags" "dummy splash_clear_far"
 }
-// Same blast radius, but the worldspawn brush blocks the direct target-to-blast
-// segment. Its damage should remain unchanged.
+// Same blast radius, but the worldspawn brush blocks the splash_shadowed
+// target-to-blast segment. Its damage should remain unchanged.
 {
 "classname" "target_dummy"
 "origin" "480 352 0"
 "angles" "0 180 0"
-"_tags" "splash_shadowed"
+"_tags" "dummy splash_shadowed"
 }
 {
 "classname" "light"

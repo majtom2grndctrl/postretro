@@ -150,6 +150,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         let credit_source = effective.credit_source.to_string();
         let resolution = effective.resolution;
         let projectile = effective.projectile.cloned();
+        let splash = effective.splash.cloned();
         // Projectile fire origins deliberately read the live host component,
         // which is the host-spawned source for authored muzzle content.
         let muzzle_offset = weapon_component.muzzle_offset;
@@ -265,6 +266,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 range,
                 pellet_count,
                 credit_source,
+                splash,
                 is_projectile,
                 fire_origin,
                 timeout_budget_ticks,

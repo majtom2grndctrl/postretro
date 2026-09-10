@@ -272,6 +272,7 @@ defineEntity({
 | `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
 | `resolution` | `"hitscan" \| "projectile"` | Shot resolution mode. A projectile requires the descriptor-owned `projectile` block below. |
 | `projectile` | `ProjectileDescriptor` (conditional) | Required exactly when `resolution` is `"projectile"`; omit it for hitscan. This is descriptor-owned tuning, never an FGD KVP. |
+| `splash` | `{ radius, minFraction?, selfDamage? }` (optional) | Radial damage at a projectile's impact point. It is currently valid only with `resolution: "projectile"`; hitscan weapons must omit it. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
 | `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. With `"magazine"`, `reloadMs` times the complete reload; with `"perShell"`, it times one shell step. Omit the block for unlimited fire. |
 
@@ -329,8 +330,40 @@ weapon: {
       },
     },
   },
+  splash: {
+    radius: 6,          // metres; finite and > 0
+    minFraction: 0.2,   // edge damage fraction; default 0, range 0..=1
+    selfDamage: true,   // owner is eligible for the blast; default true
+  },
 }
 ```
+
+### Projectile splash damage
+
+`splash` is a peer of `projectile`, not projectile travel tuning. The current
+engine applies it only when a projectile contacts static world geometry or a
+damageable entity. A hitscan descriptor containing `splash` is rejected at
+load; omit the block to keep ordinary no-splash hitscan behavior.
+
+The projectile contact point is the blast center. Every live damageable volume
+intersecting `radius` is considered once. Damage uses the weapon's effective
+`damage` at the center and falls off linearly to
+`damage * minFraction` at the radius edge, measured to the nearest point on each
+target's damageable volume. Static world geometry blocks the blast; movers and
+other entities do not.
+
+| Splash field | Type | Default | Validation and behavior |
+|--------------|------|---------|-------------------------|
+| `radius` | `number` | required | Blast radius in metres. Must be finite and `> 0.0`. |
+| `minFraction` | `number` | `0` | Fraction of base damage at the radius edge. Must be finite and in `0..=1`. |
+| `selfDamage` | `boolean` | `true` | When true, the firing pawn can take the same falloff-scaled blast damage. When false, only that owner is excluded. |
+
+A splash projectile does not also apply its ordinary single-target impact
+damage: the struck entity receives splash once, which prevents double-counting.
+A projectile without `splash` keeps direct-impact behavior. Splash damage is
+host-authoritative in connected play; Health changes replicate normally, while
+the firing client keeps its predicted burst and remote observers receive one
+impact burst over the presentation channel.
 
 `visual.body` is a required discriminated union. Use either a sprite body,
 `{ kind: "sprite", sprite: "projectiles/plasma_blue_orb.png" }`, or a rigid

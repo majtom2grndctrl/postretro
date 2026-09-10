@@ -43,10 +43,10 @@ pub struct ProjectileDescriptor {
     pub visual: ProjectileVisual,
 }
 
-/// Descriptor-owned radial damage tuning composed onto a weapon impact.
+/// Descriptor-owned radial damage tuning composed onto a projectile impact.
 ///
-/// This is deliberately a peer of [`ProjectileDescriptor`]: any resolution
-/// that locates an impact point can use the same radial effect.
+/// This remains a peer of [`ProjectileDescriptor`] so future resolution modes
+/// can reuse the authoring shape without nesting blast tuning into travel data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SplashDescriptor {
@@ -376,7 +376,7 @@ pub struct WeaponDescriptor {
     /// resolution modes so existing hitscan descriptors remain unchanged.
     #[serde(default)]
     pub projectile: Option<ProjectileDescriptor>,
-    /// Optional radial damage applied at the resolution's impact point.
+    /// Optional radial damage applied at a projectile impact point.
     #[serde(default)]
     pub splash: Option<SplashDescriptor>,
     #[serde(default, rename = "creditSource")]
@@ -489,6 +489,12 @@ impl WeaponDescriptor {
                     "`components.weapon.fireRateMs` must be a finite value > 0.0, got {}",
                     self.cooldown_ms
                 ),
+            });
+        }
+        if self.splash.is_some() && self.resolution != ResolutionMode::Projectile {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`components.weapon.splash` must be omitted unless `components.weapon.resolution` is `projectile`; hitscan splash is not supported"
+                    .to_string(),
             });
         }
         match (self.resolution, self.projectile.as_ref()) {
@@ -1085,6 +1091,8 @@ mod tests {
         assert!(!authored.self_damage);
 
         let mut descriptor = weapon_descriptor(None);
+        descriptor.resolution = ResolutionMode::Projectile;
+        descriptor.projectile = Some(projectile_descriptor());
         descriptor.splash = Some(parsed.clone());
         assert!(descriptor.clone().validate().is_ok());
 
@@ -1105,6 +1113,26 @@ mod tests {
             let error = invalid.validate().expect_err("invalid splash rejects");
             assert!(error.to_string().contains(field), "{error}");
         }
+    }
+
+    #[test]
+    fn hitscan_resolution_rejects_splash_block() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.splash = Some(SplashDescriptor {
+            radius: 12.0,
+            min_fraction: 0.25,
+            self_damage: true,
+        });
+
+        let error = descriptor
+            .validate()
+            .expect_err("hitscan splash must reject at descriptor load");
+        let DescriptorError::InvalidShape { reason } = error else {
+            panic!("expected InvalidShape");
+        };
+        assert!(reason.contains("components.weapon.splash"), "{reason}");
+        assert!(reason.contains("projectile"), "{reason}");
+        assert!(reason.contains("hitscan"), "{reason}");
     }
 
     #[test]

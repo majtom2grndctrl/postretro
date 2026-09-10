@@ -7,6 +7,7 @@ use postretro_foundation::SplashDescriptor;
 use postretro_render_data::cone_frustum::Aabb;
 
 use crate::collision::CollisionWorld;
+use crate::collision::line_of_sight;
 use crate::scripting_systems::health::is_damage_target_eligible;
 use crate::scripting_systems::hit_zones::{
     HitZoneStore, damageable_volume, for_each_hittable_candidate,
@@ -24,19 +25,26 @@ pub(crate) struct SphereEntity {
     pub(crate) distance: f32,
 }
 
+// Keep this aligned with `collision::line_of_sight`'s zero-length guard. A
+// blast center inside (or effectively on) a damageable volume has no segment
+// to test, and `line_of_sight` deliberately reports such a segment as false.
+// Splash treats it as clear so direct and point-blank targets cannot
+// self-occlude.
+const ZERO_LENGTH_OCCLUSION_EPSILON: f32 = 1.0e-5;
+
 /// Return every live, non-excluded damageable entity whose broad-phase volume
 /// intersects the sphere at `center`.
 ///
-/// `occlude` deliberately belongs to the stable query contract now. Task 2
-/// supplies its static-world line-of-sight filter; Task 1 leaves candidate
-/// membership unaffected by the optional collider.
+/// When `occlude` is present, static-world geometry can remove candidates
+/// hidden from the blast center. Dynamic movers and entities do not participate
+/// because `line_of_sight` queries static world geometry only.
 pub(crate) fn entities_in_sphere(
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     center: Vec3,
     radius: f32,
     exclude: impl Fn(EntityId) -> bool,
-    _occlude: Option<&CollisionWorld>,
+    occlude: Option<&CollisionWorld>,
 ) -> Vec<SphereEntity> {
     if !center.is_finite() || !radius.is_finite() || radius <= 0.0 {
         return Vec::new();
@@ -53,6 +61,13 @@ pub(crate) fn entities_in_sphere(
         let nearest_point = closest_point_on_aabb(center, volume);
         let distance = center.distance(nearest_point);
         if distance <= radius {
+            let blocked_by_static_world = occlude.is_some_and(|world| {
+                distance > ZERO_LENGTH_OCCLUSION_EPSILON
+                    && !line_of_sight(center, nearest_point, world)
+            });
+            if blocked_by_static_world {
+                return;
+            }
             entities.push(SphereEntity {
                 entity,
                 nearest_point,
@@ -106,15 +121,12 @@ pub(crate) fn emit_splash_damage(
     credit_source: String,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) {
-    // Task 2 adds the self-damage exclusion policy. The owner remains a normal
-    // candidate in Task 1, matching the descriptor's `selfDamage: true`
-    // default while keeping this caller signature stable.
     let targets = entities_in_sphere(
         registry,
         hit_zone_store,
         center,
         splash.radius,
-        |_| false,
+        |entity| !splash.self_damage && entity == owner_pawn,
         Some(collision_world),
     );
     let attacker = registry.exists(owner_pawn).then_some(owner_pawn);
@@ -155,6 +167,8 @@ pub(crate) fn emit_splash_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parry3d::math::{Isometry, Point};
+    use parry3d::shape::TriMesh;
     use postretro_entities::Transform;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
 
@@ -181,6 +195,19 @@ mod tests {
             )
             .expect("target health attaches");
         target
+    }
+
+    fn wall_at_x(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -1.0, -1.0),
+            Point::new(x, 1.0, -1.0),
+            Point::new(x, 1.0, 1.0),
+            Point::new(x, -1.0, 1.0),
+        ];
+        CollisionWorld {
+            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
+            isometry: Isometry::identity(),
+        }
     }
 
     #[test]
@@ -272,5 +299,136 @@ mod tests {
             .expect("edge target remains live");
         assert_eq!(edge_health.current, 100.0);
         assert!(edge_health.contributor_ledger.entries().is_empty());
+    }
+
+    #[test]
+    fn splash_occlusion_spares_wall_hidden_target_but_hits_clear_target_at_equal_distance() {
+        let mut registry = EntityRegistry::new();
+        let owner = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let hidden = spawn_target(&mut registry, Vec3::new(4.0, 0.0, 0.0), Vec3::splat(0.25));
+        let clear = spawn_target(&mut registry, Vec3::new(0.0, 0.0, 4.0), Vec3::splat(0.25));
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        let zones = HitZoneStore::new();
+        let world = wall_at_x(2.0);
+        let mut ignore_impact = |_| {};
+
+        emit_splash_damage(
+            &mut registry,
+            &zones,
+            &world,
+            Vec3::ZERO,
+            &splash,
+            100.0,
+            weapon,
+            owner,
+            "weapon.splash-test".to_string(),
+            &mut ignore_impact,
+        );
+
+        let hidden_health = registry
+            .get_component::<HealthComponent>(hidden)
+            .expect("hidden target remains live");
+        let clear_health = registry
+            .get_component::<HealthComponent>(clear)
+            .expect("clear target remains live");
+        assert_eq!(hidden_health.current, 100.0, "the wall blocks splash");
+        assert!(
+            (clear_health.current - 75.0).abs() <= 1.0e-6,
+            "the clear target is at the same 3.75m nearest-point distance"
+        );
+    }
+
+    #[test]
+    fn splash_occlusion_keeps_enclosing_zero_length_target_clear() {
+        let mut registry = EntityRegistry::new();
+        let owner = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let enclosing = spawn_target(&mut registry, Vec3::ZERO, Vec3::splat(0.25));
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        let zones = HitZoneStore::new();
+        let world = wall_at_x(1.0);
+        let mut ignore_impact = |_| {};
+
+        emit_splash_damage(
+            &mut registry,
+            &zones,
+            &world,
+            Vec3::ZERO,
+            &splash,
+            100.0,
+            weapon,
+            owner,
+            "weapon.splash-test".to_string(),
+            &mut ignore_impact,
+        );
+
+        let health = registry
+            .get_component::<HealthComponent>(enclosing)
+            .expect("enclosing target remains live");
+        assert_eq!(
+            health.current, 0.0,
+            "zero-length splash is clear and full damage"
+        );
+    }
+
+    fn health_after_owner_splash(self_damage: bool) -> (f32, f32) {
+        let mut registry = EntityRegistry::new();
+        let owner = spawn_target(&mut registry, Vec3::new(2.75, 0.0, 0.0), Vec3::splat(0.25));
+        let weapon = registry.spawn(Transform::default());
+        let other = spawn_target(&mut registry, Vec3::new(0.0, 0.0, 2.75), Vec3::splat(0.25));
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage,
+        };
+        let zones = HitZoneStore::new();
+        let world = CollisionWorld::default();
+        let mut ignore_impact = |_| {};
+
+        emit_splash_damage(
+            &mut registry,
+            &zones,
+            &world,
+            Vec3::ZERO,
+            &splash,
+            100.0,
+            weapon,
+            owner,
+            "weapon.splash-test".to_string(),
+            &mut ignore_impact,
+        );
+
+        let owner_health = registry
+            .get_component::<HealthComponent>(owner)
+            .expect("owner remains live")
+            .current;
+        let other_health = registry
+            .get_component::<HealthComponent>(other)
+            .expect("other target remains live")
+            .current;
+        (owner_health, other_health)
+    }
+
+    #[test]
+    fn splash_self_damage_policy_includes_owner_only_when_enabled() {
+        let (enabled_owner, enabled_other) = health_after_owner_splash(true);
+        let (disabled_owner, disabled_other) = health_after_owner_splash(false);
+
+        assert!((enabled_owner - 50.0).abs() <= 1.0e-6);
+        assert!((enabled_other - 50.0).abs() <= 1.0e-6);
+        assert_eq!(
+            disabled_owner, 100.0,
+            "selfDamage false excludes only the owner"
+        );
+        assert!((disabled_other - 50.0).abs() <= 1.0e-6);
     }
 }

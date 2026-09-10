@@ -85,11 +85,15 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         &texture_materials,
     );
     renderer.normalize_world_uvs(&mut world);
-    let (static_lights, static_entity_shadow_lights) =
-        capture_static_lights_and_shadow_selection(&world.lights, &world.entity_shadow_lights);
+    let (static_lights, static_light_influences, static_entity_shadow_lights) =
+        capture_static_lights_and_shadow_selection(
+            &world.lights,
+            &world.light_influences,
+            &world.entity_shadow_lights,
+        );
     let geometry = LevelGeometry {
         lights: &static_lights,
-        light_influences: &[],
+        light_influences: &static_light_influences,
         entity_shadow_lights: &static_entity_shadow_lights,
         ..level_world_to_geometry(&world, &texture_materials)
     };
@@ -130,6 +134,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             &mut renderer,
             &world,
             &static_lights,
+            &static_light_influences,
             &mut registry,
             &forced_active_writes,
         )?;
@@ -282,6 +287,7 @@ fn install_capture_animated_promotion_bridge(
     renderer: &mut Renderer,
     world: &postretro_level_loader::LevelWorld,
     capture_lights: &[postretro_level_loader::MapLight],
+    capture_light_influences: &[postretro_render_data::influence::LightInfluence],
     registry: &mut EntityRegistry,
     forced_active_writes: &[(u32, [f32; 3])],
 ) -> Result<()> {
@@ -301,7 +307,7 @@ fn install_capture_animated_promotion_bridge(
     let mut bridge = LightBridge::new();
     bridge.populate_from_level_with_influences(
         capture_lights,
-        &[],
+        capture_light_influences,
         baked_descriptors,
         registry,
         (renderer.scripted_sample_byte_offset() / size_of::<f32>()) as u32,
@@ -314,17 +320,17 @@ fn install_capture_animated_promotion_bridge(
     if !update.has_dirty_data {
         bail!("capture promotion bridge did not emit its animated forward tail");
     }
-    renderer.upload_bridge_lights(update.lights_bytes);
-    renderer.upload_bridge_influences(update.influence_bytes);
-    let forward_descriptors_committed = renderer.upload_bridge_descriptors(update.descriptor_bytes);
-    if forward_descriptors_committed {
-        renderer.upload_bridge_samples(update.samples_bytes);
-        for (slot, bytes) in update.compose_descriptor_writes {
-            renderer.write_animated_compose_descriptor(*slot, bytes);
-        }
+    if !renderer.upload_light_bridge_snapshot(
+        update.lights_bytes,
+        update.influence_bytes,
+        update.descriptor_bytes,
+        update.samples_bytes,
+        update.effective_brightness,
+        update.animated_window_brightness,
+        update.compose_descriptor_writes,
+    ) {
+        bail!("capture promotion light snapshot exceeds renderer capacity");
     }
-    renderer.set_light_effective_brightness(update.effective_brightness);
-    renderer.set_animated_light_window_brightness(update.animated_window_brightness);
     Ok(())
 }
 
@@ -531,7 +537,7 @@ fn resolve_forced_animated_promotion_rows(
                     entry.insert(forced.weight);
                 }
                 std::collections::btree_map::Entry::Occupied(entry)
-                    if *entry.get() == forced.weight => {}
+                    if (*entry.get() - forced.weight).abs() <= 1.0e-6 => {}
                 std::collections::btree_map::Entry::Occupied(_) => {
                     bail!(
                         "force_promotion tag `{}` resolves to an animated-baked row with conflicting weights",
@@ -582,16 +588,28 @@ fn forced_active_animation_descriptor(
 /// output selection entry per input entry so shadowmask channels stay aligned.
 fn capture_static_lights_and_shadow_selection(
     lights: &[postretro_level_loader::MapLight],
+    influences: &[postretro_render_data::influence::LightInfluence],
     entity_shadow_lights: &[u32],
-) -> (Vec<postretro_level_loader::MapLight>, Vec<u32>) {
+) -> (
+    Vec<postretro_level_loader::MapLight>,
+    Vec<postretro_render_data::influence::LightInfluence>,
+    Vec<u32>,
+) {
     let mut global_to_static = vec![u32::MAX; lights.len()];
     let mut static_lights = Vec::with_capacity(lights.len());
+    let mut static_influences = Vec::with_capacity(lights.len());
     for (global_index, light) in lights.iter().enumerate() {
         if light.is_dynamic {
             continue;
         }
         global_to_static[global_index] = static_lights.len() as u32;
         static_lights.push(light.clone());
+        static_influences.push(influences.get(global_index).cloned().unwrap_or(
+            postretro_render_data::influence::LightInfluence {
+                center: glam::Vec3::ZERO,
+                radius: f32::MAX,
+            },
+        ));
     }
 
     let static_entity_shadow_lights = entity_shadow_lights
@@ -604,7 +622,11 @@ fn capture_static_lights_and_shadow_selection(
         })
         .collect();
 
-    (static_lights, static_entity_shadow_lights)
+    (
+        static_lights,
+        static_influences,
+        static_entity_shadow_lights,
+    )
 }
 
 fn derive_texture_materials(
@@ -980,8 +1002,13 @@ mod tests {
             test_light(false, 4.0),
         ];
 
-        let (captured, selection) =
-            capture_static_lights_and_shadow_selection(&lights, &[3, 0, 1, 99]);
+        let influences =
+            [1.0, 2.0, 3.0, 4.0].map(|radius| postretro_render_data::influence::LightInfluence {
+                center: glam::Vec3::splat(radius),
+                radius,
+            });
+        let (captured, captured_influences, selection) =
+            capture_static_lights_and_shadow_selection(&lights, &influences, &[3, 0, 1, 99]);
 
         assert_eq!(captured.len(), 2, "capture must retain two static lights");
         assert!(
@@ -990,6 +1017,14 @@ mod tests {
             "capture must retain the pre-change static-only compact order",
         );
         assert!(captured.iter().all(|light| !light.is_dynamic));
+        assert!(
+            (captured_influences[0].center - influences[1].center).length_squared() < f32::EPSILON
+                && (captured_influences[0].radius - influences[1].radius).abs() < f32::EPSILON
+                && (captured_influences[1].center - influences[3].center).length_squared()
+                    < f32::EPSILON
+                && (captured_influences[1].radius - influences[3].radius).abs() < f32::EPSILON,
+            "capture must retain influence values in static-light compact order",
+        );
         assert_eq!(
             selection,
             vec![1, u32::MAX, 0, u32::MAX],
@@ -1219,12 +1254,21 @@ mod tests {
         dynamic.animated_slot = Some(3);
         let mut animated_baked = test_light(false, 4.0);
         animated_baked.animated_slot = Some(7);
-        let (capture_lights, _) =
-            capture_static_lights_and_shadow_selection(&[dynamic, animated_baked.clone()], &[]);
+        let (capture_lights, capture_influences, _) = capture_static_lights_and_shadow_selection(
+            &[dynamic, animated_baked.clone()],
+            &[],
+            &[],
+        );
 
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
-        bridge.populate_from_level_with_influences(&capture_lights, &[], &[], &mut registry, 0);
+        bridge.populate_from_level_with_influences(
+            &capture_lights,
+            &capture_influences,
+            &[],
+            &mut registry,
+            0,
+        );
         bridge.set_animated_baked_promotion_roster(&[7]);
         let update = bridge
             .update(&mut registry, 0.0, 1.0)

@@ -3889,26 +3889,31 @@ impl ApplicationHandler for App {
                             self.script_time as f32,
                             frame_result.alpha,
                         ) {
-                            if update.has_dirty_data {
-                                renderer.upload_bridge_lights(update.lights_bytes);
-                                renderer.upload_bridge_influences(update.influence_bytes);
-                                let forward_descriptors_committed =
-                                    renderer.upload_bridge_descriptors(update.descriptor_bytes);
-                                if forward_descriptors_committed {
-                                    renderer.upload_bridge_samples(update.samples_bytes);
-                                    // Compose and forward descriptors are one
-                                    // curve-scale transaction: retaining an old
-                                    // forward descriptor must retain its paired
-                                    // compose descriptor too.
-                                    for (slot, bytes) in update.compose_descriptor_writes {
-                                        renderer.write_animated_compose_descriptor(*slot, bytes);
-                                    }
-                                }
+                            let snapshot_committed = if update.has_dirty_data {
+                                renderer.upload_light_bridge_snapshot(
+                                    update.lights_bytes,
+                                    update.influence_bytes,
+                                    update.descriptor_bytes,
+                                    update.samples_bytes,
+                                    update.effective_brightness,
+                                    update.animated_window_brightness,
+                                    update.compose_descriptor_writes,
+                                )
+                            } else {
+                                renderer
+                                    .set_light_effective_brightness(update.effective_brightness);
+                                renderer.set_animated_light_window_brightness(
+                                    update.animated_window_brightness,
+                                );
+                                true
+                            };
+                            if !snapshot_committed {
+                                // Renderer retained its prior coherent GPU and
+                                // promotion-gate state. Retry the entire bridge
+                                // transaction next frame instead of advancing
+                                // only the CPU-side dirty generation.
+                                session.light_bridge.retry_snapshot_upload();
                             }
-                            renderer.set_light_effective_brightness(update.effective_brightness);
-                            renderer.set_animated_light_window_brightness(
-                                update.animated_window_brightness,
-                            );
                         }
                     }
 

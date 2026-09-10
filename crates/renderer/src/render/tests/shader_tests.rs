@@ -77,6 +77,21 @@ fn forward_shader_color_curve_branch_reapplies_static_intensity() {
 }
 
 #[test]
+fn inactive_forward_descriptors_emit_zero_for_every_runtime_receiver() {
+    for source in [
+        include_str!("../../shaders/forward.wgsl"),
+        include_str!("../../shaders/skinned_mesh.wgsl"),
+        include_str!("../../shaders/kinematic_brush.wgsl"),
+    ] {
+        assert!(
+            source.contains("else if light_eval_scripted_descriptor_present(scripted_desc)")
+                && source.contains("effective_color = vec3<f32>(0.0);"),
+            "a present startActive:false descriptor must stay dark during sticky demotion",
+        );
+    }
+}
+
+#[test]
 fn scripted_color_curve_white_sample_keeps_static_intensity() {
     let actual = scripted_color_curve_effective_color(
         [10.0, 10.0, 10.0],

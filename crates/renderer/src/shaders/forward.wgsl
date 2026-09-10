@@ -1129,10 +1129,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let light_type = bitcast<u32>(light.position_and_type.w);
         let falloff_model = bitcast<u32>(light.color_and_falloff_model.w);
 
-        // Scripted per-light animation. `is_active == 0` is the sentinel path:
-        // effective_color and effective_aim stay as the static GpuLight values.
-        // Active descriptors override brightness, color, and (for spots) aim
-        // from Catmull-Rom curves on the shared anim_samples buffer.
+        // Scripted per-light animation. The all-zero descriptor is the
+        // no-animation sentinel; a present inactive descriptor emits zero in
+        // lockstep with compose. Active descriptors override brightness,
+        // color, and (for spots) aim from the shared Catmull-Rom samples.
         let scripted_desc = scripted_light_descriptors[i];
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
@@ -1184,6 +1184,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if light_type == 1u && scripted_desc.direction_count > 0u {
                 effective_aim = light_eval_animated_direction(scripted_desc, cycle_t, effective_aim);
             }
+        } else if light_eval_scripted_descriptor_present(scripted_desc) {
+            effective_color = vec3<f32>(0.0);
         }
 
         var L: vec3<f32>;

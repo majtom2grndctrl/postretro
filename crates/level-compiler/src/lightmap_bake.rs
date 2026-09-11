@@ -2351,6 +2351,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2775,6 +2776,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )

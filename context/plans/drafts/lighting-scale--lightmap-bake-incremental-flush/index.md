@@ -11,6 +11,21 @@ clean: dilation runs per atlas layer independently, and the irradiance encoder
 already loops per layer; leaf cohesion (all of a leaf's charts on one atlas layer)
 makes an atlas layer a self-contained bake→encode→drop partition.
 
+## Research note — premise re-validation (from sibling `lighting-scale--lightmap-bake-scaling`)
+
+The sibling scaling plan's baseline measurement
+(`context/plans/ready/lighting-scale--lightmap-bake-scaling/research.md`) re-tests this
+plan's motivating claim. The full `stress-warren-hallway-inspection` fixture baked at the
+0.04 default density did **not** exhaust RAM: it peaked ~7.8 GB and was bounded by bake
+throughput (~70 min to 93%), and neither atlas cap was hit. So "a bake that previously
+exhausted RAM on the stress fixture" (Goal, AC) is not demonstrated by the largest current
+interior fixture — peak RAM scales with total texels, so a larger map would eventually
+bind, but no shipped fixture does today. Before building, either name a fixture that
+actually OOMs at fine density, or reframe the win as the bounded-working-set invariant this
+plan delivers regardless (peak drops from `layer_count` uncompressed layers to one). The
+mechanism is unaffected; only the motivating claim needs re-grounding. Bake throughput —
+the confirmed 0.04 barrier — is a separate concern this plan does not address.
+
 ## Scope
 
 ### In scope

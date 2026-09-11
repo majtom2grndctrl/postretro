@@ -580,7 +580,7 @@
 // regions resolve in map entity order, with the last matching region winning.
 @SolidClass = lightmap_scale_region : "Per-surface lightmap density override (brush)"
 [
-    _lightmap_scale(float) : "Lightmap density multiplier (positive; 1.0 = map density, below 1.0 = coarser, above 1.0 = finer)" : "1.0"
+    _lightmap_scale(float) : "Lightmap density multiplier (finite positive; 1.0 = map density, below 1.0 = coarser, above 1.0 = finer)" : "1.0"
 ]
 
 // Invisible brush volume that preserves full SH probe density in a sensitive

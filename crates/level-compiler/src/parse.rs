@@ -3387,7 +3387,7 @@ mod tests {
 
     #[test]
     fn lightmap_scale_region_rejects_non_positive_or_non_finite_scale() {
-        for value in ["0", "-1", "NaN"] {
+        for value in ["0", "-1", "NaN", "inf"] {
             let err = parse_inline_map(&lightmap_scale_region_map(&format!(
                 "\n\"_lightmap_scale\" \"{value}\""
             )))

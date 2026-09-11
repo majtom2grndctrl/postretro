@@ -86,6 +86,26 @@ pub enum LightmapBakeError {
         density_m_per_texel: f32,
     },
     #[error(
+        "lightmap chart has an invalid resolved density: face {face_index} resolved to \
+         {density_m_per_texel} m/texel; scale regions must yield a finite positive density"
+    )]
+    InvalidChartDensity {
+        face_index: usize,
+        density_m_per_texel: f32,
+    },
+    #[error(
+        "lightmap chart dimension overflow: face {face_index} {axis} extent {extent_m} m at \
+         {density_m_per_texel} m/texel requires {texels} texels; raise `texel_density` or reduce \
+         `_lightmap_scale`"
+    )]
+    ChartDimensionOverflow {
+        face_index: usize,
+        axis: &'static str,
+        extent_m: f32,
+        density_m_per_texel: f32,
+        texels: f32,
+    },
+    #[error(
         "lightmap leaf too large: BVH leaf {leaf_index}'s {chart_count} charts can't fit a single \
          {max_dim}x{max_dim} atlas layer, and the leaf-cohesion invariant forbids splitting a leaf \
          across layers. Raise `texel_density` or split the map."
@@ -357,7 +377,7 @@ pub fn prepare_atlas(
         // placements even when no static lights exist. Vertex splitting and UV assignment are
         // skipped because the empty bake path returns a placeholder section that no atlas
         // sampling consumes.
-        let charts = plan_charts(geom, texel_density, scale_regions);
+        let charts = plan_charts(geom, texel_density, scale_regions)?;
         let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density) {
             Ok(p) => p,
             Err(_) => PackOutput {
@@ -379,7 +399,7 @@ pub fn prepare_atlas(
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(geom);
 
-    let charts = plan_charts(geom, texel_density, scale_regions);
+    let charts = plan_charts(geom, texel_density, scale_regions)?;
 
     // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
     // pre-pack loop that duplicated it is gone — one source of truth.
@@ -697,7 +717,7 @@ fn plan_charts(
     geom: &GeometryResult,
     texel_density: f32,
     scale_regions: &[MapLightmapScaleRegion],
-) -> Vec<Chart> {
+) -> Result<Vec<Chart>, LightmapBakeError> {
     let global_density = texel_density.max(1.0e-4);
     let section = &geom.geometry;
 
@@ -792,11 +812,17 @@ fn plan_charts(
         }
 
         let density = resolved_chart_density(p0, global_density, scale_regions);
+        if !density.is_finite() || density <= 0.0 {
+            return Err(LightmapBakeError::InvalidChartDensity {
+                face_index,
+                density_m_per_texel: density,
+            });
+        }
         let u_extent = (u_max - u_min).max(density);
         let v_extent = (v_max - v_min).max(density);
 
-        let width_texels = ((u_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
-        let height_texels = ((v_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
+        let width_texels = chart_texel_dimension(u_extent, density, face_index, "width")?;
+        let height_texels = chart_texel_dimension(v_extent, density, face_index, "height")?;
 
         charts.push(Chart {
             origin: p0,
@@ -810,7 +836,30 @@ fn plan_charts(
             leaf_index,
         });
     }
-    charts
+    Ok(charts)
+}
+
+/// Convert one finite chart extent to its padded texel dimension without a
+/// lossy float-to-`u32` conversion. Extremely small effective densities can
+/// make this quotient infinite even when their authored scale was finite.
+fn chart_texel_dimension(
+    extent_m: f32,
+    density_m_per_texel: f32,
+    face_index: usize,
+    axis: &'static str,
+) -> Result<u32, LightmapBakeError> {
+    let texels = (extent_m / density_m_per_texel).ceil();
+    let padded_texels = texels + 2.0 * CHART_PADDING_TEXELS as f32;
+    if !padded_texels.is_finite() || padded_texels < 1.0 || padded_texels >= u32::MAX as f32 {
+        return Err(LightmapBakeError::ChartDimensionOverflow {
+            face_index,
+            axis,
+            extent_m,
+            density_m_per_texel,
+            texels: padded_texels,
+        });
+    }
+    Ok(padded_texels.max(1.0) as u32)
 }
 
 /// Resolve one chart's density from its first face vertex. Region iteration is
@@ -2687,7 +2736,7 @@ mod tests {
     #[test]
     fn chart_planning_produces_positive_extents() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25, &[]);
+        let charts = plan_charts(&geo, 0.25, &[]).unwrap();
         assert_eq!(charts.len(), 1);
         assert!(charts[0].uv_extent[0] > 0.0);
         assert!(charts[0].uv_extent[1] > 0.0);
@@ -2703,9 +2752,9 @@ mod tests {
         // not the centroid (P9).
         let straddled_region = scale_region([-0.1, -1.0, -0.1], [0.1, 1.0, 0.1], 0.5);
         let outside = scale_region([2.0, -1.0, 2.0], [3.0, 1.0, 3.0], 0.25);
-        let baseline = plan_charts(&geo, 0.25, &[]);
-        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]);
-        let outside_only = plan_charts(&geo, 0.25, &[outside]);
+        let baseline = plan_charts(&geo, 0.25, &[]).unwrap();
+        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]).unwrap();
+        let outside_only = plan_charts(&geo, 0.25, &[outside]).unwrap();
         assert!(
             straddled[0].width_texels < baseline[0].width_texels,
             "p0 inside a coarse region must make the whole chart coarser"
@@ -2719,12 +2768,48 @@ mod tests {
             scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
             scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
         ];
-        let planned = plan_charts(&geo, 0.25, &overlapping);
+        let planned = plan_charts(&geo, 0.25, &overlapping).unwrap();
         assert!(
             planned[0].width_texels < straddled[0].width_texels,
             "the last containing region must win and apply its scale"
         );
         assert!((resolved_chart_density(Vec3::ZERO, 0.25, &overlapping) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chart_planning_rejects_nonfinite_density_from_extreme_finite_scale() {
+        let geo = unit_quad_geometry();
+        // The smallest positive finite `f32` overflows the resolved density.
+        let regions = [scale_region(
+            [-1.0, -1.0, -1.0],
+            [1.0, 1.0, 1.0],
+            f32::from_bits(1),
+        )];
+
+        let err = plan_charts(&geo, 0.25, &regions).unwrap_err();
+        assert!(matches!(
+            err,
+            LightmapBakeError::InvalidChartDensity {
+                face_index: 0,
+                density_m_per_texel,
+            } if density_m_per_texel.is_infinite()
+        ));
+    }
+
+    #[test]
+    fn chart_planning_rejects_dimension_overflow_from_extreme_finite_scale() {
+        let geo = unit_quad_geometry();
+        let regions = [scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], f32::MAX)];
+
+        let err = plan_charts(&geo, 0.25, &regions).unwrap_err();
+        assert!(matches!(
+            err,
+            LightmapBakeError::ChartDimensionOverflow {
+                face_index: 0,
+                axis: "width",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2734,8 +2819,8 @@ mod tests {
             scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
             scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
         ];
-        let first = plan_charts(&geo, 0.25, &regions);
-        let second = plan_charts(&geo, 0.25, &regions);
+        let first = plan_charts(&geo, 0.25, &regions).unwrap();
+        let second = plan_charts(&geo, 0.25, &regions).unwrap();
         let first_dims: Vec<_> = first
             .iter()
             .map(|chart| (chart.width_texels, chart.height_texels))
@@ -2824,7 +2909,7 @@ mod tests {
     #[test]
     fn pack_layers_is_deterministic() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25, &[]);
+        let charts = plan_charts(&geo, 0.25, &[]).unwrap();
         let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         assert_eq!(p1.atlas_width, p2.atlas_width);

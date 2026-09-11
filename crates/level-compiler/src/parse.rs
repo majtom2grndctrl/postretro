@@ -2386,7 +2386,7 @@ fn resolve_brush_region_bounds(
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     let mut have_any = false;
     let mut planes = Vec::new();
-    for (face_id, verts) in &face_verts {
+    for (face_id, verts) in face_verts.iter() {
         let mut face_seen_vertex = false;
         for v in verts {
             let p = quake_to_engine(shambler_to_dvec3(v)) * scale;

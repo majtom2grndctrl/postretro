@@ -958,6 +958,7 @@ where
                 uncompressed_irradiance = true;
             }
             "--direction-texel-scale" => {
+                quality_flag_supplied = true;
                 let scale_str = args.next().ok_or_else(|| {
                     anyhow::anyhow!("--direction-texel-scale requires a positive power of two")
                 })?;
@@ -2239,6 +2240,7 @@ mod tests {
             &["--sh-density-fidelity", "0.5"],
             &["--soft-shadow-samples", "8"],
             &["--sdf-voxel-size", "0.25"],
+            &["--direction-texel-scale", "4"],
             &["--release"],
             &["--no-cache"],
         ];

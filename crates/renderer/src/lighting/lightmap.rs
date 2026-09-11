@@ -107,11 +107,7 @@ pub struct LightmapResources {
     pub shadowmask_present: bool,
     /// Static dominant-direction atlas texture (Rg8Unorm for current sections,
     /// Rgba8Unorm for accepted legacy sections; octahedral in rg).
-    /// Its sole consumer — the SDF pass's static dominant-direction trace — was
-    /// removed in `sdf-per-light-shadows` Task 2 (per-light static shadows now
-    /// key on light position). The baked atlas is still uploaded; retiring it
-    /// from the bake/upload path is the follow-on once animated lights also
-    /// migrate off the baked trace (see the plan's architecture map "Defers").
+    /// Forward shading samples it for bumped-Lambert normal-map correction.
     #[allow(dead_code)]
     direction_texture: wgpu::Texture,
 }
@@ -391,10 +387,10 @@ pub(crate) fn usable_atlas_dimensions(
         .map(|s| (s.irr_width, s.irr_height))
 }
 
-/// Filter out an absent (`None`), zero-dimension, zero-layer, oversize, or
-/// too-many-layers `LightmapSection`, returning `None` so the caller falls
-/// through to the neutral placeholder. Pure dimension-vs-limit comparison —
-/// unit-testable without a real wgpu device.
+/// Filter out an absent (`None`), invalid, or device-incompatible
+/// `LightmapSection`, returning `None` so the caller falls through to the
+/// neutral placeholder. Pure dimension-vs-limit comparison — unit-testable
+/// without a real wgpu device.
 fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
@@ -402,6 +398,7 @@ fn filter_usable_section(
 ) -> Option<&LightmapSection> {
     section
         .filter(|s| s.irr_width > 0 && s.irr_height > 0)
+        .filter(|s| s.dir_width > 0 && s.dir_height > 0)
         .filter(|s| s.layer_count > 0)
         .filter(|s| {
             let fits =
@@ -412,6 +409,20 @@ fn filter_usable_section(
                          degrading to neutral placeholder for this level",
                     s.irr_width,
                     s.irr_height,
+                    max_texture_dimension_2d,
+                );
+            }
+            fits
+        })
+        .filter(|s| {
+            let fits =
+                s.dir_width <= max_texture_dimension_2d && s.dir_height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] Lightmap direction atlas {}x{} exceeds device \
+                         maxTextureDimension2D {}; degrading to neutral placeholder for this level",
+                    s.dir_width,
+                    s.dir_height,
                     max_texture_dimension_2d,
                 );
             }
@@ -748,6 +759,19 @@ mod tests {
         assert!(
             filter_usable_section(Some(&tall), 8192, 256).is_none(),
             "atlas taller than the granted limit must drop to placeholder",
+        );
+    }
+
+    /// Regression: a byte-valid direction atlas wider than the device limit
+    /// reached `upload_direction_texture` and failed wgpu validation.
+    #[test]
+    fn oversize_direction_section_filtered_out() {
+        let mut oversize_direction = fake_section(64, 64);
+        oversize_direction.dir_width = 16_384;
+
+        assert!(
+            filter_usable_section(Some(&oversize_direction), 8192, 256).is_none(),
+            "direction atlas wider than the granted limit must drop to placeholder",
         );
     }
 

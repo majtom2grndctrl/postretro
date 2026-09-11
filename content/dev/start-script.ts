@@ -26,6 +26,17 @@ import {
   crossfireRaiderEntity,
   crossfireSentinelEntity,
 } from "./scripts/faction-crossfire";
+import {
+  SENTIMENT_CABAL_FACTION,
+  SENTIMENT_DECAY,
+  SENTIMENT_RESISTANCE_FACTION,
+  SENTIMENT_TOLERANCE,
+  factionSentimentBackstab,
+  factionSentimentCabalEntity,
+  factionSentimentReactions,
+  factionSentimentResistanceEntity,
+  factionSentimentTriggerEvents,
+} from "./scripts/faction-sentiment";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import {
   hud,
@@ -85,7 +96,7 @@ export default defineMod({
   presentationTemplates: [damageNumber, damagedEnemyBar],
   presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
-  reactions: frontendReactions,
+  reactions: [...frontendReactions, ...factionSentimentReactions],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and
@@ -96,7 +107,9 @@ export default defineMod({
     enemyDeath,
     ammoOnKill,
     combatZombieLifecycle,
+    factionSentimentBackstab,
   ],
+  triggerEvents: factionSentimentTriggerEvents,
   stores: [runCounter, progression, closetStore],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
@@ -115,6 +128,8 @@ export default defineMod({
   factions: [
     defineFaction(CROSSFIRE_RAIDERS_FACTION),
     defineFaction(CROSSFIRE_SENTINELS_FACTION),
+    defineFaction(SENTIMENT_CABAL_FACTION),
+    defineFaction(SENTIMENT_RESISTANCE_FACTION),
   ],
   sentiment: [
     sentiment(CROSSFIRE_RAIDERS_FACTION, CROSSFIRE_RAIDERS_FACTION, {
@@ -132,6 +147,18 @@ export default defineMod({
     sentiment(CROSSFIRE_SENTINELS_FACTION, CROSSFIRE_SENTINELS_FACTION, {
       sentiment: 0,
       tolerance: MAX_RETALIATION_TOLERANCE,
+    }),
+    // Mutable reference pair: they begin sympathetic, but the backstab impact
+    // policy above crosses negative on one normal hit and opens crossfire.
+    sentiment(SENTIMENT_CABAL_FACTION, SENTIMENT_RESISTANCE_FACTION, {
+      sentiment: 0.25,
+      tolerance: SENTIMENT_TOLERANCE,
+      decay: SENTIMENT_DECAY,
+    }),
+    sentiment(SENTIMENT_RESISTANCE_FACTION, SENTIMENT_CABAL_FACTION, {
+      sentiment: 0.25,
+      tolerance: SENTIMENT_TOLERANCE,
+      decay: SENTIMENT_DECAY,
     }),
   ],
   entities: [
@@ -162,6 +189,11 @@ export default defineMod({
     // remains on its player target under the same incoming damage.
     crossfireRaiderEntity,
     crossfireSentinelEntity,
+    // Mutable-sentiment reference pair. Map-placeable via
+    // `faction_sentiment_cabal` / `faction_sentiment_resistance`; tag both
+    // `faction-sentiment-target` so their harm reaches the backstab policy.
+    factionSentimentCabalEntity,
+    factionSentimentResistanceEntity,
     ...referenceEntities,
   ],
 });

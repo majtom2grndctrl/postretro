@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
@@ -32,6 +32,10 @@ use crate::netcode::{
     AuthorizedShot, HostCommandQueues, MovementOwners, NetworkIdAllocator, OpenAuthorizedShots,
     PendingHitDeclarations, ShotId, host_take_ready_hit_declarations,
     ingest_hit_declaration_for_test,
+};
+use crate::scripting::state_persistence::{
+    PersistedState, collect_persisted_faction_sentiment, collect_persisted_state,
+    overlay_persisted_faction_sentiment,
 };
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::system_reactions::apply_set_sentiment;
@@ -2270,6 +2274,418 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         "same-tick AI selection observes the projectile-seeded ledger",
     );
     assert_eq!(brain.retaliation_acquired_target, Some(attacker));
+}
+
+const SENTIMENT_CABAL: &str = "sentiment.cabal";
+const SENTIMENT_RESISTANCE: &str = "sentiment.resistance";
+const SENTIMENT_TARGET_TAG: &str = "faction-sentiment-target";
+
+fn faction_sentiment_fixture_factions() -> FactionRegistry {
+    FactionRegistry::from_descriptors(vec![
+        FactionDescriptor {
+            name: SENTIMENT_CABAL.to_string(),
+        },
+        FactionDescriptor {
+            name: SENTIMENT_RESISTANCE.to_string(),
+        },
+    ])
+    .expect("fixture faction names are valid")
+    .with_sentiments([
+        FactionSentimentDescriptor {
+            from_faction: SENTIMENT_CABAL.to_string(),
+            to_faction: SENTIMENT_RESISTANCE.to_string(),
+            sentiment: 0.25,
+            tolerance: 4.0,
+            decay: Some(0.25),
+        },
+        FactionSentimentDescriptor {
+            from_faction: SENTIMENT_RESISTANCE.to_string(),
+            to_faction: SENTIMENT_CABAL.to_string(),
+            sentiment: 0.25,
+            tolerance: 4.0,
+            decay: Some(0.25),
+        },
+    ])
+    .expect("fixture relationships resolve")
+}
+
+fn sentiment_adjust_effect(from: &str, toward: &str, delta: f32) -> serde_json::Value {
+    serde_json::json!({
+        "primitive": "adjustSentiment",
+        "target": from,
+        "args": {
+            "toward": toward,
+            "delta": { "op": "const", "value": delta },
+        },
+    })
+}
+
+fn faction_sentiment_policy(policy: Vec<serde_json::Value>) -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "faction-sentiment.backstab".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some(SENTIMENT_TARGET_TAG.to_string()),
+        policy,
+    }
+}
+
+/// Test-only composition of the existing fixed-tick seam, impact-policy
+/// runtime, frame-end sentiment writer, and persistence codec. It deliberately
+/// owns no alternate simulation path: every tick goes through production
+/// `simulate_tick_with_presentation_aim`.
+struct FactionSentimentHarness {
+    ctx: ScriptCtx,
+    factions: FactionRegistry,
+    policies: ImpactPolicyRuntime,
+    progress: ProgressTracker,
+    ai: AiRuntime,
+    mover_states: MoverTickStateTable,
+    touch_system: TouchSystem,
+    world: CollisionWorld,
+    hit_zones: HitZoneStore,
+}
+
+impl FactionSentimentHarness {
+    fn new(policy: ImpactEventDescriptor) -> Self {
+        let ctx = ScriptCtx::new();
+        let factions = faction_sentiment_fixture_factions();
+        ctx.data_registry
+            .borrow_mut()
+            .replace_factions(factions.clone());
+        let mut policies = ImpactPolicyRuntime::new(ctx.clone());
+        policies.replace_global_events(vec![policy]);
+        Self {
+            ctx,
+            factions,
+            policies,
+            progress: ProgressTracker::new(),
+            ai: AiRuntime::new(),
+            mover_states: MoverTickStateTable::default(),
+            touch_system: TouchSystem::default(),
+            world: CollisionWorld::new(),
+            hit_zones: HitZoneStore::new(),
+        }
+    }
+
+    fn replace_policy(&mut self, policy: ImpactEventDescriptor) {
+        self.policies.replace_global_events(vec![policy]);
+    }
+
+    fn tick(&mut self, tick_dt: f32) -> crate::sim::TickEvents {
+        let no_edges = HashMap::new();
+        let policies = &mut self.policies;
+        crate::sim::simulate_tick_with_presentation_aim(
+            self.ctx.registry.clone(),
+            &self.world,
+            &self.hit_zones,
+            None,
+            0.0,
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut self.progress,
+            &mut self.ai,
+            &[],
+            &mut self.mover_states,
+            &[],
+            &SimCommand {
+                movement: MovementInput {
+                    wish_dir: Vec2::ZERO,
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                    use_pressed: false,
+                    drop_pressed: false,
+                },
+                fire_button: crate::weapon::FireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                reload: false,
+                firing_slot: 0,
+                select_slot: None,
+                use_pressed: false,
+                drop_pressed: false,
+            },
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            tick_dt,
+            &mut self.touch_system,
+            &[],
+            0,
+            &self.factions,
+            self.ctx.faction_sentiment.as_ref(),
+            None,
+            &no_edges,
+            &no_edges,
+            None,
+            |_, _| {},
+            |registry| policies.evaluate_pending_in_registry(registry),
+        )
+    }
+
+    fn spawn_enemy(&self, faction: f32, position: Vec3) -> EntityId {
+        let mut registry = self.ctx.registry.borrow_mut();
+        let enemy = spawn_enemy(
+            &mut registry,
+            position,
+            brain_with(tuning(), TEST_IDLE_STATE),
+            100.0,
+        );
+        set_crossfire_faction(&mut registry, enemy, faction);
+        set_crossfire_tolerance(&mut registry, enemy, 4.0);
+        enemy
+    }
+
+    fn launch_backstab_projectile(&self, attacker: EntityId) -> EntityId {
+        let mut registry = self.ctx.registry.borrow_mut();
+        let owner_weapon = registry.spawn(Transform::default());
+        let projectile = registry.spawn(Transform {
+            position: Vec3::new(1.25, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                projectile,
+                ProjectileComponent {
+                    direction: Vec3::NEG_X.to_array(),
+                    speed: 100.0,
+                    radius: 0.0,
+                    remaining_range: 10.0,
+                    remaining_lifetime: 1.0,
+                    damage: 10.0,
+                    credit_source: "test.faction-sentiment.projectile".to_string(),
+                    owner_pawn: attacker,
+                    owner_weapon,
+                    spawned: false,
+                    predicted_shot_id: None,
+                    elapsed_flight_age: 0.0,
+                    flipbook_active: false,
+                    impact_light: None,
+                    splash: None,
+                },
+            )
+            .expect("fixture projectile attaches");
+        projectile
+    }
+}
+
+/// Full consumer proof for faction sentiment: the actual projectile stage feeds
+/// the policy runtime before AI, authored reaction writes land at frame end,
+/// persistence rekeys the sparse overlay by faction name, and duplicate impact
+/// effects retain their declared FIFO order.
+#[test]
+fn faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo() {
+    const IMPACT_DT: f32 = 0.016;
+    const EPSILON: f32 = 1.0e-5;
+
+    let mut harness = FactionSentimentHarness::new(faction_sentiment_policy(vec![
+        sentiment_adjust_effect("@impact.target", "@impact.source", -0.5),
+        sentiment_adjust_effect("@impact.source", "@impact.target", -0.5),
+    ]));
+    let cabal = harness
+        .factions
+        .index_for_name(SENTIMENT_CABAL)
+        .expect("fixture cabal resolves");
+    let resistance = harness
+        .factions
+        .index_for_name(SENTIMENT_RESISTANCE)
+        .expect("fixture resistance resolves");
+    let cabal_enemy = harness.spawn_enemy(cabal, Vec3::new(10.0, 0.0, 0.0));
+    let resistance_enemy = harness.spawn_enemy(resistance, Vec3::ZERO);
+    {
+        let mut registry = harness.ctx.registry.borrow_mut();
+        registry
+            .set_tags(resistance_enemy, vec![SENTIMENT_TARGET_TAG.to_string()])
+            .expect("impact target accepts the authored policy tag");
+        let mut health = registry
+            .get_component::<HealthComponent>(resistance_enemy)
+            .expect("fixture target carries health")
+            .clone();
+        health.hitbox = Some(Hitbox {
+            half_extents: Vec3::splat(0.5),
+            offset: Vec3::ZERO,
+        });
+        registry
+            .set_component(resistance_enemy, health)
+            .expect("fixture target retains its hitbox");
+    }
+
+    let projectile = harness.launch_backstab_projectile(cabal_enemy);
+    let events = harness.tick(IMPACT_DT);
+    assert_eq!(events.local_projectile_contacts.len(), 1);
+    assert_eq!(events.local_projectile_contacts[0].projectile, projectile);
+    {
+        let overlay = harness.ctx.faction_sentiment.borrow();
+        assert!(
+            overlay
+                .get(cabal, resistance)
+                .expect("source-to-target pair diverges")
+                < 0.0,
+            "the projectile's source-chained effect makes cabal hostile on the impact tick"
+        );
+        assert!(
+            overlay
+                .get(resistance, cabal)
+                .expect("target-to-source pair diverges")
+                < 0.0,
+            "the projectile's target-chained effect makes resistance hostile on the impact tick"
+        );
+    }
+    let registry = harness.ctx.registry.borrow();
+    assert_eq!(
+        enemy_acquired_target(&registry, cabal_enemy),
+        Some(resistance_enemy),
+        "cabal reads the post-impact hostile value before this tick's AI selection",
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, resistance_enemy),
+        Some(cabal_enemy),
+        "resistance reads its reciprocal hostile value in the same AI pass",
+    );
+    assert!(
+        (registry
+            .get_component::<HealthComponent>(resistance_enemy)
+            .expect("the focused hit is non-lethal")
+            .current
+            - 90.0)
+            .abs()
+            <= EPSILON
+    );
+    drop(registry);
+
+    // No projectile or weapon fires on these distant peers. Each fixed tick's
+    // decay therefore moves the live pair strictly toward its 0.25 baseline.
+    let mut previous = harness
+        .ctx
+        .faction_sentiment
+        .borrow()
+        .get(cabal, resistance)
+        .expect("impact left a live pair");
+    for _ in 0..3 {
+        harness.tick(0.1);
+        let next = harness
+            .ctx
+            .faction_sentiment
+            .borrow()
+            .get(cabal, resistance)
+            .expect("the pair remains diverged during the short cooldown window");
+        assert!(
+            next > previous && next < 0.25,
+            "decay must be monotonic toward the sympathetic baseline: {previous} -> {next}",
+        );
+        previous = next;
+    }
+
+    // `apply_set_sentiment` is the app's frame-end system-reaction writer.
+    // It must replace, rather than add to, the cooled live value.
+    apply_set_sentiment(&harness.ctx, SENTIMENT_CABAL, SENTIMENT_RESISTANCE, -0.75)
+        .expect("the authored story beat resolves both faction names");
+    assert!(
+        (harness
+            .ctx
+            .faction_sentiment
+            .borrow()
+            .get(cabal, resistance)
+            .expect("story beat keeps the pair diverged")
+            + 0.75)
+            .abs()
+            <= EPSILON,
+        "setSentiment overrides the current decayed value",
+    );
+
+    // Simulate a level transition: content recommits its unchanged baseline,
+    // then a fresh session overlay restores the name-keyed sparse save.
+    let empty_slots = BTreeSet::new();
+    let mut saved =
+        collect_persisted_state(&harness.ctx.slot_table.borrow(), None, &empty_slots).state;
+    assert!(
+        collect_persisted_faction_sentiment(
+            &mut saved,
+            &harness.ctx.faction_sentiment.borrow(),
+            &harness.factions,
+        )
+        .is_empty()
+    );
+    let encoded = serde_json::to_vec(&saved).expect("faction save serializes");
+    let saved: PersistedState = serde_json::from_slice(&encoded).expect("faction save restores");
+    harness
+        .ctx
+        .data_registry
+        .borrow_mut()
+        .replace_factions(harness.factions.clone());
+    let mut restored = FactionSentimentState::default();
+    assert!(
+        overlay_persisted_faction_sentiment(&mut restored, &harness.factions, &saved).is_empty()
+    );
+    assert!(
+        (restored
+            .get(cabal, resistance)
+            .expect("level-change restore resolves the saved pair")
+            + 0.75)
+            .abs()
+            <= EPSILON,
+        "a diverged directional pair survives save/restore across the level change",
+    );
+
+    // Start a fresh one-frame ordering witness. The impact is in-tick and the
+    // story beat is applied only after `tick` returns, exactly where App drains
+    // system reactions. A newly spawned cabal brain proves that next tick sees
+    // the frame-end friendly override rather than the preceding hostile impact.
+    *harness.ctx.faction_sentiment.borrow_mut() = FactionSentimentState::default();
+    harness.replace_policy(faction_sentiment_policy(vec![
+        sentiment_adjust_effect("@impact.target", "@impact.source", -0.5),
+        sentiment_adjust_effect("@impact.source", "@impact.target", -0.5),
+    ]));
+    harness.launch_backstab_projectile(cabal_enemy);
+    harness.tick(IMPACT_DT);
+    assert_eq!(
+        enemy_acquired_target(&harness.ctx.registry.borrow(), cabal_enemy),
+        Some(resistance_enemy),
+        "the impact still reaches this tick's AI before the frame-end reaction",
+    );
+    apply_set_sentiment(&harness.ctx, SENTIMENT_CABAL, SENTIMENT_RESISTANCE, 0.75)
+        .expect("frame-end story reaction remains a valid authoring path");
+    let fresh_cabal = harness.spawn_enemy(cabal, Vec3::new(20.0, 0.0, 0.0));
+    harness.tick(IMPACT_DT);
+    assert_eq!(
+        enemy_acquired_target(&harness.ctx.registry.borrow(), fresh_cabal),
+        None,
+        "the next tick reads the frame-end friendly write; it cannot see that reaction on the prior impact tick",
+    );
+
+    // Two effects on the same directed pair share one actual projectile tick.
+    // The deliberately non-associative f32 witness makes their declared FIFO
+    // order observable. Pre-impact decay moves 16,777,216 down by one ULP to
+    // 16,777,215; then -16,777,216 followed by +0.5 yields -0.5. Reversing
+    // the effects rounds the +0.5 up first and instead yields 0.
+    *harness.ctx.faction_sentiment.borrow_mut() = FactionSentimentState::default();
+    harness.replace_policy(faction_sentiment_policy(vec![
+        sentiment_adjust_effect("@impact.target", "@impact.source", -16_777_216.0),
+        sentiment_adjust_effect("@impact.target", "@impact.source", 0.5),
+    ]));
+    harness.ctx.faction_sentiment.borrow_mut().set(
+        resistance,
+        cabal,
+        16_777_216.0,
+        harness.factions.sentiment(resistance, cabal),
+    );
+    harness.launch_backstab_projectile(cabal_enemy);
+    harness.tick(IMPACT_DT);
+    assert_eq!(
+        harness
+            .ctx
+            .faction_sentiment
+            .borrow()
+            .get(resistance, cabal),
+        Some(-0.5),
+        "both same-tick impact effects apply once and in their authored FIFO order",
+    );
 }
 
 // Regression: an already-ready remote HIT was drained after the whole sim,

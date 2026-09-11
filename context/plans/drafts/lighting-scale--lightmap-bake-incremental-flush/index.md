@@ -34,7 +34,8 @@ Landed dependencies: `lighting-scale--lightmap-bake-scaling` (per-surface scale 
 half-res direction encode — encode-only, so the in-memory working set this plan bounds is
 unchanged) and `lightmap-bake-throughput` (parallelized both bake paths into per-chart
 parallel maps — this plan's per-layer partition and per-light fold compose with that
-parallelism; the ordered accumulate is the only serialization point). The byte-identity and
+parallelism; the per-chart bake stays parallel, while the outer per-layer loop and the
+ordered per-light accumulate run serially). The byte-identity and
 whole-`.prl` determinism gates are the epic's shared contract.
 
 **Alternatives rejected.** Shelve until a fixture OOMs on standard hardware — rejected: the
@@ -130,14 +131,19 @@ resident at a time, an ~`N_lights`× reduction on that term, and holds the accum
 layer rather than the whole atlas. A light-outer fold keeps a whole-atlas accumulator
 resident across every light and misses that bound. Folding lights in the same per-texel
 order the monolithic bake sums them keeps the composite bit-identical, so the byte-identity
-gate holds; the ordered accumulate is the only serialization point, and each light's
-partition still bakes with the landed per-chart parallelism. Re-scope the per-light cache
+gate holds; the per-light accumulate is ordered and the outer per-layer loop serial, while
+each light's partition still bakes with the landed per-chart parallelism. Re-scope the per-light cache
 blob (which currently spans all layers) so a fold step loads only the partition it needs,
 and bump the layer cache-format version to invalidate stale blobs. Warm-path peak resident
 is therefore one light's one-layer partition plus one layer's accumulator. The win lands on
 section-cache-miss warm bakes — the lighting- or geometry-iteration case that materializes
 per-light layers; a no-edit rebuild served by the second-level section memo never
-materializes them and is unaffected.
+materializes them and is unaffected. When the filtered light set is empty (every light
+`ShadowType::Sdf`), the fold emits a single uncovered atlas layer — reproducing
+`composite_layers`'s empty-slice `layer_count == 1` fallback — rather than spanning the
+prepared `layer_count`; the outer per-layer loop spans `layer_count` only when at least one
+light folds. This keeps the reshaped warm bake byte-identical to the pre-change warm bake on
+the all-`Sdf` path (OP4).
 
 ## Sequencing
 
@@ -170,11 +176,12 @@ Concrete orderings the bake must honor. Each is testable; each names the task th
 |---|---|---|---|---|---|
 | OP1 | Cold per-layer encode + append on a multi-layer atlas | Encode each atlas layer's irradiance and direction slice and append; outer per-layer loop sequential ascending | Slices appended ascending `0..layer_count`; blob byte-identical to the whole-atlas `encode_section`, and identical across two runs | determinism / byte-identity | Task 1 |
 | OP2 | Scatter a chart on array layer L>0 into a one-layer buffer | Allocate a one-layer buffer for layer L; parallel-scatter its charts (`placement.layer == L`) | Placement rebased to layer 0; no out-of-bounds write, no assert trip; buffer equals layer L's slice of the whole-atlas bake | correctness | Task 1 |
-| OP3 | Warm fold nesting on a multi-layer, multi-light atlas | Atlas layer outer, lights inner in global order; one-layer accumulator; encode-and-drop per layer | Peak resident = one light's partition + one layer's accumulator; composite bit-identical to cold | working-set / byte-identity | Task 2 |
-| OP4 | Warm fold with zero non-Sdf lights (every light `ShadowType::Sdf`) | Light set for the fold is empty; fold runs zero iterations; composite the empty layer set | Reshaped warm output byte-identical to the pre-change warm output — the pre-existing empty-slice divergence in `composite_layers` (empty-slice fallback vs cold coverage) is reproduced, not fixed, so the warm-vs-cold gate (AC 2) is not asserted for this case | byte-identity edge | Task 2 |
+| OP3 | Warm fold nesting on a multi-layer, multi-light atlas | Atlas layer outer, lights inner in global order; one-layer accumulator; each fold step loads only that light's layer-L partition — a per-partition cache blob on a hit, or a layer-L-only bake on a miss — never the light's whole-atlas blob; encode-and-drop per layer | Peak resident = one light's one-layer partition + one layer's accumulator; composite bit-identical to cold | working-set / byte-identity | Task 2 |
+| OP4 | Warm fold with zero non-Sdf lights (every light `ShadowType::Sdf`) on a multi-layer atlas | Fold light set empty; short-circuit to the one-layer empty-slice fallback before entering the per-layer loop, rather than running the outer atlas-layer loop `0..layer_count` with the inner light loop zero times per layer | Short-circuit the empty fold light set to the pre-change warm output — one layer, uncovered, via `composite_layers(&[])`'s empty-slice fallback — before entering the per-layer loop. Without the short-circuit the reshaped fold emits `layer_count` uncovered layers while the pre-change path collapses to one, so at `layer_count > 1` warm pre-vs-post output diverges and AC 1 fails. Both warm outputs still diverge from cold coverage (cold marks every interior texel covered with an empty light set); that divergence is pre-existing, not fixed, and AC 2 stays unasserted here | byte-identity edge | Task 2 |
 | OP5 | Fold a light reaching zero texels (fully out of influence) | Light layer enumerates the full covered set with `0.0` terms; fold, then drop | Adds `0.0` (no perturbation), ORs coverage; result matches cold | byte-identity edge | Task 2 |
 | OP6 | Atlas layer with zero charts | Iterate layers `0..layer_count` | Cannot occur — the packer places at least one leaf per opened layer; each layer's full-size buffer is still allocated and encoded | invariant | Task 1 |
 | OP7 | Per-layer parallel scatter lifecycle | Parallel-scatter a layer's charts, then dilate, encode, drop | The parallel scatter joins before the drop; no chart task writes after the layer buffer is dropped | lifecycle | Task 1 |
+| OP8 | Atlas layer whose only leaf is all-degenerate charts (zero covered texels) | Iterate layers `0..layer_count`; the layer's charts are all skipped, so zero texels fold into its accumulator | Accumulator stays all-uncovered; still encode-and-append the full-size layer so the blob keeps all `layer_count` layers. A skip-encode "optimization" for a zero-coverage layer drops it from the blob and breaks both byte-identity and the section's `layer_count`. Matches cold, which encodes the all-uncovered layer unconditionally | byte-identity edge | Task 1, Task 2 |
 
 ## Acceptance criteria
 

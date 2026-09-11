@@ -907,6 +907,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let lm_output = crate::lightmap_bake::bake_lightmap(
             &mut lm_ctx,

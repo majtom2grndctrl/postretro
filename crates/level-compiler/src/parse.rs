@@ -16,7 +16,8 @@ use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode,
     LightType, MapAssembly, MapData, MapEntityRecord, MapFogVolume, MapKinematicMover,
-    MapKinematicWaypoint, MapLight, MapTriggerVolume, NavParams, TextureProjection,
+    MapKinematicWaypoint, MapLight, MapLightmapScaleRegion, MapTriggerVolume, NavParams,
+    TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{
@@ -794,6 +795,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // and `fog_tube`). Walked alongside the entity pass; brush AABBs come from
     // brush-face vertices, point-entity AABBs from origin + radius/height.
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
+    // Brush-defined scale overrides are preserved in source entity order. Chart
+    // planning uses that order to make overlapping regions last-defined-wins.
+    let mut lightmap_scale_regions: Vec<MapLightmapScaleRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
@@ -1289,6 +1293,22 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     }
                 }
             }
+            if classname == "lightmap_scale_region" {
+                if brush_ids.len() > 1 {
+                    anyhow::bail!(
+                        "lightmap_scale_region entity must own exactly one brush (got {}); \
+                         multi-brush regions would silently produce a plane intersection rather \
+                         than the union the author likely intended — split into separate regions",
+                        brush_ids.len()
+                    );
+                }
+                let props = collect_entity_properties(&geo_map, entity_id);
+                let region =
+                    resolve_lightmap_scale_region(&geo_map, &brush_ids, &props, scale, &classname)?;
+                if let Some(region) = region {
+                    lightmap_scale_regions.push(region);
+                }
+            }
             continue;
         }
 
@@ -1469,6 +1489,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,
+        lightmap_scale_regions,
         fog_pixel_scale,
         initial_gravity,
         lightmap_density,
@@ -2325,23 +2346,29 @@ fn clamp_ambient_scatter(value: f32, classname: &str) -> f32 {
     }
 }
 
-/// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
-/// parse its KVP-authored parameters. Returns `None` when the brush set
-/// produces no usable vertices (degenerate authoring). Returns `Err` when the
-/// brush hull yields zero face planes (degenerate convex hull) or more than 16
-/// (exceeds the per-volume plane budget).
-fn resolve_fog_volume(
+/// Convex brush bounds shared by compiler-only region entities. Positions and
+/// plane distances are in engine meters; plane normals are swizzled directions
+/// and therefore deliberately do not receive the map unit scale.
+struct BrushRegionBounds {
+    min: DVec3,
+    max: DVec3,
+    planes: Vec<[f32; 4]>,
+}
+
+/// Resolve one brush entity into its world-space AABB and source-hull planes.
+///
+/// The caller owns entity-specific plane budgets and KVP validation. Returning
+/// `None` for a brush with no usable vertices matches the fog-volume path and
+/// lets a malformed invisible region stay out of the static world geometry.
+fn resolve_brush_region_bounds(
     geo_map: &GeoMap,
     brush_ids: &[BrushId],
-    props: &HashMap<String, String>,
     scale: f64,
     classname: &str,
-) -> Result<Option<MapFogVolume>> {
+) -> Result<Option<BrushRegionBounds>> {
     use shambler::brush::brush_hulls;
     use shambler::face::{face_planes, face_vertices};
 
-    // Run shambler's face-vertex pipeline on the entity's brushes only — keeps
-    // the worldspawn computation undisturbed.
     let geo_planes = face_planes(&geo_map.face_planes);
     let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
         .iter()
@@ -2358,8 +2385,8 @@ fn resolve_fog_volume(
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
     let mut have_any = false;
-    let mut planes: Vec<[f32; 4]> = Vec::new();
-    for (face_id, verts) in face_verts.iter() {
+    let mut planes = Vec::new();
+    for (face_id, verts) in &face_verts {
         let mut face_seen_vertex = false;
         for v in verts {
             let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
@@ -2371,14 +2398,18 @@ fn resolve_fog_volume(
         if !face_seen_vertex {
             continue;
         }
-        let plane = match geo_planes.get(face_id) {
-            Some(p) => p,
-            None => continue,
+        let Some(plane) = geo_planes.get(face_id) else {
+            continue;
         };
-        let n = quake_to_engine(shambler_to_dvec3(plane.normal()));
-        let any_vertex = quake_to_engine(shambler_to_dvec3(&verts[0])) * scale;
-        let d = n.dot(any_vertex);
-        planes.push([n.x as f32, n.y as f32, n.z as f32, d as f32]);
+        let normal = quake_to_engine(shambler_to_dvec3(plane.normal()));
+        let point = quake_to_engine(shambler_to_dvec3(&verts[0])) * scale;
+        let distance = normal.dot(point);
+        planes.push([
+            normal.x as f32,
+            normal.y as f32,
+            normal.z as f32,
+            distance as f32,
+        ]);
     }
     if !have_any {
         log::warn!("[Compiler] {classname} has no usable brush vertices; skipping");
@@ -2386,9 +2417,30 @@ fn resolve_fog_volume(
     }
     if planes.is_empty() {
         anyhow::bail!(
-            "{classname}: brush hull yielded zero face planes — fog volume needs a non-degenerate convex hull"
+            "{classname}: brush hull yielded zero face planes — region needs a non-degenerate convex hull"
         );
     }
+
+    Ok(Some(BrushRegionBounds { min, max, planes }))
+}
+
+/// Compute a fog_volume brush entity's world-space AABB and bounding planes from its brush faces and
+/// parse its KVP-authored parameters. Returns `None` when the brush set
+/// produces no usable vertices (degenerate authoring). Returns `Err` when the
+/// brush hull yields zero face planes (degenerate convex hull) or more than 16
+/// (exceeds the per-volume plane budget).
+fn resolve_fog_volume(
+    geo_map: &GeoMap,
+    brush_ids: &[BrushId],
+    props: &HashMap<String, String>,
+    scale: f64,
+    classname: &str,
+) -> Result<Option<MapFogVolume>> {
+    let Some(BrushRegionBounds { min, max, planes }) =
+        resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)?
+    else {
+        return Ok(None);
+    };
     if planes.len() > MAX_PLANES_PER_VOLUME {
         anyhow::bail!(
             "{classname}: brush hull yielded {} face planes — exceeds the {}-plane limit; simplify the brush",
@@ -2468,6 +2520,46 @@ fn resolve_fog_volume(
         planes,
         tags,
         is_ellipsoid: false,
+    }))
+}
+
+/// Resolve a brush-defined lightmap-density override. The AABB is the explicit
+/// chart-origin membership classifier; source planes remain parsed alongside it
+/// so this compiler-only brush entity follows the region-entity contract.
+fn resolve_lightmap_scale_region(
+    geo_map: &GeoMap,
+    brush_ids: &[BrushId],
+    props: &HashMap<String, String>,
+    scale: f64,
+    classname: &str,
+) -> Result<Option<MapLightmapScaleRegion>> {
+    let Some(bounds) = resolve_brush_region_bounds(geo_map, brush_ids, scale, classname)? else {
+        return Ok(None);
+    };
+    let lightmap_scale = props
+        .get("_lightmap_scale")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<f32>().map_err(|error| {
+                anyhow::anyhow!(
+                    "{classname} `_lightmap_scale` value `{value}` is not a valid float ({error})"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(1.0);
+    if !lightmap_scale.is_finite() || lightmap_scale <= 0.0 {
+        anyhow::bail!(
+            "{classname} `_lightmap_scale` must be a finite positive float, got {lightmap_scale}"
+        );
+    }
+
+    Ok(Some(MapLightmapScaleRegion {
+        min: bounds.min.to_array().map(|value| value as f32),
+        max: bounds.max.to_array().map(|value| value as f32),
+        planes: bounds.planes,
+        scale: lightmap_scale,
     }))
 }
 
@@ -3250,6 +3342,61 @@ mod tests {
             err.to_string().contains("`dilation` must be non-negative"),
             "{err}"
         );
+    }
+
+    fn lightmap_scale_region_map(extra_kvps: &str) -> String {
+        sh_protect_volume_map(extra_kvps).replacen(
+            "\"classname\" \"sh_protect_volume\"",
+            "\"classname\" \"lightmap_scale_region\"",
+            1,
+        )
+    }
+
+    #[test]
+    fn lightmap_scale_region_parses_positive_scale_and_unscaled_plane_normals() {
+        let map = parse_inline_map(&lightmap_scale_region_map("\n\"_lightmap_scale\" \"0.5\""))
+            .expect("positive lightmap scale region must compile");
+        assert_eq!(map.lightmap_scale_regions.len(), 1);
+        let region = &map.lightmap_scale_regions[0];
+        assert!((region.scale - 0.5).abs() < 1e-6);
+        assert_eq!(
+            region.planes.len(),
+            6,
+            "box brush keeps all bounding planes"
+        );
+        for plane in &region.planes {
+            let normal = glam::Vec3::new(plane[0], plane[1], plane[2]);
+            assert!(
+                (normal.length() - 1.0).abs() < 1e-5,
+                "plane normal {normal:?} must be swizzled but not map-unit scaled"
+            );
+        }
+        assert!(
+            map.brush_volumes
+                .iter()
+                .flat_map(|brush| brush.sides.iter())
+                .all(|side| side.texture != "protect_tex"),
+            "scale-region brushes are compiler metadata, never world geometry"
+        );
+
+        let default = parse_inline_map(&lightmap_scale_region_map(""))
+            .expect("omitted scale must use the FGD default")
+            .lightmap_scale_regions;
+        assert!((default[0].scale - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lightmap_scale_region_rejects_non_positive_or_non_finite_scale() {
+        for value in ["0", "-1", "NaN"] {
+            let err = parse_inline_map(&lightmap_scale_region_map(&format!(
+                "\n\"_lightmap_scale\" \"{value}\""
+            )))
+            .expect_err("invalid scale must fail parsing");
+            assert!(
+                err.to_string().contains("_lightmap_scale"),
+                "unexpected error for {value}: {err}"
+            );
+        }
     }
 
     /// A `switch` sharing the `trigger_volume` fixture's brush, so the two can be

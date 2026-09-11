@@ -625,6 +625,11 @@ pub struct MapData {
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
     /// space (Y-up, meters). See `context/lib/build_pipeline.md`.
     pub fog_volumes: Vec<MapFogVolume>,
+    /// Per-surface lightmap-density overrides resolved from `lightmap_scale_region`
+    /// brush entities. The parser preserves entity iteration order so chart
+    /// planning can apply the documented last-containing-region precedence.
+    /// Compiler-only: the regions shape chart dimensions but emit no PRL section.
+    pub lightmap_scale_regions: Vec<MapLightmapScaleRegion>,
     /// Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest); clamped to 1..=8.
     /// Default 4 when the worldspawn entity does not author the key.
     pub fog_pixel_scale: u32,
@@ -752,6 +757,22 @@ pub struct MapFogVolume {
     /// to a float discriminant happens exactly once, in `pack.rs::encode_fog_volumes`,
     /// rather than in every resolver that produces a `MapFogVolume`.
     pub is_ellipsoid: bool,
+}
+
+/// One mapper-authored per-surface lightmap-density override. The region is
+/// represented in engine space as both an AABB (the chart-origin membership
+/// classifier) and its source brush's bounding planes, retained with the other
+/// parsed brush-region data even though chart planning currently needs the AABB.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapLightmapScaleRegion {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Convex source-brush planes in engine space. Every plane uses the
+    /// inside-when-`dot(point, normal) <= distance` convention.
+    pub planes: Vec<[f32; 4]>,
+    /// Positive multiplier applied to the global lightmap density. Values below
+    /// one make charts coarser; values above one make them finer.
+    pub scale: f32,
 }
 
 #[cfg(test)]

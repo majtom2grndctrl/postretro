@@ -21,7 +21,7 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
-use crate::map_data::{FalloffModel, LightType, MapLight};
+use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
@@ -96,6 +96,9 @@ pub struct LightmapBakeCtx<'a> {
     /// Mutable: baker writes per-vertex lightmap UVs back after atlas placement.
     pub geometry: &'a mut GeometryResult,
     pub lights: &'a StaticBakedLights<'a>,
+    /// Ordered compiler-only brush regions that override per-chart lightmap
+    /// density. Both warm and cold paths must pass the map's same ordered set.
+    pub scale_regions: &'a [MapLightmapScaleRegion],
 }
 
 /// CLI-driven configuration for the lightmap bake. Fields are included in the
@@ -291,6 +294,7 @@ pub fn prepare_atlas(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(PreparedAtlas {
@@ -307,7 +311,7 @@ pub fn prepare_atlas(
         // placements even when no static lights exist. Vertex splitting and UV assignment are
         // skipped because the empty bake path returns a placeholder section that no atlas
         // sampling consumes.
-        let charts = plan_charts(geom, texel_density);
+        let charts = plan_charts(geom, texel_density, scale_regions);
         let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density) {
             Ok(p) => p,
             Err(_) => PackOutput {
@@ -329,7 +333,7 @@ pub fn prepare_atlas(
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(geom);
 
-    let charts = plan_charts(geom, texel_density);
+    let charts = plan_charts(geom, texel_density, scale_regions);
 
     // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
     // pre-pack loop that duplicated it is gone — one source of truth.
@@ -385,7 +389,12 @@ pub fn bake_lightmap_controlled(
     }
 
     let static_lights_empty = inputs.lights.is_empty();
-    let prepared = prepare_atlas(inputs.geometry, inputs.lights, texel_density)?;
+    let prepared = prepare_atlas(
+        inputs.geometry,
+        inputs.lights,
+        texel_density,
+        inputs.scale_regions,
+    )?;
 
     // No static lights, or atlas prep produced no placements → emit a placeholder section but
     // return the planned charts/placements so downstream animated-light passes still have
@@ -634,8 +643,12 @@ pub struct Chart {
     pub leaf_index: u32,
 }
 
-fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
-    let density = texel_density.max(1.0e-4);
+fn plan_charts(
+    geom: &GeometryResult,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+) -> Vec<Chart> {
+    let global_density = texel_density.max(1.0e-4);
     let section = &geom.geometry;
 
     let mut charts = Vec::with_capacity(section.faces.len());
@@ -728,6 +741,7 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             }
         }
 
+        let density = resolved_chart_density(p0, global_density, scale_regions);
         let u_extent = (u_max - u_min).max(density);
         let v_extent = (v_max - v_min).max(density);
 
@@ -747,6 +761,29 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
         });
     }
     charts
+}
+
+/// Resolve one chart's density from its first face vertex. Region iteration is
+/// deliberately source order: later matching brush entities override earlier
+/// ones without sorting or storing raw-region identity in cache keys.
+fn resolved_chart_density(
+    origin: Vec3,
+    global_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+) -> f32 {
+    let mut density = global_density;
+    for region in scale_regions {
+        if origin.x >= region.min[0]
+            && origin.x <= region.max[0]
+            && origin.y >= region.min[1]
+            && origin.y <= region.max[1]
+            && origin.z >= region.min[2]
+            && origin.z <= region.max[2]
+        {
+            density = global_density / region.scale;
+        }
+    }
+    density
 }
 
 /// Placeholder chart for a degenerate face. Carries the face's `leaf_index` so
@@ -2154,6 +2191,40 @@ mod tests {
         }
     }
 
+    fn scale_region(min: [f32; 3], max: [f32; 3], scale: f32) -> MapLightmapScaleRegion {
+        MapLightmapScaleRegion {
+            min,
+            max,
+            planes: Vec::new(),
+            scale,
+        }
+    }
+
+    fn bake_scale_region_fixture(regions: &[MapLightmapScaleRegion]) -> Vec<u8> {
+        let mut geometry = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let mut inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut geometry,
+            lights: &static_lights,
+            scale_regions: regions,
+        };
+        bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
+            },
+        )
+        .unwrap()
+        .section
+        .to_bytes()
+    }
+
     #[test]
     fn empty_geometry_returns_placeholder() {
         let mut geo = GeometryResult {
@@ -2174,6 +2245,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2200,6 +2272,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2226,6 +2299,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2286,6 +2360,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2328,6 +2403,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2359,6 +2435,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo_static,
             lights: &static_base,
+            scale_regions: &[],
         };
         let section_static = bake_lightmap(
             &mut inputs,
@@ -2385,6 +2462,7 @@ mod tests {
             primitives: &prims_d,
             geometry: &mut geo_dyn,
             lights: &static_dyn,
+            scale_regions: &[],
         };
         let section_dyn = bake_lightmap(
             &mut inputs_d,
@@ -2415,6 +2493,7 @@ mod tests {
             primitives: &prims_a,
             geometry: &mut geo_anim,
             lights: &static_anim,
+            scale_regions: &[],
         };
         let section_anim = bake_lightmap(
             &mut inputs_a,
@@ -2441,6 +2520,7 @@ mod tests {
             primitives: &prims_b,
             geometry: &mut geo_bo,
             lights: &static_bo,
+            scale_regions: &[],
         };
         let section_bo = bake_lightmap(
             &mut inputs_b,
@@ -2461,7 +2541,7 @@ mod tests {
     #[test]
     fn chart_planning_produces_positive_extents() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25);
+        let charts = plan_charts(&geo, 0.25, &[]);
         assert_eq!(charts.len(), 1);
         assert!(charts[0].uv_extent[0] > 0.0);
         assert!(charts[0].uv_extent[1] > 0.0);
@@ -2470,9 +2550,134 @@ mod tests {
     }
 
     #[test]
+    fn scale_regions_override_chart_density_by_origin_in_definition_order() {
+        let geo = unit_quad_geometry();
+        // The unit quad's p0 is at the origin while its centroid is at
+        // (0.5, 0.0, 0.5). This thin box therefore proves membership uses p0,
+        // not the centroid (P9).
+        let straddled_region = scale_region([-0.1, -1.0, -0.1], [0.1, 1.0, 0.1], 0.5);
+        let outside = scale_region([2.0, -1.0, 2.0], [3.0, 1.0, 3.0], 0.25);
+        let baseline = plan_charts(&geo, 0.25, &[]);
+        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]);
+        let outside_only = plan_charts(&geo, 0.25, &[outside]);
+        assert!(
+            straddled[0].width_texels < baseline[0].width_texels,
+            "p0 inside a coarse region must make the whole chart coarser"
+        );
+        assert_eq!(
+            outside_only[0].width_texels, baseline[0].width_texels,
+            "a region missing p0 must leave global density unchanged"
+        );
+
+        let overlapping = [
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
+        ];
+        let planned = plan_charts(&geo, 0.25, &overlapping);
+        assert!(
+            planned[0].width_texels < straddled[0].width_texels,
+            "the last containing region must win and apply its scale"
+        );
+        assert!((resolved_chart_density(Vec3::ZERO, 0.25, &overlapping) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn overlapping_scale_regions_plan_deterministically() {
+        let geo = unit_quad_geometry();
+        let regions = [
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
+        ];
+        let first = plan_charts(&geo, 0.25, &regions);
+        let second = plan_charts(&geo, 0.25, &regions);
+        let first_dims: Vec<_> = first
+            .iter()
+            .map(|chart| (chart.width_texels, chart.height_texels))
+            .collect();
+        let second_dims: Vec<_> = second
+            .iter()
+            .map(|chart| (chart.width_texels, chart.height_texels))
+            .collect();
+        assert_eq!(
+            first_dims, second_dims,
+            "P4: source-order resolution is stable"
+        );
+        assert_eq!(
+            bake_scale_region_fixture(&regions),
+            bake_scale_region_fixture(&regions),
+            "P4: re-baking the same overlapping-region map must emit identical PRL bytes"
+        );
+    }
+
+    #[test]
+    fn warm_and_cold_atlas_preparation_share_scale_regions() {
+        let regions = [scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5)];
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+
+        let mut warm_geo = unit_quad_geometry();
+        let warm = prepare_atlas(&mut warm_geo, &static_lights, 0.25, &regions).unwrap();
+
+        let mut cold_geo = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&cold_geo).unwrap();
+        let mut cold_inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut cold_geo,
+            lights: &static_lights,
+            scale_regions: &regions,
+        };
+        let cold = bake_lightmap(
+            &mut cold_inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                uncompressed_irradiance: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(cold.atlas_width, warm.atlas_width, "P13: atlas width");
+        assert_eq!(cold.atlas_height, warm.atlas_height, "P13: atlas height");
+        assert_eq!(cold.layer_count, warm.layer_count, "P13: atlas layers");
+        let warm_layout: Vec<_> = warm
+            .charts
+            .iter()
+            .zip(&warm.placements)
+            .map(|(chart, placement)| {
+                (
+                    chart.width_texels,
+                    chart.height_texels,
+                    placement.x,
+                    placement.y,
+                    placement.layer,
+                )
+            })
+            .collect();
+        let cold_layout: Vec<_> = cold
+            .charts
+            .iter()
+            .zip(&cold.placements)
+            .map(|(chart, placement)| {
+                (
+                    chart.width_texels,
+                    chart.height_texels,
+                    placement.x,
+                    placement.y,
+                    placement.layer,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cold_layout, warm_layout,
+            "P13: warm/cold scale regions diverged"
+        );
+    }
+
+    #[test]
     fn pack_layers_is_deterministic() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25);
+        let charts = plan_charts(&geo, 0.25, &[]);
         let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         assert_eq!(p1.atlas_width, p2.atlas_width);
@@ -2708,7 +2913,7 @@ mod tests {
             .iter()
             .map(|entry| entry.light)
             .collect();
-        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
         let progress = StageProgress::with_total(prepared.placements.len());
         let control = BakeControl::new(Arc::new(Governor::new(worker_count, false)), &progress);
@@ -2812,7 +3017,7 @@ mod tests {
         let mut geometry = two_disjoint_quads_geometry();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
         assert!(
             prepared.placements.len() > 1,
             "fixture must have enough charts to park multiple parallel workers"
@@ -2895,6 +3100,7 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             let out = bake_lightmap(
                 &mut inputs,
@@ -2947,6 +3153,7 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             bake_lightmap(
                 &mut inputs,
@@ -3101,6 +3308,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let _ = bake_lightmap(
             &mut inputs,
@@ -3268,6 +3476,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -3360,6 +3569,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let result = bake_lightmap(
             &mut inputs,
@@ -3462,6 +3672,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let _ = bake_lightmap(
             &mut inputs,
@@ -4071,6 +4282,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -4122,6 +4334,7 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             bake_lightmap(
                 &mut inputs,

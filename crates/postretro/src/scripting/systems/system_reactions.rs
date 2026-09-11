@@ -1543,8 +1543,12 @@ mod tests {
         apply_set_sentiment(&ctx, "cabal", "resistance", f32::MAX)
             .expect("a finite sentiment is accepted without a numeric clamp");
 
-        apply_adjust_sentiment(&ctx, "cabal", "resistance", f32::MAX)
-            .expect("the evaluated reaction remains a safe no-op on overflow");
+        let error = apply_adjust_sentiment(&ctx, "cabal", "resistance", f32::MAX)
+            .expect_err("the frame-end writer reports its skipped overflow to the app drain");
+        assert!(
+            error.contains("sentiment value and baseline must be finite"),
+            "the finite addition overflow must surface as a rejected non-finite result: {error}"
+        );
         assert_number_approx_eq(
             ctx.faction_sentiment
                 .borrow()

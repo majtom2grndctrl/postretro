@@ -8,8 +8,8 @@ use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{
-    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
-    encode_direction_oct, f32_to_f16_bits,
+    DIRECTION_FORMAT_OCT_RG8, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode,
+    LightmapSection, encode_direction_oct, f32_to_f16_bits,
 };
 use rayon::prelude::*;
 
@@ -21,15 +21,22 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
-use crate::map_data::{FalloffModel, LightType, MapLight};
+use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion};
 
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
+/// Default per-axis reduction for the static dominant-direction atlas.
+///
+/// The irradiance atlas stays at the planned chart resolution. Direction is a
+/// lower-frequency signal, so its post-composite representation can be stored
+/// at half resolution per axis without moving chart UVs or atlas placement.
+pub const DIRECTION_TEXEL_SCALE: u32 = 2;
+
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 /// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
 /// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
-const MIN_ATLAS_DIMENSION: u32 = 64;
+pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
 /// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
@@ -79,6 +86,26 @@ pub enum LightmapBakeError {
         density_m_per_texel: f32,
     },
     #[error(
+        "lightmap chart has an invalid resolved density: face {face_index} resolved to \
+         {density_m_per_texel} m/texel; scale regions must yield a finite positive density"
+    )]
+    InvalidChartDensity {
+        face_index: usize,
+        density_m_per_texel: f32,
+    },
+    #[error(
+        "lightmap chart dimension overflow: face {face_index} {axis} extent {extent_m} m at \
+         {density_m_per_texel} m/texel requires {texels} texels; raise `texel_density` or reduce \
+         `_lightmap_scale`"
+    )]
+    ChartDimensionOverflow {
+        face_index: usize,
+        axis: &'static str,
+        extent_m: f32,
+        density_m_per_texel: f32,
+        texels: f32,
+    },
+    #[error(
         "lightmap leaf too large: BVH leaf {leaf_index}'s {chart_count} charts can't fit a single \
          {max_dim}x{max_dim} atlas layer, and the leaf-cohesion invariant forbids splitting a leaf \
          across layers. Raise `texel_density` or split the map."
@@ -96,10 +123,17 @@ pub struct LightmapBakeCtx<'a> {
     /// Mutable: baker writes per-vertex lightmap UVs back after atlas placement.
     pub geometry: &'a mut GeometryResult,
     pub lights: &'a StaticBakedLights<'a>,
+    /// Ordered compiler-only brush regions that override per-chart lightmap
+    /// density. Both warm and cold paths must pass the map's same ordered set.
+    pub scale_regions: &'a [MapLightmapScaleRegion],
 }
 
-/// CLI-driven configuration for the lightmap bake. Fields are included in the
-/// cache key so adding a field here automatically invalidates stale entries.
+/// CLI-driven configuration for the lightmap bake.
+///
+/// The cold bake consumes this directly. The warm path owns its cache keys
+/// separately, so encode-only fields must also be folded into
+/// `lightmap_layer::section_input_hash` rather than relying on this serde
+/// derivation alone.
 #[derive(serde::Serialize)]
 pub struct LightmapConfig {
     pub lightmap_density: f32,
@@ -115,6 +149,11 @@ pub struct LightmapConfig {
     /// the bool re-keys the cache; flipping it never silently serves a stale
     /// bake from the wrong format.
     pub uncompressed_irradiance: bool,
+    /// Per-axis scale for the post-composite static-direction atlas. The CLI
+    /// admits only powers of two up to [`MIN_ATLAS_DIMENSION`]; direct callers
+    /// are normalized before encoding so no zero-sized direction atlas can be
+    /// emitted.
+    pub direction_texel_scale: u32,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -217,6 +256,7 @@ impl CompositedAtlas {
         &self,
         texel_density: f32,
         uncompressed_irradiance: bool,
+        direction_texel_scale: u32,
     ) -> LightmapSection {
         let (irr_bytes, irradiance_format) = if uncompressed_irradiance {
             // RGBA16F is already flat layer-major (`w·h·8` per layer concatenated),
@@ -243,9 +283,37 @@ impl CompositedAtlas {
             }
             (blob, IRRADIANCE_FORMAT_BC6H)
         };
-        // Direction is Rgba8Unorm and already flat layer-major, so it encodes
-        // whole-buffer like the RGBA16F irradiance path.
-        let dir_bytes = encode_direction_rgba8(&self.direction, &self.coverage);
+        // Direction is a lower-frequency signal than irradiance. Reduce it only
+        // after the warm/cold byte-identity seam: both paths retain this full
+        // resolution CompositedAtlas and arrive here with identical buffers.
+        let direction_texel_scale = effective_direction_texel_scale(
+            direction_texel_scale,
+            self.atlas_width,
+            self.atlas_height,
+        );
+        let (dir_width, dir_height, dir_bytes) = if direction_texel_scale == 1 {
+            // Keep the full-resolution composited atlas intact; only the
+            // on-wire octahedral encoding changes to its two used channels.
+            (
+                self.atlas_width,
+                self.atlas_height,
+                encode_direction_rg8(&self.direction, &self.coverage),
+            )
+        } else {
+            let (direction, coverage) = reduce_direction_atlas(
+                &self.direction,
+                &self.coverage,
+                self.atlas_width,
+                self.atlas_height,
+                self.layer_count,
+                direction_texel_scale,
+            );
+            (
+                self.atlas_width / direction_texel_scale,
+                self.atlas_height / direction_texel_scale,
+                encode_direction_rg8(&direction, &coverage),
+            )
+        };
         LightmapSection {
             layer_count: self.layer_count,
             irr_width: self.atlas_width,
@@ -253,10 +321,11 @@ impl CompositedAtlas {
             irr_texel_density: texel_density,
             irradiance: irr_bytes,
             irradiance_format,
-            dir_width: self.atlas_width,
-            dir_height: self.atlas_height,
-            dir_texel_density: texel_density,
+            dir_width,
+            dir_height,
+            dir_texel_density: texel_density * direction_texel_scale as f32,
             direction: dir_bytes,
+            direction_format: DIRECTION_FORMAT_OCT_RG8,
             mode: LightmapMode::Shadowed,
         }
     }
@@ -291,6 +360,7 @@ pub fn prepare_atlas(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(PreparedAtlas {
@@ -307,7 +377,7 @@ pub fn prepare_atlas(
         // placements even when no static lights exist. Vertex splitting and UV assignment are
         // skipped because the empty bake path returns a placeholder section that no atlas
         // sampling consumes.
-        let charts = plan_charts(geom, texel_density);
+        let charts = plan_charts(geom, texel_density, scale_regions)?;
         let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density) {
             Ok(p) => p,
             Err(_) => PackOutput {
@@ -329,7 +399,7 @@ pub fn prepare_atlas(
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(geom);
 
-    let charts = plan_charts(geom, texel_density);
+    let charts = plan_charts(geom, texel_density, scale_regions)?;
 
     // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
     // pre-pack loop that duplicated it is gone — one source of truth.
@@ -385,7 +455,12 @@ pub fn bake_lightmap_controlled(
     }
 
     let static_lights_empty = inputs.lights.is_empty();
-    let prepared = prepare_atlas(inputs.geometry, inputs.lights, texel_density)?;
+    let prepared = prepare_atlas(
+        inputs.geometry,
+        inputs.lights,
+        texel_density,
+        inputs.scale_regions,
+    )?;
 
     // No static lights, or atlas prep produced no placements → emit a placeholder section but
     // return the planned charts/placements so downstream animated-light passes still have
@@ -447,7 +522,11 @@ pub fn bake_lightmap_controlled(
     // and round-trip determinism tests can run against a known-stable baseline.
     // `encode_section` is the shared section-22 encoder both this monolithic
     // path and the per-light compositor route through.
-    let section = atlas.encode_section(texel_density, config.uncompressed_irradiance);
+    let section = atlas.encode_section(
+        texel_density,
+        config.uncompressed_irradiance,
+        config.direction_texel_scale,
+    );
 
     Ok(LightmapBakeOutput {
         section,
@@ -634,8 +713,12 @@ pub struct Chart {
     pub leaf_index: u32,
 }
 
-fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
-    let density = texel_density.max(1.0e-4);
+fn plan_charts(
+    geom: &GeometryResult,
+    texel_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+) -> Result<Vec<Chart>, LightmapBakeError> {
+    let global_density = texel_density.max(1.0e-4);
     let section = &geom.geometry;
 
     let mut charts = Vec::with_capacity(section.faces.len());
@@ -728,11 +811,18 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             }
         }
 
+        let density = resolved_chart_density(p0, global_density, scale_regions);
+        if !density.is_finite() || density <= 0.0 {
+            return Err(LightmapBakeError::InvalidChartDensity {
+                face_index,
+                density_m_per_texel: density,
+            });
+        }
         let u_extent = (u_max - u_min).max(density);
         let v_extent = (v_max - v_min).max(density);
 
-        let width_texels = ((u_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
-        let height_texels = ((v_extent / density).ceil() as u32 + 2 * CHART_PADDING_TEXELS).max(1);
+        let width_texels = chart_texel_dimension(u_extent, density, face_index, "width")?;
+        let height_texels = chart_texel_dimension(v_extent, density, face_index, "height")?;
 
         charts.push(Chart {
             origin: p0,
@@ -746,7 +836,53 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             leaf_index,
         });
     }
-    charts
+    Ok(charts)
+}
+
+/// Convert one finite chart extent to its padded texel dimension without a
+/// lossy float-to-`u32` conversion. Extremely small effective densities can
+/// make this quotient infinite even when their authored scale was finite.
+fn chart_texel_dimension(
+    extent_m: f32,
+    density_m_per_texel: f32,
+    face_index: usize,
+    axis: &'static str,
+) -> Result<u32, LightmapBakeError> {
+    let texels = (extent_m / density_m_per_texel).ceil();
+    let padded_texels = texels + 2.0 * CHART_PADDING_TEXELS as f32;
+    if !padded_texels.is_finite() || padded_texels < 1.0 || padded_texels >= u32::MAX as f32 {
+        return Err(LightmapBakeError::ChartDimensionOverflow {
+            face_index,
+            axis,
+            extent_m,
+            density_m_per_texel,
+            texels: padded_texels,
+        });
+    }
+    Ok(padded_texels.max(1.0) as u32)
+}
+
+/// Resolve one chart's density from its first face vertex. Region iteration is
+/// deliberately source order: later matching brush entities override earlier
+/// ones without sorting or storing raw-region identity in cache keys.
+fn resolved_chart_density(
+    origin: Vec3,
+    global_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+) -> f32 {
+    let mut density = global_density;
+    for region in scale_regions {
+        if origin.x >= region.min[0]
+            && origin.x <= region.max[0]
+            && origin.y >= region.min[1]
+            && origin.y <= region.max[1]
+            && origin.z >= region.min[2]
+            && origin.z <= region.max[2]
+        {
+            density = global_density / region.scale;
+        }
+    }
+    density
 }
 
 /// Placeholder chart for a degenerate face. Carries the face's `leaf_index` so
@@ -2018,14 +2154,100 @@ fn encode_irradiance_rgba16f(data: &[f32]) -> Vec<u8> {
     out
 }
 
-fn encode_direction_rgba8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(direction.len() * 4);
+/// Normalize a programmatic direction scale to a supported power of two.
+///
+/// The CLI rejects malformed values. This defensive path keeps direct callers
+/// from producing a zero-sized direction atlas if they construct a
+/// `LightmapConfig` themselves.
+fn normalized_direction_texel_scale(scale: u32) -> u32 {
+    let bounded = scale.clamp(1, MIN_ATLAS_DIMENSION);
+    if bounded.is_power_of_two() {
+        bounded
+    } else {
+        bounded.next_power_of_two()
+    }
+}
+
+/// Clamp the configured scale to dimensions that this particular atlas can
+/// represent. Baked atlas axes are power-of-two and at least 64, but keeping
+/// this guard here also makes synthetic/direct callers safe.
+fn effective_direction_texel_scale(scale: u32, atlas_width: u32, atlas_height: u32) -> u32 {
+    let mut effective = normalized_direction_texel_scale(scale);
+    while effective > atlas_width
+        || effective > atlas_height
+        || atlas_width % effective != 0
+        || atlas_height % effective != 0
+    {
+        effective /= 2;
+    }
+    effective.max(1)
+}
+
+/// Reduce full-resolution dominant directions for the static direction atlas.
+///
+/// Each output layer reads only its matching input plane. Within a block the
+/// loop is fixed row-major, coverage is ORed, and covered cancelling vectors
+/// resolve to neutral up rather than normalizing zero.
+fn reduce_direction_atlas(
+    direction: &[Vec3],
+    coverage: &[bool],
+    atlas_width: u32,
+    atlas_height: u32,
+    layer_count: u32,
+    factor: u32,
+) -> (Vec<Vec3>, Vec<bool>) {
+    debug_assert!(factor.is_power_of_two());
+    debug_assert!(factor > 0);
+    debug_assert_eq!(atlas_width % factor, 0);
+    debug_assert_eq!(atlas_height % factor, 0);
+
+    let reduced_width = atlas_width / factor;
+    let reduced_height = atlas_height / factor;
+    let source_plane = atlas_width as usize * atlas_height as usize;
+    let reduced_plane = reduced_width as usize * reduced_height as usize;
+    let mut reduced_direction = Vec::with_capacity(reduced_plane * layer_count as usize);
+    let mut reduced_coverage = Vec::with_capacity(reduced_plane * layer_count as usize);
+
+    for layer in 0..layer_count as usize {
+        let layer_start = layer * source_plane;
+        for y in 0..reduced_height {
+            for x in 0..reduced_width {
+                let mut sum = Vec3::ZERO;
+                let mut covered = false;
+                for block_y in 0..factor {
+                    for block_x in 0..factor {
+                        let source_x = x * factor + block_x;
+                        let source_y = y * factor + block_y;
+                        let index = layer_start
+                            + source_y as usize * atlas_width as usize
+                            + source_x as usize;
+                        if coverage[index] {
+                            covered = true;
+                            sum += direction[index];
+                        }
+                    }
+                }
+                reduced_coverage.push(covered);
+                reduced_direction.push(if covered && sum.length_squared() > 1.0e-8 {
+                    sum.normalize()
+                } else {
+                    Vec3::Y
+                });
+            }
+        }
+    }
+
+    (reduced_direction, reduced_coverage)
+}
+
+fn encode_direction_rg8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(direction.len() * 2);
     for (i, d) in direction.iter().enumerate() {
         let bytes = if coverage[i] {
             encode_direction_oct([d.x, d.y, d.z])
         } else {
             // Neutral up-direction: stray bilinear samples return a Lambert-valid vector.
-            [128u8, 255, 128, 255]
+            [128u8, 255]
         };
         out.extend_from_slice(&bytes);
     }
@@ -2154,6 +2376,41 @@ mod tests {
         }
     }
 
+    fn scale_region(min: [f32; 3], max: [f32; 3], scale: f32) -> MapLightmapScaleRegion {
+        MapLightmapScaleRegion {
+            min,
+            max,
+            planes: Vec::new(),
+            scale,
+        }
+    }
+
+    fn bake_scale_region_fixture(regions: &[MapLightmapScaleRegion]) -> Vec<u8> {
+        let mut geometry = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let mut inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut geometry,
+            lights: &static_lights,
+            scale_regions: regions,
+        };
+        bake_lightmap(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                uncompressed_irradiance: false,
+            },
+        )
+        .unwrap()
+        .section
+        .to_bytes()
+    }
+
     #[test]
     fn empty_geometry_returns_placeholder() {
         let mut geo = GeometryResult {
@@ -2174,12 +2431,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2200,12 +2459,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2226,6 +2487,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2235,6 +2497,7 @@ mod tests {
                 // Test reads per-texel bytes assuming the 8-byte RGBA16F stride;
                 // request the uncompressed debug bypass so the byte layout stays
                 // readable without re-implementing the GPU's BC6H decode here.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -2286,6 +2549,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -2296,6 +2560,7 @@ mod tests {
                 // test reads per-texel bytes from the irradiance blob, so it
                 // requests the RGBA16F debug bypass rather than the default
                 // BC6H production layout.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -2328,12 +2593,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2359,12 +2626,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo_static,
             lights: &static_base,
+            scale_regions: &[],
         };
         let section_static = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2385,12 +2654,14 @@ mod tests {
             primitives: &prims_d,
             geometry: &mut geo_dyn,
             lights: &static_dyn,
+            scale_regions: &[],
         };
         let section_dyn = bake_lightmap(
             &mut inputs_d,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2415,12 +2686,14 @@ mod tests {
             primitives: &prims_a,
             geometry: &mut geo_anim,
             lights: &static_anim,
+            scale_regions: &[],
         };
         let section_anim = bake_lightmap(
             &mut inputs_a,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2441,12 +2714,14 @@ mod tests {
             primitives: &prims_b,
             geometry: &mut geo_bo,
             lights: &static_bo,
+            scale_regions: &[],
         };
         let section_bo = bake_lightmap(
             &mut inputs_b,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2461,7 +2736,7 @@ mod tests {
     #[test]
     fn chart_planning_produces_positive_extents() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25);
+        let charts = plan_charts(&geo, 0.25, &[]).unwrap();
         assert_eq!(charts.len(), 1);
         assert!(charts[0].uv_extent[0] > 0.0);
         assert!(charts[0].uv_extent[1] > 0.0);
@@ -2470,9 +2745,171 @@ mod tests {
     }
 
     #[test]
+    fn scale_regions_override_chart_density_by_origin_in_definition_order() {
+        let geo = unit_quad_geometry();
+        // The unit quad's p0 is at the origin while its centroid is at
+        // (0.5, 0.0, 0.5). This thin box therefore proves membership uses p0,
+        // not the centroid (P9).
+        let straddled_region = scale_region([-0.1, -1.0, -0.1], [0.1, 1.0, 0.1], 0.5);
+        let outside = scale_region([2.0, -1.0, 2.0], [3.0, 1.0, 3.0], 0.25);
+        let baseline = plan_charts(&geo, 0.25, &[]).unwrap();
+        let straddled = plan_charts(&geo, 0.25, &[straddled_region.clone()]).unwrap();
+        let outside_only = plan_charts(&geo, 0.25, &[outside]).unwrap();
+        assert!(
+            straddled[0].width_texels < baseline[0].width_texels,
+            "p0 inside a coarse region must make the whole chart coarser"
+        );
+        assert_eq!(
+            outside_only[0].width_texels, baseline[0].width_texels,
+            "a region missing p0 must leave global density unchanged"
+        );
+
+        let overlapping = [
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
+        ];
+        let planned = plan_charts(&geo, 0.25, &overlapping).unwrap();
+        assert!(
+            planned[0].width_texels < straddled[0].width_texels,
+            "the last containing region must win and apply its scale"
+        );
+        assert!((resolved_chart_density(Vec3::ZERO, 0.25, &overlapping) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chart_planning_rejects_nonfinite_density_from_extreme_finite_scale() {
+        let geo = unit_quad_geometry();
+        // The smallest positive finite `f32` overflows the resolved density.
+        let regions = [scale_region(
+            [-1.0, -1.0, -1.0],
+            [1.0, 1.0, 1.0],
+            f32::from_bits(1),
+        )];
+
+        let err = plan_charts(&geo, 0.25, &regions).unwrap_err();
+        assert!(matches!(
+            err,
+            LightmapBakeError::InvalidChartDensity {
+                face_index: 0,
+                density_m_per_texel,
+            } if density_m_per_texel.is_infinite()
+        ));
+    }
+
+    #[test]
+    fn chart_planning_rejects_dimension_overflow_from_extreme_finite_scale() {
+        let geo = unit_quad_geometry();
+        let regions = [scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], f32::MAX)];
+
+        let err = plan_charts(&geo, 0.25, &regions).unwrap_err();
+        assert!(matches!(
+            err,
+            LightmapBakeError::ChartDimensionOverflow {
+                face_index: 0,
+                axis: "width",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn overlapping_scale_regions_plan_deterministically() {
+        let geo = unit_quad_geometry();
+        let regions = [
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5),
+            scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.25),
+        ];
+        let first = plan_charts(&geo, 0.25, &regions).unwrap();
+        let second = plan_charts(&geo, 0.25, &regions).unwrap();
+        let first_dims: Vec<_> = first
+            .iter()
+            .map(|chart| (chart.width_texels, chart.height_texels))
+            .collect();
+        let second_dims: Vec<_> = second
+            .iter()
+            .map(|chart| (chart.width_texels, chart.height_texels))
+            .collect();
+        assert_eq!(
+            first_dims, second_dims,
+            "P4: source-order resolution is stable"
+        );
+        assert_eq!(
+            bake_scale_region_fixture(&regions),
+            bake_scale_region_fixture(&regions),
+            "P4: re-baking the same overlapping-region map must emit identical PRL bytes"
+        );
+    }
+
+    #[test]
+    fn warm_and_cold_atlas_preparation_share_scale_regions() {
+        let regions = [scale_region([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0], 0.5)];
+        let lights = vec![point_light_above()];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+
+        let mut warm_geo = unit_quad_geometry();
+        let warm = prepare_atlas(&mut warm_geo, &static_lights, 0.25, &regions).unwrap();
+
+        let mut cold_geo = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&cold_geo).unwrap();
+        let mut cold_inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut cold_geo,
+            lights: &static_lights,
+            scale_regions: &regions,
+        };
+        let cold = bake_lightmap(
+            &mut cold_inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                uncompressed_irradiance: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(cold.atlas_width, warm.atlas_width, "P13: atlas width");
+        assert_eq!(cold.atlas_height, warm.atlas_height, "P13: atlas height");
+        assert_eq!(cold.layer_count, warm.layer_count, "P13: atlas layers");
+        let warm_layout: Vec<_> = warm
+            .charts
+            .iter()
+            .zip(&warm.placements)
+            .map(|(chart, placement)| {
+                (
+                    chart.width_texels,
+                    chart.height_texels,
+                    placement.x,
+                    placement.y,
+                    placement.layer,
+                )
+            })
+            .collect();
+        let cold_layout: Vec<_> = cold
+            .charts
+            .iter()
+            .zip(&cold.placements)
+            .map(|(chart, placement)| {
+                (
+                    chart.width_texels,
+                    chart.height_texels,
+                    placement.x,
+                    placement.y,
+                    placement.layer,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cold_layout, warm_layout,
+            "P13: warm/cold scale regions diverged"
+        );
+    }
+
+    #[test]
     fn pack_layers_is_deterministic() {
         let geo = unit_quad_geometry();
-        let charts = plan_charts(&geo, 0.25);
+        let charts = plan_charts(&geo, 0.25, &[]).unwrap();
         let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         assert_eq!(p1.atlas_width, p2.atlas_width);
@@ -2708,7 +3145,7 @@ mod tests {
             .iter()
             .map(|entry| entry.light)
             .collect();
-        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
         let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
         let progress = StageProgress::with_total(prepared.placements.len());
         let control = BakeControl::new(Arc::new(Governor::new(worker_count, false)), &progress);
@@ -2812,7 +3249,7 @@ mod tests {
         let mut geometry = two_disjoint_quads_geometry();
         let lights = vec![point_light_above()];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25).unwrap();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
         assert!(
             prepared.placements.len() > 1,
             "fixture must have enough charts to park multiple parallel workers"
@@ -2895,12 +3332,14 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             let out = bake_lightmap(
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -2947,12 +3386,14 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             bake_lightmap(
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -3101,12 +3542,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let _ = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -3268,6 +3711,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -3276,6 +3720,7 @@ mod tests {
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 // Reads per-texel bytes — request the RGBA16F debug bypass
                 // so the 8-byte stride matches what this loop expects.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -3360,12 +3805,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let result = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         );
@@ -3462,12 +3909,14 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let _ = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -4071,6 +4520,7 @@ mod tests {
             primitives: &prims,
             geometry: &mut geo,
             lights: &static_lights,
+            scale_regions: &[],
         };
         let section = bake_lightmap(
             &mut inputs,
@@ -4080,6 +4530,7 @@ mod tests {
                 // `floor_irradiance_r` reads per-texel bytes from the
                 // irradiance blob — request the RGBA16F debug bypass so the
                 // 8-byte stride stays valid.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -4122,12 +4573,14 @@ mod tests {
                 primitives: &prims,
                 geometry: &mut geo,
                 lights: &static_lights,
+                scale_regions: &[],
             };
             bake_lightmap(
                 &mut inputs,
                 &LightmapConfig {
                     lightmap_density: 0.05,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -4141,6 +4594,113 @@ mod tests {
             a, b,
             "soft-shadow bake drifted between runs; the area-sample seed must be a fixed \
              (x, y) hash with no RNG or hash-order dependence",
+        );
+    }
+
+    #[test]
+    fn direction_scale_one_emits_rg8_bytes() {
+        let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(-1.0, 0.0, 0.0)];
+        let coverage = vec![true, true, false, true];
+        let atlas = CompositedAtlas {
+            irradiance: vec![0.0; 4 * 4],
+            direction: direction.clone(),
+            coverage: coverage.clone(),
+            atlas_width: 2,
+            atlas_height: 2,
+            layer_count: 1,
+        };
+
+        let section = atlas.encode_section(0.25, true, 1);
+        assert_eq!(section.dir_width, 2);
+        assert_eq!(section.dir_height, 2);
+        assert_eq!(section.dir_texel_density, 0.25);
+        assert_eq!(section.direction_format, DIRECTION_FORMAT_OCT_RG8);
+        assert_eq!(
+            section.direction,
+            encode_direction_rg8(&direction, &coverage),
+            "factor 1 must encode only the octahedral channels"
+        );
+
+        let coarse = atlas.encode_section(0.25, true, 2);
+        assert_eq!(coarse.irradiance, section.irradiance);
+        assert_eq!((coarse.irr_width, coarse.irr_height), (2, 2));
+        assert_eq!((coarse.dir_width, coarse.dir_height), (1, 1));
+        assert_eq!(coarse.dir_texel_density, 0.5);
+        assert_eq!(coarse.direction.len(), section.direction.len() / 4);
+
+        // The CLI rejects these values, but direct callers must still never
+        // produce a zero-sized direction descriptor.
+        let zero_scale = atlas.encode_section(0.25, true, 0);
+        assert_eq!((zero_scale.dir_width, zero_scale.dir_height), (2, 2));
+        let oversized_scale = atlas.encode_section(0.25, true, 128);
+        assert_eq!(
+            (oversized_scale.dir_width, oversized_scale.dir_height),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn direction_reduction_uses_neutral_up_for_covered_cancelling_block() {
+        let direction = vec![Vec3::X, -Vec3::X, Vec3::X, -Vec3::X];
+        let coverage = vec![true; 4];
+
+        let (reduced_direction, reduced_coverage) =
+            reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+
+        assert_eq!(reduced_coverage, vec![true]);
+        assert_eq!(
+            reduced_direction,
+            vec![Vec3::Y],
+            "covered cancelling vectors must not normalize zero"
+        );
+        assert_eq!(
+            encode_direction_rg8(&reduced_direction, &reduced_coverage),
+            encode_direction_oct(Vec3::Y.to_array()).to_vec(),
+            "the degenerate covered block must encode as neutral up deterministically"
+        );
+    }
+
+    #[test]
+    fn direction_reduction_keeps_array_layers_separate() {
+        let direction = vec![Vec3::X; 8]
+            .into_iter()
+            .chain(vec![-Vec3::X; 8])
+            .collect::<Vec<_>>();
+        let coverage = vec![true; direction.len()];
+        let (reduced_direction, reduced_coverage) =
+            reduce_direction_atlas(&direction, &coverage, 4, 2, 2, 2);
+
+        assert_eq!(reduced_coverage, vec![true; 4]);
+        assert_eq!(reduced_direction[..2], [Vec3::X; 2]);
+        assert_eq!(reduced_direction[2..], [-Vec3::X; 2]);
+
+        let atlas = CompositedAtlas {
+            irradiance: vec![0.0; direction.len() * 4],
+            direction,
+            coverage,
+            atlas_width: 4,
+            atlas_height: 2,
+            layer_count: 2,
+        };
+        let section = atlas.encode_section(0.25, true, 2);
+        assert_eq!(section.layer_count, 2);
+        assert_eq!((section.dir_width, section.dir_height), (2, 1));
+        assert_eq!(section.direction.len(), 2 * 2 * 1 * 2);
+    }
+
+    #[test]
+    fn direction_reduction_is_deterministic_in_fixed_row_major_order() {
+        let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X];
+        let coverage = vec![true; 4];
+
+        let first = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+        let second = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+        assert_eq!(first, second);
+
+        let expected = (Vec3::X + Vec3::Y + Vec3::Z - Vec3::X).normalize();
+        assert!(
+            (first.0[0] - expected).length() <= 1.0e-6,
+            "the block sum must follow the source row-major order"
         );
     }
 

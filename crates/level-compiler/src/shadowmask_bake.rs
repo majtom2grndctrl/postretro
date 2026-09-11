@@ -1745,7 +1745,7 @@ mod tests {
     ) {
         let mut geo = quad_geometry();
         let static_lights = StaticBakedLights::from_lights(lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, primitives, _) = build_bvh(&geo).unwrap();
         (geo, prepared, bvh, primitives)
     }
@@ -2999,7 +2999,7 @@ mod tests {
         light_b.origin = DVec3::new(0.75, 1.0, 0.75);
         let lights = vec![light_a, light_b];
         let static_lights = StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, 0.25).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, 0.25, &[]).unwrap();
         let (bvh, primitives, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,

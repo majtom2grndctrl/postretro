@@ -87,6 +87,31 @@ const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
 /// baseline exactly and leaves the sparse overlay.
 const SENTIMENT_DECAY_BASELINE_EPSILON: f32 = 1.0e-6;
 
+/// Return the adjacent finite `f32` in the requested numeric direction.
+///
+/// This is the MSRV-compatible equivalent of `next_up` / `next_down` for the
+/// finite values held by the live overlay. `direction_is_positive` selects the
+/// next greater representable value; zero steps to the smallest magnitude value
+/// on the matching side of zero.
+fn adjacent_finite_f32(value: f32, direction_is_positive: bool) -> f32 {
+    debug_assert!(value.is_finite());
+    if direction_is_positive {
+        if value == 0.0 {
+            f32::from_bits(1)
+        } else if value.is_sign_positive() {
+            f32::from_bits(value.to_bits() + 1)
+        } else {
+            f32::from_bits(value.to_bits() - 1)
+        }
+    } else if value == 0.0 {
+        f32::from_bits(1 | (1 << 31))
+    } else if value.is_sign_positive() {
+        f32::from_bits(value.to_bits() - 1)
+    } else {
+        f32::from_bits(value.to_bits() + 1)
+    }
+}
+
 /// Manifest faction names resolved to compact, stable entity-state indices.
 ///
 /// Indices 0 and 1 stay reserved for the player and the built-in default enemy
@@ -208,11 +233,7 @@ impl FactionSentimentState {
                 // the normal linear step remains unchanged whenever it is
                 // representable.
                 let next = if stepped == entry.current {
-                    if distance.is_sign_positive() {
-                        entry.current.next_up()
-                    } else {
-                        entry.current.next_down()
-                    }
+                    adjacent_finite_f32(entry.current, distance.is_sign_positive())
                 } else {
                     stepped
                 };
@@ -1583,7 +1604,7 @@ mod tests {
 
         assert_eq!(
             state.get(2.0, 3.0),
-            Some(1.0_f32.next_down()),
+            Some(f32::from_bits(1.0_f32.to_bits() - 1)),
             "a positive rate must not strand a far-from-baseline value when its linear step is below one ULP"
         );
     }

@@ -2,8 +2,9 @@
 
 ## Goal
 
-Bound the lightmap bake's peak resident working set to one atlas layer (cold path) and
-one light at a time (warm path), instead of scaling with the whole map. Bake peak RAM
+Bound the lightmap bake's peak resident working set to one atlas layer (cold path) and to one light's
+contribution to a single atlas layer at a time, over a one-layer accumulator (warm
+path), instead of scaling with the whole map. Bake peak RAM
 scales with total texels, so as maps combine per-surface scale regions with geometric
 detail the bake breaks down on constrained-RAM machines; this hardens prl-build against
 that breakdown. Output stays byte-for-byte identical to the current bake — an
@@ -52,10 +53,11 @@ already addressed by `lightmap-bake-throughput`, and it does not lower peak RAM.
   uncompressed `f32` composited buffers **one atlas layer at a time**, appending each
   layer's encoded irradiance/direction slice to the layer-major blob. Resident `f32`
   working set bounded to one layer rather than `layer_count` layers.
-- **Warm path (per-light incremental cache):** fold each light's contribution into
-  the composite accumulator **one light at a time**, dropping each per-light layer as
-  soon as it is added, rather than holding all `N_lights` layers resident before a
-  single composite. Resident per-light layer set bounded to one.
+- **Warm path (per-light incremental cache):** fold the per-light contributions into a
+  **one-layer** accumulator, **atlas layer outer and lights inner**, dropping each light's
+  one-layer partition as soon as it is added, rather than holding all `N_lights` layers or a
+  whole-atlas accumulator resident before a single composite. Resident set bounded to one
+  light's one-layer partition plus one layer's accumulator.
 - Re-key / re-slice the per-light layer cache blobs as needed so a single fold step
   loads only the texels it needs; bump the layer cache-format version (dev-local
   cache regenerates on next bake).
@@ -87,7 +89,12 @@ Restructure the monolithic bake so it processes one atlas layer at a time: alloc
 single-layer composited buffer sized for one layer, bake only the faces whose chart
 placement lands on that layer, dilate (already per-layer), encode that layer's
 irradiance and direction slice, append to the growing layer-major blobs, and drop the
-`f32` buffers before advancing to the next layer. This bounds the uncompressed
+`f32` buffers before advancing to the next layer. Iterate atlas layers sequentially in
+ascending index order (0..`layer_count`) and append in that order, matching
+`encode_section`'s per-layer concatenation; do not parallelize the outer per-layer loop and
+append on completion — that makes the blob order (and the `.prl`) nondeterministic and holds
+more than one layer resident, breaking both the byte-identity gate and the peak-RAM bound.
+This bounds the uncompressed
 working set to one layer instead of `layer_count`. The result must be byte-identical
 to the current whole-atlas bake: per-layer bake + per-layer dilate + per-layer encode
 + concatenation already equals the whole-atlas path because every encode stage is
@@ -96,31 +103,41 @@ layer), the irradiance BC6H encoder already emits one block blob per layer, and 
 direction path reduces and RG8-encodes each layer's plane independently
 (`reduce_direction_atlas` reads only its matching input plane, `encode_direction_rg8` is a
 per-texel map), so per-layer slicing concatenates to the identical direction blob. The
-warm path's composite accumulator carries the same whole-map `f32` cost and gets the
-same per-layer treatment. The landed per-chart parallel scatter still applies within a
-layer: leaf cohesion keeps each leaf's charts on one atlas layer, so the parallel per-chart
-bake targets the current single-layer buffer rather than the whole atlas. Keep the
-face→layer grouping deterministic (leaf order) so the bake stays reproducible.
+warm path's composite accumulator carries the same whole-map `f32` cost; bounding it to
+one atlas layer is realized jointly with Task 2's per-light fold, since the current
+composite consumes every light's layer at once and cannot go per-layer until that fold
+is nested inside the per-atlas-layer loop. The landed per-chart parallel scatter still
+applies within a layer: leaf cohesion keeps each leaf's charts on one atlas layer, so the
+parallel per-chart bake targets the current single-layer buffer rather than the whole atlas.
+The reused `scatter_chart_into_atlas` addresses its destination by the chart's global
+`ChartPlacement.layer`, so the single-layer buffer needs the placement rebased to layer 0
+(or a layer-agnostic scatter); an unrebased `placement.layer > 0` scattered into a one-layer
+buffer writes out of bounds (and trips the `placement.layer < layer_count` assert in debug).
+Keep the face→layer grouping deterministic (leaf order) so the bake stays reproducible.
 
 ### Task 2: Incremental per-light fold (warm path)
 
-Replace the warm path's "collect all `N_lights` per-light layers, then composite
-once" with an incremental fold: bake or cache-load one light's contribution, add it
-into the composite accumulator in the existing global light order, then drop that
-light's layer before loading the next. This collapses the dominant warm-path term —
-`N_lights × covered_texels × per-texel-bytes` — to a single per-light layer resident
-at a time, an ~`N_lights`× reduction on that term. Folding in the same order the
-monolithic bake sums lights per texel keeps the composite bit-identical, so the
-byte-identity gate holds. Where a per-light cache blob currently spans all layers,
-re-scope it so a fold step loads only the partition it needs (combining with Task 1's
-per-layer partitioning); bump the layer cache-format version to invalidate stale
-blobs. The composite accumulator itself is bounded by Task 1's per-layer treatment,
-so warm-path peak resident is ~one light × one layer plus one layer's accumulator. Each
-light's layer still bakes with the landed per-chart parallelism; the ordered accumulate is
-the only serialization point, and it must sum lights in the cold path's order to hold
-byte-identity. The win lands on section-cache-miss warm bakes — the lighting- or
-geometry-iteration case that materializes per-light layers; a no-edit rebuild served by the
-second-level section memo never materializes them and is unaffected.
+Replace the warm path's "collect all `N_lights` per-light layers, then composite once"
+with an incremental fold nested inside Task 1's per-atlas-layer loop, atlas layer outer and
+lights inner: for each atlas layer, zero a one-layer accumulator, then walk lights in the
+existing global order and fold each light's contribution to that layer — sliced from the
+re-scoped per-light blob on a cache hit, or baked for that layer's charts alone on a miss
+(filtered by `ChartPlacement.layer`, so a miss never materializes the light's other layers)
+— dropping each light's one-layer partition before the next; then encode-and-append that
+layer's accumulator and drop it before advancing. This collapses the dominant warm-path
+term — `N_lights × covered_texels × per-texel-bytes` — to a single per-light partition
+resident at a time, an ~`N_lights`× reduction on that term, and holds the accumulator to one
+layer rather than the whole atlas. A light-outer fold keeps a whole-atlas accumulator
+resident across every light and misses that bound. Folding lights in the same per-texel
+order the monolithic bake sums them keeps the composite bit-identical, so the byte-identity
+gate holds; the ordered accumulate is the only serialization point, and each light's
+partition still bakes with the landed per-chart parallelism. Re-scope the per-light cache
+blob (which currently spans all layers) so a fold step loads only the partition it needs,
+and bump the layer cache-format version to invalidate stale blobs. Warm-path peak resident
+is therefore one light's one-layer partition plus one layer's accumulator. The win lands on
+section-cache-miss warm bakes — the lighting- or geometry-iteration case that materializes
+per-light layers; a no-edit rebuild served by the second-level section memo never
+materializes them and is unaffected.
 
 ## Sequencing
 
@@ -133,16 +150,31 @@ slicing stays byte-identical because the reduction and encode are layer-local (T
 
 **Phase 1 (sequential):** Task 1 — establishes the per-layer partition iterator and
 the encode-and-append assembly both paths reuse.
-**Phase 2 (sequential):** Task 2 — consumes Task 1's per-layer partitioning to bound
-the per-light fold; shares the composite accumulator lifecycle.
+**Phase 2 (sequential):** Task 2 — nests the per-light fold inside Task 1's
+per-atlas-layer loop (atlas layer outer, lights inner) to bound the warm accumulator to one
+layer.
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Baked `.prl` bytes identical to the pre-change bake | current bake (the contract) | Task 1 per-layer slice + concatenation; Task 2 ordered per-light fold — threatened if a slice crosses a layer plane or the fold reorders lights | AC 1, AC 5 |
+| Baked `.prl` bytes identical to the pre-change bake | current bake (the contract) | Task 1 per-layer slice + concatenation; Task 2 ordered per-light fold — threatened if a slice crosses a layer plane or the fold reorders lights | AC 1 |
 | Warm composite equals cold monolithic, bit-for-bit | `incremental-bake-per-element` gates | Task 2 fold sums lights in the cold path's order | AC 2 |
-| Uncompressed working set bounded to one partition | Task 1 (one atlas layer), Task 2 (one light) | each buffer dropped before the next is allocated; the accumulator is the only retained buffer | AC 3, AC 4 |
+| Uncompressed working set bounded to one partition | Task 1 (one atlas layer), Task 2 (one light's one-layer slice) | each buffer dropped before the next is allocated; the accumulator is the only retained buffer | AC 3, AC 4 |
+
+### Ordering pins
+
+Concrete orderings the bake must honor. Each is testable; each names the task that executes it.
+
+| id | Scenario | Ordering | Expected outcome | Kind | Task |
+|---|---|---|---|---|---|
+| OP1 | Cold per-layer encode + append on a multi-layer atlas | Encode each atlas layer's irradiance and direction slice and append; outer per-layer loop sequential ascending | Slices appended ascending `0..layer_count`; blob byte-identical to the whole-atlas `encode_section`, and identical across two runs | determinism / byte-identity | Task 1 |
+| OP2 | Scatter a chart on array layer L>0 into a one-layer buffer | Allocate a one-layer buffer for layer L; parallel-scatter its charts (`placement.layer == L`) | Placement rebased to layer 0; no out-of-bounds write, no assert trip; buffer equals layer L's slice of the whole-atlas bake | correctness | Task 1 |
+| OP3 | Warm fold nesting on a multi-layer, multi-light atlas | Atlas layer outer, lights inner in global order; one-layer accumulator; encode-and-drop per layer | Peak resident = one light's partition + one layer's accumulator; composite bit-identical to cold | working-set / byte-identity | Task 2 |
+| OP4 | Warm fold with zero non-Sdf lights (every light `ShadowType::Sdf`) | Light set for the fold is empty; fold runs zero iterations; composite the empty layer set | Reshaped warm output byte-identical to the pre-change warm output — the pre-existing empty-slice divergence in `composite_layers` (empty-slice fallback vs cold coverage) is reproduced, not fixed, so the warm-vs-cold gate (AC 2) is not asserted for this case | byte-identity edge | Task 2 |
+| OP5 | Fold a light reaching zero texels (fully out of influence) | Light layer enumerates the full covered set with `0.0` terms; fold, then drop | Adds `0.0` (no perturbation), ORs coverage; result matches cold | byte-identity edge | Task 2 |
+| OP6 | Atlas layer with zero charts | Iterate layers `0..layer_count` | Cannot occur — the packer places at least one leaf per opened layer; each layer's full-size buffer is still allocated and encoded | invariant | Task 1 |
+| OP7 | Per-layer parallel scatter lifecycle | Parallel-scatter a layer's charts, then dilate, encode, drop | The parallel scatter joins before the drop; no chart task writes after the layer buffer is dropped | lifecycle | Task 1 |
 
 ## Acceptance criteria
 
@@ -150,13 +182,20 @@ the per-light fold; shares the composite accumulator lifecycle.
   fixture map (cold path and warm path both).
 - [ ] The byte-identity gate between the warm per-light composite and the cold
   monolithic bake still passes.
-- [ ] Compile-time peak RSS on a fine-density multi-layer bake is measured and reported:
-  the cold-path uncompressed working set scales with one atlas layer rather than
-  `layer_count` — its share of peak RSS drops by ≥ `(layer_count − 1) / layer_count` — and
-  the warm-path per-light layer resident set drops ~`N_lights`× (from all lights resident to
-  one at a time).
-- [ ] Under a constrained-RAM budget that OOM'd the pre-change bake — the map and density
-  that blocked the `dist` build — the reshaped bake completes and writes a valid `.prl`.
+- [ ] Compile-time peak RSS is measured and reported on the map and density AC 4 caps
+  (`stress-warren-hallway-inspection` at 0.04), as absolute figures for both the pre-change
+  bake and the reshaped bake: the cold-path uncompressed working set scales with one atlas
+  layer rather than `layer_count` — its share of peak RSS drops by ≥ `(layer_count − 1) /
+  layer_count` — and the warm-path per-light layer resident set drops ~`N_lights`× (from all
+  lights resident to one at a time). The reported pre-change cold-path peak RSS and
+  post-change peak are the figures AC 4 caps between, so AC 4 reuses them without re-running
+  the retired pre-change lifecycle.
+- [ ] With the process address space capped below the pre-change cold-path peak RSS
+  reported by the criterion above and at or above the post-change peak (Linux `ulimit -v`,
+  Windows Job Object memory limit), the reshaped bake of the map and density that blocked
+  the `dist` build (`stress-warren-hallway-inspection` at 0.04) completes and writes a
+  `.prl` that passes the byte-identity gate. The pre-change peak is the figure that
+  criterion reports, so the retired lifecycle need not be re-run.
 - [ ] Re-baking the same map twice yields byte-identical `.prl` output.
 - [ ] A normal (non-verbose) bake gains no new per-item log spam; any per-partition
   memory or size breakdown appears only under `-v`/`--verbose`, and any footprint
@@ -179,15 +218,16 @@ leaf cohesion via `place_leaf` keeps a leaf's charts on one layer), encode a lay
 drop. `DEFAULT_TEXEL_DENSITY_METERS = 0.04`.
 
 Warm path — `crates/level-compiler/src/pipeline.rs` (the lightmap section of
-`run_pipeline`): today builds a `Vec<LightmapLayer>` over all lights (each from cache or
+`run_after_parsing`): today builds a `Vec<LightmapLayer>` over all lights (each from cache or
 `lightmap_layer::bake_light_layer_controlled`), then `lightmap_layer::composite_layers`,
 then `dilate` + `encode_section`. `LayerTexel`/`LightmapLayer` live in `lightmap_layer.rs`;
 each `LightmapLayer` is dense over covered texels at `size_of::<LayerTexel>()` (48 B,
 static-asserted; `weighted_dir: [f32; 3]` is unchanged by the `Rg8` switch) — the
-`N_lights`× term. The fold replaces the collect-then-composite with an accumulate-and-drop
-loop over lights (the cold path at the same site sums lights inline per texel, so it carries
-only the whole-map `f32` term, addressed by Task 1). Per-light bakes stay parallel per
-chart; the accumulate is ordered.
+`N_lights`× term. The fold replaces the collect-then-composite with an atlas-layer-outer,
+light-inner accumulate-and-drop loop, holding one light's one-layer partition and a
+one-layer accumulator (the cold path at the same site sums lights inline per texel, so it
+carries only the whole-map `f32` term, addressed by Task 1). Per-light bakes stay parallel
+per chart; the accumulate is ordered.
 
 Cache: the per-light layer cache is compiler-internal and dev-local, keyed on
 `LAYER_FORMAT_VERSION` (`lightmap_layer.rs`, currently 4); bumping it regenerates the cache

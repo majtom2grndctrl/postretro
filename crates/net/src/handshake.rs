@@ -15,9 +15,10 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
 /// dedicated E16 presentation channel and payload family advance this to 19.
 /// `WireMovementState::Sliding` changes the snapshot wire layout, advancing it
-/// to 20 so transport rejects pre-slide peers before snapshot decode.
+/// to 20 so transport rejects pre-slide peers before snapshot decode. The
+/// faction-sentiment sparse snapshot record advances it to 21.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 20;
+pub const WIRE_VERSION: u32 = 21;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -94,26 +95,24 @@ mod tests {
     }
 
     #[test]
-    fn presentation_transport_refuses_previous_protocol_and_wire_version() {
-        const PRE_PRESENTATION_PROTOCOL_ID: u32 = 0x_5052_4C36;
-        const PRE_PRESENTATION_WIRE_VERSION: u32 = 18;
+    fn faction_sentiment_snapshot_layout_refuses_previous_wire_version() {
+        const PRE_FACTION_SENTIMENT_WIRE_VERSION: u32 = 20;
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C37,
             "presentation vocabulary requires application protocol PRL7"
         );
         assert_eq!(
-            WIRE_VERSION, 20,
-            "sliding snapshot state changes the wire layout"
+            WIRE_VERSION, 21,
+            "faction-sentiment snapshot state changes the wire layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PRE_PRESENTATION_PROTOCOL_ID as u64) << 32)
-                | u64::from(PRE_PRESENTATION_WIRE_VERSION),
-            "gate 1 rejects the previous presentation-less peer before app decode"
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_FACTION_SENTIMENT_WIRE_VERSION),
+            "gate 1 rejects the prior snapshot layout before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PRE_PRESENTATION_PROTOCOL_ID,
-            wire_version: PRE_PRESENTATION_WIRE_VERSION,
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_FACTION_SENTIMENT_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

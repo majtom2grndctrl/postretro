@@ -813,6 +813,9 @@ impl ClientReplication {
             // State-slot baselines are acked by the Task 3 client apply path; this
             // entity-apply ack carries none.
             slot_baselines: Vec::new(),
+            // The faction overlay is acknowledged only after its separate sparse-set
+            // apply succeeds in `client_receive_and_apply`.
+            faction_sentiment_baseline: None,
         });
         outcome
     }
@@ -2612,6 +2615,7 @@ mod tests {
             records,
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         }
     }
 

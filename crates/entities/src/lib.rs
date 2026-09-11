@@ -31,8 +31,9 @@ pub use data_descriptors::*;
 pub use data_registry::{
     CROSS_FACTION_DEFAULT_SENTIMENT, DEFAULT_ENEMY_FACTION_INDEX, DataRegistry,
     FactionCompatibilitySnapshot, FactionDescriptor, FactionRegistry, FactionRelationship,
-    FactionSentimentDescriptor, PLAYER_FACTION_INDEX, SAME_FACTION_DEFAULT_SENTIMENT,
-    ScopedCrossing, ScopedReaction,
+    FactionSentimentDescriptor, FactionSentimentMutationError, FactionSentimentState,
+    LiveFactionSentiment, MAX_FACTION_SENTIMENT_INDEX, MAX_FACTION_SENTIMENT_OVERRIDES,
+    PLAYER_FACTION_INDEX, SAME_FACTION_DEFAULT_SENTIMENT, ScopedCrossing, ScopedReaction,
 };
 pub use engine_state_catalog::*;
 pub use postretro_foundation::{

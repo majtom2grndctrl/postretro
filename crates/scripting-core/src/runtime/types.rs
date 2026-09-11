@@ -101,6 +101,10 @@ pub struct ModManifestResult {
     /// the source descriptors keeps the normalized result's public field
     /// inventory aligned with the manifest SDK surface.
     pub sentiment: Vec<FactionSentimentDescriptor>,
+    /// Optional manifest-wide default rate for live faction sentiment to ease
+    /// back toward its immutable authored baseline. Omission is normalized to
+    /// zero (hold) and the resolved value also lives in [`Self::factions`].
+    pub faction_sentiment_decay: f32,
     /// Parallel source names for the optional `components.faction` entry on
     /// each descriptor. Private runtime plumbing keeps named authoring out of
     /// `EntityTypeDescriptor`, whose `faction` field is resolved f32 storage.

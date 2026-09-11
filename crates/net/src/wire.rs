@@ -143,7 +143,10 @@ pub enum ServerPresentationPayload {
 ///
 /// Bumped to 14 for slide: `WireMovementState` gained its `Sliding` variant,
 /// including the floor normal needed to replay a sloped authoritative baseline.
-pub const SNAPSHOT_VERSION: u16 = 14;
+///
+/// Bumped to 15 for the faction-sentiment sparse sync record. Its complete overlay
+/// set rides the snapshot envelope and has its own baseline/delta state machine.
+pub const SNAPSHOT_VERSION: u16 = 15;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -501,6 +504,10 @@ pub struct RawSnapshotMessage {
     /// validation needs the engine-owned `StateSchema`, which this registry-blind
     /// crate is never handed at decode time.
     pub state_records: Vec<crate::state_slots::RawStateSlotRecord>,
+    /// Host-authoritative sparse faction-sentiment overlay update. This is separate
+    /// from `state_records`: it is a dynamic set, not a static descriptor-backed
+    /// slot. `None` means this snapshot carries no new faction-sentiment baseline.
+    pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +605,9 @@ pub struct SnapshotMessage {
     /// gets both halves of one server frame from a single typed message.
     pub state_schema_fingerprint: [u8; 32],
     pub state_records: Vec<crate::state_slots::RawStateSlotRecord>,
+    /// Raw sparse faction-sentiment overlay record. It is validated by the engine
+    /// alongside the installed faction registry before the overlay is replaced.
+    pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,6 +1045,7 @@ impl RawSnapshotMessage {
             records,
             state_schema_fingerprint: self.state_schema_fingerprint,
             state_records: self.state_records.clone(),
+            faction_sentiment_record: self.faction_sentiment_record.clone(),
         })
     }
 }
@@ -1138,6 +1149,10 @@ pub struct AckMessage {
     /// `baseline_id` is newer. An empty list leaves prior state-ack progress
     /// unchanged. The `u16` is the `StateSlotId` inner value.
     pub slot_baselines: Vec<(u16, u32)>,
+    /// Latest complete sparse faction-sentiment baseline the client applied. This is
+    /// separate from static state-slot ids because the overlay has no descriptor.
+    /// `None` leaves the server's known baseline unchanged.
+    pub faction_sentiment_baseline: Option<u32>,
 }
 
 /// Client -> server request to re-send a full baseline for one entity, carried on
@@ -1425,6 +1440,7 @@ mod tests {
             records,
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         }
     }
 
@@ -1495,7 +1511,9 @@ mod tests {
     #[test]
     fn raw_snapshot_with_state_records_round_trips() {
         use crate::state_slots::{
-            RawStateSlotRecord, STATE_RECORD_KIND_FULL_BASELINE, WireSlotValue,
+            FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE, FactionSentimentPair,
+            RawFactionSentimentRecord, RawStateSlotRecord, STATE_RECORD_KIND_FULL_BASELINE,
+            WireSlotValue,
         };
         let raw = RawSnapshotMessage {
             version: SNAPSHOT_VERSION,
@@ -1511,6 +1529,17 @@ mod tests {
                 baseline_id: 7,
                 value: WireSlotValue::Number(50.0),
             }],
+            faction_sentiment_record: Some(RawFactionSentimentRecord {
+                kind: FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+                has_baseline_ref: false,
+                baseline_ref: 0,
+                baseline_id: 11,
+                pairs: vec![FactionSentimentPair {
+                    from_idx: 2,
+                    to_idx: 3,
+                    value: -0.75,
+                }],
+            }),
         };
         assert!(round_trips(&raw));
         // The state fields survive a decode and reach the typed apply model.
@@ -1519,6 +1548,7 @@ mod tests {
         let typed = decoded.validate().expect("entity half validates");
         assert_eq!(typed.state_schema_fingerprint, [9u8; 32]);
         assert_eq!(typed.state_records.len(), 1);
+        assert!(typed.faction_sentiment_record.is_some());
     }
 
     #[test]
@@ -1639,6 +1669,7 @@ mod tests {
             entity_baselines: vec![(3, 9), (7, 2), (42, 100)],
             despawn_tombstones: vec![(11, 4)],
             slot_baselines: vec![(1, 7), (2, 3)],
+            faction_sentiment_baseline: Some(13),
         };
         assert!(round_trips(&ack));
         // An empty ack (no per-entity progress) is still a valid carrier.
@@ -1648,6 +1679,7 @@ mod tests {
             entity_baselines: Vec::new(),
             despawn_tombstones: Vec::new(),
             slot_baselines: Vec::new(),
+            faction_sentiment_baseline: None,
         };
         assert!(round_trips(&empty));
     }
@@ -1684,6 +1716,7 @@ mod tests {
                 entity_baselines: vec![(1, 2)],
                 despawn_tombstones: vec![(4, 5)],
                 slot_baselines: vec![(6, 7)],
+                faction_sentiment_baseline: Some(8),
             }),
             ClientMessage::BaselineRefresh(BaselineRefreshRequest {
                 snapshot_sequence: 9,
@@ -1742,8 +1775,8 @@ mod tests {
     #[test]
     fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
         assert_eq!(
-            SNAPSHOT_VERSION, 14,
-            "slide's snapshot-state layout requires snapshot version 14"
+            SNAPSHOT_VERSION, 15,
+            "the faction-sentiment snapshot layout requires snapshot version 15"
         );
 
         let spawn = ServerPresentationMessage {
@@ -1804,6 +1837,7 @@ mod tests {
             )],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let typed = raw.validate().expect("well-formed snapshot validates");
         assert_eq!(typed.sequence, 4);
@@ -1841,6 +1875,7 @@ mod tests {
             )],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let typed = raw.validate().expect("well-formed delta validates");
         assert_eq!(
@@ -1867,6 +1902,7 @@ mod tests {
             records: vec![raw_record(RECORD_KIND_DESPAWN, 9, 0, 42, 7, Vec::new())],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let typed = raw.validate().expect("tombstone-only despawn validates");
         assert_eq!(
@@ -1920,6 +1956,7 @@ mod tests {
             )],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let bytes = encode(&raw);
         let truncated = &bytes[..bytes.len() - 1];
@@ -1951,6 +1988,7 @@ mod tests {
             )],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         // Decodes cleanly into the raw envelope...
         let bytes = encode(&raw);
@@ -1984,6 +2022,7 @@ mod tests {
             )],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("invalid kind still decodes");
@@ -2049,25 +2088,26 @@ mod tests {
     }
 
     #[test]
-    fn sliding_snapshot_version_rejects_immediately_previous_layout() {
-        const PRE_SLIDING_SNAPSHOT_VERSION: u16 = 13;
+    fn faction_sentiment_snapshot_version_rejects_immediately_previous_layout() {
+        const PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION: u16 = 14;
         assert_eq!(
-            SNAPSHOT_VERSION, 14,
-            "sliding movement state requires snapshot version 14"
+            SNAPSHOT_VERSION, 15,
+            "faction-sentiment state requires snapshot version 15"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_SLIDING_SNAPSHOT_VERSION,
+            version: PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         assert_eq!(
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_SLIDING_SNAPSHOT_VERSION,
+                received: PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION,
             })
         );
     }
@@ -2093,6 +2133,7 @@ mod tests {
             ],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         assert_eq!(raw.validate(), Err(ValidationError::UnknownRecordKind(77)));
     }
@@ -2261,6 +2302,7 @@ mod tests {
             records: vec![record],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
@@ -2477,6 +2519,7 @@ mod tests {
             records: vec![record],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");

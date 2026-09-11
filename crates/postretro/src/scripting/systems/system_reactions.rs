@@ -28,6 +28,82 @@ pub(crate) use postretro_scripting_core::reaction_registry::{
 /// ClampToEdge edge-smear with no meaningful additional shake effect.
 const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 
+/// Apply one name-addressed live-sentiment write at the app's frame-end system
+/// reaction drain. The authored registry remains immutable: resolve names and
+/// the baseline while holding its read borrow, then mutate only the sparse
+/// session overlay after that borrow has dropped.
+fn apply_sentiment_write(
+    script_ctx: &ScriptCtx,
+    from: &str,
+    to: &str,
+    value: f32,
+    is_adjustment: bool,
+) -> Result<(), String> {
+    if !value.is_finite() {
+        return Err(format!(
+            "{} value must be finite, got {value}",
+            if is_adjustment {
+                "adjustSentiment delta"
+            } else {
+                "setSentiment"
+            }
+        ));
+    }
+
+    let (from_index, to_index, baseline) = {
+        let data_registry = script_ctx.data_registry.borrow();
+        let factions = &data_registry.factions;
+        let from_index = factions
+            .index_for_name(from)
+            .ok_or_else(|| format!("unknown from faction `{from}`"))?;
+        let to_index = factions
+            .index_for_name(to)
+            .ok_or_else(|| format!("unknown to faction `{to}`"))?;
+        let baseline = factions.sentiment(from_index, to_index);
+        (from_index, to_index, baseline)
+    };
+
+    // The App drain owns the primary client-authority gate. Keep the writer itself
+    // closed as well so focused callers cannot accidentally bypass that boundary.
+    // This comes after reaction input validation, so a client still observes the
+    // same invalid-value/unknown-faction rejection as the host.
+    if !script_ctx.owner_slot_writes_enabled.get() {
+        return Ok(());
+    }
+
+    let mut overlay = script_ctx.faction_sentiment.borrow_mut();
+    if is_adjustment {
+        overlay
+            .adjust(from_index, to_index, value, baseline)
+            .map_err(|error| error.to_string())?;
+    } else {
+        overlay
+            .set(from_index, to_index, value, baseline)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Apply an absolute live-sentiment write queued by `setSentiment`.
+pub(crate) fn apply_set_sentiment(
+    script_ctx: &ScriptCtx,
+    from: &str,
+    to: &str,
+    value: f32,
+) -> Result<(), String> {
+    apply_sentiment_write(script_ctx, from, to, value, false)
+}
+
+/// Apply a relative live-sentiment write queued by `adjustSentiment`.
+pub(crate) fn apply_adjust_sentiment(
+    script_ctx: &ScriptCtx,
+    from: &str,
+    to: &str,
+    delta: f32,
+) -> Result<(), String> {
+    apply_sentiment_write(script_ctx, from, to, delta, true)
+}
+
 /// Install-time bindings for `setState`. Entity-owned reaction descriptors and
 /// queued commands deliberately retain only raw JSON; this binary-side table
 /// owns app-drain `DispatchScope` programs plus known rejected command identities.
@@ -280,6 +356,7 @@ pub(crate) fn is_ir_node(value: &serde_json::Value) -> bool {
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
 /// - Slot write: `setState`
+/// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
 /// - Presentation-cell write: `cellWrite`
 /// - Text-edit: `appendText`, `backspaceText`, `clearText`
 pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry) {
@@ -470,6 +547,47 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         });
         Ok(())
     });
+    // Sentiment writes are consequential system reactions like `setState`, but
+    // they intentionally stay on this app-drain route even for trigger fires:
+    // the overlay is not a tick-context slot table, so the next AI tick is the
+    // first reader that can observe the write.
+    registry.register("setSentiment", |args, queue| {
+        let parsed: SetSentimentArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setSentiment: failed to deserialize args: {e}"),
+            })?;
+        if !parsed.value.is_finite() {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!("setSentiment: value must be finite, got {}", parsed.value),
+            });
+        }
+        queue.push(SystemReactionCommand::SetSentiment {
+            from: parsed.from,
+            to: parsed.to,
+            value: parsed.value,
+        });
+        Ok(())
+    });
+    registry.register("adjustSentiment", |args, queue| {
+        let parsed: AdjustSentimentArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("adjustSentiment: failed to deserialize args: {e}"),
+            })?;
+        if !parsed.delta.is_finite() {
+            return Err(ReactionError::InvalidArgument {
+                reason: format!(
+                    "adjustSentiment: delta must be finite, got {}",
+                    parsed.delta
+                ),
+            });
+        }
+        queue.push(SystemReactionCommand::AdjustSentiment {
+            from: parsed.from,
+            to: parsed.to,
+            delta: parsed.delta,
+        });
+        Ok(())
+    });
     // `cellWrite` writes a presentation cell at the game-logic stage.
     // It carries no `tag` (system-targeted); the drain routes it into the
     // app-side `PresentationCellStore`, NOT the slot table. Distinct from
@@ -598,6 +716,22 @@ struct SetStateArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetSentimentArgs {
+    from: String,
+    to: String,
+    value: f32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdjustSentimentArgs {
+    from: String,
+    to: String,
+    delta: f32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CellWriteArgs {
     scope: String,
     cell: String,
@@ -622,7 +756,8 @@ mod tests {
     use super::*;
     use log::Level;
     use postretro_entities::{
-        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        FactionDescriptor, FactionRegistry, FactionSentimentDescriptor, NumericRange,
+        SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
@@ -699,6 +834,31 @@ mod tests {
             (actual - expected).abs() <= 1.0e-5,
             "{message}: expected {expected}, got {actual}"
         );
+    }
+
+    fn sentiment_context() -> ScriptCtx {
+        let ctx = ScriptCtx::new();
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("fixture faction declarations are valid")
+        .with_sentiments([FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: 0.25,
+            tolerance: 3.0,
+            decay: None,
+        }])
+        .expect("fixture faction relationship is valid");
+        ctx.data_registry
+            .borrow_mut()
+            .replace_factions(factions, &mut ctx.faction_sentiment.borrow_mut());
+        ctx
     }
 
     #[test]
@@ -997,6 +1157,8 @@ mod tests {
         assert!(r.contains("restartLevel"));
         assert!(r.contains("returnToFrontend"));
         assert!(r.contains("setState"));
+        assert!(r.contains("setSentiment"));
+        assert!(r.contains("adjustSentiment"));
         assert!(r.contains("cellWrite"));
         assert!(r.contains("appendText"));
         assert!(r.contains("backspaceText"));
@@ -1260,6 +1422,149 @@ mod tests {
                 dispatch_source: String::new(),
                 dispatch_values: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn sentiment_reactions_deserialize_camel_case_args_and_queue_typed_commands() {
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+
+        assert!(
+            registry
+                .dispatch(
+                    "setSentiment",
+                    &serde_json::json!({ "from": "cabal", "to": "resistance", "value": -0.75 }),
+                    &queue,
+                )
+                .expect("setSentiment args are valid")
+        );
+        assert!(
+            registry
+                .dispatch(
+                    "adjustSentiment",
+                    &serde_json::json!({ "from": "resistance", "to": "cabal", "delta": 0.5 }),
+                    &queue,
+                )
+                .expect("adjustSentiment args are valid")
+        );
+
+        let commands = queue.take();
+        let [
+            SystemReactionCommand::SetSentiment { from, to, value },
+            SystemReactionCommand::AdjustSentiment {
+                from: reverse_from,
+                to: reverse_to,
+                delta,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("sentiment reactions must queue set then adjust commands");
+        };
+        assert_eq!(from, "cabal");
+        assert_eq!(to, "resistance");
+        assert_eq!(reverse_from, "resistance");
+        assert_eq!(reverse_to, "cabal");
+        assert_number_approx_eq(*value, -0.75, "setSentiment value must round-trip");
+        assert_number_approx_eq(*delta, 0.5, "adjustSentiment delta must round-trip");
+    }
+
+    #[test]
+    fn sentiment_drain_writes_only_directional_live_overlay_and_adjusts_from_live_value() {
+        let ctx = sentiment_context();
+
+        apply_set_sentiment(&ctx, "cabal", "resistance", -0.75)
+            .expect("known factions and finite value apply");
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("directional live overlay entry is present"),
+            -0.75,
+            "set sentiment writes the requested live value",
+        );
+        assert_eq!(
+            ctx.faction_sentiment.borrow().get(3.0, 2.0),
+            None,
+            "a directional write must not create the reverse pair"
+        );
+        assert_number_approx_eq(
+            ctx.data_registry.borrow().factions.sentiment(2.0, 3.0),
+            0.25,
+            "the authored baseline remains immutable",
+        );
+
+        apply_adjust_sentiment(&ctx, "cabal", "resistance", 0.5)
+            .expect("adjustment applies from the live overlay value");
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("directional live overlay entry remains present"),
+            -0.25,
+            "adjustment starts from the live overlay value",
+        );
+
+        let reverse_baseline = ctx.data_registry.borrow().factions.sentiment(3.0, 2.0);
+        apply_adjust_sentiment(&ctx, "resistance", "cabal", -0.5)
+            .expect("an unlisted directional pair starts from its authored baseline");
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(3.0, 2.0)
+                .expect("reverse live overlay entry is present"),
+            reverse_baseline - 0.5,
+            "an unlisted reverse pair gets its own live overlay entry",
+        );
+
+        apply_set_sentiment(&ctx, "cabal", "resistance", 0.25)
+            .expect("returning to baseline is valid");
+        assert_eq!(
+            ctx.faction_sentiment.borrow().get(2.0, 3.0),
+            None,
+            "a pair at authored baseline must be sparse again"
+        );
+    }
+
+    #[test]
+    fn sentiment_drain_rejects_unknown_faction_names_without_mutating_overlay() {
+        let ctx = sentiment_context();
+
+        let error = apply_adjust_sentiment(&ctx, "unknown", "resistance", -1.0)
+            .expect_err("unknown faction names must degrade to a no-op");
+        assert!(error.contains("unknown from faction `unknown`"));
+        assert!(ctx.faction_sentiment.borrow().iter().next().is_none());
+    }
+
+    #[test]
+    fn sentiment_drain_prevents_finite_adjustment_overflow_without_clamping() {
+        let ctx = sentiment_context();
+        apply_set_sentiment(&ctx, "cabal", "resistance", f32::MAX)
+            .expect("a finite sentiment is accepted without a numeric clamp");
+
+        apply_adjust_sentiment(&ctx, "cabal", "resistance", f32::MAX)
+            .expect("the evaluated reaction remains a safe no-op on overflow");
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("live overlay entry remains present after overflow"),
+            f32::MAX,
+            "a finite adjustment that would overflow cannot commit non-finite live state",
+        );
+    }
+
+    #[test]
+    fn connected_client_sentiment_reaction_validates_but_does_not_write_overlay() {
+        let ctx = sentiment_context();
+        ctx.owner_slot_writes_enabled.set(false);
+
+        apply_set_sentiment(&ctx, "cabal", "resistance", -0.75)
+            .expect("a client-local reaction remains a valid evaluated command");
+        assert!(
+            ctx.faction_sentiment.borrow().iter().next().is_none(),
+            "the connected-client authority gate suppresses the local overlay write"
         );
     }
 

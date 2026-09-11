@@ -2,6 +2,7 @@
 // See: context/lib/networking.md
 
 use super::*;
+use postretro_entities::FactionSentimentState;
 
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only
 /// `server_echo_time_us` carried in a time-sync echo. Equal to the estimator's
@@ -107,6 +108,7 @@ pub(crate) fn host_drive_demo_mover(
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
     slot_table: &SlotTable,
+    faction_sentiment: &FactionSentimentState,
     replication_identity: &state_slots::ReplicatedSlotIdentity<'_>,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
@@ -163,6 +165,9 @@ pub(crate) fn host_replicate(
         owners,
         weapon_owners,
     );
+    // Faction sentiment is host-authoritative runtime state, not a static slot.
+    // Sample its complete sparse set once before per-client baseline/delta production.
+    state_slots.ingest_faction_sentiment(faction_sentiment);
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -180,6 +185,8 @@ pub(crate) fn host_replicate(
             if let Some(records) = state_slots.produce_for_client(client_id, sequence) {
                 raw.state_records = records;
             }
+            raw.faction_sentiment_record =
+                state_slots.produce_faction_sentiment_for_client(client_id);
             let bytes = wire::encode(&raw);
             let _ = server.send_snapshot(client_id, bytes);
         }

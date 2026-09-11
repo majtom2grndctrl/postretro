@@ -25,6 +25,7 @@
 // shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
@@ -57,7 +58,8 @@ pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry,
+    FactionSentimentState, LiveFactionSentiment, Transform,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::TargetPawn;
@@ -229,10 +231,14 @@ pub(crate) struct AiTickInputs<'a> {
     pub(crate) collision_world: Option<&'a CollisionWorld>,
     pub(crate) descriptors: &'a [EntityTypeDescriptor],
     pub(crate) descriptor_generation: u64,
-    /// Resolved manifest faction relationships. The App borrows this from the
-    /// same `DataRegistry` snapshot as descriptors, so a tick cannot observe a
-    /// new faction matrix beside stale content.
+    /// Immutable manifest baseline. The App borrows this from the same
+    /// `DataRegistry` snapshot as descriptors, so a tick cannot observe a new
+    /// faction matrix beside stale content.
     pub(crate) factions: &'a FactionRegistry,
+    /// Engine-owned live sentiment state. This is deliberately the RefCell
+    /// handle, not an already-borrowed view: impact effects may write it after
+    /// AI compute within the same tick.
+    pub(crate) faction_sentiment: &'a RefCell<FactionSentimentState>,
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -337,6 +343,7 @@ pub(crate) fn run_ai_tick_with_navigation(
     collision_world: Option<&CollisionWorld>,
 ) -> Vec<Cow<'static, str>> {
     let factions = FactionRegistry::default();
+    let faction_sentiment = RefCell::new(FactionSentimentState::default());
     run_ai_tick_with_navigation_and_impact(
         registry,
         runtime,
@@ -347,6 +354,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             descriptors: &[],
             descriptor_generation: 0,
             factions: &factions,
+            faction_sentiment: &faction_sentiment,
         },
         |_| {},
     )
@@ -366,6 +374,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         descriptors,
         descriptor_generation,
         factions,
+        faction_sentiment,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -414,18 +423,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         })
         .collect();
 
-    let mut outcomes = compute::evaluate(
-        registry,
-        snapshots,
-        programs,
-        reseat_warned,
-        los_grace,
-        tick_dt,
-        dt_ms,
-        nav_graph,
-        collision_world,
-        factions,
-    );
+    // The live view exists only for compute. `apply_outcomes` can invoke an
+    // impact policy which mutates the overlay, so retaining this Ref across the
+    // apply pass would turn an ordinary same-tick write into a RefCell panic.
+    let mut outcomes = {
+        let faction_sentiment = faction_sentiment.borrow();
+        let live_factions = LiveFactionSentiment::new(factions, &faction_sentiment);
+        compute::evaluate(
+            registry,
+            snapshots,
+            programs,
+            reseat_warned,
+            los_grace,
+            tick_dt,
+            dt_ms,
+            nav_graph,
+            collision_world,
+            &live_factions,
+        )
+    };
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
 

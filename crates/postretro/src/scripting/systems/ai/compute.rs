@@ -1,5 +1,5 @@
 use glam::Vec3;
-use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
 use super::{FACTION_STATE_FIELD, LocomotionIntent, perception};
 
@@ -68,7 +68,7 @@ pub(super) fn evaluate(
     dt_ms: f32,
     nav_graph: Option<&crate::nav::NavGraph>,
     collision_world: Option<&crate::collision::CollisionWorld>,
-    factions: &FactionRegistry,
+    factions: &LiveFactionSentiment<'_>,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for snap in snapshots {

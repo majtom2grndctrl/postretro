@@ -2,7 +2,8 @@
 // See: context/lib/networking.md §Game-logic-owned apply invariant · context/lib/scripting.md §5
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 
 use postretro_net::state_slots::{
     NumericRange as WireNumericRange, ReplicationScope as WireReplicationScope, SlotValueType,
@@ -11,7 +12,9 @@ use postretro_net::state_slots::{
 
 use postretro_entities::slot_table::SlotOwnership;
 use postretro_entities::{
-    AmmoReserve, EntityRegistry, NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
+    AmmoReserve, EntityRegistry, FactionRegistry, FactionSentimentState,
+    MAX_FACTION_SENTIMENT_INDEX, MAX_FACTION_SENTIMENT_OVERRIDES, NumericRange, ReplicationScope,
+    SlotTable, SlotType, SlotValue,
 };
 use postretro_scripting_core::StoreIdentityLedger;
 
@@ -385,13 +388,161 @@ fn write_len_prefixed_str(hasher: &mut blake3::Hasher, value: &str) {
 // ---------------------------------------------------------------------------
 
 use postretro_net::state_replication::ServerStateReplication;
-use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
+use postretro_net::state_slots::{
+    FACTION_SENTIMENT_RECORD_KIND_DELTA, FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+    FactionSentimentPair, MAX_FACTION_SENTIMENT_PAIRS, RawFactionSentimentRecord,
+    RawStateSlotRecord, WireSlotValue,
+};
 
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use postretro_entities::EntityId;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
+
+/// Baseline/delta tracker for the complete sparse faction-sentiment overlay. It
+/// deliberately does not share `ServerStateReplication`: the overlay is a dynamic
+/// set with no `StateSlotDescriptor`, while each record is still acked and repaired
+/// by the same snapshot cadence as state slots.
+#[derive(Debug)]
+struct FactionSentimentReplication {
+    current: Vec<FactionSentimentPair>,
+    /// Generation of the overlay lowered into `current`. Unchanged snapshot
+    /// frames reuse the existing allocation and pair conversion.
+    cached_generation: Option<u64>,
+    baseline_id: u32,
+    next_baseline_id: u32,
+    /// First baseline issued for the current level/schema generation. A delayed
+    /// ack from the preceding generation must not advance a freshly reset client.
+    minimum_valid_baseline_id: u32,
+    /// `client_id -> latest acknowledged complete-overlay baseline`; zero means a
+    /// newly participating client has no baseline and must receive a full set.
+    client_baselines: HashMap<u64, u32>,
+}
+
+impl Default for FactionSentimentReplication {
+    fn default() -> Self {
+        Self {
+            current: Vec::new(),
+            cached_generation: None,
+            // Baseline zero means "none held" on both sides. An empty overlay still
+            // needs a real initial baseline so a late join can clear stale local data.
+            baseline_id: 1,
+            next_baseline_id: 2,
+            minimum_valid_baseline_id: 1,
+            client_baselines: HashMap::new(),
+        }
+    }
+}
+
+impl FactionSentimentReplication {
+    fn register_client(&mut self, client_id: u64) {
+        self.client_baselines.entry(client_id).or_insert(0);
+    }
+
+    fn remove_client(&mut self, client_id: u64) {
+        self.client_baselines.remove(&client_id);
+    }
+
+    fn reset_client_baselines(&mut self) {
+        for baseline in self.client_baselines.values_mut() {
+            *baseline = 0;
+        }
+        // Give the unchanged complete set a fresh identity too. Otherwise a delayed
+        // ack from the prior level could make a reset client appear current without
+        // ever receiving the required full overlay baseline.
+        self.baseline_id = self.next_baseline_id;
+        self.minimum_valid_baseline_id = self.baseline_id;
+        self.next_baseline_id = self.next_baseline_id.wrapping_add(1).max(1);
+    }
+
+    /// Refresh the lowered wire cache only after a live-overlay mutation.
+    /// Returns whether the cache was rebuilt this call.
+    fn ingest(&mut self, sentiment: &FactionSentimentState) -> Result<bool, String> {
+        if self.cached_generation == Some(sentiment.generation()) {
+            return Ok(false);
+        }
+
+        let count = sentiment.iter().len();
+        debug_assert_eq!(
+            MAX_FACTION_SENTIMENT_OVERRIDES, MAX_FACTION_SENTIMENT_PAIRS,
+            "engine live-overlay cap must match the registry-blind wire validator"
+        );
+        if count > MAX_FACTION_SENTIMENT_OVERRIDES {
+            return Err(format!(
+                "{count} divergent pairs exceeds wire limit {MAX_FACTION_SENTIMENT_PAIRS}"
+            ));
+        }
+
+        let mut pairs = Vec::with_capacity(count);
+        for (from_idx, to_idx, value) in sentiment.iter() {
+            debug_assert!(from_idx <= MAX_FACTION_SENTIMENT_INDEX);
+            debug_assert!(to_idx <= MAX_FACTION_SENTIMENT_INDEX);
+            let from_idx = u16::try_from(from_idx).map_err(|_| {
+                format!("faction index {from_idx} cannot fit the u16 wire representation")
+            })?;
+            let to_idx = u16::try_from(to_idx).map_err(|_| {
+                format!("faction index {to_idx} cannot fit the u16 wire representation")
+            })?;
+            pairs.push(FactionSentimentPair {
+                from_idx,
+                to_idx,
+                value,
+            });
+        }
+        if self.current != pairs {
+            self.current = pairs;
+            self.baseline_id = self.next_baseline_id;
+            self.next_baseline_id = self.next_baseline_id.wrapping_add(1).max(1);
+        }
+        self.cached_generation = Some(sentiment.generation());
+        Ok(true)
+    }
+
+    fn apply_ack(&mut self, client_id: u64, baseline: Option<u32>) {
+        let Some(acknowledged) = baseline else {
+            return;
+        };
+        let Some(held) = self.client_baselines.get_mut(&client_id) else {
+            return;
+        };
+        // A delayed ack may name the immediately previous complete set after the
+        // host has already advanced again. Preserve that progress so the next delta
+        // references the baseline the client actually holds; requiring the current
+        // id here would strand a client on an unappliable old reference. A forged
+        // future id remains outside the issued namespace and is ignored.
+        if acknowledged >= self.minimum_valid_baseline_id
+            && acknowledged < self.next_baseline_id
+            && acknowledged > *held
+        {
+            *held = acknowledged;
+        }
+    }
+
+    fn produce_for_client(&self, client_id: u64) -> Option<RawFactionSentimentRecord> {
+        let held = *self.client_baselines.get(&client_id)?;
+        if held == self.baseline_id {
+            return None;
+        }
+        Some(if held == 0 {
+            RawFactionSentimentRecord {
+                kind: FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+                has_baseline_ref: false,
+                baseline_ref: 0,
+                baseline_id: self.baseline_id,
+                pairs: self.current.clone(),
+            }
+        } else {
+            RawFactionSentimentRecord {
+                kind: FACTION_SENTIMENT_RECORD_KIND_DELTA,
+                has_baseline_ref: true,
+                baseline_ref: held,
+                baseline_id: self.baseline_id,
+                pairs: self.current.clone(),
+            }
+        })
+    }
+}
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
 /// schema (rebuilt lazily from the live `SlotTable` for each committed staged-manifest
@@ -408,6 +559,7 @@ pub(crate) struct HostStateReplication {
     /// the next reset. `None` until built.
     schema: Option<ReplicatedSlotSchema>,
     tracker: ServerStateReplication,
+    faction_sentiment: FactionSentimentReplication,
     /// Set to `true` the first time frame ingest runs. Used only in debug builds to
     /// assert the ingest-before-produce ordering contract.
     #[cfg(debug_assertions)]
@@ -419,6 +571,7 @@ impl HostStateReplication {
         Self {
             schema: None,
             tracker: ServerStateReplication::new(),
+            faction_sentiment: FactionSentimentReplication::default(),
             #[cfg(debug_assertions)]
             ingested: false,
         }
@@ -450,12 +603,14 @@ impl HostStateReplication {
     /// and re-registers every current participant after a schema rebuild.
     pub(crate) fn register_client(&mut self, client_id: u64) {
         self.tracker.register_client(client_id);
+        self.faction_sentiment.register_client(client_id);
     }
 
     /// Drop a client's per-client state and owner-private values on any participation
     /// exit, including demotion and close.
     pub(crate) fn remove_client(&mut self, client_id: u64) {
         self.tracker.remove_client(client_id);
+        self.faction_sentiment.remove_client(client_id);
     }
 
     /// The source declarations changed or the level lifetime ended. Rebuild lazily
@@ -463,6 +618,7 @@ impl HostStateReplication {
     pub(crate) fn reset_schema(&mut self) {
         self.schema = None;
         self.tracker.reset_schema_state();
+        self.faction_sentiment.reset_client_baselines();
         #[cfg(debug_assertions)]
         {
             self.ingested = false;
@@ -488,9 +644,12 @@ impl HostStateReplication {
         client_id: u64,
         latest_snapshot_sequence: u32,
         slot_baselines: &[(u16, u32)],
+        faction_sentiment_baseline: Option<u32>,
     ) {
         self.tracker
             .apply_ack(client_id, latest_snapshot_sequence, slot_baselines);
+        self.faction_sentiment
+            .apply_ack(client_id, faction_sentiment_baseline);
     }
 
     /// Apply a client's `StateBaselineRefresh` request keyed by `StateSlotId` (inbound
@@ -524,6 +683,27 @@ impl HostStateReplication {
             "produce_for_client called before frame ingest; ingest must run once per frame before the per-client produce loop"
         );
         self.tracker.produce_in_batch(client_id, sequence)
+    }
+
+    /// Ingest the host's complete sparse overlay once per snapshot frame. The
+    /// resulting record is emitted per-client after that client has a participating
+    /// state-slot tracker entry, sharing the entity snapshot sequence and ack path.
+    pub(crate) fn ingest_faction_sentiment(&mut self, sentiment: &FactionSentimentState) {
+        if let Err(error) = self.faction_sentiment.ingest(sentiment) {
+            // Keep the last encodable complete set rather than panic or sending a
+            // partial overlay. Content cannot silently acquire a divergent state the
+            // protocol cannot represent.
+            log::warn!("[Net] retaining last faction-sentiment replication set: {error}");
+        }
+    }
+
+    /// Produce this recipient's complete sparse overlay record, or `None` when its
+    /// acknowledged baseline already equals the current host set.
+    pub(crate) fn produce_faction_sentiment_for_client(
+        &self,
+        client_id: u64,
+    ) -> Option<RawFactionSentimentRecord> {
+        self.faction_sentiment.produce_for_client(client_id)
     }
 
     /// Test-only convenience wrapper around frame ingest. Production consumes the
@@ -813,9 +993,10 @@ fn descriptor_weapon_cooldown_for_pawn(
 // Client-side apply glue
 // ---------------------------------------------------------------------------
 
-use std::collections::HashMap;
-
-use postretro_net::state_slots::{StateSlotRecord, StateValidationError, validate_state_records};
+use postretro_net::state_slots::{
+    FactionSentimentRecord, FactionSentimentValidationError, StateSlotRecord, StateValidationError,
+    validate_state_records,
+};
 use postretro_net::wire::StateBaselineRefreshRequest;
 
 use crate::scripting::primitives::store::apply_store_slot_batch;
@@ -831,6 +1012,10 @@ const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct StateApplyOutcome {
     pub(crate) slot_baselines: Vec<(u16, u32)>,
+    /// Complete faction-sentiment overlay baseline successfully applied from this
+    /// snapshot. It is fed into the existing reliable `AckMessage`, not a new input
+    /// message family.
+    pub(crate) faction_sentiment_baseline: Option<u32>,
     pub(crate) refresh_requests: Vec<StateBaselineRefreshRequest>,
     pub(crate) fresh_slots: Vec<String>,
     /// Source slot carried atomically with a fresh owner-private cooldown sample.
@@ -856,6 +1041,9 @@ pub(crate) struct ClientStateApply {
     /// `StateSlotId -> held baseline_id`. A delta's `baseline_ref` must match this to
     /// apply; a successful apply advances it. `FullBaseline` sets it outright.
     held_baselines: HashMap<StateSlotId, u32>,
+    /// Complete sparse faction-sentiment baseline currently reflected by the local
+    /// overlay. Its independent namespace prevents collision with static slot ids.
+    held_faction_sentiment_baseline: Option<u32>,
 }
 
 impl ClientStateApply {
@@ -864,6 +1052,7 @@ impl ClientStateApply {
             schema: None,
             net_schema: None,
             held_baselines: HashMap::new(),
+            held_faction_sentiment_baseline: None,
         }
     }
 
@@ -872,11 +1061,84 @@ impl ClientStateApply {
         self.schema = None;
         self.net_schema = None;
         self.held_baselines.clear();
+        self.held_faction_sentiment_baseline = None;
     }
 
     #[cfg(test)]
     pub(crate) fn is_reset(&self) -> bool {
-        self.schema.is_none() && self.net_schema.is_none() && self.held_baselines.is_empty()
+        self.schema.is_none()
+            && self.net_schema.is_none()
+            && self.held_baselines.is_empty()
+            && self.held_faction_sentiment_baseline.is_none()
+    }
+
+    /// Validate and atomically replace the client overlay from one host sparse-set
+    /// record. Every record carries a complete desired set, including an empty set,
+    /// so omission of a former pair on a host delta clears it locally. Nothing borrows
+    /// or mutates the live overlay until all wire and faction-index checks pass.
+    pub(crate) fn apply_faction_sentiment(
+        &mut self,
+        factions: &FactionRegistry,
+        faction_sentiment: &RefCell<FactionSentimentState>,
+        record: Option<&RawFactionSentimentRecord>,
+    ) -> Option<u32> {
+        let raw = record?;
+        let typed = match raw.validate() {
+            Ok(record) => record,
+            Err(error) => {
+                log_faction_sentiment_validation_rejection(&error);
+                return None;
+            }
+        };
+
+        let baseline_id = match &typed {
+            FactionSentimentRecord::FullBaseline { baseline_id, .. } => *baseline_id,
+            FactionSentimentRecord::Delta {
+                baseline_ref,
+                new_baseline_id,
+                ..
+            } => {
+                if self.held_faction_sentiment_baseline != Some(*baseline_ref) {
+                    // The host re-emits against its last acknowledged baseline until
+                    // it receives an ack. Leaving this record unacked therefore
+                    // retries safely without a new input-channel message variant.
+                    return None;
+                }
+                *new_baseline_id
+            }
+        };
+
+        let faction_count = factions.descriptors().len() + 2;
+        let mut replacement = FactionSentimentState::default();
+        for pair in typed.pairs() {
+            let from = usize::from(pair.from_idx);
+            let to = usize::from(pair.to_idx);
+            if from >= faction_count || to >= faction_count {
+                log::warn!(
+                    "[Net] faction-sentiment record referenced unknown faction pair ({from}, {to}); keeping existing overlay"
+                );
+                return None;
+            }
+            let from = pair.from_idx as f32;
+            let to = pair.to_idx as f32;
+            let baseline = factions.sentiment(from, to);
+            if pair.value == baseline {
+                log::warn!(
+                    "[Net] faction-sentiment record carried baseline value for pair ({from}, {to}); keeping existing overlay"
+                );
+                return None;
+            }
+            if let Err(error) = replacement.set(from, to, pair.value, baseline) {
+                log::warn!(
+                    "[Net] faction-sentiment record pair ({from}, {to}) violates the live overlay invariant: {error}; keeping existing overlay"
+                );
+                return None;
+            }
+        }
+
+        *faction_sentiment.borrow_mut() = replacement;
+        self.held_faction_sentiment_baseline = Some(baseline_id);
+        Some(baseline_id)
     }
 
     /// Build the schema (and its lowered net form) once from the live slot table,
@@ -1102,6 +1364,15 @@ impl Default for ClientStateApply {
     }
 }
 
+/// Log one stable diagnostic for a malformed faction-sentiment sparse record. The
+/// record is deliberately rejected as a whole; callers retain both the old overlay
+/// and old held baseline so a later host resend can repair it.
+fn log_faction_sentiment_validation_rejection(error: &FactionSentimentValidationError) {
+    log::warn!(
+        "[Net] dropping malformed faction-sentiment record; keeping existing overlay: {error}"
+    );
+}
+
 /// Log a stable, greppable diagnostic for a rejected replicated-state batch. The
 /// fingerprint-mismatch line is the one the AC names ("the client logs a stable
 /// mismatch diagnostic"); the others share the `[Net]` tag and a stable prefix.
@@ -1160,10 +1431,15 @@ fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::state_persistence::{
+        collect_persisted_faction_sentiment, collect_persisted_state,
+    };
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponAmmoTuning};
     use postretro_entities::components::wieldable_state::WieldableState;
     use postretro_entities::data_descriptors::ReloadStyle;
-    use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
+    use postretro_entities::{
+        DataRegistry, LiveFactionSentiment, SlotOwnership, SlotRecord, SlotSchema,
+    };
     use postretro_foundation::Seat;
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
@@ -2301,7 +2577,7 @@ mod tests {
 
         // This reliable Input ack was queued before the staged manifest committed,
         // but reaches the unchanged participation epoch after the host rebuilt.
-        host.apply_ack(CLIENT_A, 0, &[(objective_id.0, old_baseline)]);
+        host.apply_ack(CLIENT_A, 0, &[(objective_id.0, old_baseline)], None);
         let rebuilt = host
             .produce_for_client(CLIENT_A, 1)
             .expect("participant remains registered after schema rebuild");
@@ -2579,7 +2855,7 @@ mod tests {
         );
         assert_eq!(outcome.fresh_weapon_cooldown_slot, Some(0));
 
-        host.apply_ack(CLIENT_A, 0, &outcome.slot_baselines);
+        host.apply_ack(CLIENT_A, 0, &outcome.slot_baselines, None);
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
         let weapon_b_component = registry
             .get_component::<WeaponComponent>(weapon)
@@ -3481,7 +3757,7 @@ mod tests {
                 .expect("a full baseline for the unacked objective");
             objective.baseline_id
         };
-        host.apply_ack(CLIENT_A, 1, &[(0, baseline_one)]);
+        host.apply_ack(CLIENT_A, 1, &[(0, baseline_one)], None);
 
         // Now the value changes: the server emits a DELTA referencing baseline_one.
         host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
@@ -3559,5 +3835,351 @@ mod tests {
             Some(SlotValue::Number(4.0)),
             "the slot converges to the authoritative value after refresh repair"
         );
+    }
+
+    fn faction_sync_registry() -> FactionRegistry {
+        FactionRegistry::from_descriptors(vec![
+            postretro_entities::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            postretro_entities::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("fixture factions are valid")
+        .with_sentiments([postretro_entities::FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: 0.25,
+            tolerance: 3.0,
+            decay: None,
+        }])
+        .expect("fixture sentiment is valid")
+    }
+
+    #[test]
+    fn faction_sentiment_host_write_reaches_client_and_late_join_gets_full_set() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, -0.75, baseline).unwrap();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+        let first = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("joining client receives a full sparse set");
+        assert_eq!(first.kind, FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE);
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let baseline_id = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&first))
+            .expect("full sparse set applies");
+        assert_eq!(client_overlay.borrow().get(2.0, 3.0), Some(-0.75));
+        host.apply_ack(CLIENT_A, 1, &[], Some(baseline_id));
+
+        host.register_client(CLIENT_B);
+        let late_join = host
+            .produce_faction_sentiment_for_client(CLIENT_B)
+            .expect("late join gets the current diverged set without a new write");
+        assert_eq!(late_join.kind, FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE);
+        let late_overlay = RefCell::new(FactionSentimentState::default());
+        assert!(
+            ClientStateApply::new()
+                .apply_faction_sentiment(&factions, &late_overlay, Some(&late_join))
+                .is_some()
+        );
+        assert_eq!(late_overlay.borrow().get(2.0, 3.0), Some(-0.75));
+    }
+
+    #[test]
+    fn faction_sentiment_wire_cache_refreshes_on_mutation_and_reuses_unchanged_state() {
+        assert_eq!(MAX_FACTION_SENTIMENT_OVERRIDES, MAX_FACTION_SENTIMENT_PAIRS);
+        assert_eq!(MAX_FACTION_SENTIMENT_INDEX, usize::from(u16::MAX));
+
+        let mut replication = FactionSentimentReplication::default();
+        let mut overlay = FactionSentimentState::default();
+
+        assert!(replication.ingest(&overlay).unwrap());
+        assert!(!replication.ingest(&overlay).unwrap());
+
+        overlay.set(2.0, 3.0, -0.5, -1.0).unwrap();
+        assert!(replication.ingest(&overlay).unwrap());
+        assert_eq!(replication.current.len(), 1);
+        assert!(!replication.ingest(&overlay).unwrap());
+
+        overlay.set(2.0, 3.0, -1.0, -1.0).unwrap();
+        assert!(replication.ingest(&overlay).unwrap());
+        assert!(replication.current.is_empty());
+        assert!(!replication.ingest(&overlay).unwrap());
+    }
+
+    #[test]
+    fn faction_sentiment_host_clear_replaces_client_sparse_set_with_empty_delta() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, -0.75, baseline).unwrap();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let first = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("initial full set");
+        let first_baseline = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&first))
+            .expect("initial full set applies");
+        host.apply_ack(CLIENT_A, 1, &[], Some(first_baseline));
+
+        // Decay uses this same sparse removal operation once it reaches baseline.
+        host_overlay.set(2.0, 3.0, baseline, baseline).unwrap();
+        host.ingest_faction_sentiment(&host_overlay);
+        let cleared = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("changed sparse set emits delta");
+        assert_eq!(cleared.kind, FACTION_SENTIMENT_RECORD_KIND_DELTA);
+        assert!(cleared.pairs.is_empty());
+        assert!(
+            client
+                .apply_faction_sentiment(&factions, &client_overlay, Some(&cleared))
+                .is_some()
+        );
+        assert!(
+            client_overlay.borrow().iter().next().is_none(),
+            "an absent pair in the host's complete delta clears the client overlay"
+        );
+    }
+
+    #[test]
+    fn faction_sentiment_reload_rebases_overlay_and_full_sync_reaches_acknowledged_empty_set() {
+        let old_factions = faction_sync_registry();
+        assert_eq!(old_factions.faction_sentiment_decay(), 0.0);
+        let old_baseline = old_factions.sentiment(2.0, 3.0);
+        let live_value = -0.75;
+        assert_ne!(old_baseline, live_value);
+
+        let mut data_registry = DataRegistry::new();
+        let mut host_overlay = FactionSentimentState::default();
+        data_registry.replace_factions(old_factions.clone(), &mut host_overlay);
+        host_overlay
+            .set(2.0, 3.0, live_value, old_baseline)
+            .unwrap();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let initial = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("initial divergent set is sent");
+        let initial_baseline = client
+            .apply_faction_sentiment(&old_factions, &client_overlay, Some(&initial))
+            .expect("client accepts the initial divergent set");
+        host.apply_ack(CLIENT_A, 1, &[], Some(initial_baseline));
+
+        let refreshed_factions = FactionRegistry::from_descriptors(vec![
+            postretro_entities::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            postretro_entities::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .unwrap()
+        .with_sentiments([postretro_entities::FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: live_value,
+            tolerance: 3.0,
+            decay: None,
+        }])
+        .unwrap();
+        assert_eq!(refreshed_factions.faction_sentiment_decay(), 0.0);
+
+        // Regression: an at-baseline pair sent after a staged reload is rejected
+        // by the client, preventing the full-set baseline from ever being acked.
+        let before_rebase_generation = host_overlay.generation();
+        data_registry.replace_factions(refreshed_factions, &mut host_overlay);
+        assert!(host_overlay.iter().next().is_none());
+        assert_ne!(host_overlay.generation(), before_rebase_generation);
+        assert_eq!(
+            LiveFactionSentiment::new(&data_registry.factions, &host_overlay).sentiment(2.0, 3.0),
+            live_value,
+        );
+
+        let mut persisted =
+            collect_persisted_state(&SlotTable::new(), None, &BTreeSet::new()).state;
+        assert!(
+            collect_persisted_faction_sentiment(
+                &mut persisted,
+                &host_overlay,
+                &data_registry.factions,
+            )
+            .is_empty()
+        );
+        assert!(
+            serde_json::to_value(&persisted)
+                .unwrap()
+                .get("faction_sentiment")
+                .is_none(),
+            "a rebased pair is absent from persistence",
+        );
+
+        host.reset_schema_for_clients([CLIENT_A]);
+        client.reset_schema();
+        host.ingest_faction_sentiment(&host_overlay);
+        let refreshed = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("reload reset emits a fresh full set");
+        assert_eq!(refreshed.kind, FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE);
+        assert!(refreshed.pairs.is_empty());
+        let refreshed_baseline = client
+            .apply_faction_sentiment(&data_registry.factions, &client_overlay, Some(&refreshed))
+            .expect("client accepts the normalized empty full set");
+        assert!(client_overlay.borrow().iter().next().is_none());
+
+        host.apply_ack(CLIENT_A, 2, &[], Some(refreshed_baseline));
+        host.ingest_faction_sentiment(&host_overlay);
+        assert!(
+            host.produce_faction_sentiment_for_client(CLIENT_A)
+                .is_none(),
+            "the acknowledged normalized full set does not resend forever",
+        );
+    }
+
+    #[test]
+    fn faction_sentiment_overflow_does_not_emit_a_non_finite_host_client_update() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, f32::MAX, baseline).unwrap();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+        let initial = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("the finite, unclamped sentiment replicates");
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let baseline_id = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&initial))
+            .expect("finite sparse record applies on the client");
+        host.apply_ack(CLIENT_A, 1, &[], Some(baseline_id));
+
+        assert!(host_overlay.adjust(2.0, 3.0, f32::MAX, baseline).is_err());
+        host.ingest_faction_sentiment(&host_overlay);
+        assert!(
+            host.produce_faction_sentiment_for_client(CLIENT_A)
+                .is_none(),
+            "a finite adjustment overflow does not create a non-finite replicated delta"
+        );
+        assert_eq!(
+            client_overlay.borrow().get(2.0, 3.0),
+            Some(f32::MAX),
+            "the client keeps the last finite, unclamped host value"
+        );
+    }
+
+    #[test]
+    fn faction_sentiment_delayed_ack_keeps_the_next_delta_applicable() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, -0.75, baseline).unwrap();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let first = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("initial full set");
+        let first_baseline = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&first))
+            .expect("initial full set applies");
+
+        // The host advances before the reliable ack for the first complete set
+        // arrives. The delayed ack must still establish a delta reference the
+        // client holds, rather than forcing an unappliable current-only reference.
+        host_overlay.set(2.0, 3.0, -0.5, baseline).unwrap();
+        host.ingest_faction_sentiment(&host_overlay);
+        host.apply_ack(CLIENT_A, 2, &[], Some(first_baseline));
+        let second = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("advanced state is sent as a delta from the held baseline");
+        assert_eq!(second.kind, FACTION_SENTIMENT_RECORD_KIND_DELTA);
+        assert_eq!(second.baseline_ref, first_baseline);
+        assert!(
+            client
+                .apply_faction_sentiment(&factions, &client_overlay, Some(&second))
+                .is_some(),
+            "the client accepts the delta against its acknowledged prior set"
+        );
+        assert_eq!(client_overlay.borrow().get(2.0, 3.0), Some(-0.5));
+    }
+
+    #[test]
+    fn faction_sentiment_reset_refuses_a_prior_generation_ack() {
+        let baseline = faction_sync_registry().sentiment(2.0, 3.0);
+        let mut overlay = FactionSentimentState::default();
+        overlay.set(2.0, 3.0, -0.75, baseline).unwrap();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&overlay);
+        let old_baseline = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("initial full set")
+            .baseline_id;
+
+        host.reset_schema();
+        host.apply_ack(CLIENT_A, 2, &[], Some(old_baseline));
+        let reset = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("a reset client receives a new full set");
+        assert_eq!(reset.kind, FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE);
+        assert_ne!(reset.baseline_id, old_baseline);
+    }
+
+    #[test]
+    fn malformed_faction_sentiment_batch_keeps_existing_client_overlay() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let overlay = RefCell::new(FactionSentimentState::default());
+        overlay.borrow_mut().set(2.0, 3.0, -0.75, baseline).unwrap();
+        let before = overlay.borrow().iter().collect::<Vec<_>>();
+        let malformed = RawFactionSentimentRecord {
+            kind: FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+            has_baseline_ref: false,
+            baseline_ref: 0,
+            baseline_id: 7,
+            pairs: vec![
+                FactionSentimentPair {
+                    from_idx: 2,
+                    to_idx: 3,
+                    value: -0.25,
+                },
+                FactionSentimentPair {
+                    from_idx: 3,
+                    to_idx: 2,
+                    value: f32::NAN,
+                },
+            ],
+        };
+
+        assert!(
+            ClientStateApply::new()
+                .apply_faction_sentiment(&factions, &overlay, Some(&malformed))
+                .is_none()
+        );
+        assert_eq!(overlay.borrow().iter().collect::<Vec<_>>(), before);
     }
 }

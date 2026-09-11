@@ -131,9 +131,10 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    apply_join_seed, collect_per_owner_state, collect_persisted_state,
-    collected_per_owner_only_state, merge_per_owner_state, retain_saved_per_owner_state,
-    save_persisted_state, state_path, sync_client_per_owner_projection,
+    apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
+    collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
+    retain_saved_per_owner_state, save_persisted_state, state_path,
+    sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -3033,6 +3034,7 @@ impl ApplicationHandler for App {
                             descriptors,
                             descriptor_generation,
                             &data_registry.factions,
+                            script_ctx.faction_sentiment.as_ref(),
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,
@@ -4641,6 +4643,17 @@ impl ApplicationHandler for App {
                     for warning in collected.warnings {
                         log::warn!("[State] {warning}");
                     }
+                    {
+                        let factions = script_ctx.data_registry.borrow();
+                        let faction_sentiment = script_ctx.faction_sentiment.borrow();
+                        for warning in collect_persisted_faction_sentiment(
+                            &mut collected.state,
+                            &faction_sentiment,
+                            &factions.factions,
+                        ) {
+                            log::warn!("[State] {warning}");
+                        }
+                    }
                     if let Some(local_player_id) = session.player_options.player_id {
                         let per_owner = collect_per_owner_state(
                             &script_ctx.slot_table.borrow(),
@@ -5886,6 +5899,9 @@ impl App {
     ///   an install-bound runtime value evaluates against live slots at this
     ///   game-logic write point (invalid/readonly/non-projectable IR warns and
     ///   no-ops).
+    /// - `SetSentiment` / `AdjustSentiment` → resolve authored faction names
+    ///   against immutable content and mutate the live overlay after the tick;
+    ///   unknown names and malformed values warn and no-op.
     /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
     ///   to a writable String slot at the game-logic stage, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
@@ -6066,6 +6082,38 @@ impl App {
                         // Literal behavior stays on the existing readonly-gated
                         // JSON path, including target range validation/clamping.
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::SetSentiment { from, to, value } => {
+                    // This explicit frame-end arm is deliberately separate from
+                    // trigger_bindings' in-tick `setState` route. The overlay is
+                    // live session state rather than a tick-context slot table,
+                    // so every source (including trigger `on_fire`) becomes
+                    // visible to AI on the next tick.
+                    // Connected clients still evaluate presentation-side reactions.
+                    // The helper validates their faction names, then its authority
+                    // gate suppresses the local overlay write and v1 uplink.
+                    if let Err(error) = scripting_systems::system_reactions::apply_set_sentiment(
+                        &script_ctx,
+                        &from,
+                        &to,
+                        value,
+                    ) {
+                        log::warn!(
+                            "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                        );
+                    }
+                }
+                SystemReactionCommand::AdjustSentiment { from, to, delta } => {
+                    if let Err(error) = scripting_systems::system_reactions::apply_adjust_sentiment(
+                        &script_ctx,
+                        &from,
+                        &to,
+                        delta,
+                    ) {
+                        log::warn!(
+                            "[Scripting] adjustSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                        );
                     }
                 }
                 SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {
@@ -6724,6 +6772,8 @@ impl App {
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
+                        &script_ctx.data_registry.borrow().factions,
+                        script_ctx.faction_sentiment.as_ref(),
                         &replication_identity,
                         client,
                         replication,
@@ -7217,9 +7267,11 @@ impl App {
             // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
+            let faction_sentiment = script_ctx.faction_sentiment.borrow();
             let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
+                &faction_sentiment,
                 &replication_identity,
                 server,
                 allocator,
@@ -12442,6 +12494,7 @@ mod tests {
                     entities: Vec::new(),
                     factions: Default::default(),
                     sentiment: Vec::new(),
+                    faction_sentiment_decay: 0.0,
                     entity_faction_names: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),

@@ -174,6 +174,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
 /// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
 /// the UI-stack (`showDialog` /
 /// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
+/// live directional faction-sentiment writes (`setSentiment` /
+/// `adjustSentiment`),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
 /// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`,
@@ -197,6 +199,8 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "loadLevel",
     "restartLevel",
     "returnToFrontend",
+    "setSentiment",
+    "adjustSentiment",
     "updateState",
     "appendText",
     "backspaceText",
@@ -295,6 +299,8 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "loadLevel",
     "restartLevel",
     "returnToFrontend",
+    "setSentiment",
+    "adjustSentiment",
     "updateState",
     "appendText",
     "backspaceText",

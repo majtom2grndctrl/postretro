@@ -653,6 +653,7 @@ impl TimedAlarmHarness {
             records: Vec::new(),
             state_schema_fingerprint: fingerprint,
             state_records: records,
+            faction_sentiment_record: None,
         };
         assert!(
             self.server
@@ -760,6 +761,7 @@ impl TimedAlarmHarness {
                     CLIENT_ID,
                     ack.latest_snapshot_sequence,
                     &ack.slot_baselines,
+                    ack.faction_sentiment_baseline,
                 ),
                 ClientMessage::StateBaselineRefresh(refresh) => self.host_state.request_refresh(
                     CLIENT_ID,
@@ -787,6 +789,8 @@ impl ReplicatedStateFrame for TimedAlarmHarness {
             let _ = client_receive_and_apply(
                 &mut registry,
                 &mut slots,
+                &postretro_entities::FactionRegistry::default(),
+                self.client_ctx.faction_sentiment.as_ref(),
                 &self.replication_identity,
                 &mut self.client,
                 &mut self.client_replication,

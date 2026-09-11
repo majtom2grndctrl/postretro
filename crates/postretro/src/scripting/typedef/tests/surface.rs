@@ -104,6 +104,8 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "loadLevel",
         "restartLevel",
         "returnToFrontend",
+        "setSentiment",
+        "adjustSentiment",
         "openTextEntry",
         "updateState",
         "appendText",
@@ -266,6 +268,8 @@ fn typescript_ui_module_declaration_is_generated() {
             && ui_module.contains("export function createLocalState")
             && ui_module.contains("export const ui:")
             && ui_module.contains("export function showDialog(")
+            && ui_module.contains("export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;")
+            && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;")
             && ui_module.contains("export function getGameState(): GameStateRefs;")
             && ui_module.contains(
                 "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"
@@ -643,6 +647,11 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,",
         ),
         (
+            "target.adjustSentimentToward",
+            "adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;",
+            "adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,",
+        ),
+        (
             "grantHealth",
             "grantHealth(amount: NumberValue): Effect;",
             "grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,",
@@ -651,6 +660,11 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "grantAmmo",
             "grantAmmo(type: string, amount: NumberValue): Effect;",
             "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
+        ),
+        (
+            "source.adjustSentimentToward",
+            "adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;",
+            "adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,",
         ),
         (
             "slot.set",
@@ -675,19 +689,20 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        9,
-        "TypeScript must expose exactly the nine closed impact-effect builders"
+        11,
+        "TypeScript must expose exactly the eleven closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        7,
-        "Luau must expose exactly the seven receiver-method impact-effect builders; set/update are global functions"
+        9,
+        "Luau must expose exactly the nine receiver-method impact-effect builders; set/update are global functions"
     );
     // TypeScript intentionally keeps the wire union private behind the opaque
     // Effect brand; the SourceHandle signatures above are its public contract.
     for wire in [
         "grantHealth\", target: \"@impact.source",
         "grantAmmo\", target: \"@impact.source",
+        "adjustSentiment\", target: \"@impact.target\" | \"@impact.source",
         "slot.set\", target: \"@impact.source",
     ] {
         assert!(luau.contains(wire), "Luau grant wire must target source");

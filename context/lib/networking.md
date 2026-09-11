@@ -102,7 +102,8 @@ The app gate splits by **mutability**, not by subject. A value belongs to the ea
 
 **Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved.
 
-Faction declarations and directional relationships are parity-gated mod content, refreshed with the mod digest after content commits. Declaration order remains meaningful because it establishes shared faction identities. Equivalent relationship encodings, including omitted or no-op overrides, canonicalize before comparison. The parity-gated content is the authored *baseline*; runtime-mutable live sentiment (not yet built) is host-authoritative **state**, not content — it replicates like mover phase and stays out of the content-parity digest, so a live-sentiment divergence never gates participation. Its writes are host-only by design: the host mutates and replicates, and a connected client converges on the host's values rather than writing its own.
+Faction declarations and directional relationships are parity-gated mod content, refreshed with the mod digest after content commits. Declaration order remains meaningful because it establishes shared faction identities. Equivalent relationship encodings, including omitted or no-op overrides, canonicalize before comparison. The parity-gated content is the authored *baseline*; runtime-mutable live sentiment is host-authoritative **state**, not content — it replicates like mover phase and stays out of the content-parity digest, so a live-sentiment divergence never gates participation. Its writes are host-only by design: the host mutates and replicates, and a connected client converges on the host's values rather than writing its own. The live overlay admits only faction indices representable as `u16` and at most 4,096 diverged pairs. A write outside that transport envelope fails before changing host state. Snapshot production caches the lowered sparse set by overlay mutation generation, so unchanged frames do not rebuild it.
+When a content refresh changes a relationship baseline without changing faction identity, the preserved live overlay rebases before replication resets: values equal to the refreshed baseline leave the sparse set, while genuinely diverged values remain live.
 
 This overturns the earlier rule that a connection was bound to its content fingerprint for its lifetime, with a content change closing it. **Content divergence is a diagnostic to a still-connected peer, not a disconnect.** Closing would also race the design's own timing: a client's declaration for one level can still be in flight when the host installs the next, so a host that closed on mismatch would tear down a peer it had already demoted a frame earlier.
 
@@ -580,7 +581,11 @@ it to 14, and participation-framed traffic advances it to 15. E16's `drop_presse
 input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
 `JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedicated
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to
-19. Slide advances it to 20. Earlier peers are refused by both handshake gates.
+19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
+`SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
+`ClientMessage` or `ServerMessage` variant. `WIRE_VERSION` 21 refuses incompatible
+peers during the handshake; `SNAPSHOT_VERSION` 15 independently rejects incompatible
+snapshot envelopes during decode.
 
 ## Current contract
 

@@ -124,6 +124,8 @@ export {
   loadLevel,
   restartLevel,
   returnToFrontend,
+  setSentiment,
+  adjustSentiment,
   updateState,
   appendText,
   backspaceText,

@@ -877,6 +877,7 @@ impl ScriptingCore {
             // `manifest` borrows `self.script_runtime`; `data_registry` and
             // `sequence_registry` are disjoint fields, so all three coexist.
             let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+            let mut faction_sentiment = self.script_ctx.faction_sentiment.borrow_mut();
             let descriptors = std::mem::take(&mut manifest.entities);
             // Source names parallel `entities` only until this one-time drain.
             // Keep the retained manifest internally consistent if a caller
@@ -885,7 +886,10 @@ impl ScriptingCore {
             for desc in descriptors {
                 data_registry.upsert_entity_type(desc);
             }
-            data_registry.replace_factions(std::mem::take(&mut manifest.factions));
+            data_registry.replace_factions(
+                std::mem::take(&mut manifest.factions),
+                &mut faction_sentiment,
+            );
             data_registry.replace_maps(std::mem::take(&mut manifest.maps));
             data_registry.set_default_weapon_placement(manifest.default_weapon_placement.take());
             let global_reactions = validate_scoped_sequence_primitives(

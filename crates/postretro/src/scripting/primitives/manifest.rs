@@ -73,6 +73,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("toFaction", "String", "Offered candidate faction name (the directional destination).")
         .field("sentiment", "f32", "Finite directional sentiment: negative hostile, zero neutral, positive allied.")
         .field("tolerance", "f32", "Finite per-pair tolerance reserved for the engine-owned retaliation term.")
+        .field("decay?", "f32", "Optional non-negative rate that eases this live pair back to its authored sentiment. Overrides `factionSentimentDecay`; zero holds this pair.")
         .finish();
     registry
         .register_type("ModManifest")
@@ -122,6 +123,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "sentiment?",
             "Vec<FactionSentimentDescriptor>",
             "Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral.",
+        )
+        .field(
+            "factionSentimentDecay?",
+            "f32",
+            "Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.",
         )
         .field(
             "uiTrees?",
@@ -231,6 +237,7 @@ mod tests {
             entities: Vec::new(),
             factions: FactionRegistry::default(),
             sentiment: Vec::new(),
+            faction_sentiment_decay: 0.0,
             entity_faction_names: Vec::new(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
@@ -257,6 +264,7 @@ mod tests {
             "entities",
             "factions",
             "sentiment",
+            "factionSentimentDecay",
             "uiTrees",
             "presentationTemplates",
             "presentationOverlays",

@@ -8,6 +8,7 @@ use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value
 
 use crate::data_descriptors::{
     EntityTypeDescriptor, drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
@@ -177,6 +178,29 @@ pub(super) fn run_mod_init_quickjs(
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!(
                         "mod-init: `{source_path}` default mod manifest export `factions` invalid: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+        let faction_sentiment_decay =
+            match drain_faction_sentiment_decay_js(&obj, "default mod manifest export") {
+                Ok(decay) => decay,
+                Err(error) => {
+                    out = Err(ScriptError::InvalidArgument {
+                        reason: format!(
+                            "mod-init: `{source_path}` default mod manifest export `factionSentimentDecay` invalid: {error}"
+                        ),
+                    });
+                    return;
+                }
+            };
+        let factions = match factions.with_sentiment_decay(faction_sentiment_decay) {
+            Ok(factions) => factions,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `factionSentimentDecay` invalid: {error}"
                     ),
                 });
                 return;
@@ -469,6 +493,7 @@ pub(super) fn run_mod_init_quickjs(
             entities,
             factions,
             sentiment,
+            faction_sentiment_decay,
             entity_faction_names,
             ui_trees,
             presentation_templates,
@@ -567,6 +592,21 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let faction_sentiment_decay =
+        drain_faction_sentiment_decay_lua(&table, "returned mod manifest").map_err(|error| {
+            ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` returned mod manifest `factionSentimentDecay` invalid: {error}"
+                ),
+            }
+        })?;
+    let factions = factions
+        .with_sentiment_decay(faction_sentiment_decay)
+        .map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `factionSentimentDecay` invalid: {error}"
+            ),
+        })?;
     let (factions, sentiment) =
         drain_faction_sentiments_lua(&table, factions, "returned mod manifest").map_err(
             |error| ScriptError::InvalidArgument {
@@ -776,6 +816,7 @@ pub(super) fn run_mod_init_luau(
         entities,
         factions,
         sentiment,
+        faction_sentiment_decay,
         entity_faction_names,
         ui_trees,
         presentation_templates,

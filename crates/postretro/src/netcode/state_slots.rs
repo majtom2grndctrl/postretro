@@ -3906,6 +3906,41 @@ mod tests {
     }
 
     #[test]
+    fn faction_sentiment_overflow_does_not_emit_a_non_finite_host_client_update() {
+        let factions = faction_sync_registry();
+        let baseline = factions.sentiment(2.0, 3.0);
+        let mut host_overlay = FactionSentimentState::default();
+        host_overlay.set(2.0, 3.0, f32::MAX, baseline);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.ingest_faction_sentiment(&host_overlay);
+        let initial = host
+            .produce_faction_sentiment_for_client(CLIENT_A)
+            .expect("the finite, unclamped sentiment replicates");
+
+        let mut client = ClientStateApply::new();
+        let client_overlay = RefCell::new(FactionSentimentState::default());
+        let baseline_id = client
+            .apply_faction_sentiment(&factions, &client_overlay, Some(&initial))
+            .expect("finite sparse record applies on the client");
+        host.apply_ack(CLIENT_A, 1, &[], Some(baseline_id));
+
+        host_overlay.adjust(2.0, 3.0, f32::MAX, baseline);
+        host.ingest_faction_sentiment(&host_overlay);
+        assert!(
+            host.produce_faction_sentiment_for_client(CLIENT_A)
+                .is_none(),
+            "a finite adjustment overflow does not create a non-finite replicated delta"
+        );
+        assert_eq!(
+            client_overlay.borrow().get(2.0, 3.0),
+            Some(f32::MAX),
+            "the client keeps the last finite, unclamped host value"
+        );
+    }
+
+    #[test]
     fn faction_sentiment_delayed_ack_keeps_the_next_delta_applicable() {
         let factions = faction_sync_registry();
         let baseline = factions.sentiment(2.0, 3.0);

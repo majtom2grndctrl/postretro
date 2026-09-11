@@ -168,6 +168,9 @@ impl FactionSentimentState {
     /// this runtime state independent of content and removes a pair as soon as
     /// it returns to that baseline.
     pub fn set(&mut self, from: f32, to: f32, value: f32, baseline: f32) {
+        if !value.is_finite() || !baseline.is_finite() {
+            return;
+        }
         let Some(pair) = self.resolved_pair(from, to) else {
             return;
         };
@@ -177,11 +180,18 @@ impl FactionSentimentState {
     /// Add `delta` to the live value for a directional pair. An absent pair
     /// starts at the supplied authored baseline.
     pub fn adjust(&mut self, from: f32, to: f32, delta: f32, baseline: f32) {
+        if !delta.is_finite() || !baseline.is_finite() {
+            return;
+        }
         let Some(pair) = self.resolved_pair(from, to) else {
             return;
         };
         let current = self.get_resolved(pair).unwrap_or(baseline);
-        self.set_resolved(pair, current + delta, baseline);
+        let next = current + delta;
+        if !current.is_finite() || !next.is_finite() {
+            return;
+        }
+        self.set_resolved(pair, next, baseline);
     }
 
     /// Iterate the sparse diverged set in ascending `(from_idx, to_idx)`
@@ -259,6 +269,9 @@ impl FactionSentimentState {
     }
 
     fn set_resolved(&mut self, pair: (usize, usize), value: f32, baseline: f32) {
+        if !value.is_finite() || !baseline.is_finite() {
+            return;
+        }
         match self
             .overrides
             .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
@@ -1528,6 +1541,32 @@ mod tests {
             state.iter().collect::<Vec<_>>(),
             vec![(3, 2, -0.25)],
             "a value restored to its baseline is absent from the sparse overlay"
+        );
+    }
+
+    #[test]
+    fn faction_sentiment_state_rejects_non_finite_set_and_adjust_without_clamping() {
+        let mut state = FactionSentimentState::default();
+        state.set(2.0, 3.0, f32::MAX, 0.0);
+        let before = state.iter().collect::<Vec<_>>();
+
+        state.set(2.0, 3.0, f32::NAN, 0.0);
+        state.set(2.0, 3.0, f32::INFINITY, 0.0);
+        state.set(2.0, 3.0, 1.0, f32::NAN);
+        state.adjust(2.0, 3.0, f32::NAN, 0.0);
+        state.adjust(2.0, 3.0, f32::INFINITY, 0.0);
+        state.adjust(2.0, 3.0, 1.0, f32::NAN);
+        state.adjust(2.0, 3.0, f32::MAX, 0.0);
+
+        assert_eq!(
+            state.iter().collect::<Vec<_>>(),
+            before,
+            "non-finite inputs and finite-adjust overflow leave the sparse overlay unchanged"
+        );
+        assert_eq!(
+            state.get(2.0, 3.0),
+            Some(f32::MAX),
+            "the finite sentiment remains unclamped"
         );
     }
 

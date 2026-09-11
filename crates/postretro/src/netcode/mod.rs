@@ -4595,13 +4595,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            20,
-            "enemy projectile damage and presentation reuse the transport layout"
+            21,
+            "enemy projectile damage and presentation add nothing beyond the current faction-sentiment transport layout"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            14,
-            "enemy projectile presentation reuses Transform plus entity_class"
+            15,
+            "enemy projectile presentation adds nothing beyond the current faction-sentiment snapshot layout"
         );
     }
 

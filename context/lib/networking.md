@@ -582,8 +582,9 @@ input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to
 19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
-`ClientMessage` or `ServerMessage` variant. Earlier peers are refused by both handshake
-gates.
+`ClientMessage` or `ServerMessage` variant. `WIRE_VERSION` 21 refuses incompatible
+peers during the handshake; `SNAPSHOT_VERSION` 15 independently rejects incompatible
+snapshot envelopes during decode.
 
 ## Current contract
 

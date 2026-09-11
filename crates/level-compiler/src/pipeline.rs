@@ -878,6 +878,7 @@ fn run_after_parsing(
         lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
         uncompressed_irradiance: args.uncompressed_irradiance,
+        direction_texel_scale: args.direction_texel_scale,
     };
     let final_lightmap_density;
     let lightmap_bake_output = if let Some(ref cache) = stage_cache {
@@ -959,6 +960,7 @@ fn run_after_parsing(
                 &layer_input_hashes,
                 density,
                 lightmap_config.uncompressed_irradiance,
+                lightmap_config.direction_texel_scale,
             );
             let section_key = cache::CacheKey::new(
                 "lightmap_section",
@@ -1031,8 +1033,11 @@ fn run_after_parsing(
                         prepared.atlas_height,
                     );
                     composite.dilate();
-                    let section =
-                        composite.encode_section(density, lightmap_config.uncompressed_irradiance);
+                    let section = composite.encode_section(
+                        density,
+                        lightmap_config.uncompressed_irradiance,
+                        lightmap_config.direction_texel_scale,
+                    );
                     cache.put(&section_key, &section.to_bytes());
                     section
                 }
@@ -1067,6 +1072,7 @@ fn run_after_parsing(
                 lightmap_density: density,
                 area_sample_count: args.soft_shadow_samples,
                 uncompressed_irradiance: args.uncompressed_irradiance,
+                direction_texel_scale: args.direction_texel_scale,
             },
             &lightmap_control,
         )

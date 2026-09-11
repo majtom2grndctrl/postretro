@@ -579,6 +579,8 @@ pub fn layer_input_hash(
 ///    Already folded into every `layer_input_hash` via `lightmap_density`, so
 ///    this is belt-and-suspenders (same rationale as the light-count fold).
 /// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
+/// 6. `direction_texel_scale` (u32 LE) — selects the post-composite direction
+///    atlas resolution without invalidating any per-light layer cache entry.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
@@ -586,6 +588,7 @@ pub fn section_input_hash(
     layer_input_hashes: &[[u8; 32]],
     texel_density: f32,
     uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -595,6 +598,7 @@ pub fn section_input_hash(
     }
     hasher.update(&texel_density.to_le_bytes());
     hasher.update(&[u8::from(uncompressed_irradiance)]);
+    hasher.update(&direction_texel_scale.to_le_bytes());
     *hasher.finalize().as_bytes()
 }
 
@@ -836,6 +840,11 @@ mod tests {
         assert_eq!(
             mono_atlas, composite,
             "per-light composite must equal the monolithic atlas bit-for-bit"
+        );
+        assert_eq!(
+            mono_atlas.encode_section(DENSITY, true, 4),
+            composite.encode_section(DENSITY, true, 4),
+            "a non-default direction scale must encode identically after the warm/cold seam"
         );
     }
 
@@ -1755,8 +1764,46 @@ mod tests {
         density: f32,
         uncompressed_irradiance: bool,
     ) -> CacheKey {
-        let h = section_input_hash(layer_input_hashes, density, uncompressed_irradiance);
+        let h = section_input_hash(
+            layer_input_hashes,
+            density,
+            uncompressed_irradiance,
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+        );
         CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
+    }
+
+    #[test]
+    fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
+        // The layer hash represents an already-baked full-resolution light
+        // contribution. Direction coarsening occurs only during section encode,
+        // so the two builds must retain this exact layer key while their
+        // composited-section keys differ.
+        let layer_input_hashes = [[0x5a; 32]];
+        let at_scale_two = CacheKey::new(
+            "lightmap_section",
+            LIGHTMAP_SECTION_VERSION,
+            &section_input_hash(&layer_input_hashes, DENSITY, true, 2),
+        );
+        let at_scale_one = CacheKey::new(
+            "lightmap_section",
+            LIGHTMAP_SECTION_VERSION,
+            &section_input_hash(&layer_input_hashes, DENSITY, true, 1),
+        );
+        assert_ne!(
+            at_scale_two.as_filename(),
+            at_scale_one.as_filename(),
+            "changing only direction scale must re-key the warm section memo"
+        );
+
+        let dir = fresh_cache_dir("section_direction_scale");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&at_scale_two, b"scale-two-section");
+        assert!(
+            cache.get(&at_scale_one).is_none(),
+            "a factor-1 rebuild must miss a factor-2 section memo"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Bake every light's layer, composite, dilate, and `encode_section` — the
@@ -1777,7 +1824,7 @@ mod tests {
         composite.dilate();
         // Uncompressed RGBA16F so the synthetic-atlas tests stay off the BC6H
         // encoder; the cache behavior under test is format-agnostic.
-        composite.encode_section(DENSITY, true)
+        composite.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE)
     }
 
     /// Compute the filtered direct-lightmap light set + their ordered

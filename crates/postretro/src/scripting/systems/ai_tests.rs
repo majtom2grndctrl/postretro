@@ -49,7 +49,7 @@ use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{
     DataRegistry, EntityStateComponent, FactionDescriptor, FactionRegistry,
-    FactionSentimentDescriptor, ScriptCtx,
+    FactionSentimentDescriptor, FactionSentimentState, LiveFactionSentiment, ScriptCtx,
 };
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
@@ -1294,10 +1294,11 @@ fn select_target_for_test(
     candidate_scope: &mut CandidateScope,
 ) -> (Option<targeting::TargetCandidate>, Option<TargetPawn>) {
     let factions = FactionRegistry::default();
+    let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
     let offers = target_offers(
         registry,
-        &factions,
+        &live_factions,
         from,
         enemy_faction,
         None,
@@ -1316,7 +1317,7 @@ fn select_target_for_test(
         retained,
         &offers,
         registry,
-        &factions,
+        &live_factions,
         enemy_faction,
         candidate_filter,
         candidate_scope,
@@ -1715,6 +1716,7 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
             descriptors: &[],
             descriptor_generation: 0,
             factions: &factions,
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -1742,6 +1744,7 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
             descriptors: &[],
             descriptor_generation: 0,
             factions: &factions,
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -1880,6 +1883,7 @@ fn run_crossfire_tick(
             descriptors: &[],
             descriptor_generation: 0,
             factions,
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -2190,6 +2194,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         &[],
         0,
         &factions,
+        &RefCell::new(FactionSentimentState::default()),
         None,
         &no_edges,
         &no_edges,
@@ -2369,6 +2374,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
         &[],
         0,
         &factions,
+        &RefCell::new(FactionSentimentState::default()),
         None,
         &no_edges,
         &no_edges,
@@ -2472,6 +2478,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         &[],
         0,
         &FactionRegistry::default(),
+        &RefCell::new(FactionSentimentState::default()),
         None,
         &no_edges,
         &no_edges,
@@ -2559,6 +2566,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
             descriptors: &descriptors,
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -2624,6 +2632,7 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
             descriptors: &[],
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -2692,6 +2701,7 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -2762,6 +2772,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
             descriptors: &[],
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |registry| {
             policy_fires += 1;
@@ -2837,6 +2848,7 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |registry| {
             policy_fires += 1;
@@ -2933,6 +2945,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -2969,6 +2982,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -3026,6 +3040,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             descriptors: &[],
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |registry| {
             registry
@@ -10078,6 +10093,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptors: &descriptors,
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     )
@@ -10107,6 +10123,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptors: &descriptors,
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10224,6 +10241,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10264,6 +10282,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10338,6 +10357,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10363,6 +10383,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptors: &data.entities,
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10410,6 +10431,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10455,6 +10477,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             descriptors: &descriptors,
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     );
@@ -10513,6 +10536,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             descriptors: &descriptors,
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
         },
         |_| {},
     )

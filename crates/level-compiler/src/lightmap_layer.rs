@@ -422,23 +422,43 @@ pub fn geometry_world_aabb(geometry: &GeometryResult) -> (DVec3, DVec3) {
 }
 
 /// The atlas layout descriptor folded into a layer's cache key. Captures atlas
-/// dimensions, resolved chart dimensions, and per-chart placements so an atlas
-/// repack (which shifts every placement) or a per-surface density override
-/// invalidates all layers by changing this fingerprint.
+/// dimensions, resolved chart sampling extents/dimensions, and per-chart
+/// placements so an atlas repack (which shifts every placement) or a
+/// per-surface density override invalidates all layers by changing this
+/// fingerprint.
 ///
 /// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
 /// fields directly into the digest — the deterministically-derived proxy-bytes
 /// fingerprint the animated-weight-map stage uses for its non-`Serialize` atlas
-/// types. Per-chart dimensions are folded explicitly because a scale-region edit
-/// can resize a lone chart while its 64² atlas and `(0, 0, 0)` placement remain
-/// unchanged. Raw region definitions are intentionally not folded: equivalent
-/// resolved chart dimensions share cache identity.
+/// types. Every resolved per-chart sampling input is folded explicitly because
+/// a scale-region edit can change texel world positions or resize a lone chart
+/// while its 64² atlas and `(0, 0, 0)` placement remain unchanged. Raw region
+/// definitions are intentionally not folded: equivalent resolved chart
+/// outcomes share cache identity.
 fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&atlas.atlas_width.to_le_bytes());
     hasher.update(&atlas.atlas_height.to_le_bytes());
     hasher.update(&(atlas.charts.len() as u32).to_le_bytes());
     for chart in atlas.charts {
+        for component in [chart.origin.x, chart.origin.y, chart.origin.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.u_axis.x, chart.u_axis.y, chart.u_axis.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.v_axis.x, chart.v_axis.y, chart.v_axis.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in chart.uv_min {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in chart.uv_extent {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.normal.x, chart.normal.y, chart.normal.z] {
+            hasher.update(&component.to_le_bytes());
+        }
         hasher.update(&chart.width_texels.to_le_bytes());
         hasher.update(&chart.height_texels.to_le_bytes());
     }
@@ -1286,13 +1306,17 @@ mod tests {
         );
     }
 
-    fn lone_chart_layout_fingerprint(width_texels: u32, height_texels: u32) -> Vec<u8> {
+    fn lone_chart_layout_fingerprint(
+        width_texels: u32,
+        height_texels: u32,
+        uv_extent: [f32; 2],
+    ) -> Vec<u8> {
         let charts = [Chart {
             origin: Vec3::ZERO,
             u_axis: Vec3::X,
             v_axis: Vec3::Z,
             uv_min: [0.0, 0.0],
-            uv_extent: [1.0, 1.0],
+            uv_extent,
             normal: Vec3::Y,
             width_texels,
             height_texels,
@@ -1315,8 +1339,8 @@ mod tests {
 
     #[test]
     fn atlas_layout_fingerprint_rekeys_lone_chart_when_scale_changes_dimensions() {
-        let fine = lone_chart_layout_fingerprint(40, 40);
-        let coarse = lone_chart_layout_fingerprint(20, 20);
+        let fine = lone_chart_layout_fingerprint(40, 40, [1.0, 1.0]);
+        let coarse = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
         assert_ne!(
             fine, coarse,
             "P2: chart dimensions must re-key even when 64² placement is unchanged"
@@ -1327,9 +1351,9 @@ mod tests {
     fn atlas_layout_fingerprint_tracks_resolved_dimensions_not_region_definition_order() {
         // Two region orderings that resolve to the same chart dimensions reach
         // this boundary as identical chart/placement data and must share a key.
-        let equivalent_a = lone_chart_layout_fingerprint(20, 20);
-        let equivalent_b = lone_chart_layout_fingerprint(20, 20);
-        let different = lone_chart_layout_fingerprint(40, 40);
+        let equivalent_a = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let equivalent_b = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let different = lone_chart_layout_fingerprint(40, 40, [1.0, 1.0]);
         assert_eq!(
             equivalent_a, equivalent_b,
             "P11: equivalent resolved scale outcomes must not spuriously miss"
@@ -1337,6 +1361,18 @@ mod tests {
         assert_ne!(
             equivalent_a, different,
             "P11: a changed resolved chart dimension must miss"
+        );
+    }
+
+    #[test]
+    fn atlas_layout_fingerprint_rekeys_lone_chart_when_uv_extent_changes() {
+        // A scale edit can move chart sample positions without changing a
+        // small chart's rounded dimensions or its sole 64² placement.
+        let baseline = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let rescaled = lone_chart_layout_fingerprint(20, 20, [1.1, 1.0]);
+        assert_ne!(
+            baseline, rescaled,
+            "resolved sampling extent must re-key a warm layer"
         );
     }
 

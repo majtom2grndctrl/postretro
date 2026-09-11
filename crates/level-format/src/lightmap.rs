@@ -305,14 +305,60 @@ impl LightmapSection {
                 format!("unsupported lightmap irradiance format: {irr_format}"),
             )));
         }
-        if dir_format != DIRECTION_FORMAT_OCT_RGBA8 && dir_format != DIRECTION_FORMAT_OCT_RG8 {
+        let direction_texel_bytes = match dir_format {
+            DIRECTION_FORMAT_OCT_RGBA8 => DIRECTION_RGBA8_TEXEL_BYTES,
+            DIRECTION_FORMAT_OCT_RG8 => DIRECTION_TEXEL_BYTES,
+            _ => {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unsupported lightmap direction format: {dir_format}"),
+                )));
+            }
+        };
+        if dir_width == 0 || dir_height == 0 {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("unsupported lightmap direction format: {dir_format}"),
+                format!(
+                    "lightmap direction dimensions must be nonzero, got {dir_width}x{dir_height}"
+                ),
+            )));
+        }
+        let expected_dir_total_bytes = u64::from(dir_width)
+            .checked_mul(u64::from(dir_height))
+            .and_then(|texels| texels.checked_mul(u64::from(layer_count)))
+            .and_then(|texels| texels.checked_mul(direction_texel_bytes as u64))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "lightmap direction byte length overflows for {dir_width}x{dir_height}x{layer_count} format {dir_format}"
+                    ),
+                ))
+            })?;
+        let actual_dir_total_bytes = u64::try_from(dir_total_bytes).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "lightmap direction blob length exceeds u64",
+            ))
+        })?;
+        if actual_dir_total_bytes != expected_dir_total_bytes {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "lightmap direction blob length {dir_total_bytes} does not match expected {expected_dir_total_bytes} bytes for {dir_width}x{dir_height}x{layer_count} format {dir_format}"
+                ),
             )));
         }
 
-        let expected = HEADER_SIZE + irr_total_bytes + dir_total_bytes;
+        let expected = HEADER_SIZE
+            .checked_add(irr_total_bytes)
+            .and_then(|len| len.checked_add(dir_total_bytes))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "lightmap section payload length overflows address space",
+                ))
+            })?;
         if data.len() < expected {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -715,6 +761,60 @@ mod tests {
         );
         assert_eq!(section.direction.len(), 4 * DIRECTION_TEXEL_BYTES);
         assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
+    }
+
+    #[test]
+    fn rejects_short_rg8_direction_blob() {
+        let section = LightmapSection::placeholder();
+        let mut bytes = section.to_bytes();
+        // Keep the body intact, but claim one fewer direction byte at the
+        // fixed v2 header offset. This must fail before a renderer can use the
+        // inconsistent dimensions and payload for a texture upload.
+        bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(err) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string()
+                        .contains("direction blob length 1 does not match")
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_zero_direction_dimensions() {
+        let section = LightmapSection::placeholder();
+        let mut bytes = section.to_bytes();
+        // `dir_width` lives at fixed v2 header offset 28..32.
+        bytes[28..32].copy_from_slice(&0u32.to_le_bytes());
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(err) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string()
+                        .contains("direction dimensions must be nonzero")
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_rgba8_direction_round_trip_remains_accepted() {
+        let mut section = LightmapSection::placeholder();
+        section.direction_format = DIRECTION_FORMAT_OCT_RGBA8;
+        section.direction = vec![128, 255, 128, 255];
+
+        assert_eq!(
+            LightmapSection::from_bytes(&section.to_bytes()).unwrap(),
+            section
+        );
     }
 
     #[test]

@@ -1288,8 +1288,8 @@ mod tests {
 
             assert_eq!(manifest.factions.index_for_name("cabal"), Some(2.0));
             assert_eq!(manifest.factions.index_for_name("resistance"), Some(3.0));
-            assert_eq!(manifest.faction_sentiment_decay, 0.0);
-            assert_eq!(manifest.factions.faction_sentiment_decay(), 0.0);
+            assert!(manifest.faction_sentiment_decay.abs() <= f32::EPSILON);
+            assert!(manifest.factions.faction_sentiment_decay().abs() <= f32::EPSILON);
             assert_eq!(
                 manifest.entity_faction_names,
                 vec![Some("cabal".to_string()), Some("resistance".to_string())],
@@ -1348,16 +1348,19 @@ mod tests {
 
             assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
             assert_eq!(manifest.factions.tolerance(2.0, 3.0), Some(0.25));
-            assert_eq!(manifest.faction_sentiment_decay, 0.1);
-            assert_eq!(manifest.factions.faction_sentiment_decay(), 0.1);
-            assert_eq!(manifest.factions.sentiment_decay(2.0, 3.0), 0.25);
-            assert_eq!(manifest.factions.sentiment_decay(3.0, 2.0), 0.1);
+            assert!((manifest.faction_sentiment_decay - 0.1).abs() <= f32::EPSILON);
+            assert!((manifest.factions.faction_sentiment_decay() - 0.1).abs() <= f32::EPSILON);
+            assert!((manifest.factions.sentiment_decay(2.0, 3.0) - 0.25).abs() <= f32::EPSILON);
+            assert!((manifest.factions.sentiment_decay(3.0, 2.0) - 0.1).abs() <= f32::EPSILON);
             assert_eq!(manifest.sentiment.len(), 1);
             assert_eq!(manifest.sentiment[0].from_faction, "cabal");
             assert_eq!(manifest.sentiment[0].to_faction, "resistance");
             assert_eq!(manifest.sentiment[0].sentiment, -0.75);
             assert_eq!(manifest.sentiment[0].tolerance, 0.25);
-            assert_eq!(manifest.sentiment[0].decay, Some(0.25));
+            let decay = manifest.sentiment[0]
+                .decay
+                .expect("fixture authors a per-pair decay override");
+            assert!((decay - 0.25).abs() <= f32::EPSILON);
             assert_eq!(
                 manifest.factions.sentiment(3.0, 2.0),
                 -1.0,

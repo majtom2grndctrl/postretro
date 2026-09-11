@@ -874,7 +874,7 @@ export function defineMod(
   } as import("postretro").ModManifest;
 }
 
-/** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. */
+/** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. Names beginning with `@postretro.` are reserved by the engine. */
 export function defineFaction(name: string): import("postretro").FactionDescriptor {
   return { name };
 }

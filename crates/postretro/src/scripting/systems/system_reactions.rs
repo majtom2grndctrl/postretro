@@ -73,9 +73,13 @@ fn apply_sentiment_write(
 
     let mut overlay = script_ctx.faction_sentiment.borrow_mut();
     if is_adjustment {
-        overlay.adjust(from_index, to_index, value, baseline);
+        overlay
+            .adjust(from_index, to_index, value, baseline)
+            .map_err(|error| error.to_string())?;
     } else {
-        overlay.set(from_index, to_index, value, baseline);
+        overlay
+            .set(from_index, to_index, value, baseline)
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }

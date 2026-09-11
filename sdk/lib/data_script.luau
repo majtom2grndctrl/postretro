@@ -1086,7 +1086,7 @@ end
 
 --- Pure builder for a stable named faction declaration. Include the result in
 --- `defineMod({ factions = { ... } })`; archetypes refer to the name through
---- `components.faction`.
+--- `components.faction`. Names beginning with `@postretro.` are engine-reserved.
 function DataScriptSdk.defineFaction(name: string): FactionDescriptor
   return { name = name }
 end

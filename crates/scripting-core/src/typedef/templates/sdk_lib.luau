@@ -683,7 +683,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure builder for a stable named faction declaration. Include the result in
 --- `defineMod({ factions = { ... } })`; archetypes refer to its name through
---- `components.faction`.
+--- `components.faction`. Names beginning with `@postretro.` are engine-reserved.
 declare function defineFaction(name: string): FactionDescriptor
 --- Build one directed relationship for `sentiment` in the returned mod
 --- manifest. Negative sentiment is hostile, zero neutral, positive allied.

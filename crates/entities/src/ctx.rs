@@ -168,7 +168,10 @@ mod tests {
     #[test]
     fn faction_sentiment_survives_faction_content_replacement() {
         let ctx = ScriptCtx::new();
-        ctx.faction_sentiment.borrow_mut().set(2.0, 3.0, 0.5, -1.0);
+        ctx.faction_sentiment
+            .borrow_mut()
+            .set(2.0, 3.0, 0.5, -1.0)
+            .unwrap();
 
         ctx.data_registry
             .borrow_mut()

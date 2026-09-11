@@ -11,7 +11,9 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use postretro_entities::data_registry::{FactionRegistry, FactionSentimentState};
+use postretro_entities::data_registry::{
+    DEFAULT_ENEMY_FACTION_INDEX, FactionRegistry, FactionSentimentState, PLAYER_FACTION_INDEX,
+};
 use postretro_entities::slot_table::{
     ReplicationScope, SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue,
 };
@@ -24,6 +26,10 @@ pub(crate) const CURRENT_STATE_VERSION: u32 = 4;
 const OLDEST_SUPPORTED_STATE_VERSION: u32 = 2;
 const STATE_FILENAME: &str = "state.json";
 pub(crate) const PER_OWNER_SAVE_INTERVAL: Duration = Duration::from_secs(60);
+// Authored factions cannot use the `@postretro.` namespace. These stable keys
+// make the two engine-only indices durable without pretending they are authored.
+const PERSISTED_PLAYER_FACTION_KEY: &str = "@postretro.player";
+const PERSISTED_DEFAULT_ENEMY_FACTION_KEY: &str = "@postretro.default-enemy";
 
 /// Process-lifetime gate for the one-time restore and clean-exit save.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,9 +116,8 @@ pub(crate) struct PersistedState {
     slots: BTreeMap<String, PersistedValue>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
-    /// Directional live sentiment keyed by the manifest-authored `from` and
-    /// `to` faction names. The nested map keeps JSON object keys stable while
-    /// preserving the direction of every pair.
+    /// Directional live sentiment keyed by authored faction names or reserved
+    /// engine identity keys. The nested map preserves pair direction.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     faction_sentiment: BTreeMap<String, BTreeMap<String, f32>>,
 }
@@ -217,8 +222,8 @@ pub(crate) fn collect_persisted_state(
 }
 
 /// Collect the live sparse sentiment overlay into the engine-owned section of
-/// a save document. Runtime faction indices are deliberately not durable: only
-/// manifest-authored names survive a later process or content reload.
+/// a save document. Runtime faction indices are deliberately not durable:
+/// authored names and the two reserved engine identities survive reload.
 pub(crate) fn collect_persisted_faction_sentiment(
     state: &mut PersistedState,
     sentiment: &FactionSentimentState,
@@ -236,13 +241,13 @@ pub(crate) fn collect_persisted_faction_sentiment(
         }
         let Some(from_name) = faction_name_for_index(factions, from) else {
             warnings.push(format!(
-                "persistent faction sentiment from index {from} to {to} has no authored from-faction name; omitting it"
+                "persistent faction sentiment from index {from} to {to} has no durable from-faction identity; omitting it"
             ));
             continue;
         };
         let Some(to_name) = faction_name_for_index(factions, to) else {
             warnings.push(format!(
-                "persistent faction sentiment from index {from} to {to} has no authored to-faction name; omitting it"
+                "persistent faction sentiment from index {from} to {to} has no durable to-faction identity; omitting it"
             ));
             continue;
         };
@@ -268,7 +273,7 @@ pub(crate) fn overlay_persisted_faction_sentiment(
     let mut warnings = Vec::new();
 
     for (from_name, to_values) in &persisted.faction_sentiment {
-        let Some(from) = factions.index_for_name(from_name) else {
+        let Some(from) = faction_index_for_persisted_name(factions, from_name) else {
             for to_name in to_values.keys() {
                 warnings.push(format!(
                     "state file faction sentiment from `{from_name}` to `{to_name}` references an undeclared from faction; ignoring it"
@@ -284,28 +289,41 @@ pub(crate) fn overlay_persisted_faction_sentiment(
                 ));
                 continue;
             }
-            let Some(to) = factions.index_for_name(to_name) else {
+            let Some(to) = faction_index_for_persisted_name(factions, to_name) else {
                 warnings.push(format!(
                     "state file faction sentiment from `{from_name}` to `{to_name}` references an undeclared to faction; ignoring it"
                 ));
                 continue;
             };
 
-            sentiment.set(from, to, *value, factions.sentiment(from, to));
+            if let Err(error) = sentiment.set(from, to, *value, factions.sentiment(from, to)) {
+                warnings.push(format!(
+                    "state file faction sentiment from `{from_name}` to `{to_name}` is unsupported: {error}; ignoring it"
+                ));
+            }
         }
     }
 
     warnings
 }
 
-/// Authored factions begin at index two: indices zero and one are the player
-/// and compatibility enemy factions and therefore have no manifest names to
-/// persist. Pairs involving those engine-only identities remain runtime-only.
 fn faction_name_for_index(factions: &FactionRegistry, index: usize) -> Option<&str> {
-    index
-        .checked_sub(2)
-        .and_then(|offset| factions.descriptors().get(offset))
-        .map(|descriptor| descriptor.name.as_str())
+    match index {
+        0 => Some(PERSISTED_PLAYER_FACTION_KEY),
+        1 => Some(PERSISTED_DEFAULT_ENEMY_FACTION_KEY),
+        _ => index
+            .checked_sub(2)
+            .and_then(|offset| factions.descriptors().get(offset))
+            .map(|descriptor| descriptor.name.as_str()),
+    }
+}
+
+fn faction_index_for_persisted_name(factions: &FactionRegistry, name: &str) -> Option<f32> {
+    match name {
+        PERSISTED_PLAYER_FACTION_KEY => Some(PLAYER_FACTION_INDEX),
+        PERSISTED_DEFAULT_ENEMY_FACTION_KEY => Some(DEFAULT_ENEMY_FACTION_INDEX),
+        _ => factions.index_for_name(name),
+    }
 }
 
 /// Collect one player's persistent per-owner slots. The session-scoped seat is
@@ -1123,23 +1141,43 @@ mod tests {
     }
 
     #[test]
-    fn faction_sentiment_roundtrips_two_directional_pairs_by_name() {
+    fn faction_sentiment_roundtrips_authored_and_reserved_directional_pairs() {
         let factions = faction_fixture();
         let cabal = factions.index_for_name("cabal").unwrap();
         let resistance = factions.index_for_name("resistance").unwrap();
         let mut source = FactionSentimentState::default();
-        source.set(
-            cabal,
-            resistance,
-            -0.25,
-            factions.sentiment(cabal, resistance),
-        );
-        source.set(
-            resistance,
-            cabal,
-            0.5,
-            factions.sentiment(resistance, cabal),
-        );
+        source
+            .set(
+                cabal,
+                resistance,
+                -0.25,
+                factions.sentiment(cabal, resistance),
+            )
+            .unwrap();
+        source
+            .set(
+                resistance,
+                cabal,
+                0.5,
+                factions.sentiment(resistance, cabal),
+            )
+            .unwrap();
+        source
+            .set(
+                PLAYER_FACTION_INDEX,
+                DEFAULT_ENEMY_FACTION_INDEX,
+                -0.5,
+                factions.sentiment(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
+            )
+            .unwrap();
+        source
+            .set(
+                DEFAULT_ENEMY_FACTION_INDEX,
+                PLAYER_FACTION_INDEX,
+                -0.25,
+                factions.sentiment(DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX),
+            )
+            .unwrap();
 
         let mut persisted = PersistedState {
             version: CURRENT_STATE_VERSION,
@@ -1151,6 +1189,14 @@ mod tests {
         assert_eq!(
             persisted.faction_sentiment,
             BTreeMap::from([
+                (
+                    PERSISTED_DEFAULT_ENEMY_FACTION_KEY.to_string(),
+                    BTreeMap::from([(PERSISTED_PLAYER_FACTION_KEY.to_string(), -0.25)]),
+                ),
+                (
+                    PERSISTED_PLAYER_FACTION_KEY.to_string(),
+                    BTreeMap::from([(PERSISTED_DEFAULT_ENEMY_FACTION_KEY.to_string(), -0.5)]),
+                ),
                 (
                     "cabal".to_string(),
                     BTreeMap::from([("resistance".to_string(), -0.25)]),
@@ -1170,6 +1216,14 @@ mod tests {
         );
         assert_eq!(restored.get(cabal, resistance), Some(-0.25));
         assert_eq!(restored.get(resistance, cabal), Some(0.5));
+        assert_eq!(
+            restored.get(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
+            Some(-0.5)
+        );
+        assert_eq!(
+            restored.get(DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX),
+            Some(-0.25)
+        );
     }
 
     #[test]
@@ -1179,7 +1233,7 @@ mod tests {
         let resistance = factions.index_for_name("resistance").unwrap();
         let baseline = factions.sentiment(cabal, resistance);
         let mut sentiment = FactionSentimentState::default();
-        sentiment.set(cabal, resistance, 0.25, baseline);
+        sentiment.set(cabal, resistance, 0.25, baseline).unwrap();
         sentiment.decay_step(1.0, |_, _| 2.0, |_, _| baseline);
         assert!(sentiment.iter().next().is_none());
 

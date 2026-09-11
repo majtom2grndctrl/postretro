@@ -714,9 +714,15 @@ impl ImpactPolicyRuntime {
         // Keep this RefMut scoped to one writer. No impact effect may carry an
         // overlay borrow into a later effect or into the AI read path.
         {
-            ctx.faction_sentiment
-                .borrow_mut()
-                .adjust(from_faction, to_faction, delta, baseline);
+            if let Err(error) =
+                ctx.faction_sentiment
+                    .borrow_mut()
+                    .adjust(from_faction, to_faction, delta, baseline)
+            {
+                log::warn!(
+                    "[Scripting] adjustSentiment impact from faction {from_faction} to {to_faction} failed: {error}; skipping"
+                );
+            }
         }
     }
 

@@ -2669,12 +2669,17 @@ fn faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo() {
         sentiment_adjust_effect("@impact.target", "@impact.source", -16_777_216.0),
         sentiment_adjust_effect("@impact.target", "@impact.source", 0.5),
     ]));
-    harness.ctx.faction_sentiment.borrow_mut().set(
-        resistance,
-        cabal,
-        16_777_216.0,
-        harness.factions.sentiment(resistance, cabal),
-    );
+    harness
+        .ctx
+        .faction_sentiment
+        .borrow_mut()
+        .set(
+            resistance,
+            cabal,
+            16_777_216.0,
+            harness.factions.sentiment(resistance, cabal),
+        )
+        .unwrap();
     harness.launch_backstab_projectile(cabal_enemy);
     harness.tick(IMPACT_DT);
     assert_eq!(

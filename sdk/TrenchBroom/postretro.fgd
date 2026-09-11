@@ -574,6 +574,15 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// Compiler-only brush region that overrides lightmap texel density for surfaces
+// whose first face vertex falls inside its world-space AABB. Values below 1.0
+// make those charts coarser; values above 1.0 make them finer. Overlapping
+// regions resolve in map entity order, with the last matching region winning.
+@SolidClass = lightmap_scale_region : "Per-surface lightmap density override (brush)"
+[
+    _lightmap_scale(float) : "Lightmap density multiplier (positive; 1.0 = map density, below 1.0 = coarser, above 1.0 = finer)" : "1.0"
+]
+
 // Invisible brush volume that preserves full SH probe density in a sensitive
 // area. The compiler resolves the brush hull to an engine-space AABB; it emits
 // no world geometry, collision, or runtime entity.

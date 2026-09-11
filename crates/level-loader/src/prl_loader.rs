@@ -3665,7 +3665,7 @@ mod tests {
                 matches!(
                     result,
                     Err(PrlLoadError::FormatError(
-                        prl_format::FormatError::SectionOutOfBounds { .. }
+                        prl_format::FormatError::SectionOffsetOverflow { .. }
                     ))
                 ),
                 "{name} must reject invalid container bounds before applying the binding floor"

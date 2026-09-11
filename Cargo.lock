@@ -3742,9 +3742,11 @@ dependencies = [
  "proptest",
  "ratatui",
  "rayon",
+ "same-file",
  "serde",
  "serde_json",
  "shambler",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

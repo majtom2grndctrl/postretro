@@ -5887,6 +5887,9 @@ impl App {
     ///   an install-bound runtime value evaluates against live slots at this
     ///   game-logic write point (invalid/readonly/non-projectable IR warns and
     ///   no-ops).
+    /// - `SetSentiment` / `AdjustSentiment` → resolve authored faction names
+    ///   against immutable content and mutate the live overlay after the tick;
+    ///   unknown names and malformed values warn and no-op.
     /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
     ///   to a writable String slot at the game-logic stage, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
@@ -6067,6 +6070,35 @@ impl App {
                         // Literal behavior stays on the existing readonly-gated
                         // JSON path, including target range validation/clamping.
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
+                    }
+                }
+                SystemReactionCommand::SetSentiment { from, to, value } => {
+                    // This explicit frame-end arm is deliberately separate from
+                    // trigger_bindings' in-tick `setState` route. The overlay is
+                    // live session state rather than a tick-context slot table,
+                    // so every source (including trigger `on_fire`) becomes
+                    // visible to AI on the next tick.
+                    if let Err(error) = scripting_systems::system_reactions::apply_set_sentiment(
+                        &script_ctx,
+                        &from,
+                        &to,
+                        value,
+                    ) {
+                        log::warn!(
+                            "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                        );
+                    }
+                }
+                SystemReactionCommand::AdjustSentiment { from, to, delta } => {
+                    if let Err(error) = scripting_systems::system_reactions::apply_adjust_sentiment(
+                        &script_ctx,
+                        &from,
+                        &to,
+                        delta,
+                    ) {
+                        log::warn!(
+                            "[Scripting] adjustSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                        );
                     }
                 }
                 SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {

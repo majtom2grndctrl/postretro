@@ -88,6 +88,10 @@ export type PostretroUiModule = {
   restartLevel: () -> PrimitiveReactionDescriptor,
   --- Return to the frontend menu and reload its optional backdrop level.
   returnToFrontend: () -> PrimitiveReactionDescriptor,
+  --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
+  setSentiment: (from: string, to: string, value: number) -> PrimitiveReactionDescriptor,
+  --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
+  adjustSentiment: (from: string, to: string, delta: number) -> PrimitiveReactionDescriptor,
   --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",

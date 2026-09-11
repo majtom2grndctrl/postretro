@@ -797,6 +797,18 @@ declare function restartLevel(): PrimitiveReactionDescriptor
 --- the same lifecycle path. Pure: returns a PrimitiveReactionDescriptor.
 declare function returnToFrontend(): PrimitiveReactionDescriptor
 
+--- Set the live sentiment from faction `from` toward faction `to` at frame end.
+--- The pair is directional and baseline content remains immutable. Negative
+--- values degrade the relationship; positive values bond it. Unknown faction
+--- names warn and no-op.
+declare function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor
+
+--- Add `delta` to the current live sentiment from faction `from` toward
+--- faction `to` at frame end, or its authored baseline when unchanged. The
+--- pair is directional. Negative deltas degrade the relationship; positive
+--- deltas bond it. Unknown faction names warn and no-op.
+declare function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor
+
 --- System-reaction body (M13 Goal F): write a literal or runtime value at the
 --- game-logic stage. Literals use the normal readonly-gated coercion and range
 --- path. Runtime values bind once at level install. Known Number and Boolean

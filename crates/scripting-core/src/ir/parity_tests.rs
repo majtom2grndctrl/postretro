@@ -430,6 +430,45 @@ fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn faction_sentiment_reaction_builders_match_across_authoring_runtimes() {
+    // The TypeScript fixture travels through scripts-build before it reaches
+    // QuickJS; the Luau fixture loads the same public virtual UI module. Pin
+    // both exact camelCase primitive spellings and directional argument keys.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { adjustSentiment, setSentiment } from "postretro/ui";
+        JSON.stringify({
+          set: setSentiment("cabal", "resistance", -1),
+          adjust: adjustSentiment("resistance", "cabal", 0.25),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Ui = require("postretro/ui")
+        return {
+          set = Ui.setSentiment("cabal", "resistance", -1),
+          adjust = Ui.adjustSentiment("resistance", "cabal", 0.25),
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "TS and Luau sentiment reactions diverged");
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "set": {
+                "primitive": "setSentiment",
+                "args": { "from": "cabal", "to": "resistance", "value": -1 },
+            },
+            "adjust": {
+                "primitive": "adjustSentiment",
+                "args": { "from": "resistance", "to": "cabal", "delta": 0.25 },
+            },
+        }),
+        "sentiment builders must preserve their directional command wire shapes"
+    );
+}
+
+#[test]
 fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
     // This fixture intentionally uses the public root module/bare-global
     // surfaces. In particular, the Luau spelling proves `enemies` is present

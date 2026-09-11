@@ -953,19 +953,23 @@ Reading any other name is a load error.
 
 Declare stable faction names in `defineMod({ factions: [...] })`, assign a brain
 archetype with `components.faction`, and declare directed relationships with
-`sentiment(fromFaction, toFaction, { sentiment, tolerance })`. Negative
+`sentiment(fromFaction, toFaction, { sentiment, tolerance, decay? })`. Negative
 sentiment is hostile, zero neutral, and positive allied. Relationships are
 directional: declare both rows when each faction's view differs. `components.tolerance`
 overrides the directed-pair tolerance for that archetype. Unlisted pairs retain
 the compatibility rule: different factions are hostile and matching factions are
-neutral.
+neutral. Runtime changes can ease back toward this authored baseline: set the
+optional non-negative `factionSentimentDecay` manifest default, or a row's
+optional non-negative `decay` override. Both default to `0`, which holds live
+sentiment unchanged; a row override of `0` also holds that pair.
 
 ```typescript
 defineMod({
   // ...
   factions: [defineFaction("cabal"), defineFaction("resistance")],
+  factionSentimentDecay: 0.1,
   sentiment: [
-    sentiment("cabal", "resistance", { sentiment: -1, tolerance: 12 }),
+    sentiment("cabal", "resistance", { sentiment: -1, tolerance: 12, decay: 0.05 }),
     sentiment("resistance", "cabal", { sentiment: 0, tolerance: 4 }),
   ],
 });

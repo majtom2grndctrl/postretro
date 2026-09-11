@@ -49,6 +49,9 @@ pub struct FactionSentimentDescriptor {
     pub to_faction: String,
     pub sentiment: f32,
     pub tolerance: f32,
+    /// Optional per-pair rate for easing a live sentiment value back to this
+    /// authored baseline. `None` resolves to the manifest-wide default.
+    pub decay: Option<f32>,
 }
 
 /// A directional relationship resolved from the faction registry. `tolerance`
@@ -58,6 +61,8 @@ pub struct FactionSentimentDescriptor {
 pub struct FactionRelationship {
     pub sentiment: f32,
     pub tolerance: Option<f32>,
+    /// An authored pair override for the live sentiment decay rate.
+    pub decay: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +83,9 @@ pub const SAME_FACTION_DEFAULT_SENTIMENT: f32 = 0.0;
 pub const CROSS_FACTION_DEFAULT_SENTIMENT: f32 = -1.0;
 const FIRST_AUTHORED_FACTION_INDEX: f32 = 2.0;
 const MAX_EXACT_FACTION_INDEX: usize = 1 << 24;
+/// A decaying live value this close to its immutable baseline returns to the
+/// baseline exactly and leaves the sparse overlay.
+const SENTIMENT_DECAY_BASELINE_EPSILON: f32 = 1.0e-6;
 
 /// Manifest faction names resolved to compact, stable entity-state indices.
 ///
@@ -90,6 +98,9 @@ pub struct FactionRegistry {
     /// Candidate-scan lookup is allocation-free; absent pairs use the
     /// compatibility relationship without reserving an N x N matrix.
     relationship_overrides: Vec<FactionRelationshipOverride>,
+    /// Manifest-wide default for pairs without an authored decay override.
+    /// Its `0.0` default intentionally preserves the pre-decay behavior.
+    faction_sentiment_decay: f32,
 }
 
 /// Engine-owned, live faction sentiment values that diverge from immutable
@@ -175,18 +186,42 @@ impl FactionSentimentState {
             let entry = self.overrides[index];
             let rate = rate_for(entry.from, entry.to);
             let baseline = baseline_for(entry.from, entry.to);
-            let step = rate * tick_dt;
-            if !rate.is_finite() || !baseline.is_finite() || step <= 0.0 {
+            if !rate.is_finite()
+                || rate <= 0.0
+                || !baseline.is_finite()
+                || !entry.current.is_finite()
+            {
                 index += 1;
                 continue;
             }
 
             let distance = baseline - entry.current;
-            if distance.abs() <= step {
+            let step = rate * tick_dt;
+            if distance.abs() <= SENTIMENT_DECAY_BASELINE_EPSILON || distance.abs() <= step {
                 self.overrides.remove(index);
             } else {
-                self.overrides[index].current = entry.current + distance.signum() * step;
-                index += 1;
+                let stepped = entry.current + distance.signum() * step;
+                // `rate * dt` can be smaller than one ULP of an unclamped,
+                // far-from-baseline sentiment. In that case ordinary f32
+                // addition returns `current` unchanged forever. A one-ULP
+                // floor preserves monotonic motion for every positive rate;
+                // the normal linear step remains unchanged whenever it is
+                // representable.
+                let next = if stepped == entry.current {
+                    if distance.is_sign_positive() {
+                        entry.current.next_up()
+                    } else {
+                        entry.current.next_down()
+                    }
+                } else {
+                    stepped
+                };
+                if (baseline - next).abs() <= SENTIMENT_DECAY_BASELINE_EPSILON {
+                    self.overrides.remove(index);
+                } else {
+                    self.overrides[index].current = next;
+                    index += 1;
+                }
             }
         }
     }
@@ -258,6 +293,7 @@ impl<'a> LiveFactionSentiment<'a> {
         FactionRelationship {
             sentiment: self.sentiment(from, to),
             tolerance: self.tolerance(from, to),
+            decay: self.baseline.relationship(from, to).decay,
         }
     }
 }
@@ -269,6 +305,7 @@ impl<'a> LiveFactionSentiment<'a> {
 pub struct FactionCompatibilitySnapshot<'a> {
     descriptors: &'a [FactionDescriptor],
     relationship_overrides: &'a [FactionRelationshipOverride],
+    faction_sentiment_decay: f32,
 }
 
 impl<'a> FactionCompatibilitySnapshot<'a> {
@@ -289,6 +326,10 @@ impl<'a> FactionCompatibilitySnapshot<'a> {
             } = relationship_override;
             (*from, *to, *relationship)
         })
+    }
+
+    pub fn faction_sentiment_decay(&self) -> f32 {
+        self.faction_sentiment_decay
     }
 }
 
@@ -312,7 +353,18 @@ impl FactionRegistry {
         Ok(Self {
             descriptors,
             relationship_overrides: Vec::new(),
+            faction_sentiment_decay: 0.0,
         })
+    }
+
+    /// Set the manifest-wide sentiment decay default. A zero rate holds every
+    /// pair without an authored per-pair override.
+    pub fn with_sentiment_decay(mut self, decay: f32) -> Result<Self, String> {
+        if !decay.is_finite() || decay < 0.0 {
+            return Err("faction sentiment decay must be finite and >= 0".to_string());
+        }
+        self.faction_sentiment_decay = decay;
+        Ok(self)
     }
 
     /// Resolve strict manifest-authored directional relationships into the
@@ -333,6 +385,14 @@ impl FactionRegistry {
             if !entry.tolerance.is_finite() {
                 return Err(format!(
                     "tolerance from `{}` to `{}` must be finite",
+                    entry.from_faction, entry.to_faction
+                ));
+            }
+            if let Some(decay) = entry.decay
+                && (!decay.is_finite() || decay < 0.0)
+            {
+                return Err(format!(
+                    "decay from `{}` to `{}` must be finite and >= 0",
                     entry.from_faction, entry.to_faction
                 ));
             }
@@ -370,6 +430,7 @@ impl FactionRegistry {
                         relationship: FactionRelationship {
                             sentiment: entry.sentiment,
                             tolerance: Some(entry.tolerance),
+                            decay: entry.decay,
                         },
                     },
                 ),
@@ -395,10 +456,12 @@ impl FactionRegistry {
         let Self {
             descriptors,
             relationship_overrides,
+            faction_sentiment_decay,
         } = self;
         FactionCompatibilitySnapshot {
             descriptors,
             relationship_overrides,
+            faction_sentiment_decay: *faction_sentiment_decay,
         }
     }
 
@@ -412,6 +475,19 @@ impl FactionRegistry {
     /// Pair tolerance only when the authored relationship declared one.
     pub fn tolerance(&self, from: f32, to: f32) -> Option<f32> {
         self.relationship(from, to).tolerance
+    }
+
+    /// Resolve the authored per-pair decay override first, then the global
+    /// manifest default. Missing content therefore resolves to zero (hold).
+    pub fn sentiment_decay(&self, from: f32, to: f32) -> f32 {
+        self.relationship(from, to)
+            .decay
+            .unwrap_or(self.faction_sentiment_decay)
+    }
+
+    /// Global manifest default, exposed for compatibility hashing and tests.
+    pub fn faction_sentiment_decay(&self) -> f32 {
+        self.faction_sentiment_decay
     }
 
     pub fn relationship(&self, from: f32, to: f32) -> FactionRelationship {
@@ -429,6 +505,7 @@ impl FactionRegistry {
                     CROSS_FACTION_DEFAULT_SENTIMENT
                 },
                 tolerance: None,
+                decay: None,
             })
     }
 
@@ -1286,12 +1363,14 @@ mod tests {
                 to_faction: "cabal".to_string(),
                 sentiment: 0.25,
                 tolerance: 8.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "cabal".to_string(),
                 to_faction: "resistance".to_string(),
                 sentiment: -0.75,
                 tolerance: 4.0,
+                decay: None,
             },
         ])
         .expect("declared endpoint names resolve");
@@ -1314,6 +1393,7 @@ mod tests {
                     FactionRelationship {
                         sentiment: -0.75,
                         tolerance: Some(4.0),
+                        decay: None,
                     },
                 ),
                 (
@@ -1322,6 +1402,7 @@ mod tests {
                     FactionRelationship {
                         sentiment: 0.25,
                         tolerance: Some(8.0),
+                        decay: None,
                     },
                 ),
             ],
@@ -1345,12 +1426,14 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -0.75,
                 tolerance: 4.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.0,
                 tolerance: 9.0,
+                decay: None,
             },
         ])
         .expect("declared endpoint names resolve");
@@ -1366,6 +1449,8 @@ mod tests {
             "unlisted cross-faction pairs retain the prior hostile rule"
         );
         assert_eq!(factions.tolerance(2.0, 2.0), None);
+        assert_eq!(factions.faction_sentiment_decay(), 0.0);
+        assert_eq!(factions.sentiment_decay(2.0, 3.0), 0.0);
     }
 
     #[test]
@@ -1389,6 +1474,7 @@ mod tests {
                 to_faction: "faction-0".to_string(),
                 sentiment: 0.5,
                 tolerance: 3.0,
+                decay: None,
             }])
             .expect("one sparse relationship override resolves");
         assert_eq!(factions.relationship_overrides.len(), 1);
@@ -1425,6 +1511,84 @@ mod tests {
     }
 
     #[test]
+    fn faction_sentiment_decay_converges_monotonically_and_removes_at_baseline() {
+        let mut state = FactionSentimentState::default();
+        state.set(2.0, 3.0, -1.0, 0.0);
+
+        let mut values = Vec::new();
+        for _ in 0..4 {
+            state.decay_step(1.0, |_, _| 0.25, |_, _| 0.0);
+            values.push(state.get(2.0, 3.0));
+        }
+
+        assert_eq!(values, vec![Some(-0.75), Some(-0.5), Some(-0.25), None]);
+        assert!(state.iter().next().is_none());
+    }
+
+    #[test]
+    fn faction_sentiment_decay_clamps_to_baseline_without_crossing() {
+        let mut state = FactionSentimentState::default();
+        state.set(2.0, 3.0, 0.1, 0.0);
+
+        state.decay_step(1.0, |_, _| 1.0, |_, _| 0.0);
+
+        assert_eq!(state.get(2.0, 3.0), None);
+        assert!(state.iter().next().is_none());
+    }
+
+    #[test]
+    fn faction_sentiment_decay_zero_rate_holds_a_diverged_pair() {
+        let mut state = FactionSentimentState::default();
+        state.set(2.0, 3.0, -1.0, 0.0);
+
+        state.decay_step(1.0, |_, _| 0.0, |_, _| 0.0);
+
+        assert_eq!(state.get(2.0, 3.0), Some(-1.0));
+    }
+
+    #[test]
+    fn faction_sentiment_decay_uses_pair_override_before_global_default() {
+        let factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiment_decay(0.1)
+        .expect("non-negative global decay is valid")
+        .with_sentiments([FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: 0.0,
+            tolerance: 1.0,
+            decay: Some(0.25),
+        }])
+        .expect("valid pair override");
+
+        assert_eq!(factions.sentiment_decay(2.0, 3.0), 0.25);
+        assert_eq!(factions.sentiment_decay(3.0, 2.0), 0.1);
+        assert_eq!(factions.sentiment_decay(2.0, 2.0), 0.1);
+    }
+
+    #[test]
+    fn faction_sentiment_decay_uses_an_ulp_floor_when_linear_step_rounds_away() {
+        let mut state = FactionSentimentState::default();
+        state.set(2.0, 3.0, 1.0, 0.0);
+        let smaller_than_one_ulp = f32::EPSILON / 4.0;
+
+        state.decay_step(1.0, |_, _| smaller_than_one_ulp, |_, _| 0.0);
+
+        assert_eq!(
+            state.get(2.0, 3.0),
+            Some(1.0_f32.next_down()),
+            "a positive rate must not strand a far-from-baseline value when its linear step is below one ULP"
+        );
+    }
+
+    #[test]
     fn live_faction_sentiment_uses_overlay_for_sentiment_and_baseline_for_tolerance() {
         let baseline = FactionRegistry::from_descriptors(vec![
             FactionDescriptor {
@@ -1441,12 +1605,14 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -0.75,
                 tolerance: 4.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.25,
                 tolerance: 9.0,
+                decay: None,
             },
         ])
         .expect("valid authored relationships");
@@ -1466,6 +1632,7 @@ mod tests {
             FactionRelationship {
                 sentiment: 0.5,
                 tolerance: Some(4.0),
+                decay: None,
             },
             "relationship must not fall through to stale baseline sentiment"
         );
@@ -1484,6 +1651,7 @@ mod tests {
                 to_faction: "cabal".to_string(),
                 sentiment: -1.0,
                 tolerance: 1.0,
+                decay: None,
             }])
             .expect_err("unknown endpoint rejects the manifest");
         assert!(unknown.contains("undeclared from faction `missing`"));
@@ -1495,6 +1663,7 @@ mod tests {
                 to_faction: "missing".to_string(),
                 sentiment: -1.0,
                 tolerance: 1.0,
+                decay: None,
             }])
             .expect_err("unknown destination rejects the manifest");
         assert!(unknown.contains("undeclared to faction `missing`"));
@@ -1506,12 +1675,14 @@ mod tests {
                     to_faction: "cabal".to_string(),
                     sentiment: 0.0,
                     tolerance: 1.0,
+                    decay: None,
                 },
                 FactionSentimentDescriptor {
                     from_faction: "cabal".to_string(),
                     to_faction: "cabal".to_string(),
                     sentiment: -1.0,
                     tolerance: 2.0,
+                    decay: None,
                 },
             ])
             .expect_err("ambiguous duplicate pair rejects the manifest");

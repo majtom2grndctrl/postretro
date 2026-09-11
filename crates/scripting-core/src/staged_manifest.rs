@@ -12,6 +12,7 @@ use rquickjs::{
 
 use super::data_descriptors::{
     drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
     drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
@@ -336,6 +337,7 @@ fn run_staged_manifest_build(
         entities: manifest.entities,
         factions: manifest.factions,
         sentiment: manifest.sentiment,
+        faction_sentiment_decay: manifest.faction_sentiment_decay,
         entity_faction_names: manifest.entity_faction_names,
         maps: manifest.maps,
         reactions: manifest.reactions,
@@ -483,6 +485,21 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let faction_sentiment_decay =
+        drain_faction_sentiment_decay_js(&obj, "default mod manifest export").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: `{source_path}` default mod manifest export `factionSentimentDecay` invalid: {e}"
+                ),
+            }
+        })?;
+    let factions = factions
+        .with_sentiment_decay(faction_sentiment_decay)
+        .map_err(|reason| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `factionSentimentDecay` invalid: {reason}"
+            ),
+        })?;
     let (factions, sentiment) =
         drain_faction_sentiments_js(&obj, factions, "default mod manifest export").map_err(
             |e| ScriptError::InvalidArgument {
@@ -683,6 +700,7 @@ fn manifest_from_js_value<'js>(
         entities,
         factions,
         sentiment,
+        faction_sentiment_decay,
         entity_faction_names,
         ui_trees,
         presentation_templates,
@@ -782,6 +800,22 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let faction_sentiment_decay = drain_faction_sentiment_decay_lua(
+        &table,
+        "returned mod manifest",
+    )
+    .map_err(|e| ScriptError::InvalidArgument {
+        reason: format!(
+            "mod-init: `{source_path}` returned mod manifest `factionSentimentDecay` invalid: {e}"
+        ),
+    })?;
+    let factions = factions
+        .with_sentiment_decay(faction_sentiment_decay)
+        .map_err(|reason| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `factionSentimentDecay` invalid: {reason}"
+            ),
+        })?;
     let (factions, sentiment) =
         drain_faction_sentiments_lua(&table, factions, "returned mod manifest").map_err(|e| {
             ScriptError::InvalidArgument {
@@ -984,6 +1018,7 @@ fn run_staged_mod_init_luau(
         entities,
         factions,
         sentiment,
+        faction_sentiment_decay,
         entity_faction_names,
         ui_trees,
         presentation_templates,
@@ -1253,6 +1288,8 @@ mod tests {
 
             assert_eq!(manifest.factions.index_for_name("cabal"), Some(2.0));
             assert_eq!(manifest.factions.index_for_name("resistance"), Some(3.0));
+            assert_eq!(manifest.faction_sentiment_decay, 0.0);
+            assert_eq!(manifest.factions.faction_sentiment_decay(), 0.0);
             assert_eq!(
                 manifest.entity_faction_names,
                 vec![Some("cabal".to_string()), Some("resistance".to_string())],
@@ -1277,8 +1314,9 @@ mod tests {
                     globalThis.__postretroModManifest = {
                         name: "Sentiment", id: "sentiment", version: "1",
                         factions: [{ name: "cabal" }, { name: "resistance" }],
+                        factionSentimentDecay: 0.1,
                         sentiment: [sentiment("cabal", "resistance", {
-                            sentiment: -0.75, tolerance: 0.25,
+                            sentiment: -0.75, tolerance: 0.25, decay: 0.25,
                         })],
                     };
                 "#,
@@ -1290,8 +1328,9 @@ mod tests {
                     return {
                         name = "Sentiment", id = "sentiment", version = "1",
                         factions = {{ name = "cabal" }, { name = "resistance" }},
+                        factionSentimentDecay = 0.1,
                         sentiment = {sentiment("cabal", "resistance", {
-                            sentiment = -0.75, tolerance = 0.25,
+                            sentiment = -0.75, tolerance = 0.25, decay = 0.25,
                         })},
                     }
                 "#,
@@ -1309,11 +1348,16 @@ mod tests {
 
             assert_eq!(manifest.factions.sentiment(2.0, 3.0), -0.75);
             assert_eq!(manifest.factions.tolerance(2.0, 3.0), Some(0.25));
+            assert_eq!(manifest.faction_sentiment_decay, 0.1);
+            assert_eq!(manifest.factions.faction_sentiment_decay(), 0.1);
+            assert_eq!(manifest.factions.sentiment_decay(2.0, 3.0), 0.25);
+            assert_eq!(manifest.factions.sentiment_decay(3.0, 2.0), 0.1);
             assert_eq!(manifest.sentiment.len(), 1);
             assert_eq!(manifest.sentiment[0].from_faction, "cabal");
             assert_eq!(manifest.sentiment[0].to_faction, "resistance");
             assert_eq!(manifest.sentiment[0].sentiment, -0.75);
             assert_eq!(manifest.sentiment[0].tolerance, 0.25);
+            assert_eq!(manifest.sentiment[0].decay, Some(0.25));
             assert_eq!(
                 manifest.factions.sentiment(3.0, 2.0),
                 -1.0,

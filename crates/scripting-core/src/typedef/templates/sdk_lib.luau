@@ -678,6 +678,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `factionSentimentDecay` is an optional non-negative return-to-baseline
+--- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure builder for a stable named faction declaration. Include the result in
 --- `defineMod({ factions = { ... } })`; archetypes refer to its name through
@@ -685,7 +687,9 @@ declare function defineMod(config: ModManifestInput): ModManifest
 declare function defineFaction(name: string): FactionDescriptor
 --- Build one directed relationship for `sentiment` in the returned mod
 --- manifest. Negative sentiment is hostile, zero neutral, positive allied.
-declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number }): FactionSentimentDescriptor
+--- Optional non-negative `decay` overrides the global return rate; zero holds
+--- this pair after a runtime change.
+declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -906,6 +910,7 @@ export type ModManifestInput = {
   entities: {EntityTypeDescriptor}?,
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
+  factionSentimentDecay: number?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

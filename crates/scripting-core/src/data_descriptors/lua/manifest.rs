@@ -907,6 +907,21 @@ pub fn drain_factions_lua(
     })
 }
 
+/// Luau twin of [`drain_faction_sentiment_decay_js`]. Omission resolves to a
+/// zero-rate hold so existing faction content does not begin decaying.
+pub fn drain_faction_sentiment_decay_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<f32, DescriptorError> {
+    let decay = get_optional_f32_lua(table, "factionSentimentDecay")?.unwrap_or(0.0);
+    if !decay.is_finite() || decay < 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factionSentimentDecay` must be a finite rate >= 0"),
+        });
+    }
+    Ok(decay)
+}
+
 /// Luau twin of [`drain_faction_sentiments_js`]. It validates names while
 /// draining, commits sorted sparse `(from, to)` faction-index overrides, and
 /// keeps the source descriptors on the normalized manifest carrier.
@@ -939,10 +954,14 @@ pub fn drain_faction_sentiments_lua(
         let entry = lua_table(value, "sentiment entry")?;
         let sentiment = get_required_f32_lua(&entry, "sentiment")?;
         let tolerance = get_required_f32_lua(&entry, "tolerance")?;
-        if !sentiment.is_finite() || !tolerance.is_finite() {
+        let decay = get_optional_f32_lua(&entry, "decay")?;
+        if !sentiment.is_finite()
+            || !tolerance.is_finite()
+            || decay.is_some_and(|decay| !decay.is_finite() || decay < 0.0)
+        {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "{scope}: `sentiment[{index}].sentiment` and `.tolerance` must be finite f32 values"
+                    "{scope}: `sentiment[{index}]` values must be finite; `.decay`, when present, must be >= 0"
                 ),
             });
         }
@@ -951,6 +970,7 @@ pub fn drain_faction_sentiments_lua(
             to_faction: get_required_string_lua(&entry, "toFaction")?,
             sentiment,
             tolerance,
+            decay,
         });
     }
     let factions =

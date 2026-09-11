@@ -3824,6 +3824,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: 0.25,
             tolerance: 3.0,
+            decay: None,
         }])
         .expect("fixture sentiment is valid")
     }

@@ -1046,6 +1046,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -0.5,
             tolerance: 6.0,
+            decay: None,
         }])
         .expect("startup relationship snapshot is valid");
 

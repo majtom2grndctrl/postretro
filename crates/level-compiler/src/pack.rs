@@ -2,12 +2,11 @@
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use fs4::FileExt;
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
@@ -1133,14 +1132,11 @@ fn write_and_validate_sections(
     let total_size = match write_result {
         Ok(total_size) => total_size,
         Err(error) => {
-            let temporary_path = temporary_output.path().to_path_buf();
-            if let Err(cleanup_error) = temporary_output.remove_if_owned() {
-                return Err(error.context(format!(
-                    "also failed to remove temporary PRL {}: {cleanup_error}",
-                    temporary_path.display(),
-                )));
-            }
-            return Err(error);
+            let temporary_path = temporary_output.preserve();
+            return Err(anyhow::anyhow!(
+                "{error}; temporary PRL preserved at {} after write failure",
+                temporary_path.display(),
+            ));
         }
     };
     publish_validated_output(temporary_output, output, &original_output)?;
@@ -1175,8 +1171,8 @@ impl StagedPrl {
                 )
             })?;
 
-        // Every removal is identity-checked below. A pathname-based Drop cleanup
-        // could otherwise unlink a file installed after this name was stolen.
+        // Disable pathname-based Drop cleanup. Failed staging paths remain because
+        // a checked name can be replaced before an unlink reaches the filesystem.
         temporary.disable_cleanup(true);
         let identity = FileIdentity::from_file(temporary.reopen()?).map_err(|error| {
             anyhow::anyhow!(
@@ -1207,18 +1203,62 @@ impl StagedPrl {
         ensure_path_has_identity(self.path(), &self.identity, "temporary PRL")
     }
 
-    fn remove_if_owned(self) -> anyhow::Result<()> {
-        self.ensure_path_is_owned()?;
+    fn preserve(self) -> PathBuf {
+        // A checked pathname can be replaced before unlink. Keep failed staging
+        // files instead of risking deletion of bytes this invocation did not write.
         let path = self.path().to_path_buf();
-        let (file, path_guard) = self.temporary.into_parts();
-        fs::remove_file(&path).map_err(|error| {
-            anyhow::anyhow!("failed to remove temporary PRL {}: {error}", path.display())
-        })?;
-        drop(path_guard);
-        drop(file);
-        drop(self.identity);
-        Ok(())
+        drop(self);
+        path
     }
+}
+
+struct OutputPublishLock {
+    _file: File,
+}
+
+impl OutputPublishLock {
+    fn acquire(output: &Path) -> anyhow::Result<Self> {
+        let lock_path = output_lock_path(output)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to open PRL publication lock {}: {error}",
+                    lock_path.display(),
+                )
+            })?;
+        anyhow::ensure!(
+            file.metadata()?.file_type().is_file(),
+            "PRL publication lock {} is not a regular file",
+            lock_path.display(),
+        );
+        let identity = FileIdentity::from_file(file.try_clone()?)?;
+        ensure_path_has_identity(&lock_path, &identity, "PRL publication lock")?;
+        FileExt::lock(&file).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to lock PRL publication lock {}: {error}",
+                lock_path.display(),
+            )
+        })?;
+        ensure_path_has_identity(&lock_path, &identity, "PRL publication lock")?;
+        // Keep the lock pathname between runs. Removing it would let a waiter
+        // hold the old inode while a new compiler locks a newly created inode.
+        Ok(Self { _file: file })
+    }
+}
+
+fn output_lock_path(output: &Path) -> anyhow::Result<PathBuf> {
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
+    let mut lock_name = OsString::from(".");
+    lock_name.push(file_name);
+    lock_name.push(".pack.lock");
+    Ok(output.with_file_name(lock_name))
 }
 
 enum OutputIdentity {
@@ -1332,24 +1372,63 @@ fn ensure_path_has_identity(
     Ok(())
 }
 
-/// Atomically replace the unchanged output with the validated staged handle.
+/// Publish a validated staged file while excluding cooperating prl-build writers.
 fn publish_validated_output(
     temporary_output: StagedPrl,
     output: &Path,
     original_output: &OutputIdentity,
 ) -> anyhow::Result<()> {
+    publish_validated_output_with_hook(temporary_output, output, original_output, || Ok(()))
+}
+
+fn publish_validated_output_with_hook(
+    temporary_output: StagedPrl,
+    output: &Path,
+    original_output: &OutputIdentity,
+    after_precondition: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let _publication_lock = match OutputPublishLock::acquire(output) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let preserved_path = temporary_output.preserve();
+            return Err(anyhow::anyhow!(
+                "{error}; temporary PRL preserved at {} after lock failure",
+                preserved_path.display(),
+            ));
+        }
+    };
     let temporary_path = temporary_output.path().to_path_buf();
     let precondition = temporary_output
         .ensure_path_is_owned()
         .and_then(|()| original_output.ensure_unchanged(output));
     if let Err(error) = precondition {
-        if let Err(cleanup_error) = temporary_output.remove_if_owned() {
-            return Err(error.context(format!(
-                "also failed to remove temporary PRL {}: {cleanup_error}",
-                temporary_path.display(),
-            )));
-        }
-        return Err(error);
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after publication refusal",
+            preserved_path.display(),
+        ));
+    }
+
+    if let Err(error) = after_precondition() {
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after publication was interrupted",
+            preserved_path.display(),
+        ));
+    }
+
+    // The lock closes this window for cooperating prl-build processes. This
+    // late check also catches noncooperating changes observed before rename;
+    // an external writer can still race the final check and path-based rename.
+    let precondition = temporary_output
+        .ensure_path_is_owned()
+        .and_then(|()| original_output.ensure_unchanged(output));
+    if let Err(error) = precondition {
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after a late publication race",
+            preserved_path.display(),
+        ));
     }
 
     let StagedPrl {
@@ -1371,19 +1450,13 @@ fn publish_validated_output(
                 temporary,
                 identity,
             };
-            if let Err(cleanup_error) = staged.remove_if_owned() {
-                Err(anyhow::anyhow!(
-                    "failed to publish temporary PRL {} to {}: {publish_error}; also failed to remove temporary PRL: {cleanup_error}",
-                    temporary_path.display(),
-                    output.display(),
-                ))
-            } else {
-                Err(anyhow::anyhow!(
-                    "failed to publish temporary PRL {} to {}: {publish_error}",
-                    temporary_path.display(),
-                    output.display(),
-                ))
-            }
+            let preserved_path = staged.preserve();
+            Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; temporary PRL preserved at {}",
+                temporary_path.display(),
+                output.display(),
+                preserved_path.display(),
+            ))
         }
     }
 }
@@ -1462,7 +1535,7 @@ mod tests {
     use postretro_level_format::texture_names::TextureNamesSection;
     use std::io::Cursor;
 
-    fn publish_artifacts(output: &Path) -> Vec<PathBuf> {
+    fn staging_artifacts(output: &Path) -> Vec<PathBuf> {
         let parent = output.parent().expect("test output has a parent");
         let prefix = format!(
             ".{}.pack-",
@@ -1480,6 +1553,16 @@ mod tests {
                     .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
             })
             .collect()
+    }
+
+    fn remove_publication_test_artifacts(output: &Path) {
+        for path in staging_artifacts(output) {
+            std::fs::remove_file(path).expect("publish artifact should be removable");
+        }
+        let lock_path = output_lock_path(output).expect("test output should have a lock path");
+        if lock_path.exists() {
+            std::fs::remove_file(lock_path).expect("publication lock should be removable");
+        }
     }
 
     #[test]
@@ -1520,7 +1603,8 @@ mod tests {
             std::fs::read(&output).expect("streamed output should exist"),
             expected
         );
-        let _ = std::fs::remove_file(output);
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
     #[test]
@@ -1550,11 +1634,11 @@ mod tests {
             !output.exists(),
             "a declared-length mismatch must not leave a malformed final PRL"
         );
-        let _ = std::fs::remove_file(output);
+        remove_publication_test_artifacts(&output);
     }
 
     #[test]
-    fn streamed_write_replaces_existing_output_without_publish_artifacts() {
+    fn streamed_write_replaces_existing_output_without_staging_artifacts() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-replace-{}-{}.prl",
             std::process::id(),
@@ -1578,14 +1662,21 @@ mod tests {
             b"previous valid PRL"
         );
         assert!(
-            publish_artifacts(&output).is_empty(),
+            staging_artifacts(&output).is_empty(),
             "a successful publish must not leave temporary or backup files"
         );
-        let _ = std::fs::remove_file(output);
+        assert!(
+            output_lock_path(&output)
+                .expect("test output should have a lock path")
+                .is_file(),
+            "the stable lock inode must remain for later compiler invocations"
+        );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
     #[test]
-    fn streamed_write_failure_preserves_existing_output_and_removes_temporary_file() {
+    fn streamed_write_failure_preserves_existing_output_and_staged_file() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-preserve-{}-{}.prl",
             std::process::id(),
@@ -1615,11 +1706,14 @@ mod tests {
             previous_bytes,
             "a write failure must not replace the previous output"
         );
-        assert!(
-            publish_artifacts(&output).is_empty(),
-            "a write failure must not leave its temporary PRL behind"
+        let artifacts = staging_artifacts(&output);
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "failed staging is preserved rather than risking a pathname-race unlink"
         );
-        let _ = std::fs::remove_file(output);
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
     // Regression: failed compilation replaced a directory at the requested output path.
@@ -1646,15 +1740,15 @@ mod tests {
         assert!(error.to_string().contains("non-regular output"));
         assert!(output.is_dir(), "the existing directory must remain intact");
         assert!(
-            publish_artifacts(&output).is_empty(),
+            staging_artifacts(&output).is_empty(),
             "rejection before staging must not create a temporary file"
         );
         std::fs::remove_dir(output).expect("directory fixture should be removable");
     }
 
-    // Regression: error cleanup unlinked a later file installed at the staging pathname.
+    // Regression: error cleanup unlinked a replacement installed after its identity check.
     #[test]
-    fn staged_cleanup_preserves_replacement_with_different_identity() {
+    fn failed_staging_preserves_replacement_swapped_after_identity_check() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-cleanup-identity-{}-{}.prl",
             std::process::id(),
@@ -1664,15 +1758,17 @@ mod tests {
         let staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
         let staged_path = staged.path().to_path_buf();
         let displaced = output.with_extension("owned-staging");
+        staged
+            .ensure_path_is_owned()
+            .expect("the pre-cleanup identity check should pass");
         std::fs::rename(&staged_path, &displaced).expect("should displace owned staging file");
         std::fs::write(&staged_path, b"later replacement")
             .expect("should install replacement at staging path");
 
-        let error = staged
-            .remove_if_owned()
-            .expect_err("cleanup must reject a different file identity");
+        // This swap occurs where cleanup formerly performed its pathname unlink.
+        let preserved_path = staged.preserve();
 
-        assert!(error.to_string().contains("no longer names the file owned"));
+        assert_eq!(preserved_path, staged_path);
         assert_eq!(
             std::fs::read(&staged_path).expect("replacement must remain readable"),
             b"later replacement"
@@ -1733,6 +1829,7 @@ mod tests {
         );
         std::fs::remove_file(staged_path).expect("replacement staging should be removable");
         std::fs::remove_file(displaced).expect("owned staging file should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
     // Regression: symlink outputs previously changed target semantics during publication.
@@ -1772,7 +1869,7 @@ mod tests {
             std::fs::read(&target).expect("symlink target should remain readable"),
             b"symlink target"
         );
-        assert!(publish_artifacts(&output).is_empty());
+        assert!(staging_artifacts(&output).is_empty());
         std::fs::remove_file(output).expect("output symlink should be removable");
         std::fs::remove_file(target).expect("symlink target should be removable");
     }
@@ -1808,14 +1905,15 @@ mod tests {
             std::fs::read(&original).expect("original output must remain readable"),
             previous_bytes
         );
-        assert!(publish_artifacts(&output).is_empty());
-        std::fs::remove_dir(output).expect("raced directory should be removable");
+        assert_eq!(staging_artifacts(&output).len(), 1);
+        std::fs::remove_dir(&output).expect("raced directory should be removable");
         std::fs::remove_file(original).expect("original fixture should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
-    // Regression: publication overwrote a regular output installed after validation.
+    // Regression: publication overwrote an output installed after its precondition check.
     #[test]
-    fn publication_rejects_concurrent_regular_output_replacement() {
+    fn publication_rejects_regular_output_replaced_after_precondition() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-regular-race-{}-{}.prl",
             std::process::id(),
@@ -1831,11 +1929,19 @@ mod tests {
             .write_all(b"validated replacement")
             .expect("staging should write");
         staged.file_mut().flush().expect("staging should flush");
-        std::fs::rename(&output, &original).expect("should preserve original fixture");
-        std::fs::write(&output, b"concurrent writer").expect("should install raced output");
-
-        let error = publish_validated_output(staged, &output, &original_output)
-            .expect_err("publishing over a raced regular file must fail");
+        let error = publish_validated_output_with_hook(staged, &output, &original_output, || {
+            let lock_path = output_lock_path(&output)?;
+            let competing_lock = OpenOptions::new().read(true).write(true).open(lock_path)?;
+            assert!(matches!(
+                FileExt::try_lock(&competing_lock),
+                Err(fs4::TryLockError::WouldBlock)
+            ));
+            // Model an external writer that ignores the compiler's advisory lock.
+            std::fs::rename(&output, &original).expect("should preserve original fixture");
+            std::fs::write(&output, b"concurrent writer").expect("should install raced output");
+            Ok(())
+        })
+        .expect_err("publishing over a raced regular file must fail");
 
         assert!(error.to_string().contains("changed during compilation"));
         assert_eq!(
@@ -1846,9 +1952,10 @@ mod tests {
             std::fs::read(&original).expect("original output must remain readable"),
             b"original output"
         );
-        assert!(publish_artifacts(&output).is_empty());
-        std::fs::remove_file(output).expect("concurrent output should be removable");
+        assert_eq!(staging_artifacts(&output).len(), 1);
+        std::fs::remove_file(&output).expect("concurrent output should be removable");
         std::fs::remove_file(original).expect("original fixture should be removable");
+        remove_publication_test_artifacts(&output);
     }
 
     fn sample_geo_result() -> GeometryResult {

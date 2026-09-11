@@ -71,11 +71,11 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
             .parse()
             .map_err(|_| anyhow::anyhow!("{option} exceeds the maximum supported size"))?
     };
+    let (fractional_scaled, has_fractional_remainder) =
+        decimal_fraction_scaled(fractional, multiplier);
     let scaled = whole
         .checked_mul(u128::from(multiplier))
-        .and_then(|scaled| {
-            scaled.checked_add(u128::from(decimal_fraction_scaled(fractional, multiplier)))
-        })
+        .and_then(|scaled| scaled.checked_add(u128::from(fractional_scaled)))
         .filter(|scaled| *scaled <= u128::from(u64::MAX));
     let Some(scaled) = scaled else {
         anyhow::bail!(
@@ -83,12 +83,19 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
             u64::MAX
         );
     };
+    if scaled == u128::from(u64::MAX) && has_fractional_remainder {
+        anyhow::bail!(
+            "{option} exceeds the maximum supported size of {} bytes",
+            u64::MAX
+        );
+    }
 
     Ok(scaled as u64)
 }
 
 /// Convert a decimal fractional component to bytes without passing through `f64`.
-fn decimal_fraction_scaled(fractional: &str, multiplier: u64) -> u64 {
+/// Returns the truncated byte count and whether truncation discarded a remainder.
+fn decimal_fraction_scaled(fractional: &str, multiplier: u64) -> (u64, bool) {
     debug_assert!(multiplier.is_power_of_two());
     let mut digits = fractional
         .bytes()
@@ -106,7 +113,7 @@ fn decimal_fraction_scaled(fractional: &str, multiplier: u64) -> u64 {
         scaled = (scaled << 1) | u64::from(carry);
     }
 
-    scaled
+    (scaled, digits.iter().any(|&digit| digit != 0))
 }
 
 /// Render a byte budget with the largest exact binary unit for compiler help.
@@ -171,6 +178,7 @@ mod tests {
         assert!(parse_size("--sh-delta-working-set-max-size", "18446744073709551616B").is_err());
         assert!(parse_size("--sh-delta-working-set-max-size", "16777216TiB").is_err());
         assert!(parse_size("--sh-delta-working-set-max-size", "16777216.0TiB").is_err());
+        assert!(parse_size("--sh-delta-working-set-max-size", "18446744073709551615.1B").is_err());
     }
 
     #[test]
@@ -186,6 +194,10 @@ mod tests {
         assert_eq!(
             parse_size("--sh-delta-working-set-max-size", "18446744073709551615.0B").unwrap(),
             u64::MAX
+        );
+        assert_eq!(
+            parse_size("--sh-delta-working-set-max-size", "18446744073709551614.9B").unwrap(),
+            u64::MAX - 1
         );
     }
 

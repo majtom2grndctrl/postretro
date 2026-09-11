@@ -26,10 +26,17 @@ use crate::map_data::{FalloffModel, LightType, MapLight, MapLightmapScaleRegion}
 /// Default atlas texel density: 4 cm per texel.
 pub const DEFAULT_TEXEL_DENSITY_METERS: f32 = 0.04;
 
+/// Default per-axis reduction for the static dominant-direction atlas.
+///
+/// The irradiance atlas stays at the planned chart resolution. Direction is a
+/// lower-frequency signal, so its post-composite representation can be stored
+/// at half resolution per axis without moving chart UVs or atlas placement.
+pub const DIRECTION_TEXEL_SCALE: u32 = 2;
+
 /// Atlas width/height when no face would fit otherwise. Power-of-two for BC6H block alignment.
 /// The 4-alignment BC6H requires is satisfied for free since dimensions are always power-of-two
 /// ≥ 4 here, meaning `ceil(w/4)` is always exact (no partial trailing block).
-const MIN_ATLAS_DIMENSION: u32 = 64;
+pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
 /// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
@@ -101,8 +108,12 @@ pub struct LightmapBakeCtx<'a> {
     pub scale_regions: &'a [MapLightmapScaleRegion],
 }
 
-/// CLI-driven configuration for the lightmap bake. Fields are included in the
-/// cache key so adding a field here automatically invalidates stale entries.
+/// CLI-driven configuration for the lightmap bake.
+///
+/// The cold bake consumes this directly. The warm path owns its cache keys
+/// separately, so encode-only fields must also be folded into
+/// `lightmap_layer::section_input_hash` rather than relying on this serde
+/// derivation alone.
 #[derive(serde::Serialize)]
 pub struct LightmapConfig {
     pub lightmap_density: f32,
@@ -118,6 +129,11 @@ pub struct LightmapConfig {
     /// the bool re-keys the cache; flipping it never silently serves a stale
     /// bake from the wrong format.
     pub uncompressed_irradiance: bool,
+    /// Per-axis scale for the post-composite static-direction atlas. The CLI
+    /// admits only powers of two up to [`MIN_ATLAS_DIMENSION`]; direct callers
+    /// are normalized before encoding so no zero-sized direction atlas can be
+    /// emitted.
+    pub direction_texel_scale: u32,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -220,6 +236,7 @@ impl CompositedAtlas {
         &self,
         texel_density: f32,
         uncompressed_irradiance: bool,
+        direction_texel_scale: u32,
     ) -> LightmapSection {
         let (irr_bytes, irradiance_format) = if uncompressed_irradiance {
             // RGBA16F is already flat layer-major (`w·h·8` per layer concatenated),
@@ -246,9 +263,36 @@ impl CompositedAtlas {
             }
             (blob, IRRADIANCE_FORMAT_BC6H)
         };
-        // Direction is Rgba8Unorm and already flat layer-major, so it encodes
-        // whole-buffer like the RGBA16F irradiance path.
-        let dir_bytes = encode_direction_rgba8(&self.direction, &self.coverage);
+        // Direction is a lower-frequency signal than irradiance. Reduce it only
+        // after the warm/cold byte-identity seam: both paths retain this full
+        // resolution CompositedAtlas and arrive here with identical buffers.
+        let direction_texel_scale = effective_direction_texel_scale(
+            direction_texel_scale,
+            self.atlas_width,
+            self.atlas_height,
+        );
+        let (dir_width, dir_height, dir_bytes) = if direction_texel_scale == 1 {
+            // Preserve prior byte output exactly for A/B work and cache tests.
+            (
+                self.atlas_width,
+                self.atlas_height,
+                encode_direction_rgba8(&self.direction, &self.coverage),
+            )
+        } else {
+            let (direction, coverage) = reduce_direction_atlas(
+                &self.direction,
+                &self.coverage,
+                self.atlas_width,
+                self.atlas_height,
+                self.layer_count,
+                direction_texel_scale,
+            );
+            (
+                self.atlas_width / direction_texel_scale,
+                self.atlas_height / direction_texel_scale,
+                encode_direction_rgba8(&direction, &coverage),
+            )
+        };
         LightmapSection {
             layer_count: self.layer_count,
             irr_width: self.atlas_width,
@@ -256,9 +300,9 @@ impl CompositedAtlas {
             irr_texel_density: texel_density,
             irradiance: irr_bytes,
             irradiance_format,
-            dir_width: self.atlas_width,
-            dir_height: self.atlas_height,
-            dir_texel_density: texel_density,
+            dir_width,
+            dir_height,
+            dir_texel_density: texel_density * direction_texel_scale as f32,
             direction: dir_bytes,
             mode: LightmapMode::Shadowed,
         }
@@ -456,7 +500,11 @@ pub fn bake_lightmap_controlled(
     // and round-trip determinism tests can run against a known-stable baseline.
     // `encode_section` is the shared section-22 encoder both this monolithic
     // path and the per-light compositor route through.
-    let section = atlas.encode_section(texel_density, config.uncompressed_irradiance);
+    let section = atlas.encode_section(
+        texel_density,
+        config.uncompressed_irradiance,
+        config.direction_texel_scale,
+    );
 
     Ok(LightmapBakeOutput {
         section,
@@ -2055,6 +2103,92 @@ fn encode_irradiance_rgba16f(data: &[f32]) -> Vec<u8> {
     out
 }
 
+/// Normalize a programmatic direction scale to a supported power of two.
+///
+/// The CLI rejects malformed values. This defensive path keeps direct callers
+/// from producing a zero-sized direction atlas if they construct a
+/// `LightmapConfig` themselves.
+fn normalized_direction_texel_scale(scale: u32) -> u32 {
+    let bounded = scale.clamp(1, MIN_ATLAS_DIMENSION);
+    if bounded.is_power_of_two() {
+        bounded
+    } else {
+        bounded.next_power_of_two()
+    }
+}
+
+/// Clamp the configured scale to dimensions that this particular atlas can
+/// represent. Baked atlas axes are power-of-two and at least 64, but keeping
+/// this guard here also makes synthetic/direct callers safe.
+fn effective_direction_texel_scale(scale: u32, atlas_width: u32, atlas_height: u32) -> u32 {
+    let mut effective = normalized_direction_texel_scale(scale);
+    while effective > atlas_width
+        || effective > atlas_height
+        || atlas_width % effective != 0
+        || atlas_height % effective != 0
+    {
+        effective /= 2;
+    }
+    effective.max(1)
+}
+
+/// Reduce full-resolution dominant directions for the static direction atlas.
+///
+/// Each output layer reads only its matching input plane. Within a block the
+/// loop is fixed row-major, coverage is ORed, and covered cancelling vectors
+/// resolve to neutral up rather than normalizing zero.
+fn reduce_direction_atlas(
+    direction: &[Vec3],
+    coverage: &[bool],
+    atlas_width: u32,
+    atlas_height: u32,
+    layer_count: u32,
+    factor: u32,
+) -> (Vec<Vec3>, Vec<bool>) {
+    debug_assert!(factor.is_power_of_two());
+    debug_assert!(factor > 0);
+    debug_assert_eq!(atlas_width % factor, 0);
+    debug_assert_eq!(atlas_height % factor, 0);
+
+    let reduced_width = atlas_width / factor;
+    let reduced_height = atlas_height / factor;
+    let source_plane = atlas_width as usize * atlas_height as usize;
+    let reduced_plane = reduced_width as usize * reduced_height as usize;
+    let mut reduced_direction = Vec::with_capacity(reduced_plane * layer_count as usize);
+    let mut reduced_coverage = Vec::with_capacity(reduced_plane * layer_count as usize);
+
+    for layer in 0..layer_count as usize {
+        let layer_start = layer * source_plane;
+        for y in 0..reduced_height {
+            for x in 0..reduced_width {
+                let mut sum = Vec3::ZERO;
+                let mut covered = false;
+                for block_y in 0..factor {
+                    for block_x in 0..factor {
+                        let source_x = x * factor + block_x;
+                        let source_y = y * factor + block_y;
+                        let index = layer_start
+                            + source_y as usize * atlas_width as usize
+                            + source_x as usize;
+                        if coverage[index] {
+                            covered = true;
+                            sum += direction[index];
+                        }
+                    }
+                }
+                reduced_coverage.push(covered);
+                reduced_direction.push(if covered && sum.length_squared() > 1.0e-8 {
+                    sum.normalize()
+                } else {
+                    Vec3::Y
+                });
+            }
+        }
+    }
+
+    (reduced_direction, reduced_coverage)
+}
+
 fn encode_direction_rgba8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
     let mut out = Vec::with_capacity(direction.len() * 4);
     for (i, d) in direction.iter().enumerate() {
@@ -2252,6 +2386,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2279,6 +2414,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2309,6 +2445,7 @@ mod tests {
                 // Test reads per-texel bytes assuming the 8-byte RGBA16F stride;
                 // request the uncompressed debug bypass so the byte layout stays
                 // readable without re-implementing the GPU's BC6H decode here.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -2371,6 +2508,7 @@ mod tests {
                 // test reads per-texel bytes from the irradiance blob, so it
                 // requests the RGBA16F debug bypass rather than the default
                 // BC6H production layout.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -2410,6 +2548,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2442,6 +2581,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2469,6 +2609,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2500,6 +2641,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -2527,6 +2669,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -3107,6 +3250,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -3160,6 +3304,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.25,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -3315,6 +3460,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -3485,6 +3631,7 @@ mod tests {
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 // Reads per-texel bytes — request the RGBA16F debug bypass
                 // so the 8-byte stride matches what this loop expects.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -3576,6 +3723,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         );
@@ -3679,6 +3827,7 @@ mod tests {
             &LightmapConfig {
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: false,
             },
         )
@@ -4292,6 +4441,7 @@ mod tests {
                 // `floor_irradiance_r` reads per-texel bytes from the
                 // irradiance blob — request the RGBA16F debug bypass so the
                 // 8-byte stride stays valid.
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
                 uncompressed_irradiance: true,
             },
         )
@@ -4341,6 +4491,7 @@ mod tests {
                 &LightmapConfig {
                     lightmap_density: 0.05,
                     area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                    direction_texel_scale: DIRECTION_TEXEL_SCALE,
                     uncompressed_irradiance: false,
                 },
             )
@@ -4354,6 +4505,112 @@ mod tests {
             a, b,
             "soft-shadow bake drifted between runs; the area-sample seed must be a fixed \
              (x, y) hash with no RNG or hash-order dependence",
+        );
+    }
+
+    #[test]
+    fn direction_scale_one_preserves_legacy_rgba8_bytes() {
+        let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(-1.0, 0.0, 0.0)];
+        let coverage = vec![true, true, false, true];
+        let atlas = CompositedAtlas {
+            irradiance: vec![0.0; 4 * 4],
+            direction: direction.clone(),
+            coverage: coverage.clone(),
+            atlas_width: 2,
+            atlas_height: 2,
+            layer_count: 1,
+        };
+
+        let section = atlas.encode_section(0.25, true, 1);
+        assert_eq!(section.dir_width, 2);
+        assert_eq!(section.dir_height, 2);
+        assert_eq!(section.dir_texel_density, 0.25);
+        assert_eq!(
+            section.direction,
+            encode_direction_rgba8(&direction, &coverage),
+            "factor 1 must reproduce the pre-coarsening direction bytes"
+        );
+
+        let coarse = atlas.encode_section(0.25, true, 2);
+        assert_eq!(coarse.irradiance, section.irradiance);
+        assert_eq!((coarse.irr_width, coarse.irr_height), (2, 2));
+        assert_eq!((coarse.dir_width, coarse.dir_height), (1, 1));
+        assert_eq!(coarse.dir_texel_density, 0.5);
+        assert_eq!(coarse.direction.len(), section.direction.len() / 4);
+
+        // The CLI rejects these values, but direct callers must still never
+        // produce a zero-sized direction descriptor.
+        let zero_scale = atlas.encode_section(0.25, true, 0);
+        assert_eq!((zero_scale.dir_width, zero_scale.dir_height), (2, 2));
+        let oversized_scale = atlas.encode_section(0.25, true, 128);
+        assert_eq!(
+            (oversized_scale.dir_width, oversized_scale.dir_height),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn direction_reduction_uses_neutral_up_for_covered_cancelling_block() {
+        let direction = vec![Vec3::X, -Vec3::X, Vec3::X, -Vec3::X];
+        let coverage = vec![true; 4];
+
+        let (reduced_direction, reduced_coverage) =
+            reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+
+        assert_eq!(reduced_coverage, vec![true]);
+        assert_eq!(
+            reduced_direction,
+            vec![Vec3::Y],
+            "covered cancelling vectors must not normalize zero"
+        );
+        assert_eq!(
+            encode_direction_rgba8(&reduced_direction, &reduced_coverage),
+            encode_direction_oct(Vec3::Y.to_array()).to_vec(),
+            "the degenerate covered block must encode as neutral up deterministically"
+        );
+    }
+
+    #[test]
+    fn direction_reduction_keeps_array_layers_separate() {
+        let direction = vec![Vec3::X; 8]
+            .into_iter()
+            .chain(vec![-Vec3::X; 8])
+            .collect::<Vec<_>>();
+        let coverage = vec![true; direction.len()];
+        let (reduced_direction, reduced_coverage) =
+            reduce_direction_atlas(&direction, &coverage, 4, 2, 2, 2);
+
+        assert_eq!(reduced_coverage, vec![true; 4]);
+        assert_eq!(reduced_direction[..2], [Vec3::X; 2]);
+        assert_eq!(reduced_direction[2..], [-Vec3::X; 2]);
+
+        let atlas = CompositedAtlas {
+            irradiance: vec![0.0; direction.len() * 4],
+            direction,
+            coverage,
+            atlas_width: 4,
+            atlas_height: 2,
+            layer_count: 2,
+        };
+        let section = atlas.encode_section(0.25, true, 2);
+        assert_eq!(section.layer_count, 2);
+        assert_eq!((section.dir_width, section.dir_height), (2, 1));
+        assert_eq!(section.direction.len(), 2 * 2 * 1 * 4);
+    }
+
+    #[test]
+    fn direction_reduction_is_deterministic_in_fixed_row_major_order() {
+        let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X];
+        let coverage = vec![true; 4];
+
+        let first = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+        let second = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+        assert_eq!(first, second);
+
+        let expected = (Vec3::X + Vec3::Y + Vec3::Z - Vec3::X).normalize();
+        assert!(
+            (first.0[0] - expected).length() <= 1.0e-6,
+            "the block sum must follow the source row-major order"
         );
     }
 

@@ -5,9 +5,9 @@ use postretro_entities::components::health::{
     DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
 };
 use postretro_entities::{
-    EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
-    PresentationPresenter, PresentationSpawn, PresentationTemplateHandle, ScriptCtx, SlotValue,
-    Transform,
+    EntityId, EntityRegistry, EntityStateComponent, PresentationFact, PresentationFade,
+    PresentationMotion, PresentationPresenter, PresentationSpawn, PresentationTemplateHandle,
+    ScriptCtx, SlotValue, Transform,
 };
 use postretro_foundation::ir::{
     BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue,
@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
+use crate::scripting_systems::ai::FACTION_STATE_FIELD;
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///
@@ -207,6 +208,11 @@ enum BoundEffect {
         pool: String,
         amount: BoundProgram<EntityScope>,
     },
+    AdjustSentiment {
+        from_recipient: CommandRecipient,
+        to_recipient: CommandRecipient,
+        delta: BoundProgram<EntityScope>,
+    },
 }
 
 /// Which opaque impact command-target token a planned effect resolves at apply.
@@ -219,6 +225,18 @@ enum CommandRecipient {
     Source,
 }
 
+/// The recipient shape of a planned command. Most impact effects retain the
+/// original single-recipient contract; faction sentiment deliberately carries
+/// both directional endpoints all the way from bind through application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandRecipients {
+    One(CommandRecipient),
+    Pair {
+        from_recipient: CommandRecipient,
+        to_recipient: CommandRecipient,
+    },
+}
+
 enum PlannedEffect {
     Write {
         recipient: CommandRecipient,
@@ -226,7 +244,7 @@ enum PlannedEffect {
         value: IrValue,
     },
     Command {
-        recipient: CommandRecipient,
+        recipients: CommandRecipients,
         effect: ImpactEffect,
     },
 }
@@ -525,7 +543,8 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::SetHealth { .. }
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
-                        | BoundEffect::GrantAmmo { .. } => self.consequential.push(planned),
+                        | BoundEffect::GrantAmmo { .. }
+                        | BoundEffect::AdjustSentiment { .. } => self.consequential.push(planned),
                     }
                 }
             }
@@ -567,23 +586,48 @@ impl ImpactPolicyRuntime {
                         "impact writes are bound to the target-scoped entity state"
                     );
                 }
-                PlannedEffect::Command { recipient, effect } => {
+                PlannedEffect::Command { recipients, effect } => {
                     if let ImpactEffect::Present { template, value } = effect {
                         self.apply_presentation_spawn(registry, dispatch, &template, value);
                         continue;
                     }
-                    let recipient = match recipient {
-                        CommandRecipient::Target => Some(dispatch.target),
-                        CommandRecipient::Source => {
-                            dispatch.source.filter(|source| registry.exists(*source))
-                        }
-                    };
-                    if let Some(recipient) = recipient {
-                        match effect {
-                            ImpactEffect::SetOwnerSlot { slot, value } => {
+                    match (recipients, effect) {
+                        (
+                            CommandRecipients::One(recipient),
+                            ImpactEffect::SetOwnerSlot { slot, value },
+                        ) => {
+                            if let Some(recipient) =
+                                Self::resolve_command_recipient(registry, dispatch, recipient)
+                            {
                                 Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
                             }
-                            effect => apply_effect(registry, recipient, &effect),
+                        }
+                        (CommandRecipients::One(recipient), effect) => {
+                            if let Some(recipient) =
+                                Self::resolve_command_recipient(registry, dispatch, recipient)
+                            {
+                                apply_effect(registry, recipient, &effect);
+                            }
+                        }
+                        (
+                            CommandRecipients::Pair {
+                                from_recipient,
+                                to_recipient,
+                            },
+                            ImpactEffect::AdjustSentiment { delta },
+                        ) => Self::apply_adjust_sentiment(
+                            &ctx,
+                            registry,
+                            dispatch,
+                            from_recipient,
+                            to_recipient,
+                            delta,
+                        ),
+                        (CommandRecipients::Pair { .. }, effect) => {
+                            debug_assert!(
+                                false,
+                                "two-recipient impact command used unsupported effect {effect:?}"
+                            );
                         }
                     }
                 }
@@ -613,6 +657,73 @@ impl ImpactPolicyRuntime {
             return;
         };
         record.set_per_seat_value(seat, value);
+    }
+
+    fn resolve_command_recipient(
+        registry: &EntityRegistry,
+        dispatch: &ImpactDispatch,
+        recipient: CommandRecipient,
+    ) -> Option<EntityId> {
+        match recipient {
+            CommandRecipient::Target => registry.exists(dispatch.target).then_some(dispatch.target),
+            CommandRecipient::Source => dispatch.source.filter(|source| registry.exists(*source)),
+        }
+    }
+
+    /// Adjust the directional sentiment from one live impact recipient's
+    /// faction toward the other's. This stays in the policy runtime because
+    /// the pair and the live overlay are both context-owned, rather than
+    /// registry-owned effect data.
+    fn apply_adjust_sentiment(
+        ctx: &ScriptCtx,
+        registry: &EntityRegistry,
+        dispatch: &ImpactDispatch,
+        from_recipient: CommandRecipient,
+        to_recipient: CommandRecipient,
+        delta: f32,
+    ) {
+        let Some(from_entity) = Self::resolve_command_recipient(registry, dispatch, from_recipient)
+        else {
+            return;
+        };
+        let Some(to_entity) = Self::resolve_command_recipient(registry, dispatch, to_recipient)
+        else {
+            return;
+        };
+        // `get_opt` distinguishes an un-factioned entity from the player
+        // faction's valid zero index. An impact involving either is a no-op.
+        let Some(from_faction) = registry
+            .get_component::<EntityStateComponent>(from_entity)
+            .ok()
+            .and_then(|state| state.get_opt(FACTION_STATE_FIELD))
+        else {
+            return;
+        };
+        let Some(to_faction) = registry
+            .get_component::<EntityStateComponent>(to_entity)
+            .ok()
+            .and_then(|state| state.get_opt(FACTION_STATE_FIELD))
+        else {
+            return;
+        };
+        let baseline = ctx
+            .data_registry
+            .borrow()
+            .factions
+            .sentiment(from_faction, to_faction);
+        // Keep this RefMut scoped to one writer. No impact effect may carry an
+        // overlay borrow into a later effect or into the AI read path.
+        {
+            if let Err(error) =
+                ctx.faction_sentiment
+                    .borrow_mut()
+                    .adjust(from_faction, to_faction, delta, baseline)
+            {
+                log::warn!(
+                    "[Scripting] adjustSentiment impact from faction {from_faction} to {to_faction} failed: {error}; skipping"
+                );
+            }
+        }
     }
 
     /// Presentation's numeric fact was frozen by `plan_effect` before any
@@ -1054,6 +1165,26 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 amount,
             })
         }
+        "adjustSentiment" => {
+            let from_recipient = impact_recipient(target, primitive)?;
+            let to_recipient = impact_recipient(
+                Some(required_string(args, "toward", "adjustSentiment args")?),
+                "adjustSentiment toward",
+            )?;
+            let delta = bind_read(
+                args.get("delta")
+                    .ok_or_else(|| "adjustSentiment args is missing `delta`".to_string())?,
+                scope,
+            )?;
+            if delta.root_type != IrType::Number {
+                return Err("adjustSentiment `delta` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::AdjustSentiment {
+                from_recipient,
+                to_recipient,
+                delta,
+            })
+        }
         "setState" if target == Some("@impact.target") => {
             let name = required_string(args, "name", "target setState args")?;
             let value = args
@@ -1157,49 +1288,62 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
             value: eval_value(program, scope),
         },
         BoundEffect::SetOwnerSlot { slot, value } => PlannedEffect::Command {
-            recipient: CommandRecipient::Source,
+            recipients: CommandRecipients::One(CommandRecipient::Source),
             effect: ImpactEffect::SetOwnerSlot {
                 slot: slot.clone(),
                 value: number(eval_value(value, scope)),
             },
         },
         BoundEffect::SetHealth { value, after_ms } => PlannedEffect::Command {
-            recipient: CommandRecipient::Target,
+            recipients: CommandRecipients::One(CommandRecipient::Target),
             effect: ImpactEffect::SetHealth {
                 value: number(eval_value(value, scope)),
                 after_ms: *after_ms,
             },
         },
         BoundEffect::Despawn { after_ms } => PlannedEffect::Command {
-            recipient: CommandRecipient::Target,
+            recipients: CommandRecipients::One(CommandRecipient::Target),
             effect: ImpactEffect::Despawn {
                 after_ms: *after_ms,
             },
         },
         BoundEffect::PlayAnimation { state } => PlannedEffect::Command {
-            recipient: CommandRecipient::Target,
+            recipients: CommandRecipients::One(CommandRecipient::Target),
             effect: ImpactEffect::PlayAnimation {
                 state: state.clone(),
             },
         },
         BoundEffect::Present { template, value } => PlannedEffect::Command {
-            recipient: CommandRecipient::Target,
+            recipients: CommandRecipients::One(CommandRecipient::Target),
             effect: ImpactEffect::Present {
                 template: template.clone(),
                 value: number(eval_value(value, scope)),
             },
         },
         BoundEffect::GrantHealth { amount } => PlannedEffect::Command {
-            recipient: CommandRecipient::Source,
+            recipients: CommandRecipients::One(CommandRecipient::Source),
             effect: ImpactEffect::GrantHealth {
                 amount: number(eval_value(amount, scope)),
             },
         },
         BoundEffect::GrantAmmo { pool, amount } => PlannedEffect::Command {
-            recipient: CommandRecipient::Source,
+            recipients: CommandRecipients::One(CommandRecipient::Source),
             effect: ImpactEffect::GrantAmmo {
                 pool: pool.clone(),
                 amount: number(eval_value(amount, scope)),
+            },
+        },
+        BoundEffect::AdjustSentiment {
+            from_recipient,
+            to_recipient,
+            delta,
+        } => PlannedEffect::Command {
+            recipients: CommandRecipients::Pair {
+                from_recipient: *from_recipient,
+                to_recipient: *to_recipient,
+            },
+            effect: ImpactEffect::AdjustSentiment {
+                delta: number(eval_value(delta, scope)),
             },
         },
     }
@@ -1244,6 +1388,16 @@ fn require_impact_token(
         Ok(())
     } else {
         Err(format!("{primitive} must target {expected_token}"))
+    }
+}
+
+fn impact_recipient(token: Option<&str>, context: &str) -> Result<CommandRecipient, String> {
+    match token {
+        Some(IMPACT_TARGET_TOKEN) => Ok(CommandRecipient::Target),
+        Some(IMPACT_SOURCE_TOKEN) => Ok(CommandRecipient::Source),
+        _ => Err(format!(
+            "{context} must target {IMPACT_TARGET_TOKEN} or {IMPACT_SOURCE_TOKEN}"
+        )),
     }
 }
 
@@ -1346,6 +1500,14 @@ mod tests {
             "primitive": "grantAmmo",
             "target": "@impact.source",
             "args": { "type": pool, "amount": amount },
+        })
+    }
+
+    fn adjust_sentiment(target: &str, toward: &str, delta: Value) -> Value {
+        json!({
+            "primitive": "adjustSentiment",
+            "target": target,
+            "args": { "toward": toward, "delta": delta },
         })
     }
 
@@ -1546,6 +1708,147 @@ mod tests {
 
     fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
         runtime.evaluate_pending_in_registry(&mut ctx.registry.borrow_mut());
+    }
+
+    fn set_faction(ctx: &ScriptCtx, entity: EntityId, faction: f32) {
+        ctx.registry
+            .borrow_mut()
+            .entity_state_mut(entity)
+            .expect("fresh entity has state")
+            .set(FACTION_STATE_FIELD, faction);
+    }
+
+    fn install_test_factions(ctx: &ScriptCtx) {
+        let factions = postretro_entities::FactionRegistry::from_descriptors(vec![
+            postretro_entities::FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            postretro_entities::FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("test factions are valid");
+        ctx.data_registry
+            .borrow_mut()
+            .replace_factions(factions, &mut ctx.faction_sentiment.borrow_mut());
+    }
+
+    #[test]
+    fn projectile_impact_adjusts_target_and_source_faction_directions() {
+        let ctx = ScriptCtx::new();
+        install_test_factions(&ctx);
+        let victim = target(&ctx, &["projectile-target"]);
+        let shooter = source(&ctx, false, false);
+        let cabal = 2.0;
+        let resistance = 3.0;
+        set_faction(&ctx, shooter, cabal);
+        set_faction(&ctx, victim, resistance);
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "projectile-sentiment",
+            "projectile-target",
+            vec![
+                adjust_sentiment(
+                    "@impact.target",
+                    "@impact.source",
+                    json!({ "op": "mul", "a": input("@impact.amount"), "b": number(-0.25) }),
+                ),
+                adjust_sentiment("@impact.source", "@impact.target", number(0.5)),
+            ],
+        )]);
+
+        hit_from(&ctx, victim, Some(shooter), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(resistance, cabal)
+                .expect("impact creates target faction sentiment"),
+            -1.25,
+        );
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(cabal, resistance)
+                .expect("impact creates source faction sentiment"),
+            -0.5,
+        );
+        assert_number_approx_eq(
+            ctx.data_registry
+                .borrow()
+                .factions
+                .sentiment(resistance, cabal),
+            -1.0,
+        );
+    }
+
+    #[test]
+    fn impact_adjust_sentiment_supports_same_faction_pairs() {
+        let ctx = ScriptCtx::new();
+        install_test_factions(&ctx);
+        let victim = target(&ctx, &["same-faction-target"]);
+        let shooter = source(&ctx, false, false);
+        set_faction(&ctx, victim, 2.0);
+        set_faction(&ctx, shooter, 2.0);
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "same-faction-sentiment",
+            "same-faction-target",
+            vec![adjust_sentiment(
+                "@impact.target",
+                "@impact.source",
+                number(-0.5),
+            )],
+        )]);
+
+        hit_from(&ctx, victim, Some(shooter), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 2.0)
+                .expect("impact creates same-faction sentiment"),
+            -0.5,
+        );
+    }
+
+    #[test]
+    fn impact_adjust_sentiment_noops_without_a_source_or_faction() {
+        let ctx = ScriptCtx::new();
+        install_test_factions(&ctx);
+        let victim = target(&ctx, &["no-sentiment-target"]);
+        set_faction(&ctx, victim, 3.0);
+        let source_without_faction = source(&ctx, false, false);
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "no-sentiment-context",
+            "no-sentiment-target",
+            vec![adjust_sentiment(
+                "@impact.target",
+                "@impact.source",
+                number(-0.5),
+            )],
+        )]);
+
+        hit(&ctx, victim, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        hit_from(
+            &ctx,
+            victim,
+            Some(source_without_faction),
+            DamageProducer::InTick,
+        );
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert!(
+            ctx.faction_sentiment.borrow().iter().next().is_none(),
+            "contextless and faction-less impacts must not create a live pair"
+        );
     }
 
     fn state(ctx: &ScriptCtx, target: EntityId, name: &str) -> f32 {

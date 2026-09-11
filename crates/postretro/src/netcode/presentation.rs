@@ -1162,6 +1162,7 @@ mod tests {
             }],
             state_schema_fingerprint: [0; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         }
     }
 

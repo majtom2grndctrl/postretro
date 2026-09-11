@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::data_registry::DataRegistry;
+use crate::data_registry::{DataRegistry, FactionSentimentState};
 use crate::reactions::system_commands::SystemCommandQueue;
 use crate::registry::EntityRegistry;
 use crate::slot_table::SlotTable;
@@ -29,6 +29,11 @@ pub struct ScriptCtx {
     /// per-level. `App` reaches this registry via `script_ctx.data_registry`;
     /// no separate handle is held on `App`.
     pub data_registry: Rc<RefCell<DataRegistry>>,
+    /// Sparse host-authoritative sentiment that diverges from the immutable
+    /// faction registry. This is session state, so replacing faction content
+    /// during staged mod-init or a level change must not reseed it; replacement
+    /// only removes values equal to the refreshed baseline.
+    pub faction_sentiment: Rc<RefCell<FactionSentimentState>>,
     /// Engine-global typed state slots. Populated during mod init and retained
     /// until process exit; production level-clear paths never touch it.
     pub slot_table: Rc<RefCell<SlotTable>>,
@@ -63,6 +68,7 @@ impl ScriptCtx {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
             data_registry: Rc::new(RefCell::new(DataRegistry::new())),
+            faction_sentiment: Rc::new(RefCell::new(FactionSentimentState::default())),
             slot_table: Rc::new(RefCell::new(SlotTable::new())),
             frame: Rc::new(Cell::new(0)),
             // Seeded to NaN so any code path that constructs `ScriptCtx`
@@ -158,5 +164,21 @@ mod tests {
         let slots = ctx.slot_table.borrow();
         assert_eq!(slots.len(), builtin_slot_count + 1);
         assert!(slots.get("test.health").is_some());
+    }
+
+    #[test]
+    fn faction_sentiment_survives_faction_content_replacement() {
+        let ctx = ScriptCtx::new();
+        ctx.faction_sentiment
+            .borrow_mut()
+            .set(2.0, 3.0, 0.5, -1.0)
+            .unwrap();
+
+        ctx.data_registry.borrow_mut().replace_factions(
+            crate::data_registry::FactionRegistry::default(),
+            &mut ctx.faction_sentiment.borrow_mut(),
+        );
+
+        assert_eq!(ctx.faction_sentiment.borrow().get(2.0, 3.0), Some(0.5));
     }
 }

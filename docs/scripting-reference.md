@@ -953,19 +953,29 @@ Reading any other name is a load error.
 
 Declare stable faction names in `defineMod({ factions: [...] })`, assign a brain
 archetype with `components.faction`, and declare directed relationships with
-`sentiment(fromFaction, toFaction, { sentiment, tolerance })`. Negative
+`sentiment(fromFaction, toFaction, { sentiment, tolerance, decay? })`. Negative
 sentiment is hostile, zero neutral, and positive allied. Relationships are
 directional: declare both rows when each faction's view differs. `components.tolerance`
 overrides the directed-pair tolerance for that archetype. Unlisted pairs retain
 the compatibility rule: different factions are hostile and matching factions are
-neutral.
+neutral. Runtime changes can ease back toward this authored baseline: set the
+optional non-negative `factionSentimentDecay` manifest default, or a row's
+optional non-negative `decay` override. Both default to `0`, which holds live
+sentiment unchanged; a row override of `0` also holds that pair.
+
+`@postretro.` is reserved for engine persistence identities (including the
+player and compatibility-enemy factions). Do not author a faction name in that
+namespace; manifest validation rejects it. Decay always eases a changed live
+pair toward its immutable authored or compatibility baseline: a row's `decay`
+overrides `factionSentimentDecay`, and an omitted global and row both mean `0`.
 
 ```typescript
 defineMod({
   // ...
   factions: [defineFaction("cabal"), defineFaction("resistance")],
+  factionSentimentDecay: 0.1,
   sentiment: [
-    sentiment("cabal", "resistance", { sentiment: -1, tolerance: 12 }),
+    sentiment("cabal", "resistance", { sentiment: -1, tolerance: 12, decay: 0.05 }),
     sentiment("resistance", "cabal", { sentiment: 0, tolerance: 4 }),
   ],
 });
@@ -1801,6 +1811,15 @@ once, every operand reads the same starting value and the last applied write
 wins. Impact policies currently run only for in-tick weapon and AI damage;
 `applyDamage` reactions and other app-drain producers run no policy in v1.
 
+`impact.target.adjustSentimentToward(impact.source, delta)` adjusts the target
+faction's live sentiment **toward** the source faction; calling the method on
+`impact.source` reverses that direction. Negative deltas degrade the
+relationship and positive deltas strengthen its bond. The SDK method lowers to
+the impact-policy wire primitive `adjustSentiment` (not
+`adjustSentimentToward`). It is a no-op when the impact has no live source, a
+recipient is gone, or either recipient has no faction; it never changes the
+authored baseline.
+
 That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
 The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
@@ -1864,6 +1883,8 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
+| `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
+| `adjustSentiment(from, to, delta)` | `{ primitive: "adjustSentiment", args: { from, to, delta } }` | Adds `delta` to the live directional `from` → `to` relationship, starting from the authored baseline when unchanged. Negative deltas degrade it; positive deltas bond it. |
 | `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
@@ -1874,6 +1895,14 @@ the modal stack: `showDialog` and `openMenu` perform the identical `PushTree`
 operation (only `showDialog` carries the optional `onCommit`), and `closeDialog`
 pops. An unknown tree name warns and no-ops. A pop on an empty stack warns and
 no-ops.
+
+`setSentiment` and `adjustSentiment` take declared faction names and queue their
+write for the frame-end system-reaction drain, so AI observes it on the next
+fixed tick. Pairs are directional: `from` is the faction whose opinion changes,
+and `to` is the faction it changes toward. Unknown names and non-finite values
+warn and no-op. The host owns this shared state; a connected client evaluates
+the reaction locally but makes no overlay write and sends no client-to-host
+reaction uplink.
 
 Button `onPress` values have two paths. Ordinary strings are named reactions.
 Reserved `ui.*` strings are engine actions intercepted before named-reaction

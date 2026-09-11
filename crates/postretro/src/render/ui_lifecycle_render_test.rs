@@ -98,6 +98,7 @@ fn staged_manifest_result(
             entities: Vec::new(),
             factions: Default::default(),
             sentiment: Vec::new(),
+            faction_sentiment_decay: 0.0,
             entity_faction_names: Vec::new(),
             maps: Vec::new(),
             reactions: Vec::new(),

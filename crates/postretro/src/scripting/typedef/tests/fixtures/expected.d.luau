@@ -978,6 +978,8 @@ export type FactionSentimentDescriptor = {
   sentiment: number,
   --- Finite per-pair tolerance reserved for the engine-owned retaliation term.
   tolerance: number,
+  --- Optional non-negative rate that eases this live pair back to its authored sentiment. Overrides `factionSentimentDecay`; zero holds this pair.
+  decay: number?,
 }
 
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
@@ -1002,6 +1004,8 @@ export type ModManifest = {
   factions: {FactionDescriptor}?,
   --- Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral.
   sentiment: {FactionSentimentDescriptor}?,
+  --- Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.
+  factionSentimentDecay: number?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -1642,6 +1646,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
@@ -1661,6 +1666,9 @@ export type TargetHandle = {
   --- re-arms; zero stays down. Literals must be finite, and non-finite IR
   --- arithmetic resolves to zero.
   setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
@@ -1674,6 +1682,9 @@ export type SourceHandle = {
   --- skips this effect; app-drain impacts run no policy in v1. Amount
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {
@@ -1858,6 +1869,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `factionSentimentDecay` is an optional non-negative return-to-baseline
+--- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
 --- Pure builder for a stable named faction declaration. Include the result in
 --- `defineMod({ factions = { ... } })`; archetypes refer to its name through
@@ -1865,7 +1878,9 @@ declare function defineMod(config: ModManifestInput): ModManifest
 declare function defineFaction(name: string): FactionDescriptor
 --- Build one directed relationship for `sentiment` in the returned mod
 --- manifest. Negative sentiment is hostile, zero neutral, positive allied.
-declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number }): FactionSentimentDescriptor
+--- Optional non-negative `decay` overrides the global return rate; zero holds
+--- this pair after a runtime change.
+declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -1940,6 +1955,7 @@ export type ModManifestInput = {
   entities: {EntityTypeDescriptor}?,
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
+  factionSentimentDecay: number?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -2529,6 +2545,10 @@ export type PostretroUiModule = {
   restartLevel: () -> PrimitiveReactionDescriptor,
   --- Return to the frontend menu and reload its optional backdrop level.
   returnToFrontend: () -> PrimitiveReactionDescriptor,
+  --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
+  setSentiment: (from: string, to: string, value: number) -> PrimitiveReactionDescriptor,
+  --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
+  adjustSentiment: (from: string, to: string, delta: number) -> PrimitiveReactionDescriptor,
   --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",

@@ -47,7 +47,7 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
-    ScriptCtx, SlotTable,
+    FactionSentimentState, ScriptCtx, SlotTable,
 };
 use postretro_foundation::{
     WeaponPlacementDescriptor,
@@ -382,6 +382,21 @@ pub(crate) fn advance_client_presentation_effects(registry: &mut EntityRegistry,
     crate::impact_effects::tick_deferred_effects(registry, frame_dt);
 }
 
+/// Advance the authoritative live sentiment overlay before any impact producer
+/// or AI consumer runs this tick. The caller deliberately scopes the `RefMut`
+/// to this helper so AI can take its transient immutable live view afterward.
+fn decay_faction_sentiment(
+    factions: &FactionRegistry,
+    faction_sentiment: &RefCell<FactionSentimentState>,
+    tick_dt: f32,
+) {
+    faction_sentiment.borrow_mut().decay_step(
+        tick_dt,
+        |from, to| factions.sentiment_decay(from as f32, to as f32),
+        |from, to| factions.sentiment(from as f32, to as f32),
+    );
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerCommandFire {
@@ -412,6 +427,7 @@ pub(crate) fn simulate_tick(
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
+    let faction_sentiment = RefCell::new(FactionSentimentState::default());
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
@@ -433,6 +449,7 @@ pub(crate) fn simulate_tick(
         &[],
         0,
         &factions,
+        &faction_sentiment,
         None,
         &touch_edges,
         &touch_edges,
@@ -467,6 +484,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
     factions: &FactionRegistry,
+    faction_sentiment: &RefCell<FactionSentimentState>,
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
@@ -672,6 +690,11 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
+    // Decay is the first writer in the impact phase. Its mutable overlay
+    // borrow ends before ready-hit/projectile impacts and the AI's transient
+    // immutable read view, so all same-tick writes remain borrow-safe and
+    // deterministic: decay first, impacts next, frame-end reactions last.
+    decay_faction_sentiment(factions, faction_sentiment, tick_dt);
     // Remote declarations already authorized at this tick's input boundary
     // land beside authoritative projectile impacts, after deferred-effect aging
     // but before AI snapshots combat perception. A declaration waiting on this
@@ -703,6 +726,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 descriptors,
                 descriptor_generation,
                 factions,
+                faction_sentiment,
             },
             &mut on_impact,
         )
@@ -2178,6 +2202,7 @@ mod tests {
             &[],
             0,
             &FactionRegistry::default(),
+            &RefCell::new(FactionSentimentState::default()),
             None,
             &edges,
             &edges,
@@ -2299,6 +2324,7 @@ mod tests {
             &[],
             0,
             &FactionRegistry::default(),
+            &RefCell::new(FactionSentimentState::default()),
             None,
             &use_edges,
             &HashMap::new(),

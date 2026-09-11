@@ -139,6 +139,11 @@ Declarations establish slot schemas and defaults before persisted values are res
 
 Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connected client saves its per-owner values periodically and at clean exit; it never saves global slots. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts.
 
+Live faction sentiment persists beside the slot store as a directional sparse
+set. Authored factions use their names. The player and default-enemy indices use
+engine-reserved keys in a namespace authored faction names cannot enter. Unknown
+or renamed authored names warn and drop without aborting the remaining restore.
+
 ### Engine State SDK
 
 Scripts obtain engine-owned state references with `getGameState()` from `"postretro"`. It returns an immutable generated tree of descriptor references such as `getGameState().player.health`, not live values. Property access never reads current engine state.
@@ -364,7 +369,7 @@ services into scripting. Trigger `on_fire` / `on_exit` `setState` writes instead
 execute in the simulation tick against the tick-context slot table. Only slot
 writes have that in-tick trigger surface: a consequential system reaction that
 writes an engine-owned overlay rather than a tick-context slot — the runtime
-sentiment verbs (not yet built) — drains at frame-end from every source,
+sentiment verbs — drains at frame-end from every source,
 trigger fires included, so it lands the next tick with no same-tick visibility.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s

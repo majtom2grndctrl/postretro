@@ -373,6 +373,36 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
 }
 
 /**
+ * Set the live sentiment from faction `from` toward faction `to` at the
+ * frame-end game-logic drain. This replaces only that directional pair's live
+ * value; it never changes the authored baseline. Negative values degrade the
+ * relationship, while positive values bond it. Unknown faction names warn and
+ * no-op when the reaction drains.
+ */
+export function setSentiment(
+  from: string,
+  to: string,
+  value: number,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "setSentiment", args: { from, to, value } };
+}
+
+/**
+ * Add `delta` to the live sentiment from faction `from` toward faction `to`
+ * at the frame-end game-logic drain. It reads the current live value, falling
+ * back to the authored baseline when this directional pair has not diverged.
+ * Negative deltas degrade the relationship; positive deltas bond it. Unknown
+ * faction names warn and no-op when the reaction drains.
+ */
+export function adjustSentiment(
+  from: string,
+  to: string,
+  delta: number,
+): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "adjustSentiment", args: { from, to, delta } };
+}
+
+/**
  * Write `value` to the writable state reference at the game-logic stage.
  * Pure — returns the existing `setState` primitive reaction body, no engine
  * side effect. Literal values use the normal runtime readonly gate, coercion,

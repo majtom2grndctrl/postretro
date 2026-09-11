@@ -15,7 +15,7 @@ use postretro_entities::components::brain::{
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
-    EntityId, EntityRegistry, EntityStateComponent, FactionRegistry, Transform,
+    EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment, Transform,
 };
 use postretro_foundation::{BoundProgram, IrValue, RetaliationDescriptor, eval_value};
 
@@ -164,7 +164,7 @@ fn target_candidates(
 /// later retaliation admission can never alter this stride-price input.
 pub(super) fn target_offers(
     registry: &EntityRegistry,
-    factions: &FactionRegistry,
+    factions: &LiveFactionSentiment<'_>,
     from: Vec3,
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
@@ -199,7 +199,11 @@ pub(super) fn target_offers(
 /// The one directional hostility decision shared by offer filtering and the
 /// durable brain fact. A strict negative value is hostile; zero remains
 /// neutral and positive allied.
-pub(super) fn is_hostile(factions: &FactionRegistry, from_faction: f32, to_faction: f32) -> bool {
+pub(super) fn is_hostile(
+    factions: &LiveFactionSentiment<'_>,
+    from_faction: f32,
+    to_faction: f32,
+) -> bool {
     factions.sentiment(from_faction, to_faction) < 0.0
 }
 
@@ -229,7 +233,7 @@ pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
     registry: &EntityRegistry,
-    factions: &FactionRegistry,
+    factions: &LiveFactionSentiment<'_>,
     evaluating_faction: f32,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
     candidate_scope: &mut CandidateScope,
@@ -261,7 +265,7 @@ pub(super) fn select_target_with_attacker_ledger(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
     registry: &EntityRegistry,
-    factions: &FactionRegistry,
+    factions: &LiveFactionSentiment<'_>,
     evaluating_enemy: Option<EntityId>,
     evaluating_faction: f32,
     candidate_filter: Option<&BoundProgram<CandidateScope>>,
@@ -413,6 +417,7 @@ mod tests {
 
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
+    use postretro_entities::FactionRegistry;
     use postretro_entities::data_descriptors::{
         BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
     };
@@ -514,7 +519,7 @@ mod tests {
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
         let offers = target_offers(
             registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             from,
             enemy_faction,
             None,
@@ -532,7 +537,7 @@ mod tests {
             retained,
             &offers,
             registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy_faction,
             candidate_filter,
             candidate_scope,
@@ -545,7 +550,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn select_with_retaliation_for_test(
         registry: &EntityRegistry,
-        factions: &FactionRegistry,
+        factions: &LiveFactionSentiment<'_>,
         evaluating_enemy: EntityId,
         enemy_faction: f32,
         retained_target: Option<EntityId>,
@@ -655,7 +660,7 @@ mod tests {
         let factions = FactionRegistry::default();
         let hostile_offers = target_offers(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
             Some(evaluating_enemy),
@@ -682,7 +687,7 @@ mod tests {
             .set(super::super::FACTION_STATE_FIELD, 0.0);
         let default_faction_offers = target_offers(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
             Some(evaluating_enemy),
@@ -720,18 +725,21 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -1.0,
                 tolerance: 1.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.0,
                 tolerance: 1.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "cabal".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: -0.5,
                 tolerance: 1.0,
+                decay: None,
             },
         ])
         .expect("directed entries resolve");
@@ -742,7 +750,14 @@ mod tests {
             .expect("pawn has state")
             .set(super::super::FACTION_STATE_FIELD, 3.0);
 
-        let cabal_offers = target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None);
+        let cabal_offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            2.0,
+            None,
+            None,
+        );
         assert_eq!(
             cabal_offers
                 .nearest
@@ -754,7 +769,14 @@ mod tests {
             .entity_state_mut(resistance)
             .expect("pawn remains live")
             .set(super::super::FACTION_STATE_FIELD, 2.0);
-        let resistance_offers = target_offers(&registry, &factions, Vec3::ZERO, 3.0, None, None);
+        let resistance_offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            3.0,
+            None,
+            None,
+        );
         assert_eq!(
             target_candidates(&registry, Vec3::ZERO, None, None)
                 .map(|candidate| candidate.target.entity)
@@ -767,15 +789,29 @@ mod tests {
             "neutral sentiment cannot price the pure hostile stride"
         );
         assert_eq!(
-            target_offers(&registry, &factions, Vec3::ZERO, 2.0, None, None)
-                .nearest
-                .map(|candidate| candidate.target.entity),
+            target_offers(
+                &registry,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
+                Vec3::ZERO,
+                2.0,
+                None,
+                None
+            )
+            .nearest
+            .map(|candidate| candidate.target.entity),
             Some(resistance),
             "an authored same-faction negative sentiment overrides the neutral default"
         );
         assert!(
-            is_hostile(&FactionRegistry::default(), 1.0, 0.0)
-                && !is_hostile(&FactionRegistry::default(), 1.0, 1.0),
+            is_hostile(
+                &LiveFactionSentiment::with_empty_overlay(&FactionRegistry::default()),
+                1.0,
+                0.0
+            ) && !is_hostile(
+                &LiveFactionSentiment::with_empty_overlay(&FactionRegistry::default()),
+                1.0,
+                1.0
+            ),
             "unlisted pairs retain cross-faction hostile and same-faction neutral defaults"
         );
     }
@@ -785,7 +821,14 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = pawn(&mut registry, 4.0);
         let factions = FactionRegistry::default();
-        let offers = target_offers(&registry, &factions, Vec3::ZERO, 1.0, None, None);
+        let offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            1.0,
+            None,
+            None,
+        );
         let expected = RawTargetPerception {
             target: pawn,
             visible: true,
@@ -802,7 +845,7 @@ mod tests {
             None,
             &offers,
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
             None,
             &mut CandidateScope::for_validation(),
@@ -814,12 +857,19 @@ mod tests {
         assert_eq!(selected.fresh_perception, Some(expected));
 
         let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
-        let empty_offers = target_offers(&registry, &factions, Vec3::ZERO, 1.0, None, Some(pawn));
+        let empty_offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            1.0,
+            None,
+            Some(pawn),
+        );
         let retained_selection = select_target(
             Some(retained),
             &empty_offers,
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
             None,
             &mut CandidateScope::for_validation(),
@@ -841,7 +891,7 @@ mod tests {
         let factions = FactionRegistry::default();
         let offers = target_offers(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             1.0,
             None,
@@ -860,7 +910,7 @@ mod tests {
             Some(retained),
             &offers,
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
             None,
             &mut CandidateScope::for_validation(),
@@ -997,7 +1047,7 @@ mod tests {
             let ledger = ledger_for(attacker, 6.0, 0.0);
             let (nearest, selected) = select_with_retaliation_for_test(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 enemy,
                 0.0,
                 None,
@@ -1039,7 +1089,7 @@ mod tests {
 
         let selected = select_with_retaliation_for_test(
             &registry,
-            &FactionRegistry::default(),
+            &LiveFactionSentiment::with_empty_overlay(&FactionRegistry::default()),
             enemy,
             0.0,
             None,
@@ -1060,7 +1110,7 @@ mod tests {
 
         let selected = select_with_retaliation_for_test(
             &registry,
-            &FactionRegistry::default(),
+            &LiveFactionSentiment::with_empty_overlay(&FactionRegistry::default()),
             enemy,
             0.0,
             None,
@@ -1102,12 +1152,19 @@ mod tests {
 
         // Warm the exact path before measuring so the probe covers one normal
         // due scan rather than one-time test/TLS initialization.
-        let warm_offers = target_offers(&registry, &factions, Vec3::ZERO, 0.0, Some(enemy), None);
+        let warm_offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            0.0,
+            Some(enemy),
+            None,
+        );
         let _ = select_target_with_attacker_ledger(
             None,
             &warm_offers,
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             Some(enemy),
             0.0,
             None,
@@ -1120,12 +1177,19 @@ mod tests {
         );
 
         let snapshot = AllocSnapshot::arm();
-        let offers = target_offers(&registry, &factions, Vec3::ZERO, 0.0, Some(enemy), None);
+        let offers = target_offers(
+            &registry,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
+            Vec3::ZERO,
+            0.0,
+            Some(enemy),
+            None,
+        );
         let selected = select_target_with_attacker_ledger(
             None,
             &offers,
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             Some(enemy),
             0.0,
             None,
@@ -1160,7 +1224,7 @@ mod tests {
         let ledger = ledger_for(attacker, 50.0, 0.0);
         let selected = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             None,
@@ -1184,7 +1248,7 @@ mod tests {
         let max_ledger = ledger_for(max_attacker, 50.0, 0.0);
         let selected = select_with_retaliation_for_test(
             &max_tolerance_registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             max_enemy,
             0.0,
             None,
@@ -1212,7 +1276,7 @@ mod tests {
         });
         let initial = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             None,
@@ -1232,7 +1296,7 @@ mod tests {
             .accumulated_damage = 11.0;
         let held_at_margin = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             Some(attacker_a),
@@ -1252,7 +1316,7 @@ mod tests {
             .accumulated_damage = 12.1;
         let transferred = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             Some(attacker_a),
@@ -1269,7 +1333,7 @@ mod tests {
         let decayed_ledger = ledger_for(attacker_a, 10.0, 2_000.0);
         let held_after_decay = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             Some(attacker_a),
@@ -1296,7 +1360,7 @@ mod tests {
             let factions = FactionRegistry::default();
             let selected = select_with_retaliation_for_test(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 enemy,
                 0.0,
                 None,
@@ -1325,7 +1389,7 @@ mod tests {
         let factions = FactionRegistry::default();
         let selected = select_with_retaliation_for_test(
             &registry,
-            &factions,
+            &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy,
             0.0,
             None,

@@ -685,8 +685,9 @@ impl ScriptRuntime {
             // matching mod-global weapon-placement default.
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
+                let mut faction_sentiment = ctx.faction_sentiment.borrow_mut();
                 data_registry.replace_entity_types(next_descriptors);
-                data_registry.replace_factions(next_factions);
+                data_registry.replace_factions(next_factions, &mut faction_sentiment);
                 data_registry.replace_maps(next_maps);
                 data_registry.set_default_weapon_placement(next_default_weapon_placement);
                 data_registry.replace_global_reactions(next_global_reactions);
@@ -895,7 +896,13 @@ mod tests {
                 },
             ])
             .expect("startup faction snapshot is valid"),
+            &mut ctx.faction_sentiment.borrow_mut(),
         );
+        ctx.faction_sentiment
+            .borrow_mut()
+            .set(2.0, 3.0, 0.25, -1.0)
+            .expect("fixture live value diverges from the committed baseline");
+        let live_generation = ctx.faction_sentiment.borrow().generation();
         let primitive_registry = PrimitiveRegistry::new();
         let mut runtime =
             ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
@@ -917,6 +924,16 @@ mod tests {
         assert!((registry.factions.sentiment(2.0, 3.0) - 0.25).abs() <= f32::EPSILON);
         assert_eq!(registry.entities[0].faction, Some(2.0));
         assert_eq!(registry.entities[1].faction, Some(3.0));
+        drop(registry);
+        assert!(
+            ctx.faction_sentiment.borrow().iter().next().is_none(),
+            "the staged baseline equal to the live value removes the sparse override",
+        );
+        assert_ne!(
+            ctx.faction_sentiment.borrow().generation(),
+            live_generation,
+            "rebasing the staged faction snapshot invalidates replication caches",
+        );
 
         fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
@@ -956,7 +973,8 @@ mod tests {
         committed_descriptor.faction = Some(2.0);
         {
             let mut data_registry = ctx.data_registry.borrow_mut();
-            data_registry.replace_factions(committed_factions);
+            data_registry
+                .replace_factions(committed_factions, &mut ctx.faction_sentiment.borrow_mut());
             data_registry.replace_entity_types(vec![committed_descriptor.clone()]);
         }
 
@@ -1046,13 +1064,15 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -0.5,
             tolerance: 6.0,
+            decay: None,
         }])
         .expect("startup relationship snapshot is valid");
 
         let ctx = ScriptCtx::new();
         {
             let mut data_registry = ctx.data_registry.borrow_mut();
-            data_registry.replace_factions(committed_factions);
+            data_registry
+                .replace_factions(committed_factions, &mut ctx.faction_sentiment.borrow_mut());
             data_registry.replace_entity_types(vec![committed_descriptor.clone()]);
         }
         let live_brain = {

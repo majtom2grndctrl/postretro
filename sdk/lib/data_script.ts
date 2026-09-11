@@ -251,6 +251,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
   | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
 
@@ -271,6 +272,8 @@ export interface TargetHandle {
   playAnim(clip: string): Effect;
   /** Clamp to the health range. Only a positive stored result recovers and re-arms; zero stays down. Literals must be finite, and non-finite IR arithmetic resolves to zero. */
   setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+  /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+  adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   state(name: string): NumberRef;
   setState(name: string, value: NumberValue): Effect;
 }
@@ -289,6 +292,8 @@ export interface SourceHandle {
    * remain impact-target scoped; v1 has no source facts.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
+  /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+  adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
 }
 
 export type Impact = Readonly<{
@@ -391,6 +396,23 @@ function sourceImpactEffect(
   return { primitive, target: "@impact.source", args } as ImpactEffectWire as unknown as Effect;
 }
 
+function sentimentImpactEffect(
+  target: "@impact.target" | "@impact.source",
+  toward: TargetHandle | SourceHandle,
+  delta: NumberValue,
+): Effect {
+  const towardToken = toward === IMPACT_TARGET
+    ? "@impact.target"
+    : toward === IMPACT_SOURCE
+      ? "@impact.source"
+      : "@invalid";
+  return {
+    primitive: "adjustSentiment",
+    target,
+    args: { toward: towardToken, delta: numberNode(delta) },
+  } as ImpactEffectWire as unknown as Effect;
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -406,6 +428,9 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
     if (opts?.afterMs !== undefined) args.afterMs = opts.afterMs;
     return impactEffect("setHealth", args);
   },
+  adjustSentimentToward(toward, delta) {
+    return sentimentImpactEffect("@impact.target", toward, delta);
+  },
   state(name) {
     return numberRef({ op: "input", name: `@state.${name}` });
   },
@@ -417,6 +442,7 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
 const IMPACT_SOURCE: SourceHandle = Object.freeze({
   grantHealth: (amount) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
   grantAmmo: (type, amount) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  adjustSentimentToward: (toward, delta) => sentimentImpactEffect("@impact.source", toward, delta),
 }) as SourceHandle;
 
 const IMPACT: Impact = Object.freeze({
@@ -834,7 +860,9 @@ export function defineEntity<T>(
  * arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
  * `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
- * effects until the manifest is returned and validated.
+ * effects until the manifest is returned and validated. `factionSentimentDecay`
+ * is an optional non-negative global return-to-baseline rate; it defaults to
+ * zero (hold), and an individual sentiment row may override it with `decay`.
  */
 export function defineMod(
   config: ModManifestInput,
@@ -846,17 +874,22 @@ export function defineMod(
   } as import("postretro").ModManifest;
 }
 
-/** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. */
+/** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. Names beginning with `@postretro.` are reserved by the engine. */
 export function defineFaction(name: string): import("postretro").FactionDescriptor {
   return { name };
 }
 
 /** Build one directed faction relationship for `defineMod({ sentiment: [...] })`.
- * Negative values are hostile, zero is neutral, and positive is allied. */
+ * Negative values are hostile, zero is neutral, and positive is allied. An
+ * optional non-negative `decay` rate overrides the manifest-wide return rate;
+ * zero holds this relationship after it changes at runtime. */
 export function sentiment(
   fromFaction: string,
   toFaction: string,
-  values: Pick<import("postretro").FactionSentimentDescriptor, "sentiment" | "tolerance">,
+  values: Pick<
+    import("postretro").FactionSentimentDescriptor,
+    "sentiment" | "tolerance" | "decay"
+  >,
 ): import("postretro").FactionSentimentDescriptor {
   return { fromFaction, toFaction, ...values };
 }

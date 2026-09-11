@@ -276,6 +276,10 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
+  /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
+  export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;
+  /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */
+  export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;
   /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
   export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;

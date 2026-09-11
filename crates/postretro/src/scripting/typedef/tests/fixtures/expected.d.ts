@@ -979,6 +979,8 @@ declare module "postretro" {
     sentiment: number;
     /** Finite per-pair tolerance reserved for the engine-owned retaliation term. */
     tolerance: number;
+    /** Optional non-negative rate that eases this live pair back to its authored sentiment. Overrides `factionSentimentDecay`; zero holds this pair. */
+    decay?: number;
   };
 
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed. */
@@ -1003,6 +1005,8 @@ declare module "postretro" {
     factions?: ReadonlyArray<FactionDescriptor>;
     /** Optional directional faction relationships. Unlisted pairs preserve compatibility: different factions are hostile and same factions are neutral. */
     sentiment?: ReadonlyArray<FactionSentimentDescriptor>;
+    /** Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it. */
+    factionSentimentDecay?: number;
     /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
@@ -1509,6 +1513,8 @@ declare module "postretro" {
     playAnim(clip: string): Effect;
     /** Clamp to the health range. Only a positive stored result recovers and re-arms; zero stays down. Literals must be finite, and non-finite IR arithmetic resolves to zero. */
     setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+    /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+    adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
     state(name: string): NumberRef;
     setState(name: string, value: NumberValue): Effect;
   }
@@ -1518,6 +1524,8 @@ declare module "postretro" {
     grantHealth(amount: NumberValue): Effect;
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+    adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
@@ -1800,12 +1808,12 @@ declare module "postretro" {
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. */
   export function defineFaction(name: string): FactionDescriptor;
-  /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. */
-  export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance">): FactionSentimentDescriptor;
+  /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
+  export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
   /** Pure identity builder for reusable first-person weapon placement data. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
@@ -2336,6 +2344,10 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
+  /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
+  export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;
+  /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */
+  export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;
   /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
   export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;

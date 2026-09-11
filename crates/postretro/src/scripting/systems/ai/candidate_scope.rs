@@ -3,7 +3,7 @@
 
 use postretro_entities::components::brain::{RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker};
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, FactionRegistry};
+use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 use postretro_foundation::{
     BRAIN_NO_TARGET_DISTANCE, BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue,
     ResolvedInput, ResolvedOutput, resolve_candidate_input,
@@ -44,7 +44,7 @@ pub(crate) struct CandidateFacts {
 #[derive(Clone, Copy)]
 pub(crate) struct CandidateRefreshContext<'a> {
     registry: &'a EntityRegistry,
-    factions: &'a FactionRegistry,
+    factions: &'a LiveFactionSentiment<'a>,
     evaluating_faction: f32,
     archetype_tolerance: Option<f32>,
     recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -53,7 +53,7 @@ pub(crate) struct CandidateRefreshContext<'a> {
 impl<'a> CandidateRefreshContext<'a> {
     pub(crate) fn new(
         registry: &'a EntityRegistry,
-        factions: &'a FactionRegistry,
+        factions: &'a LiveFactionSentiment<'a>,
         evaluating_enemy: Option<EntityId>,
         evaluating_faction: f32,
         recent_attackers: &'a [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -210,7 +210,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 None,
                 1.0,
                 &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -242,7 +242,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 None,
                 1.0,
                 &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -277,12 +277,14 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -1.0,
                 tolerance: 2.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.0,
                 tolerance: 2.0,
+                decay: None,
             },
         ])
         .expect("directed pairs resolve");
@@ -297,7 +299,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 None,
                 2.0,
                 &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -314,7 +316,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 None,
                 3.0,
                 &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -330,7 +332,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 None,
                 3.0,
                 &[None; RECENT_ATTACKER_LEDGER_CAPACITY],
@@ -357,6 +359,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -1.0,
             tolerance: 12.0,
+            decay: None,
         }])
         .expect("directed pair resolves");
         let mut registry = EntityRegistry::new();
@@ -382,7 +385,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 Some(override_enemy),
                 2.0,
                 &empty_ledger,
@@ -395,7 +398,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 Some(pair_enemy),
                 2.0,
                 &empty_ledger,
@@ -408,7 +411,7 @@ mod tests {
         scope.refresh(
             CandidateRefreshContext::new(
                 &registry,
-                &factions,
+                &LiveFactionSentiment::with_empty_overlay(&factions),
                 Some(pair_enemy),
                 2.0,
                 &empty_ledger,
@@ -447,7 +450,8 @@ mod tests {
             .expect("recency input resolves")
             .handle;
 
-        let context = CandidateRefreshContext::new(&registry, &factions, None, 1.0, &ledger);
+        let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);
+        let context = CandidateRefreshContext::new(&registry, &live_factions, None, 1.0, &ledger);
         scope.refresh(context, first, 4.0);
         assert_eq!(scope.read(&damage), IrValue::Number(7.5));
         assert_eq!(scope.read(&recency), IrValue::Number(32.0));
@@ -516,11 +520,13 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -1.0,
             tolerance: 6.0,
+            decay: None,
         }])
         .expect("directed pair resolves");
+        let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);
         let context = CandidateRefreshContext::new(
             &registry,
-            &factions,
+            &live_factions,
             Some(first),
             2.0,
             &[None; RECENT_ATTACKER_LEDGER_CAPACITY],

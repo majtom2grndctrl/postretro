@@ -88,6 +88,10 @@ export type PostretroUiModule = {
   restartLevel: () -> PrimitiveReactionDescriptor,
   --- Return to the frontend menu and reload its optional backdrop level.
   returnToFrontend: () -> PrimitiveReactionDescriptor,
+  --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
+  setSentiment: (from: string, to: string, value: number) -> PrimitiveReactionDescriptor,
+  --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
+  adjustSentiment: (from: string, to: string, delta: number) -> PrimitiveReactionDescriptor,
   --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
@@ -129,7 +133,7 @@ export type PostretroModule = {
   defineEntity: typeof(defineEntity),
   --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
-  --- Pure builder for a stable named faction declaration.
+  --- Pure builder for a stable named faction declaration. Names beginning with `@postretro.` are engine-reserved.
   defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),

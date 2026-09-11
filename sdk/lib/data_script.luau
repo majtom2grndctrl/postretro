@@ -280,6 +280,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
@@ -301,6 +302,9 @@ export type TargetHandle = {
   --- re-arms; zero stays down. Literals must be finite, and non-finite IR
   --- arithmetic resolves to zero.
   setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
@@ -315,6 +319,9 @@ export type SourceHandle = {
   --- skips this effect; app-drain impacts run no policy in v1. Amount
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
 
 export type Impact = {
@@ -732,7 +739,29 @@ local function sourceImpactEffect(primitive: string, args: { [string]: any }?): 
   end
 end
 
-local IMPACT_TARGET: TargetHandle = table.freeze({
+local IMPACT_TARGET: TargetHandle
+local IMPACT_SOURCE: SourceHandle
+
+local function sentimentImpactEffect(
+  target: "@impact.target" | "@impact.source",
+  toward: TargetHandle | SourceHandle,
+  delta: NumberValue
+): Effect
+  local towardToken = if toward == IMPACT_TARGET then "@impact.target" elseif toward == IMPACT_SOURCE then "@impact.source" else "@invalid"
+  local wire = {
+    primitive = "adjustSentiment",
+    target = target,
+    args = { toward = towardToken, delta = numberNode(delta) },
+  } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
+end
+
+IMPACT_TARGET = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
   maxHealth = numberRef({ op = "input", name = "@impact.maxHealth" }),
@@ -749,6 +778,9 @@ local IMPACT_TARGET: TargetHandle = table.freeze({
     end
     return impactEffect("setHealth", args)
   end,
+  adjustSentimentToward = function(_self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue): Effect
+    return sentimentImpactEffect("@impact.target", toward, delta)
+  end,
   state = function(_self: TargetHandle, name: string): NumberRef
     return numberRef({ op = "input", name = "@state." .. name })
   end,
@@ -757,13 +789,16 @@ local IMPACT_TARGET: TargetHandle = table.freeze({
   end,
 })
 
-local IMPACT_SOURCE: SourceHandle = table.freeze({
+IMPACT_SOURCE = table.freeze({
   __impactSourceBrand = true,
   grantHealth = function(_self: SourceHandle, amount: NumberValue): Effect
     return sourceImpactEffect("grantHealth", { amount = numberNode(amount) })
   end,
   grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
     return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
+  end,
+  adjustSentimentToward = function(_self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue): Effect
+    return sentimentImpactEffect("@impact.source", toward, delta)
   end,
 }) :: any
 
@@ -1031,7 +1066,9 @@ end
 --- arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
---- effects until the manifest is returned and validated.
+--- effects until the manifest is returned and validated. `factionSentimentDecay`
+--- is an optional non-negative global return-to-baseline rate; it defaults to
+--- zero (hold), and an individual sentiment row may override it with `decay`.
 function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
   if config.stores == nil then
     return config
@@ -1049,24 +1086,27 @@ end
 
 --- Pure builder for a stable named faction declaration. Include the result in
 --- `defineMod({ factions = { ... } })`; archetypes refer to the name through
---- `components.faction`.
+--- `components.faction`. Names beginning with `@postretro.` are engine-reserved.
 function DataScriptSdk.defineFaction(name: string): FactionDescriptor
   return { name = name }
 end
 
 --- Build one directed faction relationship for `sentiment` in the returned
 --- mod manifest. Negative sentiment is hostile, zero neutral, and positive
---- allied; the engine validates both faction names at manifest drain.
+--- allied; the engine validates both faction names at manifest drain. An
+--- optional non-negative `decay` rate overrides `factionSentimentDecay`; zero
+--- holds this relationship after a runtime change.
 function DataScriptSdk.sentiment(
   fromFaction: string,
   toFaction: string,
-  values: { sentiment: number, tolerance: number }
+  values: { sentiment: number, tolerance: number, decay: number? }
 ): FactionSentimentDescriptor
   return {
     fromFaction = fromFaction,
     toFaction = toFaction,
     sentiment = values.sentiment,
     tolerance = values.tolerance,
+    decay = values.decay,
   }
 end
 

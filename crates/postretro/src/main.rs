@@ -3033,6 +3033,7 @@ impl ApplicationHandler for App {
                             descriptors,
                             descriptor_generation,
                             &data_registry.factions,
+                            script_ctx.faction_sentiment.as_ref(),
                             default_weapon_placement,
                             &trigger_use_edges,
                             &touch_drop_edges,

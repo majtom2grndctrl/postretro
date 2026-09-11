@@ -47,7 +47,7 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
-    ScriptCtx, SlotTable,
+    FactionSentimentState, ScriptCtx, SlotTable,
 };
 use postretro_foundation::{
     WeaponPlacementDescriptor,
@@ -412,6 +412,7 @@ pub(crate) fn simulate_tick(
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
+    let faction_sentiment = RefCell::new(FactionSentimentState::default());
     simulate_tick_with_presentation_aim(
         registry,
         collision_world,
@@ -433,6 +434,7 @@ pub(crate) fn simulate_tick(
         &[],
         0,
         &factions,
+        &faction_sentiment,
         None,
         &touch_edges,
         &touch_edges,
@@ -467,6 +469,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
     factions: &FactionRegistry,
+    faction_sentiment: &RefCell<FactionSentimentState>,
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
@@ -703,6 +706,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
                 descriptors,
                 descriptor_generation,
                 factions,
+                faction_sentiment,
             },
             &mut on_impact,
         )
@@ -2178,6 +2182,7 @@ mod tests {
             &[],
             0,
             &FactionRegistry::default(),
+            &RefCell::new(FactionSentimentState::default()),
             None,
             &edges,
             &edges,
@@ -2299,6 +2304,7 @@ mod tests {
             &[],
             0,
             &FactionRegistry::default(),
+            &RefCell::new(FactionSentimentState::default()),
             None,
             &use_edges,
             &HashMap::new(),

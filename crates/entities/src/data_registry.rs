@@ -92,6 +92,176 @@ pub struct FactionRegistry {
     relationship_overrides: Vec<FactionRelationshipOverride>,
 }
 
+/// Engine-owned, live faction sentiment values that diverge from immutable
+/// authored faction content.
+///
+/// Pairs stay sorted by their resolved faction indices so the AI can read the
+/// sparse overlay without building an N x N matrix. A value equal to its
+/// authored baseline is deliberately absent: the registry remains the one
+/// source of truth for the decay target and content compatibility.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FactionSentimentState {
+    overrides: Vec<FactionSentimentOverride>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FactionSentimentOverride {
+    from: usize,
+    to: usize,
+    current: f32,
+}
+
+/// A transient AI read over immutable faction content and the live sentiment
+/// overlay. The overlay changes sentiment only; tolerance always remains
+/// authored baseline content.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveFactionSentiment<'a> {
+    baseline: &'a FactionRegistry,
+    overlay: &'a FactionSentimentState,
+}
+
+impl FactionSentimentState {
+    /// Return a live override for this directional pair, if it has diverged
+    /// from its authored baseline.
+    pub fn get(&self, from: f32, to: f32) -> Option<f32> {
+        self.resolved_pair(from, to)
+            .and_then(|pair| self.get_resolved(pair))
+    }
+
+    /// Set a live value for a directional pair. Supplying the baseline keeps
+    /// this runtime state independent of content and removes a pair as soon as
+    /// it returns to that baseline.
+    pub fn set(&mut self, from: f32, to: f32, value: f32, baseline: f32) {
+        let Some(pair) = self.resolved_pair(from, to) else {
+            return;
+        };
+        self.set_resolved(pair, value, baseline);
+    }
+
+    /// Add `delta` to the live value for a directional pair. An absent pair
+    /// starts at the supplied authored baseline.
+    pub fn adjust(&mut self, from: f32, to: f32, delta: f32, baseline: f32) {
+        let Some(pair) = self.resolved_pair(from, to) else {
+            return;
+        };
+        let current = self.get_resolved(pair).unwrap_or(baseline);
+        self.set_resolved(pair, current + delta, baseline);
+    }
+
+    /// Iterate the sparse diverged set in ascending `(from_idx, to_idx)`
+    /// order. Consumers that serialize or replicate it can therefore retain a
+    /// stable order without allocating a sorted copy.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (usize, usize, f32)> + '_ {
+        self.overrides
+            .iter()
+            .map(|override_| (override_.from, override_.to, override_.current))
+    }
+
+    /// Generic decay substrate for the fixed-tick owner. This type knows only
+    /// how to move an already-diverged value toward a supplied baseline; rate
+    /// authoring and tick scheduling remain outside the entities crate.
+    pub fn decay_step(
+        &mut self,
+        tick_dt: f32,
+        mut rate_for: impl FnMut(usize, usize) -> f32,
+        mut baseline_for: impl FnMut(usize, usize) -> f32,
+    ) {
+        if !tick_dt.is_finite() || tick_dt <= 0.0 {
+            return;
+        }
+
+        let mut index = 0;
+        while index < self.overrides.len() {
+            let entry = self.overrides[index];
+            let rate = rate_for(entry.from, entry.to);
+            let baseline = baseline_for(entry.from, entry.to);
+            let step = rate * tick_dt;
+            if !rate.is_finite() || !baseline.is_finite() || step <= 0.0 {
+                index += 1;
+                continue;
+            }
+
+            let distance = baseline - entry.current;
+            if distance.abs() <= step {
+                self.overrides.remove(index);
+            } else {
+                self.overrides[index].current = entry.current + distance.signum() * step;
+                index += 1;
+            }
+        }
+    }
+
+    fn resolved_pair(&self, from: f32, to: f32) -> Option<(usize, usize)> {
+        Some((faction_index(from)?, faction_index(to)?))
+    }
+
+    fn get_resolved(&self, pair: (usize, usize)) -> Option<f32> {
+        self.overrides
+            .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+            .ok()
+            .map(|index| self.overrides[index].current)
+    }
+
+    fn set_resolved(&mut self, pair: (usize, usize), value: f32, baseline: f32) {
+        match self
+            .overrides
+            .binary_search_by_key(&pair, |override_| (override_.from, override_.to))
+        {
+            Ok(index) if value == baseline => {
+                self.overrides.remove(index);
+            }
+            Ok(index) => self.overrides[index].current = value,
+            Err(_) if value == baseline => {}
+            Err(index) => self.overrides.insert(
+                index,
+                FactionSentimentOverride {
+                    from: pair.0,
+                    to: pair.1,
+                    current: value,
+                },
+            ),
+        }
+    }
+}
+
+impl<'a> LiveFactionSentiment<'a> {
+    pub fn new(baseline: &'a FactionRegistry, overlay: &'a FactionSentimentState) -> Self {
+        Self { baseline, overlay }
+    }
+
+    /// Construct a baseline-only live view for focused read-path tests. Normal
+    /// runtime AI construction always supplies the session-owned overlay.
+    pub fn with_empty_overlay(baseline: &'a FactionRegistry) -> Self {
+        static EMPTY_OVERLAY: FactionSentimentState = FactionSentimentState {
+            overrides: Vec::new(),
+        };
+        Self::new(baseline, &EMPTY_OVERLAY)
+    }
+
+    /// Sentiment resolves the live sparse value first, then the authored
+    /// baseline when no runtime write has diverged this pair.
+    pub fn sentiment(&self, from: f32, to: f32) -> f32 {
+        self.overlay
+            .get(from, to)
+            .unwrap_or_else(|| self.baseline.sentiment(from, to))
+    }
+
+    /// Tolerance remains immutable authored content for this feature.
+    pub fn tolerance(&self, from: f32, to: f32) -> Option<f32> {
+        self.baseline.tolerance(from, to)
+    }
+
+    /// Construct the complete relationship explicitly: delegating to the
+    /// baseline relationship here would accidentally reintroduce stale
+    /// baseline sentiment for an overridden pair.
+    pub fn relationship(&self, from: f32, to: f32) -> FactionRelationship {
+        FactionRelationship {
+            sentiment: self.sentiment(from, to),
+            tolerance: self.tolerance(from, to),
+        }
+    }
+}
+
 /// Borrowed faction content used by compatibility hashing.
 ///
 /// Construction and iteration exhaustively bind the registry's private state,
@@ -1227,6 +1397,77 @@ mod tests {
             factions.sentiment(2.0, 129.0),
             -1.0,
             "the reverse directed pair remains on the compatibility default"
+        );
+    }
+
+    #[test]
+    fn faction_sentiment_state_tracks_only_sorted_pairs_diverged_from_baseline() {
+        let mut state = FactionSentimentState::default();
+
+        state.set(3.0, 2.0, -0.25, -1.0);
+        state.adjust(2.0, 3.0, 0.5, -1.0);
+        state.adjust(2.0, 3.0, 0.5, -1.0);
+
+        assert_eq!(
+            state.iter().collect::<Vec<_>>(),
+            vec![(2, 3, 0.0), (3, 2, -0.25)],
+            "entries sort by directional faction-index pair"
+        );
+        assert_eq!(state.get(2.0, 3.0), Some(0.0));
+        assert_eq!(state.get(3.0, 2.0), Some(-0.25));
+
+        state.set(2.0, 3.0, -1.0, -1.0);
+        assert_eq!(
+            state.iter().collect::<Vec<_>>(),
+            vec![(3, 2, -0.25)],
+            "a value restored to its baseline is absent from the sparse overlay"
+        );
+    }
+
+    #[test]
+    fn live_faction_sentiment_uses_overlay_for_sentiment_and_baseline_for_tolerance() {
+        let baseline = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .expect("valid factions")
+        .with_sentiments([
+            FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -0.75,
+                tolerance: 4.0,
+            },
+            FactionSentimentDescriptor {
+                from_faction: "resistance".to_string(),
+                to_faction: "cabal".to_string(),
+                sentiment: 0.25,
+                tolerance: 9.0,
+            },
+        ])
+        .expect("valid authored relationships");
+        let mut overlay = FactionSentimentState::default();
+
+        let live = LiveFactionSentiment::new(&baseline, &overlay);
+        assert_eq!(live.sentiment(2.0, 3.0), -0.75);
+        assert_eq!(live.tolerance(2.0, 3.0), Some(4.0));
+
+        overlay.set(2.0, 3.0, 0.5, -0.75);
+        let live = LiveFactionSentiment::new(&baseline, &overlay);
+        assert_eq!(live.sentiment(2.0, 3.0), 0.5);
+        assert_eq!(live.sentiment(3.0, 2.0), 0.25, "pairs stay directional");
+        assert_eq!(live.tolerance(2.0, 3.0), Some(4.0));
+        assert_eq!(
+            live.relationship(2.0, 3.0),
+            FactionRelationship {
+                sentiment: 0.5,
+                tolerance: Some(4.0),
+            },
+            "relationship must not fall through to stale baseline sentiment"
         );
     }
 

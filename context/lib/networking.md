@@ -580,7 +580,10 @@ it to 14, and participation-framed traffic advances it to 15. E16's `drop_presse
 input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
 `JoinSeed` variant on `ClientControlMessage` advances it to 18. E16's dedicated
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to
-19. Slide advances it to 20. Earlier peers are refused by both handshake gates.
+19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
+`SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
+`ClientMessage` or `ServerMessage` variant. Earlier peers are refused by both handshake
+gates.
 
 ## Current contract
 

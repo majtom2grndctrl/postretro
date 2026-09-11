@@ -711,6 +711,7 @@ impl ServerReplication {
             // state-less snapshot is still a valid carrier.
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         })
     }
 }

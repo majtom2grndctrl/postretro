@@ -428,6 +428,7 @@ impl StateSlotHarness {
                     entity_baselines: Vec::new(),
                     despawn_tombstones: Vec::new(),
                     slot_baselines: outcome.slot_baselines,
+                    faction_sentiment_baseline: None,
                 };
                 self.to_server
                     .enqueue(wire::encode(&ClientMessage::Ack(ack)));
@@ -450,6 +451,7 @@ impl StateSlotHarness {
                         self.client_id,
                         ack.latest_snapshot_sequence,
                         &ack.slot_baselines,
+                        ack.faction_sentiment_baseline,
                     );
                 }
                 ClientMessage::StateBaselineRefresh(StateBaselineRefreshRequest {
@@ -488,6 +490,7 @@ fn snapshot_with_state(
         records: Vec::new(),
         state_schema_fingerprint: fingerprint,
         state_records,
+        faction_sentiment_record: None,
     }
 }
 

@@ -144,8 +144,8 @@ use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACI
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
-    Transform, WorldPointPresentationSpawn,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
+    FactionSentimentState, SlotTable, Transform, WorldPointPresentationSpawn,
 };
 use postretro_foundation::{
     NavAgentParams, PlayerMovementComponent, SplashDescriptor, WeaponPlacementDescriptor,
@@ -906,6 +906,8 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
     slot_table: &mut SlotTable,
+    factions: &FactionRegistry,
+    faction_sentiment: &std::cell::RefCell<FactionSentimentState>,
     replication_identity: &ReplicatedSlotIdentity<'_>,
     client: &mut NetClient,
     replication: &mut ClientReplication,
@@ -978,6 +980,11 @@ pub(crate) fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
+            let faction_sentiment_baseline = state_slots.apply_faction_sentiment(
+                factions,
+                faction_sentiment,
+                snapshot.faction_sentiment_record.as_ref(),
+            );
             frame_outcome.replicated_state_changed |= !state_outcome.fresh_slots.is_empty();
             if state_outcome.fresh_weapon_cooldown_slot.is_some() {
                 frame_outcome.owner_private_weapon_cooldown_slot =
@@ -985,6 +992,7 @@ pub(crate) fn client_receive_and_apply(
             }
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
+                ack.faction_sentiment_baseline = faction_sentiment_baseline;
             }
             for req in state_outcome.refresh_requests {
                 client.send_input(wire::encode(&wire::ClientMessage::StateBaselineRefresh(
@@ -2000,7 +2008,12 @@ fn host_handle_client_message_inner(
             );
             // The same ack advances replicated-state baselines (M15 Phase 3.5), keyed
             // by `StateSlotId` rather than `NetworkId`. One ack, one server frame.
-            state_slots.apply_ack(client_id, ack.latest_snapshot_sequence, &ack.slot_baselines);
+            state_slots.apply_ack(
+                client_id,
+                ack.latest_snapshot_sequence,
+                &ack.slot_baselines,
+                ack.faction_sentiment_baseline,
+            );
         }
         wire::ClientMessage::BaselineRefresh(req) => {
             replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
@@ -3189,6 +3202,7 @@ mod tests {
             records: vec![record],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
+            faction_sentiment_record: None,
         }
     }
 
@@ -3346,6 +3360,7 @@ mod tests {
         set_active_inventory(&mut registry, pawn, weapon_id);
         let command_queues = HostCommandQueues::new();
         let slot_table = SlotTable::new();
+        let faction_sentiment = postretro_entities::FactionSentimentState::default();
         let mut replication = ServerReplication::new();
         let mut state_slots = state_slots::HostStateReplication::new();
         let mut last_emitted_snapshot_tick = None;
@@ -3368,6 +3383,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &faction_sentiment,
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -3401,6 +3417,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &faction_sentiment,
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -3445,6 +3462,7 @@ mod tests {
         let sampled = host_replicate(
             &registry,
             &slot_table,
+            &faction_sentiment,
             &ReplicatedSlotIdentity::default(),
             &mut server,
             &mut allocator,
@@ -5254,6 +5272,7 @@ mod tests {
                 }],
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
+                faction_sentiment_record: None,
             },
         );
         let id = *replication
@@ -5362,6 +5381,7 @@ mod tests {
                 records: vec![record(1, 2.0, -0.35)],
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
+                faction_sentiment_record: None,
             },
         );
         replication.apply_snapshot(
@@ -5372,6 +5392,7 @@ mod tests {
                 records: vec![record(2, 4.0, 0.6)],
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
+                faction_sentiment_record: None,
             },
         );
         replication.cache_remote_player_locomotion(
@@ -5691,6 +5712,7 @@ mod tests {
                 records,
                 state_schema_fingerprint: [0u8; 32],
                 state_records: Vec::new(),
+                faction_sentiment_record: None,
             },
         );
         let remote = client_outcome
@@ -5946,6 +5968,7 @@ mod tests {
                     ],
                     state_schema_fingerprint: [0u8; 32],
                     state_records: Vec::new(),
+                    faction_sentiment_record: None,
                 },
             );
             replication

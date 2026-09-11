@@ -6090,27 +6090,37 @@ impl App {
                     // live session state rather than a tick-context slot table,
                     // so every source (including trigger `on_fire`) becomes
                     // visible to AI on the next tick.
-                    if let Err(error) = scripting_systems::system_reactions::apply_set_sentiment(
-                        &script_ctx,
-                        &from,
-                        &to,
-                        value,
-                    ) {
-                        log::warn!(
-                            "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
-                        );
+                    // Connected clients still evaluate presentation-side reactions,
+                    // but faction sentiment is host-authoritative shared state. A
+                    // client-local dialog onPress therefore drains safely without a
+                    // local overlay write or a v1 client-to-host reaction uplink.
+                    if script_ctx.owner_slot_writes_enabled.get() {
+                        if let Err(error) = scripting_systems::system_reactions::apply_set_sentiment(
+                            &script_ctx,
+                            &from,
+                            &to,
+                            value,
+                        ) {
+                            log::warn!(
+                                "[Scripting] setSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                            );
+                        }
                     }
                 }
                 SystemReactionCommand::AdjustSentiment { from, to, delta } => {
-                    if let Err(error) = scripting_systems::system_reactions::apply_adjust_sentiment(
-                        &script_ctx,
-                        &from,
-                        &to,
-                        delta,
-                    ) {
-                        log::warn!(
-                            "[Scripting] adjustSentiment from `{from}` to `{to}` failed: {error}; skipping"
-                        );
+                    if script_ctx.owner_slot_writes_enabled.get() {
+                        if let Err(error) =
+                            scripting_systems::system_reactions::apply_adjust_sentiment(
+                                &script_ctx,
+                                &from,
+                                &to,
+                                delta,
+                            )
+                        {
+                            log::warn!(
+                                "[Scripting] adjustSentiment from `{from}` to `{to}` failed: {error}; skipping"
+                            );
+                        }
                     }
                 }
                 SystemReactionCommand::AddOwnerSlot { slot, seats, delta } => {
@@ -6769,6 +6779,8 @@ impl App {
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
+                        &script_ctx.data_registry.borrow().factions,
+                        script_ctx.faction_sentiment.as_ref(),
                         &replication_identity,
                         client,
                         replication,
@@ -7262,9 +7274,11 @@ impl App {
             // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
+            let faction_sentiment = script_ctx.faction_sentiment.borrow();
             let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
+                &faction_sentiment,
                 &replication_identity,
                 server,
                 allocator,

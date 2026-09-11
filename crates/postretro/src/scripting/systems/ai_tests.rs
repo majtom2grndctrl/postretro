@@ -1696,7 +1696,9 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
         },
     ])
     .expect("directed pairs resolve");
-    ctx.data_registry.borrow_mut().replace_factions(factions);
+    ctx.data_registry
+        .borrow_mut()
+        .replace_factions(factions, &mut ctx.faction_sentiment.borrow_mut());
     let mut registry = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
@@ -2352,7 +2354,7 @@ impl FactionSentimentHarness {
         let factions = faction_sentiment_fixture_factions();
         ctx.data_registry
             .borrow_mut()
-            .replace_factions(factions.clone());
+            .replace_factions(factions.clone(), &mut ctx.faction_sentiment.borrow_mut());
         let mut policies = ImpactPolicyRuntime::new(ctx.clone());
         policies.replace_global_events(vec![policy]);
         Self {
@@ -2614,11 +2616,10 @@ fn faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo() {
     );
     let encoded = serde_json::to_vec(&saved).expect("faction save serializes");
     let saved: PersistedState = serde_json::from_slice(&encoded).expect("faction save restores");
-    harness
-        .ctx
-        .data_registry
-        .borrow_mut()
-        .replace_factions(harness.factions.clone());
+    harness.ctx.data_registry.borrow_mut().replace_factions(
+        harness.factions.clone(),
+        &mut harness.ctx.faction_sentiment.borrow_mut(),
+    );
     let mut restored = FactionSentimentState::default();
     assert!(
         overlay_persisted_faction_sentiment(&mut restored, &harness.factions, &saved).is_empty()

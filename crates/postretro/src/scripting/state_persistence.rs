@@ -1186,27 +1186,31 @@ mod tests {
             faction_sentiment: BTreeMap::new(),
         };
         assert!(collect_persisted_faction_sentiment(&mut persisted, &source, &factions).is_empty());
-        assert_eq!(
-            persisted.faction_sentiment,
-            BTreeMap::from([
-                (
-                    PERSISTED_DEFAULT_ENEMY_FACTION_KEY.to_string(),
-                    BTreeMap::from([(PERSISTED_PLAYER_FACTION_KEY.to_string(), -0.25)]),
-                ),
-                (
-                    PERSISTED_PLAYER_FACTION_KEY.to_string(),
-                    BTreeMap::from([(PERSISTED_DEFAULT_ENEMY_FACTION_KEY.to_string(), -0.5)]),
-                ),
-                (
-                    "cabal".to_string(),
-                    BTreeMap::from([("resistance".to_string(), -0.25)]),
-                ),
-                (
-                    "resistance".to_string(),
-                    BTreeMap::from([("cabal".to_string(), 0.5)]),
-                ),
-            ])
-        );
+        assert_eq!(persisted.faction_sentiment.len(), 4);
+        for (from, to, expected) in [
+            (
+                PERSISTED_DEFAULT_ENEMY_FACTION_KEY,
+                PERSISTED_PLAYER_FACTION_KEY,
+                -0.25,
+            ),
+            (
+                PERSISTED_PLAYER_FACTION_KEY,
+                PERSISTED_DEFAULT_ENEMY_FACTION_KEY,
+                -0.5,
+            ),
+            ("cabal", "resistance", -0.25),
+            ("resistance", "cabal", 0.5),
+        ] {
+            let values = persisted
+                .faction_sentiment
+                .get(from)
+                .expect("persisted faction sentiment contains expected source faction");
+            assert_eq!(values.len(), 1);
+            let actual = values
+                .get(to)
+                .expect("persisted faction sentiment contains expected target faction");
+            assert!((actual - expected).abs() <= f32::EPSILON);
+        }
 
         let persisted: PersistedState =
             serde_json::from_slice(&serde_json::to_vec(&persisted).unwrap()).unwrap();
@@ -1214,16 +1218,17 @@ mod tests {
         assert!(
             overlay_persisted_faction_sentiment(&mut restored, &factions, &persisted).is_empty()
         );
-        assert_eq!(restored.get(cabal, resistance), Some(-0.25));
-        assert_eq!(restored.get(resistance, cabal), Some(0.5));
-        assert_eq!(
-            restored.get(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
-            Some(-0.5)
-        );
-        assert_eq!(
-            restored.get(DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX),
-            Some(-0.25)
-        );
+        for (from, to, expected) in [
+            (cabal, resistance, -0.25),
+            (resistance, cabal, 0.5),
+            (PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX, -0.5),
+            (DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX, -0.25),
+        ] {
+            let actual = restored
+                .get(from, to)
+                .expect("restored faction sentiment contains expected pair");
+            assert!((actual - expected).abs() <= f32::EPSILON);
+        }
     }
 
     #[test]
@@ -1277,7 +1282,10 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("renamed-faction"));
         assert_eq!(restored.get(cabal, resistance), None);
-        assert_eq!(restored.get(resistance, cabal), Some(0.5));
+        let actual = restored
+            .get(resistance, cabal)
+            .expect("restored faction sentiment contains the resolved pair");
+        assert!((actual - 0.5).abs() <= f32::EPSILON);
     }
 
     #[test]

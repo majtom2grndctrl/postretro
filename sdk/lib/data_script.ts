@@ -251,6 +251,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
   | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
 
@@ -271,6 +272,8 @@ export interface TargetHandle {
   playAnim(clip: string): Effect;
   /** Clamp to the health range. Only a positive stored result recovers and re-arms; zero stays down. Literals must be finite, and non-finite IR arithmetic resolves to zero. */
   setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+  /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+  adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   state(name: string): NumberRef;
   setState(name: string, value: NumberValue): Effect;
 }
@@ -289,6 +292,8 @@ export interface SourceHandle {
    * remain impact-target scoped; v1 has no source facts.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
+  /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+  adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
 }
 
 export type Impact = Readonly<{
@@ -391,6 +396,23 @@ function sourceImpactEffect(
   return { primitive, target: "@impact.source", args } as ImpactEffectWire as unknown as Effect;
 }
 
+function sentimentImpactEffect(
+  target: "@impact.target" | "@impact.source",
+  toward: TargetHandle | SourceHandle,
+  delta: NumberValue,
+): Effect {
+  const towardToken = toward === IMPACT_TARGET
+    ? "@impact.target"
+    : toward === IMPACT_SOURCE
+      ? "@impact.source"
+      : "@invalid";
+  return {
+    primitive: "adjustSentiment",
+    target,
+    args: { toward: towardToken, delta: numberNode(delta) },
+  } as ImpactEffectWire as unknown as Effect;
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -406,6 +428,9 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
     if (opts?.afterMs !== undefined) args.afterMs = opts.afterMs;
     return impactEffect("setHealth", args);
   },
+  adjustSentimentToward(toward, delta) {
+    return sentimentImpactEffect("@impact.target", toward, delta);
+  },
   state(name) {
     return numberRef({ op: "input", name: `@state.${name}` });
   },
@@ -417,6 +442,7 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
 const IMPACT_SOURCE: SourceHandle = Object.freeze({
   grantHealth: (amount) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
   grantAmmo: (type, amount) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  adjustSentimentToward: (toward, delta) => sentimentImpactEffect("@impact.source", toward, delta),
 }) as SourceHandle;
 
 const IMPACT: Impact = Object.freeze({

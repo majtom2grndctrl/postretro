@@ -1642,6 +1642,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
@@ -1661,6 +1662,9 @@ export type TargetHandle = {
   --- re-arms; zero stays down. Literals must be finite, and non-finite IR
   --- arithmetic resolves to zero.
   setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: TargetHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
@@ -1674,6 +1678,9 @@ export type SourceHandle = {
   --- skips this effect; app-drain impacts run no policy in v1. Amount
   --- expressions remain impact-target scoped; v1 has no source facts.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Adjust this faction's sentiment toward another impact recipient. Negative
+  --- values degrade the relationship; positive values strengthen its bond.
+  adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {

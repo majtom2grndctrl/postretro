@@ -69,7 +69,8 @@ const HEADER_SIZE: usize = 48;
 /// ```
 ///
 /// The header carries explicit `irr_total_bytes`/`dir_total_bytes`; `from_bytes`
-/// slices each blob by the stored length without recomputing per-layer block math.
+/// verifies each against the selected format's exact layer-major layout before
+/// slicing either blob.
 ///
 /// Irradiance texels for atlas positions not covered by any face chart are
 /// zero. Edge dilation is applied at bake time so bilinear sampling at chart
@@ -124,8 +125,9 @@ pub struct LightmapSection {
 /// per texel, `w·h·8` bytes total). Used in two cases: (1) the bake's debug
 /// bypass (`LightmapConfig::uncompressed_irradiance = true`), and (2) all
 /// placeholder sections (`LightmapSection::placeholder` always emits RGBA16F —
-/// placeholders never go through BC6H). `from_bytes`/`to_bytes` read and write
-/// the blob by the stored `irr_total_bytes`, not by recomputing per-layer `w·h·8`.
+/// placeholders never go through BC6H). `to_bytes` writes the blob length into
+/// the header; `from_bytes` verifies it against the format dimensions before
+/// accepting the payload.
 pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 
 /// Format tag for the irradiance blob. Block-compressed `Bc6hRgbUfloat` — 4×4
@@ -296,13 +298,43 @@ impl LightmapSection {
         let dir_format = u32::from_le_bytes(data[40..44].try_into().unwrap());
         let dir_total_bytes = u32::from_le_bytes(data[44..48].try_into().unwrap()) as usize;
 
-        // Accept both the uncompressed RGBA16F layout and the BC6H block layout.
-        // `from_bytes` reads the blob by the stored byte count, not by recomputing
-        // block math, so the only per-format work here is gating the tag value.
-        if irr_format != IRRADIANCE_FORMAT_RGBA16F && irr_format != IRRADIANCE_FORMAT_BC6H {
+        let expected_irr_total_bytes = match irr_format {
+            IRRADIANCE_FORMAT_RGBA16F => u64::from(irr_width)
+                .checked_mul(u64::from(irr_height))
+                .and_then(|texels| texels.checked_mul(u64::from(layer_count)))
+                .and_then(|texels| texels.checked_mul(IRRADIANCE_TEXEL_BYTES as u64)),
+            IRRADIANCE_FORMAT_BC6H => u64::from(irr_width)
+                .div_ceil(4)
+                .checked_mul(u64::from(irr_height).div_ceil(4))
+                .and_then(|blocks| blocks.checked_mul(u64::from(layer_count)))
+                .and_then(|blocks| blocks.checked_mul(16)),
+            _ => {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unsupported lightmap irradiance format: {irr_format}"),
+                )));
+            }
+        }
+        .ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "lightmap irradiance byte length overflows for {irr_width}x{irr_height}x{layer_count} format {irr_format}"
+                ),
+            ))
+        })?;
+        let actual_irr_total_bytes = u64::try_from(irr_total_bytes).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "lightmap irradiance blob length exceeds u64",
+            ))
+        })?;
+        if actual_irr_total_bytes != expected_irr_total_bytes {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("unsupported lightmap irradiance format: {irr_format}"),
+                format!(
+                    "lightmap irradiance blob length {irr_total_bytes} does not match expected {expected_irr_total_bytes} bytes for {irr_width}x{irr_height}x{layer_count} format {irr_format}"
+                ),
             )));
         }
         let direction_texel_bytes = match dir_format {
@@ -702,6 +734,51 @@ mod tests {
         let bytes = section.to_bytes();
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(restored.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
+    }
+
+    #[test]
+    fn rejects_short_rgba16f_irradiance_blob() {
+        let mut bytes = LightmapSection::placeholder().to_bytes();
+        // Regression: a zero-length irradiance blob for a nonzero RGBA16F atlas
+        // used to parse and later panic during the renderer texture upload.
+        bytes[8..12].copy_from_slice(&64u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&64u32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(err) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string()
+                        .contains("irradiance blob length 0 does not match")
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_short_bc6h_irradiance_blob() {
+        let mut bytes = LightmapSection::placeholder().to_bytes();
+        // Regression: a zero-length BC6H block payload for a nonzero atlas
+        // used to parse and later panic during the renderer texture upload.
+        bytes[8..12].copy_from_slice(&64u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&64u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&IRRADIANCE_FORMAT_BC6H.to_le_bytes());
+        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(err) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string()
+                        .contains("irradiance blob length 0 does not match")
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
     }
 
     #[test]

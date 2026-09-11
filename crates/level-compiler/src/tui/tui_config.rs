@@ -67,15 +67,17 @@ enum ConfigField {
     LightmapDensity,
     ShDensityFidelity,
     SoftShadowSamples,
+    DirectionTexelScale,
     BuildMode,
 }
 
 impl ConfigField {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::ProbeSpacing,
         Self::LightmapDensity,
         Self::ShDensityFidelity,
         Self::SoftShadowSamples,
+        Self::DirectionTexelScale,
         Self::BuildMode,
     ];
 
@@ -119,6 +121,7 @@ struct FormState {
     lightmap_density: String,
     sh_density_fidelity: String,
     soft_shadow_samples: String,
+    direction_texel_scale: String,
     lightmap_density_touched: bool,
     sh_density_fidelity_touched: bool,
     density_source: DensitySource,
@@ -164,6 +167,7 @@ impl FormState {
             )
             .to_string(),
             soft_shadow_samples: args.soft_shadow_samples.to_string(),
+            direction_texel_scale: args.direction_texel_scale.to_string(),
             // The screen is gated off for CLI density overrides. Keep the form
             // defensive anyway: a density supplied to this form is already an
             // explicit value and should not be discarded if it is confirmed.
@@ -204,6 +208,7 @@ impl FormState {
             ConfigField::LightmapDensity => Some(&self.lightmap_density),
             ConfigField::ShDensityFidelity => Some(&self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&self.soft_shadow_samples),
+            ConfigField::DirectionTexelScale => Some(&self.direction_texel_scale),
             ConfigField::BuildMode => None,
         }
     }
@@ -214,6 +219,7 @@ impl FormState {
             ConfigField::LightmapDensity => Some(&mut self.lightmap_density),
             ConfigField::ShDensityFidelity => Some(&mut self.sh_density_fidelity),
             ConfigField::SoftShadowSamples => Some(&mut self.soft_shadow_samples),
+            ConfigField::DirectionTexelScale => Some(&mut self.direction_texel_scale),
             ConfigField::BuildMode => None,
         }
     }
@@ -309,6 +315,7 @@ impl FormState {
 enum ValidatedField {
     Metric(f32),
     Samples(u32),
+    DirectionTexelScale(u32),
 }
 
 /// Apply the parser's quality limits to an in-progress form field.
@@ -344,6 +351,21 @@ fn validate_field(field: ConfigField, value: &str) -> Result<ValidatedField, Str
             }
             Ok(ValidatedField::Samples(parsed))
         }
+        ConfigField::DirectionTexelScale => {
+            let parsed = value
+                .parse::<u32>()
+                .map_err(|_| "must be a positive power of two".to_owned())?;
+            if parsed == 0
+                || !parsed.is_power_of_two()
+                || parsed > lightmap_bake::MIN_ATLAS_DIMENSION
+            {
+                return Err(format!(
+                    "must be a positive power of two no larger than {}",
+                    lightmap_bake::MIN_ATLAS_DIMENSION
+                ));
+            }
+            Ok(ValidatedField::DirectionTexelScale(parsed))
+        }
         ConfigField::BuildMode => unreachable!("build mode has no numeric buffer"),
     }
 }
@@ -354,6 +376,9 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
         match validate_field(field, form.value(field).expect("numeric value"))? {
             ValidatedField::Metric(value) => Ok(value),
             ValidatedField::Samples(_) => unreachable!("metric field validated as samples"),
+            ValidatedField::DirectionTexelScale(_) => {
+                unreachable!("metric field validated as direction scale")
+            }
         }
     };
     let samples = match validate_field(
@@ -363,10 +388,24 @@ fn apply_outcome(args: &mut Args, form: &FormState) -> Result<(), String> {
     )? {
         ValidatedField::Samples(value) => value,
         ValidatedField::Metric(_) => unreachable!("sample field validated as metric"),
+        ValidatedField::DirectionTexelScale(_) => {
+            unreachable!("sample field validated as direction scale")
+        }
+    };
+    let direction_texel_scale = match validate_field(
+        ConfigField::DirectionTexelScale,
+        form.value(ConfigField::DirectionTexelScale)
+            .expect("numeric value"),
+    )? {
+        ValidatedField::DirectionTexelScale(value) => value,
+        ValidatedField::Metric(_) | ValidatedField::Samples(_) => {
+            unreachable!("direction scale field validated as another kind")
+        }
     };
 
     args.probe_spacing = metric(ConfigField::ProbeSpacing)?;
     args.soft_shadow_samples = samples;
+    args.direction_texel_scale = direction_texel_scale;
     args.lightmap_density = form
         .lightmap_density_touched
         .then(|| metric(ConfigField::LightmapDensity))
@@ -577,6 +616,18 @@ fn draw_config(frame: &mut ratatui::Frame<'_>, form: &FormState) {
             lightmap_bake::SOFT_PROBE_SAMPLES
         ),
     );
+    append_field(
+        &mut lines,
+        form,
+        ConfigField::DirectionTexelScale,
+        "Direction texel scale",
+        format!("{}×", form.direction_texel_scale),
+        format!(
+            "Default {}×; larger = smaller direction atlas / less detail (power of two 1–{}).",
+            lightmap_bake::DIRECTION_TEXEL_SCALE,
+            lightmap_bake::MIN_ATLAS_DIMENSION
+        ),
+    );
     lines.extend([Line::default(), section_heading("Build strategy")]);
     append_field(
         &mut lines,
@@ -704,6 +755,16 @@ mod tests {
         );
         assert!(validate_field(ConfigField::SoftShadowSamples, &(floor - 1).to_string()).is_err());
         assert!(validate_field(ConfigField::SoftShadowSamples, "1.5").is_err());
+
+        for scale in [1, 2, lightmap_bake::MIN_ATLAS_DIMENSION] {
+            assert_eq!(
+                validate_field(ConfigField::DirectionTexelScale, &scale.to_string()),
+                Ok(ValidatedField::DirectionTexelScale(scale))
+            );
+        }
+        for invalid in ["0", "3", "65", "1.5"] {
+            assert!(validate_field(ConfigField::DirectionTexelScale, invalid).is_err());
+        }
     }
 
     #[test]
@@ -765,15 +826,31 @@ mod tests {
     }
 
     #[test]
-    fn draw_config_renders_effective_density_and_survives_resize() {
+    fn direction_texel_scale_defaults_and_writes_back_to_build_args() {
+        let mut args = default_args();
+        let mut form = FormState::from_args(&args, None, None);
+
+        assert_eq!(
+            form.direction_texel_scale,
+            lightmap_bake::DIRECTION_TEXEL_SCALE.to_string()
+        );
+        form.direction_texel_scale = "4".to_owned();
+        apply_outcome(&mut args, &form).unwrap();
+
+        assert_eq!(args.direction_texel_scale, 4);
+    }
+
+    #[test]
+    fn draw_config_renders_effective_density_direction_scale_and_survives_resize() {
         let form = FormState::from_args(&default_args(), Some(0.025), None);
-        for (width, height) in [(100, 24), (52, 12)] {
+        for (width, height) in [(100, 32), (52, 12)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw_config(frame, &form)).unwrap();
             let text = buffer_text(&terminal);
             assert!(text.contains("Pre-bake configuration"));
-            if height >= 24 {
+            if height >= 32 {
                 assert!(text.contains("map KVP"));
+                assert!(text.contains("Direction texel scale"));
             }
         }
     }

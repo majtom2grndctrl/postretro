@@ -1728,7 +1728,9 @@ mod tests {
             },
         ])
         .expect("test factions are valid");
-        ctx.data_registry.borrow_mut().replace_factions(factions);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_factions(factions, &mut ctx.faction_sentiment.borrow_mut());
     }
 
     #[test]
@@ -1759,23 +1761,26 @@ mod tests {
         hit_from(&ctx, victim, Some(shooter), DamageProducer::InTick);
         evaluate_pending(&ctx, &mut runtime);
 
-        assert_eq!(
-            ctx.faction_sentiment.borrow().get(resistance, cabal),
-            Some(-1.25),
-            "target.adjustSentimentToward(source, delta) changes victim faction toward shooter"
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(resistance, cabal)
+                .expect("impact creates target faction sentiment"),
+            -1.25,
         );
-        assert_eq!(
-            ctx.faction_sentiment.borrow().get(cabal, resistance),
-            Some(-0.5),
-            "source.adjustSentimentToward(target, delta) changes shooter faction toward victim"
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(cabal, resistance)
+                .expect("impact creates source faction sentiment"),
+            -0.5,
         );
-        assert_eq!(
+        assert_number_approx_eq(
             ctx.data_registry
                 .borrow()
                 .factions
                 .sentiment(resistance, cabal),
             -1.0,
-            "impact writes leave the immutable baseline registry untouched"
         );
     }
 
@@ -1802,7 +1807,13 @@ mod tests {
         hit_from(&ctx, victim, Some(shooter), DamageProducer::InTick);
         evaluate_pending(&ctx, &mut runtime);
 
-        assert_eq!(ctx.faction_sentiment.borrow().get(2.0, 2.0), Some(-0.5));
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 2.0)
+                .expect("impact creates same-faction sentiment"),
+            -0.5,
+        );
     }
 
     #[test]

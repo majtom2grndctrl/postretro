@@ -855,7 +855,9 @@ mod tests {
             decay: None,
         }])
         .expect("fixture faction relationship is valid");
-        ctx.data_registry.borrow_mut().replace_factions(factions);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_factions(factions, &mut ctx.faction_sentiment.borrow_mut());
         ctx
     }
 
@@ -1448,21 +1450,24 @@ mod tests {
                 .expect("adjustSentiment args are valid")
         );
 
-        assert_eq!(
-            queue.take(),
-            vec![
-                SystemReactionCommand::SetSentiment {
-                    from: "cabal".to_string(),
-                    to: "resistance".to_string(),
-                    value: -0.75,
-                },
-                SystemReactionCommand::AdjustSentiment {
-                    from: "resistance".to_string(),
-                    to: "cabal".to_string(),
-                    delta: 0.5,
-                },
-            ]
-        );
+        let commands = queue.take();
+        let [
+            SystemReactionCommand::SetSentiment { from, to, value },
+            SystemReactionCommand::AdjustSentiment {
+                from: reverse_from,
+                to: reverse_to,
+                delta,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("sentiment reactions must queue set then adjust commands");
+        };
+        assert_eq!(from, "cabal");
+        assert_eq!(to, "resistance");
+        assert_eq!(reverse_from, "resistance");
+        assert_eq!(reverse_to, "cabal");
+        assert_number_approx_eq(*value, -0.75, "setSentiment value must round-trip");
+        assert_number_approx_eq(*delta, 0.5, "adjustSentiment delta must round-trip");
     }
 
     #[test]
@@ -1471,29 +1476,46 @@ mod tests {
 
         apply_set_sentiment(&ctx, "cabal", "resistance", -0.75)
             .expect("known factions and finite value apply");
-        assert_eq!(ctx.faction_sentiment.borrow().get(2.0, 3.0), Some(-0.75));
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("directional live overlay entry is present"),
+            -0.75,
+            "set sentiment writes the requested live value",
+        );
         assert_eq!(
             ctx.faction_sentiment.borrow().get(3.0, 2.0),
             None,
             "a directional write must not create the reverse pair"
         );
-        assert_eq!(
+        assert_number_approx_eq(
             ctx.data_registry.borrow().factions.sentiment(2.0, 3.0),
             0.25,
-            "the authored baseline remains immutable"
+            "the authored baseline remains immutable",
         );
 
         apply_adjust_sentiment(&ctx, "cabal", "resistance", 0.5)
             .expect("adjustment applies from the live overlay value");
-        assert_eq!(ctx.faction_sentiment.borrow().get(2.0, 3.0), Some(-0.25));
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("directional live overlay entry remains present"),
+            -0.25,
+            "adjustment starts from the live overlay value",
+        );
 
         let reverse_baseline = ctx.data_registry.borrow().factions.sentiment(3.0, 2.0);
         apply_adjust_sentiment(&ctx, "resistance", "cabal", -0.5)
             .expect("an unlisted directional pair starts from its authored baseline");
-        assert_eq!(
-            ctx.faction_sentiment.borrow().get(3.0, 2.0),
-            Some(reverse_baseline - 0.5),
-            "an unlisted reverse pair gets its own live overlay entry"
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(3.0, 2.0)
+                .expect("reverse live overlay entry is present"),
+            reverse_baseline - 0.5,
+            "an unlisted reverse pair gets its own live overlay entry",
         );
 
         apply_set_sentiment(&ctx, "cabal", "resistance", 0.25)
@@ -1523,10 +1545,13 @@ mod tests {
 
         apply_adjust_sentiment(&ctx, "cabal", "resistance", f32::MAX)
             .expect("the evaluated reaction remains a safe no-op on overflow");
-        assert_eq!(
-            ctx.faction_sentiment.borrow().get(2.0, 3.0),
-            Some(f32::MAX),
-            "a finite adjustment that would overflow cannot commit non-finite live state"
+        assert_number_approx_eq(
+            ctx.faction_sentiment
+                .borrow()
+                .get(2.0, 3.0)
+                .expect("live overlay entry remains present after overflow"),
+            f32::MAX,
+            "a finite adjustment that would overflow cannot commit non-finite live state",
         );
     }
 

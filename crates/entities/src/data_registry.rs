@@ -270,6 +270,19 @@ impl FactionSentimentState {
             .map(|override_| (override_.from, override_.to, override_.current))
     }
 
+    /// Rebase the sparse set after authored faction content is replaced.
+    /// Live values that still diverge remain untouched; values equal to the
+    /// refreshed baseline stop being overrides and invalidate snapshot caches.
+    fn rebase(&mut self, baseline: &FactionRegistry) {
+        let previous_len = self.overrides.len();
+        self.overrides.retain(|override_| {
+            override_.current != baseline.sentiment(override_.from as f32, override_.to as f32)
+        });
+        if self.overrides.len() != previous_len {
+            self.mark_mutated();
+        }
+    }
+
     /// Generic decay substrate for the fixed-tick owner. This type knows only
     /// how to move an already-diverged value toward a supplied baseline; rate
     /// authoring and tick scheduling remain outside the entities crate.
@@ -962,12 +975,19 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
-    /// Replace the complete committed faction snapshot. Startup accepts any
-    /// validated declaration order. Staged reload verifies that the name-to-index
-    /// mapping is unchanged before calling this, while still allowing authored
-    /// relationship overrides to refresh.
-    pub fn replace_factions(&mut self, factions: FactionRegistry) {
+    /// Replace the complete committed faction snapshot and rebase live state.
+    /// Startup accepts any validated declaration order. Staged reload verifies
+    /// that the name-to-index mapping is unchanged before calling this, while
+    /// still allowing authored relationship overrides to refresh. Live values
+    /// remain intact unless they now equal the refreshed baseline, in which case
+    /// they are no longer sparse overrides.
+    pub fn replace_factions(
+        &mut self,
+        factions: FactionRegistry,
+        sentiment: &mut FactionSentimentState,
+    ) {
         self.factions = factions;
+        sentiment.rebase(&self.factions);
     }
 
     /// Identity of the current complete entity-descriptor snapshot.
@@ -1765,6 +1785,64 @@ mod tests {
     }
 
     #[test]
+    fn faction_replacement_rebases_only_live_values_equal_to_refreshed_baseline() {
+        let old_factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .unwrap()
+        .with_sentiments([FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: 0.25,
+            tolerance: 3.0,
+            decay: None,
+        }])
+        .unwrap();
+        let refreshed_factions = FactionRegistry::from_descriptors(vec![
+            FactionDescriptor {
+                name: "cabal".to_string(),
+            },
+            FactionDescriptor {
+                name: "resistance".to_string(),
+            },
+        ])
+        .unwrap()
+        .with_sentiments([FactionSentimentDescriptor {
+            from_faction: "cabal".to_string(),
+            to_faction: "resistance".to_string(),
+            sentiment: -0.75,
+            tolerance: 3.0,
+            decay: None,
+        }])
+        .unwrap();
+
+        let mut registry = DataRegistry::new();
+        let mut sentiment = FactionSentimentState::default();
+        registry.replace_factions(old_factions, &mut sentiment);
+        sentiment.set(2.0, 3.0, -0.75, 0.25).unwrap();
+        sentiment.set(3.0, 2.0, -0.5, -1.0).unwrap();
+        let before_rebase_generation = sentiment.generation();
+
+        // Regression: a staged baseline edit could leave an at-baseline live
+        // entry that clients reject and therefore never acknowledge.
+        registry.replace_factions(refreshed_factions.clone(), &mut sentiment);
+
+        assert_eq!(sentiment.get(2.0, 3.0), None);
+        assert_eq!(sentiment.get(3.0, 2.0), Some(-0.5));
+        assert_ne!(sentiment.generation(), before_rebase_generation);
+
+        let normalized_generation = sentiment.generation();
+        registry.replace_factions(refreshed_factions, &mut sentiment);
+        assert_eq!(sentiment.get(3.0, 2.0), Some(-0.5));
+        assert_eq!(sentiment.generation(), normalized_generation);
+    }
+
+    #[test]
     fn faction_sentiment_decay_converges_monotonically_and_removes_at_baseline() {
         let mut state = FactionSentimentState::default();
         state.set(2.0, 3.0, -1.0, 0.0).unwrap();
@@ -1956,7 +2034,7 @@ mod tests {
             name: "cabal".to_string(),
         }])
         .expect("valid faction declaration");
-        registry.replace_factions(factions);
+        registry.replace_factions(factions, &mut FactionSentimentState::default());
         registry.populate_level(sample_level_reactions(), Vec::new(), &[]);
 
         registry.clear();

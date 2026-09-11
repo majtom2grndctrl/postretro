@@ -259,9 +259,9 @@ mod tests {
     use postretro_entities::{
         AirParams, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
         CapsuleParams, EntityTypeDescriptor, FactionRegistry, FactionSentimentDescriptor,
-        FallParams, FireMode, GroundParams, HealthDescriptor, ImpactEventDescriptor,
-        MeshDescriptor, MotionVerb, PlayerMovementDescriptor, PrimitiveDescriptor,
-        ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+        FactionSentimentState, FallParams, FireMode, GroundParams, HealthDescriptor,
+        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
+        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
     };
     use postretro_foundation::ir::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
@@ -377,7 +377,10 @@ mod tests {
         for entity in manifest.entities.clone() {
             registry.upsert_entity_type(entity);
         }
-        registry.replace_factions(manifest.factions.clone());
+        registry.replace_factions(
+            manifest.factions.clone(),
+            &mut FactionSentimentState::default(),
+        );
         registry.replace_global_reactions(manifest.reactions.clone());
         registry.replace_global_crossings(manifest.crossings.clone());
         registry.replace_global_trigger_events(manifest.trigger_events.clone());

@@ -2,7 +2,9 @@
 // sampler, and bind group (group 4).
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::lightmap::{
+    DIRECTION_FORMAT_OCT_RG8, DIRECTION_FORMAT_OCT_RGBA8, IRRADIANCE_FORMAT_BC6H, LightmapSection,
+};
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use wgpu::util::DeviceExt;
 
@@ -103,12 +105,9 @@ pub struct LightmapResources {
     /// placeholder). Rejected or absent shadowmask data uses this all-visible
     /// fallback so static specular remains fully lit.
     pub shadowmask_present: bool,
-    /// Static dominant-direction atlas texture (Rgba8Unorm, octahedral in rg).
-    /// Its sole consumer — the SDF pass's static dominant-direction trace — was
-    /// removed in `sdf-per-light-shadows` Task 2 (per-light static shadows now
-    /// key on light position). The baked atlas is still uploaded; retiring it
-    /// from the bake/upload path is the follow-on once animated lights also
-    /// migrate off the baked trace (see the plan's architecture map "Defers").
+    /// Static dominant-direction atlas texture (Rg8Unorm for current sections,
+    /// Rgba8Unorm for accepted legacy sections; octahedral in rg).
+    /// Forward shading samples it for bumped-Lambert normal-map correction.
     #[allow(dead_code)]
     direction_texture: wgpu::Texture,
 }
@@ -388,10 +387,10 @@ pub(crate) fn usable_atlas_dimensions(
         .map(|s| (s.irr_width, s.irr_height))
 }
 
-/// Filter out an absent (`None`), zero-dimension, zero-layer, oversize, or
-/// too-many-layers `LightmapSection`, returning `None` so the caller falls
-/// through to the neutral placeholder. Pure dimension-vs-limit comparison —
-/// unit-testable without a real wgpu device.
+/// Filter out an absent (`None`), invalid, or device-incompatible
+/// `LightmapSection`, returning `None` so the caller falls through to the
+/// neutral placeholder. Pure dimension-vs-limit comparison — unit-testable
+/// without a real wgpu device.
 fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
@@ -399,6 +398,7 @@ fn filter_usable_section(
 ) -> Option<&LightmapSection> {
     section
         .filter(|s| s.irr_width > 0 && s.irr_height > 0)
+        .filter(|s| s.dir_width > 0 && s.dir_height > 0)
         .filter(|s| s.layer_count > 0)
         .filter(|s| {
             let fits =
@@ -409,6 +409,20 @@ fn filter_usable_section(
                          degrading to neutral placeholder for this level",
                     s.irr_width,
                     s.irr_height,
+                    max_texture_dimension_2d,
+                );
+            }
+            fits
+        })
+        .filter(|s| {
+            let fits =
+                s.dir_width <= max_texture_dimension_2d && s.dir_height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] Lightmap direction atlas {}x{} exceeds device \
+                         maxTextureDimension2D {}; degrading to neutral placeholder for this level",
+                    s.dir_width,
+                    s.dir_height,
                     max_texture_dimension_2d,
                 );
             }
@@ -555,13 +569,24 @@ fn upload_direction_texture(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: direction_texture_format(sec.direction_format),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
         &sec.direction,
     )
+}
+
+/// Select the texture format from the strictly parsed section tag. Current
+/// compilers write Rg8; Rgba8 remains loadable for existing PRLs whose static
+/// direction bytes carried unused padding channels.
+fn direction_texture_format(direction_format: u32) -> wgpu::TextureFormat {
+    match direction_format {
+        DIRECTION_FORMAT_OCT_RG8 => wgpu::TextureFormat::Rg8Unorm,
+        DIRECTION_FORMAT_OCT_RGBA8 => wgpu::TextureFormat::Rgba8Unorm,
+        unknown => panic!("unsupported lightmap direction format tag {unknown}"),
+    }
 }
 
 fn upload_shadowmask_texture(
@@ -620,8 +645,8 @@ fn upload_placeholder_irradiance(device: &wgpu::Device, queue: &wgpu::Queue) -> 
 
 fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     // Neutral direction: +Y encoded octahedral (0, 1) maps to (0.5, 1.0) →
-    // 8-bit quantization (128, 255). Alpha 0xFF.
-    let bytes = [128u8, 255, 128, 255];
+    // 8-bit quantization (128, 255).
+    let bytes = [128u8, 255];
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -634,7 +659,7 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rg8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
@@ -699,6 +724,7 @@ mod tests {
             dir_height: height,
             dir_texel_density: 0.04,
             direction: Vec::new(),
+            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
             mode: LightmapMode::Shadowed,
         }
     }
@@ -733,6 +759,19 @@ mod tests {
         assert!(
             filter_usable_section(Some(&tall), 8192, 256).is_none(),
             "atlas taller than the granted limit must drop to placeholder",
+        );
+    }
+
+    /// Regression: a byte-valid direction atlas wider than the device limit
+    /// reached `upload_direction_texture` and failed wgpu validation.
+    #[test]
+    fn oversize_direction_section_filtered_out() {
+        let mut oversize_direction = fake_section(64, 64);
+        oversize_direction.dir_width = 16_384;
+
+        assert!(
+            filter_usable_section(Some(&oversize_direction), 8192, 256).is_none(),
+            "direction atlas wider than the granted limit must drop to placeholder",
         );
     }
 
@@ -942,6 +981,20 @@ mod tests {
         assert_eq!(
             sampler_ty(BIND_FILTERING_SAMPLER),
             Some(wgpu::SamplerBindingType::Filtering)
+        );
+    }
+
+    #[test]
+    fn static_direction_texture_format_follows_section_tag() {
+        assert_eq!(
+            direction_texture_format(DIRECTION_FORMAT_OCT_RG8),
+            wgpu::TextureFormat::Rg8Unorm,
+            "current static direction sections must upload exactly their RG bytes",
+        );
+        assert_eq!(
+            direction_texture_format(DIRECTION_FORMAT_OCT_RGBA8),
+            wgpu::TextureFormat::Rgba8Unorm,
+            "legacy static direction sections must retain their padded upload format",
         );
     }
 

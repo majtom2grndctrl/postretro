@@ -36,7 +36,7 @@ pub const LAYER_FORMAT_VERSION: u32 = 4;
 /// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
 /// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
 /// pipeline or `LightmapSection::to_bytes` format changes independently.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
+pub const LIGHTMAP_SECTION_VERSION: u32 = 2;
 
 /// One covered atlas texel's contribution from a single light.
 ///
@@ -422,19 +422,47 @@ pub fn geometry_world_aabb(geometry: &GeometryResult) -> (DVec3, DVec3) {
 }
 
 /// The atlas layout descriptor folded into a layer's cache key. Captures atlas
-/// dimensions and the per-chart placements so an atlas repack (which shifts every
-/// placement) invalidates all layers by changing this fingerprint.
+/// dimensions, resolved chart sampling extents/dimensions, and per-chart
+/// placements so an atlas repack (which shifts every placement) or a
+/// per-surface density override invalidates all layers by changing this
+/// fingerprint.
 ///
 /// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
 /// fields directly into the digest — the deterministically-derived proxy-bytes
 /// fingerprint the animated-weight-map stage uses for its non-`Serialize` atlas
-/// types. Charts are covered transitively: placements are a deterministic
-/// function of the charts under a fixed atlas, so the placement set fingerprints
-/// the layout.
+/// types. Every resolved per-chart sampling input is folded explicitly because
+/// a scale-region edit can change texel world positions or resize a lone chart
+/// while its 64² atlas and `(0, 0, 0)` placement remain unchanged. Raw region
+/// definitions are intentionally not folded: equivalent resolved chart
+/// outcomes share cache identity.
 fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&atlas.atlas_width.to_le_bytes());
     hasher.update(&atlas.atlas_height.to_le_bytes());
+    hasher.update(&(atlas.charts.len() as u32).to_le_bytes());
+    for chart in atlas.charts {
+        for component in [chart.origin.x, chart.origin.y, chart.origin.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.u_axis.x, chart.u_axis.y, chart.u_axis.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.v_axis.x, chart.v_axis.y, chart.v_axis.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in chart.uv_min {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in chart.uv_extent {
+            hasher.update(&component.to_le_bytes());
+        }
+        for component in [chart.normal.x, chart.normal.y, chart.normal.z] {
+            hasher.update(&component.to_le_bytes());
+        }
+        hasher.update(&chart.width_texels.to_le_bytes());
+        hasher.update(&chart.height_texels.to_le_bytes());
+    }
+    hasher.update(&(atlas.placements.len() as u32).to_le_bytes());
     for p in atlas.placements {
         hasher.update(&p.x.to_le_bytes());
         hasher.update(&p.y.to_le_bytes());
@@ -571,6 +599,8 @@ pub fn layer_input_hash(
 ///    Already folded into every `layer_input_hash` via `lightmap_density`, so
 ///    this is belt-and-suspenders (same rationale as the light-count fold).
 /// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
+/// 6. `direction_texel_scale` (u32 LE) — selects the post-composite direction
+///    atlas resolution without invalidating any per-light layer cache entry.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
@@ -578,6 +608,7 @@ pub fn section_input_hash(
     layer_input_hashes: &[[u8; 32]],
     texel_density: f32,
     uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -587,6 +618,7 @@ pub fn section_input_hash(
     }
     hasher.update(&texel_density.to_le_bytes());
     hasher.update(&[u8::from(uncompressed_irradiance)]);
+    hasher.update(&direction_texel_scale.to_le_bytes());
     *hasher.finalize().as_bytes()
 }
 
@@ -775,7 +807,7 @@ mod tests {
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
 
         // Monolithic path.
-        let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY).unwrap();
+        let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY, &[]).unwrap();
         let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
         let mono_progress = StageProgress::with_total(mono_prepared.placements.len());
         let mono_control = BakeControl::new(Arc::new(Governor::new(1, false)), &mono_progress);
@@ -795,7 +827,7 @@ mod tests {
         assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
 
         // Per-light layer path.
-        let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY).unwrap();
+        let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY, &[]).unwrap();
         let (layer_bvh, layer_prims, _) = build_bvh(&layer_geo).unwrap();
         let shared = SharedAtlas {
             charts: &layer_prepared.charts,
@@ -829,6 +861,11 @@ mod tests {
             mono_atlas, composite,
             "per-light composite must equal the monolithic atlas bit-for-bit"
         );
+        assert_eq!(
+            mono_atlas.encode_section(DENSITY, true, 4),
+            composite.encode_section(DENSITY, true, 4),
+            "a non-default direction scale must encode identically after the warm/cold seam"
+        );
     }
 
     #[test]
@@ -836,7 +873,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         assert!(
             prepared.placements.len() > 1,
             "fixture must have enough charts to exercise ordered parallel collection"
@@ -926,7 +963,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         assert!(
             prepared.placements.len() > 1,
             "fixture must have a non-degenerate chart after the forced skip"
@@ -979,7 +1016,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, primitives, _) = build_bvh(&geo).unwrap();
         let chart_count = prepared.placements.len();
         let expected_texel_count = expected_chart_texel_order(&SharedAtlas {
@@ -1209,7 +1246,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1250,7 +1287,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1266,6 +1303,76 @@ mod tests {
         assert_ne!(
             h_base, h_moved,
             "moving the light must change its layer cache key"
+        );
+    }
+
+    fn lone_chart_layout_fingerprint(
+        width_texels: u32,
+        height_texels: u32,
+        uv_extent: [f32; 2],
+    ) -> Vec<u8> {
+        let charts = [Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent,
+            normal: Vec3::Y,
+            width_texels,
+            height_texels,
+            leaf_index: 0,
+        }];
+        // Both P2 variants remain at the packer's 64² minimum and at the same
+        // sole-chart placement. Only the resolved chart dimensions may re-key.
+        let placements = [ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        atlas_layout_fingerprint(&SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 64,
+            atlas_height: 64,
+        })
+    }
+
+    #[test]
+    fn atlas_layout_fingerprint_rekeys_lone_chart_when_scale_changes_dimensions() {
+        let fine = lone_chart_layout_fingerprint(40, 40, [1.0, 1.0]);
+        let coarse = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        assert_ne!(
+            fine, coarse,
+            "P2: chart dimensions must re-key even when 64² placement is unchanged"
+        );
+    }
+
+    #[test]
+    fn atlas_layout_fingerprint_tracks_resolved_dimensions_not_region_definition_order() {
+        // Two region orderings that resolve to the same chart dimensions reach
+        // this boundary as identical chart/placement data and must share a key.
+        let equivalent_a = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let equivalent_b = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let different = lone_chart_layout_fingerprint(40, 40, [1.0, 1.0]);
+        assert_eq!(
+            equivalent_a, equivalent_b,
+            "P11: equivalent resolved scale outcomes must not spuriously miss"
+        );
+        assert_ne!(
+            equivalent_a, different,
+            "P11: a changed resolved chart dimension must miss"
+        );
+    }
+
+    #[test]
+    fn atlas_layout_fingerprint_rekeys_lone_chart_when_uv_extent_changes() {
+        // A scale edit can move chart sample positions without changing a
+        // small chart's rounded dimensions or its sole 64² placement.
+        let baseline = lone_chart_layout_fingerprint(20, 20, [1.0, 1.0]);
+        let rescaled = lone_chart_layout_fingerprint(20, 20, [1.1, 1.0]);
+        assert_ne!(
+            baseline, rescaled,
+            "resolved sampling extent must re-key a warm layer"
         );
     }
 
@@ -1347,7 +1454,7 @@ mod tests {
             point_light([3.5, 1.0, 0.5], 5.0),
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1393,7 +1500,7 @@ mod tests {
             point_light([3.5, 1.0, 0.5], 1.0),
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1434,7 +1541,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![directional_light(), point_light([0.5, 1.0, 0.5], 2.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1474,7 +1581,7 @@ mod tests {
         let far = point_light([3.5, 0.5, 0.5], 1.0); // bounds the second quad only
         let lights = vec![near.clone(), far.clone()];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut prep_geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut prep_geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1515,7 +1622,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1563,7 +1670,7 @@ mod tests {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1625,7 +1732,7 @@ mod tests {
             let mut layer_geo = fx.geometry.clone();
             let density = crate::lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS;
 
-            let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, density).unwrap();
+            let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, density, &[]).unwrap();
             if mono_prepared.placements.is_empty() {
                 continue;
             }
@@ -1643,7 +1750,8 @@ mod tests {
                 AREA_SAMPLES,
             );
 
-            let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, density).unwrap();
+            let layer_prepared =
+                prepare_atlas(&mut layer_geo, &static_lights, density, &[]).unwrap();
             let (layer_bvh, layer_prims, _) = build_bvh(&layer_geo).unwrap();
             let shared = SharedAtlas {
                 charts: &layer_prepared.charts,
@@ -1692,8 +1800,46 @@ mod tests {
         density: f32,
         uncompressed_irradiance: bool,
     ) -> CacheKey {
-        let h = section_input_hash(layer_input_hashes, density, uncompressed_irradiance);
+        let h = section_input_hash(
+            layer_input_hashes,
+            density,
+            uncompressed_irradiance,
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+        );
         CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
+    }
+
+    #[test]
+    fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
+        // The layer hash represents an already-baked full-resolution light
+        // contribution. Direction coarsening occurs only during section encode,
+        // so the two builds must retain this exact layer key while their
+        // composited-section keys differ.
+        let layer_input_hashes = [[0x5a; 32]];
+        let at_scale_two = CacheKey::new(
+            "lightmap_section",
+            LIGHTMAP_SECTION_VERSION,
+            &section_input_hash(&layer_input_hashes, DENSITY, true, 2),
+        );
+        let at_scale_one = CacheKey::new(
+            "lightmap_section",
+            LIGHTMAP_SECTION_VERSION,
+            &section_input_hash(&layer_input_hashes, DENSITY, true, 1),
+        );
+        assert_ne!(
+            at_scale_two.as_filename(),
+            at_scale_one.as_filename(),
+            "changing only direction scale must re-key the warm section memo"
+        );
+
+        let dir = fresh_cache_dir("section_direction_scale");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&at_scale_two, b"scale-two-section");
+        assert!(
+            cache.get(&at_scale_one).is_none(),
+            "a factor-1 rebuild must miss a factor-2 section memo"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Bake every light's layer, composite, dilate, and `encode_section` — the
@@ -1714,7 +1860,7 @@ mod tests {
         composite.dilate();
         // Uncompressed RGBA16F so the synthetic-atlas tests stay off the BC6H
         // encoder; the cache behavior under test is format-agnostic.
-        composite.encode_section(DENSITY, true)
+        composite.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE)
     }
 
     /// Compute the filtered direct-lightmap light set + their ordered
@@ -1749,7 +1895,7 @@ mod tests {
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1813,7 +1959,7 @@ mod tests {
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1863,7 +2009,7 @@ mod tests {
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1907,7 +2053,7 @@ mod tests {
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1947,7 +2093,7 @@ mod tests {
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -1990,7 +2136,7 @@ mod tests {
         ];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,
@@ -2050,7 +2196,7 @@ mod tests {
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
         let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
-        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY).unwrap();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
         let (_, prims, _) = build_bvh(&geo).unwrap();
         let shared = SharedAtlas {
             charts: &prepared.charts,

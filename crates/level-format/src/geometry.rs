@@ -148,6 +148,13 @@ const FACE_SIZE: usize = 8;
 const HEADER_SIZE: usize = 12;
 
 impl GeometrySection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE
+            + self.vertices.len() * VERTEX_SIZE
+            + self.indices.len() * 4
+            + self.faces.len() * FACE_SIZE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let vertex_count = self.vertices.len() as u32;
         let index_count = self.indices.len() as u32;
@@ -443,9 +450,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_all_fields() {
+    fn byte_len_matches_geometry_payload() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = GeometrySection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

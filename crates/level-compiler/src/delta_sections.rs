@@ -21,6 +21,12 @@ use crate::delta_drop_policy::{
 /// Default aggregate raw payload cap for ids 27, 41, and 45 on desktop maps.
 pub(crate) const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Default peak host-RAM budget for the three dense delta intermediates.
+///
+/// This is deliberately separate from the emitted payload cap above: it admits
+/// only a cumulative dense working set whose copy chain can fit in host RAM.
+pub(crate) const DEFAULT_MAX_WORKING_SET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
 /// Authoring budget for the aggregate raw payload. Crossing this target warns
 /// but never changes emitted detail or substitutes for the production cap.
 const DIAGNOSTIC_MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
@@ -33,12 +39,14 @@ const DIAGNOSTIC_MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DeltaSectionConfig {
     pub max_payload_bytes: u64,
+    pub max_working_set_bytes: u64,
 }
 
 impl Default for DeltaSectionConfig {
     fn default() -> Self {
         Self {
             max_payload_bytes: DEFAULT_MAX_PAYLOAD_BYTES,
+            max_working_set_bytes: DEFAULT_MAX_WORKING_SET_BYTES,
         }
     }
 }
@@ -1234,6 +1242,7 @@ mod tests {
     fn post_bake_handoff_preserves_sections_and_owns_the_cap() {
         let config = DeltaSectionConfig {
             max_payload_bytes: 123,
+            ..DeltaSectionConfig::default()
         };
         let indirect = empty_indirect();
         let entity_shadow_lights = EntityShadowLightsSection {
@@ -1258,10 +1267,14 @@ mod tests {
     }
 
     #[test]
-    fn delta_section_config_defaults_to_unconditional_256_mib_cap() {
+    fn delta_section_config_defaults_to_payload_and_working_set_caps() {
         assert_eq!(
             DeltaSectionConfig::default().max_payload_bytes,
             256 * 1024 * 1024
+        );
+        assert_eq!(
+            DeltaSectionConfig::default().max_working_set_bytes,
+            16 * 1024 * 1024 * 1024
         );
     }
 
@@ -1381,6 +1394,7 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: payload_bytes(&nonzero) - 1,
+                ..DeltaSectionConfig::default()
             },
             Some(indirect(vec![0], nonzero)),
             None,
@@ -1522,6 +1536,7 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
+                ..DeltaSectionConfig::default()
             },
             None,
             None,
@@ -1603,6 +1618,7 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
+                ..DeltaSectionConfig::default()
             },
             None,
             None,
@@ -1651,6 +1667,7 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
+                ..DeltaSectionConfig::default()
             },
             Some(indirect_section),
             None,
@@ -2104,6 +2121,7 @@ mod tests {
         let sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
+                ..DeltaSectionConfig::default()
             },
             Some(compacted),
             None,

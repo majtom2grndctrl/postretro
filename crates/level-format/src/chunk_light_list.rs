@@ -93,6 +93,10 @@ impl ChunkLightListSection {
             * (self.grid_dimensions[2] as usize)
     }
 
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE + self.offsets.len() * OFFSET_ENTRY_SIZE + self.light_indices.len() * 4
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             HEADER_SIZE + self.offsets.len() * OFFSET_ENTRY_SIZE + self.light_indices.len() * 4,
@@ -223,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn populated_round_trip_preserves_offsets_and_indices() {
+    fn byte_len_matches_populated_chunk_light_list_payload() {
         let section = ChunkLightListSection {
             grid_origin: [-8.0, 0.0, -8.0],
             cell_size: 8.0,
@@ -251,6 +255,7 @@ mod tests {
             light_indices: vec![0, 4, 2, 0, 1, 2],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = ChunkLightListSection::from_bytes(&bytes).unwrap();
         assert_eq!(restored, section);
     }

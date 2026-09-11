@@ -19,6 +19,10 @@ pub struct ShadowmaskAtlasSection {
 }
 
 impl ShadowmaskAtlasSection {
+    pub fn byte_len(&self) -> usize {
+        16 + self.channels.len() + padding_to_4(self.channels.len()) + self.data.len()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let selected_light_count = self.channels.len() as u32;
         let channel_pad = padding_to_4(self.channels.len());
@@ -108,7 +112,7 @@ mod tests {
     use crate::SectionId;
 
     #[test]
-    fn round_trip_multi_layer_payload_and_channel_padding() {
+    fn byte_len_matches_padded_shadowmask_atlas_payload() {
         let section = ShadowmaskAtlasSection {
             width: 2,
             height: 2,
@@ -118,6 +122,7 @@ mod tests {
         };
 
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         assert_eq!(bytes.len(), 16 + 4 + 32);
         let restored = ShadowmaskAtlasSection::from_bytes(&bytes).unwrap();
 

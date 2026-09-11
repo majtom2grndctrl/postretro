@@ -42,6 +42,10 @@ pub struct LightInfluenceSection {
 }
 
 impl LightInfluenceSection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE + self.records.len() * INFLUENCE_RECORD_SIZE as usize
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.records.len() as u32;
         let mut buf =
@@ -148,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_all_light_types() {
+    fn byte_len_matches_all_light_influence_payload() {
         let section = LightInfluenceSection {
             records: vec![
                 // Point light
@@ -169,6 +173,7 @@ mod tests {
             ],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         assert_eq!(
             bytes.len(),
             HEADER_SIZE + 3 * INFLUENCE_RECORD_SIZE as usize

@@ -199,6 +199,14 @@ impl AnimatedLightWeightMapsSection {
         true
     }
 
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE
+            + self.chunk_rects.len() * CHUNK_RECT_SIZE
+            + self.offset_counts.len() * OFFSET_ENTRY_SIZE
+            + self.texel_lights.len() * TEXEL_LIGHT_SIZE
+            + self.slot_to_static_layer.len() * SLOT_STATIC_LAYER_SIZE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             HEADER_SIZE
@@ -519,9 +527,10 @@ mod tests {
     }
 
     #[test]
-    fn v3_multi_slot_round_trip_is_byte_identical() {
+    fn byte_len_matches_v3_multi_slot_animated_weight_payload() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         assert_eq!(
             &bytes[0..4],
             &ANIMATED_LIGHT_WEIGHT_MAPS_VERSION.to_le_bytes()

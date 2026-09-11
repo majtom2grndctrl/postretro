@@ -108,6 +108,13 @@ pub const PORTAL_COUNT_SIZE: usize = 4;
 pub const PORTAL_STRIDE: usize = 32;
 
 impl NavMeshSection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE
+            + self.regions.len() * REGION_STRIDE
+            + PORTAL_COUNT_SIZE
+            + self.portals.len() * PORTAL_STRIDE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let region_count = self.regions.len() as u32;
         let portal_count = self.portals.len() as u32;
@@ -395,9 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn stacked_regions_with_portal_round_trip() {
+    fn byte_len_matches_navmesh_with_portal_payload() {
         let section = stacked_region_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = NavMeshSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

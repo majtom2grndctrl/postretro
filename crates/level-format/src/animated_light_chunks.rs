@@ -86,6 +86,10 @@ impl AnimatedLightChunksSection {
         }
     }
 
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE + self.chunks.len() * CHUNK_STRIDE + self.light_indices.len() * 4
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             HEADER_SIZE + self.chunks.len() * CHUNK_STRIDE + self.light_indices.len() * 4,
@@ -240,9 +244,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_byte_identical() {
+    fn byte_len_matches_animated_light_chunk_payload() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = AnimatedLightChunksSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
         let rebytes = restored.to_bytes();

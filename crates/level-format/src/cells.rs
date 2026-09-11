@@ -45,6 +45,12 @@ pub struct CellsSection {
 }
 
 impl CellsSection {
+    pub fn byte_len(&self) -> usize {
+        HEADER_SIZE
+            + self.cells.len() * CELL_RECORD_SIZE
+            + self.portal_refs.len() * PORTAL_REF_STRIDE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             HEADER_SIZE
@@ -360,9 +366,10 @@ mod tests {
     }
 
     #[test]
-    fn cells_round_trip_valid_section() {
+    fn byte_len_matches_cells_payload() {
         let section = valid_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = CellsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
         assert_eq!(restored.to_bytes(), bytes);

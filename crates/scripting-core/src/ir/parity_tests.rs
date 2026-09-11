@@ -1091,6 +1091,8 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 update(counters.broken, (current) => current.plus(1)),
                 impact.target.despawn(),
                 present(damageNumber, impact.target.healthAfter),
+                impact.target.adjustSentimentToward(impact.source, impact.amount.times(-0.25)),
+                impact.source.adjustSentimentToward(impact.target, 0.5),
               ],
             },
           ];
@@ -1159,6 +1161,8 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                 end),
                 impact.target:despawn(),
                 UI.present(damageNumber, impact.target.healthAfter),
+                impact.target:adjustSentimentToward(impact.source, impact.amount:times(-0.25)),
+                impact.source:adjustSentimentToward(impact.target, 0.5),
               },
             },
           }
@@ -1331,6 +1335,34 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
         }),
         "present must lower identically through the public UI module",
+    );
+    assert_eq!(
+        base["policy"][1]["do"][7],
+        serde_json::json!({
+            "primitive": "adjustSentiment",
+            "target": "@impact.target",
+            "args": {
+                "toward": "@impact.source",
+                "delta": {
+                    "op": "mul",
+                    "a": { "op": "input", "name": "@impact.amount" },
+                    "b": { "op": "const", "value": -0.25 },
+                },
+            },
+        }),
+        "target sentiment lowering must retain its source recipient token and frozen delta IR",
+    );
+    assert_eq!(
+        base["policy"][1]["do"][8],
+        serde_json::json!({
+            "primitive": "adjustSentiment",
+            "target": "@impact.source",
+            "args": {
+                "toward": "@impact.target",
+                "delta": { "op": "const", "value": 0.5 },
+            },
+        }),
+        "source sentiment lowering must retain its target recipient token",
     );
     assert_eq!(
         typescript["independent"]["policy"][0]["do"],

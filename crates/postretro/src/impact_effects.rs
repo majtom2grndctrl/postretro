@@ -69,6 +69,12 @@ pub(crate) enum ImpactEffect {
         slot: String,
         value: f32,
     },
+    /// Faction sentiment needs both impact recipients, so the policy runtime
+    /// resolves and applies it while its scripting context is available.
+    /// This registry-only applier deliberately cannot infer that pair.
+    AdjustSentiment {
+        delta: f32,
+    },
 }
 
 /// Apply one command-buffer effect to the resolved target id.
@@ -97,6 +103,9 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         }
         ImpactEffect::SetOwnerSlot { .. } => {
             unreachable!("owner slot writes are intercepted by ImpactPolicyRuntime")
+        }
+        ImpactEffect::AdjustSentiment { .. } => {
+            unreachable!("faction sentiment writes are intercepted by ImpactPolicyRuntime")
         }
     }
 }

@@ -1509,6 +1509,8 @@ declare module "postretro" {
     playAnim(clip: string): Effect;
     /** Clamp to the health range. Only a positive stored result recovers and re-arms; zero stays down. Literals must be finite, and non-finite IR arithmetic resolves to zero. */
     setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+    /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+    adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
     state(name: string): NumberRef;
     setState(name: string, value: NumberValue): Effect;
   }
@@ -1518,6 +1520,8 @@ declare module "postretro" {
     grantHealth(amount: NumberValue): Effect;
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
+    adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {

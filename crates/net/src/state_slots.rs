@@ -50,6 +50,20 @@ pub const STATE_RECORD_KIND_FULL_BASELINE: u16 = 0;
 /// against a referenced baseline).
 pub const STATE_RECORD_KIND_DELTA: u16 = 1;
 
+/// `kind` discriminant for a full faction-sentiment baseline. Unlike a state-slot
+/// record, this carries the complete sparse overlay rather than one descriptor-backed
+/// scalar value.
+pub const FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE: u16 = 0;
+/// `kind` discriminant for a faction-sentiment update against the client's held
+/// baseline. The payload is still the complete sparse set so removals are explicit
+/// by absence and the engine can replace its overlay atomically.
+pub const FACTION_SENTIMENT_RECORD_KIND_DELTA: u16 = 1;
+
+/// Maximum sparse faction-sentiment pairs accepted in one snapshot record. The
+/// overlay is intentionally sparse; this bounds hostile decode work before the
+/// engine touches its live state.
+pub const MAX_FACTION_SENTIMENT_PAIRS: usize = 4096;
+
 /// `value_kind` discriminant for the explicit "no current value" state.
 pub const VALUE_KIND_UNSET: u16 = 0;
 /// `value_kind` discriminant for a finite `f32` number value.
@@ -125,6 +139,167 @@ pub struct StateSlotDescriptor {
 pub struct StateSchema {
     fingerprint: [u8; 32],
     descriptors: HashMap<StateSlotId, StateSlotDescriptor>,
+}
+
+// ---------------------------------------------------------------------------
+// Faction-sentiment sparse sync record
+// ---------------------------------------------------------------------------
+
+/// One directional diverged faction-sentiment value. Faction indices are content
+/// identities, so this deliberately carries compact indices instead of names. The
+/// engine validates that both indices exist in its immutable faction registry before
+/// replacing the live overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct FactionSentimentPair {
+    pub from_idx: u16,
+    pub to_idx: u16,
+    pub value: f32,
+}
+
+/// Raw faction-sentiment overlay record carried in [`crate::wire::RawSnapshotMessage`].
+/// It has its own baseline namespace and is intentionally independent of
+/// [`StateSlotDescriptor`]: a mutable, variable-length sparse set cannot be modeled as
+/// a static declared slot.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct RawFactionSentimentRecord {
+    pub kind: u16,
+    /// `FullBaseline` requires `false`; `Delta` requires `true`.
+    pub has_baseline_ref: bool,
+    pub baseline_ref: u32,
+    /// The baseline established by this complete sparse-set snapshot.
+    pub baseline_id: u32,
+    /// All diverged pairs, in strictly ascending `(from_idx, to_idx)` order.
+    pub pairs: Vec<FactionSentimentPair>,
+}
+
+/// Validated faction-sentiment sync record. The net crate validates only wire-local
+/// facts (record kind, baseline shape, pair ordering, cap, and finite values); the
+/// engine later validates that indices exist in the installed faction registry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FactionSentimentRecord {
+    FullBaseline {
+        baseline_id: u32,
+        pairs: Vec<FactionSentimentPair>,
+    },
+    Delta {
+        baseline_ref: u32,
+        new_baseline_id: u32,
+        pairs: Vec<FactionSentimentPair>,
+    },
+}
+
+impl FactionSentimentRecord {
+    /// The complete sparse set carried by this record. Deltas are replacement sets,
+    /// not per-pair arithmetic changes, so an absent pair clears a former override.
+    #[must_use]
+    pub fn pairs(&self) -> &[FactionSentimentPair] {
+        match self {
+            Self::FullBaseline { pairs, .. } | Self::Delta { pairs, .. } => pairs,
+        }
+    }
+
+    #[must_use]
+    pub fn baseline_id(&self) -> u32 {
+        match self {
+            Self::FullBaseline { baseline_id, .. } => *baseline_id,
+            Self::Delta {
+                new_baseline_id, ..
+            } => *new_baseline_id,
+        }
+    }
+}
+
+/// Why a structural faction-sentiment record must not reach the engine overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactionSentimentValidationError {
+    TooManyPairs { count: usize },
+    UnknownRecordKind(u16),
+    BadBaselineCombination { kind: u16, has_ref: bool },
+    NonFiniteValue { from_idx: u16, to_idx: u16 },
+    PairsNotStrictlySorted,
+}
+
+impl std::fmt::Display for FactionSentimentValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyPairs { count } => write!(
+                f,
+                "faction-sentiment record carried {count} pairs (max {MAX_FACTION_SENTIMENT_PAIRS})"
+            ),
+            Self::UnknownRecordKind(kind) => {
+                write!(f, "unknown faction-sentiment record kind {kind}")
+            }
+            Self::BadBaselineCombination { kind, has_ref } => write!(
+                f,
+                "illegal baseline combination for faction-sentiment record kind {kind} (has_ref={has_ref})"
+            ),
+            Self::NonFiniteValue { from_idx, to_idx } => write!(
+                f,
+                "non-finite faction-sentiment value for pair ({from_idx}, {to_idx})"
+            ),
+            Self::PairsNotStrictlySorted => {
+                write!(f, "faction-sentiment pairs were not strictly sorted")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FactionSentimentValidationError {}
+
+impl RawFactionSentimentRecord {
+    /// Validate a raw sparse-set record before the engine resolves its faction
+    /// indices. One malformed pair rejects the whole record, preserving the client's
+    /// prior overlay exactly.
+    pub fn validate(&self) -> Result<FactionSentimentRecord, FactionSentimentValidationError> {
+        if self.pairs.len() > MAX_FACTION_SENTIMENT_PAIRS {
+            return Err(FactionSentimentValidationError::TooManyPairs {
+                count: self.pairs.len(),
+            });
+        }
+        if !self.has_baseline_ref && self.baseline_ref != 0 {
+            return Err(FactionSentimentValidationError::BadBaselineCombination {
+                kind: self.kind,
+                has_ref: self.has_baseline_ref,
+            });
+        }
+        let mut previous = None;
+        for pair in &self.pairs {
+            if !pair.value.is_finite() {
+                return Err(FactionSentimentValidationError::NonFiniteValue {
+                    from_idx: pair.from_idx,
+                    to_idx: pair.to_idx,
+                });
+            }
+            let key = (pair.from_idx, pair.to_idx);
+            if previous.is_some_and(|previous| previous >= key) {
+                return Err(FactionSentimentValidationError::PairsNotStrictlySorted);
+            }
+            previous = Some(key);
+        }
+
+        match self.kind {
+            FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE if !self.has_baseline_ref => {
+                Ok(FactionSentimentRecord::FullBaseline {
+                    baseline_id: self.baseline_id,
+                    pairs: self.pairs.clone(),
+                })
+            }
+            FACTION_SENTIMENT_RECORD_KIND_DELTA if self.has_baseline_ref => {
+                Ok(FactionSentimentRecord::Delta {
+                    baseline_ref: self.baseline_ref,
+                    new_baseline_id: self.baseline_id,
+                    pairs: self.pairs.clone(),
+                })
+            }
+            FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE | FACTION_SENTIMENT_RECORD_KIND_DELTA => {
+                Err(FactionSentimentValidationError::BadBaselineCombination {
+                    kind: self.kind,
+                    has_ref: self.has_baseline_ref,
+                })
+            }
+            kind => Err(FactionSentimentValidationError::UnknownRecordKind(kind)),
+        }
+    }
 }
 
 impl StateSchema {
@@ -613,6 +788,76 @@ mod tests {
             let decoded: RawStateSlotRecord = decode(&bytes).expect("record decodes");
             assert_eq!(decoded, record);
         }
+    }
+
+    fn faction_full_baseline(
+        baseline_id: u32,
+        pairs: Vec<FactionSentimentPair>,
+    ) -> RawFactionSentimentRecord {
+        RawFactionSentimentRecord {
+            kind: FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+            has_baseline_ref: false,
+            baseline_ref: 0,
+            baseline_id,
+            pairs,
+        }
+    }
+
+    #[test]
+    fn faction_sentiment_sparse_record_round_trips_and_validates() {
+        let raw = faction_full_baseline(
+            7,
+            vec![
+                FactionSentimentPair {
+                    from_idx: 2,
+                    to_idx: 3,
+                    value: -0.75,
+                },
+                FactionSentimentPair {
+                    from_idx: 3,
+                    to_idx: 2,
+                    value: 0.25,
+                },
+            ],
+        );
+        let bytes = encode(&raw);
+        let decoded: RawFactionSentimentRecord = decode(&bytes).expect("record decodes");
+        assert_eq!(decoded, raw);
+        assert_eq!(
+            decoded.validate(),
+            Ok(FactionSentimentRecord::FullBaseline {
+                baseline_id: 7,
+                pairs: raw.pairs,
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_faction_sentiment_record_rejects_whole_sparse_set() {
+        let mut raw = faction_full_baseline(
+            7,
+            vec![FactionSentimentPair {
+                from_idx: 3,
+                to_idx: 2,
+                value: -0.75,
+            }],
+        );
+        raw.pairs.push(FactionSentimentPair {
+            from_idx: 2,
+            to_idx: 3,
+            value: 0.25,
+        });
+        assert_eq!(
+            raw.validate(),
+            Err(FactionSentimentValidationError::PairsNotStrictlySorted)
+        );
+
+        raw.pairs.sort_by_key(|pair| (pair.from_idx, pair.to_idx));
+        raw.pairs[0].value = f32::NAN;
+        assert!(matches!(
+            raw.validate(),
+            Err(FactionSentimentValidationError::NonFiniteValue { .. })
+        ));
     }
 
     // --- Validation: happy paths ---

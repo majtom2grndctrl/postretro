@@ -1845,6 +1845,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
+        faction_sentiment_record: None,
     }
 }
 

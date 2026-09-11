@@ -63,6 +63,14 @@ fn apply_sentiment_write(
         (from_index, to_index, baseline)
     };
 
+    // The App drain owns the primary client-authority gate. Keep the writer itself
+    // closed as well so focused callers cannot accidentally bypass that boundary.
+    // This comes after reaction input validation, so a client still observes the
+    // same invalid-value/unknown-faction rejection as the host.
+    if !script_ctx.owner_slot_writes_enabled.get() {
+        return Ok(());
+    }
+
     let mut overlay = script_ctx.faction_sentiment.borrow_mut();
     if is_adjustment {
         overlay.adjust(from_index, to_index, value, baseline);
@@ -1500,6 +1508,19 @@ mod tests {
             .expect_err("unknown faction names must degrade to a no-op");
         assert!(error.contains("unknown from faction `unknown`"));
         assert!(ctx.faction_sentiment.borrow().iter().next().is_none());
+    }
+
+    #[test]
+    fn connected_client_sentiment_reaction_validates_but_does_not_write_overlay() {
+        let ctx = sentiment_context();
+        ctx.owner_slot_writes_enabled.set(false);
+
+        apply_set_sentiment(&ctx, "cabal", "resistance", -0.75)
+            .expect("a client-local reaction remains a valid evaluated command");
+        assert!(
+            ctx.faction_sentiment.borrow().iter().next().is_none(),
+            "the connected-client authority gate suppresses the local overlay write"
+        );
     }
 
     #[test]

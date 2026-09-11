@@ -34,6 +34,7 @@ use crate::netcode::{
     ingest_hit_declaration_for_test,
 };
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::system_reactions::apply_set_sentiment;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{PostMovementCommand, SimCommand};
 use crate::sprite_collection::derive_collection_id;
@@ -1635,7 +1636,7 @@ fn faction_seed_is_transparent_and_target_hostility_tracks_a_retained_target() {
 }
 
 #[test]
-fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
+fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
     let mut graph = tuning();
     graph.envelope.transitions.insert(
         TEST_IDLE_STATE.to_string(),
@@ -1664,6 +1665,7 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
     );
     graph.candidate_filter = None;
 
+    let ctx = ScriptCtx::new();
     let factions = FactionRegistry::from_descriptors(vec![
         FactionDescriptor {
             name: "cabal".to_string(),
@@ -1677,7 +1679,7 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
         FactionSentimentDescriptor {
             from_faction: "cabal".to_string(),
             to_faction: "resistance".to_string(),
-            sentiment: -1.0,
+            sentiment: 0.0,
             tolerance: 0.0,
         },
         FactionSentimentDescriptor {
@@ -1688,6 +1690,7 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
         },
     ])
     .expect("directed pairs resolve");
+    ctx.data_registry.borrow_mut().replace_factions(factions);
     let mut registry = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let player = spawn_player(&mut registry, Vec3::new(5.0, 0.0, 0.0));
@@ -1706,20 +1709,47 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
         .expect("enemy carries entity state")
         .set(FACTION_STATE_FIELD, 2.0);
 
-    run_ai_tick_with_navigation_and_impact(
-        &mut registry,
-        &mut runtime,
-        0.016,
-        AiTickInputs {
-            nav_graph: None,
-            collision_world: None,
-            descriptors: &[],
-            descriptor_generation: 0,
-            factions: &factions,
-            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
-        },
-        |_| {},
-    );
+    {
+        let data = ctx.data_registry.borrow();
+        run_ai_tick_with_navigation_and_impact(
+            &mut registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                nav_graph: None,
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &data.factions,
+                faction_sentiment: &ctx.faction_sentiment,
+            },
+            |_| {},
+        );
+    }
+    assert_eq!(enemy_state_name(&registry, enemy), TEST_IDLE_STATE);
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+
+    // System reactions drain after the authoritative tick. Its next AI pass
+    // must observe the new live value, not the immutable authored baseline.
+    apply_set_sentiment(&ctx, "cabal", "resistance", -1.0)
+        .expect("the reaction resolves the fixture factions");
+    {
+        let data = ctx.data_registry.borrow();
+        run_ai_tick_with_navigation_and_impact(
+            &mut registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                nav_graph: None,
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &data.factions,
+                faction_sentiment: &ctx.faction_sentiment,
+            },
+            |_| {},
+        );
+    }
     assert_eq!(enemy_state_name(&registry, enemy), TEST_ALERT_STATE);
     assert_eq!(enemy_acquired_target(&registry, enemy), Some(player));
 
@@ -1734,20 +1764,23 @@ fn target_hostile_uses_the_same_directional_sentiment_as_offer_filtering() {
         .entity_state_mut(player)
         .expect("player remains live")
         .set(FACTION_STATE_FIELD, 2.0);
-    run_ai_tick_with_navigation_and_impact(
-        &mut registry,
-        &mut runtime,
-        0.016,
-        AiTickInputs {
-            nav_graph: None,
-            collision_world: None,
-            descriptors: &[],
-            descriptor_generation: 0,
-            factions: &factions,
-            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
-        },
-        |_| {},
-    );
+    {
+        let data = ctx.data_registry.borrow();
+        run_ai_tick_with_navigation_and_impact(
+            &mut registry,
+            &mut runtime,
+            0.016,
+            AiTickInputs {
+                nav_graph: None,
+                collision_world: None,
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &data.factions,
+                faction_sentiment: &ctx.faction_sentiment,
+            },
+            |_| {},
+        );
+    }
 
     assert_eq!(
         enemy_state_name(&registry, enemy),

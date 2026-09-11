@@ -568,6 +568,8 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "loadLevel",
             "restartLevel",
             "returnToFrontend",
+            "setSentiment",
+            "adjustSentiment",
             "updateState",
             "appendText",
             "backspaceText",

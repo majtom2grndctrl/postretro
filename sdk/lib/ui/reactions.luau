@@ -314,6 +314,32 @@ function UiReactionsSdk.returnToFrontend(): PrimitiveReactionDescriptor
   return { primitive = "returnToFrontend", args = {} }
 end
 
+--- Set the live sentiment from faction `from` toward faction `to` at the
+--- frame-end game-logic drain. This replaces only that directional pair's live
+--- value and never changes authored baseline content. Negative values degrade
+--- the relationship; positive values bond it. Unknown faction names warn and
+--- no-op when the reaction drains.
+function UiReactionsSdk.setSentiment(
+  from: string,
+  to: string,
+  value: number
+): PrimitiveReactionDescriptor
+  return { primitive = "setSentiment", args = { from = from, to = to, value = value } }
+end
+
+--- Add `delta` to the live sentiment from faction `from` toward faction `to`
+--- at the frame-end game-logic drain. It starts from the current live value,
+--- or the authored baseline when this directional pair has not diverged.
+--- Negative deltas degrade the relationship; positive deltas bond it. Unknown
+--- faction names warn and no-op when the reaction drains.
+function UiReactionsSdk.adjustSentiment(
+  from: string,
+  to: string,
+  delta: number
+): PrimitiveReactionDescriptor
+  return { primitive = "adjustSentiment", args = { from = from, to = to, delta = delta } }
+end
+
 --- Write `value` to the writable state reference at the game-logic stage.
 --- Pure: returns the existing `setState` primitive reaction body, no engine
 --- side effect. Literal values use the normal runtime readonly gate, coercion,

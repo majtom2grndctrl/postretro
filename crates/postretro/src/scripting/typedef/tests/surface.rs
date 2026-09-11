@@ -104,6 +104,8 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "loadLevel",
         "restartLevel",
         "returnToFrontend",
+        "setSentiment",
+        "adjustSentiment",
         "openTextEntry",
         "updateState",
         "appendText",
@@ -266,6 +268,8 @@ fn typescript_ui_module_declaration_is_generated() {
             && ui_module.contains("export function createLocalState")
             && ui_module.contains("export const ui:")
             && ui_module.contains("export function showDialog(")
+            && ui_module.contains("export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;")
+            && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;")
             && ui_module.contains("export function getGameState(): GameStateRefs;")
             && ui_module.contains(
                 "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"

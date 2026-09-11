@@ -53,6 +53,21 @@ pub enum SystemReactionCommand {
         /// of command selection or any persistent/wire format.
         dispatch_values: Vec<(String, IrValue)>,
     },
+    /// Set the live sentiment from one authored faction toward another. Names
+    /// cross this queue boundary so the app drain can resolve them against the
+    /// current immutable faction registry at the frame-end write point.
+    SetSentiment {
+        from: String,
+        to: String,
+        value: f32,
+    },
+    /// Add a delta to the live sentiment from one authored faction toward
+    /// another. An absent overlay pair starts from its authored baseline.
+    AdjustSentiment {
+        from: String,
+        to: String,
+        delta: f32,
+    },
     /// Add a delta to the authoritative value of one per-owner numeric slot
     /// for every seat resolved while the reaction fired. The app drain checks
     /// that each queued seat is still live before mutating the slot table.

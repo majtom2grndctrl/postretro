@@ -8,8 +8,8 @@ use bvh::ray::Ray;
 use glam::Vec3;
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::{
-    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection,
-    encode_direction_oct, f32_to_f16_bits,
+    DIRECTION_FORMAT_OCT_RG8, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode,
+    LightmapSection, encode_direction_oct, f32_to_f16_bits,
 };
 use rayon::prelude::*;
 
@@ -272,11 +272,12 @@ impl CompositedAtlas {
             self.atlas_height,
         );
         let (dir_width, dir_height, dir_bytes) = if direction_texel_scale == 1 {
-            // Preserve prior byte output exactly for A/B work and cache tests.
+            // Keep the full-resolution composited atlas intact; only the
+            // on-wire octahedral encoding changes to its two used channels.
             (
                 self.atlas_width,
                 self.atlas_height,
-                encode_direction_rgba8(&self.direction, &self.coverage),
+                encode_direction_rg8(&self.direction, &self.coverage),
             )
         } else {
             let (direction, coverage) = reduce_direction_atlas(
@@ -290,7 +291,7 @@ impl CompositedAtlas {
             (
                 self.atlas_width / direction_texel_scale,
                 self.atlas_height / direction_texel_scale,
-                encode_direction_rgba8(&direction, &coverage),
+                encode_direction_rg8(&direction, &coverage),
             )
         };
         LightmapSection {
@@ -304,6 +305,7 @@ impl CompositedAtlas {
             dir_height,
             dir_texel_density: texel_density * direction_texel_scale as f32,
             direction: dir_bytes,
+            direction_format: DIRECTION_FORMAT_OCT_RG8,
             mode: LightmapMode::Shadowed,
         }
     }
@@ -2189,14 +2191,14 @@ fn reduce_direction_atlas(
     (reduced_direction, reduced_coverage)
 }
 
-fn encode_direction_rgba8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(direction.len() * 4);
+fn encode_direction_rg8(direction: &[Vec3], coverage: &[bool]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(direction.len() * 2);
     for (i, d) in direction.iter().enumerate() {
         let bytes = if coverage[i] {
             encode_direction_oct([d.x, d.y, d.z])
         } else {
             // Neutral up-direction: stray bilinear samples return a Lambert-valid vector.
-            [128u8, 255, 128, 255]
+            [128u8, 255]
         };
         out.extend_from_slice(&bytes);
     }
@@ -4511,7 +4513,7 @@ mod tests {
     }
 
     #[test]
-    fn direction_scale_one_preserves_legacy_rgba8_bytes() {
+    fn direction_scale_one_emits_rg8_bytes() {
         let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(-1.0, 0.0, 0.0)];
         let coverage = vec![true, true, false, true];
         let atlas = CompositedAtlas {
@@ -4527,10 +4529,11 @@ mod tests {
         assert_eq!(section.dir_width, 2);
         assert_eq!(section.dir_height, 2);
         assert_eq!(section.dir_texel_density, 0.25);
+        assert_eq!(section.direction_format, DIRECTION_FORMAT_OCT_RG8);
         assert_eq!(
             section.direction,
-            encode_direction_rgba8(&direction, &coverage),
-            "factor 1 must reproduce the pre-coarsening direction bytes"
+            encode_direction_rg8(&direction, &coverage),
+            "factor 1 must encode only the octahedral channels"
         );
 
         let coarse = atlas.encode_section(0.25, true, 2);
@@ -4566,7 +4569,7 @@ mod tests {
             "covered cancelling vectors must not normalize zero"
         );
         assert_eq!(
-            encode_direction_rgba8(&reduced_direction, &reduced_coverage),
+            encode_direction_rg8(&reduced_direction, &reduced_coverage),
             encode_direction_oct(Vec3::Y.to_array()).to_vec(),
             "the degenerate covered block must encode as neutral up deterministically"
         );
@@ -4597,7 +4600,7 @@ mod tests {
         let section = atlas.encode_section(0.25, true, 2);
         assert_eq!(section.layer_count, 2);
         assert_eq!((section.dir_width, section.dir_height), (2, 1));
-        assert_eq!(section.direction.len(), 2 * 2 * 1 * 4);
+        assert_eq!(section.direction.len(), 2 * 2 * 1 * 2);
     }
 
     #[test]

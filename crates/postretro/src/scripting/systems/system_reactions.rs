@@ -848,6 +848,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: 0.25,
             tolerance: 3.0,
+            decay: None,
         }])
         .expect("fixture faction relationship is valid");
         ctx.data_registry.borrow_mut().replace_factions(factions);

@@ -277,12 +277,14 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -1.0,
                 tolerance: 2.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.0,
                 tolerance: 2.0,
+                decay: None,
             },
         ])
         .expect("directed pairs resolve");
@@ -357,6 +359,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -1.0,
             tolerance: 12.0,
+            decay: None,
         }])
         .expect("directed pair resolves");
         let mut registry = EntityRegistry::new();
@@ -517,6 +520,7 @@ mod tests {
             to_faction: "resistance".to_string(),
             sentiment: -1.0,
             tolerance: 6.0,
+            decay: None,
         }])
         .expect("directed pair resolves");
         let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);

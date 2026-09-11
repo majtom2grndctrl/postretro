@@ -382,6 +382,21 @@ pub(crate) fn advance_client_presentation_effects(registry: &mut EntityRegistry,
     crate::impact_effects::tick_deferred_effects(registry, frame_dt);
 }
 
+/// Advance the authoritative live sentiment overlay before any impact producer
+/// or AI consumer runs this tick. The caller deliberately scopes the `RefMut`
+/// to this helper so AI can take its transient immutable live view afterward.
+fn decay_faction_sentiment(
+    factions: &FactionRegistry,
+    faction_sentiment: &RefCell<FactionSentimentState>,
+    tick_dt: f32,
+) {
+    faction_sentiment.borrow_mut().decay_step(
+        tick_dt,
+        |from, to| factions.sentiment_decay(from as f32, to as f32),
+        |from, to| factions.sentiment(from as f32, to as f32),
+    );
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerCommandFire {
@@ -675,6 +690,11 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             drop_pressed,
         )
     };
+    // Decay is the first writer in the impact phase. Its mutable overlay
+    // borrow ends before ready-hit/projectile impacts and the AI's transient
+    // immutable read view, so all same-tick writes remain borrow-safe and
+    // deterministic: decay first, impacts next, frame-end reactions last.
+    decay_faction_sentiment(factions, faction_sentiment, tick_dt);
     // Remote declarations already authorized at this tick's input boundary
     // land beside authoritative projectile impacts, after deferred-effect aging
     // but before AI snapshots combat perception. A declaration waiting on this

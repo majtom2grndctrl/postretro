@@ -860,7 +860,9 @@ export function defineEntity<T>(
  * arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
  * `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
- * effects until the manifest is returned and validated.
+ * effects until the manifest is returned and validated. `factionSentimentDecay`
+ * is an optional non-negative global return-to-baseline rate; it defaults to
+ * zero (hold), and an individual sentiment row may override it with `decay`.
  */
 export function defineMod(
   config: ModManifestInput,
@@ -878,11 +880,16 @@ export function defineFaction(name: string): import("postretro").FactionDescript
 }
 
 /** Build one directed faction relationship for `defineMod({ sentiment: [...] })`.
- * Negative values are hostile, zero is neutral, and positive is allied. */
+ * Negative values are hostile, zero is neutral, and positive is allied. An
+ * optional non-negative `decay` rate overrides the manifest-wide return rate;
+ * zero holds this relationship after it changes at runtime. */
 export function sentiment(
   fromFaction: string,
   toFaction: string,
-  values: Pick<import("postretro").FactionSentimentDescriptor, "sentiment" | "tolerance">,
+  values: Pick<
+    import("postretro").FactionSentimentDescriptor,
+    "sentiment" | "tolerance" | "decay"
+  >,
 ): import("postretro").FactionSentimentDescriptor {
   return { fromFaction, toFaction, ...values };
 }

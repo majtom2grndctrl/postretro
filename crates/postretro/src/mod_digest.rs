@@ -27,7 +27,7 @@ pub(crate) fn mod_compatibility_digest(
     trigger_pools: &[TriggerPoolDescriptor],
     crossings: &[ScopedCrossing],
 ) -> [u8; 32] {
-    const MOD_DIGEST_EPOCH: u32 = 3;
+    const MOD_DIGEST_EPOCH: u32 = 4;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-mod-compatibility");
@@ -65,6 +65,8 @@ fn hash_faction_registry(hasher: &mut blake3::Hasher, factions: &FactionRegistry
     hash_faction_scalar(hasher, DEFAULT_RETALIATION_TOLERANCE);
 
     let compatibility = factions.compatibility_snapshot();
+    hash_str(hasher, "faction-sentiment-decay-default");
+    hash_faction_scalar(hasher, compatibility.faction_sentiment_decay());
     let descriptors = compatibility.descriptors();
     hash_len(hasher, descriptors.len());
     for (offset, descriptor) in descriptors.iter().enumerate() {
@@ -74,17 +76,21 @@ fn hash_faction_registry(hasher: &mut blake3::Hasher, factions: &FactionRegistry
 
     let override_count = compatibility
         .relationships()
-        .filter_map(canonical_faction_override)
+        .filter_map(|relationship| {
+            canonical_faction_override(relationship, compatibility.faction_sentiment_decay())
+        })
         .count();
     hash_len(hasher, override_count);
-    for (from, to, sentiment, tolerance) in compatibility
-        .relationships()
-        .filter_map(canonical_faction_override)
+    for (from, to, sentiment, tolerance, decay) in
+        compatibility.relationships().filter_map(|relationship| {
+            canonical_faction_override(relationship, compatibility.faction_sentiment_decay())
+        })
     {
         hash_len(hasher, from);
         hash_len(hasher, to);
         hash_faction_scalar(hasher, sentiment);
         hash_faction_scalar(hasher, tolerance);
+        hash_faction_scalar(hasher, decay);
     }
 }
 
@@ -95,22 +101,28 @@ fn hash_faction_descriptor(hasher: &mut blake3::Hasher, descriptor: &FactionDesc
 
 fn canonical_faction_override(
     (from, to, relationship): (usize, usize, FactionRelationship),
-) -> Option<(usize, usize, f32, f32)> {
+    faction_sentiment_decay: f32,
+) -> Option<(usize, usize, f32, f32, f32)> {
     let FactionRelationship {
         sentiment,
         tolerance,
+        decay,
     } = relationship;
     let sentiment = canonical_faction_scalar(sentiment);
     let tolerance = canonical_faction_scalar(tolerance.unwrap_or(DEFAULT_RETALIATION_TOLERANCE));
+    let decay = canonical_faction_scalar(decay.unwrap_or(faction_sentiment_decay));
     let default_sentiment = if from == to {
         SAME_FACTION_DEFAULT_SENTIMENT
     } else {
         CROSS_FACTION_DEFAULT_SENTIMENT
     };
-    if sentiment == default_sentiment && tolerance == DEFAULT_RETALIATION_TOLERANCE {
+    if sentiment == default_sentiment
+        && tolerance == DEFAULT_RETALIATION_TOLERANCE
+        && decay == canonical_faction_scalar(faction_sentiment_decay)
+    {
         None
     } else {
-        Some((from, to, sentiment, tolerance))
+        Some((from, to, sentiment, tolerance, decay))
     }
 }
 
@@ -259,7 +271,7 @@ mod tests {
 
     const BLESS_ENV: &str = "POSTRETRO_BLESS_COMPATIBILITY_FIXTURES";
     const FIXTURE_DIGEST_HEX: &str =
-        "7ffa9f51839dd1c4d9e541441c85b46c0758a8c0d548715be6fa70fa731937cb";
+        "24415e7b59960ace6b8768ed2009a4ee4ccc3a3d6f2538f4f015319e1401ff40";
 
     fn events() -> Vec<TriggerEventDescriptor> {
         vec![
@@ -342,6 +354,7 @@ mod tests {
             entities: vec![entity_descriptor()],
             factions: FactionRegistry::default(),
             sentiment: Vec::new(),
+            faction_sentiment_decay: 0.0,
             entity_faction_names: vec![None],
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),
@@ -568,6 +581,7 @@ mod tests {
                     to_faction: "resistance".to_string(),
                     sentiment,
                     tolerance,
+                    decay: None,
                 }])
             })
             .expect("valid faction digest fixture")
@@ -588,6 +602,54 @@ mod tests {
         let mut changed = baseline;
         changed.factions = factions(["resistance", "cabal"], -1.0, 0.25);
         assert_ne!(expected, manifest_digest(&changed));
+    }
+
+    #[test]
+    fn digest_tracks_resolved_faction_sentiment_decay_content() {
+        fn factions(pair_decay: Option<f32>) -> FactionRegistry {
+            FactionRegistry::from_descriptors(vec![
+                FactionDescriptor {
+                    name: "cabal".to_string(),
+                },
+                FactionDescriptor {
+                    name: "resistance".to_string(),
+                },
+            ])
+            .expect("valid factions")
+            .with_sentiment_decay(0.1)
+            .expect("valid global decay")
+            .with_sentiments([FactionSentimentDescriptor {
+                from_faction: "cabal".to_string(),
+                to_faction: "resistance".to_string(),
+                sentiment: -1.0,
+                tolerance: f32::MAX,
+                decay: pair_decay,
+            }])
+            .expect("valid pair decay")
+        }
+
+        assert_ne!(
+            mod_compatibility_digest(&FactionRegistry::default(), &[], &[], &[]),
+            mod_compatibility_digest(
+                &FactionRegistry::default()
+                    .with_sentiment_decay(0.1)
+                    .expect("valid global decay"),
+                &[],
+                &[],
+                &[],
+            ),
+            "the global decay default is baseline content"
+        );
+        assert_ne!(
+            mod_compatibility_digest(&factions(None), &[], &[], &[]),
+            mod_compatibility_digest(&factions(Some(0.25)), &[], &[], &[]),
+            "a pair override changes the resolved decay policy"
+        );
+        assert_eq!(
+            mod_compatibility_digest(&factions(None), &[], &[], &[]),
+            mod_compatibility_digest(&factions(Some(0.1)), &[], &[], &[]),
+            "an override equal to the global default is semantically identical"
+        );
     }
 
     fn faction_registry(
@@ -612,6 +674,7 @@ mod tests {
                             to_faction: (*to).to_string(),
                             sentiment: *sentiment,
                             tolerance: *tolerance,
+                            decay: None,
                         },
                     )
                     .collect::<Vec<_>>(),
@@ -638,6 +701,7 @@ mod tests {
                 to_faction: "faction-0".to_string(),
                 sentiment: 0.5,
                 tolerance: 2.0,
+                decay: None,
             }])
             .expect("one sparse override resolves");
 

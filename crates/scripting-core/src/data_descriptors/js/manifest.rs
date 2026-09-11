@@ -1080,6 +1080,21 @@ pub fn drain_factions_js<'js>(
     })
 }
 
+/// Drain the optional manifest-wide live sentiment decay rate. Omission keeps
+/// the zero-rate hold that preserves authored factions as immutable behavior.
+pub fn drain_faction_sentiment_decay_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<f32, DescriptorError> {
+    let decay = get_optional_f32_js(obj, "factionSentimentDecay")?.unwrap_or(0.0);
+    if !decay.is_finite() || decay < 0.0 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `factionSentimentDecay` must be a finite rate >= 0"),
+        });
+    }
+    Ok(decay)
+}
+
 /// Drain strict directional sentiment entries after faction names have been
 /// validated. The returned registry owns sorted sparse `(from, to)` index-pair
 /// overrides, while the
@@ -1118,10 +1133,14 @@ pub fn drain_faction_sentiments_js<'js>(
         })?;
         let sentiment = get_required_f32_js(&entry, "sentiment")?;
         let tolerance = get_required_f32_js(&entry, "tolerance")?;
-        if !sentiment.is_finite() || !tolerance.is_finite() {
+        let decay = get_optional_f32_js(&entry, "decay")?;
+        if !sentiment.is_finite()
+            || !tolerance.is_finite()
+            || decay.is_some_and(|decay| !decay.is_finite() || decay < 0.0)
+        {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "{scope}: `sentiment[{index}].sentiment` and `.tolerance` must be finite f32 values"
+                    "{scope}: `sentiment[{index}]` values must be finite; `.decay`, when present, must be >= 0"
                 ),
             });
         }
@@ -1130,6 +1149,7 @@ pub fn drain_faction_sentiments_js<'js>(
             to_faction: get_required_string_js(&entry, "toFaction")?,
             sentiment,
             tolerance,
+            decay,
         });
     }
     let factions =

@@ -1681,12 +1681,14 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
             to_faction: "resistance".to_string(),
             sentiment: 0.0,
             tolerance: 0.0,
+            decay: None,
         },
         FactionSentimentDescriptor {
             from_faction: "resistance".to_string(),
             to_faction: "cabal".to_string(),
             sentiment: 0.0,
             tolerance: 0.0,
+            decay: None,
         },
     ])
     .expect("directed pairs resolve");
@@ -1818,24 +1820,28 @@ fn crossfire_factions() -> FactionRegistry {
             to_faction: "crossfire.raiders".to_string(),
             sentiment: 0.0,
             tolerance: CROSSFIRE_LOW_TOLERANCE,
+            decay: None,
         },
         FactionSentimentDescriptor {
             from_faction: "crossfire.raiders".to_string(),
             to_faction: "crossfire.sentinels".to_string(),
             sentiment: -1.0,
             tolerance: CROSSFIRE_LOW_TOLERANCE,
+            decay: None,
         },
         FactionSentimentDescriptor {
             from_faction: "crossfire.sentinels".to_string(),
             to_faction: "crossfire.raiders".to_string(),
             sentiment: -1.0,
             tolerance: f32::MAX,
+            decay: None,
         },
         FactionSentimentDescriptor {
             from_faction: "crossfire.sentinels".to_string(),
             to_faction: "crossfire.sentinels".to_string(),
             sentiment: 0.0,
             tolerance: f32::MAX,
+            decay: None,
         },
     ])
     .expect("crossfire relationships resolve")

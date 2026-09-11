@@ -56,6 +56,9 @@ pub struct StagedManifest {
     /// `factions`; retained across the worker boundary to keep staged and
     /// ordinary manifest carriers equivalent.
     pub sentiment: Vec<FactionSentimentDescriptor>,
+    /// Normalized top-level sentiment decay default, retained alongside the
+    /// resolved faction registry across the staged worker boundary.
+    pub faction_sentiment_decay: f32,
     pub entity_faction_names: Vec<Option<String>>,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,

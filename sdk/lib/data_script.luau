@@ -1066,7 +1066,9 @@ end
 --- arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
---- effects until the manifest is returned and validated.
+--- effects until the manifest is returned and validated. `factionSentimentDecay`
+--- is an optional non-negative global return-to-baseline rate; it defaults to
+--- zero (hold), and an individual sentiment row may override it with `decay`.
 function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
   if config.stores == nil then
     return config
@@ -1091,17 +1093,20 @@ end
 
 --- Build one directed faction relationship for `sentiment` in the returned
 --- mod manifest. Negative sentiment is hostile, zero neutral, and positive
---- allied; the engine validates both faction names at manifest drain.
+--- allied; the engine validates both faction names at manifest drain. An
+--- optional non-negative `decay` rate overrides `factionSentimentDecay`; zero
+--- holds this relationship after a runtime change.
 function DataScriptSdk.sentiment(
   fromFaction: string,
   toFaction: string,
-  values: { sentiment: number, tolerance: number }
+  values: { sentiment: number, tolerance: number, decay: number? }
 ): FactionSentimentDescriptor
   return {
     fromFaction = fromFaction,
     toFaction = toFaction,
     sentiment = values.sentiment,
     tolerance = values.tolerance,
+    decay = values.decay,
   }
 end
 

@@ -725,18 +725,21 @@ mod tests {
                 to_faction: "resistance".to_string(),
                 sentiment: -1.0,
                 tolerance: 1.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "resistance".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: 0.0,
                 tolerance: 1.0,
+                decay: None,
             },
             FactionSentimentDescriptor {
                 from_faction: "cabal".to_string(),
                 to_faction: "cabal".to_string(),
                 sentiment: -0.5,
                 tolerance: 1.0,
+                decay: None,
             },
         ])
         .expect("directed entries resolve");

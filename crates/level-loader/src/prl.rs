@@ -2291,6 +2291,7 @@ mod tests {
             dir_height: height,
             dir_texel_density: 0.04,
             direction: vec![255; texels * postretro_level_format::lightmap::DIRECTION_TEXEL_BYTES],
+            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RG8,
             mode: postretro_level_format::lightmap::LightmapMode::Shadowed,
         };
         prl_format::SectionBlob {

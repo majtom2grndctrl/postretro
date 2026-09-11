@@ -11,11 +11,14 @@ use crate::FormatError;
 /// misinterpret it as transparency.
 pub const IRRADIANCE_TEXEL_BYTES: usize = 8;
 
-/// Byte stride of one direction texel on disk: RGBA8Unorm, 4 bytes.
-/// `rgb` holds the octahedral-encoded unit direction (remapped 0..1 → −1..1 on
-/// sample); `a` is padding and carries 0xFF so bilinear sampling of edge
-/// texels into unused neighbours doesn't corrupt direction decode.
-pub const DIRECTION_TEXEL_BYTES: usize = 4;
+/// Byte stride of one current direction texel on disk: Rg8Unorm, 2 bytes.
+/// The octahedral unit direction occupies `rg`; static direction sampling is
+/// nearest, so no padding channel is needed.
+pub const DIRECTION_TEXEL_BYTES: usize = 2;
+
+/// Byte stride of a legacy Rgba8Unorm direction texel. The loader still
+/// accepts this tag so existing PRLs can be inspected without migration.
+pub const DIRECTION_RGBA8_TEXEL_BYTES: usize = 4;
 
 /// v2 section format version. Pre-v2 sections had no version field (their first
 /// u32 was `width`); `from_bytes` rejects any value other than this.
@@ -46,7 +49,8 @@ const HEADER_SIZE: usize = 48;
 ///     u32 dir_width          (per-layer texel width;  pow2, >= 1)
 ///     u32 dir_height         (per-layer texel height; pow2, >= 1)
 ///     f32 dir_texel_density  (m/texel; informational; may differ from irr)
-///     u32 dir_format         (0 = Rgba8Unorm octahedral; only defined value)
+///     u32 dir_format         (0 = legacy Rgba8Unorm octahedral,
+///                              1 = Rg8Unorm octahedral)
 ///     u32 dir_total_bytes    (byte count for ALL direction layers combined)
 ///
 ///   Irradiance blob (irr_total_bytes bytes): layer-major.
@@ -55,8 +59,8 @@ const HEADER_SIZE: usize = 48;
 ///       Bc6hRgbUfloat: ceil(w/4)·ceil(h/4)·16 bytes of row-major 4×4 blocks
 ///
 ///   Direction blob (dir_total_bytes bytes): layer-major.
-///     Each layer is dir_width × dir_height × 4 bytes (Rgba8Unorm octahedral,
-///     row-major y * dir_width + x).
+///     Each layer is dir_width × dir_height × `direction_texel_bytes` bytes
+///     (the selected octahedral format, row-major y * dir_width + x).
 ///
 ///   Optional LMOD trailer (8 bytes; omitted when mode = Shadowed), at offset
 ///   48 + irr_total_bytes + dir_total_bytes:
@@ -101,8 +105,13 @@ pub struct LightmapSection {
     /// World-space meters-per-texel used at bake time for the direction atlas.
     /// Informational; may differ from `irr_texel_density`.
     pub dir_texel_density: f32,
-    /// Layer-major direction blob (Rgba8Unorm, octahedral, row-major per layer).
+    /// Layer-major direction blob in `direction_format`, octahedral and
+    /// row-major per layer.
     pub direction: Vec<u8>,
+    /// Format tag for `direction`. New bakes use `DIRECTION_FORMAT_OCT_RG8`;
+    /// the legacy `DIRECTION_FORMAT_OCT_RGBA8` tag stays accepted for loading
+    /// older PRLs without a migration.
+    pub direction_format: u32,
     /// Which bake produced the irradiance. `Shadowed` (default) folds static-light
     /// shadows into irradiance — the `main` behavior, written without a trailer so
     /// output is byte-identical to `main`. `Unshadowed` writes a trailer recording
@@ -128,10 +137,13 @@ pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 /// `Float { filterable: true }` slot through the linear sampler.
 pub const IRRADIANCE_FORMAT_BC6H: u32 = 1;
 
-/// Format tag for the direction blob. Only octahedral-in-Rgba8Unorm exists
-/// today. The tag is stored in the header so a future encoder can add new
-/// direction encodings without breaking existing parsers that reject unknown tags.
+/// Format tag for the legacy Rgba8Unorm direction blob. The octahedral
+/// direction occupies `rg`; `ba` was padding in static lightmaps.
 pub const DIRECTION_FORMAT_OCT_RGBA8: u32 = 0;
+
+/// Format tag for the current Rg8Unorm direction blob. It stores exactly the
+/// two octahedral components consumed by the static forward shader.
+pub const DIRECTION_FORMAT_OCT_RG8: u32 = 1;
 
 /// Magic tag introducing the bake-mode trailer, ASCII `"LMOD"` little-endian.
 /// Trailer layout (8 bytes total) appended *after* the direction blob:
@@ -191,8 +203,8 @@ impl LightmapSection {
             irradiance.extend_from_slice(&one_half.to_le_bytes());
         }
         // Neutral direction: encode (0, 1, 0) octahedral = (0.5, 1.0) remapped
-        // to (128, 255). Alpha 0xFF.
-        let direction = vec![128u8, 255, 128, 255];
+        // to (128, 255).
+        let direction = vec![128u8, 255];
         Self {
             layer_count: 1,
             irr_width: 1,
@@ -204,6 +216,7 @@ impl LightmapSection {
             dir_height: 1,
             dir_texel_density: 1.0,
             direction,
+            direction_format: DIRECTION_FORMAT_OCT_RG8,
             mode: LightmapMode::Shadowed,
         }
     }
@@ -242,7 +255,7 @@ impl LightmapSection {
         buf.extend_from_slice(&self.dir_width.to_le_bytes());
         buf.extend_from_slice(&self.dir_height.to_le_bytes());
         buf.extend_from_slice(&self.dir_texel_density.to_le_bytes());
-        buf.extend_from_slice(&DIRECTION_FORMAT_OCT_RGBA8.to_le_bytes());
+        buf.extend_from_slice(&self.direction_format.to_le_bytes());
         buf.extend_from_slice(&dir_total_bytes.to_le_bytes());
         buf.extend_from_slice(&self.irradiance);
         buf.extend_from_slice(&self.direction);
@@ -292,7 +305,7 @@ impl LightmapSection {
                 format!("unsupported lightmap irradiance format: {irr_format}"),
             )));
         }
-        if dir_format != DIRECTION_FORMAT_OCT_RGBA8 {
+        if dir_format != DIRECTION_FORMAT_OCT_RGBA8 && dir_format != DIRECTION_FORMAT_OCT_RG8 {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unsupported lightmap direction format: {dir_format}"),
@@ -353,6 +366,7 @@ impl LightmapSection {
             dir_height,
             dir_texel_density,
             direction,
+            direction_format: dir_format,
             mode,
         })
     }
@@ -411,9 +425,9 @@ pub fn f32_to_f16_bits(v: f32) -> u16 {
     (sign << 15) | ((exp16 as u16) << 10) | (mant16 as u16)
 }
 
-/// Encode a unit direction as two 8-bit octahedral components + padding.
+/// Encode a unit direction as two 8-bit octahedral components.
 /// Matches the WGSL decoder: `oct * 2 - 1`, recover z via `1 - |x| - |y|`.
-pub fn encode_direction_oct(dir: [f32; 3]) -> [u8; 4] {
+pub fn encode_direction_oct(dir: [f32; 3]) -> [u8; 2] {
     let mut d = [dir[0], dir[1], dir[2]];
     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1.0e-6);
     d[0] /= len;
@@ -435,7 +449,7 @@ pub fn encode_direction_oct(dir: [f32; 3]) -> [u8; 4] {
     // Quantize [-1, 1] → [0, 255] with round-to-nearest.
     let qx = ((ox * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     let qy = ((oy * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    [qx, qy, 128, 255]
+    [qx, qy]
 }
 
 fn signum_nonzero(v: f32) -> f32 {
@@ -479,6 +493,7 @@ mod tests {
             dir_height: 2,
             dir_texel_density: 0.04,
             direction,
+            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
         let bytes = section.to_bytes();
@@ -526,6 +541,7 @@ mod tests {
             dir_height: dir_h,
             dir_texel_density: 0.08,
             direction,
+            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
         let bytes = section.to_bytes();
@@ -581,6 +597,7 @@ mod tests {
             dir_height: dir_h,
             dir_texel_density: 0.04,
             direction,
+            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Unshadowed,
         };
         let bytes = section.to_bytes();
@@ -622,6 +639,7 @@ mod tests {
             dir_height: 4,
             dir_texel_density: 0.04,
             direction,
+            direction_format: DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
         let bytes = section.to_bytes();
@@ -647,13 +665,56 @@ mod tests {
         // Corrupt irradiance format tag at v2 offset 20..24.
         bytes[20..24].copy_from_slice(&99u32.to_le_bytes());
         assert!(LightmapSection::from_bytes(&bytes).is_err());
-        // Also corrupt direction format tag at v2 offset 40..44.
-        bytes = section.to_bytes();
-        bytes[40..44].copy_from_slice(&7u32.to_le_bytes());
-        assert!(LightmapSection::from_bytes(&bytes).is_err());
         // Suppress unused-must-use warning on `section`.
         section.layer_count = 1;
         let _ = section;
+    }
+
+    #[test]
+    fn rejects_unknown_direction_format() {
+        let section = LightmapSection::placeholder();
+        let mut bytes = section.to_bytes();
+        // Direction format tag at v2 offset 40..44 must remain an exhaustive
+        // parser gate as future tags are added.
+        bytes[40..44].copy_from_slice(&7u32.to_le_bytes());
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(err) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                assert!(
+                    err.to_string()
+                        .contains("unsupported lightmap direction format: 7")
+                );
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rg8_direction_round_trip_preserves_two_bytes_per_texel() {
+        let section = LightmapSection {
+            layer_count: 1,
+            irr_width: 2,
+            irr_height: 2,
+            irr_texel_density: 0.04,
+            irradiance: vec![0; 2 * 2 * IRRADIANCE_TEXEL_BYTES],
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: 2,
+            dir_height: 2,
+            dir_texel_density: 0.04,
+            direction: vec![128, 255, 255, 128, 0, 128, 128, 0],
+            direction_format: DIRECTION_FORMAT_OCT_RG8,
+            mode: LightmapMode::Shadowed,
+        };
+
+        let bytes = section.to_bytes();
+        assert_eq!(
+            u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+            DIRECTION_FORMAT_OCT_RG8
+        );
+        assert_eq!(section.direction.len(), 4 * DIRECTION_TEXEL_BYTES);
+        assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
     }
 
     #[test]
@@ -690,11 +751,10 @@ mod tests {
 
     #[test]
     fn encode_direction_axis_round_trip() {
-        // +Y should map close to the neutral placeholder (128, 255, 128, 255).
+        // +Y should map close to the neutral placeholder (128, 255).
         let enc = encode_direction_oct([0.0, 1.0, 0.0]);
         assert_eq!(enc[0], 128);
         assert_eq!(enc[1], 255);
-        assert_eq!(enc[3], 255);
     }
 
     #[test]

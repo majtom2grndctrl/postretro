@@ -36,7 +36,7 @@ pub const LAYER_FORMAT_VERSION: u32 = 4;
 /// `LAYER_FORMAT_VERSION` directly, so the section key changes with it.
 /// Bump `LIGHTMAP_SECTION_VERSION` only when the composite/dilate/encode
 /// pipeline or `LightmapSection::to_bytes` format changes independently.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
+pub const LIGHTMAP_SECTION_VERSION: u32 = 2;
 
 /// One covered atlas texel's contribution from a single light.
 ///

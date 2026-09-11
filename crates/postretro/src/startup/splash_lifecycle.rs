@@ -7,7 +7,8 @@ use winit::event_loop::ActiveEventLoop;
 use crate::App;
 use crate::render;
 use crate::scripting::state_persistence::{
-    load_persisted_state, overlay_persisted_state, persisted_state_version_is_supported, state_path,
+    load_persisted_state, overlay_persisted_faction_sentiment, overlay_persisted_state,
+    persisted_state_version_is_supported, state_path,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
 
@@ -349,10 +350,11 @@ impl App {
                     if let Some(state_path) = state_path(&mod_id) {
                         match load_persisted_state(&state_path) {
                             Ok(Some(persisted)) => {
-                                let local_player_id = if matches!(
+                                let is_connected_client = matches!(
                                     session.net_endpoint.as_ref(),
                                     Some(crate::netcode::NetEndpoint::Client { .. })
-                                ) {
+                                );
+                                let local_player_id = if is_connected_client {
                                     None
                                 } else {
                                     session.player_options.player_id
@@ -369,6 +371,25 @@ impl App {
                                     log::warn!("[State] {warning}");
                                 }
                                 if persisted_state_version_is_supported(&persisted) {
+                                    // Shared faction sentiment belongs to the host. A connected
+                                    // client receives its overlay from the host snapshot path and
+                                    // must never seed it from device-local campaign state.
+                                    if !is_connected_client {
+                                        let factions =
+                                            session.scripting.script_ctx.data_registry.borrow();
+                                        let mut faction_sentiment = session
+                                            .scripting
+                                            .script_ctx
+                                            .faction_sentiment
+                                            .borrow_mut();
+                                        for warning in overlay_persisted_faction_sentiment(
+                                            &mut faction_sentiment,
+                                            &factions.factions,
+                                            &persisted,
+                                        ) {
+                                            log::warn!("[State] {warning}");
+                                        }
+                                    }
                                     session.persisted_state = Some(persisted);
                                     log::info!(
                                         "[State] restored persistent slots from {}",

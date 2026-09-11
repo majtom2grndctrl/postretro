@@ -131,9 +131,10 @@ use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
-    apply_join_seed, collect_per_owner_state, collect_persisted_state,
-    collected_per_owner_only_state, merge_per_owner_state, retain_saved_per_owner_state,
-    save_persisted_state, state_path, sync_client_per_owner_projection,
+    apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
+    collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
+    retain_saved_per_owner_state, save_persisted_state, state_path,
+    sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -4641,6 +4642,17 @@ impl ApplicationHandler for App {
                     );
                     for warning in collected.warnings {
                         log::warn!("[State] {warning}");
+                    }
+                    {
+                        let factions = script_ctx.data_registry.borrow();
+                        let faction_sentiment = script_ctx.faction_sentiment.borrow();
+                        for warning in collect_persisted_faction_sentiment(
+                            &mut collected.state,
+                            &faction_sentiment,
+                            &factions.factions,
+                        ) {
+                            log::warn!("[State] {warning}");
+                        }
                     }
                     if let Some(local_player_id) = session.player_options.player_id {
                         let per_owner = collect_per_owner_state(

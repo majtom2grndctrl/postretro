@@ -1148,7 +1148,7 @@ fn write_and_validate_sections(
             ));
         }
     };
-    publish_validated_output(temporary_output, output, &original_output)?;
+    publish_validated_output(temporary_output, output, original_output)?;
     log::info!("Wrote {} ({} bytes)", output.display(), total_size);
     log::info!("Read-back validation passed.");
 
@@ -1434,7 +1434,7 @@ fn ensure_path_has_identity(
 fn publish_validated_output(
     temporary_output: StagedPrl,
     output: &Path,
-    original_output: &OutputIdentity,
+    original_output: OutputIdentity,
 ) -> anyhow::Result<()> {
     publish_validated_output_with_hook(temporary_output, output, original_output, || Ok(()))
 }
@@ -1442,7 +1442,7 @@ fn publish_validated_output(
 fn publish_validated_output_with_hook(
     temporary_output: StagedPrl,
     output: &Path,
-    original_output: &OutputIdentity,
+    original_output: OutputIdentity,
     after_precondition: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let _publication_lock = match OutputPublishLock::acquire(output) {
@@ -1484,6 +1484,10 @@ fn publish_validated_output_with_hook(
             format!("{error} after a late publication race"),
         ));
     }
+
+    // `same_file::Handle` retains the existing output's OS handle. All identity
+    // checks are complete, so release it before Windows replaces the destination.
+    drop(original_output);
 
     let StagedPrl {
         temporary,
@@ -1949,7 +1953,7 @@ mod tests {
 
         validate_readback(staged.file_mut(), std::slice::from_ref(&descriptor))
             .expect("read-back should validate the original open file");
-        let error = publish_validated_output(staged, &output, &original_output)
+        let error = publish_validated_output(staged, &output, original_output)
             .expect_err("publication must reject the replacement staging identity");
 
         assert!(error.to_string().contains("no longer names the file owned"));
@@ -2027,7 +2031,7 @@ mod tests {
         std::fs::rename(&output, &original).expect("should preserve original fixture");
         std::fs::create_dir(&output).expect("should install raced directory output");
 
-        let error = publish_validated_output(staged, &output, &original_output)
+        let error = publish_validated_output(staged, &output, original_output)
             .expect_err("publishing over a raced directory must fail");
 
         assert!(error.to_string().contains("changed during compilation"));
@@ -2060,7 +2064,7 @@ mod tests {
             .write_all(b"validated replacement")
             .expect("staging should write");
         staged.file_mut().flush().expect("staging should flush");
-        let error = publish_validated_output_with_hook(staged, &output, &original_output, || {
+        let error = publish_validated_output_with_hook(staged, &output, original_output, || {
             let lock_path = output_lock_path(&output)?;
             let competing_lock = OpenOptions::new().read(true).write(true).open(lock_path)?;
             assert!(matches!(

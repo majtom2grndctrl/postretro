@@ -900,6 +900,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn faction_sentiment_record_rejects_pair_count_above_wire_capacity() {
+        let pairs = (0..=MAX_FACTION_SENTIMENT_PAIRS)
+            .map(|to_idx| FactionSentimentPair {
+                from_idx: 0,
+                to_idx: u16::try_from(to_idx).unwrap(),
+                value: -0.5,
+            })
+            .collect();
+        let raw = faction_full_baseline(7, pairs);
+
+        assert_eq!(
+            raw.validate(),
+            Err(FactionSentimentValidationError::TooManyPairs {
+                count: MAX_FACTION_SENTIMENT_PAIRS + 1,
+            })
+        );
+    }
+
     // --- Validation: happy paths ---
 
     #[test]

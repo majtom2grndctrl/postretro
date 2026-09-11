@@ -1512,6 +1512,21 @@ mod tests {
     }
 
     #[test]
+    fn sentiment_drain_prevents_finite_adjustment_overflow_without_clamping() {
+        let ctx = sentiment_context();
+        apply_set_sentiment(&ctx, "cabal", "resistance", f32::MAX)
+            .expect("a finite sentiment is accepted without a numeric clamp");
+
+        apply_adjust_sentiment(&ctx, "cabal", "resistance", f32::MAX)
+            .expect("the evaluated reaction remains a safe no-op on overflow");
+        assert_eq!(
+            ctx.faction_sentiment.borrow().get(2.0, 3.0),
+            Some(f32::MAX),
+            "a finite adjustment that would overflow cannot commit non-finite live state"
+        );
+    }
+
+    #[test]
     fn connected_client_sentiment_reaction_validates_but_does_not_write_overlay() {
         let ctx = sentiment_context();
         ctx.owner_slot_writes_enabled.set(false);

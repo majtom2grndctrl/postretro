@@ -215,6 +215,8 @@ pub enum FactionSentimentValidationError {
     TooManyPairs { count: usize },
     UnknownRecordKind(u16),
     BadBaselineCombination { kind: u16, has_ref: bool },
+    ZeroBaselineId { kind: u16 },
+    ZeroBaselineRef { kind: u16 },
     NonFiniteValue { from_idx: u16, to_idx: u16 },
     PairsNotStrictlySorted,
 }
@@ -232,6 +234,16 @@ impl std::fmt::Display for FactionSentimentValidationError {
             Self::BadBaselineCombination { kind, has_ref } => write!(
                 f,
                 "illegal baseline combination for faction-sentiment record kind {kind} (has_ref={has_ref})"
+            ),
+            Self::ZeroBaselineId { kind } => {
+                write!(
+                    f,
+                    "faction-sentiment record kind {kind} used reserved baseline id 0"
+                )
+            }
+            Self::ZeroBaselineRef { kind } => write!(
+                f,
+                "faction-sentiment delta record kind {kind} used reserved baseline ref 0"
             ),
             Self::NonFiniteValue { from_idx, to_idx } => write!(
                 f,
@@ -261,6 +273,12 @@ impl RawFactionSentimentRecord {
                 kind: self.kind,
                 has_ref: self.has_baseline_ref,
             });
+        }
+        if self.baseline_id == 0 {
+            return Err(FactionSentimentValidationError::ZeroBaselineId { kind: self.kind });
+        }
+        if self.has_baseline_ref && self.baseline_ref == 0 {
+            return Err(FactionSentimentValidationError::ZeroBaselineRef { kind: self.kind });
         }
         let mut previous = None;
         for pair in &self.pairs {
@@ -858,6 +876,28 @@ mod tests {
             raw.validate(),
             Err(FactionSentimentValidationError::NonFiniteValue { .. })
         ));
+
+        let zero_baseline = faction_full_baseline(0, Vec::new());
+        assert_eq!(
+            zero_baseline.validate(),
+            Err(FactionSentimentValidationError::ZeroBaselineId {
+                kind: FACTION_SENTIMENT_RECORD_KIND_FULL_BASELINE,
+            })
+        );
+
+        let zero_ref = RawFactionSentimentRecord {
+            kind: FACTION_SENTIMENT_RECORD_KIND_DELTA,
+            has_baseline_ref: true,
+            baseline_ref: 0,
+            baseline_id: 8,
+            pairs: Vec::new(),
+        };
+        assert_eq!(
+            zero_ref.validate(),
+            Err(FactionSentimentValidationError::ZeroBaselineRef {
+                kind: FACTION_SENTIMENT_RECORD_KIND_DELTA,
+            })
+        );
     }
 
     // --- Validation: happy paths ---

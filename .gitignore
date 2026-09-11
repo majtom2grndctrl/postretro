@@ -21,6 +21,7 @@ target
 *.bsp
 *.prl
 *.prl.pack.lock
+*.prl.pack-*.tmp
 !crates/level-compiler/tests/fixtures/golden/test_animated_weight_maps_mixed.pre-script-light-membership.prl
 # Autosave maps (local, not version controlled)
 **/maps/autosave/

@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fs4::FileExt;
 use glam::Vec3;
@@ -66,6 +67,15 @@ use crate::portals::Portal;
 
 // PRL table and NavMesh body versions are independent domains.
 const NAVMESH_CONTAINER_VERSION: u16 = 1;
+
+// Windows denies an atomic replacement while an indexer, sync client, or reader
+// temporarily holds the destination without delete sharing. Keep the retry brief:
+// a persistent lock or ACL problem still fails and discards the staged PRL.
+const WINDOWS_PUBLISH_MAX_RETRIES: u32 = 5;
+const WINDOWS_PUBLISH_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
+const WINDOWS_ERROR_ACCESS_DENIED: i32 = 5;
+const WINDOWS_ERROR_SHARING_VIOLATION: i32 = 32;
+const WINDOWS_ERROR_LOCK_VIOLATION: i32 = 33;
 
 #[path = "pack_sections.rs"]
 mod pack_sections;
@@ -1132,10 +1142,9 @@ fn write_and_validate_sections(
     let total_size = match write_result {
         Ok(total_size) => total_size,
         Err(error) => {
-            let temporary_path = temporary_output.preserve();
-            return Err(anyhow::anyhow!(
-                "{error}; temporary PRL preserved at {} after write failure",
-                temporary_path.display(),
+            return Err(failed_staging_error(
+                temporary_output,
+                format!("{error} after write failure"),
             ));
         }
     };
@@ -1203,13 +1212,62 @@ impl StagedPrl {
         ensure_path_has_identity(self.path(), &self.identity, "temporary PRL")
     }
 
-    fn preserve(self) -> PathBuf {
-        // A checked pathname can be replaced before unlink. Keep failed staging
-        // files instead of risking deletion of bytes this invocation did not write.
+    fn discard(self) -> anyhow::Result<()> {
+        // Cleanup is best effort. Re-check before unlink so a known replacement
+        // remains intact; a failed check leaves the path for manual inspection.
         let path = self.path().to_path_buf();
-        drop(self);
-        path
+        self.ensure_path_is_owned()?;
+        self.temporary.close().map_err(|error| {
+            anyhow::anyhow!("failed to remove temporary PRL {}: {error}", path.display(),)
+        })
     }
+}
+
+fn failed_staging_error(staged: StagedPrl, failure: impl std::fmt::Display) -> anyhow::Error {
+    let temporary_path = staged.path().to_path_buf();
+    match staged.discard() {
+        Ok(()) => anyhow::anyhow!("{failure}; temporary PRL discarded"),
+        Err(cleanup_error) => anyhow::anyhow!(
+            "{failure}; temporary PRL remains at {} because cleanup failed: {cleanup_error}",
+            temporary_path.display(),
+        ),
+    }
+}
+
+fn retry_windows_publication<T, U>(
+    mut staged: T,
+    is_windows: bool,
+    mut persist: impl FnMut(T) -> Result<U, (T, std::io::Error)>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<U, (T, std::io::Error, u32)> {
+    let mut retries = 0;
+    loop {
+        match persist(staged) {
+            Ok(persisted) => return Ok(persisted),
+            Err((returned_staged, error))
+                if is_retryable_windows_publish_error(&error, is_windows)
+                    && retries < WINDOWS_PUBLISH_MAX_RETRIES =>
+            {
+                let delay = WINDOWS_PUBLISH_RETRY_BASE_DELAY * (1_u32 << retries);
+                retries += 1;
+                sleep(delay);
+                staged = returned_staged;
+            }
+            Err((returned_staged, error)) => return Err((returned_staged, error, retries)),
+        }
+    }
+}
+
+fn is_retryable_windows_publish_error(error: &std::io::Error, is_windows: bool) -> bool {
+    is_windows
+        && matches!(
+            error.raw_os_error(),
+            Some(
+                WINDOWS_ERROR_ACCESS_DENIED
+                    | WINDOWS_ERROR_SHARING_VIOLATION
+                    | WINDOWS_ERROR_LOCK_VIOLATION
+            )
+        )
 }
 
 struct OutputPublishLock {
@@ -1390,10 +1448,9 @@ fn publish_validated_output_with_hook(
     let _publication_lock = match OutputPublishLock::acquire(output) {
         Ok(lock) => lock,
         Err(error) => {
-            let preserved_path = temporary_output.preserve();
-            return Err(anyhow::anyhow!(
-                "{error}; temporary PRL preserved at {} after lock failure",
-                preserved_path.display(),
+            return Err(failed_staging_error(
+                temporary_output,
+                format!("{error} after lock failure"),
             ));
         }
     };
@@ -1402,18 +1459,16 @@ fn publish_validated_output_with_hook(
         .ensure_path_is_owned()
         .and_then(|()| original_output.ensure_unchanged(output));
     if let Err(error) = precondition {
-        let preserved_path = temporary_output.preserve();
-        return Err(anyhow::anyhow!(
-            "{error}; temporary PRL preserved at {} after publication refusal",
-            preserved_path.display(),
+        return Err(failed_staging_error(
+            temporary_output,
+            format!("{error} after publication refusal"),
         ));
     }
 
     if let Err(error) = after_precondition() {
-        let preserved_path = temporary_output.preserve();
-        return Err(anyhow::anyhow!(
-            "{error}; temporary PRL preserved at {} after publication was interrupted",
-            preserved_path.display(),
+        return Err(failed_staging_error(
+            temporary_output,
+            format!("{error} after publication was interrupted"),
         ));
     }
 
@@ -1424,10 +1479,9 @@ fn publish_validated_output_with_hook(
         .ensure_path_is_owned()
         .and_then(|()| original_output.ensure_unchanged(output));
     if let Err(error) = precondition {
-        let preserved_path = temporary_output.preserve();
-        return Err(anyhow::anyhow!(
-            "{error}; temporary PRL preserved at {} after a late publication race",
-            preserved_path.display(),
+        return Err(failed_staging_error(
+            temporary_output,
+            format!("{error} after a late publication race"),
         ));
     }
 
@@ -1435,27 +1489,51 @@ fn publish_validated_output_with_hook(
         temporary,
         identity,
     } = temporary_output;
-    match temporary.persist(output) {
-        Ok(persisted_file) => {
+    match retry_windows_publication(
+        StagedPrl {
+            temporary,
+            identity,
+        },
+        cfg!(windows),
+        |StagedPrl {
+             temporary,
+             identity,
+         }| match temporary.persist(output) {
+            Ok(persisted_file) => Ok((persisted_file, identity)),
+            Err(tempfile::PersistError {
+                error,
+                file: temporary,
+            }) => Err((
+                StagedPrl {
+                    temporary,
+                    identity,
+                },
+                error,
+            )),
+        },
+        std::thread::sleep,
+    ) {
+        Ok((persisted_file, identity)) => {
             let result = ensure_path_has_identity(output, &identity, "published output");
             drop(persisted_file);
             result
         }
-        Err(error) => {
-            let tempfile::PersistError {
-                error: publish_error,
-                file: temporary,
-            } = error;
-            let staged = StagedPrl {
-                temporary,
-                identity,
+        Err((staged, publish_error, retries)) => {
+            let retry_context = if retries == 0 {
+                String::new()
+            } else {
+                format!(
+                    " after {retries} Windows replacement retries; close processes reading {} or check its attributes and permissions",
+                    output.display(),
+                )
             };
-            let preserved_path = staged.preserve();
-            Err(anyhow::anyhow!(
-                "failed to publish temporary PRL {} to {}: {publish_error}; temporary PRL preserved at {}",
-                temporary_path.display(),
-                output.display(),
-                preserved_path.display(),
+            Err(failed_staging_error(
+                staged,
+                format!(
+                    "failed to publish temporary PRL {} to {}: {publish_error}{retry_context}",
+                    temporary_path.display(),
+                    output.display(),
+                ),
             ))
         }
     }
@@ -1563,6 +1641,60 @@ mod tests {
         if lock_path.exists() {
             std::fs::remove_file(lock_path).expect("publication lock should be removable");
         }
+    }
+
+    #[test]
+    fn windows_publication_retry_retries_transient_replacement_errors() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result: std::result::Result<(), ((), std::io::Error, u32)> = retry_windows_publication(
+            (),
+            true,
+            |_| {
+                attempts += 1;
+                if attempts <= 2 {
+                    Err((
+                        (),
+                        std::io::Error::from_raw_os_error(WINDOWS_ERROR_ACCESS_DENIED),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| delays.push(delay),
+        );
+
+        result.expect("transient Windows replacement failures should retry");
+        assert_eq!(attempts, 3);
+        assert_eq!(
+            delays,
+            vec![
+                WINDOWS_PUBLISH_RETRY_BASE_DELAY,
+                WINDOWS_PUBLISH_RETRY_BASE_DELAY * 2,
+            ]
+        );
+    }
+
+    #[test]
+    fn non_windows_publication_retry_returns_first_replace_failure() {
+        let mut attempts = 0;
+        let result: std::result::Result<(), ((), std::io::Error, u32)> = retry_windows_publication(
+            (),
+            false,
+            |_| {
+                attempts += 1;
+                Err((
+                    (),
+                    std::io::Error::from_raw_os_error(WINDOWS_ERROR_ACCESS_DENIED),
+                ))
+            },
+            |_| panic!("non-Windows publication must not sleep and retry"),
+        );
+
+        let (_, error, retries) = result.expect_err("non-Windows failure should return directly");
+        assert_eq!(attempts, 1);
+        assert_eq!(error.raw_os_error(), Some(WINDOWS_ERROR_ACCESS_DENIED));
+        assert_eq!(retries, 0);
     }
 
     #[test]
@@ -1676,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_write_failure_preserves_existing_output_and_staged_file() {
+    fn streamed_write_failure_preserves_existing_output_and_cleans_staging() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-preserve-{}-{}.prl",
             std::process::id(),
@@ -1706,11 +1838,9 @@ mod tests {
             previous_bytes,
             "a write failure must not replace the previous output"
         );
-        let artifacts = staging_artifacts(&output);
-        assert_eq!(
-            artifacts.len(),
-            1,
-            "failed staging is preserved rather than risking a pathname-race unlink"
+        assert!(
+            staging_artifacts(&output).is_empty(),
+            "failed staging should be cleaned up"
         );
         std::fs::remove_file(&output).expect("output should be removable");
         remove_publication_test_artifacts(&output);
@@ -1746,9 +1876,9 @@ mod tests {
         std::fs::remove_dir(output).expect("directory fixture should be removable");
     }
 
-    // Regression: error cleanup unlinked a replacement installed after its identity check.
+    // Regression: cleanup must not unlink a replacement installed before its identity check.
     #[test]
-    fn failed_staging_preserves_replacement_swapped_after_identity_check() {
+    fn failed_staging_cleanup_preserves_replacement_swapped_before_identity_check() {
         let output = std::env::temp_dir().join(format!(
             "postretro-streamed-pack-cleanup-identity-{}-{}.prl",
             std::process::id(),
@@ -1765,10 +1895,11 @@ mod tests {
         std::fs::write(&staged_path, b"later replacement")
             .expect("should install replacement at staging path");
 
-        // This swap occurs where cleanup formerly performed its pathname unlink.
-        let preserved_path = staged.preserve();
+        let error = staged
+            .discard()
+            .expect_err("cleanup must reject a replacement staging path");
 
-        assert_eq!(preserved_path, staged_path);
+        assert!(error.to_string().contains("no longer names the file owned"));
         assert_eq!(
             std::fs::read(&staged_path).expect("replacement must remain readable"),
             b"later replacement"
@@ -1905,7 +2036,7 @@ mod tests {
             std::fs::read(&original).expect("original output must remain readable"),
             previous_bytes
         );
-        assert_eq!(staging_artifacts(&output).len(), 1);
+        assert!(staging_artifacts(&output).is_empty());
         std::fs::remove_dir(&output).expect("raced directory should be removable");
         std::fs::remove_file(original).expect("original fixture should be removable");
         remove_publication_test_artifacts(&output);
@@ -1952,7 +2083,7 @@ mod tests {
             std::fs::read(&original).expect("original output must remain readable"),
             b"original output"
         );
-        assert_eq!(staging_artifacts(&output).len(), 1);
+        assert!(staging_artifacts(&output).is_empty());
         std::fs::remove_file(&output).expect("concurrent output should be removable");
         std::fs::remove_file(original).expect("original fixture should be removable");
         remove_publication_test_artifacts(&output);

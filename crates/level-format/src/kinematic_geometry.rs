@@ -89,6 +89,21 @@ pub struct KinematicWaypointRecord {
 }
 
 impl KinematicGeometrySection {
+    pub fn byte_len(&self) -> usize {
+        2 + 4
+            + self
+                .movers
+                .iter()
+                .map(|mover| mover_byte_len(mover, self.version))
+                .sum::<usize>()
+            + 4
+            + self
+                .waypoints
+                .iter()
+                .map(|waypoint| 4 + waypoint.name.len() + 4 + waypoint.next.len() + 12)
+                .sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.version.to_le_bytes());
@@ -172,6 +187,52 @@ impl KinematicGeometrySection {
             waypoints,
         })
     }
+}
+
+fn mover_byte_len(mover: &KinematicMoverRecord, version: u16) -> usize {
+    let string_len = |value: &str| 4 + value.len();
+    let optional_string_len = |value: Option<&String>| match value {
+        Some(value) => 1 + string_len(value),
+        None => 1,
+    };
+    let mut len = 4
+        + string_len(&mover.name)
+        + 4
+        + mover.tags.iter().map(|tag| string_len(tag)).sum::<usize>()
+        + 12
+        + string_len(&mover.path)
+        + 4
+        + 4
+        + 1
+        + 1
+        + 4
+        + mover.vertices.len() * 36
+        + 4
+        + mover.indices.len() * 4
+        + 4
+        + mover.face_meta.len() * 8;
+    if version >= KINEMATIC_GEOMETRY_VERSION_V2 {
+        len += 21;
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V3 {
+        len += string_len(&mover.block_policy) + 8;
+        len += if version == KINEMATIC_GEOMETRY_VERSION_V3 {
+            4
+        } else {
+            1 + usize::from(mover.auto_close_ms.is_some()) * 4
+        };
+        len += optional_string_len(mover.open_event.as_ref());
+        len += optional_string_len(mover.close_event.as_ref());
+        len += optional_string_len(mover.blocked_event.as_ref());
+        len += optional_string_len(mover.crush_event.as_ref());
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION_V5 {
+        len += 4 + mover.sealed_portal_ids.len() * 4;
+    }
+    if version >= KINEMATIC_GEOMETRY_VERSION {
+        len += 4 + mover.carried_lights.len() * 16;
+    }
+    len
 }
 
 fn validate_unique_mover_ids(movers: &[KinematicMoverRecord]) -> crate::Result<()> {
@@ -967,6 +1028,13 @@ mod tests {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn byte_len_matches_v1_v5_and_v6_kinematic_payloads() {
+        for section in [sample_section(), v5_fixture_section(), v1_fixture_section()] {
+            assert_eq!(section.byte_len(), section.to_bytes().len());
+        }
     }
 
     #[test]

@@ -1,10 +1,12 @@
 // Pack and write: serialize sections to .prl binary, validate via read-back.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::fs;
-use std::io::Cursor;
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
+use fs4::FileExt;
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
@@ -20,9 +22,11 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_level_format::bsp::BspLeavesSection;
 use postretro_level_format::bvh::BvhSection;
+use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
+use postretro_level_format::cell_visibility::CellVisibilitySection;
 use postretro_level_format::cells::{
     CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
 };
@@ -47,8 +51,10 @@ use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 use postretro_level_format::{
-    SectionBlob, SectionId, read_container, read_section_data, write_prl,
+    SectionDescriptor, SectionId, read_container, read_section_data, write_prl_header_and_table,
 };
+use same_file::Handle as FileIdentity;
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 use std::collections::{HashMap, HashSet};
 
@@ -64,7 +70,32 @@ const NAVMESH_CONTAINER_VERSION: u16 = 1;
 #[path = "pack_sections.rs"]
 mod pack_sections;
 
-use pack_sections::{append_optional_section, serialize_bvh_with_chunk_ranges};
+use pack_sections::bvh_with_chunk_ranges;
+
+type SectionEncoder<'a> = Box<dyn FnOnce() -> anyhow::Result<Vec<u8>> + 'a>;
+
+struct PlannedSection<'a> {
+    descriptor: SectionDescriptor,
+    encode: SectionEncoder<'a>,
+}
+
+impl<'a> PlannedSection<'a> {
+    fn new(
+        section_id: u32,
+        version: u16,
+        byte_len: usize,
+        encode: impl FnOnce() -> anyhow::Result<Vec<u8>> + 'a,
+    ) -> Self {
+        Self {
+            descriptor: SectionDescriptor {
+                section_id,
+                version,
+                byte_len: byte_len as u64,
+            },
+            encode: Box::new(encode),
+        }
+    }
+}
 
 fn scatter_section_fits_pack_cap(
     section: &AnimatedBillboardDirectScatterDeltaVolumesSection,
@@ -82,16 +113,6 @@ fn scatter_section_fits_pack_cap_with_limit(
     section
         .encoded_len()
         .is_some_and(|bytes| bytes <= max_encoded_bytes)
-}
-
-fn append_navmesh_section(sections: &mut Vec<SectionBlob>, data: Option<&[u8]>) {
-    if let Some(bytes) = data {
-        sections.push(SectionBlob {
-            section_id: SectionId::NavMesh as u32,
-            version: NAVMESH_CONTAINER_VERSION,
-            data: bytes.to_vec(),
-        });
-    }
 }
 
 /// Convert translated map lights into an `AlphaLightsSection` for the format
@@ -589,8 +610,8 @@ pub fn pack_and_write_portals(
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
-    cell_draw_index_bytes: Option<Vec<u8>>,
-    cell_visibility_bytes: Option<Vec<u8>>,
+    cell_draw_index_section: Option<&CellDrawIndexSection>,
+    cell_visibility_section: Option<&CellVisibilitySection>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
 ) -> anyhow::Result<()> {
     pack_and_write_portals_with_billboard_scatter(
@@ -624,8 +645,8 @@ pub fn pack_and_write_portals(
         navmesh,
         kinematic_geometry,
         trigger_volumes,
-        cell_draw_index_bytes,
-        cell_visibility_bytes,
+        cell_draw_index_section,
+        cell_visibility_section,
         animated_direct_sh_delta_volumes,
         None,
         None,
@@ -681,13 +702,12 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
-    // Pre-serialized CellDrawIndex (id 37) bytes, or `None` for zero-leaf maps.
-    // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
-    // emission is independent of portal presence.
-    cell_draw_index_bytes: Option<Vec<u8>>,
-    // Pre-serialized CellVisibility (id 46) bytes. The section stays optional
-    // for old PRLs; current compiler output always provides it.
-    cell_visibility_bytes: Option<Vec<u8>>,
+    // CellDrawIndex (id 37), or `None` for zero-leaf maps. Emission is
+    // independent of portal presence.
+    cell_draw_index_section: Option<&CellDrawIndexSection>,
+    // CellVisibility (id 46). The section stays optional for old PRLs; current
+    // compiler output always provides it.
+    cell_visibility_section: Option<&CellVisibilitySection>,
     animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
     billboard_direct_scatter_volume: Option<&BillboardDirectScatterVolumeSection>,
     animated_billboard_direct_scatter_delta_volumes: Option<
@@ -730,8 +750,6 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         } else {
             (None, None)
         };
-    let geometry_bytes = geo_result.geometry.to_bytes();
-    let texture_names_bytes = geo_result.texture_names.to_bytes();
     let texture_cache_keys_section = TextureCacheKeysSection {
         keys: geo_result
             .texture_names
@@ -740,28 +758,21 @@ pub fn pack_and_write_portals_with_billboard_scatter(
             .map(|name| texture_cache_keys.get(name).copied().unwrap_or([0u8; 32]))
             .collect(),
     };
-    let texture_cache_keys_bytes = texture_cache_keys_section.to_bytes();
-    let portals_bytes = portals.to_bytes();
     let cells_section = encode_cells(leaves, portals, exterior_leaves)?;
-    let cells_bytes = cells_section.to_bytes();
     let locator_section = encode_cell_locator(tree)?;
-    let locator_bytes = locator_section.to_bytes();
-    let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
+    let bvh_section = bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
     anyhow::ensure!(
-        bvh.leaves.is_empty() || cell_draw_index_bytes.is_some(),
+        bvh.leaves.is_empty() || cell_draw_index_section.is_some(),
         "CellDrawIndex section is required when Bvh contains {} leaf/leaves",
         bvh.leaves.len()
     );
     anyhow::ensure!(
-        !bvh.leaves.is_empty() || cell_draw_index_bytes.is_none(),
+        !bvh.leaves.is_empty() || cell_draw_index_section.is_none(),
         "CellDrawIndex section must be omitted when Bvh has no leaves"
     );
-    let alpha_lights_bytes = alpha_lights.to_bytes();
-    let light_influence_bytes = light_influence.to_bytes();
-    let sh_volume_bytes = sh_volume.try_to_bytes().map_err(|error| {
+    let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
         anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
     })?;
-    let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
     let entity_shadow_light_count = entity_shadow_lights
         .map(|section| section.light_indices.len())
         .unwrap_or(0);
@@ -771,461 +782,692 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         } else {
             false
         };
-    let entity_shadow_lights_bytes = entity_shadow_lights
-        .filter(|_| has_usable_direct_sh_deltas)
-        .filter(|s| !s.light_indices.is_empty())
-        .map(|s| s.to_bytes());
-    let direct_sh_delta_volumes_bytes = direct_sh_delta_volumes
-        .filter(|_| has_usable_direct_sh_deltas)
-        .map(|s| s.to_bytes());
-    let shadowmask_atlas_bytes = shadowmask_atlas
-        .filter(|_| has_usable_direct_sh_deltas)
-        .filter(|s| !s.channels.is_empty())
-        .map(|s| s.to_bytes());
-    let lightmap_bytes = lightmap.to_bytes();
-    let chunk_light_list_bytes = chunk_light_list.to_bytes();
-    let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
-    let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
-    let light_tags_bytes = light_tags.map(|s| s.to_bytes());
-    let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
-    let animated_direct_sh_delta_volumes_bytes = animated_direct_sh_delta_volumes
-        .map(AnimatedDirectShDeltaVolumesSection::try_to_bytes)
-        .transpose()
-        .map_err(|error| {
+    let mut sections = Vec::new();
+    sections.push(PlannedSection::new(
+        SectionId::Geometry as u32,
+        1,
+        geo_result.geometry.byte_len(),
+        || Ok(geo_result.geometry.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::TextureNames as u32,
+        1,
+        geo_result.texture_names.byte_len(),
+        || Ok(geo_result.texture_names.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::TextureCacheKeys as u32,
+        1,
+        texture_cache_keys_section.byte_len(),
+        || Ok(texture_cache_keys_section.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::Cells as u32,
+        1,
+        cells_section.byte_len(),
+        || Ok(cells_section.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::CellLocator as u32,
+        1,
+        locator_section.byte_len(),
+        || Ok(locator_section.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::Portals as u32,
+        1,
+        portals.byte_len(),
+        || Ok(portals.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::ChunkLightList as u32,
+        1,
+        chunk_light_list.byte_len(),
+        || Ok(chunk_light_list.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::Bvh as u32,
+        1,
+        bvh_section.byte_len(),
+        || Ok(bvh_section.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::AlphaLights as u32,
+        1,
+        alpha_lights.byte_len(),
+        || Ok(alpha_lights.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::LightInfluence as u32,
+        1,
+        light_influence.byte_len(),
+        || Ok(light_influence.to_bytes()),
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::OctahedralShVolume as u32,
+        1,
+        sh_volume_len,
+        || {
+            sh_volume.try_to_bytes().map_err(|error| {
+                anyhow::anyhow!("OctahedralShVolume violates its v10 wire contract: {error}")
+            })
+        },
+    ));
+    sections.push(PlannedSection::new(
+        SectionId::Lightmap as u32,
+        1,
+        lightmap.byte_len(),
+        || Ok(lightmap.to_bytes()),
+    ));
+    if let Some(section) = direct_sh_volume {
+        let len = section.try_byte_len().map_err(|error| {
+            anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
+        })?;
+        sections.push(PlannedSection::new(
+            SectionId::DirectShVolume as u32,
+            1,
+            len,
+            || {
+                section.try_to_bytes().map_err(|error| {
+                    anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
+                })
+            },
+        ));
+    }
+    if has_usable_direct_sh_deltas {
+        if let Some(section) =
+            entity_shadow_lights.filter(|section| !section.light_indices.is_empty())
+        {
+            sections.push(PlannedSection::new(
+                SectionId::EntityShadowLights as u32,
+                1,
+                section.byte_len(),
+                || Ok(section.to_bytes()),
+            ));
+        }
+        if let Some(section) = direct_sh_delta_volumes {
+            sections.push(PlannedSection::new(
+                SectionId::DirectShDeltaVolumes as u32,
+                1,
+                section.byte_len(),
+                || Ok(section.to_bytes()),
+            ));
+        }
+        if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
+            sections.push(PlannedSection::new(
+                SectionId::ShadowmaskAtlas as u32,
+                1,
+                section.byte_len(),
+                || Ok(section.to_bytes()),
+            ));
+        }
+    }
+    if let Some(section) = animated_light_chunks {
+        sections.push(PlannedSection::new(
+            SectionId::AnimatedLightChunks as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = animated_light_weight_maps {
+        sections.push(PlannedSection::new(
+            SectionId::AnimatedLightWeightMaps as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = light_tags {
+        sections.push(PlannedSection::new(
+            SectionId::LightTags as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = delta_sh_volumes {
+        sections.push(PlannedSection::new(
+            SectionId::DeltaShVolumes as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = animated_direct_sh_delta_volumes {
+        let len = section.try_byte_len().map_err(|error| {
             anyhow::anyhow!("AnimatedDirectShDeltaVolumes violates its wire contract: {error}")
         })?;
-    let billboard_direct_scatter_volume_bytes =
-        billboard_direct_scatter_volume.map(|s| s.to_bytes());
-    let animated_billboard_direct_scatter_delta_volumes_bytes =
-        animated_billboard_direct_scatter_delta_volumes
-            .map(AnimatedBillboardDirectScatterDeltaVolumesSection::try_to_bytes)
-            .transpose()
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"
-                )
-            })?;
-    let data_script_bytes = data_script.map(|s| s.to_bytes());
-    let map_entities_bytes = map_entities.map(|s| s.to_bytes());
-    let fog_volumes_bytes = fog_volumes.to_bytes();
-    let fog_cell_masks_bytes = fog_cell_masks.map(|s| s.to_bytes());
-    let sdf_atlas_bytes = sdf_atlas.map(|s| s.to_bytes());
-    let navmesh_bytes = navmesh.map(|s| s.to_bytes());
-    let kinematic_geometry_bytes = kinematic_geometry.map(|s| s.to_bytes());
-    let trigger_volumes_bytes = trigger_volumes.map(|s| s.to_bytes());
-
-    let mut sections = vec![
-        SectionBlob {
-            section_id: SectionId::Geometry as u32,
-            version: 1,
-            data: geometry_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::TextureNames as u32,
-            version: 1,
-            data: texture_names_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::TextureCacheKeys as u32,
-            version: 1,
-            data: texture_cache_keys_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Cells as u32,
-            version: 1,
-            data: cells_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::CellLocator as u32,
-            version: 1,
-            data: locator_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Portals as u32,
-            version: 1,
-            data: portals_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::ChunkLightList as u32,
-            version: 1,
-            data: chunk_light_list_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Bvh as u32,
-            version: 1,
-            data: bvh_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::AlphaLights as u32,
-            version: 1,
-            data: alpha_lights_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::LightInfluence as u32,
-            version: 1,
-            data: light_influence_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::OctahedralShVolume as u32,
-            version: 1,
-            data: sh_volume_bytes.clone(),
-        },
-        SectionBlob {
-            section_id: SectionId::Lightmap as u32,
-            version: 1,
-            data: lightmap_bytes.clone(),
-        },
-    ];
-    append_optional_section(
-        &mut sections,
-        SectionId::DirectShVolume as u32,
-        direct_sh_volume_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::EntityShadowLights as u32,
-        entity_shadow_lights_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::DirectShDeltaVolumes as u32,
-        direct_sh_delta_volumes_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::ShadowmaskAtlas as u32,
-        shadowmask_atlas_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::AnimatedLightChunks as u32,
-        animated_light_chunks_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::AnimatedLightWeightMaps as u32,
-        animated_light_weight_maps_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::LightTags as u32,
-        light_tags_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::DeltaShVolumes as u32,
-        delta_sh_volumes_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::AnimatedDirectShDeltaVolumes as u32,
-        animated_direct_sh_delta_volumes_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::BillboardDirectScatterVolume as u32,
-        billboard_direct_scatter_volume_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32,
-        animated_billboard_direct_scatter_delta_volumes_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::DataScript as u32,
-        data_script_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::MapEntity as u32,
-        map_entities_bytes,
-    );
-    sections.push(SectionBlob {
-        section_id: SectionId::FogVolumes as u32,
-        version: 1,
-        data: fog_volumes_bytes.clone(),
-    });
-    append_optional_section(
-        &mut sections,
-        SectionId::FogCellMasks as u32,
-        fog_cell_masks_bytes.clone(),
-    );
-    if let Some(ref bytes) = sdf_atlas_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::SdfAtlas as u32,
-            version: postretro_level_format::sdf_atlas::SDF_ATLAS_VERSION as u16,
-            data: bytes.clone(),
-        });
+        sections.push(PlannedSection::new(
+            SectionId::AnimatedDirectShDeltaVolumes as u32,
+            1,
+            len,
+            || {
+                section.try_to_bytes().map_err(|error| {
+                    anyhow::anyhow!(
+                        "AnimatedDirectShDeltaVolumes violates its wire contract: {error}"
+                    )
+                })
+            },
+        ));
     }
-    append_navmesh_section(&mut sections, navmesh_bytes.as_deref());
-    append_optional_section(
-        &mut sections,
-        SectionId::KinematicGeometry as u32,
-        kinematic_geometry_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::TriggerVolumes as u32,
-        trigger_volumes_bytes.clone(),
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::CellDrawIndex as u32,
-        cell_draw_index_bytes,
-    );
-    append_optional_section(
-        &mut sections,
-        SectionId::CellVisibility as u32,
-        cell_visibility_bytes,
-    );
+    if let Some(section) = billboard_direct_scatter_volume {
+        let len = section.try_byte_len().map_err(|error| {
+            anyhow::anyhow!("BillboardDirectScatterVolume violates its wire contract: {error}")
+        })?;
+        sections.push(PlannedSection::new(
+            SectionId::BillboardDirectScatterVolume as u32,
+            1,
+            len,
+            || {
+                section.try_to_bytes().map_err(|error| {
+                    anyhow::anyhow!(
+                        "BillboardDirectScatterVolume violates its wire contract: {error}"
+                    )
+                })
+            },
+        ));
+    }
+    if let Some(section) = animated_billboard_direct_scatter_delta_volumes {
+        let len = section.try_byte_len().map_err(|error| {
+            anyhow::anyhow!(
+                "AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"
+            )
+        })?;
+        sections.push(PlannedSection::new(SectionId::AnimatedBillboardDirectScatterDeltaVolumes as u32, 1, len, || section.try_to_bytes().map_err(|error| anyhow::anyhow!("AnimatedBillboardDirectScatterDeltaVolumes violates its wire contract: {error}"))));
+    }
+    if let Some(section) = data_script {
+        sections.push(PlannedSection::new(
+            SectionId::DataScript as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = map_entities {
+        sections.push(PlannedSection::new(
+            SectionId::MapEntity as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    sections.push(PlannedSection::new(
+        SectionId::FogVolumes as u32,
+        1,
+        fog_volumes.byte_len(),
+        || Ok(fog_volumes.to_bytes()),
+    ));
+    if let Some(section) = fog_cell_masks {
+        sections.push(PlannedSection::new(
+            SectionId::FogCellMasks as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = sdf_atlas {
+        sections.push(PlannedSection::new(
+            SectionId::SdfAtlas as u32,
+            postretro_level_format::sdf_atlas::SDF_ATLAS_VERSION as u16,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = navmesh {
+        sections.push(PlannedSection::new(
+            SectionId::NavMesh as u32,
+            NAVMESH_CONTAINER_VERSION,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = kinematic_geometry {
+        sections.push(PlannedSection::new(
+            SectionId::KinematicGeometry as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = trigger_volumes {
+        sections.push(PlannedSection::new(
+            SectionId::TriggerVolumes as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = cell_draw_index_section {
+        sections.push(PlannedSection::new(
+            SectionId::CellDrawIndex as u32,
+            1,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = cell_visibility_section {
+        let len = section.try_byte_len().map_err(|error| {
+            anyhow::anyhow!("CellVisibility violates its wire contract: {error}")
+        })?;
+        sections.push(PlannedSection::new(
+            SectionId::CellVisibility as u32,
+            1,
+            len,
+            || {
+                section.to_bytes().map_err(|error| {
+                    anyhow::anyhow!("CellVisibility violates its wire contract: {error}")
+                })
+            },
+        ));
+    }
 
-    write_and_validate_sections(output, &sections)?;
-
-    log::info!("Sections: {}", sections.len());
-    log::info!("  Geometry: {} bytes", geometry_bytes.len());
-    log::info!("  TextureNames: {} bytes", texture_names_bytes.len());
-    log::info!(
-        "  TextureCacheKeys: {} bytes ({} keys)",
-        texture_cache_keys_bytes.len(),
-        texture_cache_keys_section.keys.len(),
-    );
-    log::info!(
-        "  Cells: {} bytes ({} cells, {} portal refs)",
-        cells_bytes.len(),
-        cells_section.cells.len(),
-        cells_section.portal_refs.len(),
-    );
-    log::info!(
-        "  CellLocator: {} bytes ({} nodes)",
-        locator_bytes.len(),
-        locator_section.nodes.len(),
-    );
-    log::info!("  Portals: {} bytes", portals_bytes.len());
-    log::info!("  Bvh: {} bytes", bvh_bytes.len());
-    let assigned_count = alpha_lights
-        .lights
+    let section_count = sections.len();
+    let declared_payload_bytes: u64 = sections
         .iter()
-        .filter(|r| r.leaf_index != ALPHA_LIGHT_LEAF_UNASSIGNED)
-        .count();
-    let unassigned_count = alpha_lights.lights.len() - assigned_count;
+        .map(|section| section.descriptor.byte_len)
+        .sum();
+    let largest_payload_bytes = sections
+        .iter()
+        .map(|section| section.descriptor.byte_len)
+        .max()
+        .unwrap_or(0);
+    write_and_validate_sections(output, sections)?;
+
     log::info!(
-        "  AlphaLights: {} bytes ({} lights, {} assigned to cells, {} unassigned)",
-        alpha_lights_bytes.len(),
-        alpha_lights.lights.len(),
-        assigned_count,
-        unassigned_count,
-    );
-    log::info!(
-        "  LightInfluence: {} bytes ({} records)",
-        light_influence_bytes.len(),
-        light_influence.records.len()
-    );
-    log::info!(
-        "  OctahedralShVolume: {} bytes ({} probes)",
-        sh_volume_bytes.len(),
-        sh_volume.probes.len()
-    );
-    if let (Some(section), Some(bytes)) = (direct_sh_volume, &direct_sh_volume_bytes) {
-        log::info!(
-            "  DirectShVolume: {} bytes ({} probes, format {})",
-            bytes.len(),
-            section.total_probes(),
-            section.irradiance_format,
-        );
-    }
-    if let (Some(section), Some(bytes)) = (entity_shadow_lights, &entity_shadow_lights_bytes) {
-        log::info!(
-            "  EntityShadowLights: {} bytes ({} selected light(s))",
-            bytes.len(),
-            section.light_indices.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (direct_sh_delta_volumes, &direct_sh_delta_volumes_bytes)
-    {
-        log::info!(
-            "  DirectShDeltaVolumes: {} bytes ({} CSR entries)",
-            bytes.len(),
-            section.affinity_lights.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (delta_sh_volumes, &delta_sh_volumes_bytes) {
-        log::info!(
-            "  DeltaShVolumes: {} bytes ({} animated light(s), {} CSR entries)",
-            bytes.len(),
-            section.animation_descriptor_indices.len(),
-            section.affinity_lights.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (
-        animated_direct_sh_delta_volumes,
-        &animated_direct_sh_delta_volumes_bytes,
-    ) {
-        log::info!(
-            "  AnimatedDirectShDeltaVolumes: {} bytes ({} animated light(s), {} CSR entries)",
-            bytes.len(),
-            section.animation_descriptor_indices.len(),
-            section.affinity_lights.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (
-        billboard_direct_scatter_volume,
-        &billboard_direct_scatter_volume_bytes,
-    ) {
-        log::info!(
-            "  BillboardDirectScatterVolume: {} bytes ({} probes)",
-            bytes.len(),
-            section.total_probes().unwrap_or_default(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (
-        animated_billboard_direct_scatter_delta_volumes,
-        &animated_billboard_direct_scatter_delta_volumes_bytes,
-    ) {
-        log::info!(
-            "  AnimatedBillboardDirectScatterDeltaVolumes: {} bytes ({} CSR entries)",
-            bytes.len(),
-            section.affinity_lights.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (shadowmask_atlas, &shadowmask_atlas_bytes) {
-        log::info!(
-            "  ShadowmaskAtlas: {} bytes ({}x{}x{}, {} selected channel entr(y/ies))",
-            bytes.len(),
-            section.width,
-            section.height,
-            section.layer_count,
-            section.channels.len(),
-        );
-    }
-    log::info!(
-        "  Lightmap: {} bytes ({}x{}x{})",
-        lightmap_bytes.len(),
-        lightmap.irr_width,
-        lightmap.irr_height,
-        lightmap.layer_count,
-    );
-    log::info!(
-        "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",
-        chunk_light_list_bytes.len(),
-        chunk_light_list.has_grid,
-        chunk_light_list.chunk_count(),
-        chunk_light_list.light_indices.len(),
-    );
-    if let (Some(section), Some(bytes)) = (animated_light_chunks, &animated_light_chunks_bytes) {
-        log::info!(
-            "  AnimatedLightChunks: {} bytes ({} chunks, {} indices)",
-            bytes.len(),
-            section.chunks.len(),
-            section.light_indices.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (
-        animated_light_weight_maps,
-        &animated_light_weight_maps_bytes,
-    ) {
-        log::info!(
-            "  AnimatedLightWeightMaps: {} bytes ({} chunks, {} offset entries, {} texel lights)",
-            bytes.len(),
-            section.chunk_rects.len(),
-            section.offset_counts.len(),
-            section.texel_lights.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (data_script, &data_script_bytes) {
-        log::info!(
-            "  DataScript: {} bytes ({} compiled bytes, source: {})",
-            bytes.len(),
-            section.compiled_bytes.len(),
-            section.source_path,
-        );
-    }
-    log::info!(
-        "  FogVolumes: {} bytes ({} volumes, pixel_scale={})",
-        fog_volumes_bytes.len(),
-        fog_volumes.volumes.len(),
-        fog_volumes.pixel_scale,
-    );
-    if let (Some(section), Some(bytes)) = (fog_cell_masks, &fog_cell_masks_bytes) {
-        log::info!(
-            "  FogCellMasks: {} bytes ({} cells)",
-            bytes.len(),
-            section.masks.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (navmesh, &navmesh_bytes) {
-        log::info!(
-            "  NavMesh: {} bytes ({} regions, {} portals)",
-            bytes.len(),
-            section.regions.len(),
-            section.portals.len(),
-        );
-    }
-    if let (Some(section), Some(bytes)) = (kinematic_geometry, &kinematic_geometry_bytes) {
-        log::info!(
-            "  KinematicGeometry: {} bytes ({} movers, {} waypoints)",
-            bytes.len(),
-            section.movers.len(),
-            section.waypoints.len(),
-        );
-    }
-    let (sh_section_bytes, non_sh_section_bytes) = sections.iter().fold(
-        (0usize, 0usize),
-        |(sh_section_bytes, non_sh_section_bytes), section| {
-            let section_bytes = section.data.len();
-            if matches!(
-                section.section_id,
-                section_id
-                    if section_id == SectionId::OctahedralShVolume as u32
-                        || section_id == SectionId::DirectShVolume as u32
-                        || section_id == SectionId::DeltaShVolumes as u32
-                        || section_id == SectionId::DirectShDeltaVolumes as u32
-                        || section_id == SectionId::AnimatedDirectShDeltaVolumes as u32
-                        || section_id == SectionId::EntityShadowLights as u32
-            ) {
-                (sh_section_bytes + section_bytes, non_sh_section_bytes)
-            } else {
-                (sh_section_bytes, non_sh_section_bytes + section_bytes)
-            }
-        },
-    );
-    log::info!(
-        "  SH footprint (OctahedralShVolume, DirectShVolume, DeltaShVolumes, DirectShDeltaVolumes, AnimatedDirectShDeltaVolumes, EntityShadowLights): {} bytes SH, {} bytes non-SH, {} bytes total",
-        sh_section_bytes,
-        non_sh_section_bytes,
-        sh_section_bytes + non_sh_section_bytes,
+        "[Compiler] Serialize footprint: {section_count} sections, {declared_payload_bytes} payload bytes, {largest_payload_bytes} byte largest payload; writes materialize one payload at a time"
     );
 
     Ok(())
 }
 
-/// Write sections to disk and validate via read-back.
-fn write_and_validate_sections(output: &Path, sections: &[SectionBlob]) -> anyhow::Result<()> {
+/// Write one section payload at a time, then validate the flushed file.
+fn write_and_validate_sections(
+    output: &Path,
+    sections: Vec<PlannedSection<'_>>,
+) -> anyhow::Result<()> {
     // Validate output directory exists before writing
     if let Some(parent) = output.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
             anyhow::bail!("output directory does not exist: {}", parent.display());
         }
     }
+    let original_output = OutputIdentity::capture(output)?;
 
-    let mut file_buf = Vec::new();
-    write_prl(&mut file_buf, sections)?;
-    fs::write(output, &file_buf)?;
-
-    let total_size = file_buf.len();
+    let descriptors: Vec<_> = sections
+        .iter()
+        .map(|section| section.descriptor.clone())
+        .collect();
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
+    let mut temporary_output = StagedPrl::create(output, file_name)?;
+    let write_result = (|| -> anyhow::Result<u64> {
+        write_prl_header_and_table(temporary_output.file_mut(), &descriptors)?;
+        for section in sections {
+            let bytes = (section.encode)()?;
+            if bytes.len() as u64 != section.descriptor.byte_len {
+                match SectionId::from_u32(section.descriptor.section_id) {
+                    Some(section_id) => anyhow::bail!(
+                        "section {section_id:?} (id {}) wrote {} bytes but its table declares {} bytes",
+                        section.descriptor.section_id,
+                        bytes.len(),
+                        section.descriptor.byte_len,
+                    ),
+                    None => anyhow::bail!(
+                        "unknown section {} wrote {} bytes but its table declares {} bytes",
+                        section.descriptor.section_id,
+                        bytes.len(),
+                        section.descriptor.byte_len,
+                    ),
+                }
+            }
+            temporary_output.file_mut().write_all(&bytes)?;
+        }
+        temporary_output.file_mut().flush()?;
+        let total_size = temporary_output.file().metadata()?.len();
+        validate_readback(temporary_output.file_mut(), &descriptors)?;
+        Ok(total_size)
+    })();
+    let total_size = match write_result {
+        Ok(total_size) => total_size,
+        Err(error) => {
+            let temporary_path = temporary_output.preserve();
+            return Err(anyhow::anyhow!(
+                "{error}; temporary PRL preserved at {} after write failure",
+                temporary_path.display(),
+            ));
+        }
+    };
+    publish_validated_output(temporary_output, output, &original_output)?;
     log::info!("Wrote {} ({} bytes)", output.display(), total_size);
-
-    // Read-back validation: verify all sections round-trip.
-    validate_readback(&file_buf, sections)?;
     log::info!("Read-back validation passed.");
 
     Ok(())
 }
 
-/// Re-read the written bytes and verify all sections match.
-fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyhow::Result<()> {
-    let mut cursor = Cursor::new(file_buf);
-    let meta = read_container(&mut cursor)?;
+struct StagedPrl {
+    temporary: NamedTempFile,
+    identity: FileIdentity,
+}
+
+impl StagedPrl {
+    fn create(output: &Path, file_name: &std::ffi::OsStr) -> anyhow::Result<Self> {
+        let parent = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut prefix = OsString::from(".");
+        prefix.push(file_name);
+        prefix.push(".pack-");
+        let mut temporary = TempFileBuilder::new()
+            .prefix(&prefix)
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to create temporary PRL beside {}: {error}",
+                    output.display(),
+                )
+            })?;
+
+        // Disable pathname-based Drop cleanup. Failed staging paths remain because
+        // a checked name can be replaced before an unlink reaches the filesystem.
+        temporary.disable_cleanup(true);
+        let identity = FileIdentity::from_file(temporary.reopen()?).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to identify temporary PRL {}: {error}",
+                temporary.path().display(),
+            )
+        })?;
+
+        Ok(Self {
+            temporary,
+            identity,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.temporary.path()
+    }
+
+    fn file(&self) -> &File {
+        self.temporary.as_file()
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.temporary.as_file_mut()
+    }
+
+    fn ensure_path_is_owned(&self) -> anyhow::Result<()> {
+        ensure_path_has_identity(self.path(), &self.identity, "temporary PRL")
+    }
+
+    fn preserve(self) -> PathBuf {
+        // A checked pathname can be replaced before unlink. Keep failed staging
+        // files instead of risking deletion of bytes this invocation did not write.
+        let path = self.path().to_path_buf();
+        drop(self);
+        path
+    }
+}
+
+struct OutputPublishLock {
+    _file: File,
+}
+
+impl OutputPublishLock {
+    fn acquire(output: &Path) -> anyhow::Result<Self> {
+        let lock_path = output_lock_path(output)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to open PRL publication lock {}: {error}",
+                    lock_path.display(),
+                )
+            })?;
+        anyhow::ensure!(
+            file.metadata()?.file_type().is_file(),
+            "PRL publication lock {} is not a regular file",
+            lock_path.display(),
+        );
+        let identity = FileIdentity::from_file(file.try_clone()?)?;
+        ensure_path_has_identity(&lock_path, &identity, "PRL publication lock")?;
+        FileExt::lock(&file).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to lock PRL publication lock {}: {error}",
+                lock_path.display(),
+            )
+        })?;
+        ensure_path_has_identity(&lock_path, &identity, "PRL publication lock")?;
+        // Keep the lock pathname between runs. Removing it would let a waiter
+        // hold the old inode while a new compiler locks a newly created inode.
+        Ok(Self { _file: file })
+    }
+}
+
+fn output_lock_path(output: &Path) -> anyhow::Result<PathBuf> {
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
+    let mut lock_name = OsString::from(".");
+    lock_name.push(file_name);
+    lock_name.push(".pack.lock");
+    Ok(output.with_file_name(lock_name))
+}
+
+enum OutputIdentity {
+    Absent,
+    Regular(FileIdentity),
+}
+
+impl OutputIdentity {
+    fn capture(output: &Path) -> anyhow::Result<Self> {
+        match fs::symlink_metadata(output) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let identity = open_regular_path_identity(output, "existing output")?;
+                Ok(Self::Regular(identity))
+            }
+            Ok(_) => anyhow::bail!(
+                "refusing to replace non-regular output {}",
+                output.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::Absent),
+            Err(error) => Err(anyhow::anyhow!(
+                "failed to inspect existing output {}: {error}",
+                output.display(),
+            )),
+        }
+    }
+
+    fn ensure_unchanged(&self, output: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::Absent => match fs::symlink_metadata(output) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Ok(_) => anyhow::bail!(
+                    "refusing to publish because output {} appeared during compilation",
+                    output.display(),
+                ),
+                Err(error) => Err(anyhow::anyhow!(
+                    "failed to re-inspect output {} before publication: {error}",
+                    output.display(),
+                )),
+            },
+            Self::Regular(identity) => {
+                ensure_path_has_identity(output, identity, "existing output").map_err(|error| {
+                    anyhow::anyhow!(
+                        "refusing to publish because output {} changed during compilation: {error}",
+                        output.display(),
+                    )
+                })
+            }
+        }
+    }
+}
+
+fn open_regular_path_identity(path: &Path, description: &str) -> anyhow::Result<FileIdentity> {
+    let before = fs::symlink_metadata(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to inspect {description} {}: {error}",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        before.file_type().is_file(),
+        "{description} {} is not a regular file",
+        path.display(),
+    );
+
+    let file = File::open(path).map_err(|error| {
+        anyhow::anyhow!("failed to open {description} {}: {error}", path.display())
+    })?;
+    anyhow::ensure!(
+        file.metadata()?.file_type().is_file(),
+        "{description} {} did not open as a regular file",
+        path.display(),
+    );
+    let identity = FileIdentity::from_file(file)?;
+
+    let after = fs::symlink_metadata(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to re-inspect {description} {}: {error}",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        after.file_type().is_file(),
+        "{description} {} changed while it was inspected",
+        path.display(),
+    );
+    let confirmed = FileIdentity::from_path(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to confirm {description} {} identity: {error}",
+            path.display(),
+        )
+    })?;
+    anyhow::ensure!(
+        confirmed == identity,
+        "{description} {} changed while its identity was captured",
+        path.display(),
+    );
+    Ok(identity)
+}
+
+fn ensure_path_has_identity(
+    path: &Path,
+    expected: &FileIdentity,
+    description: &str,
+) -> anyhow::Result<()> {
+    let actual = open_regular_path_identity(path, description)?;
+    anyhow::ensure!(
+        &actual == expected,
+        "{description} {} no longer names the file owned by this invocation",
+        path.display(),
+    );
+    Ok(())
+}
+
+/// Publish a validated staged file while excluding cooperating prl-build writers.
+fn publish_validated_output(
+    temporary_output: StagedPrl,
+    output: &Path,
+    original_output: &OutputIdentity,
+) -> anyhow::Result<()> {
+    publish_validated_output_with_hook(temporary_output, output, original_output, || Ok(()))
+}
+
+fn publish_validated_output_with_hook(
+    temporary_output: StagedPrl,
+    output: &Path,
+    original_output: &OutputIdentity,
+    after_precondition: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let _publication_lock = match OutputPublishLock::acquire(output) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let preserved_path = temporary_output.preserve();
+            return Err(anyhow::anyhow!(
+                "{error}; temporary PRL preserved at {} after lock failure",
+                preserved_path.display(),
+            ));
+        }
+    };
+    let temporary_path = temporary_output.path().to_path_buf();
+    let precondition = temporary_output
+        .ensure_path_is_owned()
+        .and_then(|()| original_output.ensure_unchanged(output));
+    if let Err(error) = precondition {
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after publication refusal",
+            preserved_path.display(),
+        ));
+    }
+
+    if let Err(error) = after_precondition() {
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after publication was interrupted",
+            preserved_path.display(),
+        ));
+    }
+
+    // The lock closes this window for cooperating prl-build processes. This
+    // late check also catches noncooperating changes observed before rename;
+    // an external writer can still race the final check and path-based rename.
+    let precondition = temporary_output
+        .ensure_path_is_owned()
+        .and_then(|()| original_output.ensure_unchanged(output));
+    if let Err(error) = precondition {
+        let preserved_path = temporary_output.preserve();
+        return Err(anyhow::anyhow!(
+            "{error}; temporary PRL preserved at {} after a late publication race",
+            preserved_path.display(),
+        ));
+    }
+
+    let StagedPrl {
+        temporary,
+        identity,
+    } = temporary_output;
+    match temporary.persist(output) {
+        Ok(persisted_file) => {
+            let result = ensure_path_has_identity(output, &identity, "published output");
+            drop(persisted_file);
+            result
+        }
+        Err(error) => {
+            let tempfile::PersistError {
+                error: publish_error,
+                file: temporary,
+            } = error;
+            let staged = StagedPrl {
+                temporary,
+                identity,
+            };
+            let preserved_path = staged.preserve();
+            Err(anyhow::anyhow!(
+                "failed to publish temporary PRL {} to {}: {publish_error}; temporary PRL preserved at {}",
+                temporary_path.display(),
+                output.display(),
+                preserved_path.display(),
+            ))
+        }
+    }
+}
+
+/// Validate the flushed PRL through the handle that received the bytes.
+fn validate_readback(
+    file: &mut File,
+    expected_sections: &[SectionDescriptor],
+) -> anyhow::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    let meta = read_container(&mut *file)?;
 
     anyhow::ensure!(
         meta.header.section_count as usize == expected_sections.len(),
@@ -1234,29 +1476,50 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
         meta.header.section_count
     );
 
-    for expected in expected_sections {
-        let entry = meta.find_section(expected.section_id).ok_or_else(|| {
+    let mut expected_offset = 8 + expected_sections.len() as u64 * 22;
+    for (index, expected) in expected_sections.iter().enumerate() {
+        let entry = meta.sections.get(index).ok_or_else(|| {
             anyhow::anyhow!("section ID {} missing from read-back", expected.section_id)
         })?;
         anyhow::ensure!(
-            entry.size > 0,
-            "section ID {} has zero size",
-            expected.section_id
+            entry.section_id == expected.section_id,
+            "section table order differs at index {index}: expected ID {}, got {}",
+            expected.section_id,
+            entry.section_id,
         );
-
+        anyhow::ensure!(
+            entry.offset == expected_offset,
+            "section ID {} offset {} does not match expected {}",
+            expected.section_id,
+            entry.offset,
+            expected_offset,
+        );
+        anyhow::ensure!(
+            entry.size == expected.byte_len && entry.version == expected.version,
+            "section ID {} table entry differs from the declared length or version",
+            expected.section_id,
+        );
         let actual =
-            read_section_data(&mut cursor, &meta, expected.section_id)?.ok_or_else(|| {
+            read_section_data(&mut *file, &meta, expected.section_id)?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "section ID {} data missing from read-back",
                     expected.section_id
                 )
             })?;
         anyhow::ensure!(
-            actual == expected.data,
-            "section ID {} data mismatch after read-back",
-            expected.section_id
+            actual.len() as u64 == expected.byte_len,
+            "section ID {} framed payload length {} does not match expected {}",
+            expected.section_id,
+            actual.len(),
+            expected.byte_len,
         );
+        expected_offset += expected.byte_len;
     }
+    let file_len = file.metadata()?.len();
+    anyhow::ensure!(
+        expected_offset == file_len,
+        "section table ends at {expected_offset}, but the file is {file_len} bytes",
+    );
 
     Ok(())
 }
@@ -1270,6 +1533,430 @@ mod tests {
     use postretro_level_format::cell_visibility::CellVisibilitySection;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use std::io::Cursor;
+
+    fn staging_artifacts(output: &Path) -> Vec<PathBuf> {
+        let parent = output.parent().expect("test output has a parent");
+        let prefix = format!(
+            ".{}.pack-",
+            output
+                .file_name()
+                .expect("test output has a file name")
+                .to_string_lossy()
+        );
+        std::fs::read_dir(parent)
+            .expect("test output parent should be readable")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .collect()
+    }
+
+    fn remove_publication_test_artifacts(output: &Path) {
+        for path in staging_artifacts(output) {
+            std::fs::remove_file(path).expect("publish artifact should be removable");
+        }
+        let lock_path = output_lock_path(output).expect("test output should have a lock path");
+        if lock_path.exists() {
+            std::fs::remove_file(lock_path).expect("publication lock should be removable");
+        }
+    }
+
+    #[test]
+    fn streamed_write_matches_legacy_container_bytes_and_file_readback() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let legacy_sections = vec![
+            postretro_level_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: vec![0x01, 0x02, 0x03],
+            },
+            postretro_level_format::SectionBlob {
+                section_id: SectionId::Lightmap as u32,
+                version: 1,
+                data: vec![0xAA, 0xBB],
+            },
+        ];
+        let mut expected = Vec::new();
+        postretro_level_format::write_prl(&mut expected, &legacy_sections)
+            .expect("legacy PRL should serialize");
+
+        write_and_validate_sections(
+            &output,
+            vec![
+                PlannedSection::new(SectionId::Geometry as u32, 1, 3, || {
+                    Ok(vec![0x01, 0x02, 0x03])
+                }),
+                PlannedSection::new(SectionId::Lightmap as u32, 1, 2, || Ok(vec![0xAA, 0xBB])),
+            ],
+        )
+        .expect("streamed PRL should write and read back");
+
+        assert_eq!(
+            std::fs::read(&output).expect("streamed output should exist"),
+            expected
+        );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn streamed_write_rejects_declared_payload_length_mismatch() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-mismatch-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02]),
+            )],
+        )
+        .expect_err("writer must reject a declared length mismatch");
+
+        assert!(
+            error
+                .to_string()
+                .contains("section Geometry (id 17) wrote 2 bytes but its table declares 3")
+        );
+        assert!(
+            !output.exists(),
+            "a declared-length mismatch must not leave a malformed final PRL"
+        );
+        remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn streamed_write_replaces_existing_output_without_staging_artifacts() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-replace-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&output, b"previous valid PRL").expect("should create previous output");
+
+        write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02, 0x03]),
+            )],
+        )
+        .expect("streamed PRL should replace the previous output");
+
+        assert_ne!(
+            std::fs::read(&output).expect("replacement output must exist"),
+            b"previous valid PRL"
+        );
+        assert!(
+            staging_artifacts(&output).is_empty(),
+            "a successful publish must not leave temporary or backup files"
+        );
+        assert!(
+            output_lock_path(&output)
+                .expect("test output should have a lock path")
+                .is_file(),
+            "the stable lock inode must remain for later compiler invocations"
+        );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    #[test]
+    fn streamed_write_failure_preserves_existing_output_and_staged_file() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-preserve-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let previous_bytes = b"previous valid PRL";
+        std::fs::write(&output, previous_bytes).expect("should create previous output");
+
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                3,
+                || Ok(vec![0x01, 0x02]),
+            )],
+        )
+        .expect_err("writer must reject a declared length mismatch");
+
+        assert!(
+            error
+                .to_string()
+                .contains("wrote 2 bytes but its table declares 3")
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("previous output must remain readable"),
+            previous_bytes,
+            "a write failure must not replace the previous output"
+        );
+        let artifacts = staging_artifacts(&output);
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "failed staging is preserved rather than risking a pathname-race unlink"
+        );
+        std::fs::remove_file(&output).expect("output should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    // Regression: failed compilation replaced a directory at the requested output path.
+    #[test]
+    fn streamed_write_rejects_directory_output_before_staging() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-directory-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir(&output).expect("should create directory output fixture");
+
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                1,
+                || panic!("non-regular output must be rejected before encoding"),
+            )],
+        )
+        .expect_err("a directory cannot be replaced with a PRL");
+
+        assert!(error.to_string().contains("non-regular output"));
+        assert!(output.is_dir(), "the existing directory must remain intact");
+        assert!(
+            staging_artifacts(&output).is_empty(),
+            "rejection before staging must not create a temporary file"
+        );
+        std::fs::remove_dir(output).expect("directory fixture should be removable");
+    }
+
+    // Regression: error cleanup unlinked a replacement installed after its identity check.
+    #[test]
+    fn failed_staging_preserves_replacement_swapped_after_identity_check() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-cleanup-identity-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file_name = output.file_name().expect("test output has a file name");
+        let staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        let staged_path = staged.path().to_path_buf();
+        let displaced = output.with_extension("owned-staging");
+        staged
+            .ensure_path_is_owned()
+            .expect("the pre-cleanup identity check should pass");
+        std::fs::rename(&staged_path, &displaced).expect("should displace owned staging file");
+        std::fs::write(&staged_path, b"later replacement")
+            .expect("should install replacement at staging path");
+
+        // This swap occurs where cleanup formerly performed its pathname unlink.
+        let preserved_path = staged.preserve();
+
+        assert_eq!(preserved_path, staged_path);
+        assert_eq!(
+            std::fs::read(&staged_path).expect("replacement must remain readable"),
+            b"later replacement"
+        );
+        std::fs::remove_file(staged_path).expect("replacement should be removable");
+        std::fs::remove_file(displaced).expect("owned staging file should be removable");
+    }
+
+    // Regression: read-back reopened a replaced staging pathname and could publish its valid bytes.
+    #[test]
+    fn staged_readback_and_publish_remain_bound_to_original_file() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-staged-identity-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file_name = output.file_name().expect("test output has a file name");
+        let original_output = OutputIdentity::capture(&output).expect("output should be absent");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        let descriptor = SectionDescriptor {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            byte_len: 3,
+        };
+        write_prl_header_and_table(staged.file_mut(), std::slice::from_ref(&descriptor))
+            .expect("header should write");
+        staged
+            .file_mut()
+            .write_all(&[1, 2, 3])
+            .expect("payload should write");
+        staged.file_mut().flush().expect("staging should flush");
+
+        let staged_path = staged.path().to_path_buf();
+        let displaced = output.with_extension("owned-staging");
+        std::fs::rename(&staged_path, &displaced).expect("should displace owned staging file");
+        let mut replacement = Vec::new();
+        postretro_level_format::write_prl(
+            &mut replacement,
+            &[postretro_level_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: vec![9, 9, 9],
+            }],
+        )
+        .expect("replacement PRL should encode");
+        std::fs::write(&staged_path, replacement).expect("replacement PRL should write");
+
+        validate_readback(staged.file_mut(), std::slice::from_ref(&descriptor))
+            .expect("read-back should validate the original open file");
+        let error = publish_validated_output(staged, &output, &original_output)
+            .expect_err("publication must reject the replacement staging identity");
+
+        assert!(error.to_string().contains("no longer names the file owned"));
+        assert!(!output.exists(), "replacement bytes must not be published");
+        assert!(
+            staged_path.exists(),
+            "replacement staging file must not be deleted"
+        );
+        std::fs::remove_file(staged_path).expect("replacement staging should be removable");
+        std::fs::remove_file(displaced).expect("owned staging file should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    // Regression: symlink outputs previously changed target semantics during publication.
+    #[cfg(unix)]
+    #[test]
+    fn streamed_write_rejects_symlink_output_before_staging() {
+        use std::os::unix::fs::symlink;
+
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-symlink-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let target = output.with_extension("target");
+        std::fs::write(&target, b"symlink target").expect("should create symlink target");
+        symlink(&target, &output).expect("should create output symlink");
+
+        let error = write_and_validate_sections(
+            &output,
+            vec![PlannedSection::new(
+                SectionId::Geometry as u32,
+                1,
+                1,
+                || panic!("symlink output must be rejected before encoding"),
+            )],
+        )
+        .expect_err("a symlink cannot be replaced with a PRL");
+
+        assert!(error.to_string().contains("non-regular output"));
+        assert!(
+            std::fs::symlink_metadata(&output)
+                .expect("output symlink should remain")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("symlink target should remain readable"),
+            b"symlink target"
+        );
+        assert!(staging_artifacts(&output).is_empty());
+        std::fs::remove_file(output).expect("output symlink should be removable");
+        std::fs::remove_file(target).expect("symlink target should be removable");
+    }
+
+    // Regression: Windows backup publication could strand the original after an output race.
+    #[test]
+    fn publication_rejects_nonregular_output_replacement_without_moving_original() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-output-race-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let original = output.with_extension("original");
+        let previous_bytes = b"previous valid PRL";
+        std::fs::write(&output, previous_bytes).expect("should create previous output");
+        let original_output = OutputIdentity::capture(&output).expect("output should be regular");
+        let file_name = output.file_name().expect("test output has a file name");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        staged
+            .file_mut()
+            .write_all(b"validated replacement")
+            .expect("staging should write");
+        staged.file_mut().flush().expect("staging should flush");
+        std::fs::rename(&output, &original).expect("should preserve original fixture");
+        std::fs::create_dir(&output).expect("should install raced directory output");
+
+        let error = publish_validated_output(staged, &output, &original_output)
+            .expect_err("publishing over a raced directory must fail");
+
+        assert!(error.to_string().contains("changed during compilation"));
+        assert!(output.is_dir(), "raced directory must remain intact");
+        assert_eq!(
+            std::fs::read(&original).expect("original output must remain readable"),
+            previous_bytes
+        );
+        assert_eq!(staging_artifacts(&output).len(), 1);
+        std::fs::remove_dir(&output).expect("raced directory should be removable");
+        std::fs::remove_file(original).expect("original fixture should be removable");
+        remove_publication_test_artifacts(&output);
+    }
+
+    // Regression: publication overwrote an output installed after its precondition check.
+    #[test]
+    fn publication_rejects_regular_output_replaced_after_precondition() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-regular-race-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let original = output.with_extension("original");
+        std::fs::write(&output, b"original output").expect("should create original output");
+        let original_output = OutputIdentity::capture(&output).expect("output should be regular");
+        let file_name = output.file_name().expect("test output has a file name");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        staged
+            .file_mut()
+            .write_all(b"validated replacement")
+            .expect("staging should write");
+        staged.file_mut().flush().expect("staging should flush");
+        let error = publish_validated_output_with_hook(staged, &output, &original_output, || {
+            let lock_path = output_lock_path(&output)?;
+            let competing_lock = OpenOptions::new().read(true).write(true).open(lock_path)?;
+            assert!(matches!(
+                FileExt::try_lock(&competing_lock),
+                Err(fs4::TryLockError::WouldBlock)
+            ));
+            // Model an external writer that ignores the compiler's advisory lock.
+            std::fs::rename(&output, &original).expect("should preserve original fixture");
+            std::fs::write(&output, b"concurrent writer").expect("should install raced output");
+            Ok(())
+        })
+        .expect_err("publishing over a raced regular file must fail");
+
+        assert!(error.to_string().contains("changed during compilation"));
+        assert_eq!(
+            std::fs::read(&output).expect("concurrent output must remain readable"),
+            b"concurrent writer"
+        );
+        assert_eq!(
+            std::fs::read(&original).expect("original output must remain readable"),
+            b"original output"
+        );
+        assert_eq!(staging_artifacts(&output).len(), 1);
+        std::fs::remove_file(&output).expect("concurrent output should be removable");
+        std::fs::remove_file(original).expect("original fixture should be removable");
+        remove_publication_test_artifacts(&output);
+    }
 
     fn sample_geo_result() -> GeometryResult {
         GeometryResult {
@@ -1422,7 +2109,7 @@ mod tests {
         }
     }
 
-    fn sample_cell_draw_index_bytes() -> Vec<u8> {
+    fn sample_cell_draw_index_section() -> CellDrawIndexSection {
         CellDrawIndexSection {
             cell_count: 2,
             span_count: 1,
@@ -1432,7 +2119,6 @@ mod tests {
                 leaf_count: 1,
             }],
         }
-        .to_bytes()
     }
 
     fn minimal_kinematic_geometry_section() -> KinematicGeometrySection {
@@ -1671,12 +2357,15 @@ mod tests {
             }],
             portals: Vec::new(),
         };
-        let navmesh_bytes = navmesh.to_bytes();
-        let mut sections = Vec::new();
-        append_navmesh_section(&mut sections, Some(&navmesh_bytes));
+        let sections = vec![postretro_level_format::SectionBlob {
+            section_id: SectionId::NavMesh as u32,
+            version: NAVMESH_CONTAINER_VERSION,
+            data: navmesh.to_bytes(),
+        }];
 
         let mut prl_bytes = Vec::new();
-        write_prl(&mut prl_bytes, &sections).expect("navmesh PRL should serialize");
+        postretro_level_format::write_prl(&mut prl_bytes, &sections)
+            .expect("navmesh PRL should serialize");
 
         let mut cursor = Cursor::new(&prl_bytes);
         let meta = read_container(&mut cursor).expect("navmesh PRL table should decode");
@@ -1789,13 +2478,11 @@ mod tests {
         let alpha_lights = empty_alpha_lights();
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         let animated_direct_sh_delta_volumes = minimal_animated_direct_sh_delta_volumes();
-        let cell_visibility_bytes = CellVisibilitySection {
+        let cell_visibility_section = CellVisibilitySection {
             cell_count: 2,
             component_ids: vec![0, 0],
             coupled_pairs: vec![],
-        }
-        .to_bytes()
-        .unwrap();
+        };
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -1827,8 +2514,8 @@ mod tests {
             None,
             None,
             None,
-            Some(sample_cell_draw_index_bytes()),
-            Some(cell_visibility_bytes),
+            Some(&sample_cell_draw_index_section()),
+            Some(&cell_visibility_section),
             Some(&animated_direct_sh_delta_volumes),
         )
         .expect("pack_and_write_portals should succeed");
@@ -1926,7 +2613,7 @@ mod tests {
             None,
             Some(&kinematic),
             None,
-            Some(sample_cell_draw_index_bytes()),
+            Some(&sample_cell_draw_index_section()),
             None,
             None,
         )
@@ -1986,7 +2673,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(sample_cell_draw_index_bytes()),
+                Some(&sample_cell_draw_index_section()),
                 None,
                 None,
             )
@@ -2098,7 +2785,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(sample_cell_draw_index_bytes()),
+                Some(&sample_cell_draw_index_section()),
                 None,
                 None,
             )
@@ -2215,7 +2902,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(sample_cell_draw_index_bytes()),
+                Some(&sample_cell_draw_index_section()),
                 None,
                 None,
             )
@@ -2309,7 +2996,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(sample_cell_draw_index_bytes()),
+                Some(&sample_cell_draw_index_section()),
                 None,
                 None,
             )
@@ -2531,7 +3218,7 @@ mod tests {
             None,
             None,
             None,
-            Some(sample_cell_draw_index_bytes()),
+            Some(&sample_cell_draw_index_section()),
             None,
             None,
         );
@@ -2594,11 +3281,10 @@ mod tests {
         let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
         let light_influence = encode_light_influence(&alpha_ns);
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
-        let cell_draw_index_bytes = crate::cell_draw_index_bake::bake_cell_draw_index(
+        let cell_draw_index_section = crate::cell_draw_index_bake::bake_cell_draw_index(
             &bvh_section.leaves,
             &vis_result.leaves_section.leaves,
-        )
-        .map(|section| section.to_bytes());
+        );
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -2630,7 +3316,7 @@ mod tests {
             None,
             None,
             None,
-            cell_draw_index_bytes,
+            cell_draw_index_section.as_ref(),
             None,
             None,
         )
@@ -2703,11 +3389,10 @@ mod tests {
         .expect("closet fixture should emit kinematic geometry");
         let (_, _, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("BVH build should succeed");
-        let cell_draw_index_bytes = crate::cell_draw_index_bake::bake_cell_draw_index(
+        let cell_draw_index_section = crate::cell_draw_index_bake::bake_cell_draw_index(
             &bvh_section.leaves,
             &vis_result.leaves_section.leaves,
-        )
-        .map(|section| section.to_bytes());
+        );
         let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
         let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
         let light_influence = encode_light_influence(&alpha_ns);
@@ -2757,7 +3442,7 @@ mod tests {
             None,
             Some(&kinematic_geometry),
             None,
-            cell_draw_index_bytes,
+            cell_draw_index_section.as_ref(),
             None,
             None,
         )

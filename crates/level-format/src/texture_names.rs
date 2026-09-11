@@ -17,6 +17,10 @@ pub struct TextureNamesSection {
 }
 
 impl TextureNamesSection {
+    pub fn byte_len(&self) -> usize {
+        4 + self.names.iter().map(|name| 4 + name.len()).sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.names.len() as u32;
 
@@ -96,7 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip() {
+    fn byte_len_matches_texture_name_payload() {
         let section = TextureNamesSection {
             names: vec![
                 "metal/floor_01".to_string(),
@@ -106,6 +110,7 @@ mod tests {
         };
 
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = TextureNamesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

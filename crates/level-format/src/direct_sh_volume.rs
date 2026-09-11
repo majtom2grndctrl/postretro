@@ -96,6 +96,10 @@ pub struct DirectShVolumeSection {
 impl DirectShVolumeSection {
     pub const HEADER_SIZE: usize = 76;
 
+    pub fn byte_len(&self) -> usize {
+        Self::HEADER_SIZE + self.atlas.len()
+    }
+
     pub fn placeholder() -> Self {
         Self {
             grid_origin: [0.0; 3],
@@ -121,6 +125,11 @@ impl DirectShVolumeSection {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("DirectShVolumeSection must satisfy its wire contract")
+    }
+
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate_wire_contract()?;
+        Ok(self.byte_len())
     }
 
     /// Encode only a canonical stored-atlas section whose payload fits the
@@ -535,10 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn direct_sh_volume_round_trips_single_layer_bc6h_atlas() {
+    fn byte_len_matches_direct_sh_volume_payload() {
         let section = direct_section([3, 2, 4], IRRADIANCE_FORMAT_BC6H);
         assert_eq!(section.layer_count, 1);
         let bytes = section.to_bytes();
+        assert_eq!(section.try_byte_len().unwrap(), bytes.len());
         assert_eq!(
             &bytes[56..60],
             section.atlas_tiles_per_row.to_le_bytes().as_slice()

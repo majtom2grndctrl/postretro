@@ -58,18 +58,17 @@ pub fn cell_visibility_bake(
     })
 }
 
-/// Bake or load the CellVisibility payload. The wrapper returns encoded bytes so
-/// the pipeline keeps the existing fallible `to_bytes()` contract on both paths.
-/// With no cache it delegates directly to the original bake and performs no
-/// cache I/O.
+/// Bake or load CellVisibility. Cache entries remain encoded PRL payloads, but
+/// callers retain the decoded section so packing can determine its length
+/// without holding a separate payload image.
 pub fn cell_visibility_bake_cached(
     tree: &BspTree,
     portals: &[Portal],
     cache: Option<&StageCache>,
     control: &BakeControl,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<CellVisibilitySection> {
     let Some(cache) = cache else {
-        return Ok(cell_visibility_bake(tree, portals, control)?.to_bytes()?);
+        return cell_visibility_bake(tree, portals, control);
     };
 
     // Validate exactly as the uncached bake does before a cache hit can bypass
@@ -86,7 +85,7 @@ pub fn cell_visibility_bake_cached(
                 control.publish_total(progress_units);
                 control.governor().checkpoint();
                 control.advance(progress_units);
-                return Ok(section.to_bytes()?);
+                return Ok(section);
             }
             Err(error) => {
                 log::warn!("[cache] corrupt cell_visibility entry, re-baking: {error}");
@@ -97,9 +96,10 @@ pub fn cell_visibility_bake_cached(
         log::info!("[cache] cell_visibility miss");
     }
 
-    let bytes = cell_visibility_bake(tree, portals, control)?.to_bytes()?;
+    let section = cell_visibility_bake(tree, portals, control)?;
+    let bytes = section.to_bytes()?;
     cache.put(&key, &bytes);
-    Ok(bytes)
+    Ok(section)
 }
 
 /// Derive the CellVisibility whole-section key from every structural value the
@@ -901,8 +901,16 @@ mod tests {
         )
         .expect("cache-hit CellVisibility bake");
 
-        assert_eq!(cold, first, "cache miss must retain uncached bytes");
-        assert_eq!(first, warm, "cache hit must retain baked bytes exactly");
+        assert_eq!(
+            cold.to_bytes().expect("cold section should encode"),
+            first.to_bytes().expect("cache-miss section should encode"),
+            "cache miss must retain uncached bytes"
+        );
+        assert_eq!(
+            first.to_bytes().expect("cache-miss section should encode"),
+            warm.to_bytes().expect("cache-hit section should encode"),
+            "cache hit must retain baked bytes exactly"
+        );
         assert_eq!(first_progress.total(), Some(tree.leaves.len() * 2));
         assert_eq!(first_progress.completed(), tree.leaves.len() * 2);
         assert_eq!(warm_progress.total(), Some(tree.leaves.len() * 2));

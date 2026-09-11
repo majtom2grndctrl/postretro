@@ -1,9 +1,18 @@
 //! Owns ordered level-compilation stage orchestration.
 //! Governing contracts: `context/lib/build_pipeline.md`.
 
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use postretro_level_format::delta_sh_volumes::{PROBES_PER_CELL, delta_probe_f16_stride};
+use postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
+
+use crate::affinity_grid::{
+    AffinityInputs, AffinityReachInputs, build_csr, decompose_affinity,
+    decompose_affinity_for_lights,
+};
 use crate::bake_control::BakeControl;
 use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
@@ -224,6 +233,294 @@ fn planned_stages_for_sdf(needs_sdf: bool) -> Vec<StageDescriptor> {
         .collect()
 }
 
+const DELTA_WORKING_SET_DENSE_AND_COMPACTION_FACTOR: u64 = 2;
+// Reserve another cumulative-delta-sized share for the co-resident id 34/id 35
+// originals and clones. Base-dominated maps remain outside this delta gate, but
+// a delta-dominated admission no longer spends the entire budget on deltas.
+const DELTA_WORKING_SET_BASE_COPY_HEADROOM_FACTOR: u64 = 1;
+const DELTA_WORKING_SET_ANALYSIS_CLONE_FACTOR: u64 = 1;
+const DELTA_WORKING_SET_COPY_FACTOR: u64 =
+    DELTA_WORKING_SET_DENSE_AND_COMPACTION_FACTOR + DELTA_WORKING_SET_BASE_COPY_HEADROOM_FACTOR;
+const DELTA_WORKING_SET_ANALYZE_COPY_FACTOR: u64 =
+    DELTA_WORKING_SET_COPY_FACTOR + DELTA_WORKING_SET_ANALYSIS_CLONE_FACTOR;
+const DELTA_WORKING_SET_HISTOGRAM_ROWS: usize = 10;
+
+/// Cheap plan-phase CSR data. Its dense f16 payload remains intentionally absent.
+struct DeltaCsrPlan {
+    affinity_offsets: Vec<u32>,
+    affinity_lights: Vec<u32>,
+}
+
+impl DeltaCsrPlan {
+    fn empty() -> Self {
+        Self {
+            affinity_offsets: vec![0],
+            affinity_lights: Vec::new(),
+        }
+    }
+
+    fn from_csr(affinity_offsets: Vec<u32>, affinity_lights: Vec<u32>) -> Self {
+        debug_assert_eq!(
+            affinity_offsets.last().copied().unwrap_or_default() as usize,
+            affinity_lights.len(),
+            "plan-phase CSR offsets must end at the flat light-list length"
+        );
+        Self {
+            affinity_offsets,
+            affinity_lights,
+        }
+    }
+
+    fn affinity_lights(&self) -> &[u32] {
+        debug_assert_eq!(
+            self.affinity_offsets.last().copied().unwrap_or_default() as usize,
+            self.affinity_lights.len(),
+            "plan-phase CSR offsets must remain aligned with the flat light list"
+        );
+        &self.affinity_lights
+    }
+}
+
+/// CSR-only inputs for one delta bake's dense working-set projection.
+///
+/// `static_indices` is present only for id 41, whose CSR light indices address
+/// the EntityShadowLights selection rather than the global static-light list.
+#[derive(Clone, Copy)]
+struct DeltaCsrProjectionInput<'a> {
+    label: &'static str,
+    affinity_lights: &'a [u32],
+    static_indices: Option<&'a [u64]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeltaWorkingSetHistogramRow {
+    light_index: u32,
+    static_index: Option<u64>,
+    csr_entry_count: u64,
+    dense_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeltaWorkingSetBakeProjection {
+    label: &'static str,
+    dense_bytes: u64,
+    histogram: Vec<DeltaWorkingSetHistogramRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeltaWorkingSetProjection {
+    bakes: Vec<DeltaWorkingSetBakeProjection>,
+    cumulative_dense_bytes: u64,
+    copy_chain_factor: u64,
+    estimated_peak_bytes: u64,
+    budget_bytes: u64,
+}
+
+#[derive(Debug)]
+enum DeltaWorkingSetGateError {
+    ArithmeticOverflow { calculation: &'static str },
+    BudgetExceeded(DeltaWorkingSetProjection),
+}
+
+impl fmt::Display for DeltaWorkingSetGateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArithmeticOverflow { calculation } => write!(
+                formatter,
+                "SH delta working-set gate refused before dense baking: {calculation} overflowed"
+            ),
+            Self::BudgetExceeded(projection) => {
+                write!(
+                    formatter,
+                    "SH delta working-set gate refused before dense baking: estimated peak {} bytes exceeds budget {} bytes ({} cumulative dense bytes × copy-chain factor {})",
+                    projection.estimated_peak_bytes,
+                    projection.budget_bytes,
+                    projection.cumulative_dense_bytes,
+                    projection.copy_chain_factor,
+                )?;
+                for bake in &projection.bakes {
+                    write!(
+                        formatter,
+                        "; {} dense {} bytes",
+                        bake.label, bake.dense_bytes
+                    )?;
+                    if bake.histogram.is_empty() {
+                        write!(formatter, ", no CSR entries")?;
+                        continue;
+                    }
+                    write!(formatter, ", top lights [")?;
+                    for (index, row) in bake.histogram.iter().enumerate() {
+                        if index != 0 {
+                            write!(formatter, ", ")?;
+                        }
+                        write!(
+                            formatter,
+                            "light {}{}: {} CSR entries, {} dense bytes",
+                            row.light_index,
+                            row.static_index
+                                .map(|static_index| format!(" (static_index {static_index})"))
+                                .unwrap_or_default(),
+                            row.csr_entry_count,
+                            row.dense_bytes,
+                        )?;
+                    }
+                    write!(formatter, "]")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for DeltaWorkingSetGateError {}
+
+fn delta_working_set_copy_chain_factor(retains_analysis_clone: bool) -> u64 {
+    if retains_analysis_clone {
+        DELTA_WORKING_SET_ANALYZE_COPY_FACTOR
+    } else {
+        DELTA_WORKING_SET_COPY_FACTOR
+    }
+}
+
+fn retains_sh_analyze_dense_deltas(sh_analyze: bool, sh_coarsening_enabled: bool) -> bool {
+    sh_analyze && sh_coarsening_enabled
+}
+
+/// Project and gate the three delta bakes before any dense f16 payload exists.
+///
+/// The cumulative estimate deliberately treats all three dense payloads as
+/// co-resident through compaction. The copy-chain factor covers the dense and
+/// compaction buffers, reserves headroom for the co-resident base-volume
+/// originals and clones, and adds the `--sh-analyze` clone when retained.
+fn gate_delta_working_set(
+    bakes: [DeltaCsrProjectionInput<'_>; 3],
+    subblock_f16_len: usize,
+    budget_bytes: u64,
+    copy_chain_factor: u64,
+) -> Result<DeltaWorkingSetProjection, DeltaWorkingSetGateError> {
+    let subblock_f16_len = u64::try_from(subblock_f16_len).map_err(|_| {
+        DeltaWorkingSetGateError::ArithmeticOverflow {
+            calculation: "delta sub-block f16 length conversion",
+        }
+    })?;
+    let dense_bytes_per_entry =
+        subblock_f16_len
+            .checked_mul(2)
+            .ok_or(DeltaWorkingSetGateError::ArithmeticOverflow {
+                calculation: "delta sub-block byte length",
+            })?;
+
+    let mut cumulative_dense_bytes = 0u64;
+    let mut projected_bakes = Vec::with_capacity(bakes.len());
+    for bake in bakes {
+        let entry_count = u64::try_from(bake.affinity_lights.len()).map_err(|_| {
+            DeltaWorkingSetGateError::ArithmeticOverflow {
+                calculation: "delta CSR entry count conversion",
+            }
+        })?;
+        let dense_bytes = entry_count.checked_mul(dense_bytes_per_entry).ok_or(
+            DeltaWorkingSetGateError::ArithmeticOverflow {
+                calculation: "delta dense payload projection",
+            },
+        )?;
+        cumulative_dense_bytes = cumulative_dense_bytes.checked_add(dense_bytes).ok_or(
+            DeltaWorkingSetGateError::ArithmeticOverflow {
+                calculation: "cumulative delta dense payload projection",
+            },
+        )?;
+
+        let mut counts = BTreeMap::<u32, u64>::new();
+        for &light_index in bake.affinity_lights {
+            let count = counts.entry(light_index).or_default();
+            *count = count
+                .checked_add(1)
+                .ok_or(DeltaWorkingSetGateError::ArithmeticOverflow {
+                    calculation: "per-light delta CSR occurrence count",
+                })?;
+        }
+        let mut histogram: Vec<_> = counts
+            .into_iter()
+            .map(|(light_index, csr_entry_count)| {
+                let dense_bytes = csr_entry_count.checked_mul(dense_bytes_per_entry).ok_or(
+                    DeltaWorkingSetGateError::ArithmeticOverflow {
+                        calculation: "per-light dense payload projection",
+                    },
+                )?;
+                Ok(DeltaWorkingSetHistogramRow {
+                    light_index,
+                    static_index: bake
+                        .static_indices
+                        .and_then(|static_indices| static_indices.get(light_index as usize))
+                        .copied(),
+                    csr_entry_count,
+                    dense_bytes,
+                })
+            })
+            .collect::<Result<Vec<_>, DeltaWorkingSetGateError>>()?;
+        histogram.sort_unstable_by(|left, right| {
+            right
+                .dense_bytes
+                .cmp(&left.dense_bytes)
+                .then_with(|| left.light_index.cmp(&right.light_index))
+        });
+        histogram.truncate(DELTA_WORKING_SET_HISTOGRAM_ROWS);
+        projected_bakes.push(DeltaWorkingSetBakeProjection {
+            label: bake.label,
+            dense_bytes,
+            histogram,
+        });
+    }
+
+    let estimated_peak_bytes = cumulative_dense_bytes
+        .checked_mul(copy_chain_factor)
+        .ok_or(DeltaWorkingSetGateError::ArithmeticOverflow {
+            calculation: "delta working-set copy-chain projection",
+        })?;
+    let projection = DeltaWorkingSetProjection {
+        bakes: projected_bakes,
+        cumulative_dense_bytes,
+        copy_chain_factor,
+        estimated_peak_bytes,
+        budget_bytes,
+    };
+    if estimated_peak_bytes > budget_bytes {
+        Err(DeltaWorkingSetGateError::BudgetExceeded(projection))
+    } else {
+        Ok(projection)
+    }
+}
+
+fn log_delta_working_set_projection(projection: &DeltaWorkingSetProjection, verbose: bool) {
+    log::info!(
+        "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, admitted",
+        projection.estimated_peak_bytes,
+        projection.budget_bytes,
+    );
+    if verbose {
+        for bake in &projection.bakes {
+            for row in &bake.histogram {
+                match row.static_index {
+                    Some(static_index) => log::info!(
+                        "[Compiler] SH delta working-set histogram: {} selection slot {} (static_index {}), {} CSR entries, {} dense bytes",
+                        bake.label,
+                        row.light_index,
+                        static_index,
+                        row.csr_entry_count,
+                        row.dense_bytes,
+                    ),
+                    None => log::info!(
+                        "[Compiler] SH delta working-set histogram: {} light {}: {} CSR entries, {} dense bytes",
+                        bake.label,
+                        row.light_index,
+                        row.csr_entry_count,
+                        row.dense_bytes,
+                    ),
+                }
+            }
+        }
+    }
+}
+
 /// Execute the compiler stages in their stable order and print the Build Summary.
 pub(crate) fn run(
     args: &Args,
@@ -279,6 +576,8 @@ fn run_after_parsing(
     timings.push((StageId::Parsing.label(), parsing_elapsed));
     reporter.finish_stage(StageId::Parsing);
     let sh_coarsening_enabled = !map_data.uniform_grid_optout;
+    let retain_sh_analyze_dense_deltas =
+        retains_sh_analyze_dense_deltas(args.sh_analyze, sh_coarsening_enabled);
     if !sh_coarsening_enabled {
         log::info!(
             "[sh-coarsen] disabled by worldspawn `_sh_coarsen \"0\"`; id 41 remains uniform L0"
@@ -474,7 +773,7 @@ fn run_after_parsing(
     reporter.declare_progress(StageId::CellVisibility, cell_visibility_progress.clone());
     let cell_visibility_control =
         BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
-    let cell_visibility_bytes = cell_visibility_bake::cell_visibility_bake_cached(
+    let cell_visibility_section = cell_visibility_bake::cell_visibility_bake_cached(
         &result.tree,
         &generated_portals,
         stage_cache.as_ref(),
@@ -493,11 +792,10 @@ fn run_after_parsing(
     // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
     // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
     // zero-leaf maps; emission is independent of portal presence.
-    let cell_draw_index_bytes = cell_draw_index_bake::bake_cell_draw_index(
+    let cell_draw_index_section = cell_draw_index_bake::bake_cell_draw_index(
         &bvh_section.leaves,
         &vis_result.leaves_section.leaves,
-    )
-    .map(|section| section.to_bytes());
+    );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::NavMesh);
     // Walkable navigation graph baked from the extracted geometry's triangles
@@ -862,6 +1160,171 @@ fn run_after_parsing(
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
     }
+
+    // Plan every delta CSR before any of their dense f16 payloads are
+    // materialized. The direct selection has no dependency on the base-direct
+    // payload, so use its real content predicate instead of waiting for id 35.
+    let entity_shadow_lights_started = Instant::now();
+    let raw_entity_shadow_lights_section = if static_baked_lights.is_empty() {
+        None
+    } else {
+        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            static_lights: &static_baked_lights,
+            alpha_lights: &alpha_lights_ns,
+            params: map_data.entity_shadow_params,
+        };
+        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
+        (!section.light_indices.is_empty()).then_some(section)
+    };
+    let entity_shadow_lights_elapsed = entity_shadow_lights_started.elapsed();
+
+    let geometry_vertices: Vec<[f32; 3]> = geo_result
+        .geometry
+        .vertices
+        .iter()
+        .map(|vertex| vertex.position)
+        .collect();
+    let indirect_plan =
+        if animated_baked_lights.is_empty() || geo_result.geometry.vertices.is_empty() {
+            DeltaCsrPlan::empty()
+        } else {
+            let decomposition = decompose_affinity(&AffinityInputs {
+                geometry_vertices: &geometry_vertices,
+                tree: &result.tree,
+                exterior_leaves: &exterior_leaves,
+                portals: &generated_portals,
+                animated_lights: &animated_baked_lights,
+                probe_spacing: sh_config.probe_spacing,
+            });
+            let (affinity_offsets, affinity_lights) = build_csr(
+                &decomposition.per_light_cells,
+                decomposition.affinity_cell_count(),
+            );
+            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
+        };
+    let animated_direct_plan = if animated_baked_lights.is_empty()
+        || geo_result.geometry.vertices.is_empty()
+        || sh_volume_section.grid_dimensions == [0, 0, 0]
+    {
+        DeltaCsrPlan::empty()
+    } else {
+        let animated_lights: Vec<_> = animated_baked_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .collect();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &geometry_vertices,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            portals: &generated_portals,
+            probe_spacing: sh_config.probe_spacing,
+        };
+        let decomposition = decompose_affinity_for_lights(&reach, &animated_lights);
+        let (affinity_offsets, affinity_lights) = build_csr(
+            &decomposition.per_light_cells,
+            decomposition.affinity_cell_count(),
+        );
+        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
+    };
+    let (direct_plan, direct_plan_static_indices) = if geo_result.geometry.vertices.is_empty()
+        || sh_volume_section.grid_dimensions == [0, 0, 0]
+    {
+        (DeltaCsrPlan::empty(), Vec::new())
+    } else if let Some(selection) = raw_entity_shadow_lights_section.as_ref() {
+        // This reproduces the direct-delta baker's selection-index mapping:
+        // id 41's CSR is indexed by selection slot, with static indices only
+        // retained here for the pre-bake diagnostic.
+        let source_by_alpha = alpha_lights_ns
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(alpha_index, entry)| (alpha_index as u32, entry.source_index))
+            .collect::<HashMap<_, _>>();
+        let direct_by_source = static_baked_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.light.shadow_type == map_data::ShadowType::StaticLightMap)
+            .map(|(static_index, entry)| (entry.source_index, (entry.light, static_index as u64)))
+            .collect::<HashMap<_, _>>();
+        let selected: Vec<_> = selection
+            .light_indices
+            .iter()
+            .filter_map(|alpha_index| {
+                source_by_alpha
+                    .get(alpha_index)
+                    .and_then(|source_index| direct_by_source.get(source_index))
+                    .copied()
+            })
+            .collect();
+        let selected_lights: Vec<_> = selected.iter().map(|(light, _)| *light).collect();
+        let selected_static_indices = selected
+            .iter()
+            .map(|(_, static_index)| *static_index)
+            .collect();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &geometry_vertices,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            portals: &generated_portals,
+            probe_spacing: sh_config.probe_spacing,
+        };
+        let decomposition = decompose_affinity_for_lights(&reach, &selected_lights);
+        let (affinity_offsets, affinity_lights) = build_csr(
+            &decomposition.per_light_cells,
+            decomposition.affinity_cell_count(),
+        );
+        (
+            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights),
+            selected_static_indices,
+        )
+    } else {
+        (DeltaCsrPlan::empty(), Vec::new())
+    };
+    let subblock_f16_len = PROBES_PER_CELL
+        .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
+        .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
+    let delta_working_set_projection = match gate_delta_working_set(
+        [
+            DeltaCsrProjectionInput {
+                label: "DeltaShVolumes (id 27)",
+                affinity_lights: indirect_plan.affinity_lights(),
+                static_indices: None,
+            },
+            DeltaCsrProjectionInput {
+                label: "DirectShDeltaVolumes (id 41)",
+                affinity_lights: direct_plan.affinity_lights(),
+                static_indices: Some(&direct_plan_static_indices),
+            },
+            DeltaCsrProjectionInput {
+                label: "AnimatedDirectShDeltaVolumes (id 45)",
+                affinity_lights: animated_direct_plan.affinity_lights(),
+                static_indices: None,
+            },
+        ],
+        subblock_f16_len,
+        args.delta_section_config.max_working_set_bytes,
+        delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
+    ) {
+        Ok(projection) => projection,
+        Err(error @ DeltaWorkingSetGateError::BudgetExceeded(_)) => {
+            if let DeltaWorkingSetGateError::BudgetExceeded(projection) = &error {
+                log::info!(
+                    "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, refused",
+                    projection.estimated_peak_bytes,
+                    projection.budget_bytes,
+                );
+            }
+            return Err(anyhow::Error::new(error));
+        }
+        Err(error) => return Err(anyhow::Error::new(error)),
+    };
+    log_delta_working_set_projection(&delta_working_set_projection, args.verbose);
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::DeltaShBake);
     let delta_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DeltaShBake, delta_sh_progress.clone());
@@ -988,24 +1451,9 @@ fn run_after_parsing(
         }
     }
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::EntityShadowLights);
-    let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
-        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            static_lights: &static_baked_lights,
-            alpha_lights: &alpha_lights_ns,
-            params: map_data.entity_shadow_params,
-        };
-        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
-        if section.light_indices.is_empty() {
-            None
-        } else {
-            Some(section)
-        }
-    });
-    let entity_shadow_lights_elapsed = stage_start.elapsed();
+    // Selection already ran in the pre-bake plan phase. Begin the reporter
+    // stage here to preserve the established visible stage order.
+    reporter.begin_stage(StageId::EntityShadowLights);
     if args.verbose {
         if let Some(ref section) = raw_entity_shadow_lights_section {
             log::info!(
@@ -1114,7 +1562,7 @@ fn run_after_parsing(
     // their post-drop dense source. Retain this measurement-only snapshot only
     // for an explicit coarsened analysis; normal and uniform-L0 bakes do not
     // pay the additional memory cost.
-    let sh_analyze_dense_deltas = (args.sh_analyze && sh_coarsening_enabled).then(|| {
+    let sh_analyze_dense_deltas = retain_sh_analyze_dense_deltas.then(|| {
         (
             delta_sections.indirect.clone(),
             delta_sections.direct.clone(),
@@ -1719,8 +2167,8 @@ fn run_after_parsing(
         navmesh_section.as_ref(),
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
-        cell_draw_index_bytes,
-        Some(cell_visibility_bytes),
+        cell_draw_index_section.as_ref(),
+        Some(&cell_visibility_section),
         delta_sections.animated_direct.as_ref(),
         billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
@@ -1982,6 +2430,297 @@ mod tests {
     use glam::DVec3;
     use log::Level;
     use postretro_test_log_capture::LogCapture;
+
+    #[test]
+    fn delta_working_set_gate_refuses_three_cumulative_40_percent_bakes() {
+        let indirect = vec![0, 1];
+        let direct = vec![0, 1];
+        let animated_direct = vec![0, 1];
+
+        let error = gate_delta_working_set(
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &indirect,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &direct,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &animated_direct,
+                    static_indices: None,
+                },
+            ],
+            5,
+            150,
+            DELTA_WORKING_SET_COPY_FACTOR,
+        )
+        .expect_err("three 40%-sized dense bakes must be gated cumulatively");
+
+        let DeltaWorkingSetGateError::BudgetExceeded(projection) = error else {
+            panic!("only the budget should reject this bounded projection");
+        };
+        assert_eq!(projection.cumulative_dense_bytes, 60);
+        assert_eq!(projection.estimated_peak_bytes, 180);
+        assert_eq!(projection.bakes.len(), 3);
+        assert!(
+            projection.bakes.iter().all(|bake| bake.dense_bytes == 20),
+            "each individual bake fits the budget; only the co-resident sum refuses"
+        );
+    }
+
+    #[test]
+    fn delta_working_set_gate_reserves_base_headroom_at_all_valid_compaction_boundary() {
+        let all_valid_dense = vec![0; 10];
+        let empty = [];
+        let inputs = || {
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &all_valid_dense,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+            ]
+        };
+
+        // Regression: all-valid L0 compaction needs a second 100-byte delta
+        // buffer. The former 2x estimate admitted at 200 bytes and left no room
+        // for the id 34/id 35 originals and clones that remain live here.
+        let error =
+            gate_delta_working_set(inputs(), 5, 200, delta_working_set_copy_chain_factor(false))
+                .expect_err("the exact delta-only compaction boundary must retain base headroom");
+        let DeltaWorkingSetGateError::BudgetExceeded(projection) = error else {
+            panic!("only the budget should reject this bounded projection");
+        };
+        assert_eq!(projection.cumulative_dense_bytes, 100);
+        assert_eq!(projection.copy_chain_factor, 3);
+        assert_eq!(projection.estimated_peak_bytes, 300);
+
+        let admitted =
+            gate_delta_working_set(inputs(), 5, 300, delta_working_set_copy_chain_factor(false))
+                .expect("the conservative projection remains inclusive at its own boundary");
+        assert_eq!(admitted.estimated_peak_bytes, 300);
+    }
+
+    #[test]
+    fn delta_working_set_gate_attributes_a_dominant_direct_bake_before_execution() {
+        let indirect = vec![0];
+        let direct = vec![1; 50];
+        let animated_direct = vec![0];
+        let static_indices = vec![7, 42];
+
+        let error = gate_delta_working_set(
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &indirect,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &direct,
+                    static_indices: Some(&static_indices),
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &animated_direct,
+                    static_indices: None,
+                },
+            ],
+            4,
+            800,
+            DELTA_WORKING_SET_COPY_FACTOR,
+        )
+        .expect_err("the direct CSR alone dominates the pre-bake projection");
+
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("DeltaShVolumes (id 27) dense 8 bytes"));
+        assert!(diagnostic.contains("DirectShDeltaVolumes (id 41) dense 400 bytes"));
+        assert!(diagnostic.contains("AnimatedDirectShDeltaVolumes (id 45) dense 8 bytes"));
+        assert!(diagnostic.contains("light 1 (static_index 42): 50 CSR entries, 400 dense bytes"));
+    }
+
+    #[test]
+    fn delta_working_set_gate_admits_empty_csrs_without_histogram_rows() {
+        let empty = [];
+        let empty_static_indices: [u64; 0] = [];
+        let projection = gate_delta_working_set(
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &empty,
+                    static_indices: Some(&empty_static_indices),
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &empty,
+                    static_indices: None,
+                },
+            ],
+            18_432 / 2,
+            0,
+            DELTA_WORKING_SET_COPY_FACTOR,
+        )
+        .expect("zero entries must not divide by zero or consume the budget");
+
+        assert_eq!(projection.estimated_peak_bytes, 0);
+        assert!(
+            projection
+                .bakes
+                .iter()
+                .all(|bake| bake.histogram.is_empty())
+        );
+    }
+
+    #[test]
+    fn delta_working_set_gate_applies_analysis_factor_only_when_coarsening_retains_clone() {
+        let one = [0];
+        let inputs = || {
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &one,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &one,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &one,
+                    static_indices: None,
+                },
+            ]
+        };
+
+        let normal_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(false, true));
+        let normal = gate_delta_working_set(inputs(), 1, 21, normal_factor)
+            .expect("two delta copies plus base-copy headroom fit the selected budget");
+        assert_eq!(normal.estimated_peak_bytes, 18);
+        let uniform_l0_analysis_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, false));
+        let uniform_l0_analysis =
+            gate_delta_working_set(inputs(), 1, 21, uniform_l0_analysis_factor)
+                .expect("--sh-analyze without coarsening retains no dense clone");
+        assert_eq!(
+            uniform_l0_analysis.copy_chain_factor,
+            DELTA_WORKING_SET_COPY_FACTOR
+        );
+        assert_eq!(uniform_l0_analysis.estimated_peak_bytes, 18);
+
+        let coarsened_analysis_factor =
+            delta_working_set_copy_chain_factor(retains_sh_analyze_dense_deltas(true, true));
+        let error = gate_delta_working_set(inputs(), 1, 21, coarsened_analysis_factor)
+            .expect_err("the retained --sh-analyze clone makes four shares exceed the budget");
+        let DeltaWorkingSetGateError::BudgetExceeded(analyze) = error else {
+            panic!("the analysis factor must be the only rejection cause");
+        };
+        assert_eq!(
+            analyze.copy_chain_factor,
+            DELTA_WORKING_SET_ANALYZE_COPY_FACTOR
+        );
+        assert_eq!(analyze.estimated_peak_bytes, 24);
+    }
+
+    #[test]
+    fn delta_working_set_admission_logs_one_summary_without_histograms() {
+        let indirect = [3, 3, 1];
+        let direct = [0, 0];
+        let animated_direct = [7];
+        let static_indices = [31];
+        let projection = gate_delta_working_set(
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &indirect,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &direct,
+                    static_indices: Some(&static_indices),
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &animated_direct,
+                    static_indices: None,
+                },
+            ],
+            1,
+            100,
+            DELTA_WORKING_SET_COPY_FACTOR,
+        )
+        .expect("small diagnostic fixture is admitted");
+        let capture = LogCapture::start();
+
+        log_delta_working_set_projection(&projection, false);
+
+        capture.assert_logged_once(Level::Info, "SH delta working-set gate:");
+        capture.assert_not_logged(Level::Info, "SH delta working-set histogram:");
+    }
+
+    #[test]
+    fn delta_working_set_verbose_logging_labels_each_bake_histogram() {
+        let indirect = [3, 3];
+        let direct = [0];
+        let animated_direct = [7];
+        let static_indices = [31];
+        let projection = gate_delta_working_set(
+            [
+                DeltaCsrProjectionInput {
+                    label: "DeltaShVolumes (id 27)",
+                    affinity_lights: &indirect,
+                    static_indices: None,
+                },
+                DeltaCsrProjectionInput {
+                    label: "DirectShDeltaVolumes (id 41)",
+                    affinity_lights: &direct,
+                    static_indices: Some(&static_indices),
+                },
+                DeltaCsrProjectionInput {
+                    label: "AnimatedDirectShDeltaVolumes (id 45)",
+                    affinity_lights: &animated_direct,
+                    static_indices: None,
+                },
+            ],
+            1,
+            100,
+            DELTA_WORKING_SET_COPY_FACTOR,
+        )
+        .expect("small diagnostic fixture is admitted");
+        let capture = LogCapture::start();
+
+        log_delta_working_set_projection(&projection, true);
+
+        capture.assert_logged_once(Level::Info, "DeltaShVolumes (id 27) light 3");
+        capture.assert_logged_once(
+            Level::Info,
+            "DirectShDeltaVolumes (id 41) selection slot 0 (static_index 31)",
+        );
+        capture.assert_logged_once(Level::Info, "AnimatedDirectShDeltaVolumes (id 45) light 7");
+    }
 
     #[test]
     fn combined_protect_aabbs_concatenates_cli_then_map_sources() {

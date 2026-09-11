@@ -55,6 +55,10 @@ pub fn union_active_mask(visible_cells: &[u32], masks: &[u32]) -> u32 {
 }
 
 impl FogCellMasksSection {
+    pub fn byte_len(&self) -> usize {
+        4 + self.masks.len() * 4
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(4 + self.masks.len() * 4);
         buf.extend_from_slice(&(self.masks.len() as u32).to_le_bytes());
@@ -127,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_several_cells() {
+    fn byte_len_matches_fog_cell_masks_payload() {
         let section = FogCellMasksSection {
             masks: vec![
                 0x0000_0000,
@@ -138,6 +142,7 @@ mod tests {
             ],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         // 4 (header) + 5 * 4 (masks).
         assert_eq!(bytes.len(), 24);
         let restored = FogCellMasksSection::from_bytes(&bytes).unwrap();

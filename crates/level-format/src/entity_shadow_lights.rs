@@ -26,6 +26,10 @@ pub struct EntityShadowLightsSection {
 }
 
 impl EntityShadowLightsSection {
+    pub fn byte_len(&self) -> usize {
+        4 + self.light_indices.len() * 4
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(4 + self.light_indices.len() * 4);
         bytes.extend_from_slice(&(self.light_indices.len() as u32).to_le_bytes());
@@ -75,10 +79,11 @@ mod tests {
     use crate::SectionId;
 
     #[test]
-    fn entity_shadow_lights_round_trips_indices() {
+    fn byte_len_matches_entity_shadow_lights_payload() {
         let section = EntityShadowLightsSection {
             light_indices: vec![0, 2, 7],
         };
+        assert_eq!(section.byte_len(), section.to_bytes().len());
 
         let restored = EntityShadowLightsSection::from_bytes(&section.to_bytes()).unwrap();
 

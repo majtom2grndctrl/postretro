@@ -31,6 +31,10 @@ pub struct LightTagsSection {
 }
 
 impl LightTagsSection {
+    pub fn byte_len(&self) -> usize {
+        4 + self.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         let count = self.tags.len() as u32;
@@ -96,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_mixed_tags() {
+    fn byte_len_matches_mixed_light_tag_payload() {
         let section = LightTagsSection {
             tags: vec![
                 "hallway_wave".to_string(),
@@ -105,6 +109,7 @@ mod tests {
             ],
         };
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = LightTagsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

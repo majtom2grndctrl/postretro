@@ -110,6 +110,15 @@ impl AnimatedBillboardDirectScatterDeltaVolumesSection {
         )
     }
 
+    pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.validate_wire_contract()?;
+        let byte_len = self.encoded_len().ok_or_else(|| {
+            invalid_data("animated billboard scatter section length overflows u64")
+        })?;
+        usize::try_from(byte_len)
+            .map_err(|_| invalid_data("animated billboard scatter section length exceeds usize"))
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes().expect(
             "AnimatedBillboardDirectScatterDeltaVolumesSection must satisfy its wire contract",
@@ -477,11 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn animated_billboard_direct_scatter_deltas_round_trip_dense_payload() {
+    fn byte_len_matches_animated_billboard_direct_scatter_dense_payload() {
         let mut section = sample_section();
         section.delta_rgba[0] = 1;
         section.delta_rgba[1] = 2;
         section.delta_rgba[2] = 3;
+        assert_eq!(
+            section.try_byte_len().unwrap(),
+            section.try_to_bytes().unwrap().len()
+        );
         let restored =
             AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&section.to_bytes())
                 .expect("valid dense billboard scatter deltas must decode");

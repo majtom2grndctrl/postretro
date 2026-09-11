@@ -148,6 +148,13 @@ impl SdfAtlasSection {
             .saturating_mul(self.grid_dims[2] as usize)
     }
 
+    pub fn byte_len(&self) -> usize {
+        Self::HEADER_SIZE
+            + self.top_level.len() * 4
+            + self.atlas.len() * 2
+            + self.coarse_distances.len() * 4
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let top_level_len = self.top_level.len();
         let atlas_len = self.atlas.len();
@@ -418,9 +425,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_populated() {
+    fn byte_len_matches_populated_sdf_atlas_payload() {
         let section = populated_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = SdfAtlasSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
         // Re-encoding the decoded section reproduces the exact same bytes —

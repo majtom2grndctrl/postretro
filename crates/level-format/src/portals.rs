@@ -32,6 +32,10 @@ pub struct PortalsSection {
 const PORTAL_RECORD_SIZE: usize = 16;
 
 impl PortalsSection {
+    pub fn byte_len(&self) -> usize {
+        8 + self.vertices.len() * 12 + self.portals.len() * PORTAL_RECORD_SIZE
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let portal_count = self.portals.len() as u32;
         let vertex_count = self.vertices.len() as u32;
@@ -209,9 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trip() {
+    fn byte_len_matches_portal_payload() {
         let section = sample_section();
         let bytes = section.to_bytes();
+        assert_eq!(section.byte_len(), bytes.len());
         let restored = PortalsSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
     }

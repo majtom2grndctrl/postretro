@@ -14,14 +14,6 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
         .find(|character: char| !(character.is_ascii_digit() || character == '.'))
         .unwrap_or(value_text.len());
     let (number, unit) = value_text.split_at(split);
-    let value: f64 = number.parse().map_err(|_| {
-        anyhow::anyhow!(
-            "{option}: '{raw}' is not a valid size (e.g. 2GiB, 512MiB, or a byte count)"
-        )
-    })?;
-    if !value.is_finite() || value < 0.0 {
-        anyhow::bail!("{option} must be a non-negative size");
-    }
 
     let multiplier: u64 = match unit.trim().to_ascii_lowercase().as_str() {
         "" | "b" => 1,
@@ -35,6 +27,11 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
     };
 
     if number.bytes().all(|byte| byte.is_ascii_digit()) {
+        if number.is_empty() {
+            anyhow::bail!(
+                "{option}: '{raw}' is not a valid size (e.g. 2GiB, 512MiB, or a byte count)"
+            );
+        }
         let significant_digits = number.trim_start_matches('0');
         if significant_digits.is_empty() {
             return Ok(0);
@@ -54,18 +51,62 @@ pub(crate) fn parse_size(option: &str, raw: &str) -> anyhow::Result<u64> {
         return Ok(scaled as u64);
     }
 
-    let scaled = value * multiplier as f64;
-    // `u64::MAX` rounds up to 2^64 as f64, so compare against the first
-    // unrepresentable integer rather than converting the limit to f64.
-    const U64_EXCLUSIVE_UPPER_BOUND: f64 = 18_446_744_073_709_551_616.0;
-    if !scaled.is_finite() || scaled >= U64_EXCLUSIVE_UPPER_BOUND {
+    let (whole, fractional) = number.split_once('.').ok_or_else(|| {
+        anyhow::anyhow!(
+            "{option}: '{raw}' is not a valid size (e.g. 2GiB, 512MiB, or a byte count)"
+        )
+    })?;
+    if number.matches('.').count() != 1
+        || (whole.is_empty() && fractional.is_empty())
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        anyhow::bail!("{option}: '{raw}' is not a valid size (e.g. 2GiB, 512MiB, or a byte count)");
+    }
+
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse()
+            .map_err(|_| anyhow::anyhow!("{option} exceeds the maximum supported size"))?
+    };
+    let scaled = whole
+        .checked_mul(u128::from(multiplier))
+        .and_then(|scaled| {
+            scaled.checked_add(u128::from(decimal_fraction_scaled(fractional, multiplier)))
+        })
+        .filter(|scaled| *scaled <= u128::from(u64::MAX));
+    let Some(scaled) = scaled else {
         anyhow::bail!(
             "{option} exceeds the maximum supported size of {} bytes",
             u64::MAX
         );
-    }
+    };
 
     Ok(scaled as u64)
+}
+
+/// Convert a decimal fractional component to bytes without passing through `f64`.
+fn decimal_fraction_scaled(fractional: &str, multiplier: u64) -> u64 {
+    debug_assert!(multiplier.is_power_of_two());
+    let mut digits = fractional
+        .bytes()
+        .map(|byte| byte - b'0')
+        .collect::<Vec<_>>();
+    let mut scaled = 0;
+
+    for _ in 0..multiplier.trailing_zeros() {
+        let mut carry = 0;
+        for digit in digits.iter_mut().rev() {
+            let doubled = *digit * 2 + carry;
+            *digit = doubled % 10;
+            carry = doubled / 10;
+        }
+        scaled = (scaled << 1) | u64::from(carry);
+    }
+
+    scaled
 }
 
 /// Render a byte budget with the largest exact binary unit for compiler help.
@@ -136,6 +177,14 @@ mod tests {
     fn parse_size_accepts_largest_bare_byte_value() {
         assert_eq!(
             parse_size("--sh-delta-working-set-max-size", "18446744073709551615B").unwrap(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn parse_size_accepts_largest_decimal_byte_value() {
+        assert_eq!(
+            parse_size("--sh-delta-working-set-max-size", "18446744073709551615.0B").unwrap(),
             u64::MAX
         );
     }

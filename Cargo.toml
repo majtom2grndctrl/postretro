@@ -90,6 +90,11 @@ gilrs = "0.11"
 thiserror = "2"
 anyhow = "1"
 
+# Secure sibling staging and cross-platform open-handle identity checks for
+# atomic compiler-output publication. Both remain CPU/tooling-only.
+tempfile = "3"
+same-file = "1"
+
 # Typed bit flags (e.g. .prm slot mask)
 bitflags = "2"
 

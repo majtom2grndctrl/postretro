@@ -1,10 +1,12 @@
 // Pack and write: serialize sections to .prl binary, validate via read-back.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ffi::OsString;
+use std::fs::{self, File};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use glam::Vec3;
 use postretro_level_format::alpha_lights::{
@@ -52,6 +54,8 @@ use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 use postretro_level_format::{
     SectionDescriptor, SectionId, read_container, read_section_data, write_prl_header_and_table,
 };
+use same_file::Handle as FileIdentity;
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 use std::collections::{HashMap, HashSet};
 
@@ -63,8 +67,6 @@ use crate::portals::Portal;
 
 // PRL table and NavMesh body versions are independent domains.
 const NAVMESH_CONTAINER_VERSION: u16 = 1;
-const PACK_ARTIFACT_CREATE_ATTEMPTS: usize = 128;
-static PACK_ARTIFACT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[path = "pack_sections.rs"]
 mod pack_sections;
@@ -1091,7 +1093,7 @@ fn write_and_validate_sections(
             anyhow::bail!("output directory does not exist: {}", parent.display());
         }
     }
-    ensure_replaceable_output(output)?;
+    let original_output = OutputIdentity::capture(output)?;
 
     let descriptors: Vec<_> = sections
         .iter()
@@ -1100,9 +1102,9 @@ fn write_and_validate_sections(
     let file_name = output
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
-    let (temporary_output, mut file) = create_pack_temporary(output, file_name)?;
+    let mut temporary_output = StagedPrl::create(output, file_name)?;
     let write_result = (|| -> anyhow::Result<u64> {
-        write_prl_header_and_table(&mut file, &descriptors)?;
+        write_prl_header_and_table(temporary_output.file_mut(), &descriptors)?;
         for section in sections {
             let bytes = (section.encode)()?;
             if bytes.len() as u64 != section.descriptor.byte_len {
@@ -1121,146 +1123,264 @@ fn write_and_validate_sections(
                     ),
                 }
             }
-            file.write_all(&bytes)?;
+            temporary_output.file_mut().write_all(&bytes)?;
         }
-        file.flush()?;
-        let total_size = file.metadata()?.len();
-        drop(file);
-        validate_readback(&temporary_output, &descriptors)?;
+        temporary_output.file_mut().flush()?;
+        let total_size = temporary_output.file().metadata()?.len();
+        validate_readback(temporary_output.file_mut(), &descriptors)?;
         Ok(total_size)
     })();
     let total_size = match write_result {
         Ok(total_size) => total_size,
         Err(error) => {
-            if let Err(cleanup_error) = remove_publish_artifact(&temporary_output) {
+            let temporary_path = temporary_output.path().to_path_buf();
+            if let Err(cleanup_error) = temporary_output.remove_if_owned() {
                 return Err(error.context(format!(
                     "also failed to remove temporary PRL {}: {cleanup_error}",
-                    temporary_output.display(),
+                    temporary_path.display(),
                 )));
             }
             return Err(error);
         }
     };
-    publish_validated_output(&temporary_output, output)?;
+    publish_validated_output(temporary_output, output, &original_output)?;
     log::info!("Wrote {} ({} bytes)", output.display(), total_size);
     log::info!("Read-back validation passed.");
 
     Ok(())
 }
 
-fn pack_artifact_path(
-    output: &Path,
-    file_name: &std::ffi::OsStr,
-    kind: &str,
-    sequence: u64,
-) -> PathBuf {
-    output.with_file_name(format!(
-        ".{}.pack-{}-{sequence}.{kind}",
-        file_name.to_string_lossy(),
-        std::process::id(),
-    ))
+struct StagedPrl {
+    temporary: NamedTempFile,
+    identity: FileIdentity,
 }
 
-fn create_exclusive_publish_artifact(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).open(path)
+impl StagedPrl {
+    fn create(output: &Path, file_name: &std::ffi::OsStr) -> anyhow::Result<Self> {
+        let parent = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut prefix = OsString::from(".");
+        prefix.push(file_name);
+        prefix.push(".pack-");
+        let mut temporary = TempFileBuilder::new()
+            .prefix(&prefix)
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to create temporary PRL beside {}: {error}",
+                    output.display(),
+                )
+            })?;
+
+        // Every removal is identity-checked below. A pathname-based Drop cleanup
+        // could otherwise unlink a file installed after this name was stolen.
+        temporary.disable_cleanup(true);
+        let identity = FileIdentity::from_file(temporary.reopen()?).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to identify temporary PRL {}: {error}",
+                temporary.path().display(),
+            )
+        })?;
+
+        Ok(Self {
+            temporary,
+            identity,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.temporary.path()
+    }
+
+    fn file(&self) -> &File {
+        self.temporary.as_file()
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.temporary.as_file_mut()
+    }
+
+    fn ensure_path_is_owned(&self) -> anyhow::Result<()> {
+        ensure_path_has_identity(self.path(), &self.identity, "temporary PRL")
+    }
+
+    fn remove_if_owned(self) -> anyhow::Result<()> {
+        self.ensure_path_is_owned()?;
+        let path = self.path().to_path_buf();
+        let (file, path_guard) = self.temporary.into_parts();
+        fs::remove_file(&path).map_err(|error| {
+            anyhow::anyhow!("failed to remove temporary PRL {}: {error}", path.display())
+        })?;
+        drop(path_guard);
+        drop(file);
+        drop(self.identity);
+        Ok(())
+    }
 }
 
-fn create_pack_temporary(
-    output: &Path,
-    file_name: &std::ffi::OsStr,
-) -> anyhow::Result<(PathBuf, File)> {
-    let sequences =
-        std::iter::repeat_with(|| PACK_ARTIFACT_SEQUENCE.fetch_add(1, Ordering::Relaxed))
-            .take(PACK_ARTIFACT_CREATE_ATTEMPTS);
-    create_pack_temporary_from_sequences(output, file_name, sequences)
+enum OutputIdentity {
+    Absent,
+    Regular(FileIdentity),
 }
 
-fn create_pack_temporary_from_sequences(
-    output: &Path,
-    file_name: &std::ffi::OsStr,
-    sequences: impl IntoIterator<Item = u64>,
-) -> anyhow::Result<(PathBuf, File)> {
-    for sequence in sequences {
-        let path = pack_artifact_path(output, file_name, "tmp", sequence);
-        match create_exclusive_publish_artifact(&path) {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(anyhow::anyhow!(
-                    "failed to create temporary PRL {}: {error}",
-                    path.display(),
-                ));
+impl OutputIdentity {
+    fn capture(output: &Path) -> anyhow::Result<Self> {
+        match fs::symlink_metadata(output) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let identity = open_regular_path_identity(output, "existing output")?;
+                Ok(Self::Regular(identity))
             }
+            Ok(_) => anyhow::bail!(
+                "refusing to replace non-regular output {}",
+                output.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::Absent),
+            Err(error) => Err(anyhow::anyhow!(
+                "failed to inspect existing output {}: {error}",
+                output.display(),
+            )),
         }
     }
 
-    anyhow::bail!(
-        "failed to create a unique temporary PRL for {} after {} attempts",
-        output.display(),
-        PACK_ARTIFACT_CREATE_ATTEMPTS,
-    )
-}
-
-fn remove_publish_artifact(path: &Path) -> std::io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    fn ensure_unchanged(&self, output: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::Absent => match fs::symlink_metadata(output) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Ok(_) => anyhow::bail!(
+                    "refusing to publish because output {} appeared during compilation",
+                    output.display(),
+                ),
+                Err(error) => Err(anyhow::anyhow!(
+                    "failed to re-inspect output {} before publication: {error}",
+                    output.display(),
+                )),
+            },
+            Self::Regular(identity) => {
+                ensure_path_has_identity(output, identity, "existing output").map_err(|error| {
+                    anyhow::anyhow!(
+                        "refusing to publish because output {} changed during compilation: {error}",
+                        output.display(),
+                    )
+                })
+            }
+        }
     }
 }
 
-fn ensure_replaceable_output(output: &Path) -> anyhow::Result<bool> {
-    match fs::symlink_metadata(output) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
-        Ok(_) => anyhow::bail!(
-            "refusing to replace non-regular output {}",
-            output.display()
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to inspect existing output {}: {error}",
-            output.display(),
-        )),
-    }
+fn open_regular_path_identity(path: &Path, description: &str) -> anyhow::Result<FileIdentity> {
+    let before = fs::symlink_metadata(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to inspect {description} {}: {error}",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        before.file_type().is_file(),
+        "{description} {} is not a regular file",
+        path.display(),
+    );
+
+    let file = File::open(path).map_err(|error| {
+        anyhow::anyhow!("failed to open {description} {}: {error}", path.display())
+    })?;
+    anyhow::ensure!(
+        file.metadata()?.file_type().is_file(),
+        "{description} {} did not open as a regular file",
+        path.display(),
+    );
+    let identity = FileIdentity::from_file(file)?;
+
+    let after = fs::symlink_metadata(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to re-inspect {description} {}: {error}",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        after.file_type().is_file(),
+        "{description} {} changed while it was inspected",
+        path.display(),
+    );
+    let confirmed = FileIdentity::from_path(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to confirm {description} {} identity: {error}",
+            path.display(),
+        )
+    })?;
+    anyhow::ensure!(
+        confirmed == identity,
+        "{description} {} changed while its identity was captured",
+        path.display(),
+    );
+    Ok(identity)
 }
 
-/// Publish a validated temporary PRL without exposing a missing final output
-/// on platforms whose rename operation replaces an existing file atomically.
-fn publish_validated_output(temporary_output: &Path, output: &Path) -> anyhow::Result<()> {
-    let output_exists = match ensure_replaceable_output(output) {
-        Ok(output_exists) => output_exists,
+fn ensure_path_has_identity(
+    path: &Path,
+    expected: &FileIdentity,
+    description: &str,
+) -> anyhow::Result<()> {
+    let actual = open_regular_path_identity(path, description)?;
+    anyhow::ensure!(
+        &actual == expected,
+        "{description} {} no longer names the file owned by this invocation",
+        path.display(),
+    );
+    Ok(())
+}
+
+/// Atomically replace the unchanged output with the validated staged handle.
+fn publish_validated_output(
+    temporary_output: StagedPrl,
+    output: &Path,
+    original_output: &OutputIdentity,
+) -> anyhow::Result<()> {
+    let temporary_path = temporary_output.path().to_path_buf();
+    let precondition = temporary_output
+        .ensure_path_is_owned()
+        .and_then(|()| original_output.ensure_unchanged(output));
+    if let Err(error) = precondition {
+        if let Err(cleanup_error) = temporary_output.remove_if_owned() {
+            return Err(error.context(format!(
+                "also failed to remove temporary PRL {}: {cleanup_error}",
+                temporary_path.display(),
+            )));
+        }
+        return Err(error);
+    }
+
+    let StagedPrl {
+        temporary,
+        identity,
+    } = temporary_output;
+    match temporary.persist(output) {
+        Ok(persisted_file) => {
+            let result = ensure_path_has_identity(output, &identity, "published output");
+            drop(persisted_file);
+            result
+        }
         Err(error) => {
-            if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
-                return Err(error.context(format!(
-                    "also failed to remove temporary PRL {}: {cleanup_error}",
-                    temporary_output.display(),
-                )));
-            }
-            return Err(error);
-        }
-    };
-
-    #[cfg(windows)]
-    if output_exists {
-        return publish_with_backup(temporary_output, output);
-    }
-
-    #[cfg(not(windows))]
-    let _ = output_exists;
-
-    match fs::rename(temporary_output, output) {
-        Ok(()) => Ok(()),
-        Err(publish_error) => {
-            if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
+            let tempfile::PersistError {
+                error: publish_error,
+                file: temporary,
+            } = error;
+            let staged = StagedPrl {
+                temporary,
+                identity,
+            };
+            if let Err(cleanup_error) = staged.remove_if_owned() {
                 Err(anyhow::anyhow!(
                     "failed to publish temporary PRL {} to {}: {publish_error}; also failed to remove temporary PRL: {cleanup_error}",
-                    temporary_output.display(),
+                    temporary_path.display(),
                     output.display(),
                 ))
             } else {
                 Err(anyhow::anyhow!(
                     "failed to publish temporary PRL {} to {}: {publish_error}",
-                    temporary_output.display(),
+                    temporary_path.display(),
                     output.display(),
                 ))
             }
@@ -1268,74 +1388,13 @@ fn publish_validated_output(temporary_output: &Path, output: &Path) -> anyhow::R
     }
 }
 
-#[cfg(windows)]
-fn publish_with_backup(temporary_output: &Path, output: &Path) -> anyhow::Result<()> {
-    let file_name = output
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("output path has no file name: {}", output.display()))?;
-    let sequence = PACK_ARTIFACT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let backup_output = pack_artifact_path(output, file_name, "bak", sequence);
-
-    if let Err(error) = fs::rename(output, &backup_output) {
-        if let Err(cleanup_error) = remove_publish_artifact(temporary_output) {
-            return Err(anyhow::anyhow!(
-                "failed to back up existing output {} to {}: {error}; also failed to remove temporary PRL {}: {cleanup_error}",
-                output.display(),
-                backup_output.display(),
-                temporary_output.display(),
-            ));
-        }
-        return Err(anyhow::anyhow!(
-            "failed to back up existing output {} to {}: {error}",
-            output.display(),
-            backup_output.display(),
-        ));
-    }
-
-    if let Err(publish_error) = fs::rename(temporary_output, output) {
-        let rollback = fs::rename(&backup_output, output);
-        let cleanup = remove_publish_artifact(temporary_output);
-        return match (rollback, cleanup) {
-            (Ok(()), Ok(())) => Err(anyhow::anyhow!(
-                "failed to publish temporary PRL {} to {}: {publish_error}; restored the previous output",
-                temporary_output.display(),
-                output.display(),
-            )),
-            (Ok(()), Err(cleanup_error)) => Err(anyhow::anyhow!(
-                "failed to publish temporary PRL {} to {}: {publish_error}; restored the previous output, but failed to remove temporary PRL: {cleanup_error}",
-                temporary_output.display(),
-                output.display(),
-            )),
-            (Err(rollback_error), Ok(())) => Err(anyhow::anyhow!(
-                "failed to publish temporary PRL {} to {}: {publish_error}; failed to restore previous output from {}: {rollback_error}",
-                temporary_output.display(),
-                output.display(),
-                backup_output.display(),
-            )),
-            (Err(rollback_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
-                "failed to publish temporary PRL {} to {}: {publish_error}; failed to restore previous output from {}: {rollback_error}; also failed to remove temporary PRL: {cleanup_error}",
-                temporary_output.display(),
-                output.display(),
-                backup_output.display(),
-            )),
-        };
-    }
-
-    if let Err(cleanup_error) = remove_publish_artifact(&backup_output) {
-        return Err(anyhow::anyhow!(
-            "published PRL to {}, but failed to remove backup {}: {cleanup_error}",
-            output.display(),
-            backup_output.display(),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Re-open the written PRL and validate its container table and framed regions.
-fn validate_readback(output: &Path, expected_sections: &[SectionDescriptor]) -> anyhow::Result<()> {
-    let mut file = File::open(output)?;
-    let meta = read_container(&mut file)?;
+/// Validate the flushed PRL through the handle that received the bytes.
+fn validate_readback(
+    file: &mut File,
+    expected_sections: &[SectionDescriptor],
+) -> anyhow::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    let meta = read_container(&mut *file)?;
 
     anyhow::ensure!(
         meta.header.section_count as usize == expected_sections.len(),
@@ -1368,7 +1427,7 @@ fn validate_readback(output: &Path, expected_sections: &[SectionDescriptor]) -> 
             expected.section_id,
         );
         let actual =
-            read_section_data(&mut file, &meta, expected.section_id)?.ok_or_else(|| {
+            read_section_data(&mut *file, &meta, expected.section_id)?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "section ID {} data missing from read-back",
                     expected.section_id
@@ -1593,62 +1652,87 @@ mod tests {
         std::fs::remove_dir(output).expect("directory fixture should be removable");
     }
 
-    // Regression: predictable temporary names let pre-created files or symlinks be truncated.
+    // Regression: error cleanup unlinked a later file installed at the staging pathname.
     #[test]
-    fn temporary_creation_skips_existing_candidate_without_mutating_it() {
+    fn staged_cleanup_preserves_replacement_with_different_identity() {
         let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-temp-collision-{}-{}.prl",
+            "postretro-streamed-pack-cleanup-identity-{}-{}.prl",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
         let file_name = output.file_name().expect("test output has a file name");
-        let collision = pack_artifact_path(&output, file_name, "tmp", 7);
-        let selected = pack_artifact_path(&output, file_name, "tmp", 8);
-        std::fs::write(&collision, b"unrelated bytes").expect("should create collision fixture");
+        let staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        let staged_path = staged.path().to_path_buf();
+        let displaced = output.with_extension("owned-staging");
+        std::fs::rename(&staged_path, &displaced).expect("should displace owned staging file");
+        std::fs::write(&staged_path, b"later replacement")
+            .expect("should install replacement at staging path");
 
-        let (actual_path, file) = create_pack_temporary_from_sequences(&output, file_name, [7, 8])
-            .expect("creator should skip an existing candidate");
-        drop(file);
+        let error = staged
+            .remove_if_owned()
+            .expect_err("cleanup must reject a different file identity");
 
-        assert_eq!(actual_path, selected);
+        assert!(error.to_string().contains("no longer names the file owned"));
         assert_eq!(
-            std::fs::read(&collision).expect("collision fixture should remain readable"),
-            b"unrelated bytes"
+            std::fs::read(&staged_path).expect("replacement must remain readable"),
+            b"later replacement"
         );
-        std::fs::remove_file(collision).expect("collision fixture should be removable");
-        std::fs::remove_file(selected).expect("selected temporary should be removable");
+        std::fs::remove_file(staged_path).expect("replacement should be removable");
+        std::fs::remove_file(displaced).expect("owned staging file should be removable");
     }
 
-    // Regression: exclusive staging must not follow a pre-created symlink and truncate its target.
-    #[cfg(unix)]
+    // Regression: read-back reopened a replaced staging pathname and could publish its valid bytes.
     #[test]
-    fn temporary_creation_does_not_follow_existing_symlink_candidate() {
-        use std::os::unix::fs::symlink;
-
+    fn staged_readback_and_publish_remain_bound_to_original_file() {
         let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-temp-symlink-{}-{}.prl",
+            "postretro-streamed-pack-staged-identity-{}-{}.prl",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
         let file_name = output.file_name().expect("test output has a file name");
-        let collision = pack_artifact_path(&output, file_name, "tmp", 9);
-        let selected = pack_artifact_path(&output, file_name, "tmp", 10);
-        let target = output.with_extension("target");
-        std::fs::write(&target, b"unrelated bytes").expect("should create symlink target");
-        symlink(&target, &collision).expect("should create colliding symlink");
+        let original_output = OutputIdentity::capture(&output).expect("output should be absent");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        let descriptor = SectionDescriptor {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            byte_len: 3,
+        };
+        write_prl_header_and_table(staged.file_mut(), std::slice::from_ref(&descriptor))
+            .expect("header should write");
+        staged
+            .file_mut()
+            .write_all(&[1, 2, 3])
+            .expect("payload should write");
+        staged.file_mut().flush().expect("staging should flush");
 
-        let (actual_path, file) = create_pack_temporary_from_sequences(&output, file_name, [9, 10])
-            .expect("creator should skip an existing symlink candidate");
-        drop(file);
+        let staged_path = staged.path().to_path_buf();
+        let displaced = output.with_extension("owned-staging");
+        std::fs::rename(&staged_path, &displaced).expect("should displace owned staging file");
+        let mut replacement = Vec::new();
+        postretro_level_format::write_prl(
+            &mut replacement,
+            &[postretro_level_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: vec![9, 9, 9],
+            }],
+        )
+        .expect("replacement PRL should encode");
+        std::fs::write(&staged_path, replacement).expect("replacement PRL should write");
 
-        assert_eq!(actual_path, selected);
-        assert_eq!(
-            std::fs::read(&target).expect("symlink target should remain readable"),
-            b"unrelated bytes"
+        validate_readback(staged.file_mut(), std::slice::from_ref(&descriptor))
+            .expect("read-back should validate the original open file");
+        let error = publish_validated_output(staged, &output, &original_output)
+            .expect_err("publication must reject the replacement staging identity");
+
+        assert!(error.to_string().contains("no longer names the file owned"));
+        assert!(!output.exists(), "replacement bytes must not be published");
+        assert!(
+            staged_path.exists(),
+            "replacement staging file must not be deleted"
         );
-        std::fs::remove_file(collision).expect("colliding symlink should be removable");
-        std::fs::remove_file(selected).expect("selected temporary should be removable");
-        std::fs::remove_file(target).expect("symlink target should be removable");
+        std::fs::remove_file(staged_path).expect("replacement staging should be removable");
+        std::fs::remove_file(displaced).expect("owned staging file should be removable");
     }
 
     // Regression: symlink outputs previously changed target semantics during publication.
@@ -1693,25 +1777,78 @@ mod tests {
         std::fs::remove_file(target).expect("symlink target should be removable");
     }
 
+    // Regression: Windows backup publication could strand the original after an output race.
     #[test]
-    fn publish_failure_preserves_existing_regular_output() {
+    fn publication_rejects_nonregular_output_replacement_without_moving_original() {
         let output = std::env::temp_dir().join(format!(
-            "postretro-streamed-pack-publish-failure-{}-{}.prl",
+            "postretro-streamed-pack-output-race-{}-{}.prl",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
-        let missing_temporary = output.with_extension("missing-temp");
+        let original = output.with_extension("original");
         let previous_bytes = b"previous valid PRL";
         std::fs::write(&output, previous_bytes).expect("should create previous output");
+        let original_output = OutputIdentity::capture(&output).expect("output should be regular");
+        let file_name = output.file_name().expect("test output has a file name");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        staged
+            .file_mut()
+            .write_all(b"validated replacement")
+            .expect("staging should write");
+        staged.file_mut().flush().expect("staging should flush");
+        std::fs::rename(&output, &original).expect("should preserve original fixture");
+        std::fs::create_dir(&output).expect("should install raced directory output");
 
-        publish_validated_output(&missing_temporary, &output)
-            .expect_err("publishing a missing temporary file must fail");
+        let error = publish_validated_output(staged, &output, &original_output)
+            .expect_err("publishing over a raced directory must fail");
 
+        assert!(error.to_string().contains("changed during compilation"));
+        assert!(output.is_dir(), "raced directory must remain intact");
         assert_eq!(
-            std::fs::read(&output).expect("previous output must remain readable"),
+            std::fs::read(&original).expect("original output must remain readable"),
             previous_bytes
         );
-        std::fs::remove_file(output).expect("output fixture should be removable");
+        assert!(publish_artifacts(&output).is_empty());
+        std::fs::remove_dir(output).expect("raced directory should be removable");
+        std::fs::remove_file(original).expect("original fixture should be removable");
+    }
+
+    // Regression: publication overwrote a regular output installed after validation.
+    #[test]
+    fn publication_rejects_concurrent_regular_output_replacement() {
+        let output = std::env::temp_dir().join(format!(
+            "postretro-streamed-pack-regular-race-{}-{}.prl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let original = output.with_extension("original");
+        std::fs::write(&output, b"original output").expect("should create original output");
+        let original_output = OutputIdentity::capture(&output).expect("output should be regular");
+        let file_name = output.file_name().expect("test output has a file name");
+        let mut staged = StagedPrl::create(&output, file_name).expect("staging should succeed");
+        staged
+            .file_mut()
+            .write_all(b"validated replacement")
+            .expect("staging should write");
+        staged.file_mut().flush().expect("staging should flush");
+        std::fs::rename(&output, &original).expect("should preserve original fixture");
+        std::fs::write(&output, b"concurrent writer").expect("should install raced output");
+
+        let error = publish_validated_output(staged, &output, &original_output)
+            .expect_err("publishing over a raced regular file must fail");
+
+        assert!(error.to_string().contains("changed during compilation"));
+        assert_eq!(
+            std::fs::read(&output).expect("concurrent output must remain readable"),
+            b"concurrent writer"
+        );
+        assert_eq!(
+            std::fs::read(&original).expect("original output must remain readable"),
+            b"original output"
+        );
+        assert!(publish_artifacts(&output).is_empty());
+        std::fs::remove_file(output).expect("concurrent output should be removable");
+        std::fs::remove_file(original).expect("original fixture should be removable");
     }
 
     fn sample_geo_result() -> GeometryResult {

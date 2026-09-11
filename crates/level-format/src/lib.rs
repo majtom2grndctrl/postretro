@@ -77,6 +77,9 @@ pub enum FormatError {
     #[error("PRL container size overflow")]
     ContainerSizeOverflow,
 
+    #[error("failed to allocate {size} bytes for PRL container metadata")]
+    ContainerMetadataAllocationFailed { size: usize },
+
     #[error("section {section_id} offset {offset} + size {size} overflows the PRL container")]
     SectionOffsetOverflow {
         section_id: u32,
@@ -505,8 +508,11 @@ pub fn read_container<R: Read>(reader: &mut R) -> Result<ContainerMeta> {
     let section_count = u16::from_le_bytes([header_buf[6], header_buf[7]]);
 
     // Section table
-    let table_size = section_count as usize * SECTION_ENTRY_SIZE;
-    let mut table_buf = vec![0u8; table_size];
+    let section_count_usize = usize::from(section_count);
+    let table_size = section_count_usize * SECTION_ENTRY_SIZE;
+    let mut table_buf = Vec::new();
+    try_reserve_container_metadata(&mut table_buf, table_size, table_size)?;
+    table_buf.resize(table_size, 0);
     let bytes_read = read_exact_or_short(reader, &mut table_buf)?;
     if bytes_read < table_size {
         return Err(FormatError::TruncatedSectionTable {
@@ -515,8 +521,10 @@ pub fn read_container<R: Read>(reader: &mut R) -> Result<ContainerMeta> {
         });
     }
 
-    let mut sections = Vec::with_capacity(section_count as usize);
-    for i in 0..section_count as usize {
+    let entries_size = section_count_usize * std::mem::size_of::<SectionEntry>();
+    let mut sections = Vec::new();
+    try_reserve_container_metadata(&mut sections, section_count_usize, entries_size)?;
+    for i in 0..section_count_usize {
         let base = i * SECTION_ENTRY_SIZE;
         let section_id = u32::from_le_bytes([
             table_buf[base],
@@ -561,6 +569,16 @@ pub fn read_container<R: Read>(reader: &mut R) -> Result<ContainerMeta> {
         },
         sections,
     })
+}
+
+fn try_reserve_container_metadata<T>(
+    buffer: &mut Vec<T>,
+    additional: usize,
+    size: usize,
+) -> Result<()> {
+    buffer
+        .try_reserve_exact(additional)
+        .map_err(|_| FormatError::ContainerMetadataAllocationFailed { size })
 }
 
 /// Borrow a specific section's raw bytes by section ID from a complete PRL
@@ -645,10 +663,10 @@ fn validate_section_bounds(
     let end = entry
         .offset
         .checked_add(entry.size)
-        .ok_or(FormatError::SectionOutOfBounds {
+        .ok_or(FormatError::SectionOffsetOverflow {
+            section_id: entry.section_id,
             offset: entry.offset,
             size: entry.size,
-            file_len,
         })?;
     if end > file_len {
         return Err(FormatError::SectionOutOfBounds {
@@ -988,19 +1006,34 @@ mod tests {
 
         assert!(matches!(
             borrowed_error,
-            FormatError::SectionOutOfBounds {
+            FormatError::SectionOffsetOverflow {
+                section_id,
                 offset: u64::MAX,
                 size: 1,
-                file_len: 0,
-            }
+            } if section_id == SectionId::Geometry as u32
         ));
         assert!(matches!(
             owned_error,
-            FormatError::SectionOutOfBounds {
+            FormatError::SectionOffsetOverflow {
+                section_id,
                 offset: u64::MAX,
                 size: 1,
-                file_len: 0,
-            }
+            } if section_id == SectionId::Geometry as u32
+        ));
+    }
+
+    // Regression: container metadata reservations could abort instead of returning
+    // FormatError.
+    #[test]
+    fn container_metadata_reservation_reports_allocation_failure() {
+        let mut metadata = Vec::<u8>::new();
+
+        let error = try_reserve_container_metadata(&mut metadata, usize::MAX, usize::MAX)
+            .expect_err("an impossible metadata allocation must return a format error");
+
+        assert!(matches!(
+            error,
+            FormatError::ContainerMetadataAllocationFailed { size: usize::MAX }
         ));
     }
 

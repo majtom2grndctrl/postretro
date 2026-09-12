@@ -12,7 +12,7 @@ use thiserror::Error;
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 8;
+pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 9;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -166,6 +166,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -278,8 +279,10 @@ mod tests {
     }
 
     #[test]
-    fn payload_round_trips_nested_ir_and_slide_tuning_without_view_feel() {
+    fn payload_round_trips_nested_ir_slide_and_knockback_tuning_without_view_feel() {
         let mut descriptor = movement_descriptor();
+        descriptor.knockback.air_drag = 3.0;
+        descriptor.knockback.control = 0.4;
         descriptor.slide = Some(SlideParams {
             min_speed: 8.0,
             slide_drag: 12.0,
@@ -328,6 +331,8 @@ mod tests {
             TuningPayload::new(payload.movement, payload.wieldables)
         );
         let movement = decoded.movement.unwrap();
+        assert!((movement.knockback.air_drag - 3.0).abs() < 1.0e-6);
+        assert!((movement.knockback.control - 0.4).abs() < 1.0e-6);
         let dash = movement.dash.as_ref().unwrap();
         assert_eq!(dash.boost_speed, NumberOrIr::Literal(18.0));
         assert!(matches!(dash.momentum_retention, NumberOrIr::Ir(_)));
@@ -374,14 +379,14 @@ mod tests {
     fn payload_rejects_previous_epoch() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(7);
+        json["epoch"] = serde_json::json!(8);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 8,
-                received: 7,
+                expected: 9,
+                received: 8,
             })
         ));
     }

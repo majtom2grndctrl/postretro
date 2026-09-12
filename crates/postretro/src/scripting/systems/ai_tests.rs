@@ -107,6 +107,7 @@ macro_rules! test_behavior_graph {
         move_speed: $move_speed:expr $(,)?
     }) => {
         BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: $initial,
                 activities: $activities,
@@ -273,6 +274,7 @@ fn enemy_mesh() -> MeshComponent {
 /// targets for the player POSITION lookup.
 fn player_movement_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
             half_height: 0.8,
@@ -1907,7 +1909,10 @@ fn damage_crossfire_enemy(
     assert!(apply_damage_with_context(
         registry,
         victim,
-        &DamagePayload { amount },
+        &DamagePayload {
+            amount,
+            impulse: glam::Vec3::ZERO
+        },
         context,
     ));
 }
@@ -2168,6 +2173,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         .set_component(
             projectile,
             ProjectileComponent {
+                knockback_impulse: [0.0; 3],
                 direction: Vec3::NEG_X.to_array(),
                 speed: 100.0,
                 radius: 0.0,
@@ -2455,6 +2461,7 @@ impl FactionSentimentHarness {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_X.to_array(),
                     speed: 100.0,
                     radius: 0.0,
@@ -2741,6 +2748,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     let mut open_shots = OpenAuthorizedShots::new();
     open_shots.record(
         AuthorizedShot {
+            knockback: None,
             shot_id,
             pawn: attacker,
             weapon,
@@ -2948,7 +2956,10 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
             apply_damage_with_context(
                 registry,
                 enemy,
-                &DamagePayload { amount: 50.0 },
+                &DamagePayload {
+                    amount: 50.0,
+                    impulse: glam::Vec3::ZERO,
+                },
                 DamageContext {
                     source_id: "test.remote.lethal".to_string(),
                     attacker: Some(pawn),
@@ -6867,7 +6878,10 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
             normal: Vec3::Y,
             target: Some(enemy),
             zone: None,
-            outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload { amount: 1.0 }),
+            outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO,
+            }),
         },
         "test.player-hitscan".to_string(),
         1.0,
@@ -6896,7 +6910,10 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
     assert!(apply_damage_with_context(
         &mut registry,
         enemy,
-        &DamagePayload { amount: 1.0 },
+        &DamagePayload {
+            amount: 1.0,
+            impulse: glam::Vec3::ZERO
+        },
         DamageContext::new("test.entity-melee", DamageProducer::InTick),
     ));
     run_ai_tick(&mut registry, &mut runtime, DT);
@@ -6989,7 +7006,10 @@ fn candidate_damage_recency_matches_the_brain_fact_on_the_same_ai_tick() {
     assert!(apply_damage_with_context(
         &mut registry,
         enemy,
-        &DamagePayload { amount: 7.0 },
+        &DamagePayload {
+            amount: 7.0,
+            impulse: glam::Vec3::ZERO
+        },
         context,
     ));
 
@@ -7111,7 +7131,10 @@ fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_an
     assert!(apply_damage_with_context(
         &mut registry,
         enemy,
-        &DamagePayload { amount: 1.0 },
+        &DamagePayload {
+            amount: 1.0,
+            impulse: glam::Vec3::ZERO
+        },
         damage_context,
     ));
     assert_eq!(
@@ -8758,6 +8781,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     });
 
     BehaviorGraphDescriptor {
+        knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
             activities: BTreeMap::from([
@@ -9273,7 +9297,10 @@ fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
     assert!(apply_damage_with_context(
         &mut registry,
         sourced_enemy,
-        &DamagePayload { amount: 1.0 },
+        &DamagePayload {
+            amount: 1.0,
+            impulse: glam::Vec3::ZERO
+        },
         context,
     ));
 
@@ -10058,7 +10085,10 @@ fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
     apply_damage_with_context(
         &mut reg,
         enemy,
-        &DamagePayload { amount: 5.0 },
+        &DamagePayload {
+            amount: 5.0,
+            impulse: glam::Vec3::ZERO,
+        },
         DamageContext::new("test.weapon", DamageProducer::InTick),
     );
     policies.evaluate_pending_in_registry(&mut reg);
@@ -10308,6 +10338,7 @@ fn projectile_weapon_descriptor(
         emitter: None,
         movement: None,
         weapon: Some(WeaponDescriptor {
+            knockback: None,
             damage,
             pellet_count: 1,
             spread_degrees: 0.0,

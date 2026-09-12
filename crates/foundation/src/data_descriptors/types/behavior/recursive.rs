@@ -90,6 +90,8 @@ pub struct BehaviorSelectorRow {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BehaviorGraphDescriptor {
+    #[serde(default)]
+    pub knockback: crate::KnockbackResponse,
     #[serde(flatten)]
     pub envelope: BehaviorGraphEnvelope,
     #[serde(default)]
@@ -155,6 +157,8 @@ fn default_retaliation_recency_weight() -> f32 {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawBehaviorGraphDescriptor {
+    #[serde(default)]
+    knockback: crate::KnockbackResponse,
     initial: String,
     #[serde(deserialize_with = "deserialize_activities")]
     activities: BTreeMap<String, BehaviorActivityDescriptor>,
@@ -179,6 +183,7 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
     {
         let raw = RawBehaviorGraphDescriptor::deserialize(deserializer)?;
         Ok(Self {
+            knockback: raw.knockback,
             envelope: BehaviorGraphEnvelope {
                 initial: raw.initial,
                 activities: raw.activities,
@@ -281,6 +286,7 @@ impl BehaviorGraphDescriptor {
 
     /// Shared validation used after both JS and Luau conversion paths.
     pub fn validate(mut self) -> Result<Self, DescriptorError> {
+        self.knockback.validate("components.behavior.knockback")?;
         validate_positive("moveSpeed", self.move_speed)?;
         if let Some(radius) = self.engagement_radius {
             validate_positive("engagementRadius", radius)?;
@@ -915,6 +921,7 @@ mod tests {
     #[test]
     fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {
         let graph = BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: BTreeMap::new(),

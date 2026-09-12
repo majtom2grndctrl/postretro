@@ -272,7 +272,8 @@ defineEntity({
 | `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
 | `resolution` | `"hitscan" \| "projectile"` | Shot resolution mode. A projectile requires the descriptor-owned `projectile` block below. |
 | `projectile` | `ProjectileDescriptor` (conditional) | Required exactly when `resolution` is `"projectile"`; omit it for hitscan. This is descriptor-owned tuning, never an FGD KVP. |
-| `splash` | `{ radius, minFraction?, selfDamage? }` (optional) | Radial damage at a projectile's impact point. It is currently valid only with `resolution: "projectile"`; hitscan weapons must omit it. |
+| `knockback` | `{ speed, upwardBias? }` (optional) | Direct-hit push independent of damage. Applies per pellet or projectile entity contact; composes with `splash.knockback` when both are authored. |
+| `splash` | `{ radius, minFraction?, selfDamage?, knockback? }` (optional) | Radial damage at a projectile's impact point. It is currently valid only with `resolution: "projectile"`; hitscan weapons must omit it. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
 | `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs?, reloadStyle? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1`; `reloadMs` defaults to `1000`; and `reloadStyle` defaults to `"magazine"`. With `"magazine"`, `reloadMs` times the complete reload; with `"perShell"`, it times one shell step. Omit the block for unlimited fire. |
 
@@ -356,7 +357,7 @@ other entities do not.
 |--------------|------|---------|-------------------------|
 | `radius` | `number` | required | Blast radius in metres. Must be finite and `> 0.0`. |
 | `minFraction` | `number` | `0` | Fraction of base damage at the radius edge. Must be finite and in `0..=1`. |
-| `selfDamage` | `boolean` | `true` | When true, the firing pawn can take the same falloff-scaled blast damage. When false, only that owner is excluded. |
+| `selfDamage` | `boolean` | `true` | When true, the firing pawn can take the same falloff-scaled blast damage. When false, only that owner's damage is suppressed; blast push remains independent. |
 
 A splash projectile does not also apply its ordinary single-target impact
 damage: the struck entity receives splash once, which prevents double-counting.
@@ -439,6 +440,58 @@ Weapon reload outcomes can fire the reaction event names `reload_started`,
 `reload_started` and one `reload_shell_loaded` for each credited shell. It ends
 with `reload_completed` or `reload_cancelled`, except when its pawn is lost as
 a step expires: the loop silently returns to idle with neither terminal event.
+
+### Hit and blast knockback
+
+Knockback adds velocity through the existing character collision movement. It is
+independent of damage: a zero-damage weapon can push. `selfDamage: false`
+suppresses only the owner's health damage; rocket jumping also requires
+`splash.knockback` with positive `speed` and nonzero `selfScale`. Omit the weapon
+and splash knockback blocks to preserve existing behavior.
+
+Direct hits use `weapon.knockback: { speed, upwardBias? }`. `speed` is the added
+velocity magnitude in metres/sec, finite in `0..=1000`. `upwardBias` defaults to
+`0` and must be finite in `0..=1`: the engine blends the normalized shot direction
+toward world up by that fraction, then normalizes again. A zero or cancelled
+direction falls back to up. A hitscan weapon applies push per pellet.
+
+A splash projectile adds radial push with `splash.knockback`:
+
+```ts
+splash: {
+  radius: 6,
+  selfDamage: false,
+  knockback: { speed: 14, upwardBias: 0.25, minFraction: 0, selfScale: 1 },
+}
+```
+
+The same keys work in Luau tables. Push points outward from the impact center,
+with the same upward blend. It uses the blast's radius, target-volume distance,
+and static-world occlusion. Its own `minFraction` sets the linear speed falloff
+at the blast edge, independently of damage falloff; it defaults to `0` and must
+be finite in `0..=1`. `selfScale` multiplies only the owner's received impulse,
+defaults to `1`, and must be finite in `0..=10`. Set it to `0` to disable self push
+regardless of the `selfDamage` setting. Splash applies once per eligible target.
+If `weapon.knockback` is also authored,
+a projectile entity contact receives both the direct push and radial push. Splash
+still replaces direct health damage, so the struck entity takes splash damage once.
+
+Players declare their response under `components.movement.knockback`; enemies
+use `components.behavior.knockback`. Every response field is optional:
+
+| Response field | Default | Meaning |
+|----------------|---------|---------|
+| `scale` | `1` | Received impulse multiplier, finite in `0..=10`. `0` makes this character immune to push. |
+| `groundDrag` | `8` | Grounded decay rate in inverse seconds, finite in `0..=1000`. |
+| `airDrag` | `0` | Airborne decay rate in inverse seconds, finite in `0..=1000`. `0` retains the push until collision or landing. |
+| `control` | `1` | Fraction of normal steering while push remains, finite in `0..=1`. Abilities remain available. |
+
+Each tick the protected impulse is multiplied by `max(0, 1 - drag * dt)`.
+With positive drag, a remaining magnitude below `0.001` metres/sec is cleared.
+Gravity and collision still act normally. Character movement preserves the
+external impulse separately so ordinary speed caps and enemy navigation do not
+erase it. Multiplayer resolves hits and pushes on the host; authoritative
+movement updates carry the resulting momentum through client reconciliation.
 
 ### Reserved engine-fired reaction addresses
 

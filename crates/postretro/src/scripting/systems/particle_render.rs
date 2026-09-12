@@ -500,6 +500,7 @@ mod tests {
             .set_component(
                 id,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: [0.0, 0.0, -1.0],
                     speed: 40.0,
                     radius: 0.2,

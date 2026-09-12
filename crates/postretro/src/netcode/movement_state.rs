@@ -12,9 +12,10 @@ use postretro_net::wire::{WireGroundRef, WireMovementState, WirePlayerMovementSt
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Extract the mutable tick subset of a `PlayerMovementComponent` into its wire
-/// mirror. Only the fields that change tick-to-tick cross the wire; descriptor
-/// tuning, `view_feel`, standing dimensions, stuck-stop config, and
-/// `dash_programs` stay local on both peers and are never read here.
+/// mirror. Snapshots carry only fields that change tick-to-tick. Descriptor
+/// tuning arrives separately in `TuningPayload` on Control, except `view_feel`,
+/// which stays local; standing dimensions, stuck-stop config, and
+/// `dash_programs` are never read here.
 // Called by Task 4's host snapshot production (`replication::collect_payloads`); also
 // consumed by Task 5 reconciliation.
 pub(crate) fn movement_state_to_wire(
@@ -33,6 +34,7 @@ pub(crate) fn movement_state_to_wire(
             component.velocity.y,
             component.velocity.z,
         ],
+        knockback_velocity: component.knockback_velocity.to_array(),
         ground: ground_ref_to_wire(component.ground),
         air_jumps_remaining: component.air_jumps_remaining,
         air_dashes_remaining: component.air_dashes_remaining,
@@ -67,6 +69,7 @@ pub(crate) fn merge_wire_into_movement_state_checked(
         return false;
     };
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
+    component.knockback_velocity = Vec3::from_array(wire.knockback_velocity);
     component.ground = ground;
     component.air_jumps_remaining = wire.air_jumps_remaining;
     component.air_dashes_remaining = wire.air_dashes_remaining;
@@ -177,6 +180,7 @@ mod tests {
     /// hiding an accidental overwrite).
     fn rich_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -243,6 +247,7 @@ mod tests {
 
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            knockback_velocity: [0.0; 3],
             velocity: [1.0, -2.0, 3.5],
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,
@@ -268,6 +273,7 @@ mod tests {
         // Drive the mutable subset to non-default values, then extract and merge
         // back into a fresh component and confirm the subset survives.
         component.velocity = Vec3::new(2.0, -0.5, 9.0);
+        component.knockback_velocity = Vec3::new(1.0, 0.0, 6.0);
         component.set_grounded(false);
         component.air_jumps_remaining = 1;
         component.air_dashes_remaining = 1;
@@ -294,6 +300,7 @@ mod tests {
         ));
 
         assert!((rebuilt.velocity - component.velocity).length() < EPSILON);
+        assert!((rebuilt.knockback_velocity - component.knockback_velocity).length() < EPSILON);
         assert_eq!(rebuilt.is_grounded(), component.is_grounded());
         assert_eq!(rebuilt.air_jumps_remaining, component.air_jumps_remaining);
         assert_eq!(rebuilt.air_dashes_remaining, component.air_dashes_remaining);

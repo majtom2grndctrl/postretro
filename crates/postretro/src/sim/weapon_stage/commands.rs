@@ -149,6 +149,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
         reload_deliveries.extend(machine.deliveries);
         let effective = weapon_component.effective();
         let damage = effective.damage;
+        let knockback = effective.knockback;
         let range = effective.range;
         let pellet_count = effective.pellet_count as usize;
         let credit_source = effective.credit_source.to_string();
@@ -191,13 +192,25 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             timeout_budget_ticks,
             projectile_presentation,
         ) = match resolution {
-            ResolutionMode::Hitscan => (
-                false,
-                Vec3::ZERO,
-                None,
-                crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
-                None,
-            ),
+            ResolutionMode::Hitscan => {
+                // Freeze direction's origin with the shot. The later declaration
+                // still validates LOS/range from the live eye, but strafing after
+                // FIRE must not rotate its knockback.
+                let fire_origin = match remote_projectile_aim(&registry, remote) {
+                    Some((eye, _)) => eye,
+                    // Amount-only FIRE can still be authorized before a pawn
+                    // has movement; existing HIT validation requires its eye.
+                    None if knockback.is_none() => Vec3::ZERO,
+                    None => continue,
+                };
+                (
+                    false,
+                    fire_origin,
+                    None,
+                    crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                    None,
+                )
+            }
             ResolutionMode::Projectile => {
                 let Some(projectile) = projectile.as_ref() else {
                     log::warn!(
@@ -288,6 +301,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 weapon,
                 fire_tick: remote.fire_tick,
                 damage,
+                knockback,
                 range,
                 pellet_count,
                 credit_source,
@@ -628,6 +642,7 @@ pub(crate) fn spawn_projectile(
         remaining_range: launch.range,
         remaining_lifetime: launch.lifetime,
         damage: launch.damage,
+        knockback_impulse: launch.knockback_impulse.to_array(),
         credit_source: launch.credit_source,
         owner_pawn,
         owner_weapon,
@@ -885,6 +900,7 @@ mod projectile_spawn_tests {
 
     fn launch(visual: ProjectileVisual) -> weapon::ProjectileLaunch {
         weapon::ProjectileLaunch {
+            knockback_impulse: glam::Vec3::ZERO,
             origin: Vec3::new(1.0, 2.0, 3.0),
             direction: Vec3::NEG_Z,
             speed: 40.0,
@@ -1064,6 +1080,7 @@ mod projectile_spawn_tests {
         };
 
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 8.0,
             min_fraction: 0.25,
             self_damage: true,

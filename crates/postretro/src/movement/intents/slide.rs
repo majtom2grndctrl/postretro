@@ -197,8 +197,8 @@ pub(crate) fn sliding_intent(
     }
 
     if !component.is_grounded() {
-        component.velocity.y =
-            (component.velocity.y + gravity * dt).max(-component.fall.terminal_velocity);
+        component.velocity.y += gravity * dt;
+        crate::movement::knockback::clamp_fall_speed(component);
         // A non-jump ledge exit retains momentum and lets Crouching own airborne
         // locomotion/stand-up from the following tick onward.
         return Some(Transition {
@@ -241,7 +241,7 @@ pub(crate) fn sliding_intent(
     steer_boost(
         boost,
         wish_dir_from_input(input.wish_dir, input.facing_yaw),
-        slide.steer_rate.to_radians() * dt,
+        slide.steer_rate.to_radians() * component.knockback_control() * dt,
     );
 
     let speed = Vec2::new(boost.x, boost.z).length();

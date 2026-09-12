@@ -9630,6 +9630,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(postretro_foundation::WeaponDescriptor {
+                knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -10641,6 +10642,7 @@ mod tests {
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,

@@ -224,6 +224,8 @@ Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimatio
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates enum shape, finite numeric fields, and movement-state-local numeric invariants before typed apply. A sliding floor normal must be absent or bounded and unit-length within a small squared-length tolerance. Resolving a mover id to a loaded local mover is engine-owned client apply.
 
+Knockback is host-authoritative combat state. Snapshots carry total player velocity and its protected knockback portion; reconciliation restores both before replay, without reapplying the hit. The host freezes direct-hit tuning at fire time and derives impulse from accepted hit geometry or projectile travel direction. Clients never submit impulse magnitude. Predicted projectiles remain presentation-only until authoritative movement arrives. Response tuning travels with the host movement descriptor. The wire and tuning payload versions reject older peers that cannot represent these fields.
+
 Three distinct metadata validity gates apply:
 
 - **Movement-authority metadata** (`local_player`, `last_processed_client_tick`): valid only on records carrying `PlayerMovementState`. No other record type may carry these fields.
@@ -583,9 +585,11 @@ input edge advances it to 16, and E17's `blocked` phase advances it to 17. E16's
 unreliable Presentation channel and `ServerPresentationMessage` family advance it to
 19. Slide advances it to 20. The sparse faction-sentiment snapshot record advances
 `SNAPSHOT_VERSION` to 15 and `WIRE_VERSION` to 21; it changes no Input-channel
-`ClientMessage` or `ServerMessage` variant. `WIRE_VERSION` 21 refuses incompatible
-peers during the handshake; `SNAPSHOT_VERSION` 15 independently rejects incompatible
-snapshot envelopes during decode.
+`ClientMessage` or `ServerMessage` variant. Protected player knockback velocity
+advances `SNAPSHOT_VERSION` to 16 and `WIRE_VERSION` to 22. `WIRE_VERSION` 22 refuses
+incompatible peers during the handshake; `SNAPSHOT_VERSION` 16 independently rejects
+incompatible snapshot envelopes during decode. The host movement descriptor's
+knockback response advances the independent tuning payload epoch to 9.
 
 ## Current contract
 

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::KnockbackResponse;
 use crate::ir::IrNode;
 
 /// Authored player-movement component preset. The four core sub-objects
@@ -15,6 +16,9 @@ use crate::ir::IrNode;
 /// materialization (not here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerMovementDescriptor {
+    /// Response to weapon and blast impulses.
+    #[serde(default)]
+    pub knockback: KnockbackResponse,
     pub capsule: CapsuleParams,
     pub ground: GroundParams,
     pub air: AirParams,

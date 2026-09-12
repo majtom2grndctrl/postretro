@@ -61,6 +61,8 @@ Type-specific data lives in the component. An entity is "a player" by virtue of 
 
 **Splash / area effects.** Splash is a `splash` block on `WeaponDescriptor`, beside the projectile block rather than nested in its travel tuning. Current use is projectile impacts; descriptors reject splash on hitscan weapons. A blast damages each visible live damageable volume in radius once through the damage chokepoint, using authored linear distance falloff and optional owner exclusion. Static world geometry occludes; movers and entities do not. Host-authoritative results reach clients through replicated Health, and remote explosion VFX use the Presentation channel with the predicted owner excluded. See [Networking](./networking.md) §Channel model and §Combat authority.
 
+**Knockback.** Weapon hits carry an independent velocity-change payload. Direct hits use travel direction; splash uses the vector from blast center to damageable-volume center. Both support an authored upward blend. Splash force has its own distance falloff and owner multiplier: disabling self-damage still permits rocket jumping, and zero damage still permits a concussive blast. Splash replaces direct health damage; explicitly authored direct and radial pushes compose. Only live damageable players and navigation agents receive movement impulses. Health-only props remain stationary. Hit-zone multipliers affect damage only. Direct projectile tuning is captured at fire time; impact never re-reads the weapon. Response belongs to `movement.knockback` for players and `behavior.knockback` for enemies. See [Movement](./movement.md) §6.
+
 ---
 
 ## 3. Entity Lifecycle

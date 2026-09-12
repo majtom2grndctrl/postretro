@@ -2851,3 +2851,138 @@ fn set_and_clear_run_without_dev_tools_feature() {
     let path = find_path(&graph, Vec3::new(1.0, 0.0, 6.0), Vec3::new(5.0, 0.0, 6.0));
     assert!(path.is_some(), "find_path runs without dev-tools");
 }
+
+#[test]
+fn knockback_moves_idle_agent_and_wall_contact_consumes_it() {
+    let world = LWall::fixture().collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 2.0, &params);
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    agent.is_grounded = true;
+    agent.knockback.ground_drag = 0.0;
+    agent.add_knockback(Vec3::X * 12.0);
+    registry.set_component(id, agent).unwrap();
+    for _ in 0..45 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+    }
+    let pos = registry.get_component::<Transform>(id).unwrap().position;
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(pos.x > 3.5 && pos.x < 4.0 - params.radius + EPS);
+    assert!(agent.knockback_velocity.x.abs() < EPS);
+    assert!(agent.velocity.x.abs() < EPS);
+    for _ in 0..15 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+    }
+    let settled = registry.get_component::<Transform>(id).unwrap().position;
+    assert!((pos.x - settled.x).abs() < EPS);
+}
+
+#[test]
+fn knockback_survives_path_steering_and_vertical_launch_lands() {
+    // Regression: zero-control knockback hid a full steering ramp, then released it as a lurch.
+    let world = LWall::fixture().collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 1.0, &params);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(1.0, rest_y(&params), 7.0)],
+    );
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    agent.is_grounded = true;
+    agent.knockback.control = 0.0;
+    agent.add_knockback(Vec3::new(1.0, 6.0, 0.0));
+    registry.set_component(id, agent).unwrap();
+    for _ in 0..10 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+    }
+    let pos = registry.get_component::<Transform>(id).unwrap().position;
+    assert!(pos.x > 1.1 && pos.y > rest_y(&params) + 0.5);
+    assert!(
+        (pos.z - 1.0).abs() < EPS,
+        "zero control suppresses AI intent"
+    );
+
+    let mut before_release = pos;
+    let mut release = None;
+    for _ in 0..180 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+        let after = registry.get_component::<Transform>(id).unwrap().position;
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if agent.knockback_velocity == Vec3::ZERO {
+            release = Some((before_release, after, agent.velocity));
+            break;
+        }
+        before_release = after;
+    }
+    let (before_release, after_release, release_velocity) =
+        release.expect("ground drag should end protected knockback");
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(agent.is_grounded);
+    assert!(agent.knockback_velocity.length() < EPS);
+
+    let first_recovery_speed = STEERING_ACCEL_PER_SPEED * agent.move_speed * DT;
+    let release_speed = xz_length(release_velocity);
+    assert!(
+        release_speed > 0.0 && release_speed <= first_recovery_speed + EPS,
+        "steering must restart from rest after suppression; speed={release_speed}"
+    );
+    let release_displacement = after_release.z - before_release.z;
+    assert!(
+        release_displacement > 0.0 && release_displacement <= first_recovery_speed * DT + EPS,
+        "steering release must accelerate instead of lurching; dz={release_displacement}"
+    );
+}
+
+#[test]
+fn partial_knockback_control_scales_turn_rate_and_preserves_steer_speed() {
+    let world = LWall::fixture().collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 1.0, &params);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(7.0, rest_y(&params), 1.0)],
+    );
+    let mut transform = *registry.get_component::<Transform>(id).unwrap();
+    transform.position.y = 10.0;
+    registry.set_component(id, transform).unwrap();
+
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    agent.is_grounded = false;
+    agent.knockback.control = 0.5;
+    agent.steer_velocity = Vec3::Z * agent.move_speed;
+    agent.velocity = agent.steer_velocity;
+    let move_speed = agent.move_speed;
+    assert!(agent.add_knockback(Vec3::Y));
+    registry.set_component(id, agent).unwrap();
+
+    tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let velocity = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .velocity;
+    let turned = angle_between_xz(Vec3::Z, velocity);
+    let expected_turn = MAX_TURN_RATE * 0.5 * DT;
+    assert!(
+        (turned - expected_turn).abs() < EPS,
+        "half control must apply half the normal turn; expected={expected_turn}, actual={turned}"
+    );
+    assert!(
+        (xz_length(velocity) - move_speed).abs() < EPS,
+        "control scales steering rate without scaling existing locomotion velocity"
+    );
+}

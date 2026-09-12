@@ -1583,6 +1583,7 @@ mod tests {
         viewmodel: Option<&str>,
     ) -> WeaponDescriptor {
         WeaponDescriptor {
+            knockback: None,
             damage,
             pellet_count: 1,
             spread_degrees: 0.0,

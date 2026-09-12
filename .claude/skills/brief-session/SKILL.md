@@ -18,7 +18,7 @@ description: >
 
 **Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and let the executor build it in strides; small increments earn their cost only where the path is genuinely uncertain. A brief spends its length on that split: Decisions settle what is known, and Path's first slice names the one assumption still worth falsifying before the rest. A brief that slices everything has not decided anything. When the work lays a foundation, its first consumer is in the same brief — the consumer proves the foundation and keeps it from landing as a stub nothing exercises.
 
-**Work as an orchestrator.** After a baseline read, dispatch right-sized agents for research. Keep your own context for Decisions. At build time, the integrating executor may also delegate independent implementation slices; it retains shared contracts, integration, tests, and commits.
+**Work as an orchestrator.** After a baseline read, delegate bounded research questions when parallel work will help. Keep your own context for Decisions. At build time, the integrating executor may also delegate independent implementation slices; it retains shared contracts, integration, tests, and commits.
 
 ## What to research
 
@@ -84,7 +84,7 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 - [ ] A Scripting surface example, if present, runs under an Acceptance row and shows no engine internals
 - [ ] Every open question is marked **blocks build** or **delegated**
 - [ ] Header carries the commit the source was read at
-- [ ] Under the mode target, or the excess is derivation moved to `research.md`
+- [ ] Under the mode target before required boundary and wire tables, or excess derivation moved to `research.md`
 
 ## Closing note
 

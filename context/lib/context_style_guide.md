@@ -194,7 +194,7 @@ _Scope: context/ files & plans._
 
 Context files are the durable layer. Plans are the ephemeral layer.
 
-**Plans** live in `context/plans/`, moving through four stages: `drafts/` → `ready/` → `in-progress/` → `done/`. Plans contain detailed implementation specs — function names, algorithms, task breakdowns, acceptance criteria. That detail earns its place during planning but becomes maintenance debt once the code exists.
+**Plans** live in `context/plans/`, moving through four stages: `drafts/` → `ready/` → `in-progress/` → `done/`. Full specs may contain functions, algorithms, and task breakdowns. Problem briefs record decisions and acceptance, then defer task breakdown to build time. Both are ephemeral once code ships.
 
 **When a new doc is added to `context/lib/`:** add a corresponding entry to the Agent Router in `index.md` before merging. An unrouted doc is invisible to agents.
 

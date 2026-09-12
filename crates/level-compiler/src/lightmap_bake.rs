@@ -2386,7 +2386,11 @@ fn normalized_direction_texel_scale(scale: u32) -> u32 {
 /// Clamp the configured scale to dimensions that this particular atlas can
 /// represent. Baked atlas axes are power-of-two and at least 64, but keeping
 /// this guard here also makes synthetic/direct callers safe.
-fn effective_direction_texel_scale(scale: u32, atlas_width: u32, atlas_height: u32) -> u32 {
+pub(crate) fn effective_direction_texel_scale(
+    scale: u32,
+    atlas_width: u32,
+    atlas_height: u32,
+) -> u32 {
     let mut effective = normalized_direction_texel_scale(scale);
     while effective > atlas_width
         || effective > atlas_height

@@ -372,11 +372,14 @@ fn bake_shadowmask_atlas_cached_with_window(
         resident_layers,
     );
     let section = fill.finish();
-    cache.put(&section_key, &section.to_bytes());
-    if !selected.is_empty() {
-        // Keep the final fill unit pending through whole-section memo storage.
-        control.advance(1);
-    }
+    cache_shadowmask_section_then_complete(
+        cache,
+        &section_key,
+        &section,
+        control,
+        !selected.is_empty(),
+        || {},
+    );
     Some(section)
 }
 
@@ -750,6 +753,22 @@ fn advance_shadowmask_total(
     if total != 0 {
         control.governor().checkpoint();
         control.advance(total);
+    }
+}
+
+fn cache_shadowmask_section_then_complete(
+    cache: &StageCache,
+    section_key: &CacheKey,
+    section: &ShadowmaskAtlasSection,
+    control: &BakeControl,
+    has_valid_selection: bool,
+    after_cache_write: impl FnOnce(),
+) {
+    cache.put(section_key, &section.to_bytes());
+    after_cache_write();
+    if has_valid_selection {
+        // Keep the final fill unit pending through whole-section memo storage.
+        control.advance(1);
     }
 }
 
@@ -1708,6 +1727,14 @@ mod tests {
         assert_eq!(section.channels, vec![0]);
         assert_eq!(section.data[0], 64);
         assert_eq!(section.data[4], 255);
+        assert_eq!(
+            section.to_bytes(),
+            vec![
+                2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 64, 255, 255, 255, 255,
+                255, 255, 255,
+            ],
+            "single-layer literal captured before the analytic restructure"
+        );
     }
 
     #[test]
@@ -2650,6 +2677,66 @@ mod tests {
     }
 
     #[test]
+    fn shadowmask_fixture_is_deterministic_across_rebuilds_and_workers() {
+        let mut fixture = load_fixture("gate-heavily-lit");
+        let lights = fixture.lights.clone();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+            static_lights: &static_lights,
+            alpha_lights: &alpha_lights,
+            params: crate::map_data::EntityShadowParams::default(),
+        });
+        assert!(!selection.light_indices.is_empty());
+        let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[])
+            .expect("gate-heavily-lit atlas planning");
+        let (bvh, primitives, _) = build_bvh(&fixture.geometry).unwrap();
+        let shared = shared_from_prepared(&prepared);
+        let one_worker = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let many_workers = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let one_progress = StageProgress::indeterminate();
+        let one_control = BakeControl::new(Arc::new(Governor::new(1, false)), &one_progress);
+        let many_progress = StageProgress::indeterminate();
+        let many_control = BakeControl::new(Arc::new(Governor::new(4, false)), &many_progress);
+
+        let one = one_worker
+            .install(|| {
+                bake_shadowmask_atlas(
+                    Some(&selection),
+                    &alpha_lights,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &fixture.geometry,
+                    1,
+                    &one_control,
+                )
+            })
+            .expect("one-worker named-fixture shadowmask");
+        let many = many_workers
+            .install(|| {
+                bake_shadowmask_atlas(
+                    Some(&selection),
+                    &alpha_lights,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &fixture.geometry,
+                    1,
+                    &many_control,
+                )
+            })
+            .expect("many-worker named-fixture shadowmask");
+
+        assert_eq!(one.to_bytes(), many.to_bytes());
+        assert_eq!(one_progress.completed(), one_progress.total().unwrap());
+        assert_eq!(many_progress.completed(), many_progress.total().unwrap());
+    }
+
+    #[test]
     fn pre_streaming_multilayer_five_way_overlap_golden_bytes_are_preserved() {
         let lights = [
             (0, light(5.0)),
@@ -3503,7 +3590,7 @@ mod tests {
     }
 
     #[test]
-    fn shadowmask_atlas_cache_miss_reuses_existing_layers_and_stores_section() {
+    fn pre_analytic_layer_cache_is_reused_without_rebake() {
         let mut test_light = light(5.0);
         test_light.origin = DVec3::new(0.25, 1.0, 0.25);
         let lights = vec![test_light];
@@ -3557,6 +3644,164 @@ mod tests {
             expected
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shadowmask_cache_epochs_remain_pre_analytic_values() {
+        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 2);
+        assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 5);
+    }
+
+    #[test]
+    fn shadowmask_final_progress_unit_follows_section_memo_write() {
+        let dir = fresh_cache_dir("final_progress_order");
+        let cache = StageCache::new(&dir).unwrap();
+        let key = CacheKey::new(
+            SHADOWMASK_ATLAS_STAGE_ID,
+            SHADOWMASK_ATLAS_STAGE_VERSION,
+            &[7; 32],
+        );
+        let section = shadowmask_section(1, 1, 1, vec![0], 255);
+        let progress = StageProgress::with_total(1);
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+
+        cache_shadowmask_section_then_complete(&cache, &key, &section, &control, true, || {
+            assert!(cache.get(&key).is_some());
+            assert_eq!(progress.completed(), 0);
+        });
+
+        assert_eq!(progress.completed(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+
+        let light = light(1.0);
+        let selected = vec![(0, 0, &light)];
+        let graph = OverlapGraph::new(1);
+        let uncached_progress = StageProgress::with_total(2);
+        let uncached_control =
+            BakeControl::new(Arc::new(Governor::new(1, false)), &uncached_progress);
+        let fill = ShadowmaskFill::new(1, 1, 1, 1, &selected, &graph, Some(&uncached_control));
+        assert_eq!(uncached_progress.completed(), 1);
+        let uncached_section = fill.finish();
+        assert_eq!(uncached_progress.completed(), 1);
+        assert_eq!(uncached_section.data.len(), 4);
+        uncached_control.advance(1);
+        assert_eq!(uncached_progress.completed(), 2);
+    }
+
+    #[test]
+    fn shadowmask_publishes_one_total_and_completes_with_section() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
+
+        let section = bake_shadowmask_atlas(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            AREA_SAMPLES,
+            &control,
+        );
+
+        assert!(section.is_some());
+        let total = progress
+            .total()
+            .expect("stage publishes a determinate total");
+        assert_eq!(total, shadowmask_progress_total(lights.len(), &shared));
+        assert_eq!(progress.completed(), total);
+    }
+
+    #[test]
+    fn one_light_change_reruns_graph_and_reuses_unchanged_partitions() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let cache_dir = fresh_cache_dir("one_light_change");
+        let cache = StageCache::new(&cache_dir).unwrap();
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &test_control(),
+        )
+        .unwrap();
+
+        let mut changed_lights = lights.clone();
+        changed_lights[2].intensity += 0.5;
+        let changed_alpha_lights = AlphaLightsNs::from_lights(&changed_lights);
+        let changed_hashes: Vec<_> = (0..layer_count_from_shared(&shared))
+            .map(|target_layer| {
+                lightmap_layer::layer_input_hash(
+                    &changed_lights[2],
+                    &shared,
+                    &primitives,
+                    &geometry,
+                    DENSITY,
+                    AREA_SAMPLES,
+                    target_layer,
+                )
+            })
+            .collect();
+        for hash in &changed_hashes {
+            let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
+            assert!(cache.get(&key).is_none());
+        }
+
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let hook_admissions = Arc::clone(&admissions);
+        let governor = Arc::new(Governor::new(4, false));
+        governor.set_enter_hook(Arc::new(move || {
+            hook_admissions.fetch_add(1, Ordering::Relaxed);
+        }));
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(governor, &progress);
+        let changed = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &changed_alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &control,
+        );
+
+        assert!(changed.is_some());
+        assert_eq!(progress.completed(), progress.total().unwrap());
+        assert_eq!(
+            admissions.load(Ordering::Relaxed),
+            shared.placements.len() * 2,
+            "the changed section must rerun one graph chart item and one changed-light bake item per chart; unchanged partitions must hit"
+        );
+        for hash in &changed_hashes {
+            let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
+            assert!(cache.get(&key).is_some());
+        }
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     #[test]

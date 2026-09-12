@@ -1719,6 +1719,26 @@ pub(crate) fn light_contribution_and_direction(
     }
 }
 
+/// The direct-contribution floor shared by the lightmap bake and analytic
+/// shadowmask coverage. Keeping the comparison in one helper prevents graph
+/// membership from drifting away from the bake's `Option` boundary.
+const LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED: f32 = 1.0e-12;
+
+pub(crate) fn contribution_covers_shadowmask(contribution_squared: f32) -> bool {
+    contribution_squared > LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED
+}
+
+/// Whether a light geometrically covers a texel before any visibility ray.
+#[cfg(test)]
+pub(crate) fn light_texel_is_covered(
+    light: &MapLight,
+    world_p: Vec3,
+    surface_normal: Vec3,
+) -> bool {
+    let (contribution, _) = light_contribution_and_direction(light, world_p, surface_normal);
+    contribution_covers_shadowmask(contribution.length_squared())
+}
+
 /// One light's contribution to a single atlas texel: the shadowed irradiance
 /// (RGB) and the unnormalized weighted direction (`to_light * luminance`),
 /// the exact two terms `bake_face_chart` accumulates per light before the
@@ -1769,7 +1789,7 @@ pub(crate) fn light_texel_contribution_and_visibility(
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
-    if contribution.length_squared() <= 1.0e-12 {
+    if !contribution_covers_shadowmask(contribution.length_squared()) {
         return (Vec3::ZERO, Vec3::ZERO, None);
     }
     // Lightmaps always bake shadowed: an occluded texel goes dark so a
@@ -5232,5 +5252,15 @@ mod tests {
         assert_ne!(texel_seed(3, 7), texel_seed(7, 3));
         assert_ne!(texel_seed(0, 0), texel_seed(0, 1));
         assert_ne!(texel_seed(0, 0), texel_seed(1, 0));
+    }
+
+    #[test]
+    fn shadowmask_coverage_threshold_uses_one_shared_comparison() {
+        let threshold = LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED;
+        let below = f32::from_bits(threshold.to_bits() - 1);
+        let above = f32::from_bits(threshold.to_bits() + 1);
+
+        assert!(!contribution_covers_shadowmask(below));
+        assert!(contribution_covers_shadowmask(above));
     }
 }

@@ -288,6 +288,7 @@ pub fn bake_light_layer(
 /// `target_layer` is deliberately part of both the returned partition's
 /// containment and its cache key. A partition never carries texels from a
 /// neighbouring atlas layer.
+#[allow(clippy::too_many_arguments)]
 pub fn bake_light_layer_controlled(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,

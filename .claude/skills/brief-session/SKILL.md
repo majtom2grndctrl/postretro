@@ -12,11 +12,13 @@ description: >
 ## Before you write
 
 - **Read the `/draft-brief` skill** — the five sections, the Decisions-vs-Path test, the two kinds of open question, and what the executor does with the brief afterward.
-- **Know the consumer.** One long-horizon executor with the whole brief, `research.md`, and the repo. It re-verifies source before building and writes its own task split. Write for that reader: nothing restated, nothing pre-chewed.
+- **Know the consumer.** One integrating executor owns the whole brief, `research.md`, and the repo. It writes the task split and may delegate bounded slices with the same context. Write for that reader: nothing restated, nothing pre-chewed.
+
+- **Choose execution weight.** Compact is the default for one sustained build. Resumable adds an owner plan review and durable task checkpoints when sessions, phases, handoffs, or expensive manual proof justify them. Cross-boundary contracts do not force resumable mode.
 
 **Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and let the executor build it in strides; small increments earn their cost only where the path is genuinely uncertain. A brief spends its length on that split: Decisions settle what is known, and Path's first slice names the one assumption still worth falsifying before the rest. A brief that slices everything has not decided anything. When the work lays a foundation, its first consumer is in the same brief — the consumer proves the foundation and keeps it from landing as a stub nothing exercises.
 
-**Work as an orchestrator.** After a baseline read of the request, dispatch right-sized agents for research. Keep your own context for the Decisions section — that is the judgment only this session can make.
+**Work as an orchestrator.** After a baseline read, dispatch right-sized agents for research. Keep your own context for Decisions. At build time, the integrating executor may also delegate independent implementation slices; it retains shared contracts, integration, tests, and commits.
 
 ## What to research
 
@@ -64,7 +66,7 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 
 **10. Mark every open question.** Each is **blocks build** or **delegated**. An unmarked question is a decision left in the executor's lap with no reporting obligation, which is how it goes silent.
 
-**11. Amend, don't stack.** One commit per brief per session. Push the amended commit so the work persists; keep the history clean. This is a drafting habit — the build commits once per task, and `/build-brief` says so.
+**11. Match persistence to mode.** Resumable drafts use one amended commit per session. Compact drafts continuing to promotion may remain uncommitted. Commit sooner when the session may end or the owner wants a durable review point.
 
 ### Before handoff
 
@@ -82,8 +84,8 @@ Dispatch shape: read-only, one question per agent, returns claim + symbol + conf
 - [ ] A Scripting surface example, if present, runs under an Acceptance row and shows no engine internals
 - [ ] Every open question is marked **blocks build** or **delegated**
 - [ ] Header carries the commit the source was read at
-- [ ] Under ~120 lines, or the excess is named as derivation and moved
+- [ ] Under the mode target, or the excess is derivation moved to `research.md`
 
 ## Closing note
 
-This skill keeps a brief short and decided. It does not verify the brief is right. `/validate-plan` still runs, and the executor's plan of record is where the brief meets the code.
+This skill keeps a brief short and decided. It does not verify direction. `/validate-plan` still runs. `/build-brief` applies compact or resumable coordination after promotion.

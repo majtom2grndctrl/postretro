@@ -2,35 +2,45 @@
 name: draft-brief
 description: >
   Drafts a problem brief for PostRetro — the lightweight spec form for a
-  long-horizon executor that has the repo. Records the problem, the decisions,
-  the acceptance criteria, and a non-binding path; leaves task decomposition
-  and source verification to build time. Use instead of /draft-plan when
-  trialing the brief process. Does not promote to ready/ — that happens after
-  /validate-plan and owner sign-off.
+  repo-aware executor. Records the problem, decisions, acceptance criteria,
+  and a non-binding path. Chooses compact or resumable execution before prose
+  grows around the work. Use instead of /draft-plan when trialing the brief
+  process. Promotion follows /validate-plan and owner sign-off.
 argument-hint: "[feature-name]"
 ---
 
 # Draft Brief
 
-Explore scope, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`. The line under the title marks it as a brief so downstream skills can tell it from a `/draft-plan` spec.
+Explore scope, choose execution weight, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`. The line under the title identifies the document and its execution mode.
 
-A brief is written for a reader with the repo, not a reader with a paragraph. It records judgment and leaves verification to build time. Target 60–120 lines. Anything that would make it longer is derivation (→ `research.md`) or task decomposition (→ the executor's plan of record, written at build time).
+A brief is written for a reader with the repo. It records judgment and leaves task decomposition to build time. Target 40–90 lines for compact work, 60–120 for resumable work. Longer material is derivation (`research.md`) or task decomposition (`plan.md`).
 
 ## Current plans
 
 !`ls context/plans/drafts/ context/plans/ready/ context/plans/in-progress/ 2>/dev/null`
 
-## Three rules
+## Rules
 
-1. **Nothing is restated for an agent that cannot see the rest.** The executor gets the whole brief, `research.md`, and the source tree. There is no task-paragraph contract.
+1. **Nothing is restated for an agent that cannot see the rest.** Every executor gets the whole brief, relevant research and context, and the source tree. There is no task-paragraph contract.
 2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
 3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. Where the stakes warrant a detail read, `/review-brief` is the opt-in — it writes only Acceptance rows and `research.md`, and everything else is a finding for the owner.
+4. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
 
 ## Process
 
-### 1. Understand the problem
+### 1. Frame and size
 
 Read the user's description. Ask focused questions when the problem is unclear — don't over-interrogate. Pin down what was observed and by whom, the cause, and what is true when the work is done.
+
+Decide whether the work needs a brief before writing one:
+
+| Shape | Use when |
+|---|---|
+| Task | Local, reversible work with no decision contract worth retaining. Report that finding; do not create a brief. |
+| Compact brief | One coherent outcome can be built in one sustained session. This is the default. |
+| Resumable brief | Work likely spans sessions, has ordered phases, needs durable handoffs, carries expensive manual proof, or has an irreversible migration. |
+
+Public APIs, wire changes, and cross-subsystem behavior still require complete Decisions, Acceptance, and boundary sections. They do not force resumable mode.
 
 ### 2. Research
 
@@ -47,7 +57,7 @@ Findings that inform but don't decide go to a sibling `research.md`. Lifecycle d
 ```markdown
 # <feature-name>
 
-Brief · Epic <N> (omit if none) · reads: `context/lib/<doc>.md` §x · read at <short-sha>
+Brief · <compact|resumable> · Epic <N> (omit if none) · reads: `context/lib/<doc>.md` §x · read at <short-sha>
 
 ## Problem
 One paragraph. What was observed and by whom — player, modder, developer,
@@ -100,7 +110,7 @@ Non-binding. Research distilled to what would change the executor's plan.
 
 **Scripting surface.** A modder-facing API — an SDK function, a descriptor field, a script event — is designed by the owner, and its shape is a Decision: once a mod depends on it, it is a one-way door. The brief carries it as a code example under `### Scripting surface` inside Decisions, written the way a modder would write it. The example is normative for the surface — names, argument order, defaults, return shape, the calling pattern — and says nothing about the engine behind it; SDK internals and Rust do not appear. It is also a fixture: one Acceptance row runs it, as a test or a `content/dev` script, so the example cannot drift from what ships. A TypeScript example implies its Luau mirror, and the Boundary inventory says whether both ship. Path may sketch an alternative shape for the owner to weigh; Path never carries the one that ships.
 
-**Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past ~120 lines, look for derivation that belongs in `research.md` or task decomposition that belongs to the executor.
+**Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor.
 
 **Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
 
@@ -118,7 +128,9 @@ Non-binding. Research distilled to what would change the executor's plan.
 
 ### 5. Commit
 
-Stage and commit the plan folder. Amend as the brief iterates in-session; one commit per brief, not one per edit.
+For resumable drafting, stage and commit the plan folder. Amend as the brief iterates in-session; one commit per brief, not one per edit.
+
+For compact work continuing in the same session, keep the draft uncommitted until promotion. Commit sooner when the session may end or the owner wants a durable review point.
 
 Do not update `context/lib/` during drafting. Durable capture happens at promotion.
 
@@ -154,9 +166,12 @@ At promotion:
 
 ## What happens after
 
-`/build-brief` runs the brief as one long-horizon session. Before any code it writes the plan of record, `plan.md`, beside the brief — task split, corrected identifiers, delegated answers, and an **AC-to-proof table** mapping every Acceptance row to the test that will prove it — then stops for the owner's skim. That is the only planned check-in before the diff; a false Decision premise is the one unplanned one.
+`/build-brief` reads the mode from the header. Both modes write `plan.md` with corrections, delegated answers, task split, and an AC-to-proof table.
 
-**Decisions and Acceptance are owner-owned.** The executor never edits either section: it proposes a restatement verbatim and stops. A false Decision premise is a stop, not a workaround. This is what keeps the executor from loosening the criteria it is about to be measured against.
+- **Compact:** write the plan, commit it with the move to `in-progress/`, and continue. Promotion plus invocation is approval; there is no second plan stop.
+- **Resumable:** commit the proposed plan and stop for the owner's skim before implementation.
+
+**Decisions and Acceptance are owner-owned.** A change to outcome, public contract, or proof requires a proposed restatement and an owner decision. A clarification that preserves them goes in `plan.md`; it does not stop the build. A false Decision premise always stops.
 
 At landing the table gains a result column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
 

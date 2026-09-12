@@ -1,135 +1,149 @@
 ---
 name: build-brief
 description: >
-  Executes a promoted problem brief as one long-horizon session: verifies the
-  brief against source, writes the plan of record, stops for the owner's skim,
-  then builds task by task with plan.md as the checkpoint, reviews the diff, and
-  lands with an AC-to-proof report. Use on a brief in ready/ or to resume one in
-  in-progress/. Counterpart to /orchestrate for the brief process — no task
-  fan-out, no task-paragraph contract.
+  Executes a promoted PostRetro problem brief end to end. Compact briefs use
+  one continuous build with light checkpoints. Resumable briefs add an owner
+  plan review and durable task checkpoints. Both verify decisions, map
+  acceptance to proof, run review and fix loops, and land the result.
 argument-hint: "[brief-name]"
 ---
 
 # Build Brief
 
-One session builds the whole brief. It reads the brief, `research.md`, and the source tree; it writes its own task split; it keeps its state in `plan.md` so a fresh session can pick up where this one stopped. Nothing is dispatched a paragraph at a time.
+Build one promoted brief. Read its `compact` or `resumable` mode from the header. Both modes preserve the same Decisions and Acceptance contract. Mode changes coordination weight.
 
-Two stops, and only two: after `plan.md` is written, and on a false Decision premise. Everything else is a note in `plan.md`; keep going.
+The integrating executor owns `plan.md`, shared contracts, commits, and final verification. It may delegate bounded implementation slices. Every worker reads the whole brief and relevant context. Never dispatch a task paragraph alone.
 
-## Where to enter
+## Locate the brief
 
-!`ls context/plans/ready/ context/plans/in-progress/ 2>/dev/null`
+Inspect `context/plans/ready/` and `context/plans/in-progress/`.
 
-| State | Do |
+| State | Action |
 |---|---|
-| Brief is in `ready/` | Start at step 1 |
-| `plan.md` says `status: proposed` | Stop. Report the plan; wait for the owner |
-| `plan.md` says `status: approved`, tasks remain | Resume at the first task without a `done` row |
-| `plan.md` says `status: approved`, all tasks `done` | Resume at step 6 |
-| `plan.md` says `status: blocked` | Report the block; wait for the owner |
+| Brief in `ready/` | Start at **Take the brief**. |
+| Compact `plan.md` says `active` | Resume the first unfinished task. |
+| Resumable `plan.md` says `proposed` | Report the plan and wait for owner approval. |
+| Resumable `plan.md` says `approved` | Resume the first unfinished task. |
+| All tasks done | Resume at **Preflight and review**. |
+| `plan.md` says `blocked` | Report the block and wait for the owner. |
 
-## Process
+## Take the brief
 
-### 1. Take the brief
+Start from clean, current `main`. Create the feature branch and move the brief from `ready/` to `in-progress/`. Do not commit the move yet.
 
-```
-git mv context/plans/ready/<name> context/plans/in-progress/<name>
-git checkout -b <name>
-```
+Read, in order:
 
-Commit the move. Read, in order: `context/lib/index.md` and the docs it routes to for this subsystem, `context/lib/development_guide.md`, the brief, `research.md` if present. The brief's Problem paragraph is what every later choice is measured against; read it twice.
+1. `context/lib/index.md` and routed subsystem docs.
+2. `context/lib/development_guide.md` and `context/lib/testing_guide.md`.
+3. Brief `index.md`, then `research.md` when present.
 
-### 2. Verify against source
+Problem defines success. Decisions and Acceptance define the contract.
 
-Re-read every symbol the brief cites, in Decisions and in Path. Two outcomes, and the difference matters:
+## Verify source
 
-- **A Path claim is stale** — the seam moved, the precedent was refactored, the sketch does not fit. Note it in `plan.md` under *Corrections* and plan around it. Path is non-binding; being wrong there is expected.
-- **A Decision premise is false** — the claim the decision rests on does not hold. Set `status: blocked` in `plan.md`, name the premise and what you found, commit, and stop. Whether the decision survives is the owner's call. Do not route around it.
+Resumable mode re-reads every source symbol cited by Decisions and Path.
 
-Decisions and Acceptance are owner-owned. The executor edits neither; where one needs changing, it proposes the wording verbatim and stops.
+Compact mode first compares the brief's `read at` commit with current source. If no relevant source changed, reuse the grounded Decision reads. Re-open changed cited symbols and any seam the diff could affect. Never skip verification because the same conversation continued.
 
-### 3. Write the plan of record
+- **Stale Path:** record current source and adjusted approach under *Corrections*. Continue.
+- **False Decision premise:** set `status: blocked`, record evidence, commit the checkpoint, and stop. The owner decides whether the Decision survives.
 
-`plan.md` beside the brief. This is the checkpoint the whole build runs from — a session that dies mid-build is recovered from this file, so keep it current.
+Decisions and Acceptance belong to the owner. Stop for a change to outcome, public contract, or required proof. Record a clarification under *Corrections* and continue when every Decision and Acceptance row keeps the same meaning.
+
+## Write the plan of record
+
+Create `plan.md` beside the brief. It must support resumption without the prior conversation.
 
 ```markdown
-# <name> — plan of record
+# <brief name> — plan of record
 
-status: proposed
-read at: <short-sha>
+mode: compact | resumable
+status: active | proposed | approved | blocked
+read at: <short sha>
 
 ## Corrections
-- <cited symbol> → <what is there now>, planning around it by <how>
+- <brief claim> → <current source fact>; planning around it by <approach>
 
 ## Delegated answers
-- <open question from the brief> — <answer, one sentence of why>
+- <brief question> — <answer and one-sentence reason>
 
 ## AC-to-proof
 
 | AC | Proof | Status |
 |---|---|---|
-| 1 | `test_name` | achievable as stated |
+| 1 | `focused_test` | achievable as stated |
 | 4 | owner, in-engine | manual-visual |
-| 6 | proposed rewording: "<verbatim>" | needs restatement |
 
 ## Tasks
-| # | Task | Status |
-|---|---|---|
-| 1 | <first slice, and why it is first if that differs from the Path> | |
-| 2 | … | |
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | <thin slice testing highest-risk premise> | integrating executor | — | |
 ```
 
-The first slice is the thinnest change that falsifies the brief's riskiest assumption. Take the Path's suggestion unless verification gave a reason not to; say the reason if so.
+Include every Acceptance row. Assign automated proof, manual proof, or `needs restatement` with exact proposed wording. First task tests the riskiest assumption through the thinnest useful slice.
 
-Every Acceptance row appears in the table. A row with no proof is `needs restatement` with a proposed wording, never omitted. Manual-visual rows are the owner's to prove and the table says so.
+For compact mode, set `status: active`. Commit the move and plan together, then continue. Promotion and `/build-brief` invocation are approval.
 
-Commit `plan.md`. **End the turn.** Report the plan (Corrections, any `needs restatement` rows, the task order) and do not write code until the owner says go.
+For resumable mode, set `status: proposed`. Commit the move and plan together. Report corrections, proof gaps, ownership, and task order. Stop for the owner's skim. On approval, set `status: approved` and continue; fold that update into the first implementation commit.
 
-### 4. Approval
+## Build
 
-The owner skims and says go, or edits the brief and says go. On go, set `status: approved` in `plan.md` and commit. If the owner accepted a restatement, they edit the brief's Acceptance; update the table's row to `achievable as stated` and cite the new wording.
+Execute tasks in dependency order. Keep shared contracts and integration with the integrating executor.
 
-### 5. Build
+Delegate only when a slice has clear ownership and can be reviewed independently. Give each worker:
 
-Task by task, in the plan's order. For each:
+- Full brief and relevant `research.md`.
+- Routed context docs and full Acceptance list.
+- Named files or subsystem ownership.
+- Upstream contracts and downstream consumers.
+- Instruction not to edit `plan.md` or commit.
 
-- Implement. Read dependent code before editing it; follow the subsystem docs from step 1.
-- Focused tests for the touched crate or module — `cargo test -p <crate> <filter>`, one target (`--lib` or `--bin <name>`). Check the count; a filter matching nothing prints `0 passed` and exits `ok`.
-- One commit per task, with the plan's task number in the message. Not amended — the review diff and the resumability both need the history.
-- Mark the row `done · <short-sha> · <test>` in `plan.md` and commit that too. A task is not done until its row says so.
+Run independent workers concurrently when their files and contracts do not overlap. The integrating executor resolves shared seams and runs Cargo commands after concurrent edits finish.
 
-A Decision that turns out to be unbuildable as written is a step-2 stop, not a deviation: `status: blocked`, name it, end the turn. A Path deviation is a *Corrections* line. If unsure which, it is a Decision.
+For each task:
 
-Subagents are for reading — tracing a call path, checking a precedent. The executor writes the code, so the plan and the diff come from one context.
+1. Read dependent code before editing.
+2. Implement and integrate.
+3. Run focused tests; confirm filters matched tests.
+4. Update the task row with proof and status.
 
-Files past ~800 lines that a task extends are split first, behavior-preserving, in their own commit, before the task's commit.
+Compact mode commits coherent milestones. One commit may cover the feature. Include the matching `plan.md` update in the same commit.
 
-### 6. Preflight and review
+Resumable mode commits each completed task with its `plan.md` update. Do not create a second status-only commit.
 
-Run `/preflight` once, on the finished branch. Fix mechanical failures; a failure that needs a design choice is a `blocked` stop.
+A false Decision premise remains a blocked stop. A Path change remains a Correction. A material Decision or Acceptance change requires owner direction. A clarification that preserves their meaning does not.
 
-Then `/review-panel`, then `/fix-review-findings`. Findings that would change a Decision or an AC go to the owner, not into the diff.
+## Preflight and review
 
-### 7. Land
+Run `/preflight` after integration. Then run `/review-panel` and `/fix-review-findings` as a review → fix → focused retest loop. Repeat only while new concrete findings appear.
 
-Fill the **landing report** at the bottom of `plan.md`: the AC-to-proof table with a result column — every AC, the test or owner step that proved it, pass or fail. An AC with no proof is a named gap, never a silent one.
+Mechanical fixes proceed. Findings that change a Decision or Acceptance row go to the owner. After fixes, run the full relevant gate once.
 
-Then a **trial notes** block, five lines, so the process can be measured against `/orchestrate`:
+## Land
+
+Add a result column to the AC-to-proof table. Record pass, fail, or outstanding manual proof for every row. No silent gaps.
+
+Update durable `context/lib/` contracts. Move the brief to `context/plans/done/`. Commit the move, plan, and context updates with the final coherent change.
+
+Add trial notes only when the owner is evaluating the process:
 
 ```markdown
 ## Trial notes
+- mode: compact | resumable
 - sessions used: N
-- tasks that needed rework after their first commit: N
+- delegated implementation slices: N
 - review-panel findings: N (N acted on)
 - Decision premises found false: N
 - Path claims corrected: N
 ```
 
-Update `context/lib/` for any behavior the build changed — subsystem docs, constraints, contracts. `git mv` the folder to `done/` with `plan.md` beside it. Commit the move and the doc updates together. Report: the branch, the landing table, the trial notes, and any manual-visual rows still waiting on the owner.
+Report the branch, landing table, review loop, and outstanding manual checks.
 
-## Working rules
+## Invariants
 
-- **`plan.md` is truth.** Any state that matters to resumption lives there, committed. A fresh session should never need this session's transcript.
-- **Two stops.** Plan written; Decision premise false. A session that wants a third stop is usually looking at a Path deviation and should write the *Corrections* line instead.
-- **Owner-owned text.** Decisions and Acceptance are edited by the owner. The executor's job is to propose exactly and stop.
-- **No fan-out.** This skill does not dispatch tasks to agents with a paragraph each. That is `/orchestrate`, for `/draft-plan` specs.
+- `plan.md` holds state needed to resume.
+- Decisions and Acceptance remain owner-owned.
+- Compact changes checkpoints, not contract rigor.
+- Delegation shares full context; no task-paragraph contracts.
+- Integrating executor owns seams, tests, and commits.

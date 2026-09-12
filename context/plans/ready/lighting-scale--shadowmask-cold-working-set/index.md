@@ -1,6 +1,6 @@
 # lighting-scale--shadowmask-cold-working-set
 
-Brief · resumable · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache, §Distribution packaging · read at `6c645c03`, plus `81922771` on `origin/feature/lighting-scale--lightmap-bake-incremental-flush` for the warm partition path
+Brief · resumable · reads: `context/lib/build_pipeline.md` §PRL section IDs, §Build Cache, §Distribution packaging · read at `6168c5c9`, with `lighting-scale--lightmap-bake-incremental-flush` merged
 
 ## Problem
 
@@ -52,8 +52,9 @@ only light-scaling residency is an adjacency matrix of one byte per light pair.
   `Write`-based serialization. The buffer stays content-sized because it is the bytes
   written to disk.
 - **Cache keys and memo semantics are unchanged.** The fill still reads layer partitions,
-  so the layer fingerprint still governs; the graph pass reads no cache at all. Re-keying
-  belongs to the sibling branch.
+  so the layer fingerprint still governs; the graph pass reads no cache at all. The
+  per-partition layer keys `lighting-scale--lightmap-bake-incremental-flush` landed stay as
+  they are.
 - **Progress stays determinate.** `shadowmask-bake-scaling` published a real total so the
   stage shows a percentage rather than a spinner. The countable units change from
   light-and-chart bake work to the graph pass plus the fill, so the total is recomputed
@@ -97,7 +98,7 @@ Equivalence — decides the shape, then stands so the two definitions cannot dri
   Bytes and the whole channel table are unchanged from a run with pruning disabled. Pins
   `ord-zero-coverage`.
 
-Residency — new behavior; none of these can pass today:
+The new pass — residency and ordering; none of these can pass today:
 
 - [ ] No structure indexed by light-and-texel is live at any point in the stage. The only
   light-scaling residency left is the adjacency matrix at one byte per light pair — 114 KB
@@ -166,15 +167,17 @@ Density 0.04 on this map is a **stress probe, not a supported configuration**. I
 section near 1.29 GB, and the runtime's usability filter checks only dimensions and layer
 count — nothing stands between that artifact and an uncompressed texture upload of the
 same size. These rows prove the compiler survives the stress case; they make no claim that
-the result ships. They also require the sibling lightmap branch landed, since the same map
-at this density currently exhausts the machine one stage earlier.
+the result ships.
 
 - [ ] On the owner's 16 GiB Windows machine, a `--release` compile of
   `stress-warren-hallway-inspection.map` at density 0.04 reaches and completes this stage,
   with out-of-band peak RSS recorded. Budget the run: the lightmap stage alone takes
   roughly forty minutes at that density.
-- [ ] That compile's section-42 bytes match a reference build produced on a machine with
-  headroom.
+- [ ] If a machine with headroom can produce a reference build at this density, the stress
+  compile's section-42 bytes match it. No pre-change build can serve as that reference —
+  the pre-change compiler cannot reach the end of this stage at 0.04, which is the defect.
+  Absent such a machine, byte evidence rests on the supported-density row below and on the
+  automated golden gates, and this row is recorded as not run.
 - [ ] A supported-density compile of the same map is unchanged in bytes and no slower than
   a pre-change build by more than a stated margin.
 
@@ -224,5 +227,3 @@ at this density currently exhausts the machine one stage earlier.
 - The reach fraction for this stage's geometry — **delegated**: measured during the build,
   not inherited from another bake's fixture, and recorded in the plan of record.
 - The supported-density margin in the last manual row — **delegated**.
-- The warm partition path is only on the sibling branch until it merges — **delegated**:
-  the executor re-checks it against the merged tree before building on it.

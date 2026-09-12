@@ -8,9 +8,11 @@ read at: 438a84925
 
 - The Path says to reuse `ReachIndex` inversion directly → current
   `direct_sh_bake::ReachIndex` also owns SH-probe coordinate mapping and is
-  not reusable as the chart-prune index; reuse
-  `affinity_grid::decompose_affinity_for_lights` and the shared CSR/inversion
-  primitives, then add the chart-aware lookup at the shadowmask boundary.
+  not reusable as the chart-prune index. The affinity portal filter classifies
+  cell centroids, so it also cannot prove that rejecting a whole chart is a
+  coverage superset at portal/leaf boundaries. The implemented prune therefore
+  reuses the authoritative `affinity_grid::light_aabb` against each chart's
+  world AABB; the exact shared texel predicate remains the final authority.
 - The brief schedules the id-42 graph-versus-coloring clarification for
   promotion → `build_pipeline.md` already contains that clarification and marks
   the analytic pass as not yet built; landing removes the marker and updates the
@@ -26,10 +28,12 @@ two-line promoted-context update above.
   cold chart-layer batching; the layer-outer fill itself holds one partition at
   a time. Change 4 only if the measured implementation requires it, and record
   that evidence here before landing.
-- Reach fraction — integrating executor measures accepted versus candidate
-  light/chart pairs on `stress-warren-hallway-inspection-mini.map` during the
-  graph-pass task, then records the fraction here. The full stress map is
-  reserved for the owner-run manual gate.
+- Reach fraction — at density 0.04 on
+  `stress-warren-hallway-inspection-mini.map`, the analytic graph prune kept
+  52,994 / 647,566 light/chart pairs (8.18%) across 166 selected lights and
+  3,901 charts. This was measured by the explicit ignored graph-only fixture
+  test; it does not bake rays or write stage-cache entries. The full stress map
+  remains reserved for the owner-run manual gate.
 - Supported-density margin — no more than 10% slower in the ShadowmaskAtlas
   stage at density 0.16, comparing the same release build, map, machine, and
   worker setting. Record both timings; treat larger regression as a failed
@@ -46,18 +50,18 @@ two-line promoted-context update above.
 
 | AC | Proof | Status |
 |---|---|---|
-| Analytic coverage equals baked coverage across fixtures/golden, including both sides of the shared threshold, occluded zero, beyond-falloff, degenerate charts, and NaN | `analytic_coverage_matches_baked_coverage_fixture_matrix` plus the existing top-level golden | achievable as stated |
-| Every prune rejection has no analytically covered chart texel | `shadowmask_chart_prune_is_coverage_superset` | achievable as stated |
-| A fully pruned selected light keeps its node, channel, bytes, and later channel ordering | `pruned_zero_coverage_light_keeps_node_and_channel_table` | achievable as stated |
-| No light-and-texel structure remains; sole light-scaling allocation is `n*n` bytes (114,244 bytes at 338 lights) | `shadowmask_graph_storage_is_one_byte_per_light_pair`; source review confirms deleted membership/index types | achievable as stated |
-| Light-scaling residency is independent of atlas layers at fixed plane/light count, excluding the output | `shadowmask_graph_storage_is_layer_count_independent` | achievable as stated |
+| Analytic coverage equals baked coverage across fixtures/golden, including both sides of the shared threshold, occluded zero, beyond-falloff, degenerate charts, and NaN | `analytic_coverage_matches_baked_coverage_fixture_matrix` plus the existing top-level golden | passed in tasks 1 and 3 |
+| Every prune rejection has no analytically covered chart texel | `shadowmask_chart_prune_is_coverage_superset` | passed |
+| A fully pruned selected light keeps its node, channel, bytes, and later channel ordering | `pruned_zero_coverage_light_keeps_node_and_channel_table` | passed |
+| No light-and-texel structure remains; sole light-scaling allocation is `n*n` bytes (114,244 bytes at 338 lights) | `shadowmask_graph_storage_is_one_byte_per_light_pair`; source review confirms deleted membership/index types | storage passed; membership deletion pending task 4 |
+| Light-scaling residency is independent of atlas layers at fixed plane/light count, excluding the output | `shadowmask_graph_storage_is_layer_count_independent` | passed for graph allocation; fill proof pending task 4 |
 | Exactly one full-size output allocation; conversion is in-place or absent | grep/review of the fill path; add a counting-allocator test only if review finds an ambiguous second allocation | review gate |
 | Output allocation occurs exactly once on cold, cached miss, and wholly filtered cached paths | `shadowmask_output_allocates_once_on_every_fill_path` using test-only allocation instrumentation at the allocation seam | achievable as stated |
-| Coloring runs once after every graph item joins | `shadowmask_coloring_waits_for_complete_graph` | achievable as stated |
-| Pause/resume and mid-pass `-j` lowering preserve bytes without preemption/deadlock | `shadowmask_graph_pause_and_permit_retarget_preserve_output` | achievable as stated |
-| Progress advances during graph construction | `shadowmask_progress_advances_during_graph_pass` | achievable as stated |
-| Cross-layer shared texel refuses one channel; disjoint lights may share one | `analytic_graph_respects_cross_layer_overlap_and_disjoint_reuse` via synthetic coverage seam | achievable as stated |
-| Reversed graph work order and worker count preserve adjacency/channel table | `analytic_graph_is_order_and_worker_count_independent` | achievable as stated |
+| Coloring runs once after every graph item joins | `shadowmask_coloring_waits_for_complete_graph` | passed |
+| Pause/resume and mid-pass `-j` lowering preserve bytes without preemption/deadlock | `shadowmask_graph_pause_and_permit_retarget_preserve_output` | passed |
+| Progress advances during graph construction | `shadowmask_progress_advances_during_graph_pass` | passed |
+| Cross-layer shared texel refuses one channel; disjoint lights may share one | `analytic_graph_respects_cross_layer_overlap_and_disjoint_reuse` via synthetic coverage seam | passed |
+| Reversed graph work order and worker count preserve adjacency/channel table | `analytic_graph_is_order_and_worker_count_independent` | passed |
 | Cold, cold cache miss, warm partition miss, section hit, and analytic route are byte-identical | `top_level_cached_and_analytic_paths_match_multilayer_five_way_golden` | achievable as stated |
 | Zero selection, wholly filtered selection, out-of-range slot, one-layer literal, and two-layer golden stay unchanged | focused degenerate-path tests plus existing multilayer golden | achievable as stated |
 | Unchanged rebuild hits section memo; one-light change misses it, re-runs graph without cache reads, and reuses other partitions | `one_light_change_reruns_graph_and_reuses_unchanged_partitions` | achievable as stated |
@@ -77,7 +81,7 @@ two-line promoted-context update above.
 |---|---|---|---|---|
 | 1 | Add the shared coverage predicate and coverage-only chart walk; prove analytic/baked equivalence across the fixture matrix before changing graph construction | integrating executor | — | done — `analytic_coverage` (2), threshold (1), degenerate walk (1), NaN inclusion (1) |
 | 2 | Split the 3,600+ line `shadowmask_bake.rs` by responsibility without behavior changes; run existing shadowmask tests and commit the split alone | integrating executor | 1 | done — assignment module extracted; `shadowmask_bake::tests` 45 passed |
-| 3 | Build the pruned parallel analytic graph pass from shared affinity reach data, preserving every selected node; measure and record the mini-warren reach fraction, barrier, ordering, pause, worker-count, progress, and adjacency-storage proofs | integrating executor | 2 | pending |
+| 3 | Build the pruned parallel analytic graph pass from shared affinity reach data, preserving every selected node; measure and record the mini-warren reach fraction, barrier, ordering, pause, worker-count, progress, and adjacency-storage proofs | integrating executor | 2 | done — 54 shadowmask tests passed; mini-warren kept 8.18% of pairs |
 | 4 | Replace membership assembly with layer-outer partition fill into one output allocation on cold and warm section-miss paths; preserve cache keys/epochs, define dropped-partition population, and pin filtered-selection allocation and final progress ordering | integrating executor | 3 | pending |
 | 5 | Complete lifecycle, degeneracy, determinism, cache, golden-byte, and allocation review gates; run focused compiler tests after each seam and confirm every filter executes tests | integrating executor | 4 | pending |
 | 6 | Run preflight, review panel, fix/retest loops, update durable build-pipeline contracts, populate AC results, move the brief to `done/`, and commit the landing | integrating executor | 5 | pending |

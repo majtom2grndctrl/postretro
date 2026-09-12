@@ -478,17 +478,26 @@ pub(crate) fn for_each_light_layer_chart_texel_controlled(
     atlas: &SharedAtlas<'_>,
     face_idx: usize,
     control: &BakeControl,
-    mut sample_texel: impl FnMut(ChartWalkSample),
+    sample_texel: impl FnMut(ChartWalkSample),
 ) {
     // Parallel bake work must enter once at its outermost boundary so pause
     // and the shared concurrency cap apply to every chart.
     let _permit = control.governor().enter();
+    for_each_light_layer_chart_texel(atlas, face_idx, sample_texel);
+    control.advance(1);
+}
+
+/// Walk one chart without acquiring a governor permit. Callers that include
+/// prune/setup work in the same parallel item acquire the permit outside this
+/// helper, then use this exact raster loop.
+pub(crate) fn for_each_light_layer_chart_texel(
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    mut sample_texel: impl FnMut(ChartWalkSample),
+) {
     let placement = &atlas.placements[face_idx];
     let chart = &atlas.charts[face_idx];
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-        // Degenerate charts still consume one progress unit while the permit is
-        // held; their ordered slot is an empty buffer.
-        control.advance(1);
         return;
     }
 
@@ -516,7 +525,6 @@ pub(crate) fn for_each_light_layer_chart_texel_controlled(
             sample_texel(sample);
         }
     }
-    control.advance(1);
 }
 
 /// Composite per-light layers into the pre-BC6H atlas, reproducing

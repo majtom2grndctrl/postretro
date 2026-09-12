@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 
@@ -12,16 +13,74 @@ pub(super) const SHADOWMASK_COLOR_SEARCH_NODE_BUDGET: usize = 100_000;
 
 const SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS: usize = 1024;
 
+/// Full symmetric overlap matrix. One atomic byte per ordered light pair lets
+/// chart workers union edges directly without per-chart graph copies.
+pub(super) struct OverlapGraph {
+    light_count: usize,
+    edges: Vec<AtomicU8>,
+}
+
+const _: () = assert!(std::mem::size_of::<AtomicU8>() == 1);
+
+impl OverlapGraph {
+    pub(super) fn new(light_count: usize) -> Self {
+        let edge_count = light_count
+            .checked_mul(light_count)
+            .expect("shadowmask overlap graph dimensions exceed addressable memory");
+        Self {
+            light_count,
+            edges: (0..edge_count).map(|_| AtomicU8::new(0)).collect(),
+        }
+    }
+
+    pub(super) fn light_count(&self) -> usize {
+        self.light_count
+    }
+
+    pub(super) fn storage_bytes(&self) -> usize {
+        self.edges.len() * std::mem::size_of::<AtomicU8>()
+    }
+
+    pub(super) fn mark_overlap(&self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        self.edges[a * self.light_count + b].store(1, Ordering::Relaxed);
+        self.edges[b * self.light_count + a].store(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn overlaps(&self, a: usize, b: usize) -> bool {
+        self.edges[a * self.light_count + b].load(Ordering::Relaxed) != 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Vec<u8> {
+        self.edges
+            .iter()
+            .map(|edge| edge.load(Ordering::Relaxed))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_edges(light_count: usize, edges: &[(usize, usize)]) -> Self {
+        let graph = Self::new(light_count);
+        for &(a, b) in edges {
+            graph.mark_overlap(a, b);
+        }
+        graph
+    }
+}
+
 #[cfg(test)]
-pub(super) fn overlap_graph(membership: &ShadowmaskMembership) -> Vec<Vec<bool>> {
+pub(super) fn overlap_graph(membership: &ShadowmaskMembership) -> OverlapGraph {
     overlap_graph_controlled(membership, || {})
 }
 
 pub(super) fn overlap_graph_controlled(
     membership: &ShadowmaskMembership,
     mut checkpoint: impl FnMut(),
-) -> Vec<Vec<bool>> {
-    let mut graph = vec![vec![false; membership.by_light.len()]; membership.by_light.len()];
+) -> OverlapGraph {
+    let graph = OverlapGraph::new(membership.by_light.len());
     let mut texel_lights: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut operation_count = 0;
     for (compact_light_index, entries) in membership.by_light.iter().enumerate() {
@@ -41,8 +100,7 @@ pub(super) fn overlap_graph_controlled(
                 if a == b {
                     continue;
                 }
-                graph[a][b] = true;
-                graph[b][a] = true;
+                graph.mark_overlap(a, b);
             }
         }
     }
@@ -97,12 +155,12 @@ impl ExactColorBudget {
 }
 
 pub(super) fn assign_channels_with_drops_controlled(
-    graph: &[Vec<bool>],
+    graph: &OverlapGraph,
     selected: &[(usize, u32, &MapLight)],
     exact_node_budget: usize,
     mut checkpoint: impl FnMut(),
 ) -> ChannelAssignment {
-    let mut active = vec![true; graph.len()];
+    let mut active = vec![true; graph.light_count()];
     let mut budget = ExactColorBudget::new(exact_node_budget);
     let mut operation_count = 0;
 
@@ -130,7 +188,7 @@ pub(super) fn assign_channels_with_drops_controlled(
                 ExactColorResult::Uncolorable => {
                     let Some(drop_index) = lowest_intensity_active(selected, &active) else {
                         return finish_channel_assignment(
-                            vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()],
+                            vec![SHADOWMASK_CHANNEL_DROPPED; graph.light_count()],
                             &active,
                             budget.visited,
                             0,
@@ -227,7 +285,7 @@ fn light_intensity_score(light: &MapLight) -> f32 {
 }
 
 pub(super) fn color_graph_exact_bounded(
-    graph: &[Vec<bool>],
+    graph: &OverlapGraph,
     active: &[bool],
     budget: &mut ExactColorBudget,
     operation_count: &mut usize,
@@ -241,7 +299,7 @@ pub(super) fn color_graph_exact_bounded(
         .collect();
     order.sort_by(|&a, &b| degrees[b].cmp(&degrees[a]).then(a.cmp(&b)));
 
-    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
+    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.light_count()];
     let result = color_order_exact_bounded_iterative(
         graph,
         active,
@@ -262,7 +320,7 @@ struct ExactColorFrame {
 }
 
 fn color_order_exact_bounded_iterative(
-    graph: &[Vec<bool>],
+    graph: &OverlapGraph,
     active: &[bool],
     order: &[usize],
     channels: &mut [u8],
@@ -303,11 +361,11 @@ fn color_order_exact_bounded_iterative(
             let channel = frame.next_channel;
             frame.next_channel += 1;
             let mut used_by_neighbor = false;
-            for other in 0..graph.len() {
+            for other in 0..graph.light_count() {
                 record_assignment_operation(operation_count, checkpoint);
                 if other != light
                     && active[other]
-                    && graph[light][other]
+                    && graph.overlaps(light, other)
                     && channels[other] == channel
                 {
                     used_by_neighbor = true;
@@ -342,7 +400,7 @@ fn color_order_exact_bounded_iterative(
 }
 
 pub(super) fn color_graph_priority_greedy(
-    graph: &[Vec<bool>],
+    graph: &OverlapGraph,
     selected: &[(usize, u32, &MapLight)],
     active: &mut [bool],
     operation_count: &mut usize,
@@ -355,13 +413,13 @@ pub(super) fn color_graph_priority_greedy(
         .collect();
     order.sort_by(|&a, &b| light_drop_priority_cmp(selected, b, a));
 
-    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
+    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.light_count()];
     for &light in &order {
         record_assignment_operation(operation_count, checkpoint);
         let mut used = [false; 4];
-        for other in 0..graph.len() {
+        for other in 0..graph.light_count() {
             record_assignment_operation(operation_count, checkpoint);
-            if other != light && graph[light][other] {
+            if other != light && graph.overlaps(light, other) {
                 let channel = channels[other] as usize;
                 if channel < used.len() {
                     used[channel] = true;
@@ -379,19 +437,19 @@ pub(super) fn color_graph_priority_greedy(
 }
 
 fn active_degrees(
-    graph: &[Vec<bool>],
+    graph: &OverlapGraph,
     active: &[bool],
     operation_count: &mut usize,
     checkpoint: &mut impl FnMut(),
 ) -> Vec<usize> {
-    let mut degrees = vec![0; graph.len()];
-    for light in 0..graph.len() {
+    let mut degrees = vec![0; graph.light_count()];
+    for light in 0..graph.light_count() {
         if !active[light] {
             continue;
         }
-        for other in 0..graph.len() {
+        for other in 0..graph.light_count() {
             record_assignment_operation(operation_count, checkpoint);
-            if other != light && active[other] && graph[light][other] {
+            if other != light && active[other] && graph.overlaps(light, other) {
                 degrees[light] += 1;
             }
         }

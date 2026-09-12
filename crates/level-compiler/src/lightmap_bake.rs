@@ -1729,7 +1729,6 @@ pub(crate) fn contribution_covers_shadowmask(contribution_squared: f32) -> bool 
 }
 
 /// Whether a light geometrically covers a texel before any visibility ray.
-#[cfg(test)]
 pub(crate) fn light_texel_is_covered(
     light: &MapLight,
     world_p: Vec3,

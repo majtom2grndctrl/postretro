@@ -106,7 +106,11 @@ pub(crate) fn try_enter_dash(
         let dash = component.dash.as_ref()?;
         let programs = &component.dash_programs;
         let mut scope = MovementScope::for_validation();
-        scope.refresh(component, 0.0);
+        scope.refresh_with_total_velocity(
+            component,
+            0.0,
+            component.velocity + component.knockback_velocity,
+        );
         // `boostSpeed`: floor 0 (an EXPRESSION evaluating to 0 yields a
         // zero-boost dash; a literal 0 was already rejected at declaration — its
         // bound is exclusive `> 0`, which no clamp can reproduce, so the eval
@@ -243,7 +247,11 @@ pub(crate) fn dash_intent(
             .expect("dash present (checked above)");
         let programs = &component.dash_programs;
         let mut scope = MovementScope::for_validation();
-        scope.refresh(component, *elapsed_ms);
+        scope.refresh_with_total_velocity(
+            component,
+            *elapsed_ms,
+            component.velocity + component.knockback_velocity,
+        );
         // `steerControl` ∈ [0, 1]; `dashDrag` ≥ 0.
         let steer_control = resolve_number(
             &dash.steer_control,
@@ -265,10 +273,7 @@ pub(crate) fn dash_intent(
     // Gravity runs normally (FPS-shaped: the dash does not suspend it).
     if !component.is_grounded() {
         component.velocity.y += gravity * dt;
-        let terminal = component.fall.terminal_velocity;
-        if component.velocity.y < -terminal {
-            component.velocity.y = -terminal;
-        }
+        crate::movement::knockback::clamp_fall_speed(component);
     }
 
     let ground_speed = if input.running {
@@ -283,6 +288,7 @@ pub(crate) fn dash_intent(
     // not feed the tracked boost layer.
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     if steer_control > 0.0 && input_dir_3d.length_squared() > 0.0 {
+        let control = component.knockback_control();
         let context_accel = if component.is_grounded() {
             component.ground_params.accel
         } else {
@@ -292,7 +298,7 @@ pub(crate) fn dash_intent(
             &mut component.velocity,
             input_dir_3d,
             ground_speed,
-            context_accel * steer_control,
+            context_accel * steer_control * control,
             dt,
         );
     }

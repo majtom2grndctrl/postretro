@@ -694,6 +694,17 @@ pub(crate) fn attach_descriptor_components(
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, move_speed);
+        if let Ok(mut agent) = registry
+            .get_component::<postretro_entities::components::agent::AgentComponent>(id)
+            .cloned()
+        {
+            agent.knockback = descriptor
+                .behavior
+                .as_ref()
+                .expect("behavior seeded agent")
+                .knockback;
+            let _ = registry.set_component(id, agent);
+        }
 
         // Warn-once per undeclared animation-state name; the tick keeps the prior
         // animation for those states. Called here for its spawn-time side
@@ -2180,6 +2191,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 12.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -2320,6 +2332,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,
@@ -3293,7 +3306,9 @@ mod tests {
         // Without this, `is_networked_ai_enemy` (which reads those live columns)
         // and the pre-materialization `descriptor_materializes_ai_enemy` could
         // disagree.
-        let descriptors = vec![behavior_enemy_descriptor("grunt")];
+        let mut descriptor = behavior_enemy_descriptor("grunt");
+        descriptor.behavior.as_mut().unwrap().knockback.scale = 0.25;
+        let descriptors = vec![descriptor];
         let placements = vec![placement("grunt", &[])];
         let mut reg = EntityRegistry::new();
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
@@ -3302,6 +3317,10 @@ mod tests {
             .iter_with_kind(ComponentKind::Brain)
             .next()
             .expect("behavior descriptor materializes a Brain");
+        let agent = reg
+            .get_component::<postretro_entities::components::agent::AgentComponent>(id)
+            .unwrap();
+        assert!((agent.knockback.scale - 0.25).abs() < f32::EPSILON);
         assert!(
             matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
             "behavior descriptor materializes an Agent alongside the Brain"

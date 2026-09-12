@@ -215,7 +215,20 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
+    let raw: LuaValue = table.get("knockback").map_err(lua_err)?;
+    let knockback = if matches!(raw, LuaValue::Nil) {
+        KnockbackResponse::default()
+    } else {
+        let json = conv::lua_to_json(raw).map_err(lua_err)?;
+        validate_knockback_object(&json, "movement.knockback")?;
+        serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
+            reason: format!("`movement.knockback` invalid: {e}"),
+        })?
+    };
+    knockback.validate("movement.knockback")?;
+
     Ok(PlayerMovementDescriptor {
+        knockback,
         capsule,
         ground,
         air,

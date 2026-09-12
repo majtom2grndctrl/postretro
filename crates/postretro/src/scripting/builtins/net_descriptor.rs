@@ -627,6 +627,7 @@ mod tests {
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
         descriptor.behavior = Some(BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: std::collections::BTreeMap::from([(
@@ -810,6 +811,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,
@@ -893,6 +895,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,

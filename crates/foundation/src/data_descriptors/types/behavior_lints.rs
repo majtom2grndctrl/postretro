@@ -81,6 +81,7 @@ mod tests {
 
     fn graph() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "initial".to_string(),
                 activities: BTreeMap::from([

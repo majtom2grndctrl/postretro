@@ -841,6 +841,7 @@ mod tests {
         use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 
         BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "rest".to_string(),
                 activities: std::collections::BTreeMap::from([
@@ -1454,7 +1455,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             brain_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             damage_context,
         ));
         let brain = registry
@@ -1469,7 +1473,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             health_only_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.health-only", DamageProducer::InTick),
         ));
         assert!(
@@ -1518,7 +1525,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             target,
-            &DamagePayload { amount: 10.0 },
+            &DamagePayload {
+                amount: 10.0,
+                impulse: glam::Vec3::ZERO
+            },
             lethal_context,
         ));
 
@@ -1537,7 +1547,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             target,
-            &DamagePayload { amount: 5.0 },
+            &DamagePayload {
+                amount: 5.0,
+                impulse: glam::Vec3::ZERO
+            },
             corpse_context,
         ));
 
@@ -1597,7 +1610,10 @@ mod tests {
             assert!(apply_damage_with_context(
                 &mut registry,
                 enemy,
-                &DamagePayload { amount: 1.0 },
+                &DamagePayload {
+                    amount: 1.0,
+                    impulse: glam::Vec3::ZERO
+                },
                 context,
             ));
             registry
@@ -1664,7 +1680,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             brain_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.missing-attacker", DamageProducer::InTick),
         ));
         let brain = registry
@@ -1684,7 +1703,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             brain_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             damage_context,
         ));
         assert_eq!(
@@ -1754,7 +1776,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             brain_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             directional_context,
         ));
         let brain = registry
@@ -1768,7 +1793,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut registry,
             brain_entity,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.contextless-hit", DamageProducer::InTick),
         ));
         let brain = registry

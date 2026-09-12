@@ -536,6 +536,7 @@ pub(super) fn evaluate(
                             resolved.cooldown_ms(),
                             AttackOutcome::Projectile {
                                 launch: Box::new(ProjectileLaunch {
+                                    knockback_impulse: resolved.knockback_impulse(direction),
                                     origin,
                                     direction,
                                     speed: resolved.projectile().speed,

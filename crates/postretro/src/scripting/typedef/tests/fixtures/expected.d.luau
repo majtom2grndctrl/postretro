@@ -267,14 +267,48 @@ export type ProjectileDescriptor = {
   visual: ProjectileVisual,
 }
 
+--- Direct-hit velocity change independent of damage. Omit the block for no direct knockback.
+export type KnockbackDescriptor = {
+  --- Added speed in metres/sec. Must be finite in 0..=1000; 0 disables push.
+  speed: number,
+  --- Blend hit travel direction toward world up before normalization. Defaults to 0; finite in 0..=1. A zero or cancelled direction falls back to up.
+  upwardBias: number?,
+}
+
+--- Radial push using the blast radius and occlusion, independently of damage and selfDamage.
+export type SplashKnockbackDescriptor = {
+  --- Added speed at the blast center in metres/sec. Must be finite in 0..=1000.
+  speed: number,
+  --- Blend outward direction toward world up before normalization. Defaults to 0; finite in 0..=1. A coincident or cancelled direction falls back to up.
+  upwardBias: number?,
+  --- Fraction of push speed at the blast edge, with linear falloff. Defaults to 0; finite in 0..=1. Independent of damage minFraction.
+  minFraction: number?,
+  --- Owner-only push multiplier. Defaults to 1; finite in 0..=10. Set 0 to disable self push, independently of selfDamage.
+  selfScale: number?,
+}
+
+--- Player or enemy response to hit impulses. All fields are optional; omission uses the defaults.
+export type KnockbackResponse = {
+  --- Received impulse multiplier. Defaults to 1; finite in 0..=10. Set 0 for immunity.
+  scale: number?,
+  --- Grounded decay rate in inverse seconds. Each tick multiplies protected impulse by max(0, 1 - groundDrag * dt). Defaults to 8; finite in 0..=1000.
+  groundDrag: number?,
+  --- Airborne decay rate in inverse seconds, using the same rule as groundDrag. Defaults to 0; finite in 0..=1000. Gravity still acts normally.
+  airDrag: number?,
+  --- Fraction of normal steering while knockback remains. Defaults to 1; finite in 0..=1. Abilities remain available.
+  control: number?,
+}
+
 --- Radial damage applied at a projectile impact point. The block is a peer of `projectile`, but current engine behavior accepts it only on projectile weapons.
 export type SplashDescriptor = {
   --- Blast radius in metres. Must be finite and greater than 0.
   radius: number,
   --- Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0.
   minFraction: number?,
-  --- Whether the firing pawn can be damaged by its own blast. Defaults to true.
+  --- Whether the firing pawn can be damaged by its own blast. Defaults to true; does not suppress knockback.
   selfDamage: boolean?,
+  --- Optional radial push independent of damage. Omit for no blast push.
+  knockback: SplashKnockbackDescriptor?,
 }
 
 --- The visible parts of a flying projectile. A body is required; optional trail particles, a travelling light, and a contact flash are cosmetic presentation.
@@ -442,6 +476,8 @@ export type WeaponPlacementDescriptor = {
 
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
+  --- Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored.
+  knockback: KnockbackDescriptor?,
   --- Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.
   damage: number,
   --- Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.
@@ -637,6 +673,8 @@ export type BehaviorGraphDescriptor = {
   patrol: PatrolDescriptor?,
   --- Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph.
   attacks: { [string]: AttackParams }?,
+  --- Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.
+  knockback: KnockbackResponse?,
   --- Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.
   moveSpeed: number,
   --- Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.
@@ -653,6 +691,8 @@ export type PlayerMovementDescriptor = {
   air: AirParams,
   --- Required terminal falling-speed limit.
   fall: FallParams,
+  --- Optional player impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.
+  knockback: KnockbackResponse?,
   --- Optional dash tuning. When omitted, dash is disabled. When present, all of its fields are required.
   dash: DashParams?,
   --- Optional input-forgiveness tuning (coyote time + jump buffer). When the whole object is omitted, the documented engine defaults apply (~100ms each). When present, each field is itself optional and falls back to its engine default; 0 disables that grace.

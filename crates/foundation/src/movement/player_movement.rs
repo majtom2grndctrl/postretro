@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 // This mirrors the reverse import (`movement/scope.rs` references
 // `PlayerMovementComponent`); both modules are game-logic-stage, so no subsystem
 // boundary is crossed.
+use crate::KnockbackResponse;
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
     GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, ViewFeelParams,
@@ -240,7 +241,12 @@ pub struct PlayerMovementComponent {
     /// to when standing. Seeded from `desc.capsule.eye_height`, never mutated.
     pub standing_eye_height: f32,
     pub ground: GroundRef,
+    /// Total collision-resolved velocity, including the protected knockback layer.
     pub velocity: Vec3,
+    #[serde(default)]
+    pub knockback_velocity: Vec3,
+    #[serde(default)]
+    pub knockback: KnockbackResponse,
     /// The most recent walkable floor-contact normal, forwarded by the
     /// collision substrate after each tick. Per-state intents read this on
     /// their following tick instead of querying collision directly.
@@ -377,6 +383,8 @@ impl PlayerMovementComponent {
             cos_walkable,
             ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
+            knockback_velocity: Vec3::ZERO,
+            knockback: desc.knockback,
             last_floor_normal: None,
             air_jumps_remaining,
             air_dashes_remaining,
@@ -393,6 +401,42 @@ impl PlayerMovementComponent {
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
+        }
+    }
+
+    /// Add a world-space velocity impulse. Failed/non-finite sums leave state intact.
+    pub fn add_knockback(&mut self, impulse: Vec3) -> bool {
+        let impulse = impulse * self.knockback.scale;
+        let velocity = self.velocity + impulse;
+        let knockback_velocity = self.knockback_velocity + impulse;
+        if !impulse.is_finite()
+            || impulse == Vec3::ZERO
+            || !velocity.is_finite()
+            || !knockback_velocity.is_finite()
+            || !velocity.length_squared().is_finite()
+            || !knockback_velocity.length_squared().is_finite()
+        {
+            return false;
+        }
+        self.velocity = velocity;
+        self.knockback_velocity = knockback_velocity;
+        if impulse.y > 0.0 && velocity.y > 0.0 {
+            // Retain a mover reference until tick can transfer base momentum.
+            // World contact has no release state and can be cleared immediately.
+            if !matches!(self.ground, GroundRef::Mover(_)) {
+                self.set_grounded(false);
+            }
+            self.last_floor_normal = None;
+        }
+        true
+    }
+
+    /// Directional acceleration/steering available while a shove remains active.
+    pub fn knockback_control(&self) -> f32 {
+        if self.knockback_velocity != Vec3::ZERO {
+            self.knockback.control
+        } else {
+            1.0
         }
     }
 
@@ -472,6 +516,7 @@ mod tests {
             fall: FallParams {
                 terminal_velocity: 40.0,
             },
+            knockback: KnockbackResponse::default(),
             stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
             stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
             dash: None,

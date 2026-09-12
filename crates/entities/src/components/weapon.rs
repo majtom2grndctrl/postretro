@@ -9,8 +9,8 @@ use std::sync::Once;
 
 use crate::components::wieldable_state::WieldableState;
 use crate::data_descriptors::{
-    FireMode, ProjectileDescriptor, ReloadStyle, ResolutionMode, SplashDescriptor,
-    WeaponDescriptor, WeaponResource,
+    FireMode, KnockbackDescriptor, ProjectileDescriptor, ReloadStyle, ResolutionMode,
+    SplashDescriptor, WeaponDescriptor, WeaponResource,
 };
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
@@ -32,6 +32,7 @@ pub struct EffectiveAmmoStats<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveStats<'a> {
     pub damage: f32,
+    pub knockback: Option<KnockbackDescriptor>,
     pub pellet_count: u32,
     pub spread_degrees: f32,
     pub range: f32,
@@ -263,6 +264,8 @@ impl ReloadFeedbackStream {
 pub struct WeaponComponent {
     pub damage: f32,
     #[serde(default)]
+    pub knockback: Option<KnockbackDescriptor>,
+    #[serde(default)]
     pub pellet_count: u32,
     #[serde(default)]
     pub spread_degrees: f32,
@@ -362,6 +365,7 @@ impl WeaponComponent {
             resolution: desc.resolution,
             projectile: desc.projectile.clone(),
             splash: desc.splash.clone(),
+            knockback: desc.knockback,
             muzzle_offset: desc.muzzle_offset.map(Vec3::from_array),
             lower_ms: desc.lower_ms,
             raise_ms: desc.raise_ms,
@@ -395,6 +399,7 @@ impl WeaponComponent {
             resolution: self.resolution,
             projectile: self.projectile.as_ref(),
             splash: self.splash.as_ref(),
+            knockback: self.knockback,
             muzzle_offset: self.muzzle_offset,
             lower_ms: self.lower_ms,
             raise_ms: self.raise_ms,
@@ -456,6 +461,7 @@ impl WeaponComponent {
         self.resolution = desc.resolution;
         self.projectile = desc.projectile.clone();
         self.splash = desc.splash.clone();
+        self.knockback = desc.knockback;
         self.muzzle_offset = desc.muzzle_offset.map(Vec3::from_array);
         self.lower_ms = desc.lower_ms;
         self.raise_ms = desc.raise_ms;
@@ -610,6 +616,7 @@ mod tests {
 
     fn descriptor(damage: f32, range: f32, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
+            knockback: None,
             damage,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1200,9 +1207,24 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_and_refresh_preserve_direct_knockback_independently_of_damage() {
+        let mut descriptor = descriptor(0.0, 20.0, 100.0);
+        descriptor.knockback = Some(KnockbackDescriptor {
+            speed: 12.0,
+            upward_bias: 0.25,
+        });
+        let mut component = WeaponComponent::from_descriptor(&descriptor);
+        assert!((component.effective().knockback.unwrap().speed - 12.0).abs() < f32::EPSILON);
+        descriptor.knockback = None;
+        component.refresh_from_descriptor(&descriptor);
+        assert!(component.effective().knockback.is_none());
+    }
+
+    #[test]
     fn descriptor_and_refresh_preserve_splash_tuning_in_effective_stats() {
         let mut descriptor = descriptor(10.0, 20.0, 100.0);
         descriptor.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 8.0,
             min_fraction: 0.25,
             self_damage: false,
@@ -1211,6 +1233,7 @@ mod tests {
         assert_eq!(component.effective().splash, descriptor.splash.as_ref());
 
         descriptor.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 16.0,
             min_fraction: 0.5,
             self_damage: true,

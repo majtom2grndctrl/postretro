@@ -195,7 +195,10 @@ pub(super) fn apply_outcomes(
                         apply_damage_with_context(
                             registry,
                             target.entity,
-                            &DamagePayload { amount: damage },
+                            &DamagePayload {
+                                amount: damage,
+                                impulse: glam::Vec3::ZERO,
+                            },
                             DamageContext {
                                 source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
                                 attacker: Some(outcome.id),

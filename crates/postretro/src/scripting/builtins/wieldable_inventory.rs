@@ -344,6 +344,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,

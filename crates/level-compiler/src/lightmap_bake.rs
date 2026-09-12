@@ -584,6 +584,34 @@ fn bake_layered_section_controlled(
         direction.append(&mut layer_direction);
     }
 
+    assemble_layered_section(
+        atlas_w,
+        atlas_h,
+        layer_count,
+        texel_density,
+        uncompressed_irradiance,
+        direction_texel_scale,
+        irradiance,
+        direction,
+    )
+}
+
+/// Assemble the stable layer-major section payload after callers have encoded
+/// each atlas plane. The cold bake and warm incremental compositor share this
+/// seam so their final layer ordering and wire-format choices stay identical.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn assemble_layered_section(
+    atlas_w: u32,
+    atlas_h: u32,
+    layer_count: u32,
+    texel_density: f32,
+    uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
+    irradiance: Vec<u8>,
+    direction: Vec<u8>,
+) -> LightmapSection {
+    let direction_texel_scale =
+        effective_direction_texel_scale(direction_texel_scale, atlas_w, atlas_h);
     LightmapSection {
         layer_count,
         irr_width: atlas_w,
@@ -691,7 +719,7 @@ fn bake_atlas_layer_controlled(
 /// The whole-atlas encoder applies these same operations independently to each
 /// plane. Keeping this helper plane-only makes the cold path's append order
 /// explicit while preserving BC6H blocks, direction reduction, and Rg8 output.
-fn encode_atlas_layer(
+pub(crate) fn encode_atlas_layer(
     atlas: &CompositedAtlas,
     uncompressed_irradiance: bool,
     direction_texel_scale: u32,

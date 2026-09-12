@@ -21,7 +21,7 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 4;
+pub const LAYER_FORMAT_VERSION: u32 = 5;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -185,6 +185,65 @@ pub struct SharedAtlas<'a> {
     pub atlas_height: u32,
 }
 
+/// One global atlas layer's in-progress, ordered light fold.
+///
+/// The production warm path retains only this one atlas plane plus one
+/// light/layer cache partition at a time. `weighted_dir` deliberately stays
+/// separate from the finished direction buffer so normalization still occurs
+/// once, after the complete global-light-order fold.
+pub struct IncrementalLayerAccumulator {
+    atlas: CompositedAtlas,
+    weighted_dir: Vec<Vec3>,
+    fallback_normal: Vec<Vec3>,
+}
+
+impl IncrementalLayerAccumulator {
+    pub fn zeroed(atlas_width: u32, atlas_height: u32) -> Self {
+        let texel_count = atlas_width as usize * atlas_height as usize;
+        Self {
+            atlas: CompositedAtlas::zeroed(atlas_width, atlas_height, 1),
+            weighted_dir: vec![Vec3::ZERO; texel_count],
+            fallback_normal: vec![Vec3::Y; texel_count],
+        }
+    }
+
+    /// Fold one already-validated `(light, target_layer)` partition. Callers
+    /// supply partitions in the original global light order; float addition is
+    /// intentionally neither reordered nor reduced.
+    pub fn fold_partition(&mut self, partition: &LightmapLayer, target_layer: u32) {
+        debug_assert_eq!(partition.atlas_width, self.atlas.atlas_width);
+        debug_assert_eq!(partition.atlas_height, self.atlas.atlas_height);
+        for texel in &partition.texels {
+            debug_assert_eq!(texel.layer, target_layer);
+            let idx = texel.idx as usize;
+            self.atlas.irradiance[idx * 4] += texel.irradiance[0];
+            self.atlas.irradiance[idx * 4 + 1] += texel.irradiance[1];
+            self.atlas.irradiance[idx * 4 + 2] += texel.irradiance[2];
+            self.weighted_dir[idx] += Vec3::from_array(texel.weighted_dir);
+            self.fallback_normal[idx] = Vec3::from_array(texel.fallback_normal);
+            self.atlas.coverage[idx] = true;
+        }
+    }
+
+    /// Finish the ordered fold. The returned plane is ready for the shared
+    /// per-layer dilation and encode path.
+    pub fn finish(mut self) -> CompositedAtlas {
+        for (idx, covered) in self.atlas.coverage.iter().copied().enumerate() {
+            if !covered {
+                continue;
+            }
+            self.atlas.irradiance[idx * 4 + 3] = 1.0;
+            let weighted_dir = self.weighted_dir[idx];
+            self.atlas.direction[idx] = if weighted_dir.length_squared() > 1.0e-8 {
+                weighted_dir.normalize()
+            } else {
+                self.fallback_normal[idx]
+            };
+        }
+        self.atlas
+    }
+}
+
 /// Influence AABB used to bound the geometry slice folded into a light's cache
 /// key. Point/Spot → `falloff_range
 /// + AABB_PADDING_METERS` cube; Directional → the whole-world AABB. Delegates to
@@ -213,7 +272,7 @@ pub fn bake_light_layer(
     area_sample_count: u32,
     control: &BakeControl,
 ) -> LightmapLayer {
-    bake_light_layer_controlled(
+    bake_light_layer_all_controlled(
         light,
         atlas,
         bvh,
@@ -224,7 +283,40 @@ pub fn bake_light_layer(
     )
 }
 
+/// Bake one light's cacheable contribution for exactly one atlas array layer.
+///
+/// `target_layer` is deliberately part of both the returned partition's
+/// containment and its cache key. A partition never carries texels from a
+/// neighbouring atlas layer.
 pub fn bake_light_layer_controlled(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    target_layer: u32,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> LightmapLayer {
+    let face_indices: Vec<usize> = atlas
+        .placements
+        .iter()
+        .enumerate()
+        .filter_map(|(face_idx, placement)| (placement.layer == target_layer).then_some(face_idx))
+        .collect();
+    bake_light_layer_for_faces(
+        light,
+        atlas,
+        bvh,
+        primitives,
+        geometry,
+        &face_indices,
+        area_sample_count,
+        control,
+    )
+}
+
+fn bake_light_layer_all_controlled(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
     bvh: &bvh::bvh::Bvh<f32, 3>,
@@ -233,27 +325,38 @@ pub fn bake_light_layer_controlled(
     area_sample_count: u32,
     control: &BakeControl,
 ) -> LightmapLayer {
-    let atlas_w = atlas.atlas_width;
+    let face_indices: Vec<usize> = (0..atlas.placements.len()).collect();
+    bake_light_layer_for_faces(
+        light,
+        atlas,
+        bvh,
+        primitives,
+        geometry,
+        &face_indices,
+        area_sample_count,
+        control,
+    )
+}
 
-    // The atlas array layer count: the highest layer any chart landed on, plus
-    // one. The multi-bin packer (`pack_layers`) spills leaves onto higher layers,
-    // so this is `1` only when every chart fits a single layer.
-    let layer_count = atlas
-        .placements
-        .iter()
-        .map(|p| p.layer + 1)
-        .max()
-        .unwrap_or(1);
-
-    // `par_iter().map().collect()` is indexed: the outer collection retains the
-    // placement order even while ray work runs concurrently. Flattening those
+#[allow(clippy::too_many_arguments)]
+fn bake_light_layer_for_faces(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    face_indices: &[usize],
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> LightmapLayer {
+    let layer_count = atlas_layer_count(atlas);
+    // `par_iter().map().collect()` is indexed: the outer collection retains
+    // planner order even while ray work runs concurrently. Flattening those
     // per-chart buffers therefore preserves the cache payload's established
     // chart/row/column order exactly.
-    let per_chart_texels: Vec<Vec<LayerTexel>> = atlas
-        .placements
+    let per_chart_texels: Vec<Vec<LayerTexel>> = face_indices
         .par_iter()
-        .enumerate()
-        .map(|(face_idx, _)| {
+        .map(|&face_idx| {
             bake_light_layer_chart_controlled(
                 light,
                 atlas,
@@ -266,14 +369,22 @@ pub fn bake_light_layer_controlled(
             )
         })
         .collect();
-    let texels = per_chart_texels.into_iter().flatten().collect();
 
     LightmapLayer {
-        atlas_width: atlas_w,
+        atlas_width: atlas.atlas_width,
         atlas_height: atlas.atlas_height,
         layer_count,
-        texels,
+        texels: per_chart_texels.into_iter().flatten().collect(),
     }
+}
+
+pub fn atlas_layer_count(atlas: &SharedAtlas<'_>) -> u32 {
+    atlas
+        .placements
+        .iter()
+        .map(|placement| placement.layer + 1)
+        .max()
+        .unwrap_or(1)
 }
 
 /// Bake one `(light, chart)` contribution in placement order.
@@ -554,6 +665,7 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// - the influence-bounded geometry slice hash,
 /// - `lightmap_density` + `area_sample_count`,
 /// - the atlas layout descriptor (dims + per-chart placements).
+/// - `target_layer`, so partitions with the same light and layout cannot alias.
 ///
 /// Consumers pass this digest to `CacheKey::new("lightmap_layer",
 /// LAYER_FORMAT_VERSION, &hash)` so the layer stage owns invalidation.
@@ -564,6 +676,7 @@ pub fn layer_input_hash(
     geometry: &GeometryResult,
     lightmap_density: f32,
     area_sample_count: u32,
+    target_layer: u32,
 ) -> [u8; 32] {
     let world_aabb = geometry_world_aabb(geometry);
 
@@ -576,7 +689,54 @@ pub fn layer_input_hash(
     hasher.update(&lightmap_density.to_le_bytes());
     hasher.update(&area_sample_count.to_le_bytes());
     hasher.update(&atlas_layout_fingerprint(atlas));
+    hasher.update(&target_layer.to_le_bytes());
     *hasher.finalize().as_bytes()
+}
+
+/// Validate a decoded cache partition against the current shared atlas. Cache
+/// corruption and stale/mismatched payloads are callers' soft misses, never a
+/// PRL-load error.
+pub fn validate_layer_partition(
+    partition: &LightmapLayer,
+    atlas: &SharedAtlas<'_>,
+    target_layer: u32,
+) -> Result<(), String> {
+    if partition.atlas_width != atlas.atlas_width || partition.atlas_height != atlas.atlas_height {
+        return Err(format!(
+            "dimensions {}x{} != {}x{}",
+            partition.atlas_width, partition.atlas_height, atlas.atlas_width, atlas.atlas_height
+        ));
+    }
+    let layer_count = atlas_layer_count(atlas);
+    if partition.layer_count != layer_count {
+        return Err(format!(
+            "layer_count {} != {}",
+            partition.layer_count, layer_count
+        ));
+    }
+    if target_layer >= layer_count {
+        return Err(format!(
+            "target layer {target_layer} out of bounds for {layer_count} layers"
+        ));
+    }
+    let Some(plane) = (atlas.atlas_width as usize).checked_mul(atlas.atlas_height as usize) else {
+        return Err("atlas dimensions overflow texel plane size".to_string());
+    };
+    for (texel_index, texel) in partition.texels.iter().enumerate() {
+        if texel.layer != target_layer {
+            return Err(format!(
+                "texel {texel_index} belongs to layer {}, not target layer {target_layer}",
+                texel.layer
+            ));
+        }
+        if texel.idx as usize >= plane {
+            return Err(format!(
+                "texel {texel_index} idx {} out of bounds for {plane} texels",
+                texel.idx
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Build the cache key for the composited lightmap section — the second-level
@@ -591,10 +751,11 @@ pub fn layer_input_hash(
 /// 2. light count (u32 LE) — so add/remove can never alias a reorder. The
 ///    fixed-width 32-byte hash records below already make a plain concatenation
 ///    injective, but folding the count is a cheap belt-and-suspenders guard.
-/// 3. each light's `layer_input_hash` `[u8; 32]`, in the caller's exact filtered
-///    order (global static order, `ShadowType::Sdf` dropped). Folding the input
-///    hashes mirrors folding the full per-light keys: any per-light input change
-///    (light params, geometry slice, density, atlas layout) flows through here.
+/// 3. each light-layer `layer_input_hash` `[u8; 32]`, in the caller's exact
+///    layer-major then global-static-light order (`ShadowType::Sdf` dropped).
+///    Folding the input hashes mirrors folding the full cache keys: any
+///    per-light input change (light params, geometry slice, density, atlas
+///    layout, or target layer) flows through here.
 /// 4. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
 ///    Already folded into every `layer_input_hash` via `lightmap_density`, so
 ///    this is belt-and-suspenders (same rationale as the light-count fold).
@@ -786,13 +947,12 @@ mod tests {
         order
     }
 
-    /// The headline gate (in miniature): the per-light compositor reproduces the
-    /// monolithic `bake_face_chart` pre-BC6H atlas bit-for-bit on a synthetic
-    /// multi-light atlas. Two point lights over different quads plus one
-    /// directional (full-atlas layer) exercise sparse + dense layers, the
-    /// summed-direction normalize, and the covered-but-dark fallback branch.
+    /// The production warm fold reproduces the cold monolith on a synthetic
+    /// multi-light, multi-atlas-layer layout. Two point lights over different
+    /// quads plus one directional light exercise sparse + dense partitions,
+    /// ordered direction accumulation, and the covered-but-dark fallback.
     #[test]
-    fn composite_matches_monolithic_atlas_bit_for_bit() {
+    fn incremental_layer_fold_matches_monolithic_section_bytes() {
         // One geometry clone per path so each path's prepare_atlas mutates its own
         // copy identically; the BVH is built once from the shared pre-bake state.
         let mut mono_geo = two_quad_geometry();
@@ -807,7 +967,9 @@ mod tests {
         let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
 
         // Monolithic path.
-        let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY, &[]).unwrap();
+        let mut mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY, &[]).unwrap();
+        mono_prepared.placements[1].layer = 1;
+        mono_prepared.layer_count = 2;
         let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
         let mono_progress = StageProgress::with_total(mono_prepared.placements.len());
         let mono_control = BakeControl::new(Arc::new(Governor::new(1, false)), &mono_progress);
@@ -826,8 +988,11 @@ mod tests {
         );
         assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
 
-        // Per-light layer path.
-        let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY, &[]).unwrap();
+        // Warm production fold, with the same forced two-plane layout.
+        let mut layer_prepared =
+            prepare_atlas(&mut layer_geo, &static_lights, DENSITY, &[]).unwrap();
+        layer_prepared.placements[1].layer = 1;
+        layer_prepared.layer_count = 2;
         let (layer_bvh, layer_prims, _) = build_bvh(&layer_geo).unwrap();
         let shared = SharedAtlas {
             charts: &layer_prepared.charts,
@@ -835,36 +1000,24 @@ mod tests {
             atlas_width: layer_prepared.atlas_width,
             atlas_height: layer_prepared.atlas_height,
         };
-        let layer_total = layer_prepared.placements.len() * light_refs.len();
-        let layer_progress = StageProgress::with_total(layer_total);
-        let layer_control = BakeControl::new(Arc::new(Governor::new(1, false)), &layer_progress);
-        let layers: Vec<LightmapLayer> = light_refs
-            .iter()
-            .map(|l| {
-                bake_light_layer_controlled(
-                    l,
-                    &shared,
-                    &layer_bvh,
-                    &layer_prims,
-                    &layer_geo,
-                    AREA_SAMPLES,
-                    &layer_control,
-                )
-            })
-            .collect();
-        assert_eq!(layer_progress.total(), Some(layer_total));
-        assert_eq!(layer_progress.completed(), layer_total);
-        let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
-        composite.dilate();
-
+        let warm_section =
+            compose_section(&light_refs, &shared, &layer_bvh, &layer_prims, &layer_geo);
         assert_eq!(
-            mono_atlas, composite,
-            "per-light composite must equal the monolithic atlas bit-for-bit"
+            mono_atlas.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE,),
+            warm_section,
+            "layer-major incremental warm fold must equal the cold monolith byte-for-byte"
         );
         assert_eq!(
-            mono_atlas.encode_section(DENSITY, true, 4),
-            composite.encode_section(DENSITY, true, 4),
-            "a non-default direction scale must encode identically after the warm/cold seam"
+            mono_atlas.encode_section(DENSITY, false, crate::lightmap_bake::DIRECTION_TEXEL_SCALE,),
+            compose_section_with_format(
+                &light_refs,
+                &shared,
+                &layer_bvh,
+                &layer_prims,
+                &layer_geo,
+                false,
+            ),
+            "incremental layer assembly must preserve the cold BC6H bytes too"
         );
     }
 
@@ -893,7 +1046,7 @@ mod tests {
             .build()
             .expect("single-worker rayon pool");
         let single_thread_layer = one_thread.install(|| {
-            bake_light_layer_controlled(
+            bake_light_layer(
                 &lights[0],
                 &shared,
                 &bvh,
@@ -911,7 +1064,7 @@ mod tests {
             .build()
             .expect("multi-worker rayon pool");
         let multi_thread_layer = multi_thread.install(|| {
-            bake_light_layer_controlled(
+            bake_light_layer(
                 &lights[0],
                 &shared,
                 &bvh,
@@ -983,7 +1136,7 @@ mod tests {
             .build()
             .expect("multi-worker rayon pool");
         let layer = pool.install(|| {
-            bake_light_layer_controlled(
+            bake_light_layer(
                 &lights[0],
                 &shared,
                 &bvh,
@@ -1046,7 +1199,7 @@ mod tests {
                 .build()
                 .expect("multi-worker rayon pool")
                 .install(|| {
-                    bake_light_layer_controlled(
+                    bake_light_layer(
                         &lights[0],
                         &shared,
                         &bvh,
@@ -1298,12 +1451,114 @@ mod tests {
 
         let base = point_light([0.5, 1.0, 0.5], 5.0);
         let moved = point_light([10.0, 1.0, 0.5], 5.0);
-        let h_base = layer_input_hash(&base, &shared, &prims, &geo, DENSITY, AREA_SAMPLES);
-        let h_moved = layer_input_hash(&moved, &shared, &prims, &geo, DENSITY, AREA_SAMPLES);
+        let h_base = layer_input_hash(&base, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
+        let h_moved = layer_input_hash(&moved, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, 0);
         assert_ne!(
             h_base, h_moved,
             "moving the light must change its layer cache key"
         );
+    }
+
+    #[test]
+    fn target_layer_partitions_are_disjoint_and_rekeyed() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        assert_eq!(prepared.placements.len(), 2, "fixture needs two charts");
+        // Force a two-layer layout while retaining chart coordinates and seeds.
+        prepared.placements[0].layer = 0;
+        prepared.placements[1].layer = 1;
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let control = BakeControl::unrestricted();
+        let first = bake_light_layer_controlled(
+            &lights[0],
+            &shared,
+            &bvh,
+            &prims,
+            &geo,
+            0,
+            AREA_SAMPLES,
+            &control,
+        );
+        let second = bake_light_layer_controlled(
+            &lights[0],
+            &shared,
+            &bvh,
+            &prims,
+            &geo,
+            1,
+            AREA_SAMPLES,
+            &control,
+        );
+
+        assert!(!first.texels.is_empty() && !second.texels.is_empty());
+        assert!(first.texels.iter().all(|texel| texel.layer == 0));
+        assert!(second.texels.iter().all(|texel| texel.layer == 1));
+        assert!(validate_layer_partition(&first, &shared, 0).is_ok());
+        assert!(validate_layer_partition(&second, &shared, 1).is_ok());
+        assert!(
+            validate_layer_partition(&first, &shared, 1).is_err(),
+            "a partition from another atlas layer must be a soft cache miss"
+        );
+
+        let key_for = |target_layer| {
+            CacheKey::new(
+                "lightmap_layer",
+                LAYER_FORMAT_VERSION,
+                &layer_input_hash(
+                    &lights[0],
+                    &shared,
+                    &prims,
+                    &geo,
+                    DENSITY,
+                    AREA_SAMPLES,
+                    target_layer,
+                ),
+            )
+            .as_filename()
+        };
+        assert_ne!(
+            key_for(0),
+            key_for(1),
+            "one light's partitions must not share a cache key"
+        );
+    }
+
+    #[test]
+    fn all_sdf_fallback_remains_one_uncovered_plane() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let mut prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        prepared.placements[1].layer = 1;
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+
+        let warm_fallback = compose_section(&[], &shared, &bvh, &prims, &geo);
+        let mut legacy_fallback = composite_layers(&[], shared.atlas_width, shared.atlas_height);
+        legacy_fallback.dilate();
+        assert_eq!(
+            warm_fallback,
+            legacy_fallback.encode_section(
+                DENSITY,
+                true,
+                crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            ),
+            "all-Sdf warm fallback must remain the legacy single uncovered plane"
+        );
+        assert_eq!(warm_fallback.layer_count, 1);
     }
 
     fn lone_chart_layout_fingerprint(
@@ -1437,7 +1692,7 @@ mod tests {
         prims: &[BvhPrimitive],
         geo: &GeometryResult,
     ) -> CacheKey {
-        let h = layer_input_hash(light, shared, prims, geo, DENSITY, AREA_SAMPLES);
+        let h = layer_input_hash(light, shared, prims, geo, DENSITY, AREA_SAMPLES, 0);
         CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &h)
     }
 
@@ -1842,9 +2097,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Bake every light's layer, composite, dilate, and `encode_section` — the
-    /// exact recompose the warm path runs on a section miss. Returns the
-    /// composited `LightmapSection` the cache memoizes.
+    /// Exercise the production warm fold: for each atlas layer, bake/load one
+    /// light partition at a time in global light order, fold it, then
+    /// dilate/encode/append that plane before advancing to the next one.
     fn compose_section(
         lights: &[&MapLight],
         shared: &SharedAtlas<'_>,
@@ -1852,15 +2107,68 @@ mod tests {
         prims: &[BvhPrimitive],
         geo: &GeometryResult,
     ) -> LightmapSection {
-        let layers: Vec<LightmapLayer> = lights
-            .iter()
-            .map(|l| bake_layer_for_test(l, shared, bvh, prims, geo, AREA_SAMPLES))
-            .collect();
-        let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
-        composite.dilate();
-        // Uncompressed RGBA16F so the synthetic-atlas tests stay off the BC6H
-        // encoder; the cache behavior under test is format-agnostic.
-        composite.encode_section(DENSITY, true, crate::lightmap_bake::DIRECTION_TEXEL_SCALE)
+        compose_section_with_format(lights, shared, bvh, prims, geo, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_section_with_format(
+        lights: &[&MapLight],
+        shared: &SharedAtlas<'_>,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        prims: &[BvhPrimitive],
+        geo: &GeometryResult,
+        uncompressed_irradiance: bool,
+    ) -> LightmapSection {
+        if lights.is_empty() {
+            let mut fallback = composite_layers(&[], shared.atlas_width, shared.atlas_height);
+            fallback.dilate();
+            return fallback.encode_section(
+                DENSITY,
+                uncompressed_irradiance,
+                crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            );
+        }
+
+        let control = BakeControl::unrestricted();
+        let mut irradiance = Vec::new();
+        let mut direction = Vec::new();
+        for target_layer in 0..atlas_layer_count(shared) {
+            let mut accumulator =
+                IncrementalLayerAccumulator::zeroed(shared.atlas_width, shared.atlas_height);
+            for light in lights {
+                let partition = bake_light_layer_controlled(
+                    light,
+                    shared,
+                    bvh,
+                    prims,
+                    geo,
+                    target_layer,
+                    AREA_SAMPLES,
+                    &control,
+                );
+                accumulator.fold_partition(&partition, target_layer);
+            }
+            let mut plane = accumulator.finish();
+            plane.dilate();
+            let (mut plane_irradiance, mut plane_direction) =
+                crate::lightmap_bake::encode_atlas_layer(
+                    &plane,
+                    uncompressed_irradiance,
+                    crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+                );
+            irradiance.append(&mut plane_irradiance);
+            direction.append(&mut plane_direction);
+        }
+        crate::lightmap_bake::assemble_layered_section(
+            shared.atlas_width,
+            shared.atlas_height,
+            atlas_layer_count(shared),
+            DENSITY,
+            uncompressed_irradiance,
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            irradiance,
+            direction,
+        )
     }
 
     /// Compute the filtered direct-lightmap light set + their ordered
@@ -1873,9 +2181,20 @@ mod tests {
         prims: &[BvhPrimitive],
         geo: &GeometryResult,
     ) -> Vec<[u8; 32]> {
-        light_refs
-            .iter()
-            .map(|l| layer_input_hash(l, shared, prims, geo, DENSITY, AREA_SAMPLES))
+        (0..atlas_layer_count(shared))
+            .flat_map(|target_layer| {
+                light_refs.iter().map(move |light| {
+                    layer_input_hash(
+                        light,
+                        shared,
+                        prims,
+                        geo,
+                        DENSITY,
+                        AREA_SAMPLES,
+                        target_layer,
+                    )
+                })
+            })
             .collect()
     }
 
@@ -2157,6 +2476,7 @@ mod tests {
             &geo,
             DENSITY,
             AREA_SAMPLES,
+            0,
         ));
         assert_ne!(
             base_key,
@@ -2209,11 +2529,11 @@ mod tests {
         let samples_b = 32u32;
         let hashes_a: Vec<[u8; 32]> = light_refs
             .iter()
-            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_a))
+            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_a, 0))
             .collect();
         let hashes_b: Vec<[u8; 32]> = light_refs
             .iter()
-            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_b))
+            .map(|l| layer_input_hash(l, &shared, &prims, &geo, DENSITY, samples_b, 0))
             .collect();
 
         assert_ne!(

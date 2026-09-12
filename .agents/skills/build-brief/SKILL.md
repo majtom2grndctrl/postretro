@@ -27,6 +27,8 @@ Inspect `context/plans/ready/` and `context/plans/in-progress/`.
 | All tasks done | Resume at **Preflight and review**. |
 | `plan.md` says `blocked` | Report the block and wait for the owner. |
 
+When the owner resolves a block, apply only the authorized wording or decision. Return to the step that raised it and re-run that check. Set the mode's normal status only after the block clears.
+
 ## Take the brief
 
 Start from clean, current `main`. Create the feature branch and move the brief from `ready/` to `in-progress/`. Do not commit the move yet.
@@ -43,12 +45,12 @@ Problem defines success. Decisions and Acceptance define the contract.
 
 Resumable mode re-reads every source symbol cited by Decisions and Path.
 
-Compact mode first compares the brief's `read at` commit with current source. If no relevant source changed, reuse the grounded Decision reads. Re-open changed cited symbols and any seam the diff could affect. Never skip verification because the same conversation continued.
+Compact mode inspects source changes since the brief's `read at` commit. If no source changed, reuse the grounded Decision reads. Otherwise re-open affected cited symbols and their boundary consumers. Conversation continuity is not proof of unchanged source.
 
 - **Stale Path:** record current source and adjusted approach under *Corrections*. Continue.
-- **False Decision premise:** set `status: blocked`, record evidence, commit the checkpoint, and stop. The owner decides whether the Decision survives.
+- **False Decision premise:** create a minimal `plan.md` with `status: blocked` and the evidence. Commit it with the move to `in-progress/`, then stop. The owner decides whether the Decision survives.
 
-Decisions and Acceptance belong to the owner. Stop for a change to outcome, public contract, or required proof. Record a clarification under *Corrections* and continue when every Decision and Acceptance row keeps the same meaning.
+Decisions and Acceptance belong to the owner. Stop for a material change to either. Record a clarification under *Corrections* and continue when both keep the same meaning.
 
 ## Write the plan of record
 
@@ -83,9 +85,11 @@ read at: <short sha>
 
 Include every Acceptance row. Assign automated proof, manual proof, or `needs restatement` with exact proposed wording. First task tests the riskiest assumption through the thinnest useful slice.
 
+If any row needs restatement, set `status: blocked`, commit the plan with the move, and stop. This applies to both modes.
+
 For compact mode, set `status: active`. Commit the move and plan together, then continue. Promotion and `/build-brief` invocation are approval.
 
-For resumable mode, set `status: proposed`. Commit the move and plan together. Report corrections, proof gaps, ownership, and task order. Stop for the owner's skim. On approval, set `status: approved` and continue; fold that update into the first implementation commit.
+For resumable mode, set `status: proposed`. Commit the move and plan together. Report corrections, ownership, and task order. Stop for the owner's skim. On approval, set `status: approved` and commit before implementation so a new session can recover the approval.
 
 ## Build
 

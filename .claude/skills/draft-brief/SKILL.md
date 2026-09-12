@@ -38,9 +38,11 @@ Decide whether the work needs a brief before writing one:
 |---|---|
 | Task | Local, reversible work with no decision contract worth retaining. Report that finding; do not create a brief. |
 | Compact brief | One coherent outcome can be built in one sustained session. This is the default. |
-| Resumable brief | Work likely spans sessions, has ordered phases, needs durable handoffs, carries expensive manual proof, or has an irreversible migration. |
+| Resumable brief | Work likely spans sessions, has ordered phases, needs durable handoffs, waits on later manual proof, or has an irreversible migration. |
 
 Public APIs, wire changes, and cross-subsystem behavior still require complete Decisions, Acceptance, and boundary sections. They do not force resumable mode.
+
+Revisit the mode after research. Change it before writing when new facts change the coordination cost.
 
 ### 2. Research
 
@@ -48,7 +50,7 @@ Read `context/lib/context_style_guide.md` first. All brief prose follows it.
 
 Route through `context/lib/index.md` to the docs governing the subsystem. Grep `context/plans/done/` for the *concepts* the brief touches — ownership, authority, mechanism-vs-policy, layering — not just the subsystem name. Cross-epic commitments are the ones a subsystem-local drafter misses.
 
-Use subagents for exploration. Target 80% confidence. Stop when you can write the Decisions section with every premise grounded.
+Use subagents only for bounded, independent research questions. Target 80% confidence. Stop when you can write Decisions with every premise grounded.
 
 Findings that inform but don't decide go to a sibling `research.md`. Lifecycle diagrams go there too; keep one in the brief only when it is the clearest statement of a decision.
 
@@ -110,7 +112,7 @@ Non-binding. Research distilled to what would change the executor's plan.
 
 **Scripting surface.** A modder-facing API — an SDK function, a descriptor field, a script event — is designed by the owner, and its shape is a Decision: once a mod depends on it, it is a one-way door. The brief carries it as a code example under `### Scripting surface` inside Decisions, written the way a modder would write it. The example is normative for the surface — names, argument order, defaults, return shape, the calling pattern — and says nothing about the engine behind it; SDK internals and Rust do not appear. It is also a fixture: one Acceptance row runs it, as a test or a `content/dev` script, so the example cannot drift from what ships. A TypeScript example implies its Luau mirror, and the Boundary inventory says whether both ship. Path may sketch an alternative shape for the owner to weigh; Path never carries the one that ships.
 
-**Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor.
+**Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor. Required boundary and wire tables do not count toward the target.
 
 **Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
 
@@ -171,7 +173,7 @@ At promotion:
 - **Compact:** write the plan, commit it with the move to `in-progress/`, and continue. Promotion plus invocation is approval; there is no second plan stop.
 - **Resumable:** commit the proposed plan and stop for the owner's skim before implementation.
 
-**Decisions and Acceptance are owner-owned.** A change to outcome, public contract, or proof requires a proposed restatement and an owner decision. A clarification that preserves them goes in `plan.md`; it does not stop the build. A false Decision premise always stops.
+**Decisions and Acceptance are owner-owned.** A material change to either requires a proposed restatement and an owner decision. A clarification that preserves both goes in `plan.md`; it does not stop the build. A false Decision premise always stops.
 
 At landing the table gains a result column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
 

@@ -934,22 +934,26 @@ fn run_after_parsing(
             let warm_lightmap_total = prepared.placements.len().saturating_mul(layer_lights.len());
             lightmap_control.publish_total(warm_lightmap_total);
 
-            // Compute every light's layer input hash up front (cheap — no blob
-            // reads). These both fold into the second-level section key and feed
-            // the per-light layer keys on a section-cache miss.
-            let layer_input_hashes: Vec<[u8; 32]> = layer_lights
-                .iter()
-                .map(|light| {
-                    lightmap_layer::layer_input_hash(
+            // Compute every `(atlas layer, light)` cache fingerprint up front
+            // (cheap — no blob reads). The layer-major, global-light-order fold
+            // is both the section memo input and the exact production work
+            // order. Target layer is part of every layer key, so same-light
+            // partitions cannot collide.
+            let mut layer_input_hashes =
+                Vec::with_capacity(prepared.layer_count as usize * layer_lights.len());
+            for target_layer in 0..prepared.layer_count {
+                for light in &layer_lights {
+                    layer_input_hashes.push(lightmap_layer::layer_input_hash(
                         light,
                         &shared,
                         &bvh_primitives,
                         &geo_result,
                         density,
                         args.soft_shadow_samples,
-                    )
-                })
-                .collect();
+                        target_layer,
+                    ));
+                }
+            }
 
             // Second-level cache: memoize the composited `LightmapSection` so a
             // no-edit rebuild does one section decode and skips the layer reads,
@@ -991,53 +995,116 @@ fn run_after_parsing(
                 }
                 None => {
                     log::info!("[cache] lightmap_section miss");
-                    let mut layers: Vec<lightmap_layer::LightmapLayer> =
-                        Vec::with_capacity(layer_lights.len());
-                    for (light, input_hash) in layer_lights.iter().zip(&layer_input_hashes) {
-                        let layer_key = cache::CacheKey::new(
-                            "lightmap_layer",
-                            lightmap_layer::LAYER_FORMAT_VERSION,
-                            input_hash,
+                    let section = if layer_lights.is_empty() {
+                        // Preserve the established all-Sdf fallback exactly:
+                        // it is one uncovered plane, not one per prepared
+                        // atlas layer.
+                        let mut fallback = lightmap_layer::composite_layers(
+                            &[],
+                            prepared.atlas_width,
+                            prepared.atlas_height,
                         );
-                        let layer = match cache
-                            .get(&layer_key)
-                            .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
-                        {
-                            Some(layer) => {
-                                log::info!("[cache] lightmap_layer hit");
-                                lightmap_control.governor().checkpoint();
-                                lightmap_control.advance(prepared.placements.len());
-                                layer
-                            }
-                            None => {
-                                log::info!("[cache] lightmap_layer miss");
-                                let layer = lightmap_layer::bake_light_layer_controlled(
-                                    light,
-                                    &shared,
-                                    &bvh,
-                                    &bvh_primitives,
-                                    &geo_result,
-                                    args.soft_shadow_samples,
-                                    &lightmap_control,
+                        fallback.dilate();
+                        fallback.encode_section(
+                            density,
+                            lightmap_config.uncompressed_irradiance,
+                            lightmap_config.direction_texel_scale,
+                        )
+                    } else {
+                        let mut irradiance = Vec::new();
+                        let mut direction = Vec::new();
+                        for target_layer in 0..prepared.layer_count {
+                            let target_chart_count = prepared
+                                .placements
+                                .iter()
+                                .filter(|placement| placement.layer == target_layer)
+                                .count();
+                            // The accumulator and each cache partition are
+                            // scoped to one atlas plane. Fold lights strictly
+                            // in the pre-existing global order.
+                            let mut accumulator =
+                                lightmap_layer::IncrementalLayerAccumulator::zeroed(
+                                    prepared.atlas_width,
+                                    prepared.atlas_height,
                                 );
-                                cache.put(&layer_key, &layer.to_bytes());
-                                layer
+                            let hash_offset = target_layer as usize * layer_lights.len();
+                            for (light, input_hash) in layer_lights.iter().zip(
+                                &layer_input_hashes[hash_offset..hash_offset + layer_lights.len()],
+                            ) {
+                                let layer_key = cache::CacheKey::new(
+                                    "lightmap_layer",
+                                    lightmap_layer::LAYER_FORMAT_VERSION,
+                                    input_hash,
+                                );
+                                let cached_partition = cache
+                                    .get(&layer_key)
+                                    .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
+                                    .and_then(|partition| {
+                                        match lightmap_layer::validate_layer_partition(
+                                            &partition,
+                                            &shared,
+                                            target_layer,
+                                        ) {
+                                            Ok(()) => Some(partition),
+                                            Err(reason) => {
+                                                log::warn!(
+                                                    "[Compiler] lightmap_layer cache entry does not match target layer {target_layer} ({reason}), re-baking"
+                                                );
+                                                None
+                                            }
+                                        }
+                                    });
+                                let partition = match cached_partition {
+                                    Some(partition) => {
+                                        log::info!("[cache] lightmap_layer hit");
+                                        lightmap_control.governor().checkpoint();
+                                        lightmap_control.advance(target_chart_count);
+                                        partition
+                                    }
+                                    None => {
+                                        log::info!("[cache] lightmap_layer miss");
+                                        let partition = lightmap_layer::bake_light_layer_controlled(
+                                            light,
+                                            &shared,
+                                            &bvh,
+                                            &bvh_primitives,
+                                            &geo_result,
+                                            target_layer,
+                                            args.soft_shadow_samples,
+                                            &lightmap_control,
+                                        );
+                                        cache.put(&layer_key, &partition.to_bytes());
+                                        partition
+                                    }
+                                };
+                                accumulator.fold_partition(&partition, target_layer);
+                                // Make the cache partition's lifetime explicit:
+                                // the next cache read/bake cannot overlap this
+                                // one light/layer contribution in memory.
+                                drop(partition);
                             }
-                        };
-                        layers.push(layer);
-                    }
-
-                    let mut composite = lightmap_layer::composite_layers(
-                        &layers,
-                        prepared.atlas_width,
-                        prepared.atlas_height,
-                    );
-                    composite.dilate();
-                    let section = composite.encode_section(
-                        density,
-                        lightmap_config.uncompressed_irradiance,
-                        lightmap_config.direction_texel_scale,
-                    );
+                            let mut plane = accumulator.finish();
+                            plane.dilate();
+                            let (mut layer_irradiance, mut layer_direction) =
+                                lightmap_bake::encode_atlas_layer(
+                                    &plane,
+                                    lightmap_config.uncompressed_irradiance,
+                                    lightmap_config.direction_texel_scale,
+                                );
+                            irradiance.append(&mut layer_irradiance);
+                            direction.append(&mut layer_direction);
+                        }
+                        lightmap_bake::assemble_layered_section(
+                            prepared.atlas_width,
+                            prepared.atlas_height,
+                            prepared.layer_count,
+                            density,
+                            lightmap_config.uncompressed_irradiance,
+                            lightmap_config.direction_texel_scale,
+                            irradiance,
+                            direction,
+                        )
+                    };
                     cache.put(&section_key, &section.to_bytes());
                     section
                 }

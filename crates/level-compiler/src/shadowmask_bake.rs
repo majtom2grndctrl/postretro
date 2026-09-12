@@ -297,32 +297,40 @@ fn bake_shadowmask_atlas_cached_with_window(
         return None;
     }
 
+    let layer_count = layer_count_from_shared(shared);
     let mut selected = Vec::with_capacity(selection.light_indices.len());
     let mut selected_layer_input_hashes = Vec::with_capacity(selection.light_indices.len());
-    let mut layer_input_hashes = Vec::with_capacity(selection.light_indices.len());
+    let mut layer_input_hashes =
+        Vec::with_capacity(selection.light_indices.len() * layer_count as usize);
     for (selection_index, &alpha_index) in selection.light_indices.iter().enumerate() {
         let Some(entry) = alpha_lights.entries().get(alpha_index as usize) else {
             log::warn!(
                 "[ShadowmaskAtlas] selected AlphaLights index {alpha_index} is out of range; marking dropped"
             );
-            layer_input_hashes.push(invalid_selected_light_hash(alpha_index));
+            for target_layer in 0..layer_count {
+                layer_input_hashes.push(invalid_selected_light_hash(alpha_index, target_layer));
+            }
             continue;
         };
 
-        let input_hash = lightmap_layer::layer_input_hash(
-            entry.light,
-            shared,
-            primitives,
-            geometry,
-            lightmap_density,
-            area_sample_count,
-        );
-        layer_input_hashes.push(input_hash);
-        selected.push((selection_index, alpha_index, entry.light, input_hash));
-        selected_layer_input_hashes.push(input_hash);
+        let hashes: Vec<[u8; 32]> = (0..layer_count)
+            .map(|target_layer| {
+                lightmap_layer::layer_input_hash(
+                    entry.light,
+                    shared,
+                    primitives,
+                    geometry,
+                    lightmap_density,
+                    area_sample_count,
+                    target_layer,
+                )
+            })
+            .collect();
+        layer_input_hashes.extend_from_slice(&hashes);
+        selected.push((selection_index, alpha_index, entry.light));
+        selected_layer_input_hashes.push(hashes);
     }
 
-    let layer_count = layer_count_from_shared(shared);
     let section_input_hash = shadowmask_atlas_input_hash(
         selection,
         &layer_input_hashes,
@@ -363,21 +371,16 @@ fn bake_shadowmask_atlas_cached_with_window(
     }
 
     log::info!("[cache] shadowmask_atlas miss");
-    let selected_refs: Vec<(usize, u32, &MapLight)> = selected
-        .iter()
-        .map(|&(selection_index, alpha_index, light, _)| (selection_index, alpha_index, light))
-        .collect();
-    let membership = collect_shadowmask_membership_in_batches(
-        &selected_refs,
+    let membership = collect_cached_shadowmask_membership_by_partition(
+        &selected,
         shared,
         bvh,
         primitives,
         geometry,
         area_sample_count,
-        Some(cache),
-        Some(&selected_layer_input_hashes),
+        cache,
+        &selected_layer_input_hashes,
         control,
-        resident_layer_window,
         resident_layers,
     );
     let section = build_shadowmask_from_membership_controlled(
@@ -385,12 +388,12 @@ fn bake_shadowmask_atlas_cached_with_window(
         shared.atlas_height,
         layer_count as usize,
         selection.light_indices.len(),
-        &selected_refs,
+        &selected,
         &membership,
         Some(control),
     );
     cache.put(&section_key, &section.to_bytes());
-    if !selected_refs.is_empty() {
+    if !selected.is_empty() {
         // Keep the final fill unit pending through whole-section memo storage.
         control.advance(1);
     }
@@ -507,9 +510,10 @@ pub fn bake_shadowmask_atlas_from_layers(
 ///
 /// The byte layout is fixed and order-sensitive:
 /// `LAYER_FORMAT_VERSION`, selected-light count, selected `AlphaLights` indices,
-/// selected per-light `lightmap_layer::layer_input_hash` values, then atlas
-/// width/height/layer-count. The caller supplies the hashes in exactly the same
-/// order as `selection.light_indices`; the helper does no sorting.
+/// then every selected `(light, atlas layer)`
+/// `lightmap_layer::layer_input_hash` in selected-light-major, ascending-layer
+/// order, followed by atlas width/height/layer-count. The caller supplies that
+/// exact order; the helper does no sorting.
 pub fn shadowmask_atlas_input_hash(
     selection: &EntityShadowLightsSection,
     layer_input_hashes: &[[u8; 32]],
@@ -518,9 +522,12 @@ pub fn shadowmask_atlas_input_hash(
     layer_count: u32,
 ) -> [u8; 32] {
     debug_assert_eq!(
-        selection.light_indices.len(),
+        selection
+            .light_indices
+            .len()
+            .saturating_mul(layer_count as usize),
         layer_input_hashes.len(),
-        "shadowmask selected light/hash slices must align"
+        "shadowmask selected light/layer hash slices must align"
     );
 
     let mut hasher = blake3::Hasher::new();
@@ -799,10 +806,105 @@ fn collect_shadowmask_membership_in_batches(
     membership
 }
 
-fn invalid_selected_light_hash(alpha_index: u32) -> [u8; 32] {
+/// Read or bake exactly one `(selected light, atlas layer)` cache partition at
+/// a time, compact its raw visibility into membership, then drop it. This keeps
+/// shadowmask's raw-visibility consumer aligned with the lightmap cache grain.
+#[allow(clippy::too_many_arguments)]
+fn collect_cached_shadowmask_membership_by_partition(
+    selected: &[(usize, u32, &MapLight)],
+    shared: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    cache: &StageCache,
+    layer_input_hashes: &[Vec<[u8; 32]>],
+    control: &BakeControl,
+    resident_layers: &ResidentLayerTracker,
+) -> ShadowmaskMembership {
+    let layer_count = layer_count_from_shared(shared);
+    debug_assert_eq!(
+        selected.len(),
+        layer_input_hashes.len(),
+        "selected light/hash partitions must align after invalid selections are filtered"
+    );
+    let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
+    let mut membership = ShadowmaskMembership::for_light_count(selected.len());
+
+    for (compact_light_index, ((_, alpha_index, light), hashes)) in
+        selected.iter().zip(layer_input_hashes).enumerate()
+    {
+        debug_assert_eq!(hashes.len(), layer_count as usize);
+        for target_layer in 0..layer_count {
+            let target_chart_count = shared
+                .placements
+                .iter()
+                .filter(|placement| placement.layer == target_layer)
+                .count();
+            let hash = &hashes[target_layer as usize];
+            let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
+            let cached_partition = cache
+                .get(&key)
+                .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
+                .and_then(|partition| {
+                    match lightmap_layer::validate_layer_partition(
+                        &partition,
+                        shared,
+                        target_layer,
+                    ) {
+                        Ok(()) => Some(partition),
+                        Err(reason) => {
+                            log::warn!(
+                                "[Compiler] corrupt lightmap_layer cache entry for shadowmask selected AlphaLights index {alpha_index}, target layer {target_layer} ({reason}), re-baking"
+                            );
+                            None
+                        }
+                    }
+                });
+            let partition = match cached_partition {
+                Some(partition) => {
+                    log::info!("[cache] lightmap_layer hit");
+                    control.governor().checkpoint();
+                    control.advance(target_chart_count);
+                    partition
+                }
+                None => {
+                    log::info!("[cache] lightmap_layer miss");
+                    let partition = lightmap_layer::bake_light_layer_controlled(
+                        light,
+                        shared,
+                        bvh,
+                        primitives,
+                        geometry,
+                        target_layer,
+                        area_sample_count,
+                        control,
+                    );
+                    cache.put(&key, &partition.to_bytes());
+                    partition
+                }
+            };
+            let _resident_partition = resident_layers.acquire();
+            membership.by_light[compact_light_index].extend(collect_layer_membership(
+                compact_light_index,
+                &partition,
+                plane,
+            ));
+            // The compact membership owns the raw values it needs; discard the
+            // full cache partition before reading or baking the next one.
+            drop(partition);
+        }
+        control.governor().checkpoint();
+    }
+
+    membership
+}
+
+fn invalid_selected_light_hash(alpha_index: u32, target_layer: u32) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"shadowmask_atlas_invalid_selected_alpha_light");
     hasher.update(&alpha_index.to_le_bytes());
+    hasher.update(&target_layer.to_le_bytes());
     *hasher.finalize().as_bytes()
 }
 
@@ -1766,8 +1868,15 @@ mod tests {
         geo: &GeometryResult,
         area_samples: u32,
     ) -> (CacheKey, [u8; 32]) {
-        let input_hash =
-            lightmap_layer::layer_input_hash(light, shared, primitives, geo, DENSITY, area_samples);
+        let input_hash = lightmap_layer::layer_input_hash(
+            light,
+            shared,
+            primitives,
+            geo,
+            DENSITY,
+            area_samples,
+            0,
+        );
         (
             CacheKey::new(
                 "lightmap_layer",
@@ -2508,19 +2617,20 @@ mod tests {
             "no-cache streaming bake must match the pre-streaming golden"
         );
 
-        let input_hashes: Vec<[u8; 32]> = lights
-            .iter()
-            .map(|test_light| {
-                lightmap_layer::layer_input_hash(
+        let mut input_hashes = Vec::new();
+        for test_light in &lights {
+            for target_layer in 0..layer_count_from_shared(&shared) {
+                input_hashes.push(lightmap_layer::layer_input_hash(
                     test_light,
                     &shared,
                     &primitives,
                     &geometry,
                     DENSITY,
                     AREA_SAMPLES,
-                )
-            })
-            .collect();
+                    target_layer,
+                ));
+            }
+        }
         let cold_dir = fresh_cache_dir("top_level_golden_cold");
         let cold_cache = StageCache::new(&cold_dir).expect("cold cache dir");
         let cached_miss = bake_shadowmask_atlas_cached(
@@ -2542,8 +2652,9 @@ mod tests {
             "cache-backed streaming bake must match the pre-streaming golden"
         );
 
-        // Copy only the warm per-light layers to a fresh cache so the next
-        // call must take a section miss while reusing every layer entry.
+        // Copy every warm light/layer partition to a fresh cache so the next
+        // call must take a section miss while reusing every raw-visibility
+        // source without accepting a stale neighbouring layer.
         let warm_dir = fresh_cache_dir("top_level_golden_warm_layers");
         let warm_cache = StageCache::new(&warm_dir).expect("warm cache dir");
         for input_hash in &input_hashes {
@@ -3216,6 +3327,7 @@ mod tests {
                     &geo,
                     DENSITY,
                     AREA_SAMPLES,
+                    0,
                 )
             })
             .collect();
@@ -3568,7 +3680,7 @@ mod tests {
         );
         assert_ne!(
             base,
-            shadowmask_atlas_input_hash(&selection, &hashes, 4, 8, 2)
+            shadowmask_atlas_input_hash(&selection, &[hashes[0], fake_layer_hash(8)], 4, 8, 2)
         );
     }
 
@@ -3599,9 +3711,9 @@ mod tests {
         };
 
         let layer_hash_4 =
-            lightmap_layer::layer_input_hash(&lights[0], &shared, &primitives, &geo, DENSITY, 4);
+            lightmap_layer::layer_input_hash(&lights[0], &shared, &primitives, &geo, DENSITY, 4, 0);
         let layer_hash_8 =
-            lightmap_layer::layer_input_hash(&lights[0], &shared, &primitives, &geo, DENSITY, 8);
+            lightmap_layer::layer_input_hash(&lights[0], &shared, &primitives, &geo, DENSITY, 8, 0);
         assert_ne!(
             layer_hash_4, layer_hash_8,
             "--soft-shadow-samples must affect the selected layer input hash"

@@ -17,6 +17,18 @@ texel density through the cold, shippable compiler path. It records:
 The `cargo build` steps happen before measurement. The measurements invoke
 `prl-build.exe` directly, so Cargo compilation memory is not included.
 
+### Host-memory prerequisite
+
+This map's SH-delta stage estimates a 36.5 GiB dense working set before it
+reaches the lightmap bake. The compiler's normal 16 GiB SH-delta safety gate
+therefore refuses the map before any useful lightmap measurement. The commands
+below explicitly raise that *unrelated* gate to 48 GiB. Run this test only on a
+machine with at least 64 GiB installed RAM and substantial free memory; the
+flag permits the stage, it does not allocate memory or make an undersized
+machine safe. If the bake fails or the system pages heavily during the SH-delta
+stage, stop and report that result rather than changing density or other bake
+settings.
+
 ## 1. Fetch the two branches in GitHub Desktop
 
 1. Open the PostRetro repository in GitHub Desktop and choose **Fetch origin**.
@@ -61,7 +73,7 @@ function Invoke-LightmapBake($Label) {
     $process = Start-Process `
         -FilePath $exe `
         -WorkingDirectory $repo `
-        -ArgumentList "$map -o `"$out`" --release" `
+        -ArgumentList "$map -o `"$out`" --release --sh-delta-working-set-max-size 48GiB" `
         -NoNewWindow -PassThru -Wait
     $stopwatch.Stop()
 

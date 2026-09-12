@@ -146,7 +146,9 @@ pub enum ServerPresentationPayload {
 ///
 /// Bumped to 15 for the faction-sentiment sparse sync record. Its complete overlay
 /// set rides the snapshot envelope and has its own baseline/delta state machine.
-pub const SNAPSHOT_VERSION: u16 = 15;
+///
+/// Bumped to 16 for the protected knockback velocity in player movement state.
+pub const SNAPSHOT_VERSION: u16 = 16;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -261,6 +263,8 @@ pub enum WireGroundRef {
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],
+    /// Protected impulse contribution already included in total velocity.
+    pub knockback_velocity: [f32; 3],
     pub ground: WireGroundRef,
     pub air_jumps_remaining: u32,
     pub air_dashes_remaining: u32,
@@ -331,14 +335,15 @@ impl WireMovementState {
 }
 
 impl WirePlayerMovementState {
-    /// Whether every replicated float is finite (no NaN/inf): velocity, all live
-    /// timers, capsule dimensions, aim pitch, and the active state's payload. Checked
-    /// at `validate` so a non-finite movement state is rejected before typed apply and
-    /// never reaches the registry. Integer counters and bools cannot be non-finite, so
-    /// they are not checked.
+    /// Whether every replicated float is finite (no NaN/inf): velocity, protected
+    /// knockback velocity, all live timers, capsule dimensions, aim pitch, and the
+    /// active state's payload. Checked at `validate` so a non-finite movement state is
+    /// rejected before typed apply and never reaches the registry. Integer counters and
+    /// bools cannot be non-finite, so they are not checked.
     #[must_use]
     fn all_finite(&self) -> bool {
         self.velocity.iter().all(|c| c.is_finite())
+            && self.knockback_velocity.iter().all(|c| c.is_finite())
             && self.dash_cooldown_ms.is_finite()
             && self.coyote_timer_ms.is_finite()
             && self.jump_buffer_timer_ms.is_finite()
@@ -1314,6 +1319,7 @@ mod tests {
 
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            knockback_velocity: [0.0; 3],
             velocity: [0.0, 3.5, -1.0],
             ground: WireGroundRef::Airborne,
             air_jumps_remaining: 1,
@@ -1775,8 +1781,8 @@ mod tests {
     #[test]
     fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
         assert_eq!(
-            SNAPSHOT_VERSION, 15,
-            "the faction-sentiment snapshot layout requires snapshot version 15"
+            SNAPSHOT_VERSION, 16,
+            "the protected knockback snapshot layout requires snapshot version 16"
         );
 
         let spawn = ServerPresentationMessage {
@@ -2088,14 +2094,14 @@ mod tests {
     }
 
     #[test]
-    fn faction_sentiment_snapshot_version_rejects_immediately_previous_layout() {
-        const PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION: u16 = 14;
+    fn knockback_snapshot_version_rejects_immediately_previous_layout() {
+        const PRE_KNOCKBACK_SNAPSHOT_VERSION: u16 = 15;
         assert_eq!(
-            SNAPSHOT_VERSION, 15,
-            "faction-sentiment state requires snapshot version 15"
+            SNAPSHOT_VERSION, 16,
+            "protected knockback state requires snapshot version 16"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION,
+            version: PRE_KNOCKBACK_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -2107,7 +2113,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_FACTION_SENTIMENT_SNAPSHOT_VERSION,
+                received: PRE_KNOCKBACK_SNAPSHOT_VERSION,
             })
         );
     }
@@ -2679,7 +2685,10 @@ mod tests {
     /// field.
     #[test]
     fn non_finite_movement_state_rejects_each_field() {
-        let mutators: [fn(&mut WirePlayerMovementState); 14] = [
+        let mutators: [fn(&mut WirePlayerMovementState); 17] = [
+            |m| m.knockback_velocity[0] = f32::NAN,
+            |m| m.knockback_velocity[1] = f32::INFINITY,
+            |m| m.knockback_velocity[2] = f32::NEG_INFINITY,
             |m| m.velocity[0] = f32::NAN,
             |m| m.velocity[2] = f32::INFINITY,
             |m| m.dash_cooldown_ms = f32::NAN,

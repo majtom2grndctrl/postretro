@@ -174,6 +174,7 @@ mod tests {
     /// `PlayerMovementComponent` in [`sample_component_value`].
     fn sample_player_movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,
@@ -285,6 +286,7 @@ mod tests {
             )),
             ComponentKind::Weapon => {
                 ComponentValue::Weapon(WeaponComponent::from_descriptor(&WeaponDescriptor {
+                    knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
                     spread_degrees: 0.0,
@@ -334,6 +336,7 @@ mod tests {
             ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
             ComponentKind::Brain => {
                 ComponentValue::Brain(BrainComponent::from_graph(&BehaviorGraphDescriptor {
+                    knockback: Default::default(),
                     envelope: BehaviorGraphEnvelope {
                         initial: "idle".to_string(),
                         activities: std::collections::BTreeMap::from([(
@@ -419,6 +422,7 @@ mod tests {
                 },
             ),
             ComponentKind::Projectile => ComponentValue::Projectile(ProjectileComponent {
+                knockback_impulse: [0.0; 3],
                 direction: [0.0, 0.0, -1.0],
                 speed: 20.0,
                 radius: 0.1,

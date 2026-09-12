@@ -86,6 +86,12 @@ Two policies cut across every state and define the modern feel. Both are foundat
 - **Momentum conservation.** Velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal rule and a boost rule over §2's closed vocabulary. Carried momentum above the run cap survives into the air only while the player gives no air-steer input or `air.bunny_hop` is set; otherwise airborne `Normal` re-clamps it.
 - **Input forgiveness.** Coyote and jump-buffer windows are descriptor-tuned. The engine derives their edges once per tick; state intents consume those edges rather than raw button bits.
 
+### Knockback
+
+Combat adds authored velocity changes to a protected knockback layer on players and navigation agents. Normal acceleration, air-speed caps, AI steering, and dash/slide carry operate on locomotion; the protected layer rejoins before collision. Collision projects both layers and landing clears vertical knockback, so blocked pushes cannot return on the next tick. Gravity acts once on total motion; terminal fall limits consume downward knockback before altering baseline velocity.
+
+Character descriptors author response scale, ground/air drag, and locomotion control during a shove. Drag removes a linear fraction per fixed tick (`max(0, 1 - drag * dt)`); zero drag preserves momentum. Control scales steering and acceleration while protected velocity remains, leaving jump/dash activation available. Upward impulses release ground attachment; mover launches preserve the prior base long enough to transfer its release velocity once. Mutable knockback velocity participates in player prediction and reconciliation. No runtime script callback or rigid-body solver is involved.
+
 ### Moving bases
 
 Player grounded state is a `GroundRef`: `Airborne`, `World`, or `Mover(mover_id)`. Scripting-facing `grounded` stays a bool projection (`ground != Airborne`), and AI agent grounding remains separate.

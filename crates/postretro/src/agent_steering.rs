@@ -372,6 +372,22 @@ pub(crate) fn tick(
             continue;
         };
         let mut agent = component.clone();
+        // Horizontal steering is reconstructed each tick; preserve external
+        // velocity separately, and update the carried vertical total for drag.
+        agent.velocity -= agent.knockback_velocity;
+        crate::movement::knockback::decay(
+            &mut agent.knockback_velocity,
+            &agent.knockback,
+            agent.is_grounded,
+            dt,
+        );
+        agent.velocity += agent.knockback_velocity;
+        let knocked = agent.knockback_velocity != Vec3::ZERO;
+        let control = if knocked {
+            agent.knockback.control
+        } else {
+            1.0
+        };
         let position = registry
             .get_component::<Transform>(current.id)
             .map(|t| t.position)
@@ -395,8 +411,9 @@ pub(crate) fn tick(
                 collision_world,
                 &capsule,
                 position,
-                Vec3::ZERO,
+                agent.knockback_velocity,
                 agent.velocity.y,
+                &mut agent.knockback_velocity,
                 gravity,
                 dt,
             );
@@ -479,15 +496,16 @@ pub(crate) fn tick(
             &agent,
             position,
             goal_speed,
-            STEERING_ACCEL_PER_SPEED * agent.move_speed,
-            MAX_TURN_RATE,
+            STEERING_ACCEL_PER_SPEED * agent.move_speed * control,
+            MAX_TURN_RATE * control,
             LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
             dt,
         );
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
-        let has_recovery_intent = has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
+        let has_recovery_intent =
+            !knocked && has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
         if has_recovery_intent {
             if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
                 // Fire recovery: clear the plan latch so the next tick's
@@ -526,11 +544,11 @@ pub(crate) fn tick(
         desired += separation_preserving_goal_progress(
             steer_velocity,
             separation(current, &agent, &snapshot),
-        );
+        ) * control;
 
         // Clamp horizontal speed to the agent's top speed so the combined
         // (goal + separation) vector never drives faster than `move_speed`.
-        desired = clamp_xz_speed(desired, agent.move_speed);
+        desired = clamp_xz_speed(desired, agent.move_speed) + agent.knockback_velocity;
 
         // Move through the world.
         let capsule = AgentCapsule {
@@ -544,6 +562,7 @@ pub(crate) fn tick(
             position,
             Vec3::new(desired.x, 0.0, desired.z),
             agent.velocity.y,
+            &mut agent.knockback_velocity,
             gravity,
             dt,
         );

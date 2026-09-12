@@ -312,11 +312,34 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("visual", "ProjectileVisual", "What players see while the projectile flies and resolves: one required body, an optional cosmetic trail, an optional travel light, and an optional impact-flash light. These settings do not change damage or hit detection.")
         .finish();
     registry
+        .register_type("KnockbackDescriptor")
+        .doc("Direct-hit velocity change independent of damage. Omit the block for no direct knockback.")
+        .field("speed", "f32", "Added speed in metres/sec. Must be finite in 0..=1000; 0 disables push.")
+        .field("upwardBias?", "f32", "Blend hit travel direction toward world up before normalization. Defaults to 0; finite in 0..=1. A zero or cancelled direction falls back to up.")
+        .finish();
+    registry
+        .register_type("SplashKnockbackDescriptor")
+        .doc("Radial push using the blast radius and occlusion, independently of damage and selfDamage.")
+        .field("speed", "f32", "Added speed at the blast center in metres/sec. Must be finite in 0..=1000.")
+        .field("upwardBias?", "f32", "Blend outward direction toward world up before normalization. Defaults to 0; finite in 0..=1. A coincident or cancelled direction falls back to up.")
+        .field("minFraction?", "f32", "Fraction of push speed at the blast edge, with linear falloff. Defaults to 0; finite in 0..=1. Independent of damage minFraction.")
+        .field("selfScale?", "f32", "Owner-only push multiplier. Defaults to 1; finite in 0..=10. Set 0 to disable self push, independently of selfDamage.")
+        .finish();
+    registry
+        .register_type("KnockbackResponse")
+        .doc("Player or enemy response to hit impulses. All fields are optional; omission uses the defaults.")
+        .field("scale?", "f32", "Received impulse multiplier. Defaults to 1; finite in 0..=10. Set 0 for immunity.")
+        .field("groundDrag?", "f32", "Grounded decay rate in inverse seconds. Each tick multiplies protected impulse by max(0, 1 - groundDrag * dt). Defaults to 8; finite in 0..=1000.")
+        .field("airDrag?", "f32", "Airborne decay rate in inverse seconds, using the same rule as groundDrag. Defaults to 0; finite in 0..=1000. Gravity still acts normally.")
+        .field("control?", "f32", "Fraction of normal steering while knockback remains. Defaults to 1; finite in 0..=1. Abilities remain available.")
+        .finish();
+    registry
         .register_type("SplashDescriptor")
         .doc("Radial damage applied at a projectile impact point. The block is a peer of `projectile`, but current engine behavior accepts it only on projectile weapons.")
         .field("radius", "f32", "Blast radius in metres. Must be finite and greater than 0.")
         .field("minFraction?", "f32", "Fraction of base damage at the outer edge. Must be finite and in 0..=1; defaults to 0.")
-        .field("selfDamage?", "bool", "Whether the firing pawn can be damaged by its own blast. Defaults to true.")
+        .field("selfDamage?", "bool", "Whether the firing pawn can be damaged by its own blast. Defaults to true; does not suppress knockback.")
+        .field("knockback?", "SplashKnockbackDescriptor", "Optional radial push independent of damage. Omit for no blast push.")
         .finish();
     registry
         .register_type("ProjectileVisual")
@@ -441,6 +464,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
+        .field("knockback?", "KnockbackDescriptor", "Optional direct-hit push. Applies per hitscan pellet or projectile entity contact, independently of damage. Composes with splash.knockback when both are authored.")
         .field("damage", "f32", "Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0.")
         .field("pelletCount?", "u32", "Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1.")
         .field("spreadDegrees?", "f32", "Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis).")
@@ -616,6 +640,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("retaliation?", "RetaliationDescriptor", "Optional scalar tuning for the engine-owned retaliation preference. The block cannot author ranking logic; omitted values use compatibility defaults and the default tolerance keeps the term inert.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
         .field("attacks?", "BehaviorAttacks", "Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries. Omit for an attackless graph.")
+        .field("knockback?", "KnockbackResponse", "Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")
         .finish();
@@ -626,6 +651,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("ground", "GroundParams", "Required on-ground speed, acceleration, stepping, and slope limits.")
         .field("air", "AirParams", "Required jump and mid-air steering parameters.")
         .field("fall", "FallParams", "Required terminal falling-speed limit.")
+        .field("knockback?", "KnockbackResponse", "Optional player impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.")
         .field(
             "dash?",
             "DashParams",

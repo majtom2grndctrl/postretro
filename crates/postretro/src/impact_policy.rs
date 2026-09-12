@@ -1619,6 +1619,7 @@ mod tests {
 
     fn mark_as_local_player(ctx: &ScriptCtx, target: EntityId) {
         let movement = PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,
@@ -1701,7 +1702,10 @@ mod tests {
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             target,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO,
+            },
             context,
         );
     }
@@ -2367,7 +2371,10 @@ mod tests {
         apply_damage_with_context(
             &mut registry,
             target,
-            &DamagePayload { amount: 1.0 },
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO,
+            },
             context,
         );
         crate::session::evaluate_pending_in_tick_impacts(
@@ -2425,7 +2432,10 @@ mod tests {
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             target,
-            &DamagePayload { amount: 100.0 },
+            &DamagePayload {
+                amount: 100.0,
+                impulse: glam::Vec3::ZERO,
+            },
             damage,
         );
         evaluate_pending(&ctx, &mut runtime);
@@ -2515,7 +2525,10 @@ mod tests {
             apply_damage_with_context(
                 &mut registry,
                 target,
-                &DamagePayload { amount: 1.0 },
+                &DamagePayload {
+                    amount: 1.0,
+                    impulse: glam::Vec3::ZERO,
+                },
                 context,
             );
             crate::session::evaluate_pending_in_tick_impacts(
@@ -2628,7 +2641,10 @@ mod tests {
             apply_damage_with_context(
                 &mut registry,
                 target,
-                &DamagePayload { amount: 1.0 },
+                &DamagePayload {
+                    amount: 1.0,
+                    impulse: glam::Vec3::ZERO,
+                },
                 context,
             );
             runtime.evaluate_pending_in_registry(&mut registry);
@@ -2694,7 +2710,10 @@ mod tests {
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             hit.target,
-            &DamagePayload { amount: 50.0 },
+            &DamagePayload {
+                amount: 50.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.gib", DamageProducer::InTick),
         );
         evaluate_pending(&ctx, &mut runtime);
@@ -2751,7 +2770,10 @@ mod tests {
             apply_damage_with_context(
                 &mut registry,
                 target,
-                &DamagePayload { amount: 3.0 },
+                &DamagePayload {
+                    amount: 3.0,
+                    impulse: glam::Vec3::ZERO,
+                },
                 DamageContext::new("weapon.shotgun", DamageProducer::InTick),
             );
             runtime.evaluate_pending_in_registry(&mut registry);
@@ -2781,7 +2803,10 @@ mod tests {
         apply_damage_with_context(
             &mut registry,
             target,
-            &DamagePayload { amount: 3.0 },
+            &DamagePayload {
+                amount: 3.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.shotgun", DamageProducer::InTick),
         );
         runtime.evaluate_pending_in_registry(&mut registry);
@@ -2911,7 +2936,10 @@ mod tests {
             apply_damage_with_context(
                 &mut registry,
                 target,
-                &DamagePayload { amount: 1.0 },
+                &DamagePayload {
+                    amount: 1.0,
+                    impulse: glam::Vec3::ZERO,
+                },
                 context,
             );
             runtime.evaluate_pending_in_registry(&mut registry);

@@ -1425,6 +1425,7 @@ mod tests {
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
             crate::netcode::AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn: owner,
                 weapon,
@@ -1434,6 +1435,7 @@ mod tests {
                 pellet_count: 1,
                 credit_source: "weapon.test.remote-splash".to_string(),
                 splash: Some(SplashDescriptor {
+                    knockback: None,
                     radius: 4.0,
                     min_fraction: 0.2,
                     self_damage: true,

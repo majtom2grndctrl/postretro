@@ -551,10 +551,12 @@ fn plan_movement_replace(
     }
 
     let mut refreshed = PlayerMovementComponent::from_descriptor(descriptor);
-    // Preserve only live physics-integration state — velocity, the grounded flag,
-    // and the airborne-tick counter. Everything descriptor-derived reseeds from
-    // the new descriptor.
+    // Preserve live physics integration, including the external-impulse layer.
+    // Dropping that layer would reclassify the shove as voluntary velocity and
+    // let the next movement tick erase it through ordinary speed caps.
+    // Descriptor-derived response tuning reseeds from the new descriptor.
     refreshed.velocity = live.velocity;
+    refreshed.knockback_velocity = live.knockback_velocity;
     refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
@@ -816,6 +818,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -924,6 +927,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius,
                     half_height,
@@ -1182,6 +1186,45 @@ mod tests {
         // authored jump-count change takes effect on save, not only after landing.
         assert_eq!(component.air_jumps_remaining, 3);
         assert_eq!(component.air_ticks, 7);
+    }
+
+    #[test]
+    fn knockback_movement_refresh_preserves_live_impulse_and_updates_response() {
+        let old = vec![movement_descriptor("player", 1)];
+        let mut new = old.clone();
+        let response = &mut new[0].movement.as_mut().unwrap().knockback;
+        response.scale = 0.5;
+        response.air_drag = 2.0;
+        response.control = 0.25;
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.velocity = Vec3::new(3.0, 0.0, 0.0);
+        let impulse = Vec3::new(12.0, 6.0, 0.0);
+        assert!(live.add_knockback(impulse));
+        let total_velocity = live.velocity;
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement")
+        };
+        assert!((component.velocity - total_velocity).length() < 1.0e-6);
+        assert!((component.knockback_velocity - impulse).length() < 1.0e-6);
+        assert!((component.knockback.scale - 0.5).abs() < f32::EPSILON);
+        assert!((component.knockback.air_drag - 2.0).abs() < f32::EPSILON);
+        assert!((component.knockback.control - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

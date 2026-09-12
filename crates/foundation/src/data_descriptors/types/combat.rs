@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::types::light::FalloffKind;
 use crate::data_descriptors::{
-    DescriptorError, is_portable_content_relative_asset_path, validate_ascii_identifier,
+    DescriptorError, KnockbackDescriptor, SplashKnockbackDescriptor,
+    is_portable_content_relative_asset_path, validate_ascii_identifier,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,9 @@ pub struct SplashDescriptor {
     /// Whether the firing pawn is eligible for its own blast.
     #[serde(default = "default_splash_self_damage")]
     pub self_damage: bool,
+    /// Optional blast impulse, independent of damage and self-damage eligibility.
+    #[serde(default)]
+    pub knockback: Option<SplashKnockbackDescriptor>,
 }
 
 const fn default_splash_self_damage() -> bool {
@@ -351,6 +355,9 @@ impl WeaponPlacementDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct WeaponDescriptor {
     pub damage: f32,
+    /// Optional direct-hit impulse, independent of damage.
+    #[serde(default)]
+    pub knockback: Option<KnockbackDescriptor>,
     #[serde(default = "default_pellet_count")]
     pub pellet_count: u32,
     #[serde(default)]
@@ -413,6 +420,9 @@ pub struct WeaponDescriptor {
 
 impl WeaponDescriptor {
     pub fn validate(self) -> Result<Self, DescriptorError> {
+        if let Some(knockback) = &self.knockback {
+            knockback.validate("components.weapon.knockback")?;
+        }
         if !self.damage.is_finite() || self.damage < 0.0 {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
@@ -576,6 +586,9 @@ impl WeaponDescriptor {
 }
 
 fn validate_splash_descriptor(splash: &SplashDescriptor) -> Result<(), DescriptorError> {
+    if let Some(knockback) = &splash.knockback {
+        knockback.validate("components.weapon.splash.knockback")?;
+    }
     if !splash.radius.is_finite() || splash.radius <= 0.0 {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
@@ -991,6 +1004,7 @@ mod tests {
 
     fn weapon_descriptor(credit_source: Option<&str>) -> WeaponDescriptor {
         WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1106,6 +1120,7 @@ mod tests {
         ] {
             let mut invalid = descriptor.clone();
             invalid.splash = Some(SplashDescriptor {
+                knockback: None,
                 radius,
                 min_fraction,
                 self_damage: true,
@@ -1119,6 +1134,7 @@ mod tests {
     fn hitscan_resolution_rejects_splash_block() {
         let mut descriptor = weapon_descriptor(None);
         descriptor.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 12.0,
             min_fraction: 0.25,
             self_damage: true,

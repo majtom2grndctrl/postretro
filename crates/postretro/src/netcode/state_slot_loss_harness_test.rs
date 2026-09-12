@@ -152,6 +152,7 @@ fn spawn_owned_health(
 fn spawn_owned_ammo_weapons(registry: &mut EntityRegistry, pawn: EntityId) -> (EntityId, EntityId) {
     let weapon = |ammo_type: &str| {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -534,6 +535,7 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
         enemy,
         enemy,
         ProjectileLaunch {
+            knockback_impulse: Vec3::ZERO,
             origin: Vec3::ZERO,
             direction: Vec3::X,
             speed: 4.0,
@@ -676,6 +678,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
         enemy,
         enemy,
         ProjectileLaunch {
+            knockback_impulse: Vec3::ZERO,
             origin: Vec3::ZERO,
             direction: Vec3::X,
             speed: 4.0,
@@ -704,6 +707,7 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
                 },
             },
             splash: Some(SplashDescriptor {
+                knockback: None,
                 radius: 2.0,
                 min_fraction: 0.0,
                 self_damage: true,

@@ -553,6 +553,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,
                     half_height: 0.8,
@@ -618,6 +619,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -827,6 +829,7 @@ mod tests {
         let shot_id = crate::netcode::ShotId::from_parts(pawn_net, 5);
         open_shots.record(
             crate::netcode::AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn,
                 weapon,
@@ -1111,6 +1114,7 @@ mod tests {
         let shot_id = crate::netcode::ShotId::from_parts(old_pawn_net, 9);
         open_shots.record(
             crate::netcode::AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn: old_pawn,
                 weapon: old_weapon,

@@ -236,6 +236,7 @@ mod tests {
     /// sweep. Mirrors `make_player`: the sweep branches on component *presence*.
     fn make_brain(registry: &mut EntityRegistry, id: EntityId) {
         let graph = BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: std::collections::BTreeMap::from([(
@@ -309,6 +310,7 @@ mod tests {
     /// tuning values are never read here.
     fn make_player(registry: &mut EntityRegistry, id: EntityId) {
         let descriptor = PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.5,
                 half_height: 0.9,
@@ -559,7 +561,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 5.0 },
+            &DamagePayload {
+                amount: 5.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("script.after-latch", DamageProducer::InTick),
         );
         let latched_health = reg.get_component::<HealthComponent>(id).unwrap();
@@ -596,13 +601,19 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 10.0 },
+            &DamagePayload {
+                amount: 10.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.lethal", DamageProducer::InTick),
         );
         apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
         );
 

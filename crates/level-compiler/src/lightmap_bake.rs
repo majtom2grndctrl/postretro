@@ -501,7 +501,7 @@ pub fn bake_lightmap_controlled(
     let layer_count = prepared.layer_count;
 
     control.publish_total(placements.len());
-    let atlas = bake_monolithic_atlas_controlled(
+    let section = bake_layered_section_controlled(
         inputs.bvh,
         inputs.primitives,
         inputs.geometry,
@@ -512,20 +512,10 @@ pub fn bake_lightmap_controlled(
         atlas_h,
         layer_count,
         area_sample_count,
-        control,
-    );
-
-    // Compress to BC6H by default — `Bc6hRgbUfloat` is ~8× smaller than RGBA16F
-    // on disk and in VRAM, and the smooth low-frequency irradiance compresses
-    // cleanly under the in-tree single-mode encoder. The debug bypass leaves
-    // output byte-identical to the pre-BC6H path so owner-side A/B compares
-    // and round-trip determinism tests can run against a known-stable baseline.
-    // `encode_section` is the shared section-22 encoder both this monolithic
-    // path and the per-light compositor route through.
-    let section = atlas.encode_section(
         texel_density,
         config.uncompressed_irradiance,
         config.direction_texel_scale,
+        control,
     );
 
     Ok(LightmapBakeOutput {
@@ -536,6 +526,203 @@ pub fn bake_lightmap_controlled(
         atlas_height: atlas_h,
         layer_count,
     })
+}
+
+/// Bake, dilate, encode, and discard one atlas layer at a time.
+///
+/// This is the shipping cold path. The layer loop is deliberately serial and
+/// ascending so its blobs retain the section format's layer-major order. Chart
+/// work remains parallel within one layer, but every worker joins before that
+/// layer is dilated, encoded, and dropped. The whole-atlas
+/// [`bake_monolithic_atlas_controlled`] builder remains below as the reference
+/// kernel for byte-identity tests.
+#[allow(clippy::too_many_arguments)]
+fn bake_layered_section_controlled(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    charts: &[Chart],
+    placements: &[ChartPlacement],
+    atlas_w: u32,
+    atlas_h: u32,
+    layer_count: u32,
+    area_sample_count: u32,
+    texel_density: f32,
+    uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
+    control: &BakeControl,
+) -> LightmapSection {
+    debug_assert_eq!(charts.len(), placements.len());
+
+    let direction_texel_scale =
+        effective_direction_texel_scale(direction_texel_scale, atlas_w, atlas_h);
+    let mut irradiance = Vec::new();
+    let mut direction = Vec::new();
+
+    for layer in 0..layer_count {
+        // Keep the layer's full-resolution f32 buffers scoped to this block.
+        // The encoded bytes are appended before their backing buffers are
+        // dropped, bounding the uncompressed working set to one atlas plane.
+        let (mut layer_irradiance, mut layer_direction) = {
+            let atlas = bake_atlas_layer_controlled(
+                bvh,
+                primitives,
+                geometry,
+                static_lights,
+                charts,
+                placements,
+                atlas_w,
+                atlas_h,
+                layer,
+                area_sample_count,
+                control,
+            );
+            encode_atlas_layer(&atlas, uncompressed_irradiance, direction_texel_scale)
+        };
+        irradiance.append(&mut layer_irradiance);
+        direction.append(&mut layer_direction);
+    }
+
+    LightmapSection {
+        layer_count,
+        irr_width: atlas_w,
+        irr_height: atlas_h,
+        irr_texel_density: texel_density,
+        irradiance,
+        irradiance_format: if uncompressed_irradiance {
+            IRRADIANCE_FORMAT_RGBA16F
+        } else {
+            IRRADIANCE_FORMAT_BC6H
+        },
+        dir_width: atlas_w / direction_texel_scale,
+        dir_height: atlas_h / direction_texel_scale,
+        dir_texel_density: texel_density * direction_texel_scale as f32,
+        direction,
+        direction_format: DIRECTION_FORMAT_OCT_RG8,
+        mode: LightmapMode::Shadowed,
+    }
+}
+
+/// Bake one global atlas layer into a one-layer composited buffer.
+///
+/// `placement.layer` is intentionally retained while baking so the fixed
+/// atlas-space sample seed stays unchanged. It is rebased only for the scatter
+/// destination because the temporary atlas has exactly one layer.
+#[allow(clippy::too_many_arguments)]
+fn bake_atlas_layer_controlled(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    charts: &[Chart],
+    placements: &[ChartPlacement],
+    atlas_w: u32,
+    atlas_h: u32,
+    target_layer: u32,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> CompositedAtlas {
+    // Collect serially from the chart/leaf order emitted by the planner. The
+    // vector is only face indices, not per-texel bake data, and makes the
+    // layer selection deterministic before per-chart work fans out.
+    let layer_faces: Vec<usize> = placements
+        .iter()
+        .enumerate()
+        .filter_map(|(face_idx, placement)| (placement.layer == target_layer).then_some(face_idx))
+        .collect();
+
+    // `pack_layers` assigns every chart a disjoint rectangle, so a chart can
+    // bake independently. Keep only one local chart buffer per admitted worker
+    // and scatter it immediately; collecting every chart buffer would duplicate
+    // the uncompressed layer working set.
+    let atlas = Mutex::new(CompositedAtlas::zeroed(atlas_w, atlas_h, 1));
+
+    layer_faces.par_iter().for_each(|&face_idx| {
+        // Parallel work items must enter exactly once at their outermost
+        // boundary. In particular, `checkpoint` alone would honor pause while
+        // bypassing the compiler's `-j` concurrency cap.
+        let _permit = control.governor().enter();
+        let chart = &charts[face_idx];
+        let placement = &placements[face_idx];
+        let chart_atlas = bake_face_chart(
+            bvh,
+            primitives,
+            geometry,
+            static_lights,
+            chart,
+            placement,
+            area_sample_count,
+        );
+
+        // This lock only protects finite row-wise memcpy operations. It never
+        // waits on another permit or on stage completion, so holding the permit
+        // while waiting for the lock cannot form a nested-wait deadlock. A
+        // degenerate chart's local buffer is all-default and intentionally has
+        // no scatter work.
+        if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
+            let mut atlas = atlas
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let rebased_placement = ChartPlacement {
+                x: placement.x,
+                y: placement.y,
+                layer: 0,
+            };
+            scatter_chart_into_atlas(&chart_atlas, &rebased_placement, &mut atlas);
+        }
+        // Progress means charts baked. Degenerate charts return an empty local
+        // contribution, still scatter as a no-op, and still advance here.
+        control.advance(1);
+    });
+
+    let mut atlas = atlas
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Dilation deliberately remains sequential and un-gated after every chart
+    // has scattered, preserving the serial bake's post-pass ordering.
+    atlas.dilate();
+    atlas
+}
+
+/// Encode one already-dilated composited atlas plane.
+///
+/// The whole-atlas encoder applies these same operations independently to each
+/// plane. Keeping this helper plane-only makes the cold path's append order
+/// explicit while preserving BC6H blocks, direction reduction, and Rg8 output.
+fn encode_atlas_layer(
+    atlas: &CompositedAtlas,
+    uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
+) -> (Vec<u8>, Vec<u8>) {
+    debug_assert_eq!(atlas.layer_count, 1);
+
+    let irradiance = if uncompressed_irradiance {
+        encode_irradiance_rgba16f(&atlas.irradiance)
+    } else {
+        bc6h::encode_bc6h_rgb_from_f32_rgba(
+            &atlas.irradiance,
+            atlas.atlas_width,
+            atlas.atlas_height,
+        )
+    };
+
+    let direction = if direction_texel_scale == 1 {
+        encode_direction_rg8(&atlas.direction, &atlas.coverage)
+    } else {
+        let (direction, coverage) = reduce_direction_atlas(
+            &atlas.direction,
+            &atlas.coverage,
+            atlas.atlas_width,
+            atlas.atlas_height,
+            1,
+            direction_texel_scale,
+        );
+        encode_direction_rg8(&direction, &coverage)
+    };
+
+    (irradiance, direction)
 }
 
 /// Bake the full static-light atlas and dilate — the monolithic side of the
@@ -2352,6 +2539,43 @@ mod tests {
         geometry
     }
 
+    /// Two large, separate leaves that each fit a 64² atlas layer but cannot
+    /// share one. This keeps the cold-bake byte-identity fixture small while
+    /// forcing the production path through a non-zero array layer.
+    fn two_large_disjoint_quads_geometry() -> GeometryResult {
+        let mut first = unit_quad_geometry();
+        for vertex in &mut first.geometry.vertices {
+            vertex.position[0] *= 12.0;
+            vertex.position[2] *= 12.0;
+        }
+
+        let mut second = unit_quad_geometry();
+        for vertex in &mut second.geometry.vertices {
+            vertex.position[0] = vertex.position[0] * 12.0 + 16.0;
+            vertex.position[2] *= 12.0;
+        }
+        second.geometry.faces[0].leaf_index = 1;
+
+        let vertex_offset = first.geometry.vertices.len() as u32;
+        let index_offset = first.geometry.indices.len() as u32;
+        first.geometry.vertices.extend(second.geometry.vertices);
+        first.geometry.indices.extend(
+            second
+                .geometry
+                .indices
+                .into_iter()
+                .map(|index| index + vertex_offset),
+        );
+        first.geometry.faces.extend(second.geometry.faces);
+        first
+            .face_index_ranges
+            .extend(second.face_index_ranges.into_iter().map(|mut range| {
+                range.index_offset += index_offset;
+                range
+            }));
+        first
+    }
+
     fn point_light_above() -> MapLight {
         MapLight {
             origin: DVec3::new(0.5, 1.0, 0.5),
@@ -3191,6 +3415,268 @@ mod tests {
         assert_eq!(
             serial, parallel,
             "chart completion order must not change the pre-BC6H atlas"
+        );
+    }
+
+    fn multi_layer_reference_section() -> LightmapSection {
+        let mut geometry = two_large_disjoint_quads_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let mut light = point_light_above();
+        light.origin = DVec3::new(10.0, 8.0, 6.0);
+        light.falloff_range = 40.0;
+        let lights = vec![light];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .collect();
+        let prepared = prepare_atlas(&mut geometry, &static_lights, 0.25, &[]).unwrap();
+        assert_eq!(
+            prepared.layer_count, 2,
+            "fixture must force a non-zero atlas layer"
+        );
+
+        bake_monolithic_atlas(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &prepared.charts,
+            &prepared.placements,
+            prepared.atlas_width,
+            prepared.atlas_height,
+            prepared.layer_count,
+            DEFAULT_AREA_SAMPLE_COUNT,
+        )
+        .encode_section(0.25, false, DIRECTION_TEXEL_SCALE)
+    }
+
+    fn multi_layer_cold_section() -> LightmapSection {
+        let mut geometry = two_large_disjoint_quads_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let mut light = point_light_above();
+        light.origin = DVec3::new(10.0, 8.0, 6.0);
+        light.falloff_range = 40.0;
+        let lights = vec![light];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let mut inputs = LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &mut geometry,
+            lights: &static_lights,
+            scale_regions: &[],
+        };
+
+        bake_lightmap_controlled(
+            &mut inputs,
+            &LightmapConfig {
+                lightmap_density: 0.25,
+                area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+                direction_texel_scale: DIRECTION_TEXEL_SCALE,
+                uncompressed_irradiance: false,
+            },
+            &BakeControl::unrestricted(),
+        )
+        .unwrap()
+        .section
+    }
+
+    /// OP1: the shipping cold path encodes every layer in ascending order and
+    /// appends its bytes exactly as the retained whole-atlas reference kernel.
+    #[test]
+    fn layered_cold_bake_matches_reference_and_repeats_byte_identically() {
+        let reference = multi_layer_reference_section();
+        let first = multi_layer_cold_section();
+        let second = multi_layer_cold_section();
+
+        assert_eq!(first.layer_count, 2, "fixture must exercise layer 1");
+        assert_eq!(
+            first.to_bytes(),
+            reference.to_bytes(),
+            "layer-major cold encoding must equal whole-atlas reference encoding"
+        );
+        assert_eq!(
+            first.to_bytes(),
+            second.to_bytes(),
+            "serial layer traversal and per-chart parallel scatter must not reorder output"
+        );
+    }
+
+    /// OP2: a global placement on layer 1 must scatter into layer 0 of the
+    /// one-layer temporary atlas. Compare against layer 1 of the retained
+    /// whole-atlas reference to catch both an out-of-bounds layer address and
+    /// a silent write into the wrong plane.
+    #[test]
+    fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
+        let geometry = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let lights = vec![point_light_above()];
+        let light_refs: Vec<&MapLight> = lights.iter().collect();
+        let charts = vec![synthetic_chart_leaf(64, 64, 1)];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 1,
+        }];
+
+        let whole = bake_monolithic_atlas(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            64,
+            64,
+            2,
+            DEFAULT_AREA_SAMPLE_COUNT,
+        );
+        let layer = bake_atlas_layer_controlled(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            64,
+            64,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            &BakeControl::unrestricted(),
+        );
+        let plane = 64usize * 64;
+
+        assert_eq!(layer.layer_count, 1);
+        assert_eq!(layer.irradiance, whole.irradiance[plane * 4..plane * 8]);
+        assert_eq!(layer.direction, whole.direction[plane..plane * 2]);
+        assert_eq!(layer.coverage, whole.coverage[plane..plane * 2]);
+    }
+
+    /// OP7: the per-layer chart fan-out must join its scatter work before the
+    /// serial dilation pass reads the temporary plane. A two-worker scatter of
+    /// disjoint chart rectangles must therefore equal the reference whole-atlas
+    /// plane and report both chart completions on return.
+    #[test]
+    fn per_layer_parallel_scatter_joins_before_dilation() {
+        let geometry = two_disjoint_quads_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let lights = vec![point_light_above()];
+        let light_refs: Vec<&MapLight> = lights.iter().collect();
+        let charts = vec![
+            synthetic_chart_leaf(32, 64, 0),
+            synthetic_chart_leaf(32, 64, 1),
+        ];
+        let placements = vec![
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 0,
+            },
+            ChartPlacement {
+                x: 32,
+                y: 0,
+                layer: 0,
+            },
+        ];
+        let expected = bake_monolithic_atlas(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            64,
+            64,
+            1,
+            DEFAULT_AREA_SAMPLE_COUNT,
+        );
+        let progress = StageProgress::with_total(placements.len());
+        let control = BakeControl::new(Arc::new(Governor::new(2, false)), &progress);
+        let actual = ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap()
+            .install(|| {
+                bake_atlas_layer_controlled(
+                    &bvh,
+                    &primitives,
+                    &geometry,
+                    &light_refs,
+                    &charts,
+                    &placements,
+                    64,
+                    64,
+                    0,
+                    DEFAULT_AREA_SAMPLE_COUNT,
+                    &control,
+                )
+            });
+
+        assert_eq!(actual, expected);
+        assert_eq!(progress.completed(), placements.len());
+        assert_eq!(progress.total(), Some(progress.completed()));
+    }
+
+    /// OP8: even a layer containing only degenerate charts is encoded and
+    /// appended. Skipping it would shrink the two layer blobs and violate the
+    /// section's layer count despite leaving no covered texels behind.
+    #[test]
+    fn layered_cold_encode_retains_degenerate_layer_blob() {
+        let geometry = unit_quad_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let lights = vec![point_light_above()];
+        let light_refs: Vec<&MapLight> = lights.iter().collect();
+        let charts = vec![synthetic_chart_leaf(64, 64, 0), empty_chart_for_leaf(1)];
+        let placements = vec![
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 0,
+            },
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 1,
+            },
+        ];
+        let section = bake_layered_section_controlled(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            64,
+            64,
+            2,
+            DEFAULT_AREA_SAMPLE_COUNT,
+            0.25,
+            true,
+            DIRECTION_TEXEL_SCALE,
+            &BakeControl::unrestricted(),
+        );
+        let reference = bake_monolithic_atlas(
+            &bvh,
+            &primitives,
+            &geometry,
+            &light_refs,
+            &charts,
+            &placements,
+            64,
+            64,
+            2,
+            DEFAULT_AREA_SAMPLE_COUNT,
+        )
+        .encode_section(0.25, true, DIRECTION_TEXEL_SCALE);
+
+        assert_eq!(section.layer_count, 2);
+        assert_eq!(section.irradiance.len(), 2 * 64 * 64 * 8);
+        assert_eq!(section.direction.len(), 2 * 32 * 32 * 2);
+        assert_eq!(
+            section.to_bytes(),
+            reference.to_bytes(),
+            "the uncovered degenerate plane must still be encoded layer-major"
         );
     }
 

@@ -240,6 +240,13 @@ Concrete orderings the bake must honor. Each is testable; each names the task th
   summary is a single `log::info` line. (Review/grep gate, not a runnable test: verify by
   inspecting the added log sites against the existing `log_stats` verbose gating.)
 
+### Windows measurement runbook
+
+The copy-paste instructions for the required pre/post peak-working-set and
+byte-identity evidence are in [windows-test-instructions.md](./windows-test-instructions.md).
+They use GitHub Desktop for branch switching; no Git CLI is required on the
+measurement machine.
+
 ## Rough sketch
 
 Bake — `crates/level-compiler/src/lightmap_bake.rs`: `CompositedAtlas` (irradiance

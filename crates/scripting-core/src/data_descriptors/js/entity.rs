@@ -91,6 +91,13 @@ pub fn entity_descriptor_from_js<'js>(
                         validate_optional_projectile_shapes_js(weapon_obj)?;
                     }
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    validate_optional_knockback_object(&json, "components.weapon.knockback")?;
+                    if let Some(splash) = json.get("splash") {
+                        validate_optional_knockback_object(
+                            splash,
+                            "components.weapon.splash.knockback",
+                        )?;
+                    }
                     let descriptor: WeaponDescriptor =
                         serde_json::from_value(json).map_err(|e| {
                             DescriptorError::InvalidShape {
@@ -138,6 +145,7 @@ pub fn entity_descriptor_from_js<'js>(
                 if !raw.is_null() && !raw.is_undefined() {
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
                     reject_object_where_move_selector_belongs(&json)?;
+                    validate_optional_knockback_object(&json, "components.behavior.knockback")?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.behavior` invalid: {e}"),

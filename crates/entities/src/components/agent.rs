@@ -18,7 +18,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::NavAgentParams;
+use postretro_foundation::{KnockbackResponse, NavAgentParams};
 
 /// Live state for one movable navigation agent.
 ///
@@ -52,6 +52,11 @@ pub struct AgentComponent {
     /// Live velocity (world space) the collide-and-slide harness integrates and
     /// resolves each tick.
     pub velocity: Vec3,
+    /// External velocity protected from path steering's horizontal replacement.
+    #[serde(default)]
+    pub knockback_velocity: Vec3,
+    #[serde(default)]
+    pub knockback: KnockbackResponse,
     /// Pre-collision, smoothed XZ path-following velocity integrated by the
     /// steering system. Separation is added transiently after this value and is
     /// never folded back into it, so heading/acceleration state stays free of
@@ -135,6 +140,8 @@ impl AgentComponent {
             step_height,
             move_speed,
             velocity: Vec3::ZERO,
+            knockback_velocity: Vec3::ZERO,
+            knockback: KnockbackResponse::default(),
             steer_velocity: Vec3::ZERO,
             stuck_ticks: 0,
             unstick_window_remaining: 0,
@@ -148,6 +155,28 @@ impl AgentComponent {
             arrived: false,
             blocked: false,
         }
+    }
+
+    /// Add a scaled world-space velocity impulse, atomically rejecting invalid sums.
+    pub fn add_knockback(&mut self, impulse: Vec3) -> bool {
+        let impulse = impulse * self.knockback.scale;
+        let velocity = self.velocity + impulse;
+        let knockback_velocity = self.knockback_velocity + impulse;
+        if !impulse.is_finite()
+            || impulse == Vec3::ZERO
+            || !velocity.is_finite()
+            || !knockback_velocity.is_finite()
+            || !velocity.length_squared().is_finite()
+            || !knockback_velocity.length_squared().is_finite()
+        {
+            return false;
+        }
+        self.velocity = velocity;
+        self.knockback_velocity = knockback_velocity;
+        if impulse.y > 0.0 && velocity.y > 0.0 {
+            self.is_grounded = false;
+        }
+        true
     }
 
     /// Construct an agent from baked navmesh agent parameters. Seeds the capsule

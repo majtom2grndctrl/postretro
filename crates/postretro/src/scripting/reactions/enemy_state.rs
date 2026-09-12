@@ -93,6 +93,7 @@ mod tests {
             .set_component(
                 brain,
                 BrainComponent::from_graph(&postretro_foundation::BehaviorGraphDescriptor {
+                    knockback: Default::default(),
                     envelope: postretro_foundation::BehaviorGraphEnvelope {
                         initial: "idle".to_string(),
                         activities: std::collections::BTreeMap::from([(

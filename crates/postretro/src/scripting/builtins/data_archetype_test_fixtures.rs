@@ -99,6 +99,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
 /// (`validate_brain_animation_states`).
 fn sample_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
             activities: BTreeMap::from([

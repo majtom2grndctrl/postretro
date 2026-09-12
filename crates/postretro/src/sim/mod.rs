@@ -1638,6 +1638,7 @@ mod tests {
     /// A direct-graph brain staged directly into its `alert` state.
     fn alert_brain(move_speed: f32) -> BrainComponent {
         let graph = BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: BTreeMap::from([
@@ -1794,6 +1795,7 @@ mod tests {
 
     pub(super) fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1828,6 +1830,7 @@ mod tests {
         reload_ms: u32,
     ) -> (WeaponComponent, AmmoReserve) {
         let descriptor = WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1916,6 +1919,7 @@ mod tests {
 
     pub(super) fn trigger_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -3123,7 +3127,10 @@ mod tests {
             normal: Vec3::Y,
             target: Some(target),
             zone: None,
-            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: 10.0,
+                impulse: glam::Vec3::ZERO,
+            }),
         };
         {
             let mut registry = registry.borrow_mut();

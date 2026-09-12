@@ -28,6 +28,7 @@ pub(crate) struct ResolvedProjectileAttack {
     canonical_weapon_name: String,
     range: f32,
     damage: f32,
+    knockback: Option<postretro_foundation::KnockbackDescriptor>,
     cooldown_ms: f32,
     credit_source: Option<String>,
     projectile: ProjectileDescriptor,
@@ -45,6 +46,12 @@ impl ResolvedProjectileAttack {
 
     pub(crate) fn damage(&self) -> f32 {
         self.damage
+    }
+
+    pub(crate) fn knockback_impulse(&self, direction: glam::Vec3) -> glam::Vec3 {
+        self.knockback.map_or(glam::Vec3::ZERO, |push| {
+            postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
+        })
     }
 
     pub(crate) fn cooldown_ms(&self) -> f32 {
@@ -260,6 +267,7 @@ fn resolve_projectile_attacks(
             .filter(|weapon| weapon.resolution == ResolutionMode::Projectile)
             .and_then(|weapon| {
                 weapon.projectile.as_ref().map(|projectile| ResolvedProjectileAttack {
+                    knockback: weapon.knockback,
                     canonical_weapon_name: weapon_name.to_string(),
                     range: weapon.range,
                     damage: weapon.damage,
@@ -465,6 +473,7 @@ mod tests {
 
     fn graph_with_attacks(attacks: BTreeMap<String, AttackParams>) -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: BTreeMap::from([(
@@ -525,6 +534,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage,
                 pellet_count: 1,
                 spread_degrees: 0.0,

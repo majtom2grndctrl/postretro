@@ -6,6 +6,7 @@ use glam::{Vec2, Vec3};
 mod carry;
 mod dispatch;
 mod intents;
+pub(crate) mod knockback;
 mod mover_carry;
 mod scope;
 mod substrate;
@@ -180,6 +181,12 @@ pub(crate) fn tick(
 ) -> (Vec3, MovementEvents) {
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;
+    let knockback_launch = component.is_grounded()
+        && component.knockback_velocity.y > 0.0
+        && component.velocity.y > 0.0;
+    if knockback_launch {
+        component.set_grounded(false);
+    }
     let collision = collision.combined_collision();
     // Mutable working position: a crouch entry/stand-up resize anchors one
     // capsule extreme and shifts the center by the helper-returned delta. The
@@ -206,6 +213,10 @@ pub(crate) fn tick(
     // Dispatch temporarily leaves a `Normal` placeholder in the component while
     // it borrows a state's live payload. Snapshot the real outgoing vocabulary
     // member first so the tick owns the single authoritative edge record.
+    // State caps, friction, and transition carry own voluntary movement only.
+    // Gravity still accumulates in that base; the external layer is recomposed
+    // before the one shared collision sweep.
+    component.velocity -= component.knockback_velocity;
     let state_before_dispatch = component.movement_state.kind();
     let transition = dispatch_state_intent(
         component,
@@ -217,6 +228,15 @@ pub(crate) fn tick(
         &mut position,
         &mut events,
     );
+
+    knockback::decay(
+        &mut component.knockback_velocity,
+        &component.knockback,
+        previous_ground.is_grounded() && !knockback_launch,
+        dt,
+    );
+    knockback::clamp_fall_speed(component);
+    component.velocity += component.knockback_velocity;
 
     // The grounded edge consumed a pending buffer this tick — clear it so the
     // buffered jump fires exactly once on landing, never twice.
@@ -248,7 +268,7 @@ pub(crate) fn tick(
         dt,
         position,
         previous_ground,
-        events.jumped,
+        events.jumped || knockback_launch,
     );
 
     // Contact flows forward through the tick seam: the active intent has
@@ -353,6 +373,7 @@ mod tests {
             fall: FallParams {
                 terminal_velocity: 40.0,
             },
+            knockback: Default::default(),
             stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
             stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
             dash: None,
@@ -6049,6 +6070,239 @@ mod tests {
         assert!(
             matches!(disabled.movement_state, MovementState::Normal),
             "slide without crouch is disabled rather than entering an invalid state"
+        );
+    }
+
+    #[test]
+    fn knockback_stacks_scaled_impulses_and_rejects_invalid_sums() {
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        comp.knockback.scale = 0.5;
+        comp.set_grounded(true);
+        assert!(comp.add_knockback(Vec3::new(8.0, 4.0, 0.0)));
+        assert!(comp.add_knockback(Vec3::new(4.0, 2.0, 0.0)));
+        assert!((comp.velocity - Vec3::new(6.0, 3.0, 0.0)).length() < VEL_EPS);
+        assert!(!comp.is_grounded());
+        let before = comp.clone();
+        assert!(!comp.add_knockback(Vec3::splat(f32::INFINITY)));
+        assert!(!comp.add_knockback(Vec3::splat(f32::MAX)));
+        assert_eq!(comp, before);
+        comp.knockback.scale = 0.0;
+        assert!(!comp.add_knockback(Vec3::X));
+    }
+
+    #[test]
+    fn knockback_survives_air_steering_cap_and_control_zero_blocks_acceleration() {
+        let world = empty_world();
+        for control in [0.0, 1.0] {
+            let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+            comp.knockback.control = control;
+            comp.add_knockback(Vec3::X * 30.0);
+            let mut pos = Vec3::Y * 20.0;
+            let input = MovementInput {
+                wish_dir: Vec2::Y,
+                ..idle_input()
+            };
+            run_ticks(&mut comp, &world, &mut pos, 10, &input);
+            assert!((comp.velocity.x - 30.0).abs() < VEL_EPS);
+            assert!(pos.x > 4.9);
+            if control == 0.0 {
+                assert!(comp.velocity.z.abs() < VEL_EPS);
+            } else {
+                assert!(comp.velocity.z < -0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn knockback_wall_contact_clears_impulse_without_reverse_ghost_velocity() {
+        let world = flat_floor_and_wall_world();
+        let mut desc = canonical_descriptor();
+        desc.knockback.ground_drag = 0.0;
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        comp.add_knockback(Vec3::X * 30.0);
+        run_ticks(&mut comp, &world, &mut pos, 30, &idle_input());
+        assert!(pos.x < 5.0 - comp.capsule.radius + POS_EPS);
+        assert!(pos.x > 4.5);
+        assert!(comp.knockback_velocity.x.abs() < VEL_EPS);
+        let wall_position = pos;
+        for _ in 0..30 {
+            run_ticks(&mut comp, &world, &mut pos, 1, &idle_input());
+            // Capsule casts return approximate contact normals, so a head-on
+            // impact may leave a small tangent. That tangent is still external
+            // velocity; it must not reconstruct an opposing voluntary base.
+            assert!(
+                (comp.velocity - comp.knockback_velocity).length() < VEL_EPS,
+                "wall contact recreated voluntary velocity: total={:?}, protected={:?}",
+                comp.velocity,
+                comp.knockback_velocity
+            );
+            assert!(comp.velocity.x <= VEL_EPS, "inward push survived the wall");
+        }
+        assert!(
+            (pos.x - wall_position.x).abs() < crate::collision::SKIN_DISTANCE,
+            "wall recoil exceeded the collision skin: before={wall_position:?}, after={pos:?}, velocity={:?}, knockback={:?}",
+            comp.velocity,
+            comp.knockback_velocity
+        );
+    }
+
+    #[test]
+    fn knockback_vertical_launch_obeys_gravity_and_landing_clears_layer() {
+        let world = flat_floor_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&canonical_descriptor());
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        let ground_y = pos.y;
+        comp.add_knockback(Vec3::Y * 10.0);
+        run_ticks(&mut comp, &world, &mut pos, 15, &idle_input());
+        assert!(pos.y > ground_y + 1.5);
+        assert!(!comp.is_grounded());
+        run_ticks(&mut comp, &world, &mut pos, 120, &idle_input());
+        assert!(comp.is_grounded());
+        assert!((pos.y - ground_y).abs() < 0.03);
+        assert!(comp.knockback_velocity.y.abs() < VEL_EPS);
+        assert!(comp.velocity.y.abs() < VEL_EPS);
+    }
+
+    #[test]
+    fn knockback_does_not_enter_dash_or_slide_boost_banks() {
+        let world = empty_world();
+        let desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 1.0, 500.0, 1, false));
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        comp.add_knockback(Vec3::X * 20.0);
+        let mut pos = Vec3::Y * 20.0;
+        let input = MovementInput {
+            dash_pressed: true,
+            ..idle_input()
+        };
+        run_ticks(&mut comp, &world, &mut pos, 1, &input);
+        assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
+        run_ticks(&mut comp, &world, &mut pos, 5, &idle_input());
+        assert!((comp.velocity.x - 20.0).abs() < VEL_EPS);
+
+        let world = flat_floor_and_wall_world();
+        let mut desc = slide_descriptor();
+        desc.knockback.ground_drag = 0.0;
+        // This test isolates the two velocity banks. Slope assistance can add
+        // its own cross-axis boost from the capsule's approximate floor normal.
+        desc.slide.as_mut().unwrap().slope_assist = 0.0;
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        comp.velocity = Vec3::NEG_Z * 12.0;
+        run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
+        assert!(is_sliding(&comp));
+        comp.add_knockback(Vec3::X * 5.0);
+        run_ticks(&mut comp, &world, &mut pos, 5, &crouch_hold_input());
+        assert!(
+            (comp.velocity.x - 5.0).abs() < VEL_EPS,
+            "unexpected slide velocity: position={pos:?}, velocity={:?}, knockback={:?}, state={:?}, floor={:?}",
+            comp.velocity,
+            comp.knockback_velocity,
+            comp.movement_state,
+            comp.last_floor_normal
+        );
+        let MovementState::Sliding { boost, .. } = comp.movement_state else {
+            panic!("slide remains active")
+        };
+        assert!(
+            (comp.knockback_velocity - Vec3::X * 5.0).length() < VEL_EPS,
+            "slide altered external momentum: {:?}",
+            comp.knockback_velocity
+        );
+        assert!(
+            (Vec3::new(comp.velocity.x, 0.0, comp.velocity.z) - comp.knockback_velocity - boost)
+                .length()
+                < VEL_EPS,
+            "slide boost absorbed the external layer: total={:?}, protected={:?}, boost={boost:?}",
+            comp.velocity,
+            comp.knockback_velocity
+        );
+    }
+
+    #[test]
+    fn knockback_launch_from_mover_keeps_base_release_velocity() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+        poses.set(7, Vec3::ZERO, Vec3::X * 3.0, Vec3::ZERO);
+        comp.add_knockback(Vec3::Y * 8.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert!(!comp.is_grounded());
+        assert!((comp.velocity.x - 3.0).abs() < VEL_EPS);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert!((comp.velocity.x - 3.0).abs() < VEL_EPS);
+    }
+
+    #[test]
+    fn knockback_terminal_speed_does_not_create_upward_momentum_when_drag_removes_downward_shove() {
+        let world = empty_world();
+        let mut desc = canonical_descriptor();
+        desc.knockback.air_drag = 30.0;
+        let mut comp = PlayerMovementComponent::from_descriptor(&desc);
+        comp.add_knockback(Vec3::NEG_Y * 100.0);
+        let mut pos = Vec3::Y * 100.0;
+        for _ in 0..30 {
+            let (next, _) = tick(&mut comp, &idle_input(), &world, 0.0, DT, pos);
+            pos = next;
+            assert!(
+                comp.velocity.y <= VEL_EPS,
+                "damping a downward shove must not launch upward"
+            );
+            assert!(comp.velocity.y >= -desc.fall.terminal_velocity - VEL_EPS);
+        }
+        assert!(comp.velocity.y.abs() < VEL_EPS);
+
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        comp.add_knockback(Vec3::Y * 5.0);
+        for _ in 0..240 {
+            let (next, _) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            pos = next;
+        }
+        assert!((comp.velocity.y + comp.fall.terminal_velocity).abs() < VEL_EPS);
+    }
+
+    #[test]
+    fn knockback_ceiling_contact_stops_launch_then_gravity_resumes() {
+        let world = floor_and_ceiling_world(4.0);
+        let (mut comp, mut pos) = settle_player(&canonical_descriptor());
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        comp.add_knockback(Vec3::Y * 20.0);
+        run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
+        assert!(pos.y + comp.capsule.half_height + comp.capsule.radius <= 4.0 + POS_EPS);
+        assert!(comp.knockback_velocity.y.abs() < VEL_EPS);
+        assert!(comp.velocity.y < 0.0);
+    }
+
+    #[test]
+    fn knockback_dash_expressions_read_total_speed_at_entry_and_during_dash() {
+        let world = empty_world();
+        let mut dash = dash_params(1.0, 0.0, 0.0, 1.0, 500.0, 1, false);
+        dash.boost_speed = NumberOrIr::Ir(ir_input("speed"));
+        dash.dash_drag = NumberOrIr::Ir(ir_input("verticalSpeed"));
+        let mut comp = PlayerMovementComponent::from_descriptor(&dash_descriptor(dash));
+        comp.add_knockback(Vec3::new(30.0, 6.0, 0.0));
+        let input = MovementInput {
+            dash_pressed: true,
+            ..idle_input()
+        };
+        let (pos, _) = tick(&mut comp, &input, &world, 0.0, DT, Vec3::Y * 20.0);
+        let MovementState::Dash { boost, .. } = comp.movement_state else {
+            panic!("dash entry must use the physical horizontal speed")
+        };
+        assert!((boost.length() - 30.0).abs() < VEL_EPS);
+        tick(&mut comp, &idle_input(), &world, 0.0, DT, pos);
+        let MovementState::Dash { boost, .. } = comp.movement_state else {
+            panic!("dash remains active")
+        };
+        assert!((boost.length() - (30.0 - 6.0 * DT)).abs() < VEL_EPS);
+        assert!(
+            (comp.velocity.x - 30.0).abs() < VEL_EPS,
+            "expression reads must not change the protected layer"
         );
     }
 }

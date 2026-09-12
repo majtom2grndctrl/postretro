@@ -271,11 +271,11 @@ New ways an activation resolves — each a sibling under `ActivationOutcome` —
 
 ### Damage & Defenses
 
-Grow `DamagePayload` from amount-only into the full taxonomy, and add layered and temporal defenses. Depends only on the shipped payload and Epic 14 IR, so it can run parallel to Resolution Modes.
+Grow `DamagePayload` into the full taxonomy, and add layered and temporal defenses. Depends only on the shipped payload and Epic 14 IR, so it can run parallel to Resolution Modes.
 
 - [ ] **damage types / elemental** — a damage type grows inside the payload; unlocks the combat-events `element` / `damageOf(element)` facts.
 - [ ] **crit math** — a crit multiplier and flag, applied per hit zone (skeletal hit zones shipped in Epic 10).
-- [ ] **knockback** — an on-hit impulse payload field feeding the movement substrate (the rocket-jump seam).
+- [x] **knockback** — authorable direct-hit and splash impulses feed player and enemy movement, with independent self-push, response scaling, drag, and steering control. Host-authoritative impulses replicate and reconcile in co-op. See `docs/scripting-reference.md` and the reference rocket's damage-free rocket-jump example.
 - [ ] **status effects / DoT** — a new engine-owned per-tick component (burn / shock / corrode) with duration and stacking; DoT ticks are server-authoritative and emit through the combat-events chokepoint.
 - [ ] **damage application order** — the `applyDamage` chokepoint drains author-nominated absorption layers before health, in an authored order, rather than always subtracting from health and letting a policy react after. Today the chokepoint reduces health then fires the impact policy, so a shield can only refund health post-hit, never absorb before it. The engine owns only the drain order; each layer's value, max, recharge, and type stay author state (per-entity `@state`) + IR policy — so shields, armor, and wards are authored over one primitive, not baked as engine components. Foundation for **shields** below.
 - [ ] **shields + shield types** — shields as author-declared state layered over health through **damage application order** above: recharge authored as IR *policy* (fast like Halo, slow-and-delayed like Borderlands), elemental shield types, resistance interactions; unlocks the combat-events `brokeShield` fact. The engine owns the drain-before-health order, not a bespoke shield component. Supersedes the former Future/Gameplay "Shields + damage-type system."

@@ -57,6 +57,7 @@ pub(crate) fn crouching_intent(
     events: &mut MovementEvents,
     eye_current: &mut f32,
 ) -> Option<Transition> {
+    let control = component.knockback_control();
     let crouched_half_height = component.capsule.half_height;
     let standing_half_height = component.standing_half_height;
 
@@ -76,10 +77,7 @@ pub(crate) fn crouching_intent(
     // 1. Gravity (airborne only) — identical to `Normal`.
     if !component.is_grounded() {
         component.velocity.y += gravity * dt;
-        let terminal = component.fall.terminal_velocity;
-        if component.velocity.y < -terminal {
-            component.velocity.y = -terminal;
-        }
+        crate::movement::knockback::clamp_fall_speed(component);
     }
 
     // 2. Jump — NEVER suppressed while crouched (D10). A grounded/coyote/buffered
@@ -112,7 +110,7 @@ pub(crate) fn crouching_intent(
                 &mut component.velocity,
                 input_dir_3d,
                 ground_speed,
-                component.ground_params.accel,
+                component.ground_params.accel * control,
                 dt,
             );
         }
@@ -134,7 +132,7 @@ pub(crate) fn crouching_intent(
             &mut component.velocity,
             wish_dir_3d,
             wish_speed,
-            component.air.accel,
+            component.air.accel * control,
             dt,
         );
         if !component.air.bunny_hop {

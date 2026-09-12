@@ -148,6 +148,7 @@ fn perfect_link() -> LinkConfig {
 /// `BrainComponent` keeps the fixture honest.
 fn brain() -> BrainComponent {
     BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
             activities: std::collections::BTreeMap::from([(
@@ -329,6 +330,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 
 fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
             activities: std::collections::BTreeMap::from([
@@ -1096,6 +1098,7 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
         .set_component(
             player,
             PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+                knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,
                     half_height: 0.8,

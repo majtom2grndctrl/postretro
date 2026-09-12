@@ -2064,6 +2064,7 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
                     spread_degrees: 0.0,
@@ -2131,6 +2132,7 @@ mod tests {
             .set_component(
                 weapon,
                 WeaponComponent {
+                    knockback: None,
                     damage: 10.0,
                     pellet_count: 1,
                     spread_degrees: 0.0,

@@ -364,6 +364,7 @@ pub(crate) fn run_mover_blocking_pass(
                     victim,
                     &DamagePayload {
                         amount: snapshot.crush_damage,
+                        impulse: glam::Vec3::ZERO,
                     },
                     DamageContext::new("mover.crush", DamageProducer::InTick),
                 ) {
@@ -736,6 +737,7 @@ mod tests {
 
     fn player_movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.25,
                 half_height: 0.5,

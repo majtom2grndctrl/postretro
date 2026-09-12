@@ -34,7 +34,7 @@ pub use candidate::{
     resolve_candidate_input,
 };
 pub use data_descriptors::*;
-pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams};
+pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_impulse};
 pub use ir::*;
 pub use movement::{
     DashPrograms, GroundRef, MovementScope, MovementState, MovementStateKind,

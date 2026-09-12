@@ -17,8 +17,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C37; // "PRL7"
 /// `WireMovementState::Sliding` changes the snapshot wire layout, advancing it
 /// to 20 so transport rejects pre-slide peers before snapshot decode. The
 /// faction-sentiment sparse snapshot record advances it to 21.
+/// Protected knockback velocity in player movement advances it to 22.
 /// The tuning-payload epoch remains independent.
-pub const WIRE_VERSION: u32 = 21;
+pub const WIRE_VERSION: u32 = 22;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -95,24 +96,24 @@ mod tests {
     }
 
     #[test]
-    fn faction_sentiment_snapshot_layout_refuses_previous_wire_version() {
-        const PRE_FACTION_SENTIMENT_WIRE_VERSION: u32 = 20;
+    fn knockback_snapshot_layout_refuses_previous_wire_version() {
+        const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C37,
             "presentation vocabulary requires application protocol PRL7"
         );
         assert_eq!(
-            WIRE_VERSION, 21,
-            "faction-sentiment snapshot state changes the wire layout"
+            WIRE_VERSION, 22,
+            "protected knockback velocity changes the snapshot layout"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_FACTION_SENTIMENT_WIRE_VERSION),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_KNOCKBACK_WIRE_VERSION),
             "gate 1 rejects the prior snapshot layout before app decode"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_FACTION_SENTIMENT_WIRE_VERSION,
+            wire_version: PRE_KNOCKBACK_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

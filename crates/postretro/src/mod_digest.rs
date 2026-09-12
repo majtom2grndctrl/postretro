@@ -407,6 +407,7 @@ mod tests {
 
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -446,6 +447,7 @@ mod tests {
 
     fn behavior_descriptor() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: BTreeMap::from([(
@@ -475,6 +477,7 @@ mod tests {
 
         let mut weapon = entity_descriptor();
         weapon.weapon = Some(WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,

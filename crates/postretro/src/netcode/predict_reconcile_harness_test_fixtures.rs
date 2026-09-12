@@ -133,10 +133,11 @@ pub(crate) fn downhill_facet_normal(slope: f32) -> Vec3 {
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn
-/// from — descriptor tuning is identical on host and client (it never crosses the
-/// wire), so only the mutable tick subset replicates.
+/// from. This fixture starts with identical local descriptors and does not exercise
+/// Control-channel `TuningPayload` delivery; snapshots carry the mutable tick state.
 pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
             half_height: 0.8,

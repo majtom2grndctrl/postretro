@@ -472,6 +472,7 @@ mod tests {
 
     fn test_movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,

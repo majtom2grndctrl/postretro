@@ -23,6 +23,7 @@ export const referencePlasmaBoltEntity = defineEntity({
   components: {
     weapon: {
       damage: 10.0,
+      knockback: { speed: 3.0, upwardBias: 0.1 },
       range: 96.0,
       fireRateMs: 130.0,
       fireMode: "auto",
@@ -120,7 +121,13 @@ export const referenceRocketEntity = defineEntity({
       splash: {
         radius: 5.0,
         minFraction: 0.2,
-        selfDamage: true,
+        selfDamage: false,
+        knockback: {
+          speed: 16.0,
+          upwardBias: 0.2,
+          minFraction: 0.1,
+          selfScale: 1.0,
+        },
       },
       creditSource: "player.reference-rocket:primary",
     },

@@ -290,7 +290,9 @@ pub(super) fn integrate_collision(
                     // (= -normal.y * (vx*nx + vz*nz)) on the next iteration.
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
+                    super::knockback::project(&mut component.knockback_velocity, normal);
                     component.velocity.y = 0.0;
+                    component.knockback_velocity.y = 0.0;
                     if toi <= 1e-6 {
                         // TOI=0 floor contact: the capsule's lower hemisphere
                         // sits inside the SKIN_DISTANCE band. Push y up by
@@ -352,6 +354,7 @@ pub(super) fn integrate_collision(
 
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
+                    super::knockback::project(&mut component.knockback_velocity, normal);
                     if toi <= 1e-6 {
                         // Separation nudge, not a physics step: see floor
                         // branch above for rationale. Zero remaining_dt
@@ -393,6 +396,8 @@ pub(super) fn integrate_collision(
         if horiz_disp < component.stuck_stop_threshold {
             component.velocity.x = 0.0;
             component.velocity.z = 0.0;
+            component.knockback_velocity.x = 0.0;
+            component.knockback_velocity.z = 0.0;
             current_pos.x = slide_start_xz.x;
             current_pos.z = slide_start_xz.y;
         }
@@ -482,6 +487,8 @@ pub(super) fn integrate_collision(
     // `SubstrateResult::hit_floor`.
     if hit_floor_this_tick {
         component.ground = ground_ref_this_tick;
+        component.velocity.y = 0.0;
+        component.knockback_velocity.y = 0.0;
     } else if previous_ground.is_grounded() && !jumped {
         // Stayed on / left the ground organically — only clear the flag when
         // no floor contact this tick. The jump branch already cleared it.
@@ -672,7 +679,8 @@ pub(super) fn standup_clearance_probe(
 /// double-jump and the air-dash budget reset through one mechanism. The
 /// ceiling rule keeps the charge from being spent at the apex of the rising arc.
 pub(super) fn air_jump_ready(component: &PlayerMovementComponent) -> bool {
-    component.air_jumps_remaining > 0 && component.velocity.y <= component.air.jump_ceiling
+    component.air_jumps_remaining > 0
+        && component.velocity.y + component.knockback_velocity.y <= component.air.jump_ceiling
 }
 
 /// Derived jump edges for the tick, computed ONCE before the per-state intents

@@ -43,13 +43,11 @@ pub(crate) fn normal_intent(
     position: &mut Vec3,
     events: &mut MovementEvents,
 ) -> Option<Transition> {
+    let control = component.knockback_control();
     // 1. Gravity (airborne only).
     if !component.is_grounded() {
         component.velocity.y += gravity * dt;
-        let terminal = component.fall.terminal_velocity;
-        if component.velocity.y < -terminal {
-            component.velocity.y = -terminal;
-        }
+        crate::movement::knockback::clamp_fall_speed(component);
     }
 
     // 2. Grounded jump — fired off the DERIVED grounded edge (a fresh grounded
@@ -93,7 +91,7 @@ pub(crate) fn normal_intent(
                 &mut component.velocity,
                 input_dir_3d,
                 ground_speed,
-                component.ground_params.accel,
+                component.ground_params.accel * control,
                 dt,
             );
         }
@@ -117,7 +115,7 @@ pub(crate) fn normal_intent(
             &mut component.velocity,
             wish_dir_3d,
             wish_speed,
-            component.air.accel,
+            component.air.accel * control,
             dt,
         );
         if !component.air.bunny_hop {

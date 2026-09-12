@@ -22,6 +22,9 @@ pub struct ProjectileComponent {
     pub remaining_range: f32,
     pub remaining_lifetime: f32,
     pub damage: f32,
+    /// Fire-time resolved direct-hit velocity change, independent of damage.
+    #[serde(default)]
+    pub knockback_impulse: [f32; 3],
     pub credit_source: String,
     pub owner_pawn: EntityId,
     pub owner_weapon: EntityId,

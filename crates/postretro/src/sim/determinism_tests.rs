@@ -1204,6 +1204,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
         .set_component(
             id,
             WeaponComponent::from_descriptor(&WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -1285,6 +1286,7 @@ fn spawn_local_active_weapon(registry: &mut EntityRegistry) -> EntityId {
 
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
             half_height: 0.8,
@@ -1413,6 +1415,7 @@ fn brain_in_state(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponen
 
 fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
             activities: std::collections::BTreeMap::from([

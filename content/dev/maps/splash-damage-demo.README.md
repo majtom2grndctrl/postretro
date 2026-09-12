@@ -7,8 +7,10 @@ take progressively less damage.
 
 `splash_shadowed` is deliberately behind the worldspawn wall. The wall is static
 world geometry, not a mover or brush entity, so its segment from the blast point
-blocks splash line of sight. The player starts close enough to the direct target
-to take point-blank self damage with the reference rocket's `selfDamage: true`.
+blocks splash line of sight. The reference rocket has `selfDamage: false` and
+independent self-knockback: nearby blasts push the player without removing health.
+Aim at the floor to test rocket jumping. The dummies are health-only targets;
+use a map with navigation enemies to compare enemy knockback.
 
 Build and run it manually:
 

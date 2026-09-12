@@ -740,6 +740,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -821,6 +822,7 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
                     radius: 0.1,
@@ -928,6 +930,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn: EntityId::from_raw(1),
                 weapon: EntityId::from_raw(2),
@@ -1032,6 +1035,7 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
                     radius: 0.1,
@@ -1449,6 +1453,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn,
                 weapon,
@@ -1511,6 +1516,7 @@ mod tests {
             pawn,
             weapon,
             weapon::ProjectileLaunch {
+                knockback_impulse: Vec3::ZERO,
                 origin: Vec3::new(1.0, 2.0, 3.0),
                 direction: Vec3::NEG_Z,
                 speed: projectile.speed,
@@ -1863,6 +1869,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn,
                 weapon,
@@ -1995,6 +2002,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn,
                 weapon,
@@ -2159,6 +2167,7 @@ mod tests {
         let _ = registry.set_component(
             source,
             ProjectileComponent {
+                knockback_impulse: [0.0; 3],
                 direction: Vec3::NEG_Z.to_array(),
                 speed: 4.0,
                 radius: 0.1,
@@ -2296,6 +2305,7 @@ mod tests {
             .set_component(
                 source,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 4.0,
                     radius: 0.1,
@@ -2354,6 +2364,7 @@ mod tests {
         let mut open_shots = OpenAuthorizedShots::new();
         open_shots.record(
             AuthorizedShot {
+                knockback: None,
                 shot_id,
                 pawn,
                 weapon,

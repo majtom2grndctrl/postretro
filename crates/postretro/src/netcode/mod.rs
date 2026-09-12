@@ -148,7 +148,8 @@ use postretro_entities::{
     FactionSentimentState, SlotTable, Transform, WorldPointPresentationSpawn,
 };
 use postretro_foundation::{
-    NavAgentParams, PlayerMovementComponent, SplashDescriptor, WeaponPlacementDescriptor,
+    KnockbackDescriptor, NavAgentParams, PlayerMovementComponent, SplashDescriptor,
+    WeaponPlacementDescriptor,
 };
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
@@ -491,6 +492,8 @@ pub(crate) struct AuthorizedShot {
     pub(crate) range: f32,
     pub(crate) pellet_count: usize,
     pub(crate) credit_source: String,
+    /// Direct impulse tuning captured at FIRE; never taken from client hit data.
+    pub(crate) knockback: Option<KnockbackDescriptor>,
     /// Immutable projectile-impact tuning captured at FIRE. Host hit intake
     /// must not reread a weapon that may have changed or despawned in flight.
     pub(crate) splash: Option<SplashDescriptor>,
@@ -870,6 +873,7 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
         }
     };
     m.velocity.iter().all(|c| c.is_finite())
+        && m.knockback_velocity.iter().all(|c| c.is_finite())
         && m.dash_cooldown_ms.is_finite()
         && m.coyote_timer_ms.is_finite()
         && m.jump_buffer_timer_ms.is_finite()
@@ -2123,6 +2127,29 @@ fn ingest_hit_declaration(
                 projectile_contact: None,
             };
         };
+        // Splash replaces direct health damage, but its impulse may compose with
+        // the weapon's direct push. Both derive from frozen host launch facts.
+        if impact.target.is_some()
+            && let Some(knockback) = open.shot.knockback
+        {
+            let mut direct_push = impact.clone();
+            direct_push.outcome = ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: 0.0,
+                impulse: postretro_foundation::knockback_impulse(
+                    knockback.speed,
+                    knockback.upward_bias,
+                    open.shot.projectile_direction.unwrap_or(Vec3::ZERO),
+                ),
+            });
+            crate::sim::apply_authorized_weapon_impact_damage(
+                context.registry,
+                open.shot.weapon,
+                Some(open.shot.pawn),
+                &direct_push,
+                open.shot.credit_source.clone(),
+                0.0,
+            );
+        }
         let point = impact.point;
         weapon::spawn_impact_effect_at(context.registry, point, impact.normal);
         context
@@ -2315,16 +2342,13 @@ fn apply_valid_hit_record(
         return false;
     }
     let point = Vec3::from_array(record.point);
-    if !point.is_finite() {
+    if !point.is_finite() || !shot.fire_origin.is_finite() {
         return false;
     }
     let origin = if shot.is_projectile {
         // A later projectile declaration is valid after the pawn moved or took
         // cover. The fire-time origin measures its travel; present-eye LOS is
         // intentionally a hitscan-only corruption check in co-op PvE.
-        if !shot.fire_origin.is_finite() {
-            return false;
-        }
         shot.fire_origin
     } else {
         // Preserve the shipped hitscan/pellet validation exactly: live eye for
@@ -2350,6 +2374,17 @@ fn apply_valid_hit_record(
         zone: record.zone.clone(),
         outcome: ActivationOutcome::Hit(weapon::DamagePayload {
             amount: shot.damage,
+            impulse: shot.knockback.as_ref().map_or(Vec3::ZERO, |knockback| {
+                // Movement after FIRE must not rotate the accepted hit's push.
+                let direction = shot
+                    .projectile_direction
+                    .unwrap_or(point - shot.fire_origin);
+                postretro_foundation::knockback_impulse(
+                    knockback.speed,
+                    knockback.upward_bias,
+                    direction,
+                )
+            }),
         }),
     };
     crate::sim::apply_authorized_weapon_impact_damage(
@@ -2928,6 +2963,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -3001,6 +3037,7 @@ mod tests {
         let before = tuning_payload_for_pawn(&registry, pawn, &[], None);
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
+            knockback: None,
             damage: 14.0,
             pellet_count: 8,
             spread_degrees: 4.0,
@@ -3208,6 +3245,7 @@ mod tests {
 
     fn test_weapon(damage: f32, range: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
             damage,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -3531,6 +3569,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 1.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -3606,6 +3645,7 @@ mod tests {
         range: f32,
     ) -> AuthorizedShot {
         AuthorizedShot {
+            knockback: None,
             shot_id,
             pawn,
             weapon,
@@ -3624,6 +3664,61 @@ mod tests {
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
         }
+    }
+
+    #[test]
+    fn authorized_direct_knockback_uses_frozen_tuning_and_consumes_shot_once() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture
+            .registry
+            .set_component(fixture.target, movement_component_with_eye_height(0.5))
+            .unwrap();
+        let mut shot = fixture.open_shots.get(fixture.shot_id).unwrap().shot;
+        shot.damage = 0.0;
+        shot.fire_origin = attacker_eye(&fixture.registry, fixture.pawn).unwrap();
+        shot.knockback = Some(KnockbackDescriptor {
+            speed: 12.0,
+            upward_bias: 0.0,
+        });
+        fixture.open_shots.record(shot, 7);
+        // A delayed declaration arrives after the shooter strafed. Live-eye LOS
+        // and range still pass, but the shot's original +X direction must survive.
+        let mut shooter_transform = *fixture
+            .registry
+            .get_component::<Transform>(fixture.pawn)
+            .unwrap();
+        shooter_transform.position.z = 2.0;
+        fixture
+            .registry
+            .set_component(fixture.pawn, shooter_transform)
+            .unwrap();
+        // The live weapon has no authored push; the immutable FIRE authorization
+        // still supplies it, independently from the zero damage amount.
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        assert!(fixture.ingest(7, &declaration));
+        let first = fixture
+            .registry
+            .get_component::<PlayerMovementComponent>(fixture.target)
+            .unwrap()
+            .knockback_velocity;
+        assert!((first - Vec3::new(12.0, 0.0, 0.0)).length() < 1.0e-4);
+        assert!(!fixture.ingest(7, &declaration));
+        let repeated = fixture
+            .registry
+            .get_component::<PlayerMovementComponent>(fixture.target)
+            .unwrap()
+            .knockback_velocity;
+        assert!((repeated - first).length() < 1.0e-4);
+        assert!(
+            (fixture
+                .registry
+                .get_component::<HealthComponent>(fixture.target)
+                .unwrap()
+                .current
+                - 100.0)
+                .abs()
+                < 1.0e-4
+        );
     }
 
     #[test]
@@ -3832,6 +3927,7 @@ mod tests {
             self.open_shots.retire(self.shot_id);
             self.open_shots.record(
                 AuthorizedShot {
+                    knockback: stats.knockback,
                     shot_id: self.shot_id,
                     pawn: self.pawn,
                     weapon: self.weapon,
@@ -3887,6 +3983,7 @@ mod tests {
             shot.fire_origin = Vec3::ZERO;
             shot.damage = 100.0;
             shot.splash = Some(SplashDescriptor {
+                knockback: None,
                 radius: 2.0,
                 min_fraction: 0.0,
                 self_damage: true,
@@ -4595,13 +4692,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            21,
-            "enemy projectile damage and presentation add nothing beyond the current faction-sentiment transport layout"
+            22,
+            "enemy projectile damage and presentation add nothing beyond the current knockback transport layout"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            15,
-            "enemy projectile presentation adds nothing beyond the current faction-sentiment snapshot layout"
+            16,
+            "enemy projectile presentation adds nothing beyond the current knockback snapshot layout"
         );
     }
 
@@ -5339,6 +5436,7 @@ mod tests {
     fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                knockback_velocity: [0.0; 3],
                 velocity: [12.0, 0.0, 4.0],
                 ground: postretro_net::wire::WireGroundRef::World,
                 air_jumps_remaining: 1,
@@ -5454,6 +5552,7 @@ mod tests {
             light: None,
             emitter: None,
             movement: Some(PlayerMovementDescriptor {
+                knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.4,
                     half_height: 0.8,
@@ -5936,6 +6035,7 @@ mod tests {
                                     scale: [1.0, 1.0, 1.0],
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    knockback_velocity: [0.0; 3],
                                     velocity: [0.0, 0.0, 0.0],
                                     ground: postretro_net::wire::WireGroundRef::World,
                                     air_jumps_remaining: 1,

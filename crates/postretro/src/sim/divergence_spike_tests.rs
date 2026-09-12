@@ -259,6 +259,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
         .set_component(
             id,
             WeaponComponent::from_descriptor(&WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -291,6 +292,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
 
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
             half_height: 0.8,

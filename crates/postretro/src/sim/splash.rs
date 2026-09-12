@@ -114,7 +114,7 @@ pub(crate) fn splash_damage_amount(
 /// health change cannot alter the membership or falloff of another target in
 /// the same blast. `occlusion_origin` may differ from `center` solely to start
 /// the static-world sightline clear of a contacted world triangle. Returns
-/// whether at least one target received nonzero damage.
+/// whether at least one target received a damage or knockback dispatch.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_splash_damage(
     registry: &mut EntityRegistry,
@@ -134,7 +134,14 @@ pub(crate) fn emit_splash_damage(
         hit_zone_store,
         center,
         splash.radius,
-        |entity| !splash.self_damage && entity == owner_pawn,
+        |entity| {
+            entity == owner_pawn
+                && !splash.self_damage
+                && splash
+                    .knockback
+                    .as_ref()
+                    .is_none_or(|push| push.self_scale == 0.0)
+        },
         Some(collision_world),
         occlusion_origin,
     );
@@ -142,10 +149,30 @@ pub(crate) fn emit_splash_damage(
     let mut dispatched = false;
 
     for target in targets {
-        let amount =
-            splash_damage_amount(damage, splash.radius, splash.min_fraction, target.distance);
-        // A zero edge floor deliberately produces no hit or impact dispatch.
-        if !amount.is_finite() || amount <= 0.0 {
+        let amount = if target.entity == owner_pawn && !splash.self_damage {
+            0.0
+        } else {
+            splash_damage_amount(damage, splash.radius, splash.min_fraction, target.distance)
+        };
+        let impulse = splash.knockback.as_ref().map_or(Vec3::ZERO, |push| {
+            let speed = splash_damage_amount(
+                push.speed,
+                splash.radius,
+                push.min_fraction,
+                target.distance,
+            );
+            let scale = if target.entity == owner_pawn {
+                push.self_scale
+            } else {
+                1.0
+            };
+            // The nearest volume point gives falloff, but its center gives a
+            // stable outward direction even when the blast is inside the box.
+            let direction = damageable_volume(registry, hit_zone_store, target.entity)
+                .map_or(Vec3::Y, |volume| (volume.min + volume.max) * 0.5 - center);
+            postretro_foundation::knockback_impulse(speed, push.upward_bias, direction) * scale
+        });
+        if (!amount.is_finite() || amount <= 0.0) && impulse == Vec3::ZERO {
             continue;
         }
         let impact = WeaponImpact {
@@ -153,7 +180,7 @@ pub(crate) fn emit_splash_damage(
             normal: Vec3::Y,
             target: Some(target.entity),
             zone: None,
-            outcome: ActivationOutcome::Hit(DamagePayload { amount }),
+            outcome: ActivationOutcome::Hit(DamagePayload { amount, impulse }),
         };
         apply_authorized_weapon_impact_damage(
             registry,
@@ -283,6 +310,7 @@ mod tests {
         let midpoint = spawn_target(&mut registry, Vec3::new(2.75, 0.0, 0.0), Vec3::splat(0.25));
         let edge = spawn_target(&mut registry, Vec3::new(5.25, 0.0, 0.0), Vec3::splat(0.25));
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 5.0,
             min_fraction: 0.0,
             self_damage: true,
@@ -336,6 +364,7 @@ mod tests {
         let hidden = spawn_target(&mut registry, Vec3::new(4.0, 0.0, 0.0), Vec3::splat(0.25));
         let clear = spawn_target(&mut registry, Vec3::new(0.0, 0.0, 4.0), Vec3::splat(0.25));
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 5.0,
             min_fraction: 0.0,
             self_damage: true,
@@ -381,6 +410,7 @@ mod tests {
         let weapon = registry.spawn(Transform::default());
         let enclosing = spawn_target(&mut registry, Vec3::ZERO, Vec3::splat(0.25));
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 5.0,
             min_fraction: 0.0,
             self_damage: true,
@@ -418,6 +448,7 @@ mod tests {
         let weapon = registry.spawn(Transform::default());
         let other = spawn_target(&mut registry, Vec3::new(0.0, 0.0, 2.75), Vec3::splat(0.25));
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 5.0,
             min_fraction: 0.0,
             self_damage,
@@ -463,5 +494,172 @@ mod tests {
             "selfDamage false excludes only the owner"
         );
         assert!((disabled_other - 50.0).abs() <= 1.0e-6);
+    }
+
+    fn push_config() -> postretro_foundation::SplashKnockbackDescriptor {
+        postretro_foundation::SplashKnockbackDescriptor {
+            speed: 16.0,
+            upward_bias: 0.0,
+            min_fraction: 0.25,
+            self_scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn splash_launches_owner_without_self_damage_and_uses_independent_force_falloff() {
+        use postretro_foundation::PlayerMovementComponent;
+        let mut registry = EntityRegistry::new();
+        let owner = spawn_target(&mut registry, Vec3::new(0.0, 2.75, 0.0), Vec3::splat(0.25));
+        let edge = spawn_target(&mut registry, Vec3::new(5.25, 0.0, 0.0), Vec3::splat(0.25));
+        for target in [owner, edge] {
+            registry
+                .set_component(target, crate::sim::tests::trigger_movement())
+                .unwrap();
+        }
+        let weapon = registry.spawn(Transform::default());
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: false,
+            knockback: Some(push_config()),
+        };
+        let mut drains = 0;
+        assert!(emit_splash_damage(
+            &mut registry,
+            &HitZoneStore::new(),
+            &CollisionWorld::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &splash,
+            100.0,
+            weapon,
+            owner,
+            "test.rocket".into(),
+            &mut |_| drains += 1,
+        ));
+        assert_eq!(drains, 1);
+        for target in [owner, edge] {
+            let health = registry.get_component::<HealthComponent>(target).unwrap();
+            assert!((health.current - 100.0).abs() < 1.0e-5);
+            assert!(health.contributor_ledger.entries().is_empty());
+        }
+        let owner_motion = registry
+            .get_component::<PlayerMovementComponent>(owner)
+            .unwrap();
+        assert!((owner_motion.velocity.y - 10.0).abs() < 1.0e-5);
+        assert!(!owner_motion.is_grounded());
+        let edge_motion = registry
+            .get_component::<PlayerMovementComponent>(edge)
+            .unwrap();
+        assert!((edge_motion.velocity.x - 4.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn harmless_blast_pushes_clear_enemy_but_not_wall_hidden_enemy() {
+        use postretro_entities::components::agent::AgentComponent;
+        let mut registry = EntityRegistry::new();
+        let owner = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let hidden = spawn_target(&mut registry, Vec3::new(4.0, 0.0, 0.0), Vec3::splat(0.25));
+        let clear = spawn_target(&mut registry, Vec3::new(0.0, 0.0, 4.0), Vec3::splat(0.25));
+        for target in [hidden, clear] {
+            registry
+                .set_component(target, AgentComponent::new(0.25, 1.0, 0.2, 3.0))
+                .unwrap();
+        }
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: false,
+            knockback: Some(push_config()),
+        };
+        emit_splash_damage(
+            &mut registry,
+            &HitZoneStore::new(),
+            &wall_at_x(2.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &splash,
+            0.0,
+            weapon,
+            owner,
+            "test.concussion".into(),
+            &mut |_| {},
+        );
+        assert!(
+            registry
+                .get_component::<AgentComponent>(hidden)
+                .unwrap()
+                .velocity
+                .length()
+                < 1.0e-5
+        );
+        assert!(
+            registry
+                .get_component::<AgentComponent>(clear)
+                .unwrap()
+                .velocity
+                .z
+                > 1.0
+        );
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(clear)
+                .unwrap()
+                .current
+                - 100.0)
+                .abs()
+                < 1.0e-5
+        );
+    }
+
+    #[test]
+    fn splash_self_scale_zero_keeps_self_damage_but_disables_self_push() {
+        use postretro_foundation::PlayerMovementComponent;
+        let mut registry = EntityRegistry::new();
+        let owner = spawn_target(&mut registry, Vec3::ZERO, Vec3::splat(0.25));
+        registry
+            .set_component(owner, crate::sim::tests::trigger_movement())
+            .unwrap();
+        let weapon = registry.spawn(Transform::default());
+        let splash = SplashDescriptor {
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: true,
+            knockback: Some(postretro_foundation::SplashKnockbackDescriptor {
+                self_scale: 0.0,
+                ..push_config()
+            }),
+        };
+        emit_splash_damage(
+            &mut registry,
+            &HitZoneStore::new(),
+            &CollisionWorld::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &splash,
+            10.0,
+            weapon,
+            owner,
+            "test.self".into(),
+            &mut |_| {},
+        );
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(owner)
+                .unwrap()
+                .current
+                - 90.0)
+                .abs()
+                < 1.0e-5
+        );
+        assert!(
+            registry
+                .get_component::<PlayerMovementComponent>(owner)
+                .unwrap()
+                .velocity
+                .length()
+                < 1.0e-5
+        );
     }
 }

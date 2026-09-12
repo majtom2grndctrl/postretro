@@ -1887,6 +1887,30 @@ mod tests {
         )
     }
 
+    fn cached_partition_with_visibility(
+        light: &MapLight,
+        shared: &SharedAtlas<'_>,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geo: &GeometryResult,
+        visibility: f32,
+    ) -> LightmapLayer {
+        let mut partition = lightmap_layer::bake_light_layer_controlled(
+            light,
+            shared,
+            bvh,
+            primitives,
+            geo,
+            0,
+            AREA_SAMPLES,
+            &test_control(),
+        );
+        for texel in &mut partition.texels {
+            texel.raw_visibility = visibility;
+        }
+        partition
+    }
+
     fn shadowmask_key(
         selection: &EntityShadowLightsSection,
         shared: &SharedAtlas<'_>,
@@ -1971,12 +1995,8 @@ mod tests {
             layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
         let selected = selected_refs(&selection, &alpha_lights);
-        let seeded_layer = layer(
-            shared.atlas_width,
-            shared.atlas_height,
-            layer_count_from_shared(&shared),
-            &[(0, 0, 0.25)],
-        );
+        let seeded_layer =
+            cached_partition_with_visibility(&lights[0], &shared, &bvh, &primitives, &geo, 0.25);
         let expected = bake_shadowmask_atlas_from_layers(
             &selection,
             shared.atlas_width,
@@ -2020,9 +2040,18 @@ mod tests {
     enum BadCachedLayer {
         Metadata,
         TexelBounds,
+        MissingTexel,
+        DuplicateTexel,
     }
 
-    fn bad_cached_layer(shared: &SharedAtlas<'_>, kind: BadCachedLayer) -> LightmapLayer {
+    fn bad_cached_layer(
+        shared: &SharedAtlas<'_>,
+        kind: BadCachedLayer,
+        light: &MapLight,
+        bvh: &bvh::bvh::Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geo: &GeometryResult,
+    ) -> LightmapLayer {
         match kind {
             BadCachedLayer::Metadata => layer(
                 shared.atlas_width + 1,
@@ -2039,6 +2068,20 @@ mod tests {
                     (0, layer_count_from_shared(shared), 0.5),
                 ],
             ),
+            BadCachedLayer::MissingTexel => {
+                let mut partition =
+                    cached_partition_with_visibility(light, shared, bvh, primitives, geo, 0.25);
+                assert!(partition.texels.len() > 1, "fixture needs multiple texels");
+                partition.texels.remove(partition.texels.len() / 2);
+                partition
+            }
+            BadCachedLayer::DuplicateTexel => {
+                let mut partition =
+                    cached_partition_with_visibility(light, shared, bvh, primitives, geo, 0.25);
+                assert!(partition.texels.len() > 1, "fixture needs multiple texels");
+                partition.texels[1] = partition.texels[0];
+                partition
+            }
         }
     }
 
@@ -2055,7 +2098,7 @@ mod tests {
         let (layer_key, input_hash) =
             layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
-        let invalid = bad_cached_layer(&shared, kind);
+        let invalid = bad_cached_layer(&shared, kind, &lights[0], &bvh, &primitives, &geo);
 
         let dir = fresh_cache_dir(label);
         let cache = StageCache::new(&dir).expect("cache dir");
@@ -2083,8 +2126,8 @@ mod tests {
             stored_layer, invalid,
             "invalid decodable lightmap_layer payload must not be reused"
         );
-        validate_cached_lightmap_layer(&stored_layer, &shared, layer_count_from_shared(&shared))
-            .expect("rebaked layer matches current atlas");
+        lightmap_layer::validate_layer_partition(&stored_layer, &shared, 0)
+            .expect("rebaked partition matches current atlas");
 
         let stored_section = cache.get(&section_key).expect("shadowmask section stored");
         assert_eq!(
@@ -3259,12 +3302,8 @@ mod tests {
             layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
         let selected = selected_refs(&selection, &alpha_lights);
-        let seeded_layer = layer(
-            shared.atlas_width,
-            shared.atlas_height,
-            layer_count_from_shared(&shared),
-            &[(0, 0, 0.25)],
-        );
+        let seeded_layer =
+            cached_partition_with_visibility(&lights[0], &shared, &bvh, &primitives, &geo, 0.25);
         let expected = bake_shadowmask_atlas_from_layers(
             &selection,
             shared.atlas_width,
@@ -3335,16 +3374,15 @@ mod tests {
         let cache = StageCache::new(&dir).expect("cache dir");
         for (index, hash) in hashes.iter().enumerate() {
             let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
-            cache.put(
-                &key,
-                &layer(
-                    shared.atlas_width,
-                    shared.atlas_height,
-                    layer_count_from_shared(&shared),
-                    &[(0, 0, index as f32 / 4.0)],
-                )
-                .to_bytes(),
+            let partition = cached_partition_with_visibility(
+                &lights[index],
+                &shared,
+                &bvh,
+                &primitives,
+                &geo,
+                index as f32 / 4.0,
             );
+            cache.put(&key, &partition.to_bytes());
         }
 
         let total = shadowmask_progress_total(lights.len(), &shared);
@@ -3410,16 +3448,9 @@ mod tests {
         let (first_layer_key, _) = layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let dir = fresh_cache_dir("mixed_layer_cache_progress");
         let cache = StageCache::new(&dir).expect("cache dir");
-        cache.put(
-            &first_layer_key,
-            &layer(
-                shared.atlas_width,
-                shared.atlas_height,
-                layer_count_from_shared(&shared),
-                &[(0, 0, 0.5)],
-            )
-            .to_bytes(),
-        );
+        let first_partition =
+            cached_partition_with_visibility(&lights[0], &shared, &bvh, &primitives, &geo, 0.5);
+        cache.put(&first_layer_key, &first_partition.to_bytes());
 
         let total = shadowmask_progress_total(selection.light_indices.len(), &shared);
         let progress = StageProgress::indeterminate();
@@ -3455,6 +3486,22 @@ mod tests {
         assert_cached_layer_rejected_and_rebaked(
             "out_of_bounds_layer_texel",
             BadCachedLayer::TexelBounds,
+        );
+    }
+
+    #[test]
+    fn shadowmask_atlas_layer_cache_rejects_missing_texel() {
+        assert_cached_layer_rejected_and_rebaked(
+            "missing_layer_texel",
+            BadCachedLayer::MissingTexel,
+        );
+    }
+
+    #[test]
+    fn shadowmask_atlas_layer_cache_rejects_duplicate_texel() {
+        assert_cached_layer_rejected_and_rebaked(
+            "duplicate_layer_texel",
+            BadCachedLayer::DuplicateTexel,
         );
     }
 
@@ -3517,12 +3564,8 @@ mod tests {
             layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
         let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
         let selected = selected_refs(&selection, &alpha_lights);
-        let seeded_layer = layer(
-            shared.atlas_width,
-            shared.atlas_height,
-            layer_count_from_shared(&shared),
-            &[(0, 0, 0.75)],
-        );
+        let seeded_layer =
+            cached_partition_with_visibility(&lights[0], &shared, &bvh, &primitives, &geo, 0.75);
         let expected = bake_shadowmask_atlas_from_layers(
             &selection,
             shared.atlas_width,

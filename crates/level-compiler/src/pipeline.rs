@@ -962,6 +962,7 @@ fn run_after_parsing(
             // existing determinism gate), so caching them cannot perturb output.
             let section_input_hash = lightmap_layer::section_input_hash(
                 &layer_input_hashes,
+                &shared,
                 density,
                 lightmap_config.uncompressed_irradiance,
                 lightmap_config.direction_texel_scale,
@@ -974,9 +975,29 @@ fn run_after_parsing(
 
             // A `from_bytes` failure on a present entry is treated as a miss
             // (warn + recompose), mirroring the layer codec's corruption handling.
+            let expected_section_layer_count = if layer_lights.is_empty() {
+                1
+            } else {
+                prepared.layer_count
+            };
             let cached_section = cache.get(&section_key).and_then(|bytes| {
                 match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
-                    Ok(section) => Some(section),
+                    Ok(section) => match lightmap_layer::validate_cached_lightmap_section(
+                        &section,
+                        &shared,
+                        expected_section_layer_count,
+                        density,
+                        lightmap_config.uncompressed_irradiance,
+                        lightmap_config.direction_texel_scale,
+                    ) {
+                        Ok(()) => Some(section),
+                        Err(reason) => {
+                            log::warn!(
+                                "[Compiler] lightmap_section cache entry does not match current atlas ({reason}), recomposing"
+                            );
+                            None
+                        }
+                    },
                     Err(err) => {
                         log::warn!("[Compiler] corrupt lightmap section, recomposing: {err}");
                         None
@@ -1056,13 +1077,17 @@ fn run_after_parsing(
                                     });
                                 let partition = match cached_partition {
                                     Some(partition) => {
-                                        log::info!("[cache] lightmap_layer hit");
+                                        if args.verbose {
+                                            log::info!("[cache] lightmap_layer hit");
+                                        }
                                         lightmap_control.governor().checkpoint();
                                         lightmap_control.advance(target_chart_count);
                                         partition
                                     }
                                     None => {
-                                        log::info!("[cache] lightmap_layer miss");
+                                        if args.verbose {
+                                            log::info!("[cache] lightmap_layer miss");
+                                        }
                                         let partition = lightmap_layer::bake_light_layer_controlled(
                                             light,
                                             &shared,
@@ -1120,10 +1145,11 @@ fn run_after_parsing(
             }
         }
     } else {
-        // Cold / exact path (`--no-cache`): the monolithic whole-atlas bake, the
-        // shippable source of truth. No layer reads/writes. The multi-bin packer
-        // opens new array layers instead of failing on atlas area, so there is no
-        // density-coarsening retry — bake once at the fixed density.
+        // Cold / exact path (`--no-cache`): one-layer incremental bake, the
+        // shippable source of truth. The monolithic whole-atlas bake is test-only.
+        // No layer reads/writes. The multi-bin packer opens new array layers instead
+        // of failing on atlas area, so there is no density-coarsening retry — bake
+        // once at the fixed density.
         let density = lightmap_config.lightmap_density;
         final_lightmap_density = density;
         let mut lm_ctx = lightmap_bake::LightmapBakeCtx {

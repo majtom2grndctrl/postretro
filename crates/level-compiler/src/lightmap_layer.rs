@@ -11,7 +11,8 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    Chart, CompositedAtlas, light_texel_contribution_and_visibility, segment_clear, texel_seed,
+    Chart, CompositedAtlas, effective_direction_texel_scale,
+    light_texel_contribution_and_visibility, segment_clear, texel_seed,
 };
 use crate::map_data::{LightType, MapLight};
 use glam::DVec3;
@@ -723,19 +724,138 @@ pub fn validate_layer_partition(
     let Some(plane) = (atlas.atlas_width as usize).checked_mul(atlas.atlas_height as usize) else {
         return Err("atlas dimensions overflow texel plane size".to_string());
     };
-    for (texel_index, texel) in partition.texels.iter().enumerate() {
-        if texel.layer != target_layer {
-            return Err(format!(
-                "texel {texel_index} belongs to layer {}, not target layer {target_layer}",
-                texel.layer
-            ));
+    if atlas.charts.len() != atlas.placements.len() {
+        return Err(format!(
+            "chart count {} != placement count {}",
+            atlas.charts.len(),
+            atlas.placements.len()
+        ));
+    }
+
+    // Compare directly against the baker's deterministic chart/row/column walk.
+    // This proves exact membership and order without allocating an atlas-sized
+    // seen-set alongside the decoded partition.
+    let mut actual = partition.texels.iter().enumerate();
+    let mut expected_count = 0usize;
+    for (chart, placement) in atlas.charts.iter().zip(atlas.placements) {
+        if placement.layer != target_layer || chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0
+        {
+            continue;
         }
-        if texel.idx as usize >= plane {
-            return Err(format!(
-                "texel {texel_index} idx {} out of bounds for {plane} texels",
-                texel.idx
-            ));
+        let (interior_width, interior_height) = chart_interior_dims(chart);
+        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+        for y in 0..interior_height {
+            for x in 0..interior_width {
+                let atlas_x = placement.x as i32 + padding + x;
+                let atlas_y = placement.y as i32 + padding + y;
+                let expected_idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
+                let Some((actual_index, texel)) = actual.next() else {
+                    return Err(format!(
+                        "missing texel {expected_count}: expected layer {target_layer} idx {expected_idx}"
+                    ));
+                };
+                if texel.layer != target_layer || texel.idx != expected_idx {
+                    return Err(format!(
+                        "texel {actual_index} is layer {} idx {}, expected layer {target_layer} idx {expected_idx}",
+                        texel.layer, texel.idx
+                    ));
+                }
+                if texel.idx as usize >= plane {
+                    return Err(format!(
+                        "texel {actual_index} idx {} out of bounds for {plane} texels",
+                        texel.idx
+                    ));
+                }
+                expected_count += 1;
+            }
         }
+    }
+    if let Some((actual_index, texel)) = actual.next() {
+        return Err(format!(
+            "unexpected texel {actual_index}: layer {} idx {} after {expected_count} expected texels",
+            texel.layer, texel.idx
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a decoded composited-section memo against the current atlas and
+/// encode configuration. A decodable but stale payload is a soft cache miss.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_cached_lightmap_section(
+    section: &postretro_level_format::lightmap::LightmapSection,
+    atlas: &SharedAtlas<'_>,
+    expected_layer_count: u32,
+    texel_density: f32,
+    uncompressed_irradiance: bool,
+    direction_texel_scale: u32,
+) -> Result<(), String> {
+    use postretro_level_format::lightmap::{
+        DIRECTION_FORMAT_OCT_RG8, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LightmapMode,
+    };
+
+    if section.irr_width != atlas.atlas_width || section.irr_height != atlas.atlas_height {
+        return Err(format!(
+            "irradiance dimensions {}x{} != {}x{}",
+            section.irr_width, section.irr_height, atlas.atlas_width, atlas.atlas_height
+        ));
+    }
+    if section.layer_count != expected_layer_count {
+        return Err(format!(
+            "layer_count {} != {expected_layer_count}",
+            section.layer_count
+        ));
+    }
+    if section.irr_texel_density.to_bits() != texel_density.to_bits() {
+        return Err(format!(
+            "irradiance density {} != {texel_density}",
+            section.irr_texel_density
+        ));
+    }
+    let expected_irradiance_format = if uncompressed_irradiance {
+        IRRADIANCE_FORMAT_RGBA16F
+    } else {
+        IRRADIANCE_FORMAT_BC6H
+    };
+    if section.irradiance_format != expected_irradiance_format {
+        return Err(format!(
+            "irradiance format {} != {expected_irradiance_format}",
+            section.irradiance_format
+        ));
+    }
+
+    let direction_texel_scale = effective_direction_texel_scale(
+        direction_texel_scale,
+        atlas.atlas_width,
+        atlas.atlas_height,
+    );
+    let expected_dir_width = atlas.atlas_width / direction_texel_scale;
+    let expected_dir_height = atlas.atlas_height / direction_texel_scale;
+    if section.dir_width != expected_dir_width || section.dir_height != expected_dir_height {
+        return Err(format!(
+            "direction dimensions {}x{} != {expected_dir_width}x{expected_dir_height}",
+            section.dir_width, section.dir_height
+        ));
+    }
+    let expected_dir_density = texel_density * direction_texel_scale as f32;
+    if section.dir_texel_density.to_bits() != expected_dir_density.to_bits() {
+        return Err(format!(
+            "direction density {} != {expected_dir_density}",
+            section.dir_texel_density
+        ));
+    }
+    if section.direction_format != DIRECTION_FORMAT_OCT_RG8 {
+        return Err(format!(
+            "direction format {} != {DIRECTION_FORMAT_OCT_RG8}",
+            section.direction_format
+        ));
+    }
+    if section.mode != LightmapMode::Shadowed {
+        return Err(format!(
+            "lightmap mode {:?} != {:?}",
+            section.mode,
+            LightmapMode::Shadowed
+        ));
     }
     Ok(())
 }
@@ -757,17 +877,21 @@ pub fn validate_layer_partition(
 ///    Folding the input hashes mirrors folding the full cache keys: any
 ///    per-light input change (light params, geometry slice, density, atlas
 ///    layout, or target layer) flows through here.
-/// 4. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
+/// 4. the complete prepared atlas layout fingerprint. This is required even
+///    when the filtered light set is empty, because the all-Sdf fallback bytes
+///    still depend on atlas dimensions.
+/// 5. `texel_density` (f32 LE) — the `density` passed to `encode_section`.
 ///    Already folded into every `layer_input_hash` via `lightmap_density`, so
 ///    this is belt-and-suspenders (same rationale as the light-count fold).
-/// 5. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
-/// 6. `direction_texel_scale` (u32 LE) — selects the post-composite direction
+/// 6. `uncompressed_irradiance` (1 byte, 0/1) — selects BC6H vs RGBA16F output.
+/// 7. `direction_texel_scale` (u32 LE) — selects the post-composite direction
 ///    atlas resolution without invalidating any per-light layer cache entry.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
 pub fn section_input_hash(
     layer_input_hashes: &[[u8; 32]],
+    atlas: &SharedAtlas<'_>,
     texel_density: f32,
     uncompressed_irradiance: bool,
     direction_texel_scale: u32,
@@ -778,6 +902,7 @@ pub fn section_input_hash(
     for hash in layer_input_hashes {
         hasher.update(hash);
     }
+    hasher.update(&atlas_layout_fingerprint(atlas));
     hasher.update(&texel_density.to_le_bytes());
     hasher.update(&[u8::from(uncompressed_irradiance)]);
     hasher.update(&direction_texel_scale.to_le_bytes());
@@ -1533,6 +1658,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_layer_partition_rejects_missing_and_duplicate_texels() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let original = bake_light_layer_controlled(
+            &lights[0],
+            &shared,
+            &bvh,
+            &prims,
+            &geo,
+            0,
+            AREA_SAMPLES,
+            &BakeControl::unrestricted(),
+        );
+        assert!(original.texels.len() > 1, "fixture needs multiple texels");
+
+        let mut missing = original.clone();
+        missing.texels.remove(missing.texels.len() / 2);
+        assert!(
+            validate_layer_partition(&missing, &shared, 0).is_err(),
+            "a partition missing one in-bounds texel must be rejected"
+        );
+
+        let mut duplicate = original.clone();
+        duplicate.texels[1] = duplicate.texels[0];
+        assert!(
+            validate_layer_partition(&duplicate, &shared, 0).is_err(),
+            "a duplicate replacing another in-bounds texel must be rejected"
+        );
+    }
+
+    #[test]
     fn all_sdf_fallback_remains_one_uncovered_plane() {
         let mut geo = two_quad_geometry();
         let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
@@ -1918,6 +2083,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn malformed_partition_cache_hits_soft_miss_before_warm_fold() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let control = BakeControl::unrestricted();
+        let expected = bake_light_layer_controlled(
+            &lights[0],
+            &shared,
+            &bvh,
+            &prims,
+            &geo,
+            0,
+            AREA_SAMPLES,
+            &control,
+        );
+        assert!(expected.texels.len() > 1, "fixture needs multiple texels");
+        let key = layer_key(&lights[0], &shared, &prims, &geo);
+        let dir = fresh_cache_dir("malformed_partition_soft_miss");
+        let cache = StageCache::new(&dir).expect("cache dir");
+
+        for malformed in [
+            {
+                let mut layer = expected.clone();
+                layer.texels.remove(layer.texels.len() / 2);
+                layer
+            },
+            {
+                let mut layer = expected.clone();
+                layer.texels[1] = layer.texels[0];
+                layer
+            },
+        ] {
+            cache.put(&key, &malformed.to_bytes());
+            let recovered = cache
+                .get(&key)
+                .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
+                .and_then(|partition| {
+                    validate_layer_partition(&partition, &shared, 0)
+                        .ok()
+                        .map(|()| partition)
+                })
+                .unwrap_or_else(|| {
+                    bake_light_layer_controlled(
+                        &lights[0],
+                        &shared,
+                        &bvh,
+                        &prims,
+                        &geo,
+                        0,
+                        AREA_SAMPLES,
+                        &control,
+                    )
+                });
+            assert_eq!(
+                recovered, expected,
+                "malformed decoded payload must degrade to the exact re-bake"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `--cache-dir` redirect (module-level): a `StageCache` opened on an
     /// override directory writes its layer entries there, under that path —
     /// nothing lands in the default `.build-caches/prl-cache/`.
@@ -2053,11 +2289,13 @@ mod tests {
     /// the production key derivation, not a test-only reimplementation.
     fn section_key(
         layer_input_hashes: &[[u8; 32]],
+        shared: &SharedAtlas<'_>,
         density: f32,
         uncompressed_irradiance: bool,
     ) -> CacheKey {
         let h = section_input_hash(
             layer_input_hashes,
+            shared,
             density,
             uncompressed_irradiance,
             crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
@@ -2072,15 +2310,37 @@ mod tests {
         // so the two builds must retain this exact layer key while their
         // composited-section keys differ.
         let layer_input_hashes = [[0x5a; 32]];
+        let charts = [Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: 5,
+            height_texels: 5,
+            leaf_index: 0,
+        }];
+        let placements = [ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 64,
+            atlas_height: 64,
+        };
         let at_scale_two = CacheKey::new(
             "lightmap_section",
             LIGHTMAP_SECTION_VERSION,
-            &section_input_hash(&layer_input_hashes, DENSITY, true, 2),
+            &section_input_hash(&layer_input_hashes, &shared, DENSITY, true, 2),
         );
         let at_scale_one = CacheKey::new(
             "lightmap_section",
             LIGHTMAP_SECTION_VERSION,
-            &section_input_hash(&layer_input_hashes, DENSITY, true, 1),
+            &section_input_hash(&layer_input_hashes, &shared, DENSITY, true, 1),
         );
         assert_ne!(
             at_scale_two.as_filename(),
@@ -2094,6 +2354,53 @@ mod tests {
         assert!(
             cache.get(&at_scale_one).is_none(),
             "a factor-1 rebuild must miss a factor-2 section memo"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
+        // Regression: the empty layer-hash list previously let an all-Sdf
+        // fallback from prepared layout A alias layout B even though its bytes
+        // are dimension-dependent.
+        let charts = [Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [1.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: 5,
+            height_texels: 5,
+            leaf_index: 0,
+        }];
+        let placements = [ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let layout_a = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 64,
+            atlas_height: 64,
+        };
+        let layout_b = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 128,
+            atlas_height: 64,
+        };
+        let key_a = section_key(&[], &layout_a, DENSITY, true);
+        let key_b = section_key(&[], &layout_b, DENSITY, true);
+        assert_ne!(key_a.as_filename(), key_b.as_filename());
+
+        let dir = fresh_cache_dir("all_sdf_layout_change");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&key_a, b"layout-a-section");
+        assert!(
+            cache.get(&key_b).is_none(),
+            "layout B must miss a fallback section memo written for layout A"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2225,7 +2532,7 @@ mod tests {
         };
 
         let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let key_build1 = section_key(&hashes, DENSITY, true);
+        let key_build1 = section_key(&hashes, &shared, DENSITY, true);
 
         let dir = fresh_cache_dir("section_roundtrip");
         let cache = StageCache::new(&dir).expect("cache dir");
@@ -2239,7 +2546,7 @@ mod tests {
         cache.put(&key_build1, &composed.to_bytes());
 
         // Second build: same key, section hits and decodes — no layer blob read.
-        let key_build2 = section_key(&hashes, DENSITY, true);
+        let key_build2 = section_key(&hashes, &shared, DENSITY, true);
         assert_eq!(
             key_build1.as_filename(),
             key_build2.as_filename(),
@@ -2261,6 +2568,104 @@ mod tests {
             "the section round-trip must not read or write any per-light layer blob"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cached_section_validation_covers_current_atlas_and_encode_config() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let expected = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
+        let validate = |section: &LightmapSection, direction_scale| {
+            validate_cached_lightmap_section(
+                section,
+                &shared,
+                prepared.layer_count,
+                DENSITY,
+                true,
+                direction_scale,
+            )
+        };
+        validate(&expected, crate::lightmap_bake::DIRECTION_TEXEL_SCALE)
+            .expect("freshly composed section matches current inputs");
+
+        let mut stale = expected.clone();
+        stale.irr_width *= 2;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.layer_count += 1;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.irr_texel_density *= 2.0;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.irradiance_format = postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        assert!(validate(&expected, 1).is_err(), "direction scale is config");
+        let mut stale = expected.clone();
+        stale.dir_width *= 2;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.dir_texel_density *= 2.0;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.direction_format = postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+        let mut stale = expected.clone();
+        stale.mode = postretro_level_format::lightmap::LightmapMode::Unshadowed;
+        assert!(validate(&stale, crate::lightmap_bake::DIRECTION_TEXEL_SCALE).is_err());
+    }
+
+    #[test]
+    fn mismatched_decoded_section_cache_hit_soft_misses_and_recomposes() {
+        let mut geo = two_quad_geometry();
+        let lights = vec![point_light([0.5, 1.0, 0.5], 5.0)];
+        let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&lights);
+        let light_refs: Vec<&MapLight> = static_lights.entries().iter().map(|e| e.light).collect();
+        let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let shared = SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+        };
+        let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
+        let key = section_key(&hashes, &shared, DENSITY, true);
+        let expected = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
+        let mut stale = expected.clone();
+        stale.irr_texel_density *= 2.0;
+
+        let dir = fresh_cache_dir("section_metadata_soft_miss");
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&key, &stale.to_bytes());
+        let recovered = cache
+            .get(&key)
+            .and_then(|bytes| LightmapSection::from_bytes(&bytes).ok())
+            .and_then(|section| {
+                validate_cached_lightmap_section(
+                    &section,
+                    &shared,
+                    prepared.layer_count,
+                    DENSITY,
+                    true,
+                    crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+                )
+                .ok()
+                .map(|()| section)
+            })
+            .unwrap_or_else(|| compose_section(&light_refs, &shared, &bvh, &prims, &geo));
+        assert_eq!(recovered, expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2289,7 +2694,7 @@ mod tests {
         };
 
         let base_hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let base_section = section_key(&base_hashes, DENSITY, true).as_filename();
+        let base_section = section_key(&base_hashes, &shared, DENSITY, true).as_filename();
         let base_layer1 =
             CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &base_hashes[1]).as_filename();
 
@@ -2299,7 +2704,7 @@ mod tests {
         let edited_static = crate::light_namespaces::StaticBakedLights::from_lights(&edited);
         let edited_refs: Vec<&MapLight> = edited_static.entries().iter().map(|e| e.light).collect();
         let edited_hashes = layer_input_hashes(&edited_refs, &shared, &prims, &geo);
-        let edited_section = section_key(&edited_hashes, DENSITY, true).as_filename();
+        let edited_section = section_key(&edited_hashes, &shared, DENSITY, true).as_filename();
         let edited_layer1 =
             CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &edited_hashes[1]).as_filename();
 
@@ -2339,7 +2744,7 @@ mod tests {
         };
 
         let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let key = section_key(&hashes, DENSITY, true);
+        let key = section_key(&hashes, &shared, DENSITY, true);
         let original = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
 
         let dir = fresh_cache_dir("section_corrupt");
@@ -2383,7 +2788,7 @@ mod tests {
         };
 
         let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let key = section_key(&hashes, DENSITY, true);
+        let key = section_key(&hashes, &shared, DENSITY, true);
         let section = compose_section(&light_refs, &shared, &bvh, &prims, &geo);
 
         let dir = fresh_cache_dir("section_override");
@@ -2423,7 +2828,7 @@ mod tests {
         };
 
         let hashes = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let key = section_key(&hashes, DENSITY, true);
+        let key = section_key(&hashes, &shared, DENSITY, true);
 
         // No-cache control flow: the key is derivable, but with the section-cache
         // block skipped nothing is ever `put`. Model that by never calling `put`.
@@ -2466,7 +2871,7 @@ mod tests {
         };
 
         let base = layer_input_hashes(&light_refs, &shared, &prims, &geo);
-        let base_key = section_key(&base, DENSITY, true).as_filename();
+        let base_key = section_key(&base, &shared, DENSITY, true).as_filename();
 
         // Add a light: a third hash extends the fold.
         let mut added = base.clone();
@@ -2481,7 +2886,7 @@ mod tests {
         ));
         assert_ne!(
             base_key,
-            section_key(&added, DENSITY, true).as_filename(),
+            section_key(&added, &shared, DENSITY, true).as_filename(),
             "adding a light must change the section key"
         );
 
@@ -2489,7 +2894,7 @@ mod tests {
         let removed = vec![base[0]];
         assert_ne!(
             base_key,
-            section_key(&removed, DENSITY, true).as_filename(),
+            section_key(&removed, &shared, DENSITY, true).as_filename(),
             "removing a light must change the section key"
         );
 
@@ -2497,7 +2902,7 @@ mod tests {
         let reordered = vec![base[1], base[0]];
         assert_ne!(
             base_key,
-            section_key(&reordered, DENSITY, true).as_filename(),
+            section_key(&reordered, &shared, DENSITY, true).as_filename(),
             "reordering lights must change the section key (the fold is ordered)"
         );
         // Guard against an accidental commutative fold: the swap must NOT be a
@@ -2538,8 +2943,8 @@ mod tests {
             .collect();
 
         assert_ne!(
-            section_key(&hashes_a, DENSITY, true).as_filename(),
-            section_key(&hashes_b, DENSITY, true).as_filename(),
+            section_key(&hashes_a, &shared, DENSITY, true).as_filename(),
+            section_key(&hashes_b, &shared, DENSITY, true).as_filename(),
             "changing --soft-shadow-samples must change the section key (section miss)"
         );
     }

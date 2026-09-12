@@ -75,7 +75,7 @@ two-line promoted-context update above.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Add the shared coverage predicate and coverage-only chart walk; prove analytic/baked equivalence across the fixture matrix before changing graph construction | integrating executor | — | pending |
+| 1 | Add the shared coverage predicate and coverage-only chart walk; prove analytic/baked equivalence across the fixture matrix before changing graph construction | integrating executor | — | done — `analytic_coverage` (2), threshold (1), degenerate walk (1), NaN inclusion (1) |
 | 2 | Split the 3,600+ line `shadowmask_bake.rs` by responsibility without behavior changes; run existing shadowmask tests and commit the split alone | integrating executor | 1 | pending |
 | 3 | Build the pruned parallel analytic graph pass from shared affinity reach data, preserving every selected node; measure and record the mini-warren reach fraction, barrier, ordering, pause, worker-count, progress, and adjacency-storage proofs | integrating executor | 2 | pending |
 | 4 | Replace membership assembly with layer-outer partition fill into one output allocation on cold and warm section-miss paths; preserve cache keys/epochs, define dropped-partition population, and pin filtered-selection allocation and final progress ordering | integrating executor | 3 | pending |

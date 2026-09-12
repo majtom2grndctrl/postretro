@@ -1034,7 +1034,7 @@ fn collect_layer_membership(
     for texel in &layer.texels {
         // This is deliberately the legacy skip predicate. NaN is retained
         // because `NaN < 0.0` is false; cache payloads permit NaN.
-        if texel.raw_visibility < 0.0 {
+        if !raw_visibility_is_covered(texel.raw_visibility) {
             continue;
         }
         let layer_offset = (texel.layer as usize)
@@ -1050,6 +1050,10 @@ fn collect_layer_membership(
         });
     }
     entries
+}
+
+fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
+    !(raw_visibility < 0.0)
 }
 
 fn build_shadowmask_from_membership(
@@ -1616,7 +1620,7 @@ mod tests {
     use crate::chart_raster::ChartPlacement;
     use crate::governor::Governor;
     use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-    use crate::lightmap_bake::{Chart, prepare_atlas};
+    use crate::lightmap_bake::{Chart, light_texel_is_covered, prepare_atlas};
     use crate::lightmap_layer::{LayerTexel, bake_light_layer};
     use crate::map_data::{FalloffModel, LightType, ShadowType};
     use crate::reporter::StageProgress;
@@ -2186,6 +2190,14 @@ mod tests {
 
         let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
 
+        let mut analytic_light = light(5.0);
+        analytic_light.origin = DVec3::new(0.5, 1.0, 0.5);
+        assert!(
+            light_texel_is_covered(&analytic_light, Vec3::new(0.5, 0.0, 0.5), Vec3::Y),
+            "NaN visibility is downstream of a positive analytic contribution"
+        );
+        assert!(raw_visibility_is_covered(f32::NAN));
+
         // NaN was historically included because the old code skipped only
         // values satisfying `raw_visibility < 0.0`. It must still create the
         // overlap edge (and quantizes with the established Rust cast behavior).
@@ -2595,6 +2607,48 @@ mod tests {
             4
         );
         assert_valid_channel_assignment(&graph, &channels);
+    }
+
+    #[test]
+    fn analytic_coverage_matches_baked_coverage_on_multilayer_golden() {
+        let (geometry, bvh, primitives, charts, placements, lights, _) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+
+        for test_light in &lights {
+            let baked = lightmap_layer::bake_light_layer(
+                test_light,
+                &shared,
+                &bvh,
+                &primitives,
+                &geometry,
+                AREA_SAMPLES,
+                &test_control(),
+            );
+            let baked_coverage: Vec<_> = baked
+                .texels
+                .iter()
+                .filter(|texel| !(texel.raw_visibility < 0.0))
+                .map(|texel| (texel.layer, texel.idx))
+                .collect();
+            let mut analytic_coverage = Vec::new();
+            for chart_index in 0..shared.placements.len() {
+                lightmap_layer::visit_light_chart_coverage_controlled(
+                    test_light,
+                    &shared,
+                    chart_index,
+                    &test_control(),
+                    |texel| analytic_coverage.push((texel.layer, texel.idx)),
+                );
+            }
+
+            assert_eq!(analytic_coverage, baked_coverage);
+        }
     }
 
     #[test]

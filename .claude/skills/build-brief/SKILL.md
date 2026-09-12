@@ -74,7 +74,7 @@ read at: <short sha>
 | AC | Proof | Status |
 |---|---|---|
 | 1 | `focused_test` | achievable as stated |
-| 4 | owner, in-engine | manual-visual |
+| 4 | owner, in-engine | manual |
 
 ## Tasks
 

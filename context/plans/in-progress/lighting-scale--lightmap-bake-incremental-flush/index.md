@@ -81,6 +81,9 @@ already addressed by `lightmap-bake-throughput`, and it does not lower peak RAM.
   spec.
 - **The second-level composited-section cache.** It memoizes the whole section and is
   unchanged; only the per-light layer level is re-scoped.
+- **Whole-compiler completion and peak RSS.** The owner-machine diagnostic reaches
+  `ShadowmaskAtlas` after the lightmap stage, where a separate allocation limit aborts
+  the build. Shadowmask membership and output residency are a follow-on concern.
 
 ## Tasks
 
@@ -203,42 +206,28 @@ Concrete orderings the bake must honor. Each is testable; each names the task th
 
 ## Acceptance criteria
 
-- [ ] The baked `.prl` is byte-identical to the pre-change bake for a multi-layer
-  fixture map (cold path and warm path both). This is a one-time pre-vs-post comparison,
-  not an existing standing test — the `compiler_cli_contract` gates check determinism
-  (`-j1` vs `-jN`, run-to-run), not pre-vs-post — so capture a pre-change `.prl` golden
-  from the retired bake and diff the reshaped output against it.
-- [ ] The warm-vs-cold byte-identity gate still passes and exercises the new per-layer
-  fold, not the retired whole-atlas `composite_layers`: retarget the gate (or add one) to
-  compare the reshaped per-layer fold against the monolithic atlas. Production no longer
-  calls `composite_layers`, so the current gate — which compares `composite_layers` against
-  the monolithic bake — would pass a wrong fold; `composite_layers` is retained only as a
-  test kernel.
-- [ ] Compile-time peak RSS is measured and reported on the map and density AC 4 caps
-  (`stress-warren-hallway-inspection` at 0.04), as absolute process figures for both the
-  pre-change bake and the reshaped bake, captured with an external wrapper (Linux
-  `/usr/bin/time -v` max resident set; Windows peak working set) — no in-process probe.
-  Reported alongside the measured figures, but as an analytic bound and not as a fraction of
-  process RSS: the uncompressed working set drops from `layer_count` layers to one (cold path)
-  and from all `N_lights` per-light layers resident to one at a time (warm path). The measured
-  absolute peak is expected to drop substantially, since that buffer term dominated the
-  observed ~7.8 GB peak. The reported pre-change and post-change absolute cold-path peaks are
-  the figures AC 4 caps between, so AC 4 reuses them without re-running the retired pre-change
-  lifecycle.
-- [ ] With the process address space capped below the pre-change cold-path peak RSS
-  reported by the criterion above and at or above the post-change peak (Linux `ulimit -v`,
-  Windows Job Object memory limit), the reshaped bake of the map and density that blocked
-  the `dist` build (`stress-warren-hallway-inspection` at 0.04) completes and writes a
-  `.prl` that passes the byte-identity gate. The pre-change peak is the figure that
-  criterion reports, so the retired lifecycle need not be re-run. This capped-completion gate
-  covers the cold/`dist` path — the observed OOM, and `dist` builds are cold (no stage cache).
-  The warm path's per-light peak reduction is not gated under a cap here; its memory claim is
-  analytic-only (AC 3's working-set bound).
-- [ ] Re-baking the same map twice yields byte-identical `.prl` output.
+- [ ] `layered_cold_bake_matches_reference_and_repeats_byte_identically` proves the
+  shipping cold path's ascending layer bake/encode/drop output matches the retained
+  monolithic reference and repeats byte-identically on a multi-layer fixture.
+- [ ] `incremental_layer_fold_matches_monolithic_section_bytes` and
+  `multi_layer_composite_matches_monolithic_bit_for_bit` prove the warm
+  layer-outer/light-inner fold matches the monolithic reference without calling the
+  retired whole-atlas production path.
+- [ ] Focused `lightmap_bake` tests cover per-layer scatter, nonzero-layer rebasing,
+  parallel join-before-drop, and degenerate-layer coverage.
+- [ ] Owner-machine diagnostic evidence records that the cold `0.04` bake, with the
+  test-only `4.0 m` SH probe spacing, gets through `LightmapBake` and reaches the later
+  `ShadowmaskAtlas` failure. This is stage-reach evidence, not a full-compiler RSS or
+  completion claim.
 - [ ] A normal (non-verbose) bake gains no new per-item log spam; any per-partition
   memory or size breakdown appears only under `-v`/`--verbose`, and any footprint
   summary is a single `log::info` line. (Review/grep gate, not a runnable test: verify by
   inspecting the added log sites against the existing `log_stats` verbose gating.)
+
+### Windows stage-reach diagnostic
+
+The copy-paste instructions for reproducing the owner-machine stage reach and recording a
+later-stage failure are in [windows-test-instructions.md](./windows-test-instructions.md).
 
 ## Rough sketch
 

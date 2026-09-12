@@ -96,8 +96,15 @@ ascending index order (0..`layer_count`) and append in that order, matching
 append on completion — that makes the blob order (and the `.prl`) nondeterministic and holds
 more than one layer resident, breaking both the byte-identity gate and the peak-RAM bound.
 This bounds the uncompressed
-working set to one layer instead of `layer_count`. The result must be byte-identical
-to the current whole-atlas bake: per-layer bake + per-layer dilate + per-layer encode
+working set to one layer instead of `layer_count`. Concretely, `bake_lightmap_controlled`
+today bakes the whole atlas (via `bake_monolithic_atlas_controlled`) and only then hands the
+finished `CompositedAtlas` to `encode_section`; the per-layer bound requires fusing that call
+boundary into one loop — bake → dilate → encode → append → drop per layer — so the whole-atlas
+`CompositedAtlas` is never materialized. Add this fused per-layer path as the shipping cold
+path and keep `bake_monolithic_atlas_controlled` as a whole-atlas builder (it is already
+production-dead, retained for tests): the byte-identity gates compare against a whole-atlas
+`CompositedAtlas`, so that builder must survive as their reference kernel. The result must be
+byte-identical to the current whole-atlas bake: per-layer bake + per-layer dilate + per-layer encode
 + concatenation already equals the whole-atlas path because every encode stage is
 layer-local: dilation never crosses a layer boundary (`CompositedAtlas::dilate` loops per
 layer), the irradiance BC6H encoder already emits one block blob per layer, and the
@@ -132,9 +139,20 @@ layer rather than the whole atlas. A light-outer fold keeps a whole-atlas accumu
 resident across every light and misses that bound. Folding lights in the same per-texel
 order the monolithic bake sums them keeps the composite bit-identical, so the byte-identity
 gate holds; the per-light accumulate is ordered and the outer per-layer loop serial, while
-each light's partition still bakes with the landed per-chart parallelism. Re-scope the per-light cache
-blob (which currently spans all layers) so a fold step loads only the partition it needs,
-and bump the layer cache-format version to invalidate stale blobs. Warm-path peak resident
+each light's partition still bakes with the landed per-chart parallelism. The layer-L-only
+miss bake is a new capability: `lightmap_layer::bake_light_layer_controlled` today bakes every
+layer (it walks `atlas.placements.par_iter()` across all layers), so it must gain a target-layer
+parameter that filters placements to `placement.layer == L`. Re-scope the per-light cache from
+one all-layers blob to per-partition (per-layer) blobs so a fold step loads only the partition
+it needs. The per-partition blob must be keyed per layer: today `layer_input_hash`
+(`lightmap_layer.rs`) folds the whole atlas layout but no layer index, and the layer
+`CacheKey` digest (`pipeline.rs`) is identical for every layer of a light — so partition blobs
+written under the unchanged key collide, and a layer-L fold reads back another layer's bytes.
+Fold the target layer index into the layer cache key (the `layer_input_hash` digest or the
+`CacheKey`), and bump `LAYER_FORMAT_VERSION` to invalidate the stale all-layers blobs
+(`LIGHTMAP_SECTION_VERSION`, the second-level section memo, stays unchanged). A layer-filtered
+bake tags its texels `layer == L` but `LayerTexel.idx` is already within-layer, so the
+one-layer accumulator indexes by `idx` directly — no rebase. Warm-path peak resident
 is therefore one light's one-layer partition plus one layer's accumulator. The win lands on
 section-cache-miss warm bakes — the lighting- or geometry-iteration case that materializes
 per-light layers; a no-edit rebuild served by the second-level section memo never
@@ -186,27 +204,41 @@ Concrete orderings the bake must honor. Each is testable; each names the task th
 ## Acceptance criteria
 
 - [ ] The baked `.prl` is byte-identical to the pre-change bake for a multi-layer
-  fixture map (cold path and warm path both).
-- [ ] The byte-identity gate between the warm per-light composite and the cold
-  monolithic bake still passes.
+  fixture map (cold path and warm path both). This is a one-time pre-vs-post comparison,
+  not an existing standing test — the `compiler_cli_contract` gates check determinism
+  (`-j1` vs `-jN`, run-to-run), not pre-vs-post — so capture a pre-change `.prl` golden
+  from the retired bake and diff the reshaped output against it.
+- [ ] The warm-vs-cold byte-identity gate still passes and exercises the new per-layer
+  fold, not the retired whole-atlas `composite_layers`: retarget the gate (or add one) to
+  compare the reshaped per-layer fold against the monolithic atlas. Production no longer
+  calls `composite_layers`, so the current gate — which compares `composite_layers` against
+  the monolithic bake — would pass a wrong fold; `composite_layers` is retained only as a
+  test kernel.
 - [ ] Compile-time peak RSS is measured and reported on the map and density AC 4 caps
-  (`stress-warren-hallway-inspection` at 0.04), as absolute figures for both the pre-change
-  bake and the reshaped bake: the cold-path uncompressed working set scales with one atlas
-  layer rather than `layer_count` — its share of peak RSS drops by ≥ `(layer_count − 1) /
-  layer_count` — and the warm-path per-light layer resident set drops ~`N_lights`× (from all
-  lights resident to one at a time). The reported pre-change cold-path peak RSS and
-  post-change peak are the figures AC 4 caps between, so AC 4 reuses them without re-running
-  the retired pre-change lifecycle.
+  (`stress-warren-hallway-inspection` at 0.04), as absolute process figures for both the
+  pre-change bake and the reshaped bake, captured with an external wrapper (Linux
+  `/usr/bin/time -v` max resident set; Windows peak working set) — no in-process probe.
+  Reported alongside the measured figures, but as an analytic bound and not as a fraction of
+  process RSS: the uncompressed working set drops from `layer_count` layers to one (cold path)
+  and from all `N_lights` per-light layers resident to one at a time (warm path). The measured
+  absolute peak is expected to drop substantially, since that buffer term dominated the
+  observed ~7.8 GB peak. The reported pre-change and post-change absolute cold-path peaks are
+  the figures AC 4 caps between, so AC 4 reuses them without re-running the retired pre-change
+  lifecycle.
 - [ ] With the process address space capped below the pre-change cold-path peak RSS
   reported by the criterion above and at or above the post-change peak (Linux `ulimit -v`,
   Windows Job Object memory limit), the reshaped bake of the map and density that blocked
   the `dist` build (`stress-warren-hallway-inspection` at 0.04) completes and writes a
   `.prl` that passes the byte-identity gate. The pre-change peak is the figure that
-  criterion reports, so the retired lifecycle need not be re-run.
+  criterion reports, so the retired lifecycle need not be re-run. This capped-completion gate
+  covers the cold/`dist` path — the observed OOM, and `dist` builds are cold (no stage cache).
+  The warm path's per-light peak reduction is not gated under a cap here; its memory claim is
+  analytic-only (AC 3's working-set bound).
 - [ ] Re-baking the same map twice yields byte-identical `.prl` output.
 - [ ] A normal (non-verbose) bake gains no new per-item log spam; any per-partition
   memory or size breakdown appears only under `-v`/`--verbose`, and any footprint
-  summary is a single `log::info` line.
+  summary is a single `log::info` line. (Review/grep gate, not a runnable test: verify by
+  inspecting the added log sites against the existing `log_stats` verbose gating.)
 
 ## Rough sketch
 
@@ -220,8 +252,8 @@ allocates the atlas whole, scatters every baked face into it via a per-chart `pa
 `bake_lightmap_controlled` then calls `encode_section` —
 irradiance loops per layer for BC6H, direction is a single-pass `encode_direction_rg8` after
 an optional per-axis `reduce_direction_atlas` (`DIRECTION_TEXEL_SCALE`, default 2). The
-per-layer partition is the seam: group faces by `ChartPlacement.layer` (`chart_raster.rs`;
-leaf cohesion via `place_leaf` keeps a leaf's charts on one layer), encode a layer's slice,
+per-layer partition is the seam: group faces by `ChartPlacement.layer` (defined in `chart_raster.rs`;
+leaf cohesion via `place_leaf` in `lightmap_bake.rs` keeps a leaf's charts on one layer), encode a layer's slice,
 drop. `DEFAULT_TEXEL_DENSITY_METERS = 0.04`.
 
 Warm path — `crates/level-compiler/src/pipeline.rs` (the lightmap section of

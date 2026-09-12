@@ -1,12 +1,10 @@
 // Shadowmask overlap graph construction and deterministic four-channel assignment.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
 
-use super::ShadowmaskMembership;
 use crate::map_data::MapLight;
 
 pub(super) const SHADOWMASK_COLOR_SEARCH_NODE_BUDGET: usize = 100_000;
@@ -69,42 +67,6 @@ impl OverlapGraph {
         }
         graph
     }
-}
-
-#[cfg(test)]
-pub(super) fn overlap_graph(membership: &ShadowmaskMembership) -> OverlapGraph {
-    overlap_graph_controlled(membership, || {})
-}
-
-pub(super) fn overlap_graph_controlled(
-    membership: &ShadowmaskMembership,
-    mut checkpoint: impl FnMut(),
-) -> OverlapGraph {
-    let graph = OverlapGraph::new(membership.by_light.len());
-    let mut texel_lights: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut operation_count = 0;
-    for (compact_light_index, entries) in membership.by_light.iter().enumerate() {
-        for entry in entries {
-            record_assignment_operation(&mut operation_count, &mut checkpoint);
-            debug_assert_eq!(entry.compact_light_index as usize, compact_light_index);
-            texel_lights
-                .entry(entry.global_texel_index)
-                .or_default()
-                .push(compact_light_index);
-        }
-    }
-    for lights in texel_lights.values() {
-        for (pos, &a) in lights.iter().enumerate() {
-            for &b in &lights[pos + 1..] {
-                record_assignment_operation(&mut operation_count, &mut checkpoint);
-                if a == b {
-                    continue;
-                }
-                graph.mark_overlap(a, b);
-            }
-        }
-    }
-    graph
 }
 
 fn record_assignment_operation(operation_count: &mut usize, checkpoint: &mut impl FnMut()) {

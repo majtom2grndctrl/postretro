@@ -1,7 +1,6 @@
 # Research — shadowmask cold working set
 
-Read at `6c645c03` (main) and `81922771`
-(`origin/feature/lighting-scale--lightmap-bake-incremental-flush`).
+Read at `6168c5c9`, with `lighting-scale--lightmap-bake-incremental-flush` merged.
 
 ## Measured atlas
 

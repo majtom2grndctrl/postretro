@@ -131,3 +131,28 @@ Regression guards — these pass today:
 - Whether the failing config is reachable on the owner's machine during this build —
   **delegated**: it depends on the in-progress lightmap branch, and the manual row records the
   attempt either way.
+
+## Sequence
+
+Independent of `lighting-scale--shadowmask-cold-working-set` in both directions: that
+brief non-goals attribution to this one, and this one's helper sits outside any bake
+stage's module so its restructure cannot delete the guard. Either may land first.
+
+`/validate-plan` returned **Reshape** on `2aa1f01d`, not yet acted on. Three findings, all
+open:
+
+- A bound admitting max-atlas × max-layers × selected-light-count also admits the
+  motivating 42 TB request if the failing computation is cross-light — which the 2-adic
+  argument points at. Deliverable and mechanism pull opposite ways.
+- The adoption rule ("every size-determining computation preceding an allocation") and the
+  Path inventory ("the existing `checked_mul` guards") are different sets, and diverge on
+  unchecked `with_capacity` sites in the lightmap path.
+- Routing `LightmapLayer::from_bytes` through an abort helper converts a documented
+  recoverable contract — corrupt blob, cache miss, re-bake — into a build-killing abort.
+
+The rival the brief never held: report-then-refuse. Emit `stage · computation · factors ·
+product` on the success path, so attribution does not depend on the guard firing.
+
+Re-anchor before reshaping. This brief was written against pre-merge `main`; the lightmap
+incremental-flush work has since landed, adding roughly 1,900 lines across the files its
+inventory walks, and the failing configuration is plausibly reachable in that new code.

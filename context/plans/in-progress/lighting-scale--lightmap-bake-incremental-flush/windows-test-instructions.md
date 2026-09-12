@@ -7,50 +7,40 @@ Desktop** for branch switching; PowerShell runs only the Rust build and bake.
 ## What this measures
 
 The test bakes `stress-warren-hallway-inspection.map` at the default `0.04`
-texel density through the cold, shippable compiler path. It records:
+lightmap texel density through the cold, cache-free compiler path. It uses a
+test-only `4.0 m` SH probe spacing (the normal spacing is `1.0 m`) so the
+unrelated direct-SH-delta stage fits on the 16 GiB Windows host. It records:
 
 - Peak working set for the pre-change and post-change compiler processes.
 - SHA-256 hashes of their emitted `.prl` files, which must match.
 - A second post-change output hash, which must match the first post-change
   output and proves repeat determinism.
 
-The `cargo build` steps happen before measurement. The measurements invoke
-`prl-build.exe` directly, so Cargo compilation memory is not included.
+Each `cargo build` happens immediately before its matching measurement. The
+measurements invoke `prl-build.exe` directly, so Cargo compilation memory is
+not included.
 
 ### Host-memory prerequisite
 
-This map's SH-delta stage estimates a 36.5 GiB dense working set before it
-reaches the lightmap bake. The compiler's normal 16 GiB SH-delta safety gate
-therefore refuses the map before any useful lightmap measurement. The commands
-below explicitly raise that *unrelated* gate to 48 GiB. Run this test only on a
-machine with at least 64 GiB installed RAM and substantial free memory; the
-flag permits the stage, it does not allocate memory or make an undersized
-machine safe. If the bake fails or the system pages heavily during the SH-delta
-stage, stop and report that result rather than changing density or other bake
-settings.
+At the normal `1.0 m` spacing, this map's SH-delta stage estimates a 36.5 GiB
+dense working set before it reaches the lightmap bake, so the normal 16 GiB
+safety gate correctly refuses it. Increasing the spacing to `4.0 m` reduces
+the three-dimensional probe grid by roughly 64x while leaving the lightmap
+layout and its `0.04` density unchanged. This is deliberately a
+lightmap-focused stress profile, not a production-quality SH bake. Use the
+same profile on both branches: their output hashes must still match each
+other, but they are not hashes of the normal-precision shipping map.
 
 ## 1. Fetch the two branches in GitHub Desktop
 
 1. Open the PostRetro repository in GitHub Desktop and choose **Fetch origin**.
-2. In the **Current Branch** menu, select
-   `test/lightmap-bake-before-incremental-flush`.
-3. Use **Repository → Open in Terminal** to open PowerShell in the checkout,
-   then build the pre-change executable:
-
-```powershell
-cargo build --release -p postretro-level-compiler
-```
-
-4. Return to GitHub Desktop and select
+2. Confirm both branches appear in the **Current Branch** menu:
+   `test/lightmap-bake-before-incremental-flush` and
    `feature/lighting-scale--lightmap-bake-incremental-flush`.
-5. Use **Repository → Open in Terminal** again, then build the post-change
-   executable:
 
-```powershell
-cargo build --release -p postretro-level-compiler
-```
-
-Leave GitHub Desktop on the feature branch before continuing.
+Build immediately after switching branches in steps 3 and 4 below. A single
+checkout has one `target\\release\\prl-build.exe`; building both branches up
+front would measure the wrong executable for the first branch.
 
 ## 2. Paste this PowerShell helper
 
@@ -73,18 +63,18 @@ function Invoke-LightmapBake($Label) {
     $process = Start-Process `
         -FilePath $exe `
         -WorkingDirectory $repo `
-        -ArgumentList "$map -o `"$out`" --release --sh-delta-working-set-max-size 48GiB" `
+        -ArgumentList "$map -o `"$out`" --release --sh-probe-spacing 4.0" `
         -NoNewWindow -PassThru -Wait
     $stopwatch.Stop()
 
-    $file = Get-Item $out
+    $file = if (Test-Path -LiteralPath $out) { Get-Item -LiteralPath $out } else { $null }
     [pscustomobject]@{
         Label = $Label
         ExitCode = $process.ExitCode
         Seconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         PeakWorkingSetGiB = [math]::Round($process.PeakWorkingSet64 / 1GB, 2)
-        OutputGiB = [math]::Round($file.Length / 1GB, 3)
-        Sha256 = (Get-FileHash $out -Algorithm SHA256).Hash
+        OutputGiB = if ($file) { [math]::Round($file.Length / 1GB, 3) } else { $null }
+        Sha256 = if ($file) { (Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash } else { $null }
         Output = $out
     }
 }
@@ -92,25 +82,29 @@ function Invoke-LightmapBake($Label) {
 
 ## 3. Measure the pre-change baseline
 
-In GitHub Desktop, switch back to
-`test/lightmap-bake-before-incremental-flush`, then choose **Repository → Open
-in Terminal**. Paste the helper from step 2 if this is a new terminal, then run:
+In GitHub Desktop, switch to `test/lightmap-bake-before-incremental-flush`,
+then choose **Repository → Open in Terminal**. Paste the helper from step 2 if
+this is a new terminal, then build and run:
 
 ```powershell
+cargo build --release -p postretro-level-compiler
 $before = Invoke-LightmapBake "before"
 $before
 ```
 
 Record the result row. If this bake cannot complete because of memory pressure,
-record that fact and any displayed error; do not lower density.
+record that fact and any displayed error; do not lower the lightmap density or
+raise the SH working-set limit.
 
 ## 4. Measure the post-change branch twice
 
 In GitHub Desktop, switch to
 `feature/lighting-scale--lightmap-bake-incremental-flush`, then choose
-**Repository → Open in Terminal**. Paste the helper again if needed, then run:
+**Repository → Open in Terminal**. Paste the helper again if needed, then
+build and run:
 
 ```powershell
+cargo build --release -p postretro-level-compiler
 $after1 = Invoke-LightmapBake "after-1"
 $after2 = Invoke-LightmapBake "after-2"
 

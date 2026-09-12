@@ -1,7 +1,7 @@
 # lighting-scale--shadowmask-cold-working-set — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 438a84925
 
 ## Corrections
@@ -34,6 +34,13 @@ two-line promoted-context update above.
   stage at density 0.16, comparing the same release build, map, machine, and
   worker setting. Record both timings; treat larger regression as a failed
   manual row rather than averaging it away.
+- Owner test coordination — when the branch is ready for the 16 GiB Windows
+  stress bake, push it to the remote and hand off the exact command; do not ask
+  the owner to reproduce an intermediate checkpoint.
+- Local bake policy — do not run incremental/warm map bakes on this MacBook;
+  their stage cache floods local disk. Local verification uses focused unit
+  tests and `cargo check`, and any necessary map compile uses `--no-cache` with
+  a small fixture and explicit output cleanup.
 
 ## AC-to-proof
 
@@ -81,6 +88,8 @@ two-line promoted-context update above.
   plan and returns the bounded-membership fallback to the owner.
 - Shared contracts, `plan.md`, Cargo verification, commits, and final integration
   remain with the integrating executor.
+- Owner approved this plan with remote Windows stress testing at the test-ready
+  checkpoint and no incremental/warm bakes on the MacBook.
 - Do not bump `SHADOWMASK_ATLAS_STAGE_VERSION` or
   `lightmap_layer::LAYER_FORMAT_VERSION`; graph discovery is not a byte or layer
   computation change.

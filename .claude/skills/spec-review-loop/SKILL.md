@@ -4,8 +4,8 @@ description: >
   Runs the full review loop over a draft spec: /review-draft-spec, open-question
   resolution, /review-implementability, conditional re-reviews, then a
   context/lib audit for content the spec makes stale. Applies findings that hold
-  up; surfaces blockers. Run in a session grounded by /spec-session, after a
-  draft exists.
+  up; surfaces blockers. Run after a draft exists, in a session that has read
+  /draft-plan's revising rules.
 disable-model-invocation: true
 argument-hint: "[plan-name]"
 ---
@@ -14,7 +14,7 @@ argument-hint: "[plan-name]"
 
 Drive one draft spec from "written" to "reviewed clean, library current." Blockers stop the loop and go to the owner.
 
-Precondition: `/spec-session` ran this session. If it did not, run it first — the loop applies findings, and applying them without the habits reintroduces what the reviewers caught.
+Precondition: `/draft-plan`'s *Revising* rules were read this session. If not, read them first — the loop applies findings, and applying them without those habits reintroduces what the reviewers caught.
 
 Argument is the plan folder name. Absent, list `context/plans/drafts/` and ask which.
 

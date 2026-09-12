@@ -3,8 +3,8 @@ name: draft-plan-schema-first
 description: >
   Experimental variant of draft-plan. Drafts feature or epic specs for PostRetro,
   authoring the structured tables before any prose. A session may produce zero,
-  one, or several plans depending on scope. Use when starting new planning work
-  and testing schema-first authoring order. Does not promote to ready/ — that is
+  one, or several plans depending on scope. Use after /draft-session routes
+  work to a spec, when testing schema-first authoring order. Does not promote to ready/ — that is
   a separate step after review.
 ---
 
@@ -22,13 +22,9 @@ A drafting session may produce 0, 1, or N plans. Scope often shifts during plann
 
 ### 1. Understand the goal
 
-Read the user's description. Ask focused questions when scope is unclear — don't over-interrogate.
+Start from the `/draft-session` handoff: problem, outcome, verified facts, decisions, proof, and the route. If none exists, run `/draft-session` first — routing is its job, not this skill's. Ask a focused question only where the handoff leaves the Goal or "done" unwritable.
 
-Pin down:
-- What outcome matters
-- What constraints apply
-- What subsystems are touched
-- What "done" looks like — concrete, verifiable
+Pin down what subsystems are touched and what constraints apply. The spec's consumer is `/orchestrate`: task agents receive the Goal, their own paragraph, the AC list, and the Invariants table — nothing else. Write knowing that.
 
 ### 2. Research
 
@@ -161,6 +157,8 @@ Unresolved items, risks, alternatives considered, if applicable (only use sectio
 
 **Task-paragraph contract.** Each task paragraph is an execution contract: `/orchestrate` hands a task agent only its own paragraph, the plan's Goal, the AC list, and the Invariants table when present — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list and Invariants table are the only shared channels across tasks.
 
+**State a fact once.** A fact written in two places is a defect waiting for a fix to land in one of them — the largest single source of new defects across review rounds. A task can *reference* an AC or an Invariants row instead of restating it; the agent receives both. Restate only where both sides of an interface genuinely need it. Never write a count in prose: "the three call sites" is wrong the moment a fourth appears, while the enumeration after it stays right.
+
 **Split-before-extend rule.** When the plan adds functionality to a source file already past ~800 lines, split it first — a behavior-preserving task that breaks the file along seams you already see. Sequence the split right before the task that extends that file; don't drag an off-critical-path file forward. Splitting and extending in one task buries a refactor inside a feature diff — keep them separate.
 
 ### 5. Acceptance criteria
@@ -243,9 +241,20 @@ Before committing, walk the spec:
 
 All directions must close. Gaps signal that something was assumed without being written down.
 
+### 7b. Revising
+
+Structural edits decay the rest of the spec silently — the diff never touches what they falsify.
+
+- **Delete the pivot.** No "an early draft," "was thought to," "no longer." The implementer never saw the old version; state the current design. History goes in `research.md`.
+- **Sweep every reference to a corrected diagnosis** — summary bullets, scope lists, task titles, prose. A survivor points the reader at a defect that no longer exists.
+- **Review artifacts contain instructions, not decisions.** "Pin whether X happens," pasted into the spec, is a question addressed to the implementer. Convert it to a decided outcome or move it to Open questions with an owner.
+- **Re-read Invariants and Sequencing after any structural edit.** Moving a field between tasks falsifies a concurrency claim; adding a case falsifies an invariant true when written.
+- **Newest acceptance criteria have the fewest tests.** Criteria added after the task list was written are delivered by nothing. A clause bolted onto an existing criterion is worse: coverage looks done and no row reaches the new arm. Every time you extend an AC, name the row that executes the extension, or write it.
+- **Read the diff, not the result.** Amend-only histories destroy the per-round diff, so snapshot before each round and diff against the snapshot. An edit that drops a trailing line reads fine everywhere you think to look.
+
 ### 8. Commit
 
-Stage and commit the plan folder (`index.md` + optional `research.md`).
+Stage and commit the plan folder (`index.md` + optional `research.md`). Amend as the spec iterates in-session; one commit per spec, not one per edit.
 
 **Do not update `context/lib/` during drafting.** Durable capture happens at promotion — after review. Reviewer agents often reshape the spec; library updates should land once, against the final shape.
 

@@ -4,8 +4,8 @@ description: >
   Drafts a problem brief for PostRetro — the lightweight spec form for a
   repo-aware executor. Records the problem, decisions, acceptance criteria,
   and a non-binding path. Chooses compact or resumable execution before prose
-  grows around the work. Use instead of /draft-plan when trialing the brief
-  process. Promotion follows /validate-plan and owner sign-off.
+  grows around the work. Use after /draft-session routes work to a brief.
+  Promotion follows /validate-plan and owner sign-off.
 argument-hint: "[feature-name]"
 ---
 
@@ -13,7 +13,7 @@ argument-hint: "[feature-name]"
 
 Explore scope, choose execution weight, write a brief. Output lives in `context/plans/drafts/<feature-name>/index.md`. The line under the title identifies the document and its execution mode.
 
-A brief is written for a reader with the repo. It records judgment and leaves task decomposition to build time. Target 40–90 lines for compact work, 60–120 for resumable work. Longer material is derivation (`research.md`) or task decomposition (`plan.md`).
+A brief is written for a reader with the repo. One integrating executor owns the whole brief, `research.md`, and the source tree; it writes the task split and may delegate bounded slices with the same context. Write for that reader: nothing restated, nothing pre-chewed. The brief records judgment and leaves task decomposition to build time. Target 40–90 lines for compact work, 60–120 for resumable work. Longer material is derivation (`research.md`) or task decomposition (`plan.md`).
 
 ## Current plans
 
@@ -30,15 +30,14 @@ A brief is written for a reader with the repo. It records judgment and leaves ta
 
 ### 1. Frame and size
 
-Read the user's description. Ask focused questions when the problem is unclear — don't over-interrogate. Pin down what was observed and by whom, the cause, and what is true when the work is done.
+Start from the `/draft-session` handoff: problem, outcome, verified facts, decisions, proof, and the route. If none exists, run `/draft-session` first — routing is its job, not this skill's. Ask a focused question only where the handoff leaves the Problem paragraph unwritable.
 
-Decide whether the work needs a brief before writing one:
+Choose the execution mode:
 
-| Shape | Use when |
+| Mode | Use when |
 |---|---|
-| Task | Local, reversible work with no decision contract worth retaining. Report that finding; do not create a brief. |
-| Compact brief | One coherent outcome can be built in one sustained session. This is the default. |
-| Resumable brief | Work likely spans sessions, has ordered phases, needs durable handoffs, waits on later manual proof, or has an irreversible migration. |
+| Compact | One coherent outcome can be built in one sustained session. This is the default. |
+| Resumable | Work likely spans sessions, has ordered phases, needs durable handoffs, waits on later manual proof, or has an irreversible migration. |
 
 Public APIs, wire changes, and cross-subsystem behavior still require complete Decisions, Acceptance, and boundary sections. They do not force resumable mode.
 
@@ -50,7 +49,7 @@ Read `context/lib/context_style_guide.md` first. All brief prose follows it.
 
 Route through `context/lib/index.md` to the docs governing the subsystem. Grep `context/plans/done/` for the *concepts* the brief touches — ownership, authority, mechanism-vs-policy, layering — not just the subsystem name. Cross-epic commitments are the ones a subsystem-local drafter misses.
 
-Use subagents only for bounded, independent research questions. Target 80% confidence. Stop when you can write Decisions with every premise grounded.
+The handoff's verified facts are the floor, not the ceiling. Use subagents only for bounded, independent research questions — one claim, one agent, answered with the symbol. Stop when you can write Decisions with every premise grounded and the Problem's basis confirmed, not just reported.
 
 Findings that inform but don't decide go to a sibling `research.md`. Lifecycle diagrams go there too; keep one in the brief only when it is the clearest statement of a decision.
 
@@ -62,10 +61,11 @@ Findings that inform but don't decide go to a sibling `research.md`. Lifecycle d
 Brief · <compact|resumable> · Epic <N> (omit if none) · reads: `context/lib/<doc>.md` §x · read at <short-sha>
 
 ## Problem
-One paragraph. What was observed and by whom — player, modder, developer,
-a review finding, or an anticipated need; say which. The cause in one
-sentence, not a symptom of it. Then what is true when this is done, written
-as behavior.
+One paragraph. Who raised it — player, modder, developer, a review finding
+— and its basis: an observed defect, a requested capability, an anticipated
+need, or an experiment. A defect gets its cause in one sentence, not a
+symptom of it; a capability gets the behavior it adds and who uses it. Then
+what is true when this is done, written as behavior.
 
 ## Decisions
 - One bullet per decision: what, and why. Cite the commitment it touches
@@ -92,8 +92,8 @@ functions do not appear here.
 
 ### Automated
 - [ ] …
-### Manual-visual
-- [ ] …
+### Manual
+- [ ] … (visual, playtest, audio, network, runtime diagnostics)
 
 ## Path
 Non-binding. Research distilled to what would change the executor's plan.
@@ -112,7 +112,9 @@ Non-binding. Research distilled to what would change the executor's plan.
 
 **Scripting surface.** A modder-facing API — an SDK function, a descriptor field, a script event — is designed by the owner, and its shape is a Decision: once a mod depends on it, it is a one-way door. The brief carries it as a code example under `### Scripting surface` inside Decisions, written the way a modder would write it. The example is normative for the surface — names, argument order, defaults, return shape, the calling pattern — and says nothing about the engine behind it; SDK internals and Rust do not appear. It is also a fixture: one Acceptance row runs it, as a test or a `content/dev` script, so the example cannot drift from what ships. A TypeScript example implies its Luau mirror, and the Boundary inventory says whether both ship. Path may sketch an alternative shape for the owner to weigh; Path never carries the one that ships.
 
-**Size smell** is on the Problem paragraph, not the document. Two causes in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor. Required boundary and wire tables do not count toward the target.
+**Argue in `research.md`; conclude in the brief.** A Decisions bullet that runs past three sentences is still arguing. State a fact once — a fact in two places is a defect waiting for a fix to land in one of them — and never write a count in prose; the enumeration stays right when the count goes stale.
+
+**Size smell** is on the Problem paragraph, not the document. Two problems in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor. Required boundary and wire tables do not count toward the target.
 
 **Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
 
@@ -121,12 +123,19 @@ Non-binding. Research distilled to what would change the executor's plan.
 ### 4. Cross-check
 
 - Every Acceptance row: which Decision or Problem sentence makes it necessary? None → it is aspirational; drop it or add the decision.
-- Every Acceptance row: could it pass on a build that leaves the Problem's defect in place? Yes → it is measuring something adjacent; reword it, or label it a regression guard.
+- Every Acceptance row: could it pass on a build that leaves the Problem unsolved — the defect present, the capability absent? Yes → it is measuring something adjacent; reword it, or label it a regression guard.
 - Every Decision: which Acceptance row would fail if it were violated? None → it is either a Path hint wearing a decision's clothes, or an AC is missing.
 - Every Decision premise about the code: read this session, cited by symbol.
 - Every "not doing": would a reader assume this brief owed it? If so, it carries a warrant.
 - The Scripting surface example, if present: an Acceptance row runs it, and every name in it either resolves against the SDK or is one this brief adds.
 - Open questions: each is marked **blocks build** or **delegated**. No unmarked entries.
+
+### 4b. Revising
+
+- A resolved question becomes one Decisions bullet and leaves. No history: not "was open," not "we settled on." The executor never saw the question.
+- A review finding lands as an Acceptance row, a `research.md` pin row, or a Decisions edit the owner makes in their own words. Reviewer prose never lands in Decisions — that parenthetical is how a brief turns back into a spec.
+- Re-read Decisions after any Problem edit. A reframed basis orphans a decision that answered the old one, and the diff never touches the orphan.
+- Read the diff, not the result. Amend-only histories destroy the per-round diff, so snapshot before each round and diff against the snapshot. An edit that drops a trailing line reads fine everywhere you think to look.
 
 ### 5. Commit
 
@@ -140,7 +149,7 @@ Do not update `context/lib/` during drafting. Durable capture happens at promoti
 
 Run `/validate-plan <name>`. It reads the brief the same way it reads a spec; the six questions apply unchanged.
 
-Surface the verdict. Never act on *Reshape*, *Not a spec*, or *Under-scoped* unilaterally — those are owner decisions.
+Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a spec*, or *Under-scoped* unilaterally — those are owner decisions.
 
 ### 7. Report
 

@@ -878,6 +878,7 @@ fn run_after_parsing(
         lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
         uncompressed_irradiance: args.uncompressed_irradiance,
+        direction_texel_scale: args.direction_texel_scale,
     };
     let final_lightmap_density;
     let lightmap_bake_output = if let Some(ref cache) = stage_cache {
@@ -892,8 +893,13 @@ fn run_after_parsing(
         // atlas area, so there is no density-coarsening retry — prepare once at
         // the fixed density.
         let density = lightmap_config.lightmap_density;
-        let prepared = lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
-            .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
+        let prepared = lightmap_bake::prepare_atlas(
+            &mut geo_result,
+            &static_baked_lights,
+            density,
+            &map_data.lightmap_scale_regions,
+        )
+        .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
         final_lightmap_density = density;
 
         // Mirror `bake_lightmap`'s placeholder branch: with no static lights or no
@@ -954,6 +960,7 @@ fn run_after_parsing(
                 &layer_input_hashes,
                 density,
                 lightmap_config.uncompressed_irradiance,
+                lightmap_config.direction_texel_scale,
             );
             let section_key = cache::CacheKey::new(
                 "lightmap_section",
@@ -1026,8 +1033,11 @@ fn run_after_parsing(
                         prepared.atlas_height,
                     );
                     composite.dilate();
-                    let section =
-                        composite.encode_section(density, lightmap_config.uncompressed_irradiance);
+                    let section = composite.encode_section(
+                        density,
+                        lightmap_config.uncompressed_irradiance,
+                        lightmap_config.direction_texel_scale,
+                    );
                     cache.put(&section_key, &section.to_bytes());
                     section
                 }
@@ -1054,6 +1064,7 @@ fn run_after_parsing(
             primitives: &bvh_primitives,
             geometry: &mut geo_result,
             lights: &static_baked_lights,
+            scale_regions: &map_data.lightmap_scale_regions,
         };
         lightmap_bake::bake_lightmap_controlled(
             &mut lm_ctx,
@@ -1061,6 +1072,7 @@ fn run_after_parsing(
                 lightmap_density: density,
                 area_sample_count: args.soft_shadow_samples,
                 uncompressed_irradiance: args.uncompressed_irradiance,
+                direction_texel_scale: args.direction_texel_scale,
             },
             &lightmap_control,
         )

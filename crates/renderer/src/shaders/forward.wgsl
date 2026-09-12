@@ -365,8 +365,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
-// The baker stores octahedral-encoded directions in the rg channels of an
-// Rgba8Unorm texture; sampling returns 0..1, remapped to -1..1 here.
+// Current bakes store octahedral directions in Rg8Unorm; legacy Rgba8Unorm
+// input remains accepted. Both store components in rg, sampled as 0..1 here.
 fn decode_lightmap_direction(enc: vec4<f32>) -> vec3<f32> {
     let ox = enc.r * 2.0 - 1.0;
     let oy = enc.g * 2.0 - 1.0;

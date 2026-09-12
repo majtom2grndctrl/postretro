@@ -1243,6 +1243,7 @@ mod tests {
             dir_height: 2048,
             dir_texel_density: 1.0,
             direction: vec![0u8; 4096 * 2048 * 4],
+            direction_format: postretro_level_format::lightmap::DIRECTION_FORMAT_OCT_RGBA8,
             mode: LightmapMode::Shadowed,
         };
         assert_eq!(

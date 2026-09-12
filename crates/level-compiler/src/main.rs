@@ -694,6 +694,9 @@ pub struct Args {
     /// on disk and in VRAM); the uncompressed form is larger and exists for
     /// debugging and quality comparison against the compressed path.
     uncompressed_irradiance: bool,
+    /// Per-axis reduction for the static dominant-direction atlas. Must be a
+    /// positive power of two no larger than the minimum atlas dimension.
+    direction_texel_scale: u32,
     /// Maximum concurrent governed bake work items.
     jobs: usize,
     /// Interactive reporter selection policy.
@@ -753,6 +756,7 @@ fn help_text() -> String {
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
+         --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
          --sh-analyze-out <PATH>    Destination for the SH analysis JSON (default: <output>.sh-analysis.json when --sh-analyze is set)\n    \
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
@@ -769,6 +773,8 @@ fn help_text() -> String {
         delta_working_set_max =
             size_options::format_size_for_help(delta_sections::DEFAULT_MAX_WORKING_SET_BYTES),
         jobs = default_jobs(),
+        direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE,
+        direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
     )
 }
 
@@ -792,6 +798,7 @@ where
     let mut release = false;
     let mut quality_flag_supplied = false;
     let mut uncompressed_irradiance = false;
+    let mut direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE;
     let mut jobs = default_jobs();
     let mut tui = TuiPreference::Auto;
     let mut sh_analyze = false;
@@ -950,6 +957,28 @@ where
             "--uncompressed-irradiance" => {
                 uncompressed_irradiance = true;
             }
+            "--direction-texel-scale" => {
+                quality_flag_supplied = true;
+                let scale_str = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--direction-texel-scale requires a positive power of two")
+                })?;
+                let parsed: u32 = scale_str.parse().map_err(|_| {
+                    anyhow::anyhow!(
+                        "--direction-texel-scale must be a positive power of two no larger than {}",
+                        lightmap_bake::MIN_ATLAS_DIMENSION
+                    )
+                })?;
+                if parsed == 0
+                    || !parsed.is_power_of_two()
+                    || parsed > lightmap_bake::MIN_ATLAS_DIMENSION
+                {
+                    anyhow::bail!(
+                        "--direction-texel-scale must be a positive power of two no larger than {}",
+                        lightmap_bake::MIN_ATLAS_DIMENSION
+                    );
+                }
+                direction_texel_scale = parsed;
+            }
             "--sh-analyze" => {
                 sh_analyze = true;
             }
@@ -1016,6 +1045,7 @@ where
         release,
         quality_flag_supplied,
         uncompressed_irradiance,
+        direction_texel_scale,
         jobs,
         tui,
         sh_analyze,
@@ -2040,6 +2070,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_direction_texel_scale_defaults_and_rejects_invalid_values() {
+        let default = parse_args_from(vec!["input.map".to_string()].into_iter()).unwrap();
+        assert_eq!(
+            default.direction_texel_scale,
+            lightmap_bake::DIRECTION_TEXEL_SCALE
+        );
+
+        let unit_scale = parse_args_from(
+            vec![
+                "input.map".to_string(),
+                "--direction-texel-scale".to_string(),
+                "1".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(unit_scale.direction_texel_scale, 1);
+
+        for invalid in ["0", "3", "128"] {
+            let result = parse_args_from(
+                vec![
+                    "input.map".to_string(),
+                    "--direction-texel-scale".to_string(),
+                    invalid.to_string(),
+                ]
+                .into_iter(),
+            );
+            assert!(
+                result.is_err(),
+                "{invalid} must not produce zero or partial direction dimensions"
+            );
+        }
+    }
+
+    #[test]
     fn parse_args_probe_spacing() {
         let args = vec![
             "input.map".to_string(),
@@ -2175,6 +2240,7 @@ mod tests {
             &["--sh-density-fidelity", "0.5"],
             &["--soft-shadow-samples", "8"],
             &["--sdf-voxel-size", "0.25"],
+            &["--direction-texel-scale", "4"],
             &["--release"],
             &["--no-cache"],
         ];

@@ -298,3 +298,19 @@ not a new algorithm. The renderer already views the shadowmask as `D2Array` and 
 `LayerMajor`; only the layer count and the per-light slot decode change. `block_count ==
 1` must reproduce the pre-change section and behavior (AC 7) so the common case is
 unaffected.
+
+## Re-anchor before building
+
+`lighting-scale--shadowmask-cold-working-set` (promoted to `ready/`) restructures the
+assignment seam this plan targets. It deletes the per-(light, texel) membership record and
+derives the overlap graph analytically, so the adjacency this plan consumes arrives on a
+cheaper footing — but `assign_channels_with_drops` and the membership type its Task 2 slots
+into both change shape.
+
+This plan's own Sequencing note already flags a collision with restructures of that seam
+and asks for deliberate ordering. Re-anchor against the landed restructure before building.
+
+One foreclosure to weigh: the deleted record is the only structure where per-texel
+visibility values and cross-light adjacency coexist. Intensity-ordered retention is
+unaffected — it reads light parameters only — but a contribution-weighted or
+coverage-weighted retention priority would have to re-materialize that term.

@@ -9,6 +9,7 @@ mod entity;
 mod frontend;
 mod g2_fields;
 mod health;
+mod knockback;
 mod maps;
 mod mesh;
 mod movement_core;

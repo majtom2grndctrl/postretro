@@ -98,6 +98,7 @@ fn run_ordered_switch_pair(refuse_final_for_reload: bool) -> (usize, Vec<Current
     let slot_c = host_registry.spawn(Transform::default());
     let test_weapon = || {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -587,6 +588,93 @@ fn install_armed_reconcile_pawn(
     h.prediction.arm(h.host_pawn_network_id, pawn);
     h.client_pawn = Some(pawn);
     pawn
+}
+
+// A server-only blast can arrive while the client has already predicted commands.
+// Reconciliation must restore the protected shove and replay movement without
+// applying the original combat event a second time.
+#[test]
+fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
+    let mut h = LoopbackHarness::new(light_link());
+    let baseline_transform = Transform {
+        position: Vec3::new(0.0, 10.0, 0.0),
+        ..Transform::default()
+    };
+    let mut baseline_movement = player_component();
+    baseline_movement.set_grounded(false);
+    let pawn = install_armed_reconcile_pawn(&mut h, baseline_transform, baseline_movement.clone());
+    let command = idle_command();
+    let _ = h.prediction.next_client_tick();
+    let mut ticks = Vec::new();
+    for _ in 0..3 {
+        let tick = h.prediction.next_client_tick();
+        let input = super::wire_convert::sim_command_to_input(&command, tick, 0.0);
+        let prev = (
+            *h.client_registry.get_component::<Transform>(pawn).unwrap(),
+            h.client_registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone(),
+        );
+        let (transform, movement) = h
+            .prediction
+            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .expect("armed pawn predicts pending movement");
+        h.client_registry.set_component(pawn, transform).unwrap();
+        h.client_registry.set_component(pawn, movement).unwrap();
+        ticks.push(tick);
+    }
+    assert!(baseline_movement.add_knockback(Vec3::new(12.0, 5.0, 0.0)));
+    let wire = movement_state_to_wire(&baseline_movement, 0.0);
+    let mut expected_transform = baseline_transform;
+    let mut expected_movement = baseline_movement.clone();
+    for _ in &ticks {
+        let replayed = super::prediction::replay(
+            expected_transform,
+            expected_movement,
+            command.movement.clone(),
+            &h.world,
+            GRAVITY,
+            DT,
+        );
+        expected_transform = replayed.0;
+        expected_movement = replayed.1;
+    }
+    assert!(expected_transform.position.x > baseline_transform.position.x + 0.1);
+    assert!(expected_movement.knockback_velocity.x > 0.0);
+    // Reapplying the same authoritative baseline must produce the same tail,
+    // rather than accumulating an impulse on the latest predicted velocity.
+    for _ in 0..2 {
+        assert!(
+            reconcile_local_pawn(
+                &mut h.client_registry,
+                &mut h.prediction,
+                pawn,
+                baseline_transform,
+                Some(&wire),
+                Some(ticks[0] - 1),
+                &h.world,
+                GRAVITY,
+                DT,
+            )
+            .is_some()
+        );
+        let actual = h
+            .client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap();
+        let position = h
+            .client_registry
+            .get_component::<Transform>(pawn)
+            .unwrap()
+            .position;
+        assert!((position - expected_transform.position).length() < 1.0e-4);
+        assert!((actual.velocity - expected_movement.velocity).length() < 1.0e-4);
+        assert!(
+            (actual.knockback_velocity - expected_movement.knockback_velocity).length() < 1.0e-4
+        );
+    }
+    assert!(h.bystanders_alive(), "replay remains movement-only");
 }
 
 fn sliding_component(floor_normal: Vec3) -> PlayerMovementComponent {

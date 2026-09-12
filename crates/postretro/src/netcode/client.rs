@@ -2411,6 +2411,7 @@ mod tests {
         aim_pitch: f32,
     ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            knockback_velocity: [0.0; 3],
             velocity,
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,

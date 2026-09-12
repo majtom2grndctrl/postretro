@@ -42,6 +42,7 @@
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
 - **Dynamic weapon accuracy / spread / bloom / recoil-as-accuracy-loss / movement inaccuracy / crosshair spread ring** → `entity_model.md` §Components (Weapon vocabulary — Dynamic accuracy) · `networking.md` §engine-randomness carve-out
 - **Splash / AoE / area damage / blast radius / distance falloff / rocket explosion** → `entity_model.md` §Components (Splash / area effects)
+- **Knockback / hit impulses / rocket jumping** → `entity_model.md` §Components (Knockback) · `movement.md` §6 · `networking.md` §Game-logic-owned apply invariant
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)

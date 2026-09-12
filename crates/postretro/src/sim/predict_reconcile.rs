@@ -417,6 +417,7 @@ fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
 
 fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
+        knockback: Default::default(),
         capsule: CapsuleParams {
             radius: 0.4,
             half_height: 0.8,

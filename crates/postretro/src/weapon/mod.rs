@@ -10,7 +10,8 @@ use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, Weapo
 use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
-    FireMode, ProjectileDescriptor, ResolutionMode, SplashDescriptor, WeaponPlacementDescriptor,
+    FireMode, KnockbackDescriptor, ProjectileDescriptor, ResolutionMode, SplashDescriptor,
+    WeaponPlacementDescriptor,
 };
 
 use crate::collision::{CollisionWorld, cast_ray, cast_sphere_exact};
@@ -271,6 +272,7 @@ pub(crate) struct ProjectileLaunch {
     pub(crate) range: f32,
     pub(crate) lifetime: f32,
     pub(crate) damage: f32,
+    pub(crate) knockback_impulse: Vec3,
     pub(crate) credit_source: String,
     pub(crate) descriptor: ProjectileDescriptor,
     /// Impact-composed radial damage snapshot, independent from projectile
@@ -439,6 +441,7 @@ pub(crate) fn tick_resolved_component(
 ) -> WeaponFireEvents {
     let stats = weapon.effective();
     let damage = stats.damage;
+    let knockback = stats.knockback;
     let pellet_count = stats.pellet_count;
     let base_spread_degrees = stats.spread_degrees;
     let range = stats.range;
@@ -487,6 +490,7 @@ pub(crate) fn tick_resolved_component(
                 hit_zone_store,
                 anim_time,
                 damage,
+                knockback.as_ref(),
                 pellet_count,
                 spread_radians,
                 range,
@@ -550,6 +554,7 @@ fn fire_hitscan(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     damage: f32,
+    knockback: Option<&KnockbackDescriptor>,
     pellet_count: u32,
     spread_radians: f32,
     range: f32,
@@ -583,7 +588,7 @@ fn fire_hitscan(
                     pellet_rng.next_f32(),
                     pellet_rng.next_f32(),
                 );
-                let impact = match resolve_nearest_hit(NearestHitQuery {
+                let mut impact = match resolve_nearest_hit(NearestHitQuery {
                     owner_pawn,
                     origin,
                     direction: pellet_direction,
@@ -599,10 +604,22 @@ fn fire_hitscan(
                         normal: world.normal,
                         target: None,
                         zone: None,
-                        outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+                        outcome: ActivationOutcome::Hit(DamagePayload {
+                            amount: damage,
+                            impulse: glam::Vec3::ZERO,
+                        }),
                     },
                     None => continue,
                 };
+                if let ActivationOutcome::Hit(payload) = &mut impact.outcome {
+                    payload.impulse = knockback.map_or(Vec3::ZERO, |config| {
+                        postretro_foundation::knockback_impulse(
+                            config.speed,
+                            config.upward_bias,
+                            pellet_direction,
+                        )
+                    });
+                }
                 events.impacts.push(impact);
             }
         }
@@ -621,6 +638,13 @@ fn fire_hitscan(
                 range,
                 lifetime: projectile.lifetime_ms / 1000.0,
                 damage,
+                knockback_impulse: knockback.map_or(Vec3::ZERO, |config| {
+                    postretro_foundation::knockback_impulse(
+                        config.speed,
+                        config.upward_bias,
+                        direction,
+                    )
+                }),
                 credit_source: credit_source.to_string(),
                 descriptor: projectile.clone(),
                 splash: splash.cloned(),
@@ -662,7 +686,17 @@ pub(crate) fn resolve_client_fire(
     // roll this back: the next shell must use the next fan.
     let shell_counter = weapon.shells_fired;
     weapon.shells_fired = weapon.shells_fired.wrapping_add(1);
-    let (cooldown_ms, pellet_count, range, resolution, projectile, splash, damage, credit_source) = {
+    let (
+        cooldown_ms,
+        pellet_count,
+        range,
+        resolution,
+        projectile,
+        splash,
+        damage,
+        knockback,
+        credit_source,
+    ) = {
         let stats = weapon.effective();
         (
             stats.cooldown_ms,
@@ -672,6 +706,7 @@ pub(crate) fn resolve_client_fire(
             stats.projectile.cloned(),
             stats.splash.cloned(),
             stats.damage,
+            stats.knockback,
             stats.credit_source.to_string(),
         )
     };
@@ -740,6 +775,13 @@ pub(crate) fn resolve_client_fire(
             (
                 Vec::new(),
                 Some(ProjectileLaunch {
+                    knockback_impulse: knockback.map_or(Vec3::ZERO, |push| {
+                        postretro_foundation::knockback_impulse(
+                            push.speed,
+                            push.upward_bias,
+                            direction,
+                        )
+                    }),
                     origin,
                     direction,
                     speed: projectile.speed,
@@ -1170,7 +1212,10 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
         normal: entity.normal,
         target: Some(entity.target),
         zone: entity.zone,
-        outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+        outcome: ActivationOutcome::Hit(DamagePayload {
+            amount: damage,
+            impulse: glam::Vec3::ZERO,
+        }),
     }
 }
 
@@ -1225,6 +1270,7 @@ pub(crate) mod tests {
 
     pub(crate) fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
             damage: 25.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1272,6 +1318,7 @@ pub(crate) mod tests {
 
     fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
         WeaponDescriptor {
+            knockback: None,
             damage: 25.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1881,7 +1928,41 @@ pub(crate) mod tests {
         assert_vec3_approx(impact.normal, Vec3::new(0.0, 0.0, 1.0));
         assert_eq!(
             impact.outcome,
-            ActivationOutcome::Hit(DamagePayload { amount: 25.0 })
+            ActivationOutcome::Hit(DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO
+            })
+        );
+    }
+
+    #[test]
+    fn hitscan_knockback_uses_travel_direction_and_authored_upward_bias() {
+        let mut registry = EntityRegistry::new();
+        let mut component = weapon_component(FireMode::Semi, 100.0);
+        component.damage = 0.0;
+        component.knockback = Some(KnockbackDescriptor {
+            speed: 12.0,
+            upward_bias: 0.5,
+        });
+        let weapon_id = spawn_weapon(&mut registry, component);
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &wall_world(),
+            1.0 / 60.0,
+        );
+        let ActivationOutcome::Hit(payload) = only_impact(&events).outcome else {
+            panic!("hit expected")
+        };
+        assert!(payload.amount.abs() < EPSILON);
+        assert_vec3_approx(
+            payload.impulse,
+            Vec3::new(0.0, 1.0, -1.0).normalize() * 12.0,
         );
     }
 
@@ -2354,7 +2435,10 @@ pub(crate) mod tests {
         assert_vec3_approx(impact.normal, Vec3::new(0.0, 0.0, 1.0));
         assert_eq!(
             impact.outcome,
-            ActivationOutcome::Hit(DamagePayload { amount: 25.0 })
+            ActivationOutcome::Hit(DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO
+            })
         );
     }
 
@@ -3001,6 +3085,7 @@ pub(crate) mod tests {
                 .set_component(
                     projectile,
                     ProjectileComponent {
+                        knockback_impulse: [0.0; 3],
                         direction: Vec3::NEG_Z.to_array(),
                         speed: 10.0,
                         radius: 0.1,

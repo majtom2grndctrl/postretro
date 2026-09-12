@@ -64,6 +64,7 @@ pub(crate) fn dispatch(
 
     let payload = DamagePayload {
         amount: args.amount,
+        impulse: glam::Vec3::ZERO,
     };
 
     for &id in targets {

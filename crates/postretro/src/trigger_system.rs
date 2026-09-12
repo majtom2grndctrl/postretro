@@ -726,6 +726,7 @@ mod tests {
 
     fn movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -1595,6 +1596,7 @@ mod tests {
             .set_tags(enemy, vec!["closet_enemies".into()])
             .expect("tag closet enemy");
         let graph = BehaviorGraphDescriptor {
+            knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
                 activities: std::collections::BTreeMap::from([(

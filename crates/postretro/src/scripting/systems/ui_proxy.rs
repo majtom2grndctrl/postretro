@@ -325,6 +325,7 @@ mod tests {
     /// to be sane for this test's purpose.
     fn movement_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.35,
                 half_height: 0.9,
@@ -405,6 +406,7 @@ mod tests {
 
     fn spawn_ammo_weapon(ctx: &ScriptCtx, pawn: EntityId) -> EntityId {
         let descriptor = WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -1054,6 +1056,7 @@ mod tests {
                 .set_component(
                     id,
                     WeaponComponent::from_descriptor(&WeaponDescriptor {
+                        knockback: None,
                         damage: 10.0,
                         pellet_count: 1,
                         spread_degrees: 0.0,

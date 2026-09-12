@@ -97,12 +97,14 @@ pub(crate) struct SlideResult {
 /// fall speed in from the previous tick (0 when freshly grounded). `gravity` is
 /// the world gravity scalar (negative — points down), supplied by the caller
 /// (matching the player substrate, which takes gravity from the script ctx).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collide_and_slide(
     world: &CollisionWorld,
     capsule: &AgentCapsule,
     position: Vec3,
     desired_horizontal: Vec3,
     vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
     gravity: f32,
     dt: f32,
 ) -> SlideResult {
@@ -125,16 +127,18 @@ pub(crate) fn collide_and_slide(
     // step beneath the lifted position. Pure walls skip the lift.
     let horiz = Vec3::new(velocity.x, 0.0, velocity.z);
     let horiz_speed = horiz.length();
-    if let Some(lifted) = step_up_lift(
-        world,
-        &parry,
-        capsule,
-        current_pos,
-        horiz,
-        horiz_speed,
-        remaining_dt,
-    ) {
-        current_pos = lifted;
+    if velocity.y <= 0.0 {
+        if let Some(lifted) = step_up_lift(
+            world,
+            &parry,
+            capsule,
+            current_pos,
+            horiz,
+            horiz_speed,
+            remaining_dt,
+        ) {
+            current_pos = lifted;
+        }
     }
 
     // Iterative project-and-advance slide.
@@ -176,6 +180,7 @@ pub(crate) fn collide_and_slide(
                 // Project velocity onto the contact plane (slide along surface).
                 let v_dot_n = velocity.dot(normal);
                 velocity -= normal * v_dot_n;
+                crate::movement::knockback::project(knockback_velocity, normal);
 
                 if toi <= 1e-6 {
                     // Resting contact: nudge off the surface (zero-dt) so the
@@ -205,6 +210,7 @@ pub(crate) fn collide_and_slide(
     // grounded). Wall-projected residual +Y is also cleared when grounded.
     if grounded {
         velocity.y = 0.0;
+        knockback_velocity.y = 0.0;
     }
 
     SlideResult {
@@ -428,7 +434,17 @@ mod tests {
 
         let mut advanced_z = false;
         for _ in 0..240 {
-            let result = collide_and_slide(&world, &capsule, pos, desired, vertical, gravity, dt);
+            let mut knockback = Vec3::ZERO;
+            let result = collide_and_slide(
+                &world,
+                &capsule,
+                pos,
+                desired,
+                vertical,
+                &mut knockback,
+                gravity,
+                dt,
+            );
             pos = result.position;
             vertical = result.velocity.y;
 
@@ -474,8 +490,17 @@ mod tests {
         let mut grounded = false;
 
         for _ in 0..120 {
-            let result =
-                collide_and_slide(&world, &capsule, pos, Vec3::ZERO, vertical, gravity, dt);
+            let mut knockback = Vec3::ZERO;
+            let result = collide_and_slide(
+                &world,
+                &capsule,
+                pos,
+                Vec3::ZERO,
+                vertical,
+                &mut knockback,
+                gravity,
+                dt,
+            );
             pos = result.position;
             vertical = result.velocity.y;
             grounded = result.grounded;

@@ -87,7 +87,7 @@ pub use postretro_entities::data_descriptors::{
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{
-    behavior::*, combat::*, manifest::*, movement::*,
+    behavior::*, combat::*, knockback::*, manifest::*, movement::*,
 };
 
 pub use js::entity::*;

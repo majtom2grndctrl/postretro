@@ -118,6 +118,13 @@ pub fn entity_descriptor_from_lua(
                         validate_optional_projectile_shapes_lua(weapon_table)?;
                     }
                     let json = conv::lua_to_json(raw).map_err(lua_err)?;
+                    validate_optional_knockback_object(&json, "components.weapon.knockback")?;
+                    if let Some(splash) = json.get("splash") {
+                        validate_optional_knockback_object(
+                            splash,
+                            "components.weapon.splash.knockback",
+                        )?;
+                    }
                     let descriptor: WeaponDescriptor =
                         serde_json::from_value(json).map_err(|e| {
                             DescriptorError::InvalidShape {
@@ -171,6 +178,7 @@ pub fn entity_descriptor_from_lua(
                 if !matches!(raw, LuaValue::Nil) {
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
                     normalize_behavior_selectors(&mut json)?;
+                    validate_optional_knockback_object(&json, "components.behavior.knockback")?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.behavior` invalid: {e}"),

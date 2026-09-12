@@ -211,7 +211,24 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
+    let knockback = if obj.contains_key("knockback").map_err(js_err)? {
+        let raw: JsValue = obj.get("knockback").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            KnockbackResponse::default()
+        } else {
+            let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+            validate_knockback_object(&json, "movement.knockback")?;
+            serde_json::from_value(json).map_err(|e| DescriptorError::InvalidShape {
+                reason: format!("`movement.knockback` invalid: {e}"),
+            })?
+        }
+    } else {
+        KnockbackResponse::default()
+    };
+    knockback.validate("movement.knockback")?;
+
     Ok(PlayerMovementDescriptor {
+        knockback,
         capsule,
         ground,
         air,

@@ -117,6 +117,18 @@ pub(crate) fn advance(
             }
 
             if let Some(splash) = component.splash.as_ref() {
+                // Splash replaces direct health damage. An explicitly authored
+                // direct shove still composes with the blast's radial shove.
+                apply_authorized_weapon_impact_damage(
+                    registry,
+                    component.owner_weapon,
+                    registry
+                        .exists(component.owner_pawn)
+                        .then_some(component.owner_pawn),
+                    impact,
+                    component.credit_source.clone(),
+                    0.0,
+                );
                 // The host has already materialized its local impact burst. Keep
                 // remote observers on their own world-point route: scripted
                 // presentation intake is keyed by a presenter, while this blast
@@ -325,7 +337,7 @@ fn advance_matching(
             || component.remaining_range <= 0.0
             || component.remaining_lifetime <= 0.0;
 
-        if let Some(impact) = resolve_projectile_impact(
+        if let Some(mut impact) = resolve_projectile_impact(
             collision_world,
             &registry.borrow(),
             hit_zone_store,
@@ -338,6 +350,9 @@ fn advance_matching(
             component.owner_pawn,
             component.damage,
         ) {
+            if let ActivationOutcome::Hit(payload) = &mut impact.outcome {
+                payload.impulse = Vec3::from_array(component.knockback_impulse);
+            }
             pending.push(PendingProjectileAction::Impact {
                 projectile: projectile_id,
                 component,
@@ -459,14 +474,20 @@ pub(crate) fn resolve_projectile_impact(
             normal: world.normal,
             target: None,
             zone: None,
-            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+            outcome: ActivationOutcome::Hit(DamagePayload {
+                amount: damage,
+                impulse: glam::Vec3::ZERO,
+            }),
         },
         NearestProjectileHit::Entity(entity) => WeaponImpact {
             point: entity.point,
             normal: entity.normal,
             target: Some(entity.target),
             zone: entity.zone,
-            outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
+            outcome: ActivationOutcome::Hit(DamagePayload {
+                amount: damage,
+                impulse: glam::Vec3::ZERO,
+            }),
         },
     })
 }
@@ -591,6 +612,7 @@ mod tests {
             .set_component(
                 projectile,
                 ProjectileComponent {
+                    knockback_impulse: [0.0; 3],
                     direction: Vec3::NEG_Z.to_array(),
                     speed: 1.0,
                     radius,
@@ -617,6 +639,61 @@ mod tests {
         let zones = HitZoneStore::new();
         let mut ignore_impact = |_: &mut EntityRegistry| {};
         advance(registry, &world, &zones, 0.0, dt, &mut ignore_impact);
+    }
+
+    #[test]
+    fn projectile_knockback_survives_weapon_removal_and_composes_with_harmless_splash() {
+        use postretro_foundation::PlayerMovementComponent;
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = {
+            let mut registry = registry.borrow_mut();
+            let target = spawn_target(&mut registry, Vec3::new(0.0, 0.0, -2.0), Vec3::splat(0.25));
+            registry
+                .set_component(target, crate::sim::tests::trigger_movement())
+                .unwrap();
+            let projectile = spawn_projectile(&mut registry, 5.0, 0.0, 0.0);
+            let mut component = registry
+                .get_component::<ProjectileComponent>(projectile)
+                .unwrap()
+                .clone();
+            component.spawned = false;
+            component.knockback_impulse = [0.0, 0.0, -4.0];
+            component.splash = Some(SplashDescriptor {
+                radius: 5.0,
+                min_fraction: 0.0,
+                self_damage: false,
+                knockback: Some(postretro_foundation::SplashKnockbackDescriptor {
+                    speed: 6.0,
+                    upward_bias: 0.0,
+                    min_fraction: 1.0,
+                    self_scale: 0.0,
+                }),
+            });
+            registry.despawn(component.owner_weapon).unwrap();
+            registry.set_component(projectile, component).unwrap();
+            target
+        };
+        advance_once(&registry, 3.0);
+        let registry = registry.borrow();
+        assert!(
+            (registry
+                .get_component::<PlayerMovementComponent>(target)
+                .unwrap()
+                .velocity
+                .z
+                + 10.0)
+                .abs()
+                < 1.0e-5
+        );
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current
+                - 20.0)
+                .abs()
+                < 1.0e-5
+        );
     }
 
     #[test]
@@ -903,6 +980,7 @@ mod tests {
             .expect("projectile component attaches")
             .clone();
         component.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 2.0,
             min_fraction: 0.0,
             self_damage: true,
@@ -966,6 +1044,7 @@ mod tests {
             .expect("projectile component attaches")
             .clone();
         component.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 2.0,
             min_fraction: 0.0,
             self_damage: true,
@@ -1054,6 +1133,7 @@ mod tests {
         let owner = component.owner_pawn;
         component.credit_source = "player.reference-rocket:primary".to_string();
         component.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 5.0,
             min_fraction: 0.2,
             self_damage: true,
@@ -1648,6 +1728,7 @@ mod tests {
         component.predicted_shot_id = Some(0);
         component.impact_light = Some(impact_light());
         component.splash = Some(SplashDescriptor {
+            knockback: None,
             radius: 2.0,
             min_fraction: 0.0,
             self_damage: true,

@@ -205,6 +205,7 @@ mod tests {
             emitter: None,
             movement: None,
             weapon: Some(WeaponDescriptor {
+                knockback: None,
                 damage: 10.0,
                 pellet_count: 1,
                 spread_degrees: 0.0,
@@ -265,6 +266,7 @@ mod tests {
 
     fn refreshed_ammo_descriptor(reload_style: ReloadStyle) -> WeaponDescriptor {
         WeaponDescriptor {
+            knockback: None,
             damage: 10.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -2049,6 +2051,7 @@ mod tests {
         };
         let muzzle_local = Vec3::new(0.15, -0.1, -0.8);
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 6.0,
             min_fraction: 0.2,
             self_damage: true,
@@ -2160,6 +2163,7 @@ mod tests {
         let eye = Vec3::new(0.0, 0.5, 0.0);
         let placement = WeaponPlacementDescriptor::default();
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 1.0,
             min_fraction: 0.2,
             self_damage: false,
@@ -2436,6 +2440,7 @@ mod tests {
         };
         let muzzle_offset = Vec3::new(1.0, 0.0, -0.5);
         let splash = SplashDescriptor {
+            knockback: None,
             radius: 1.0,
             min_fraction: 1.0,
             self_damage: false,
@@ -5261,7 +5266,10 @@ mod tests {
             normal: Vec3::Y,
             target: Some(target),
             zone: Some("head".to_string()),
-            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: 10.0,
+                impulse: glam::Vec3::ZERO,
+            }),
         };
 
         let attacker = registry.spawn(Transform::default());
@@ -5309,7 +5317,10 @@ mod tests {
             normal: Vec3::Y,
             target: Some(target),
             zone: Some("over".to_string()),
-            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: f32::MAX }),
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: f32::MAX,
+                impulse: glam::Vec3::ZERO,
+            }),
         };
 
         let attacker = registry.spawn(Transform::default());

@@ -83,8 +83,21 @@ impl MovementScope {
     ///
     /// Allocation-free: every slot is a stack scalar written into the owned array.
     pub fn refresh(&mut self, component: &PlayerMovementComponent, elapsed_ms: f32) {
+        self.refresh_with_total_velocity(component, elapsed_ms, component.velocity);
+    }
+
+    /// Snapshot a caller-provided physical velocity during movement integration.
+    /// State intents temporarily peel external velocity off the component; they
+    /// supply the recomposed total here. Tick-boundary readers use `refresh`,
+    /// where the stored component velocity already includes every layer.
+    pub fn refresh_with_total_velocity(
+        &mut self,
+        component: &PlayerMovementComponent,
+        elapsed_ms: f32,
+        velocity: glam::Vec3,
+    ) {
         // Horizontal speed is |velocity.xz| — the magnitude on the ground plane.
-        let v = component.velocity;
+        let v = velocity;
         let horizontal_speed = (v.x * v.x + v.z * v.z).sqrt();
         self.values = [
             IrValue::Number(horizontal_speed),
@@ -209,6 +222,7 @@ mod tests {
             fall: FallParams {
                 terminal_velocity: 40.0,
             },
+            knockback: Default::default(),
             stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
             stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
             dash: None,
@@ -322,5 +336,23 @@ mod tests {
         let stub_scope = StubScope::new();
         let stub_program = bind(&tree, &stub_scope).expect("stub binds");
         assert_number(eval_value(&stub_program, &stub_scope), 5.0);
+    }
+
+    #[test]
+    fn refresh_reads_total_boundary_velocity_without_adding_knockback_twice() {
+        let mut component = seeded_component();
+        component.add_knockback(Vec3::new(5.0, 8.0, 0.0));
+        let mut scope = MovementScope::for_validation();
+        scope.refresh(&component, 0.0);
+        for (name, expected) in [
+            (
+                "speed",
+                Vec3::new(component.velocity.x, 0.0, component.velocity.z).length(),
+            ),
+            ("verticalSpeed", component.velocity.y),
+        ] {
+            let program = bind(&read_only(*input(name)), &scope).unwrap();
+            assert_number(eval_value(&program, &scope), expected);
+        }
     }
 }

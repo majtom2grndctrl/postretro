@@ -53,7 +53,7 @@ impl ContributorLedgerRecord {
 }
 
 /// Attribution facts that travel beside a [`DamagePayload`] at the health
-/// chokepoint. The payload remains foundation-owned and amount-focused; entity
+/// chokepoint. The foundation-owned payload carries hit effects; entity
 /// identity stays here in `postretro-entities`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DamageContext {
@@ -712,7 +712,10 @@ mod tests {
         assert!(apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));
 
@@ -732,7 +735,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 999.0 },
+            &DamagePayload {
+                amount: 999.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("test.health", DamageProducer::InTick),
         );
 
@@ -754,7 +760,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext {
                 source_id: "weapon.test".to_string(),
                 attacker: Some(attacker),
@@ -834,7 +843,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
                 attacker: Some(attacker),
@@ -846,7 +858,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 90.0 },
+            &DamagePayload {
+                amount: 90.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
                 attacker: Some(attacker),
@@ -883,7 +898,10 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
                 attacker: None,
@@ -917,13 +935,19 @@ mod tests {
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 10.0 },
+            &DamagePayload {
+                amount: 10.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.lethal", DamageProducer::InTick),
         );
         apply_damage_with_context(
             &mut reg,
             target,
-            &DamagePayload { amount: 50.0 },
+            &DamagePayload {
+                amount: 50.0,
+                impulse: glam::Vec3::ZERO,
+            },
             DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
         );
 
@@ -977,8 +1001,8 @@ mod tests {
     #[test]
     fn zone_multiplier_scales_payload_amount() {
         // Mirrors the damage-site computation: a listed tag scales the payload,
-        // an unlisted tag and an absent zone both apply 1.0. The chokepoint
-        // stays amount-only (the scaling happens at the fire site).
+        // an unlisted tag and an absent zone both apply 1.0. The health
+        // chokepoint consumes the resolved amount; scaling happens at the fire site.
         let mut desc = descriptor(100.0);
         desc.zone_multipliers.insert("head".to_string(), 1.5);
         let component = HealthComponent::from_descriptor(&desc);
@@ -1002,7 +1026,10 @@ mod tests {
         assert!(!apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 25.0 },
+            &DamagePayload {
+                amount: 25.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));
 
@@ -1020,7 +1047,10 @@ mod tests {
         assert!(!apply_damage_with_context(
             &mut reg,
             id,
-            &DamagePayload { amount: 0.0 },
+            &DamagePayload {
+                amount: 0.0,
+                impulse: glam::Vec3::ZERO
+            },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));
         assert_eq!(
@@ -1125,6 +1155,7 @@ mod tests {
 
         fn movement_descriptor() -> PlayerMovementDescriptor {
             PlayerMovementDescriptor {
+                knockback: Default::default(),
                 capsule: CapsuleParams {
                     radius: 0.35,
                     half_height: 0.9,

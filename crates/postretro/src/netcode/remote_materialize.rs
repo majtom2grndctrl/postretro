@@ -365,6 +365,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh.as_mut().unwrap().shadow_only = true;
         descriptor.movement = Some(PlayerMovementDescriptor {
+            knockback: Default::default(),
             capsule: CapsuleParams {
                 radius: 0.4,
                 half_height: 0.8,
@@ -407,6 +408,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh = None;
         descriptor.weapon = Some(WeaponDescriptor {
+            knockback: None,
             damage: 1.0,
             pellet_count: 1,
             spread_degrees: 0.0,
@@ -439,6 +441,7 @@ mod tests {
         let mut descriptor = enemy_mesh_descriptor(classname);
         descriptor.mesh = None;
         descriptor.weapon = Some(WeaponDescriptor {
+            knockback: None,
             damage: 1.0,
             pellet_count: 1,
             spread_degrees: 0.0,

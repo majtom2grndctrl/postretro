@@ -74,6 +74,7 @@ postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
+postretro-combat-model = { workspace = true }
 postretro-scripting-core = { workspace = true }
 postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
@@ -111,6 +112,7 @@ postretro-script-compiler = { path = "../script-compiler" }
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
+postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by
 # `scripts-build`, without spawning the sidecar process during unit tests.

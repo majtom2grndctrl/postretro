@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use super::MapEntity;
 use super::data_archetype::{find_descriptor, spawn_descriptor_instance};
+use postretro_combat_model::CarriedState;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::mesh::MeshComponent;
@@ -13,8 +14,6 @@ use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, WeaponResource};
-
-use crate::netcode::CarriedState;
 
 fn seed_weapon_reserve(
     registry: &mut EntityRegistry,

@@ -47,7 +47,7 @@ mod tests {
         trigger_movement, weapon_component,
     };
     use crate::sim::{
-        PostMovementCommand, PredictedProjectileResolution, ReloadDelivery, ReloadOutcome, ShotId,
+        PostMovementCommand, PredictedProjectileResolution, ReloadDelivery, ReloadOutcome,
         advance_predicted, simulate_tick,
     };
     use crate::sprite_collection::derive_collection_id;
@@ -57,6 +57,7 @@ mod tests {
     };
     use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
     use glam::Vec3;
+    use postretro_combat_model::{HIT_RANGE_TOLERANCE, ShotId};
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::inventory::Inventory;
     use postretro_entities::components::weapon::{
@@ -2649,7 +2650,7 @@ mod tests {
         let [authorized] = result.authorized_shots.as_slice() else {
             panic!("accepted remote projectile fire mints one authorization");
         };
-        let max_distance = authorized.shot.range * crate::netcode::HIT_RANGE_TOLERANCE;
+        let max_distance = authorized.shot.range * HIT_RANGE_TOLERANCE;
         let contact = authorized.shot.fire_origin + Vec3::NEG_Z * (max_distance - 0.01);
         let eye = Vec3::new(0.0, 0.5, 0.0);
         assert!(

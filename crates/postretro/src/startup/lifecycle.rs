@@ -1454,7 +1454,7 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) suppress_boot_pawn: bool,
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
-    pub(crate) local_carried_loadout: Option<crate::netcode::CarriedState>,
+    pub(crate) local_carried_loadout: Option<postretro_combat_model::CarriedState>,
 }
 
 /// Connected-client trigger-pool install result exposed only to cross-subsystem

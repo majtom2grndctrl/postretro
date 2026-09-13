@@ -4,6 +4,7 @@ members = [
     "crates/ui",
     "crates/foundation",
     "crates/entities",
+    "crates/combat-model",
     "crates/scripting-core",
     "crates/level-format",
     "crates/model",
@@ -174,6 +175,7 @@ postretro-level-loader = { path = "crates/level-loader" }
 postretro-visibility = { path = "crates/visibility" }
 postretro-foundation = { path = "crates/foundation" }
 postretro-entities = { path = "crates/entities" }
+postretro-combat-model = { path = "crates/combat-model" }
 postretro-scripting-core = { path = "crates/scripting-core" }
 postretro-ui = { path = "crates/ui" }
 postretro-net = { path = "crates/net" }

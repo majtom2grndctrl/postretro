@@ -4,6 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use glam::Vec3;
+use postretro_combat_model::ShotId;
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::light::{LightComponent, LightKind};
 use postretro_entities::components::mesh::MeshComponent;
@@ -23,7 +24,6 @@ use crate::weapon;
 
 use super::{
     NetworkIdAllocator, OpenAuthorizedShots, PROJECTILE_CONTACT_DESPAWN_REASON, ReplicableSet,
-    ShotId,
 };
 
 #[derive(Debug)]
@@ -673,7 +673,8 @@ pub(super) fn attach_projectile_visual_components(
 mod tests {
     use super::*;
     use crate::netcode::replication::produce_owned_snapshots;
-    use crate::netcode::{AuthorizedShot, ClientReplication, HostCommandQueues, MovementOwners};
+    use crate::netcode::{ClientReplication, HostCommandQueues, MovementOwners};
+    use postretro_combat_model::AuthorizedShot;
     use postretro_entities::components::deferred_effect::{
         DeferredEffectComponent, DeferredEffectKind,
     };

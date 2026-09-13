@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::Vec3;
+#[cfg(test)]
+use postretro_combat_model::{AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, ShotId};
 use postretro_entities::{
     EntityId, EntityRegistry, PresentationFact, PresentationFade, PresentationMotion,
     PresentationSpawn, PresentationTemplateHandle, WorldPointPresentationSpawn,
@@ -1421,10 +1423,10 @@ mod tests {
         owners.set(owner, PREDICTED_OWNER_CLIENT);
         let mut allocator = NetworkIdAllocator::new();
         let owner_network_id = allocator.stamp(owner);
-        let shot_id = crate::netcode::ShotId::from_parts(owner_network_id, 17);
+        let shot_id = ShotId::from_parts(owner_network_id, 17);
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         open_shots.record(
-            crate::netcode::AuthorizedShot {
+            AuthorizedShot {
                 knockback: None,
                 shot_id,
                 pawn: owner,
@@ -1447,7 +1449,7 @@ mod tests {
                 projectile_tick_seconds: Some(1.0 / 60.0),
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
-                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
             },
             PREDICTED_OWNER_CLIENT,
         );

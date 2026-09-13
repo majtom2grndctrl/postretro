@@ -7612,7 +7612,9 @@ impl App {
         }
         let shot_id = allocator
             .network_id_for_entity(resolved.pawn)
-            .map(|network_id| netcode::ShotId::from_parts(network_id, resolved.client_tick));
+            .map(|network_id| {
+                postretro_combat_model::ShotId::from_parts(network_id, resolved.client_tick)
+            });
         sim::RemotePawnCommand {
             pawn: resolved.pawn,
             owner_client_id: resolved.client_id,
@@ -7625,7 +7627,10 @@ impl App {
         }
     }
 
-    fn host_record_authorized_shots(&mut self, shots: &[netcode::OpenAuthorizedShot]) {
+    fn host_record_authorized_shots(
+        &mut self,
+        shots: &[postretro_combat_model::OpenAuthorizedShot],
+    ) {
         let Some(netcode::NetEndpoint::Host { open_shots, .. }) = self
             .session
             .as_mut()

@@ -29,9 +29,8 @@ use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::{NavGraph, distance_xz, find_path};
 use crate::netcode::{
-    AuthorizedShot, HostCommandQueues, MovementOwners, NetworkIdAllocator, OpenAuthorizedShots,
-    PendingHitDeclarations, ShotId, host_take_ready_hit_declarations,
-    ingest_hit_declaration_for_test,
+    HostCommandQueues, MovementOwners, NetworkIdAllocator, OpenAuthorizedShots,
+    PendingHitDeclarations, host_take_ready_hit_declarations, ingest_hit_declaration_for_test,
 };
 use crate::scripting::state_persistence::{
     PersistedState, collect_persisted_faction_sentiment, collect_persisted_state,
@@ -42,6 +41,7 @@ use crate::scripting_systems::system_reactions::apply_set_sentiment;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{PostMovementCommand, SimCommand};
 use crate::sprite_collection::derive_collection_id;
+use postretro_combat_model::{AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, ShotId};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, graph_activity_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -2765,7 +2765,7 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
             projectile_tick_seconds: None,
             is_projectile: false,
             fire_origin: Vec3::new(10.0, 0.5, 0.0),
-            timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+            timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
         },
         7,
     );

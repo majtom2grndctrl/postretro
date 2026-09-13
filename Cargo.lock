@@ -3676,6 +3676,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "parry3d",
+ "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-compiler",
@@ -3700,6 +3701,17 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "winit",
+]
+
+[[package]]
+name = "postretro-combat-model"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-net",
+ "serde",
 ]
 
 [[package]]

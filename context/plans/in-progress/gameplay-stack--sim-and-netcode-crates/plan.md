@@ -1,7 +1,7 @@
 # gameplay-stack--sim-and-netcode-crates — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 01d12d66
 
 ## Corrections
@@ -23,7 +23,7 @@ read at: 01d12d66
 | sim library omits netcode but sim test targets link it | `cargo build -p postretro-sim`; `cargo test -p postretro-sim --no-run` | achievable as stated | |
 | binary/sim/netcode edit isolation holds | warm-build `touch` experiment with Cargo recompilation evidence | achievable as stated | |
 | no moved module remains under `crates/postretro/src/` | path audit plus grep gate | achievable as stated | |
-| no test is lost and every moved test is named | workspace test count comparison; named moves in Task 4 | achievable as stated | |
+| no test is lost and every moved test is named | workspace test count comparison; per-test move ledger below | achievable as stated | |
 | M15 Phase 0 determinism harness is unchanged and passes | focused `postretro-sim` determinism test | achievable as stated | |
 | `gen-script-types` preserves `sdk/types/` bytes and committed typedef test passes | byte comparison and focused typedef test | achievable as stated | |
 | xtask `mint-identity` invokes the sim binary and produces a mod sidecar at the unchanged SDK depth | focused xtask wrapper test | achievable as stated | |
@@ -42,12 +42,23 @@ read at: 01d12d66
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Partition `scripting/systems` at the frame/fixed-tick seam and sink `ClipMetadata` to `postretro-model` plus `PresentationDrawInput` to `postretro-foundation`; prove that `hit_zones → mesh_anim` is the only surviving fixed-tick link. | integrating executor | — | pending |
+| 1 | Partition `scripting/systems` at the frame/fixed-tick seam: keep frame-path bridges binary-side, re-root fixed-tick handlers without widening their surface, and keep `mesh_render` consuming the moved CPU stores through that seam. Sink `ClipMetadata` to `postretro-model` and `PresentationDrawInput` to `postretro-foundation`; prove the record sinks and fixed-tick/frame-path dependency direction with focused tests. | integrating executor | — | pending |
 | 2 | Prepare the boundaries on the one-crate tree: relocate frame timing/presentation pool, sink weapon placement, separate spawn windup, move App drains up, establish test-support surfaces, and resolve all binary-only test reaches (including the delegated lifecycle helper). | integrating executor | 1 | pending |
 | 3 | Create and transplant `postretro-sim` wholesale: collision, fixed-tick systems, scripting runtime/handlers, bins, allocator, manifests, and public seams; retain only deliberate test-support access. | integrating executor | 2 | pending |
-| 4 | Create and transplant `postretro-netcode` wholesale above sim; move sim-type test callers `sim/weapon_stage.rs` and `scripting/systems/ai_tests.rs` into netcode, move/drop remaining binary reaches, and name every changed test file. | integrating executor | 3 | pending |
-| 5 | Integrate binary orchestration and durable docs; verify dependency trees, isolation, graph, targeted behavior, code visibility audit, and all automated acceptance before review. | integrating executor | 4 | pending |
+| 4 | Create and transplant `postretro-netcode` wholesale above sim. Move only the `ingest_hit_declaration_for_test` callers from `sim/weapon_stage.rs` and `scripting/systems/ai_tests.rs` into netcode-owned harness coverage (retain their unrelated source-adjacent tests), then move/drop every remaining binary-only test reach and complete the per-test move ledger. | integrating executor | 3 | pending |
+| 5 | Integrate binary orchestration and durable docs (`development_guide.md` target shape and `scripting.md` command examples); verify dependency trees, isolation, graph, targeted behavior, code visibility audit, and all automated acceptance before review. | integrating executor | 4 | pending |
 | 6 | Run review-panel → fix-review-findings → focused retest, then final preflight; record automated results and leave manual runbook evidence explicitly outstanding or land after it arrives. | integrating executor | 5 | pending |
+
+## Per-test move ledger
+
+The test count is recorded before the transplant and compared after it. This ledger is updated in the same commit as each test relocation; a source-adjacent test stays in place unless it requires a netcode function whose signature names a sim-defined type.
+
+| Current location | Planned ownership | Reason |
+|---|---|---|
+| `sim/weapon_stage.rs` — `ingest_hit_declaration_for_test` callers | netcode-owned harness coverage | The helper names sim `CollisionWorld` and `HitZoneStore`; a sim test target would see a second sim compilation through its netcode dev-dependency. |
+| `scripting/systems/ai_tests.rs` — `ingest_hit_declaration_for_test` callers | netcode-owned harness coverage | Same type-identity constraint; the tests exercise a netcode ingestion entry point. |
+| `sim/touch.rs`, `sim/determinism_tests.rs`, `impact_effects.rs` harness reaches | remain source-adjacent in sim through netcode `test-support` only where their signatures use shared lower-crate types | They do not carry a sim-defined type across the dev-dependency cycle. |
+| netcode tests named in the brief Path table | netcode if they reach sim/normal dependencies; binary tests or reach removal otherwise | Nothing moves down merely to serve a test. |
 
 ## External manual runbook
 

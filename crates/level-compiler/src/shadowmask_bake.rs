@@ -345,7 +345,14 @@ fn bake_shadowmask_atlas_cached_with_window(
     log::info!("[cache] shadowmask_atlas miss");
     if selected.is_empty() {
         let section = empty_section_for_selection(shared, selection.light_indices.len());
-        cache.put(&section_key, &section.to_bytes());
+        cache_shadowmask_section_then_complete(
+            cache,
+            &section_key,
+            &section,
+            control,
+            false,
+            || {},
+        );
         return Some(section);
     }
     let graph = build_analytic_overlap_graph(&selected, shared, geometry, control);
@@ -451,7 +458,8 @@ fn bake_shadowmask_atlas_cached_with_test_window(
 /// `selection.light_indices`, after dropping any out-of-range selected
 /// `AlphaLights` entries the same way the uncached path does. Each `selected`
 /// entry carries its original selection index so invalid earlier selections do
-/// not shift the channel table.
+/// not shift the channel table. Every preloaded texel must fit within the
+/// supplied atlas layer and plane dimensions.
 pub fn bake_shadowmask_atlas_from_layers(
     selection: &EntityShadowLightsSection,
     atlas_width: u32,
@@ -464,11 +472,13 @@ pub fn bake_shadowmask_atlas_from_layers(
         return None;
     }
 
-    debug_assert_eq!(
+    assert_eq!(
         selected.len(),
         layers.len(),
         "shadowmask selected light/layer slices must align"
     );
+
+    validate_preloaded_layer_texels(atlas_width, atlas_height, layer_count, layers);
 
     if selected.is_empty() {
         return Some(empty_section_for_dimensions(
@@ -487,6 +497,29 @@ pub fn bake_shadowmask_atlas_from_layers(
         selected,
         layers,
     ))
+}
+
+fn validate_preloaded_layer_texels(
+    atlas_width: u32,
+    atlas_height: u32,
+    layer_count: u32,
+    layers: &[LightmapLayer],
+) {
+    let plane = texel_plane_len(atlas_width, atlas_height);
+    for layer in layers {
+        for texel in &layer.texels {
+            assert!(
+                texel.layer < layer_count,
+                "preloaded shadowmask texel layer {} exceeds atlas layer count {layer_count}",
+                texel.layer
+            );
+            assert!(
+                (texel.idx as usize) < plane,
+                "preloaded shadowmask texel index {} exceeds atlas plane length {plane}",
+                texel.idx
+            );
+        }
+    }
 }
 
 /// Whole-section input hash for the `"shadowmask_atlas"` memo entry.
@@ -567,6 +600,9 @@ thread_local! {
     static SHADOWMASK_OUTPUT_ALLOCATION_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
+    static SHADOWMASK_STREAMED_CACHE_WRITE_COUNT: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
 }
 
 fn allocate_shadowmask_output(data_len: usize) -> Vec<u8> {
@@ -583,6 +619,16 @@ fn reset_shadowmask_output_allocation_count() {
 #[cfg(test)]
 fn shadowmask_output_allocation_count() -> usize {
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn reset_shadowmask_streamed_cache_write_count() {
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn shadowmask_streamed_cache_write_count() -> usize {
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(std::cell::Cell::get)
 }
 
 fn layer_count_from_shared(shared: &SharedAtlas<'_>) -> u32 {
@@ -733,7 +779,18 @@ fn chart_may_receive_light(
     if matches!(light.light_type, LightType::Directional) {
         return true;
     }
-    let (light_min, light_max) = affinity_grid::light_aabb(light, world_aabb);
+    let (mut light_min, mut light_max) = affinity_grid::light_aabb(light, world_aabb);
+    // Coverage casts the light origin to f32 before subtracting the f32 chart
+    // sample. Pruning must use that same coordinate domain or it can reject a
+    // chart that coverage retains at large finite coordinates.
+    let coverage_origin = DVec3::new(
+        light.origin.x as f32 as f64,
+        light.origin.y as f32 as f64,
+        light.origin.z as f32 as f64,
+    );
+    let origin_rounding = coverage_origin - light.origin;
+    light_min += origin_rounding;
+    light_max += origin_rounding;
     chart_min.x <= light_max.x
         && chart_max.x >= light_min.x
         && chart_min.y <= light_max.y
@@ -764,7 +821,23 @@ fn cache_shadowmask_section_then_complete(
     has_valid_selection: bool,
     after_cache_write: impl FnOnce(),
 ) {
-    cache.put(section_key, &section.to_bytes());
+    let selected_light_count = section.channels.len() as u32;
+    let mut section_header = [0u8; 16];
+    section_header[0..4].copy_from_slice(&section.width.to_le_bytes());
+    section_header[4..8].copy_from_slice(&section.height.to_le_bytes());
+    section_header[8..12].copy_from_slice(&section.layer_count.to_le_bytes());
+    section_header[12..16].copy_from_slice(&selected_light_count.to_le_bytes());
+    let channel_padding = [0u8; 3];
+    let channel_padding_len = (4 - section.channels.len() % 4) % 4;
+
+    #[cfg(test)]
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
+    cache.put_streamed(section_key, section.byte_len() as u64, |writer| {
+        writer.write_all(&section_header)?;
+        writer.write_all(&section.channels)?;
+        writer.write_all(&channel_padding[..channel_padding_len])?;
+        writer.write_all(&section.data)
+    });
     after_cache_write();
     if has_valid_selection {
         // Keep the final fill unit pending through whole-section memo storage.
@@ -1006,7 +1079,7 @@ fn build_shadowmask_from_layers(
 }
 
 fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
-    !(raw_visibility < 0.0)
+    raw_visibility.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
 }
 
 fn overlap_graph_from_layers(layers: &[LightmapLayer]) -> OverlapGraph {
@@ -2252,6 +2325,103 @@ mod tests {
         assert!(rejected_pairs > 0, "fixture must exercise prune rejection");
     }
 
+    // Regression: pruning used the f64 source origin while coverage rounded it
+    // to f32, dropping a finite high-coordinate overlap edge and its masks.
+    #[test]
+    fn shadowmask_chart_prune_preserves_high_coordinate_coverage_edge_and_masks() {
+        let mut chart = one_texel_chart();
+        chart.origin = Vec3::new(16_777_216.0, 0.0, 0.0);
+        let charts = vec![chart];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let mut rounded_origin = light(5.0);
+        rounded_origin.origin = DVec3::new(16_777_217.0, 0.05, 0.5);
+        rounded_origin.falloff_range = 0.1;
+        let mut exact_origin = light(4.0);
+        exact_origin.origin = DVec3::new(16_777_216.0, 0.05, 0.5);
+        exact_origin.falloff_range = 0.1;
+        let lights = vec![rounded_origin, exact_origin];
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let geometry = quad_geometry();
+        let world_aabb = lightmap_layer::geometry_world_aabb(&geometry);
+
+        assert!(chart_may_receive_light(
+            &lights[0],
+            chart_world_aabb(&charts[0]),
+            world_aabb,
+        ));
+
+        let mut shared_covered_texel = None;
+        lightmap_layer::for_each_light_layer_chart_texel(&shared, 0, |sample| {
+            if light_texel_is_covered(&lights[0], sample.world_p, sample.surface_normal)
+                && light_texel_is_covered(&lights[1], sample.world_p, sample.surface_normal)
+            {
+                shared_covered_texel = Some((sample.idx, sample.layer));
+            }
+        });
+        let (covered_idx, covered_layer) =
+            shared_covered_texel.expect("both lights must cover one chart texel");
+
+        let chart_order = [0];
+        let (pruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            true,
+        );
+        let (unpruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            false,
+        );
+
+        assert!(pruned_graph.overlaps(0, 1));
+        assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
+
+        let layers = [
+            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.25)]),
+            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.5)]),
+        ];
+        let mut fill = ShadowmaskFill::new(5, 5, 1, 2, &selected, &pruned_graph, None);
+        for (compact_index, layer) in layers.iter().enumerate() {
+            fill.write_partition(compact_index, layer);
+        }
+        let section = fill.finish();
+        let first_channel = section.channels[0];
+        let second_channel = section.channels[1];
+        let global_texel_index = covered_idx as usize + covered_layer as usize * 25;
+
+        assert_ne!(first_channel, SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(second_channel, SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(first_channel, second_channel);
+        assert_eq!(
+            section.data[shadowmask_data_offset(global_texel_index, first_channel).unwrap()],
+            64
+        );
+        assert_eq!(
+            section.data[shadowmask_data_offset(global_texel_index, second_channel).unwrap()],
+            128
+        );
+    }
+
     #[test]
     fn pruned_zero_coverage_light_keeps_node_and_channel_table() {
         let (geometry, bvh, primitives, charts, placements, mut lights, _) =
@@ -2833,6 +3003,15 @@ mod tests {
             TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
             "cache-backed streaming bake must match the pre-streaming golden"
         );
+        let cold_section_key = shadowmask_key(&selection, &shared, &input_hashes);
+        let stored_section = cold_cache
+            .get(&cold_section_key)
+            .expect("cache miss stores the streamed whole section");
+        assert_eq!(
+            stored_section.as_slice(),
+            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            "streamed whole-section cache bytes must match the section wire format"
+        );
 
         // Copy every warm light/layer partition to a fresh cache so the next
         // call must take a section miss while reusing every raw-visibility
@@ -2893,7 +3072,7 @@ mod tests {
     }
 
     #[test]
-    fn shadowmask_output_allocates_once_on_every_fill_path() {
+    fn shadowmask_cache_miss_allocates_one_output_and_streams_without_a_second_payload() {
         let (geometry, bvh, primitives, charts, placements, lights, selection) =
             top_level_multilayer_five_way_inputs();
         let shared = SharedAtlas {
@@ -2905,6 +3084,7 @@ mod tests {
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
 
         reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
         let cold = bake_shadowmask_atlas(
             Some(&selection),
             &alpha_lights,
@@ -2917,10 +3097,12 @@ mod tests {
         );
         assert!(cold.is_some());
         assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 0);
 
         let cache_dir = fresh_cache_dir("one_output_allocation");
         let cache = StageCache::new(&cache_dir).unwrap();
         reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
         let cached_miss = bake_shadowmask_atlas_cached(
             Some(&selection),
             &alpha_lights,
@@ -2935,6 +3117,7 @@ mod tests {
         );
         assert!(cached_miss.is_some());
         assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 1);
 
         let no_alpha_lights = AlphaLightsNs::from_lights(&[]);
         let filtered_selection = EntityShadowLightsSection {
@@ -2943,6 +3126,7 @@ mod tests {
         let filtered_cache_dir = fresh_cache_dir("filtered_one_output_allocation");
         let filtered_cache = StageCache::new(&filtered_cache_dir).unwrap();
         reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
         let filtered = bake_shadowmask_atlas_cached(
             Some(&filtered_selection),
             &no_alpha_lights,
@@ -2957,6 +3141,7 @@ mod tests {
         );
         assert!(filtered.is_some());
         assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 1);
 
         let _ = std::fs::remove_dir_all(cache_dir);
         let _ = std::fs::remove_dir_all(filtered_cache_dir);
@@ -3405,6 +3590,17 @@ mod tests {
         .expect("cached all-filtered selection still emits an empty section");
 
         assert_eq!(cached_section, section);
+        let invalid_hashes: Vec<_> = (0..layer_count_from_shared(&shared))
+            .map(|target_layer| invalid_selected_light_hash(0, target_layer))
+            .collect();
+        let section_key = shadowmask_key(&selection, &shared, &invalid_hashes);
+        assert_eq!(
+            cache
+                .get(&section_key)
+                .expect("all-filtered route stores the streamed whole section"),
+            section.to_bytes(),
+            "all-filtered cache bytes must match the section wire format"
+        );
         assert_eq!(cached_progress.total(), None);
         assert_eq!(cached_progress.completed(), 0);
         let _ = std::fs::remove_dir_all(cache_dir);
@@ -3444,6 +3640,67 @@ mod tests {
         assert_eq!(section.channels[0], SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
         assert_eq!(section.data[section.channels[1] as usize], 64);
+    }
+
+    // Regression: the compatibility route only checked this alignment in debug
+    // builds, so release could emit a section with inconsistent channel data.
+    #[test]
+    #[should_panic(expected = "shadowmask selected light/layer slices must align")]
+    fn preloaded_layer_bake_rejects_missing_layer_for_selected_light() {
+        let first_light = light(5.0);
+        let second_light = light(4.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0, 1],
+        };
+        let selected = vec![(0usize, 0u32, &first_light), (1usize, 1u32, &second_light)];
+        let layers = vec![layer(1, 1, 1, &[(0, 0, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    }
+
+    // Regression: the compatibility route only checked this alignment in debug
+    // builds, so release could retain a layer with no selected-light channel.
+    #[test]
+    #[should_panic(expected = "shadowmask selected light/layer slices must align")]
+    fn preloaded_layer_bake_rejects_layer_without_selected_light() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![
+            layer(1, 1, 1, &[(0, 0, 0.25)]),
+            layer(1, 1, 1, &[(0, 0, 0.5)]),
+        ];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    }
+
+    // Regression: a preloaded texel in a later layer could overwrite layer one.
+    #[test]
+    #[should_panic(expected = "preloaded shadowmask texel index")]
+    fn preloaded_layer_bake_rejects_texel_index_outside_its_plane() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![layer(1, 1, 2, &[(1, 0, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 2, &selected, &layers);
+    }
+
+    #[test]
+    #[should_panic(expected = "preloaded shadowmask texel layer")]
+    fn preloaded_layer_bake_rejects_texel_layer_outside_atlas() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![layer(1, 1, 1, &[(0, 1, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
     }
 
     #[test]

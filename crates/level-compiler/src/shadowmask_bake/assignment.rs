@@ -379,10 +379,10 @@ pub(super) fn color_graph_priority_greedy(
     for &light in &order {
         record_assignment_operation(operation_count, checkpoint);
         let mut used = [false; 4];
-        for other in 0..graph.light_count() {
+        for (other, &channel) in channels.iter().enumerate() {
             record_assignment_operation(operation_count, checkpoint);
             if other != light && graph.overlaps(light, other) {
-                let channel = channels[other] as usize;
+                let channel = channel as usize;
                 if channel < used.len() {
                     used[channel] = true;
                 }
@@ -409,9 +409,9 @@ fn active_degrees(
         if !active[light] {
             continue;
         }
-        for other in 0..graph.light_count() {
+        for (other, &other_is_active) in active.iter().enumerate() {
             record_assignment_operation(operation_count, checkpoint);
-            if other != light && active[other] && graph.overlaps(light, other) {
+            if other != light && other_is_active && graph.overlaps(light, other) {
                 degrees[light] += 1;
             }
         }

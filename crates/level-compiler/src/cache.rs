@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -172,11 +172,27 @@ impl StageCache {
     /// Write an entry atomically. Best-effort: any error is logged and
     /// swallowed so a flaky cache directory cannot break a build.
     pub fn put(&self, key: &CacheKey, bytes: &[u8]) {
+        self.put_streamed(key, bytes.len() as u64, |writer| writer.write_all(bytes));
+    }
+
+    /// Write an entry atomically without requiring one contiguous payload.
+    ///
+    /// `write_payload` streams exactly `payload_len` bytes into the staged
+    /// entry. The cache computes the same payload hash as [`Self::put`], then
+    /// patches it into the reserved header before syncing and publishing.
+    /// Length mismatches and I/O failures follow `put`'s best-effort logging
+    /// and cleanup behavior.
+    pub fn put_streamed(
+        &self,
+        key: &CacheKey,
+        payload_len: u64,
+        write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) {
         let final_path = self.entry_path(key);
         // Distinct keys produce distinct hex filenames (no extension), so `<digest>.tmp` is unique per key — parallel group bakes never collide here.
         let tmp_path = final_path.with_extension("tmp");
 
-        if let Err(err) = self.write_entry(&tmp_path, bytes) {
+        if let Err(err) = self.write_streamed_entry(&tmp_path, payload_len, write_payload) {
             log::warn!(
                 "[cache] failed to stage entry {}: {err}",
                 tmp_path.display()
@@ -298,21 +314,78 @@ impl StageCache {
         }
     }
 
-    fn write_entry(&self, tmp_path: &Path, bytes: &[u8]) -> io::Result<()> {
-        let hash = blake3::hash(bytes);
-        let len = bytes.len() as u64;
-
+    fn write_streamed_entry(
+        &self,
+        tmp_path: &Path,
+        payload_len: u64,
+        write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut file = fs::File::create(tmp_path)?;
         file.write_all(&ENTRY_MAGIC)?;
-        file.write_all(&len.to_le_bytes())?;
+        file.write_all(&payload_len.to_le_bytes())?;
+        file.write_all(&[0; HASH_BYTES])?;
+
+        let (actual_len, hash) = {
+            let mut payload_writer = HashingWriter::new(&mut file);
+            write_payload(&mut payload_writer)?;
+            payload_writer.flush()?;
+            payload_writer.finish()
+        };
+        if actual_len != payload_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "streamed cache payload length mismatch: declared={payload_len} actual={actual_len}"
+                ),
+            ));
+        }
+
+        file.seek(SeekFrom::Start(
+            (ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES) as u64,
+        ))?;
         file.write_all(hash.as_bytes())?;
-        file.write_all(bytes)?;
         file.sync_all()?;
         Ok(())
     }
 
     fn entry_path(&self, key: &CacheKey) -> PathBuf {
         self.dir.join(key.as_filename())
+    }
+}
+
+struct HashingWriter<'a> {
+    file: &'a mut fs::File,
+    hasher: blake3::Hasher,
+    bytes_written: u64,
+}
+
+impl<'a> HashingWriter<'a> {
+    fn new(file: &'a mut fs::File) -> Self {
+        Self {
+            file,
+            hasher: blake3::Hasher::new(),
+            bytes_written: 0,
+        }
+    }
+
+    fn finish(self) -> (u64, blake3::Hash) {
+        (self.bytes_written, self.hasher.finalize())
+    }
+}
+
+impl Write for HashingWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.file.write(bytes)?;
+        self.hasher.update(&bytes[..written]);
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::other("streamed cache payload length overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
     }
 }
 
@@ -393,6 +466,65 @@ mod tests {
         cache.put(&key, &payload);
         let loaded = cache.get(&key).expect("entry should be present");
         assert_eq!(loaded, payload);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streamed_cache_write_matches_contiguous_entry_bytes_and_roundtrips() {
+        let dir = fresh_temp_dir("streamed_identity");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let contiguous_key = CacheKey::new("shadowmask_atlas", 2, b"contiguous");
+        let streamed_key = CacheKey::new("shadowmask_atlas", 2, b"streamed");
+        let parts: [&[u8]; 4] = [b"header", b"channels", &[0, 0, 0], b"atlas-data"];
+        let payload: Vec<u8> = parts.iter().flat_map(|part| part.iter().copied()).collect();
+
+        cache.put(&contiguous_key, &payload);
+        cache.put_streamed(&streamed_key, payload.len() as u64, |writer| {
+            for part in parts {
+                writer.write_all(part)?;
+            }
+            Ok(())
+        });
+
+        let contiguous_entry =
+            fs::read(dir.join(contiguous_key.as_filename())).expect("read contiguous entry");
+        let streamed_entry =
+            fs::read(dir.join(streamed_key.as_filename())).expect("read streamed entry");
+        assert_eq!(streamed_entry, contiguous_entry);
+        assert_eq!(cache.get(&streamed_key), Some(payload));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn streamed_cache_write_rejects_length_mismatch_without_publishing() {
+        let dir = fresh_temp_dir("streamed_length_mismatch");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("shadowmask_atlas", 2, b"wrong-length");
+
+        cache.put_streamed(&key, 6, |writer| writer.write_all(b"short"));
+
+        assert!(cache.get(&key).is_none());
+        assert!(!dir.join(key.as_filename()).with_extension("tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_streamed_cache_write_preserves_published_entry_and_cleans_stage() {
+        let dir = fresh_temp_dir("streamed_atomic_failure");
+        let cache = StageCache::new(&dir).expect("create cache dir");
+        let key = CacheKey::new("shadowmask_atlas", 2, b"preserve-published");
+        cache.put(&key, b"published");
+
+        cache.put_streamed(&key, 7, |writer| {
+            writer.write_all(b"partial")?;
+            Err(io::Error::other("injected cache write failure"))
+        });
+
+        assert_eq!(cache.get(&key), Some(b"published".to_vec()));
+        assert!(!dir.join(key.as_filename()).with_extension("tmp").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

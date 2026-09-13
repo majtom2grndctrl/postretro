@@ -1,7 +1,7 @@
 # lighting-scale--shadowmask-cold-working-set — plan of record
 
 mode: resumable
-status: approved
+status: landed-with-gaps
 read at: 438a84925
 
 ## Corrections
@@ -55,8 +55,8 @@ two-line promoted-context update above.
 | A fully pruned selected light keeps its node, channel, bytes, and later channel ordering | `pruned_zero_coverage_light_keeps_node_and_channel_table` | passed |
 | No light-and-texel structure remains; sole light-scaling allocation is `n*n` bytes (114,244 bytes at 338 lights) | `shadowmask_graph_storage_is_one_byte_per_light_pair`; source review confirms deleted membership/index types | passed — membership/index types deleted |
 | Light-scaling residency is independent of atlas layers at fixed plane/light count, excluding the output | `shadowmask_graph_storage_is_layer_count_independent` | passed — adjacency depends only on light count; partition residency remains bounded by W |
-| Exactly one full-size output allocation; conversion is in-place or absent | grep/review of the fill path; add a counting-allocator test only if review finds an ambiguous second allocation | passed — direct serial `Vec<u8>` fill, no conversion |
-| Output allocation occurs exactly once on cold, cached miss, and wholly filtered cached paths | `shadowmask_output_allocates_once_on_every_fill_path` using test-only allocation instrumentation at the allocation seam | passed |
+| Exactly one full-size output allocation; conversion is in-place or absent | allocation-seam instrumentation plus streamed whole-section cache-write identity tests | passed — direct serial `Vec<u8>` fill, no conversion, and no second contiguous cache payload |
+| Output allocation occurs exactly once on cold, cached miss, and wholly filtered cached paths | `shadowmask_cache_miss_allocates_one_output_and_streams_without_a_second_payload` using test-only allocation and streamed-write instrumentation | passed |
 | Coloring runs once after every graph item joins | `shadowmask_coloring_waits_for_complete_graph` | passed |
 | Pause/resume and mid-pass `-j` lowering preserve bytes without preemption/deadlock | `shadowmask_graph_pause_and_permit_retarget_preserve_output` | passed |
 | Progress advances during graph construction | `shadowmask_progress_advances_during_graph_pass` | passed |
@@ -71,9 +71,9 @@ two-line promoted-context update above.
 | Progress stays short until finalization and section memo write on cached and uncached paths | `shadowmask_final_progress_unit_follows_section_memo_write` | passed |
 | Stage publishes one determinate total and completes only with the section | `shadowmask_publishes_one_total_and_completes_with_section` | passed |
 | Two unchanged compiles at one and many workers emit identical id-42 bytes on a named fixture | `shadowmask_fixture_is_deterministic_across_rebuilds_and_workers` using `stress-warren-hallway-inspection-mini.map` or a smaller named id-42 fixture if its runtime is lower | passed on cacheless `gate-heavily-lit` at 1 and 4 workers |
-| Density 0.04 full stress compile completes on owner's 16 GiB Windows machine with peak RSS | owner, out-of-band RSS and elapsed-time capture | manual-stress |
-| Density 0.04 bytes match a headroom reference build when available | owner/reference machine; record not run if unavailable | manual-conditional |
-| Supported-density stress-map bytes stay unchanged and ShadowmaskAtlas time regresses no more than 10% | owner or integrating executor, density 0.16 before/after release timing on the same machine/settings | manual-performance |
+| Density 0.04 full stress compile completes on owner's 16 GiB Windows machine with peak RSS | owner, out-of-band RSS and elapsed-time capture | outstanding manual — test-ready runbook supplied |
+| Density 0.04 bytes match a headroom reference build when available | owner/reference machine; record not run if unavailable | not run — no headroom reference host currently available |
+| Supported-density stress-map bytes stay unchanged and ShadowmaskAtlas time regresses no more than 10% | owner or integrating executor, density 0.16 before/after release timing on the same machine/settings | outstanding manual — separate density-0.16 comparison |
 
 ## Tasks
 
@@ -84,7 +84,30 @@ two-line promoted-context update above.
 | 3 | Build the pruned parallel analytic graph pass from shared affinity reach data, preserving every selected node; measure and record the mini-warren reach fraction, barrier, ordering, pause, worker-count, progress, and adjacency-storage proofs | integrating executor | 2 | done — 54 shadowmask tests passed; mini-warren kept 8.18% of pairs |
 | 4 | Replace membership assembly with layer-outer partition fill into one output allocation on cold and warm section-miss paths; preserve cache keys/epochs, define dropped-partition population, and pin filtered-selection allocation and final progress ordering | integrating executor | 3 | done — 55 active shadowmask tests passed; one allocation and dropped-partition warm-hit proofs added |
 | 5 | Complete lifecycle, degeneracy, determinism, cache, golden-byte, and allocation review gates; run focused compiler tests after each seam and confirm every filter executes tests | integrating executor | 4 | done — 60 active shadowmask tests passed; named cacheless fixture gate included |
-| 6 | Run preflight, review panel, fix/retest loops, update durable build-pipeline contracts, populate AC results, move the brief to `done/`, and commit the landing | integrating executor | 5 | pending |
+| 6 | Run preflight, review panel, fix/retest loops, update durable build-pipeline contracts, populate AC results, move the brief to `done/`, and commit the landing | integrating executor | 5 | done — five review findings fixed; focused gates and full preflight passed; Windows stress proof remains outstanding |
+
+## Landing report
+
+| Area | Result |
+|---|---|
+| Shared analytic coverage and conservative chart pruning | pass — shared predicate/walk equivalence, prune-superset, high-coordinate rounding, zero-coverage-node, ordering, and cross-layer tests |
+| Graph storage, barrier, governor, progress, and determinism | pass — one-byte `n*n` adjacency, complete-join coloring, pause/retarget, worker-count, fixture, and progress tests |
+| Layer-outer streaming fill and cache lifecycle | pass — one final output, no second contiguous cache payload, bounded cold batches, one-at-a-time warm partitions, dropped-light reuse, memo lifecycle, and golden bytes |
+| Degenerate and compatibility routes | pass — zero/filtered selection, out-of-range slots, malformed preloaded coordinates/alignment, single-layer literal, and multilayer golden |
+| Review panel | pass after fixes — five findings acted on: stale durable docs, preloaded bounds, streamed cache serialization, release alignment, and high-coordinate pruning |
+| Preflight | pass — `cargo fmt --check`; `cargo clippy --target-dir target/preflight-clippy -- -D warnings`; full `cargo test` with loopback access |
+| Windows density-0.04 stress proof | outstanding manual — use `windows-test-instructions.md` on the owner's 16 GiB host |
+| Density-0.04 headroom reference | not run — no reference host is currently available |
+| Supported-density byte/timing comparison | outstanding manual — density 0.16 before/after on one host, with a 10% stage-time margin |
+
+## Trial notes
+
+- mode: resumable
+- sessions used: 1
+- delegated implementation slices: 0
+- review-panel findings: 5 (5 acted on)
+- Decision premises found false: 0
+- Path claims corrected: 2
 
 ## Resume notes
 

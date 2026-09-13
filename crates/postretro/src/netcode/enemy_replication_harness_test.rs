@@ -944,6 +944,26 @@ fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires(
     }
 }
 
+#[test]
+fn spawn_windup_covers_interpolation_ceiling_without_equality_pin() {
+    let windup_ms = crate::spawner::SPAWN_ATTACK_WINDUP_MS;
+    assert!(crate::spawner::spawn_windup_covers_interpolation_ceiling(
+        windup_ms,
+        MAX_DELAY_MICROS,
+    ));
+    assert!(
+        !crate::spawner::spawn_windup_covers_interpolation_ceiling(windup_ms, MAX_DELAY_MICROS + 1,),
+        "raising interpolation policy above the gameplay windup must trip the guard"
+    );
+    assert!(
+        crate::spawner::spawn_windup_covers_interpolation_ceiling(
+            windup_ms + 1.0,
+            MAX_DELAY_MICROS,
+        ),
+        "raising gameplay windup above the interpolation ceiling remains valid"
+    );
+}
+
 // A fixed-tick spawner creates this entity after level installation, so the host's
 // post-tick re-sweep is the only production path that can register it. Once registered,
 // its Transform-only baseline must carry the descriptor class and materialize the same

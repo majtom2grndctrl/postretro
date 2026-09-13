@@ -1,6 +1,11 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+mod descriptor_health;
+pub(crate) mod frame_timing;
+mod mesh_bindings;
+pub(crate) mod presentation_pool;
+pub(crate) mod presentation_projection;
 mod projectile_stage;
 pub(crate) mod splash;
 pub(crate) mod touch;
@@ -35,6 +40,10 @@ use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 #[cfg(test)]
 use crate::weapon;
 use crate::weapon::FireButtonState;
+pub(crate) use descriptor_health::install_descriptor_player_health_range;
+pub(crate) use mesh_bindings::{
+    resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
+};
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
@@ -116,7 +125,8 @@ pub(crate) fn normalize_wieldable_inventory(
     weapon_stage::normalize_inventory_liveness(registry, pawn)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 pub(crate) fn run_local_weapon_fire_for_test(
     registry: &Rc<RefCell<EntityRegistry>>,
     pawn: EntityId,

@@ -8,8 +8,6 @@ mod lifecycle_sprite_collections;
 #[path = "lifecycle_world_cpu.rs"]
 mod lifecycle_world_cpu;
 
-#[cfg(test)]
-pub(crate) use lifecycle_world_cpu::install_descriptor_player_health_range;
 pub(crate) use lifecycle_world_cpu::install_world_cpu;
 
 use std::path::{Component, Path, PathBuf};
@@ -3443,7 +3441,7 @@ mod tests {
             wire_version: 3,
         };
         let logs = crate::scripting::reactions::log_capture::capture(|| {
-            crate::netcode::client_drain_control(
+            crate::client_drain_control(
                 &mut app,
                 vec![postretro_net::wire::ServerControlMessage::Divergence(
                     postretro_net::wire::DivergenceReason::Closing(

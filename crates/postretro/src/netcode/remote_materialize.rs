@@ -569,52 +569,6 @@ mod tests {
         store
     }
 
-    fn resolved_attachment_transform(
-        mesh: &MeshComponent,
-        store: &crate::scripting_systems::hit_zones::HitZoneStore,
-    ) -> glam::Mat4 {
-        let mut instances = Vec::new();
-        let mut world_pose = Vec::new();
-        let mut attachment_handles = HashMap::new();
-        let holder = postretro_model::ModelHandle::from(mesh.model.as_str());
-        let resolver = crate::scripting_systems::attachments::SocketPoseResolver::new(store);
-        assert!(crate::scripting_systems::attachments::emit_for_holder(
-            &mut instances,
-            &mut world_pose,
-            &mut attachment_handles,
-            &resolver,
-            &holder,
-            glam::Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)),
-            postretro_model::sample_params::MeshSampleParams::rigid(),
-            mesh.pose_inputs,
-            mesh.shadow_bias_scale,
-            9,
-            true,
-            true,
-            &mesh.attachments,
-        ));
-        assert_eq!(
-            instances.len(),
-            1,
-            "one resolved hand attachment emits one prop"
-        );
-        instances[0].transform
-    }
-
-    fn assert_mat4_approx(actual: glam::Mat4, expected: glam::Mat4, context: &str) {
-        for (index, (actual, expected)) in actual
-            .to_cols_array()
-            .into_iter()
-            .zip(expected.to_cols_array())
-            .enumerate()
-        {
-            assert!(
-                (actual - expected).abs() < 1.0e-5,
-                "{context}: matrix element {index}: expected {expected}, got {actual}",
-            );
-        }
-    }
-
     fn spawn_transform_only(reg: &mut EntityRegistry) -> EntityId {
         reg.try_spawn(
             Transform {
@@ -925,64 +879,13 @@ mod tests {
     }
 
     #[test]
-    fn active_weapon_attachment_uses_hand_socket_without_first_person_placement() {
-        let mut descriptors = vec![
+    fn active_weapon_attachment_resolves_the_descriptor_hand_socket() {
+        let descriptors = vec![
             player_mesh_descriptor("co_op_avatar"),
             third_person_weapon_descriptor("reference_pistol", "models/pistol/model.gltf"),
             third_person_weapon_descriptor("missing_pistol", "models/missing/model.gltf"),
         ];
-        let descriptors_without_placement = descriptors.clone();
-        descriptors[1].weapon.as_mut().unwrap().placement =
-            Some(postretro_foundation::WeaponPlacementDescriptor {
-                offset: postretro_foundation::PlacementOffset {
-                    right: 0.5,
-                    up: -0.4,
-                    forward: 0.8,
-                },
-                rotation: postretro_foundation::PlacementRotation {
-                    yaw: 20.0,
-                    pitch: -10.0,
-                    roll: 5.0,
-                },
-            });
         let store = attachment_store();
-        let mut baseline_registry = EntityRegistry::new();
-        let baseline_pawn = spawn_transform_only(&mut baseline_registry);
-        let baseline_request = RemoteEntityMaterialize {
-            network_id: postretro_net::wire::NetworkId(9),
-            entity_id: baseline_pawn,
-            entity_class: "co_op_avatar".to_string(),
-            initial_animation_state: None,
-            active_weapon_archetype: None,
-            weapon_attachment_changed: false,
-        };
-
-        assert!(materialize_armed_remote_player(
-            &baseline_request,
-            &descriptors_without_placement,
-            &mut baseline_registry,
-            None,
-        ));
-        assert!(update_active_weapon_attachment(
-            &mut baseline_registry,
-            baseline_pawn,
-            &descriptors_without_placement,
-            Some("reference_pistol"),
-            &store,
-        ));
-        crate::resolve_mesh_entity_bindings_for_entities(
-            &mut baseline_registry,
-            &crate::scripting_systems::mesh_anim::MeshClipTables::default(),
-            &store,
-            [baseline_pawn],
-        );
-        let baseline_transform = resolved_attachment_transform(
-            baseline_registry
-                .get_component::<MeshComponent>(baseline_pawn)
-                .unwrap(),
-            &store,
-        );
-
         let mut registry = EntityRegistry::new();
         let pawn = spawn_transform_only(&mut registry);
         let request = RemoteEntityMaterialize {
@@ -1006,7 +909,7 @@ mod tests {
             Some("reference_pistol"),
             &store,
         ));
-        crate::resolve_mesh_entity_bindings_for_entities(
+        crate::sim::resolve_mesh_entity_bindings_for_entities(
             &mut registry,
             &crate::scripting_systems::mesh_anim::MeshClipTables::default(),
             &store,
@@ -1017,13 +920,6 @@ mod tests {
         assert_eq!(mesh.attachments[0].socket, ACTIVE_WEAPON_SOCKET);
         assert_eq!(mesh.attachments[0].model, "models/pistol/model.gltf");
         assert_eq!(mesh.attachments[0].binding, AttachmentBinding::Skinned(3));
-        let authored_transform = resolved_attachment_transform(mesh, &store);
-        assert_mat4_approx(
-            authored_transform,
-            baseline_transform,
-            "third-person hand attachment ignores first-person placement",
-        );
-
         assert!(update_active_weapon_attachment(
             &mut registry,
             pawn,

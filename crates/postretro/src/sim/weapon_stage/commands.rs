@@ -241,7 +241,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     })
                     .and_then(|descriptor| descriptor.weapon.as_ref())
                     .and_then(|weapon| weapon.placement.as_ref());
-                let placement = crate::resolve_weapon_placement(
+                let placement = postretro_foundation::resolve_weapon_placement(
                     default_weapon_placement,
                     None,
                     authored_placement,
@@ -438,8 +438,12 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         .and_then(|weapon| weapon.placement.as_ref());
     // Resolve from the pre-switch active weapon captured above. A same-tick
     // switch may repoint inventory later, but it cannot change this shot.
-    let placement =
-        crate::resolve_weapon_placement(default_weapon_placement, None, authored_placement, None);
+    let placement = postretro_foundation::resolve_weapon_placement(
+        default_weapon_placement,
+        None,
+        authored_placement,
+        None,
+    );
     let pellet_salt_name = weapon::pellet_salt_name(&registry, weapon_id, &weapon_component);
     // The descriptor override stays unresolved in the component. Only this
     // App-fed local input gate resolves it against the mod-global policy.

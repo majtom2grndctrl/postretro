@@ -1361,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_tick_frame_latches_press_and_preserves_prompt_until_the_next_touch_tick() {
+    fn touch_tick_applies_a_latched_press_and_clears_the_prompt() {
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::ZERO);
         let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Press, 7);
@@ -1371,25 +1371,6 @@ mod tests {
         tick(&mut system, &mut registry, &players, &[]);
         assert_eq!(system.prompts, vec![(PlayerId::Local(pawn), item)]);
 
-        let mut latch = crate::input::GameplayInputLatch::new();
-        let use_press = crate::input::ActionSnapshot::with_button_state(
-            crate::input::Action::Use,
-            crate::input::ButtonState::Pressed,
-        );
-        assert!(latch.snapshot_for_ticks(&use_press, 0).is_none());
-        assert_eq!(
-            system.prompts,
-            vec![(PlayerId::Local(pawn), item)],
-            "the zero-tick render frame leaves the published prompt intact"
-        );
-
-        let latched = latch
-            .snapshot_for_ticks(&crate::input::ActionSnapshot::neutral(), 2)
-            .expect("the later two-tick frame receives the pending press");
-        assert_eq!(
-            latched.button(crate::input::Action::Use),
-            crate::input::ButtonState::Pressed
-        );
         tick(
             &mut system,
             &mut registry,

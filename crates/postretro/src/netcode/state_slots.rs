@@ -2742,7 +2742,7 @@ mod tests {
     #[test]
     fn descriptor_health_range_is_role_invariant_and_accepts_first_baseline() {
         use crate::scripting::map_entity::MapEntity;
-        use crate::startup::lifecycle::install_descriptor_player_health_range;
+        use crate::sim::install_descriptor_player_health_range;
 
         let mut descriptors =
             crate::netcode::predict_reconcile_harness_test_fixtures::entity_descriptors();

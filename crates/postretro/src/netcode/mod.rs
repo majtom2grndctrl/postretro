@@ -124,8 +124,7 @@ pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
     host_register_world_items,
 };
-pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll, restore_carried_health};
-pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
+pub(crate) use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub(crate) const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
@@ -139,9 +138,14 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
-use postretro_combat_model::{AuthorizedShot, HIT_RANGE_TOLERANCE, OpenAuthorizedShot, ShotId};
+use postretro_combat_model::{
+    AuthorizedShot, HIT_RANGE_TOLERANCE, OpenAuthorizedShot, ShotId, TuningPayload,
+    WieldableTuningPayload,
+};
 #[cfg(test)]
-use postretro_combat_model::{MAX_OPEN_SHOT_AGE_TICKS, projectile_timeout_budget_ticks};
+use postretro_combat_model::{
+    MAX_OPEN_SHOT_AGE_TICKS, TUNING_PAYLOAD_EPOCH, projectile_timeout_budget_ticks,
+};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
@@ -3053,8 +3057,8 @@ mod tests {
         let encoded = install_test_tuning(&mut tuning, &mut generation);
         let accepted_generation = generation;
         let unknown_epoch = String::from_utf8(encoded).unwrap().replacen(
-            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH),
-            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH + 1),
+            &format!("\"epoch\":{TUNING_PAYLOAD_EPOCH}"),
+            &format!("\"epoch\":{}", TUNING_PAYLOAD_EPOCH + 1),
             1,
         );
 

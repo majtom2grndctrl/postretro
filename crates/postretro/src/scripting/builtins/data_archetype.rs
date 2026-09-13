@@ -18,6 +18,7 @@ use glam::Vec3;
 
 use super::MapEntity;
 use crate::scripting_systems::ai::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
+use postretro_combat_model::{CarriedState, restore_carried_health};
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
 use postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
@@ -989,7 +990,7 @@ pub(crate) fn spawn_from_player_starts_with_carried_loadout(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
-    carried_loadout: Option<&crate::netcode::CarriedState>,
+    carried_loadout: Option<&CarriedState>,
 ) -> PlayerSpawnResult {
     let mut spawned = 0usize;
 
@@ -1030,7 +1031,7 @@ pub(crate) fn spawn_from_player_starts_with_carried_loadout(
             );
         if is_first_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
-            crate::netcode::restore_carried_health(carried_loadout, registry, id);
+            restore_carried_health(carried_loadout, registry, id);
         }
 
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
@@ -2419,7 +2420,7 @@ mod tests {
             &[player],
             &mut registry,
             None,
-            Some(&crate::netcode::CarriedState {
+            Some(&CarriedState {
                 health_current: Some(36.0),
                 ..Default::default()
             }),

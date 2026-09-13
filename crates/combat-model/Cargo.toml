@@ -6,6 +6,11 @@ rust-version.workspace = true
 description = "Combat domain data shared by Postretro crates"
 license.workspace = true
 
+[features]
+# Makes the pre-canonicalization payload constructor available only to dependent
+# test targets that must prove the engine-side JSON codec clears local view feel.
+test-support = []
+
 [dependencies]
 glam.workspace = true
 serde.workspace = true

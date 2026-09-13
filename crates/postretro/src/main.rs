@@ -1394,7 +1394,7 @@ struct ClientFireMuzzleTerms {
 /// local weapon component is intentionally absent: a Control-only replacement
 /// can make it stale until the next local-pawn snapshot applies.
 fn client_fire_muzzle_terms(
-    tuning: &netcode::TuningPayload,
+    tuning: &postretro_combat_model::TuningPayload,
     active_slot: usize,
 ) -> Option<ClientFireMuzzleTerms> {
     let row = tuning.wieldables.get(active_slot)?.as_ref()?;
@@ -9789,7 +9789,7 @@ mod tests {
             Some(local_data_placement),
         )];
         let mut slots = std::array::from_fn(|_| None);
-        slots[0] = Some(netcode::WieldableTuningPayload {
+        slots[0] = Some(postretro_combat_model::WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
             placement: host_placement.clone(),
             muzzle_offset: Some(host_muzzle),
@@ -9808,7 +9808,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
         });
-        let initial = netcode::TuningPayload::new(None, slots.clone());
+        let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
         assert_eq!(terms.placement, host_placement);
         assert_eq!(terms.muzzle_offset, Some(Vec3::from_array(host_muzzle)));
@@ -9828,7 +9828,7 @@ mod tests {
         // snapshot refresh. The old component/data values remain irrelevant.
         slots[0].as_mut().unwrap().placement = replacement_placement.clone();
         slots[0].as_mut().unwrap().muzzle_offset = Some(replacement_muzzle);
-        let replacement = netcode::TuningPayload::new(None, slots);
+        let replacement = postretro_combat_model::TuningPayload::new(None, slots);
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");
         assert_eq!(terms.placement, replacement_placement);
         assert_eq!(

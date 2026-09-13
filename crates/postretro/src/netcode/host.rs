@@ -2,6 +2,7 @@
 // See: context/lib/networking.md
 
 use super::*;
+use postretro_combat_model::{CarriedState, TuningPayload};
 use postretro_entities::FactionSentimentState;
 
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only
@@ -242,7 +243,7 @@ pub(crate) fn host_handle_accept_descriptor_at_placement(
     placement_index: usize,
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-    carried_loadout: Option<&super::CarriedState>,
+    carried_loadout: Option<&CarriedState>,
 ) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,

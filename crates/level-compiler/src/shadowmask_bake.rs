@@ -1,9 +1,9 @@
 // Per-light shadowmask bake for selected static entity-shadow lights.
 // Governing context: context/lib/build_pipeline.md
 
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use glam::DVec3;
 use rayon::prelude::*;
 
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -17,7 +17,12 @@ use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AlphaLightsNs;
 use crate::lightmap_layer::{self, LayerTexel, LightmapLayer, SharedAtlas};
-use crate::map_data::MapLight;
+use crate::map_data::{LightType, MapLight};
+use crate::{affinity_grid, lightmap_bake};
+
+mod assignment;
+
+use assignment::*;
 
 pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
@@ -35,40 +40,6 @@ const SHADOWMASK_RESIDENT_LAYER_WINDOW: usize = 4;
 /// Fill checks the cooperative pause gate at this cadence without consuming a
 /// governor permit; chart work remains the only governed parallel level.
 const SHADOWMASK_FILL_CHECKPOINT_TEXELS: usize = 1024;
-
-/// Preserve the established exact coloring on ordinary maps, but cap the
-/// pathological backtracking that can otherwise consume a core indefinitely.
-const SHADOWMASK_COLOR_SEARCH_NODE_BUDGET: usize = 100_000;
-
-/// Serial graph and assignment loops check the cooperative pause gate at this
-/// deterministic operation cadence, including inside dense neighbor scans.
-const SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS: usize = 1024;
-
-/// A shadowmask needs only the atlas position, fixed selected-light index, and
-/// unquantized visibility from a lightmap layer. Keeping the visibility as `f32`
-/// preserves the established single quantization at fill time.
-#[derive(Clone, Copy, Debug)]
-struct ShadowmaskMembershipTexel {
-    global_texel_index: usize,
-    compact_light_index: u32,
-    raw_visibility: f32,
-}
-
-/// Complete compact coverage needed by the global one-channel-per-light
-/// assignment. Buckets are always addressed and consumed in compact selection
-/// order, never in bake completion order.
-#[derive(Debug)]
-struct ShadowmaskMembership {
-    by_light: Vec<Vec<ShadowmaskMembershipTexel>>,
-}
-
-impl ShadowmaskMembership {
-    fn for_light_count(light_count: usize) -> Self {
-        Self {
-            by_light: (0..light_count).map(|_| Vec::new()).collect(),
-        }
-    }
-}
 
 /// Test-only instrumentation counts every full-layer-equivalent payload:
 /// cached or assembled layers and each cold light's aggregate raw chart output.
@@ -204,28 +175,30 @@ fn bake_shadowmask_atlas_with_window(
     }
 
     publish_shadowmask_total(control, selected.len(), shared);
-    let membership = collect_shadowmask_membership_in_batches(
+    let graph = build_analytic_overlap_graph(&selected, shared, geometry, control);
+    let mut fill = ShadowmaskFill::new(
+        shared.atlas_width,
+        shared.atlas_height,
+        layer_count_from_shared(shared),
+        selection.light_indices.len(),
+        &selected,
+        &graph,
+        Some(control),
+        Some(resident_layers),
+    );
+    fill_uncached_shadowmask_partitions(
+        &mut fill,
         &selected,
         shared,
         bvh,
         primitives,
         geometry,
         area_sample_count,
-        None,
-        None,
         control,
         resident_layer_window,
         resident_layers,
     );
-    let section = build_shadowmask_from_membership_controlled(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count_from_shared(shared) as usize,
-        selection.light_indices.len(),
-        &selected,
-        &membership,
-        Some(control),
-    );
+    let section = fill.finish();
     // The first light's fill unit is held until all atlas finalization has
     // completed, so the stage cannot display 100% while still working.
     control.advance(1);
@@ -371,7 +344,31 @@ fn bake_shadowmask_atlas_cached_with_window(
     }
 
     log::info!("[cache] shadowmask_atlas miss");
-    let membership = collect_cached_shadowmask_membership_by_partition(
+    if selected.is_empty() {
+        let section = empty_section_for_selection(shared, selection.light_indices.len());
+        cache_shadowmask_section_then_complete(
+            cache,
+            &section_key,
+            &section,
+            control,
+            false,
+            || {},
+        );
+        return Some(section);
+    }
+    let graph = build_analytic_overlap_graph(&selected, shared, geometry, control);
+    let mut fill = ShadowmaskFill::new(
+        shared.atlas_width,
+        shared.atlas_height,
+        layer_count,
+        selection.light_indices.len(),
+        &selected,
+        &graph,
+        Some(control),
+        Some(resident_layers),
+    );
+    fill_cached_shadowmask_partitions(
+        &mut fill,
         &selected,
         shared,
         bvh,
@@ -381,22 +378,16 @@ fn bake_shadowmask_atlas_cached_with_window(
         cache,
         &selected_layer_input_hashes,
         control,
-        resident_layers,
     );
-    let section = build_shadowmask_from_membership_controlled(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count as usize,
-        selection.light_indices.len(),
-        &selected,
-        &membership,
-        Some(control),
+    let section = fill.finish();
+    cache_shadowmask_section_then_complete(
+        cache,
+        &section_key,
+        &section,
+        control,
+        !selected.is_empty(),
+        || {},
     );
-    cache.put(&section_key, &section.to_bytes());
-    if !selected.is_empty() {
-        // Keep the final fill unit pending through whole-section memo storage.
-        control.advance(1);
-    }
     Some(section)
 }
 
@@ -468,7 +459,8 @@ fn bake_shadowmask_atlas_cached_with_test_window(
 /// `selection.light_indices`, after dropping any out-of-range selected
 /// `AlphaLights` entries the same way the uncached path does. Each `selected`
 /// entry carries its original selection index so invalid earlier selections do
-/// not shift the channel table.
+/// not shift the channel table. Every preloaded texel must fit within the
+/// supplied atlas layer and plane dimensions.
 pub fn bake_shadowmask_atlas_from_layers(
     selection: &EntityShadowLightsSection,
     atlas_width: u32,
@@ -481,11 +473,13 @@ pub fn bake_shadowmask_atlas_from_layers(
         return None;
     }
 
-    debug_assert_eq!(
+    assert_eq!(
         selected.len(),
         layers.len(),
         "shadowmask selected light/layer slices must align"
     );
+
+    validate_preloaded_layer_texels(atlas_width, atlas_height, layer_count, layers);
 
     if selected.is_empty() {
         return Some(empty_section_for_dimensions(
@@ -504,6 +498,29 @@ pub fn bake_shadowmask_atlas_from_layers(
         selected,
         layers,
     ))
+}
+
+fn validate_preloaded_layer_texels(
+    atlas_width: u32,
+    atlas_height: u32,
+    layer_count: u32,
+    layers: &[LightmapLayer],
+) {
+    let plane = texel_plane_len(atlas_width, atlas_height);
+    for layer in layers {
+        for texel in &layer.texels {
+            assert!(
+                texel.layer < layer_count,
+                "preloaded shadowmask texel layer {} exceeds atlas layer count {layer_count}",
+                texel.layer
+            );
+            assert!(
+                (texel.idx as usize) < plane,
+                "preloaded shadowmask texel index {} exceeds atlas plane length {plane}",
+                texel.idx
+            );
+        }
+    }
 }
 
 /// Whole-section input hash for the `"shadowmask_atlas"` memo entry.
@@ -575,8 +592,44 @@ fn empty_section_for_dimensions(
         height,
         layer_count,
         channels: vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count],
-        data: vec![255; data_len],
+        data: allocate_shadowmask_output(data_len),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SHADOWMASK_OUTPUT_ALLOCATION_COUNT: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+    static SHADOWMASK_STREAMED_CACHE_WRITE_COUNT: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+fn allocate_shadowmask_output(data_len: usize) -> Vec<u8> {
+    #[cfg(test)]
+    SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
+    vec![255; data_len]
+}
+
+#[cfg(test)]
+fn reset_shadowmask_output_allocation_count() {
+    SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn shadowmask_output_allocation_count() -> usize {
+    SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn reset_shadowmask_streamed_cache_write_count() {
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn shadowmask_streamed_cache_write_count() -> usize {
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(std::cell::Cell::get)
 }
 
 fn layer_count_from_shared(shared: &SharedAtlas<'_>) -> u32 {
@@ -607,8 +660,144 @@ fn shadowmask_progress_total(valid_selected_light_count: usize, shared: &SharedA
     }
     valid_selected_light_count
         .saturating_mul(shared.placements.len())
+        .saturating_add(shared.placements.len())
         .saturating_add(1)
         .saturating_add(valid_selected_light_count)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AnalyticGraphStats {
+    light_chart_pairs: usize,
+    candidate_light_chart_pairs: usize,
+}
+
+fn build_analytic_overlap_graph(
+    selected: &[(usize, u32, &MapLight)],
+    shared: &SharedAtlas<'_>,
+    geometry: &GeometryResult,
+    control: &BakeControl,
+) -> OverlapGraph {
+    let chart_order: Vec<usize> = (0..shared.placements.len()).collect();
+    let (graph, stats) = build_analytic_overlap_graph_in_order(
+        selected,
+        shared,
+        geometry,
+        control,
+        &chart_order,
+        true,
+    );
+    log::debug!(
+        "[ShadowmaskAtlas] analytic graph prune kept {}/{} light-chart pairs; adjacency {} bytes",
+        stats.candidate_light_chart_pairs,
+        stats.light_chart_pairs,
+        graph.storage_bytes()
+    );
+    graph
+}
+
+fn build_analytic_overlap_graph_in_order(
+    selected: &[(usize, u32, &MapLight)],
+    shared: &SharedAtlas<'_>,
+    geometry: &GeometryResult,
+    control: &BakeControl,
+    chart_order: &[usize],
+    prune: bool,
+) -> (OverlapGraph, AnalyticGraphStats) {
+    let graph = OverlapGraph::new(selected.len());
+    let world_aabb = lightmap_layer::geometry_world_aabb(geometry);
+    let candidate_pairs = AtomicUsize::new(0);
+
+    chart_order.par_iter().for_each(|&chart_index| {
+        // The prune, texel walk, and edge union are one governed chart item.
+        let _permit = control.governor().enter();
+        let chart = &shared.charts[chart_index];
+        let chart_aabb = chart_world_aabb(chart);
+        let candidates: Vec<usize> = selected
+            .iter()
+            .enumerate()
+            .filter_map(|(compact_index, &(_, _, light))| {
+                (!prune || chart_may_receive_light(light, chart_aabb, world_aabb))
+                    .then_some(compact_index)
+            })
+            .collect();
+        candidate_pairs.fetch_add(candidates.len(), Ordering::Relaxed);
+
+        let mut covered_lights = Vec::with_capacity(candidates.len());
+        lightmap_layer::for_each_light_layer_chart_texel(shared, chart_index, |sample| {
+            covered_lights.clear();
+            for &compact_index in &candidates {
+                let light = selected[compact_index].2;
+                if lightmap_bake::light_texel_is_covered(
+                    light,
+                    sample.world_p,
+                    sample.surface_normal,
+                ) {
+                    covered_lights.push(compact_index);
+                }
+            }
+            for (position, &a) in covered_lights.iter().enumerate() {
+                for &b in &covered_lights[position + 1..] {
+                    graph.mark_overlap(a, b);
+                }
+            }
+        });
+        control.advance(1);
+    });
+
+    let stats = AnalyticGraphStats {
+        light_chart_pairs: selected.len().saturating_mul(chart_order.len()),
+        candidate_light_chart_pairs: candidate_pairs.load(Ordering::Relaxed),
+    };
+    (graph, stats)
+}
+
+fn chart_world_aabb(chart: &lightmap_bake::Chart) -> Option<(DVec3, DVec3)> {
+    if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+        return None;
+    }
+
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    for u in [chart.uv_min[0], chart.uv_min[0] + chart.uv_extent[0]] {
+        for v in [chart.uv_min[1], chart.uv_min[1] + chart.uv_extent[1]] {
+            let point = chart.origin + chart.u_axis * u + chart.v_axis * v;
+            let point = DVec3::new(point.x as f64, point.y as f64, point.z as f64);
+            min = min.min(point);
+            max = max.max(point);
+        }
+    }
+    Some((min, max))
+}
+
+fn chart_may_receive_light(
+    light: &MapLight,
+    chart_aabb: Option<(DVec3, DVec3)>,
+    world_aabb: (DVec3, DVec3),
+) -> bool {
+    let Some((chart_min, chart_max)) = chart_aabb else {
+        return false;
+    };
+    if matches!(light.light_type, LightType::Directional) {
+        return true;
+    }
+    let (mut light_min, mut light_max) = affinity_grid::light_aabb(light, world_aabb);
+    // Coverage casts the light origin to f32 before subtracting the f32 chart
+    // sample. Pruning must use that same coordinate domain or it can reject a
+    // chart that coverage retains at large finite coordinates.
+    let coverage_origin = DVec3::new(
+        light.origin.x as f32 as f64,
+        light.origin.y as f32 as f64,
+        light.origin.z as f32 as f64,
+    );
+    let origin_rounding = coverage_origin - light.origin;
+    light_min += origin_rounding;
+    light_max += origin_rounding;
+    chart_min.x <= light_max.x
+        && chart_max.x >= light_min.x
+        && chart_min.y <= light_max.y
+        && chart_max.y >= light_min.y
+        && chart_min.z <= light_max.z
+        && chart_max.z >= light_min.z
 }
 
 /// A whole-section cache hit performs no chart, assignment, or fill work, but
@@ -625,192 +814,122 @@ fn advance_shadowmask_total(
     }
 }
 
-/// Run the only light-axis Rayon level used by the shadowmask bake.
-///
-/// Each batch contains at most W selected lights. A cold light's chart buffers
-/// collectively equal one full layer payload, so widening a batch to the
-/// governor cap would also widen residency. The indexed chart level still uses
-/// every permitted worker when W times the chart count exposes enough work.
-/// Every chart joins and every payload is compacted before the next batch.
+fn cache_shadowmask_section_then_complete(
+    cache: &StageCache,
+    section_key: &CacheKey,
+    section: &ShadowmaskAtlasSection,
+    control: &BakeControl,
+    has_valid_selection: bool,
+    after_cache_write: impl FnOnce(),
+) {
+    let selected_light_count = section.channels.len() as u32;
+    let mut section_header = [0u8; 16];
+    section_header[0..4].copy_from_slice(&section.width.to_le_bytes());
+    section_header[4..8].copy_from_slice(&section.height.to_le_bytes());
+    section_header[8..12].copy_from_slice(&section.layer_count.to_le_bytes());
+    section_header[12..16].copy_from_slice(&selected_light_count.to_le_bytes());
+    let channel_padding = [0u8; 3];
+    let channel_padding_len = (4 - section.channels.len() % 4) % 4;
+
+    #[cfg(test)]
+    SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
+    cache.put_streamed(section_key, section.byte_len() as u64, |writer| {
+        writer.write_all(&section_header)?;
+        writer.write_all(&section.channels)?;
+        writer.write_all(&channel_padding[..channel_padding_len])?;
+        writer.write_all(&section.data)
+    });
+    after_cache_write();
+    if has_valid_selection {
+        // Keep the final fill unit pending through whole-section memo storage.
+        control.advance(1);
+    }
+}
+
+/// Bake one atlas layer at a time, retaining at most W selected-light chart
+/// payloads and consuming them directly into the final output. Assembling a
+/// full partition here would overlap it with the batch that supplied it.
 #[allow(clippy::too_many_arguments)]
-fn collect_shadowmask_membership_in_batches(
+fn fill_uncached_shadowmask_partitions(
+    fill: &mut ShadowmaskFill,
     selected: &[(usize, u32, &MapLight)],
     shared: &SharedAtlas<'_>,
     bvh: &bvh::bvh::Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     area_sample_count: u32,
-    cache: Option<&StageCache>,
-    layer_input_hashes: Option<&[[u8; 32]]>,
     control: &BakeControl,
     resident_layer_window: usize,
     resident_layers: &ResidentLayerTracker,
-) -> ShadowmaskMembership {
+) {
     assert!(
         resident_layer_window > 0,
         "shadowmask resident-layer window must be at least one"
     );
-    debug_assert_eq!(
-        cache.is_some(),
-        layer_input_hashes.is_some(),
-        "cached shadowmask membership needs per-light hashes"
-    );
-    if let Some(hashes) = layer_input_hashes {
-        debug_assert_eq!(
-            hashes.len(),
-            selected.len(),
-            "selected light/hash slices must align after invalid selections are filtered"
-        );
-    }
-
-    let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
-    let chart_count = shared.placements.len();
     let layer_count = layer_count_from_shared(shared);
-    let mut membership = ShadowmaskMembership::for_light_count(selected.len());
-
-    let mut batch_start = 0;
-    while batch_start < selected.len() {
-        let mut batch_membership: Vec<Option<Vec<ShadowmaskMembershipTexel>>> = Vec::new();
-        let mut missing: Vec<(usize, &MapLight, Option<CacheKey>)> = Vec::new();
-
-        while batch_start + batch_membership.len() < selected.len()
-            && batch_membership.len() < resident_layer_window
-        {
-            let batch_light_index = batch_membership.len();
-            let compact_light_index = batch_start + batch_light_index;
-            let (_, alpha_index, light) = selected[compact_light_index];
-            batch_membership.push(None);
-            if let (Some(cache), Some(hashes)) = (cache, layer_input_hashes) {
-                let layer_key = CacheKey::new(
-                    "lightmap_layer",
-                    lightmap_layer::LAYER_FORMAT_VERSION,
-                    &hashes[compact_light_index],
-                );
-                let cached_layer = cache
-                    .get(&layer_key)
-                    .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
-                    .and_then(|layer| match validate_cached_lightmap_layer(
-                        &layer,
-                        shared,
-                        layer_count,
-                    ) {
-                        Ok(()) => Some(layer),
-                        Err(reason) => {
-                            log::warn!(
-                                "[Compiler] corrupt lightmap_layer cache entry for shadowmask selected AlphaLights index {alpha_index} ({reason}), re-baking"
-                            );
-                            None
-                        }
-                    });
-                if let Some(layer) = cached_layer {
-                    let _resident_layer = resident_layers.acquire();
-                    log::info!("[cache] lightmap_layer hit");
-                    // A warm layer has no chart task, but it is still a full
-                    // light's worth of published shadowmask work.
-                    control.governor().checkpoint();
-                    control.advance(chart_count);
-                    batch_membership[batch_light_index] =
-                        Some(collect_layer_membership(compact_light_index, &layer, plane));
-                } else {
-                    log::info!("[cache] lightmap_layer miss");
-                    missing.push((batch_light_index, light, Some(layer_key)));
-                }
-            } else {
-                missing.push((batch_light_index, light, None));
-            }
-        }
-        let batch_len = batch_membership.len();
-
-        // This indexed collection is the sole governed parallel level. It is
-        // ordered first by compact selected-light index and then by chart index,
-        // so joining cannot inherit Rayon completion order.
-        let work_items: Vec<(usize, &MapLight, usize)> = missing
+    for target_layer in 0..layer_count {
+        let target_charts: Vec<_> = shared
+            .placements
             .iter()
-            .flat_map(|(batch_light_index, light, _)| {
-                (0..chart_count).map(move |chart_index| (*batch_light_index, *light, chart_index))
-            })
-            .collect();
-        // Charge each cold light before any chart buffer starts growing. One
-        // guard covers all of that light's per-chart Vecs and is retained while
-        // they are assembled, cached, and compacted. This makes the test hook
-        // observe the raw payloads that previously escaped its accounting.
-        let raw_output_guards: Vec<_> = missing.iter().map(|_| resident_layers.acquire()).collect();
-        let chart_outputs: Vec<Vec<LayerTexel>> = work_items
-            .par_iter()
-            .map(|&(_, light, chart_index)| {
-                lightmap_layer::bake_light_layer_chart_controlled(
-                    light,
-                    shared,
-                    chart_index,
-                    bvh,
-                    primitives,
-                    geometry,
-                    area_sample_count,
-                    control,
-                )
+            .enumerate()
+            .filter_map(|(chart_index, placement)| {
+                (placement.layer == target_layer).then_some(chart_index)
             })
             .collect();
 
-        let mut chart_outputs = chart_outputs.into_iter();
-        let mut raw_output_guards = raw_output_guards.into_iter();
-        for (batch_light_index, _light, layer_key) in missing {
-            let _resident_payload = raw_output_guards
-                .next()
-                .expect("one residency guard is required for each cold light payload");
-            let texels = (0..chart_count)
-                .flat_map(|_| {
-                    chart_outputs
-                        .next()
-                        .expect("one ordered output is required for every chart task")
+        for batch_start in (0..selected.len()).step_by(resident_layer_window) {
+            let batch_end = (batch_start + resident_layer_window).min(selected.len());
+            let batch = &selected[batch_start..batch_end];
+            let _resident_partitions: Vec<_> =
+                batch.iter().map(|_| resident_layers.acquire()).collect();
+            let work_items: Vec<(usize, &MapLight)> = batch
+                .iter()
+                .flat_map(|&(_, _, light)| {
+                    target_charts
+                        .iter()
+                        .copied()
+                        .map(move |chart_index| (chart_index, light))
                 })
                 .collect();
-            let layer = LightmapLayer {
-                atlas_width: shared.atlas_width,
-                atlas_height: shared.atlas_height,
-                layer_count,
-                texels,
-            };
-            if let (Some(cache), Some(layer_key)) = (cache, layer_key.as_ref()) {
-                cache.put(layer_key, &layer.to_bytes());
+            let chart_outputs: Vec<Vec<LayerTexel>> = work_items
+                .par_iter()
+                .map(|&(chart_index, light)| {
+                    lightmap_layer::bake_light_layer_chart_controlled(
+                        light,
+                        shared,
+                        chart_index,
+                        bvh,
+                        primitives,
+                        geometry,
+                        area_sample_count,
+                        control,
+                    )
+                })
+                .collect();
+            let mut chart_outputs = chart_outputs.into_iter();
+            for compact_light_index in batch_start..batch_end {
+                for _ in 0..target_charts.len() {
+                    let chart_texels = chart_outputs
+                        .next()
+                        .expect("one ordered output is required for every chart task");
+                    fill.write_texels(compact_light_index, &chart_texels);
+                }
+                if target_layer + 1 == layer_count && compact_light_index != 0 {
+                    control.advance(1);
+                }
             }
-            let compact_light_index = batch_start + batch_light_index;
-            batch_membership[batch_light_index] =
-                Some(collect_layer_membership(compact_light_index, &layer, plane));
+            debug_assert!(chart_outputs.next().is_none());
         }
-        debug_assert!(
-            chart_outputs.next().is_none(),
-            "every chart output must join exactly one selected light"
-        );
-        debug_assert!(
-            raw_output_guards.next().is_none(),
-            "every cold light payload must release exactly one residency guard"
-        );
-
-        // Batch concatenation follows the fixed compact selection order rather
-        // than work completion order. Coloring runs only after every batch has
-        // populated this global membership.
-        for (batch_light_index, entries) in batch_membership.into_iter().enumerate() {
-            membership.by_light[batch_start + batch_light_index] = entries
-                .expect("each selected light must provide cached or freshly baked membership");
-        }
-
-        batch_start += batch_len;
-        // Chart items and full-layer guards have all released their governed
-        // permits or residency accounting by this point.
         control.governor().checkpoint();
     }
-
-    // Keep the assignment barrier cooperative too, including the empty-chart
-    // case where no governed chart item had a chance to observe a pause.
-    control.governor().checkpoint();
-    membership
 }
 
-/// Read or bake exactly one `(selected light, atlas layer)` cache partition at
-/// a time, compact its raw visibility into membership, then drop it. This keeps
-/// shadowmask's raw-visibility consumer aligned with the lightmap cache grain.
+/// Read or bake exactly one `(atlas layer, selected light)` cache partition,
+/// write it into the final output, then drop it. Every selected partition is
+/// populated in the cache even when global coloring drops the light.
 #[allow(clippy::too_many_arguments)]
-fn collect_cached_shadowmask_membership_by_partition(
+fn fill_cached_shadowmask_partitions(
+    fill: &mut ShadowmaskFill,
     selected: &[(usize, u32, &MapLight)],
     shared: &SharedAtlas<'_>,
     bvh: &bvh::bvh::Bvh<f32, 3>,
@@ -820,22 +939,18 @@ fn collect_cached_shadowmask_membership_by_partition(
     cache: &StageCache,
     layer_input_hashes: &[Vec<[u8; 32]>],
     control: &BakeControl,
-    resident_layers: &ResidentLayerTracker,
-) -> ShadowmaskMembership {
+) {
     let layer_count = layer_count_from_shared(shared);
     debug_assert_eq!(
         selected.len(),
         layer_input_hashes.len(),
         "selected light/hash partitions must align after invalid selections are filtered"
     );
-    let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
-    let mut membership = ShadowmaskMembership::for_light_count(selected.len());
-
-    for (compact_light_index, ((_, alpha_index, light), hashes)) in
-        selected.iter().zip(layer_input_hashes).enumerate()
-    {
-        debug_assert_eq!(hashes.len(), layer_count as usize);
-        for target_layer in 0..layer_count {
+    for target_layer in 0..layer_count {
+        for (compact_light_index, ((_, alpha_index, light), hashes)) in
+            selected.iter().zip(layer_input_hashes).enumerate()
+        {
+            debug_assert_eq!(hashes.len(), layer_count as usize);
             let target_chart_count = shared
                 .placements
                 .iter()
@@ -884,20 +999,14 @@ fn collect_cached_shadowmask_membership_by_partition(
                     partition
                 }
             };
-            let _resident_partition = resident_layers.acquire();
-            membership.by_light[compact_light_index].extend(collect_layer_membership(
-                compact_light_index,
-                &partition,
-                plane,
-            ));
-            // The compact membership owns the raw values it needs; discard the
-            // full cache partition before reading or baking the next one.
+            fill.write_partition(compact_light_index, &partition);
             drop(partition);
+            if target_layer + 1 == layer_count && compact_light_index != 0 {
+                control.advance(1);
+            }
         }
         control.governor().checkpoint();
     }
-
-    membership
 }
 
 fn invalid_selected_light_hash(alpha_index: u32, target_layer: u32) -> [u8; 32] {
@@ -936,62 +1045,6 @@ fn validate_cached_shadowmask_section(
     Ok(())
 }
 
-fn validate_cached_lightmap_layer(
-    layer: &LightmapLayer,
-    shared: &SharedAtlas<'_>,
-    layer_count: u32,
-) -> Result<(), String> {
-    if layer.atlas_width != shared.atlas_width || layer.atlas_height != shared.atlas_height {
-        return Err(format!(
-            "dimensions {}x{} != {}x{}",
-            layer.atlas_width, layer.atlas_height, shared.atlas_width, shared.atlas_height
-        ));
-    }
-    if layer.layer_count != layer_count {
-        return Err(format!(
-            "layer_count {} != {}",
-            layer.layer_count, layer_count
-        ));
-    }
-
-    let Some(plane) = (shared.atlas_width as usize).checked_mul(shared.atlas_height as usize)
-    else {
-        return Err("atlas dimensions overflow texel plane size".to_string());
-    };
-    let Some(texel_count) = plane.checked_mul(layer_count as usize) else {
-        return Err("atlas layer count overflows addressable texels".to_string());
-    };
-    for (texel_index, texel) in layer.texels.iter().enumerate() {
-        if texel.layer >= layer_count {
-            return Err(format!(
-                "texel {texel_index} layer {} out of bounds for {} layers",
-                texel.layer, layer_count
-            ));
-        }
-        if texel.idx as usize >= plane {
-            return Err(format!(
-                "texel {texel_index} idx {} out of bounds for {} texels",
-                texel.idx, plane
-            ));
-        }
-        let Some(global_texel_index) = (texel.layer as usize)
-            .checked_mul(plane)
-            .and_then(|offset| offset.checked_add(texel.idx as usize))
-        else {
-            return Err(format!(
-                "texel {texel_index} layer-major index exceeds addressable memory"
-            ));
-        };
-        if global_texel_index >= texel_count {
-            return Err(format!(
-                "texel {texel_index} layer-major index {global_texel_index} out of bounds for {texel_count} texels"
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn build_shadowmask_from_layers(
     width: u32,
     height: u32,
@@ -1000,211 +1053,186 @@ fn build_shadowmask_from_layers(
     selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
 ) -> ShadowmaskAtlasSection {
-    let plane = texel_plane_len(width, height);
-    let mut membership = ShadowmaskMembership::for_light_count(layers.len());
-    for (compact_light_index, layer) in layers.iter().enumerate() {
-        record_layer_membership(&mut membership, compact_light_index, layer, plane);
-    }
-    build_shadowmask_from_membership(
+    debug_assert_eq!(selected.len(), layers.len());
+    let graph = overlap_graph_from_layers(layers);
+    let mut fill = ShadowmaskFill::new(
         width,
         height,
-        layer_count,
+        layer_count as u32,
         selected_light_count,
         selected,
-        &membership,
-    )
-}
-
-fn record_layer_membership(
-    membership: &mut ShadowmaskMembership,
-    compact_light_index: usize,
-    layer: &LightmapLayer,
-    plane: usize,
-) {
-    membership.by_light[compact_light_index] =
-        collect_layer_membership(compact_light_index, layer, plane);
-}
-
-fn collect_layer_membership(
-    compact_light_index: usize,
-    layer: &LightmapLayer,
-    plane: usize,
-) -> Vec<ShadowmaskMembershipTexel> {
-    let mut entries = Vec::with_capacity(layer.texels.len());
-    for texel in &layer.texels {
-        // This is deliberately the legacy skip predicate. NaN is retained
-        // because `NaN < 0.0` is false; cache payloads permit NaN.
-        if texel.raw_visibility < 0.0 {
-            continue;
-        }
-        let layer_offset = (texel.layer as usize)
-            .checked_mul(plane)
-            .expect("shadowmask layer texel index exceeds addressable memory");
-        let global_texel_index = layer_offset
-            .checked_add(texel.idx as usize)
-            .expect("shadowmask global texel index exceeds addressable memory");
-        entries.push(ShadowmaskMembershipTexel {
-            global_texel_index,
-            compact_light_index: compact_light_index as u32,
-            raw_visibility: texel.raw_visibility,
-        });
-    }
-    entries
-}
-
-fn build_shadowmask_from_membership(
-    width: u32,
-    height: u32,
-    layer_count: usize,
-    selected_light_count: usize,
-    selected: &[(usize, u32, &MapLight)],
-    membership: &ShadowmaskMembership,
-) -> ShadowmaskAtlasSection {
-    build_shadowmask_from_membership_controlled(
-        width,
-        height,
-        layer_count,
-        selected_light_count,
-        selected,
-        membership,
-        None,
-    )
-}
-
-fn build_shadowmask_from_membership_controlled(
-    width: u32,
-    height: u32,
-    layer_count: usize,
-    selected_light_count: usize,
-    selected: &[(usize, u32, &MapLight)],
-    membership: &ShadowmaskMembership,
-    control: Option<&BakeControl>,
-) -> ShadowmaskAtlasSection {
-    // With progress enabled, compact light zero's fill unit remains pending so
-    // the top-level caller can advance it after any section-cache write. This
-    // keeps 100% synonymous with completion of the whole stage.
-    build_shadowmask_from_membership_with_assignment_checkpoint(
-        width,
-        height,
-        layer_count,
-        selected_light_count,
-        selected,
-        membership,
-        control,
-        || {
-            if let Some(control) = control {
-                control.governor().checkpoint();
-            }
-        },
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_shadowmask_from_membership_with_assignment_checkpoint(
-    width: u32,
-    height: u32,
-    layer_count: usize,
-    selected_light_count: usize,
-    selected: &[(usize, u32, &MapLight)],
-    membership: &ShadowmaskMembership,
-    control: Option<&BakeControl>,
-    assignment_checkpoint: impl FnOnce(),
-) -> ShadowmaskAtlasSection {
-    debug_assert_eq!(
-        selected.len(),
-        membership.by_light.len(),
-        "shadowmask selected light/membership slices must align"
-    );
-
-    let texel_count = texel_plane_len(width, height)
-        .checked_mul(layer_count)
-        .expect("shadowmask atlas texel count exceeds addressable memory");
-    // No governed work item is active here: every chart batch completed before
-    // this serial global assignment barrier.
-    assignment_checkpoint();
-    let graph = overlap_graph_controlled(membership, || {
-        if let Some(control) = control {
-            control.governor().checkpoint();
-        }
-    });
-    let assignment = assign_channels_with_drops_controlled(
         &graph,
-        selected,
-        SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
-        || {
-            if let Some(control) = control {
-                control.governor().checkpoint();
-            }
-        },
+        None,
+        None,
     );
-    let compact_channels = assignment.channels;
-    if let Some(control) = control.filter(|_| !selected.is_empty()) {
-        control.advance(1);
+    for (compact_light_index, layer) in layers.iter().enumerate() {
+        fill.write_partition(compact_light_index, layer);
     }
-    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count];
-    for (compact_index, &(selection_index, _, _)) in selected.iter().enumerate() {
-        if selection_index < channels.len() {
-            channels[selection_index] = compact_channels
-                .get(compact_index)
-                .copied()
-                .unwrap_or(SHADOWMASK_CHANNEL_DROPPED);
+    fill.finish()
+}
+
+fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
+    raw_visibility.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
+}
+
+fn overlap_graph_from_layers(layers: &[LightmapLayer]) -> OverlapGraph {
+    let graph = OverlapGraph::new(layers.len());
+    for a in 0..layers.len() {
+        for b in a + 1..layers.len() {
+            if layers_overlap(&layers[a], &layers[b]) {
+                graph.mark_overlap(a, b);
+            }
         }
     }
+    graph
+}
 
-    let data_len = texel_count
-        .checked_mul(4)
-        .expect("shadowmask atlas byte count exceeds addressable memory");
-    let data: Vec<AtomicU8> = (0..data_len).map(|_| AtomicU8::new(255)).collect();
-    membership
-        .by_light
-        .par_iter()
-        .enumerate()
-        .for_each(|(compact_index, mask)| {
-            let channel = compact_channels
-                .get(compact_index)
-                .copied()
-                .unwrap_or(SHADOWMASK_CHANNEL_DROPPED);
-            if channel == SHADOWMASK_CHANNEL_DROPPED {
-                if compact_index != 0 {
-                    if let Some(control) = control {
-                        control.advance(1);
-                    }
-                }
-                return;
-            }
-            for chunk in mask.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
-                // Fill is intentionally ungoverned, but remains cooperative
-                // for long masks. It never enters the governor or waits on a
-                // governed chart item.
+fn layers_overlap(a: &LightmapLayer, b: &LightmapLayer) -> bool {
+    a.texels.iter().any(|a_texel| {
+        raw_visibility_is_covered(a_texel.raw_visibility)
+            && b.texels.iter().any(|b_texel| {
+                raw_visibility_is_covered(b_texel.raw_visibility)
+                    && a_texel.layer == b_texel.layer
+                    && a_texel.idx == b_texel.idx
+            })
+    })
+}
+
+struct ShadowmaskFill<'a> {
+    width: u32,
+    height: u32,
+    layer_count: u32,
+    plane: usize,
+    compact_channels: Vec<u8>,
+    channels: Vec<u8>,
+    data: Vec<u8>,
+    control: Option<&'a BakeControl>,
+    resident_layers: Option<&'a ResidentLayerTracker>,
+}
+
+impl<'a> ShadowmaskFill<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+        selected_light_count: usize,
+        selected: &[(usize, u32, &MapLight)],
+        graph: &OverlapGraph,
+        control: Option<&'a BakeControl>,
+        resident_layers: Option<&'a ResidentLayerTracker>,
+    ) -> Self {
+        Self::new_with_assignment_checkpoint(
+            width,
+            height,
+            layer_count,
+            selected_light_count,
+            selected,
+            graph,
+            control,
+            resident_layers,
+            || {
                 if let Some(control) = control {
                     control.governor().checkpoint();
                 }
-                for texel in chunk {
-                    debug_assert_eq!(texel.compact_light_index as usize, compact_index);
-                    let visibility = (texel.raw_visibility.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-                    let offset = shadowmask_data_offset(texel.global_texel_index, channel)
-                        .expect("shadowmask texel byte offset exceeds addressable memory");
-                    // An overlap is a graph edge, so coloring gives those lights
-                    // different channels and therefore different byte offsets.
-                    // Same-channel lights have no shared texel, making these
-                    // parallel stores disjoint by construction.
-                    data[offset].store(visibility, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            if compact_index != 0 {
-                if let Some(control) = control {
-                    control.advance(1);
-                }
-            }
-        });
-    let data = data.into_iter().map(AtomicU8::into_inner).collect();
+            },
+        )
+    }
 
-    ShadowmaskAtlasSection {
-        width,
-        height,
-        layer_count: layer_count as u32,
-        channels,
-        data,
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_assignment_checkpoint(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+        selected_light_count: usize,
+        selected: &[(usize, u32, &MapLight)],
+        graph: &OverlapGraph,
+        control: Option<&'a BakeControl>,
+        resident_layers: Option<&'a ResidentLayerTracker>,
+        assignment_checkpoint: impl FnOnce(),
+    ) -> Self {
+        debug_assert_eq!(selected.len(), graph.light_count());
+        assignment_checkpoint();
+        let assignment = assign_channels_with_drops_controlled(
+            graph,
+            selected,
+            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+            || {
+                if let Some(control) = control {
+                    control.governor().checkpoint();
+                }
+            },
+        );
+        let compact_channels = assignment.channels;
+        if let Some(control) = control.filter(|_| !selected.is_empty()) {
+            control.advance(1);
+        }
+        let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count];
+        for (compact_index, &(selection_index, _, _)) in selected.iter().enumerate() {
+            if selection_index < channels.len() {
+                channels[selection_index] = compact_channels[compact_index];
+            }
+        }
+        let plane = texel_plane_len(width, height);
+        let data_len = plane
+            .checked_mul(layer_count as usize)
+            .and_then(|texels| texels.checked_mul(4))
+            .expect("shadowmask atlas byte count exceeds addressable memory");
+
+        Self {
+            width,
+            height,
+            layer_count,
+            plane,
+            compact_channels,
+            channels,
+            data: allocate_shadowmask_output(data_len),
+            control,
+            resident_layers,
+        }
+    }
+
+    fn write_partition(&mut self, compact_light_index: usize, partition: &LightmapLayer) {
+        // Count the actual full partition at its consumer boundary. The cold
+        // path's chart payloads are already charged, so assembling a partition
+        // on top of them would raise the measured high-water mark above W.
+        let _resident_partition = self.resident_layers.map(ResidentLayerTracker::acquire);
+        self.write_texels(compact_light_index, &partition.texels);
+    }
+
+    fn write_texels(&mut self, compact_light_index: usize, texels: &[LayerTexel]) {
+        let channel = self.compact_channels[compact_light_index];
+        if channel == SHADOWMASK_CHANNEL_DROPPED {
+            return;
+        }
+        for chunk in texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
+            if let Some(control) = self.control {
+                control.governor().checkpoint();
+            }
+            for texel in chunk {
+                if !raw_visibility_is_covered(texel.raw_visibility) {
+                    continue;
+                }
+                let global_texel_index = (texel.layer as usize)
+                    .checked_mul(self.plane)
+                    .and_then(|offset| offset.checked_add(texel.idx as usize))
+                    .expect("shadowmask global texel index exceeds addressable memory");
+                let offset = shadowmask_data_offset(global_texel_index, channel)
+                    .expect("shadowmask texel byte offset exceeds addressable memory");
+                let visibility = (texel.raw_visibility.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                self.data[offset] = visibility;
+            }
+        }
+    }
+
+    fn finish(self) -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection {
+            width: self.width,
+            height: self.height,
+            layer_count: self.layer_count,
+            channels: self.channels,
+            data: self.data,
+        }
     }
 }
 
@@ -1221,402 +1249,16 @@ fn shadowmask_data_offset(global_texel_index: usize, channel: u8) -> Option<usiz
 }
 
 #[cfg(test)]
-fn overlap_graph(membership: &ShadowmaskMembership) -> Vec<Vec<bool>> {
-    overlap_graph_controlled(membership, || {})
-}
-
-fn overlap_graph_controlled(
-    membership: &ShadowmaskMembership,
-    mut checkpoint: impl FnMut(),
-) -> Vec<Vec<bool>> {
-    let mut graph = vec![vec![false; membership.by_light.len()]; membership.by_light.len()];
-    let mut texel_lights: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut operation_count = 0;
-    for (compact_light_index, entries) in membership.by_light.iter().enumerate() {
-        for entry in entries {
-            record_assignment_operation(&mut operation_count, &mut checkpoint);
-            debug_assert_eq!(entry.compact_light_index as usize, compact_light_index);
-            texel_lights
-                .entry(entry.global_texel_index)
-                .or_default()
-                .push(compact_light_index);
-        }
-    }
-    for lights in texel_lights.values() {
-        for (pos, &a) in lights.iter().enumerate() {
-            for &b in &lights[pos + 1..] {
-                record_assignment_operation(&mut operation_count, &mut checkpoint);
-                if a == b {
-                    continue;
-                }
-                graph[a][b] = true;
-                graph[b][a] = true;
-            }
-        }
-    }
-    graph
-}
-
-fn record_assignment_operation(operation_count: &mut usize, checkpoint: &mut impl FnMut()) {
-    *operation_count = (*operation_count).saturating_add(1);
-    if *operation_count % SHADOWMASK_ASSIGNMENT_CHECKPOINT_OPERATIONS == 0 {
-        checkpoint();
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ChannelAssignment {
-    channels: Vec<u8>,
-    exact_nodes_visited: usize,
-    fallback_lights_considered: usize,
-    fallback_operations: usize,
-    used_fallback: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExactColorResult {
-    Colored,
-    Uncolorable,
-    BudgetExhausted,
-}
-
-struct ExactColorBudget {
-    remaining: usize,
-    visited: usize,
-}
-
-impl ExactColorBudget {
-    fn new(nodes: usize) -> Self {
-        Self {
-            remaining: nodes,
-            visited: 0,
-        }
-    }
-
-    fn visit(&mut self, operation_count: &mut usize, checkpoint: &mut impl FnMut()) -> bool {
-        if self.remaining == 0 {
-            return false;
-        }
-        self.remaining -= 1;
-        self.visited += 1;
-        record_assignment_operation(operation_count, checkpoint);
-        true
-    }
-}
-
-fn assign_channels_with_drops_controlled(
-    graph: &[Vec<bool>],
-    selected: &[(usize, u32, &MapLight)],
-    exact_node_budget: usize,
-    mut checkpoint: impl FnMut(),
-) -> ChannelAssignment {
-    let mut active = vec![true; graph.len()];
-    let mut budget = ExactColorBudget::new(exact_node_budget);
-    let mut operation_count = 0;
-
-    if exact_node_budget != 0 {
-        loop {
-            checkpoint();
-            let (result, channels) = color_graph_exact_bounded(
-                graph,
-                &active,
-                &mut budget,
-                &mut operation_count,
-                &mut checkpoint,
-            );
-            match result {
-                ExactColorResult::Colored => {
-                    return finish_channel_assignment(
-                        channels,
-                        &active,
-                        budget.visited,
-                        0,
-                        0,
-                        false,
-                    );
-                }
-                ExactColorResult::Uncolorable => {
-                    let Some(drop_index) = lowest_intensity_active(selected, &active) else {
-                        return finish_channel_assignment(
-                            vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()],
-                            &active,
-                            budget.visited,
-                            0,
-                            0,
-                            false,
-                        );
-                    };
-                    active[drop_index] = false;
-                    continue;
-                }
-                ExactColorResult::BudgetExhausted => {
-                    log::warn!(
-                        "[ShadowmaskAtlas] exact channel search exhausted its deterministic {exact_node_budget}-node budget; using conservative fallback"
-                    );
-                    break;
-                }
-            }
-        }
-    } else {
-        log::warn!(
-            "[ShadowmaskAtlas] exact channel search exhausted its deterministic 0-node budget; using conservative fallback"
-        );
-    }
-
-    checkpoint();
-    let fallback_start_operations = operation_count;
-    let (channels, fallback_lights_considered) = color_graph_priority_greedy(
-        graph,
-        selected,
-        &mut active,
-        &mut operation_count,
-        &mut checkpoint,
-    );
-    finish_channel_assignment(
-        channels,
-        &active,
-        budget.visited,
-        fallback_lights_considered,
-        operation_count.saturating_sub(fallback_start_operations),
-        true,
-    )
-}
-
-fn finish_channel_assignment(
-    channels: Vec<u8>,
-    active: &[bool],
-    exact_nodes_visited: usize,
-    fallback_lights_considered: usize,
-    fallback_operations: usize,
-    used_fallback: bool,
-) -> ChannelAssignment {
-    let dropped: Vec<usize> = active
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &is_active)| (!is_active).then_some(i))
-        .collect();
-    if !dropped.is_empty() {
-        log::warn!(
-            "[ShadowmaskAtlas] dropped {} selected light mask(s) to obtain a four-channel assignment: {:?}",
-            dropped.len(),
-            dropped
-        );
-    }
-    ChannelAssignment {
-        channels,
-        exact_nodes_visited,
-        fallback_lights_considered,
-        fallback_operations,
-        used_fallback,
-    }
-}
-
-fn lowest_intensity_active(selected: &[(usize, u32, &MapLight)], active: &[bool]) -> Option<usize> {
-    active
-        .iter()
-        .enumerate()
-        .filter(|&(_, is_active)| *is_active)
-        .min_by(|&(a, _), &(b, _)| light_drop_priority_cmp(selected, a, b))
-        .map(|(i, _)| i)
-}
-
-fn light_drop_priority_cmp(
-    selected: &[(usize, u32, &MapLight)],
-    a: usize,
-    b: usize,
-) -> std::cmp::Ordering {
-    light_intensity_score(selected[a].2)
-        .total_cmp(&light_intensity_score(selected[b].2))
-        .then(selected[a].0.cmp(&selected[b].0))
-        .then(selected[a].1.cmp(&selected[b].1))
-}
-
-fn light_intensity_score(light: &MapLight) -> f32 {
-    light.intensity * light.color[0].max(light.color[1]).max(light.color[2])
-}
-
-fn color_graph_exact_bounded(
-    graph: &[Vec<bool>],
-    active: &[bool],
-    budget: &mut ExactColorBudget,
-    operation_count: &mut usize,
-    checkpoint: &mut impl FnMut(),
-) -> (ExactColorResult, Vec<u8>) {
-    let degrees = active_degrees(graph, active, operation_count, checkpoint);
-    let mut order: Vec<usize> = active
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &is_active)| is_active.then_some(i))
-        .collect();
-    order.sort_by(|&a, &b| degrees[b].cmp(&degrees[a]).then(a.cmp(&b)));
-
-    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
-    let result = color_order_exact_bounded_iterative(
-        graph,
-        active,
-        &order,
-        &mut channels,
-        budget,
-        operation_count,
-        checkpoint,
-    );
-    (result, channels)
-}
-
-#[derive(Clone, Copy)]
-struct ExactColorFrame {
-    cursor: usize,
-    next_channel: u8,
-    entered: bool,
-}
-
-fn color_order_exact_bounded_iterative(
-    graph: &[Vec<bool>],
-    active: &[bool],
-    order: &[usize],
-    channels: &mut [u8],
-    budget: &mut ExactColorBudget,
-    operation_count: &mut usize,
-    checkpoint: &mut impl FnMut(),
-) -> ExactColorResult {
-    let capacity = order
-        .len()
-        .saturating_add(1)
-        .min(budget.remaining.saturating_add(1));
-    let mut stack = Vec::with_capacity(capacity);
-    stack.push(ExactColorFrame {
-        cursor: 0,
-        next_channel: 0,
-        entered: false,
-    });
-
-    loop {
-        record_assignment_operation(operation_count, checkpoint);
-        let Some(frame) = stack.last_mut() else {
-            return ExactColorResult::Uncolorable;
-        };
-        if !frame.entered {
-            if !budget.visit(operation_count, checkpoint) {
-                return ExactColorResult::BudgetExhausted;
-            }
-            frame.entered = true;
-            if frame.cursor == order.len() {
-                return ExactColorResult::Colored;
-            }
-        }
-
-        let cursor = frame.cursor;
-        let light = order[cursor];
-        let mut selected_channel = None;
-        while frame.next_channel < 4 {
-            let channel = frame.next_channel;
-            frame.next_channel += 1;
-            let mut used_by_neighbor = false;
-            for other in 0..graph.len() {
-                record_assignment_operation(operation_count, checkpoint);
-                if other != light
-                    && active[other]
-                    && graph[light][other]
-                    && channels[other] == channel
-                {
-                    used_by_neighbor = true;
-                    break;
-                }
-            }
-            if !used_by_neighbor {
-                selected_channel = Some(channel);
-                break;
-            }
-        }
-
-        if let Some(channel) = selected_channel {
-            channels[light] = channel;
-            stack.push(ExactColorFrame {
-                cursor: cursor + 1,
-                next_channel: 0,
-                entered: false,
-            });
-            continue;
-        }
-
-        channels[light] = SHADOWMASK_CHANNEL_DROPPED;
-        stack.pop();
-        let Some(parent) = stack.last() else {
-            return ExactColorResult::Uncolorable;
-        };
-        if parent.cursor < order.len() {
-            channels[order[parent.cursor]] = SHADOWMASK_CHANNEL_DROPPED;
-        }
-    }
-}
-
-fn color_graph_priority_greedy(
-    graph: &[Vec<bool>],
-    selected: &[(usize, u32, &MapLight)],
-    active: &mut [bool],
-    operation_count: &mut usize,
-    checkpoint: &mut impl FnMut(),
-) -> (Vec<u8>, usize) {
-    let mut order: Vec<usize> = active
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &is_active)| is_active.then_some(index))
-        .collect();
-    order.sort_by(|&a, &b| light_drop_priority_cmp(selected, b, a));
-
-    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; graph.len()];
-    for &light in &order {
-        record_assignment_operation(operation_count, checkpoint);
-        let mut used = [false; 4];
-        for other in 0..graph.len() {
-            record_assignment_operation(operation_count, checkpoint);
-            if other != light && graph[light][other] {
-                let channel = channels[other] as usize;
-                if channel < used.len() {
-                    used[channel] = true;
-                }
-            }
-        }
-        if let Some(channel) = used.iter().position(|&is_used| !is_used) {
-            channels[light] = channel as u8;
-        } else {
-            active[light] = false;
-        }
-    }
-
-    (channels, order.len())
-}
-
-fn active_degrees(
-    graph: &[Vec<bool>],
-    active: &[bool],
-    operation_count: &mut usize,
-    checkpoint: &mut impl FnMut(),
-) -> Vec<usize> {
-    let mut degrees = vec![0; graph.len()];
-    for light in 0..graph.len() {
-        if !active[light] {
-            continue;
-        }
-        for other in 0..graph.len() {
-            record_assignment_operation(operation_count, checkpoint);
-            if other != light && active[other] && graph[light][other] {
-                degrees[light] += 1;
-            }
-        }
-    }
-    degrees
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::bake_control::BakeControl;
     use crate::bvh_build::build_bvh;
     use crate::chart_raster::ChartPlacement;
+    use crate::entity_shadow_select::{EntityShadowSelectionInputs, select_entity_shadow_lights};
+    use crate::fixture_pipeline::load_fixture;
     use crate::governor::Governor;
     use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-    use crate::lightmap_bake::{Chart, prepare_atlas};
+    use crate::lightmap_bake::{Chart, light_texel_is_covered, prepare_atlas};
     use crate::lightmap_layer::{LayerTexel, bake_light_layer};
     use crate::map_data::{FalloffModel, LightType, ShadowType};
     use crate::reporter::StageProgress;
@@ -1649,25 +1291,20 @@ mod tests {
         }
     }
 
-    fn graph_with_edges(light_count: usize, edges: &[(usize, usize)]) -> Vec<Vec<bool>> {
-        let mut graph = vec![vec![false; light_count]; light_count];
-        for &(a, b) in edges {
-            graph[a][b] = true;
-            graph[b][a] = true;
-        }
-        graph
+    fn graph_with_edges(light_count: usize, edges: &[(usize, usize)]) -> OverlapGraph {
+        OverlapGraph::from_edges(light_count, edges)
     }
 
-    fn assert_valid_channel_assignment(graph: &[Vec<bool>], channels: &[u8]) {
-        assert_eq!(graph.len(), channels.len());
-        for (light, neighbors) in graph.iter().enumerate() {
+    fn assert_valid_channel_assignment(graph: &OverlapGraph, channels: &[u8]) {
+        assert_eq!(graph.light_count(), channels.len());
+        for light in 0..graph.light_count() {
             let channel = channels[light];
             assert!(channel < 4 || channel == SHADOWMASK_CHANNEL_DROPPED);
             if channel == SHADOWMASK_CHANNEL_DROPPED {
                 continue;
             }
-            for (other, &adjacent) in neighbors.iter().enumerate().skip(light + 1) {
-                if adjacent && channels[other] != SHADOWMASK_CHANNEL_DROPPED {
+            for other in light + 1..graph.light_count() {
+                if graph.overlaps(light, other) && channels[other] != SHADOWMASK_CHANNEL_DROPPED {
                     assert_ne!(channel, channels[other]);
                 }
             }
@@ -2169,6 +1806,14 @@ mod tests {
         assert_eq!(section.channels, vec![0]);
         assert_eq!(section.data[0], 64);
         assert_eq!(section.data[4], 255);
+        assert_eq!(
+            section.to_bytes(),
+            vec![
+                2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 64, 255, 255, 255, 255,
+                255, 255, 255,
+            ],
+            "single-layer literal captured before the analytic restructure"
+        );
     }
 
     #[test]
@@ -2186,6 +1831,14 @@ mod tests {
 
         let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &layers);
 
+        let mut analytic_light = light(5.0);
+        analytic_light.origin = DVec3::new(0.5, 1.0, 0.5);
+        assert!(
+            light_texel_is_covered(&analytic_light, Vec3::new(0.5, 0.0, 0.5), Vec3::Y),
+            "NaN visibility is downstream of a positive analytic contribution"
+        );
+        assert!(raw_visibility_is_covered(f32::NAN));
+
         // NaN was historically included because the old code skipped only
         // values satisfying `raw_visibility < 0.0`. It must still create the
         // overlap edge (and quantizes with the established Rust cast behavior).
@@ -2196,30 +1849,19 @@ mod tests {
 
     #[cfg(target_pointer_width = "64")]
     #[test]
-    fn membership_indices_above_u32_do_not_alias_overlap_or_fill_offsets() {
+    fn layer_indices_above_u32_do_not_alias_overlap_or_fill_offsets() {
         let first = 0usize;
         let plane = texel_plane_len(8192, 8192);
         let after_u32 = 64usize * plane;
         assert_eq!(after_u32, u32::MAX as usize + 1);
-        let membership = ShadowmaskMembership {
-            by_light: vec![
-                vec![ShadowmaskMembershipTexel {
-                    global_texel_index: first,
-                    compact_light_index: 0,
-                    raw_visibility: 1.0,
-                }],
-                vec![ShadowmaskMembershipTexel {
-                    global_texel_index: after_u32,
-                    compact_light_index: 1,
-                    raw_visibility: 1.0,
-                }],
-            ],
-        };
-
-        let graph = overlap_graph(&membership);
+        let layers = vec![
+            layer(8192, 8192, 65, &[(0, 0, 1.0)]),
+            layer(8192, 8192, 65, &[(0, 64, 1.0)]),
+        ];
+        let graph = overlap_graph_from_layers(&layers);
 
         assert!(
-            !graph[0][1],
+            !graph.overlaps(0, 1),
             "distinct global texels must not gain a false overlap edge after u32"
         );
         assert_ne!(
@@ -2244,27 +1886,23 @@ mod tests {
             let control = BakeControl::new(worker_governor, &worker_progress);
             let light = light(1.0);
             let selected = vec![(0, 0, &light)];
-            let membership = ShadowmaskMembership {
-                by_light: vec![vec![ShadowmaskMembershipTexel {
-                    global_texel_index: 0,
-                    compact_light_index: 0,
-                    raw_visibility: 1.0,
-                }]],
-            };
-            let section = build_shadowmask_from_membership_with_assignment_checkpoint(
+            let graph = OverlapGraph::new(1);
+            let fill = ShadowmaskFill::new_with_assignment_checkpoint(
                 1,
                 1,
                 1,
                 1,
                 &selected,
-                &membership,
+                &graph,
                 Some(&control),
+                None,
                 || {
                     control.governor().checkpoint_with_wait_observer(|| {
                         waiting_tx.send(()).expect("test coordinator is waiting");
                     });
                 },
             );
+            let section = fill.finish();
             control.advance(1);
             finished_tx
                 .send(section)
@@ -2407,8 +2045,11 @@ mod tests {
 
         assert!(first.used_fallback);
         assert_eq!(first.exact_nodes_visited, 0);
-        assert_eq!(first.fallback_lights_considered, graph.len());
-        assert_eq!(first.fallback_operations, graph.len() * (graph.len() + 1));
+        assert_eq!(first.fallback_lights_considered, graph.light_count());
+        assert_eq!(
+            first.fallback_operations,
+            graph.light_count() * (graph.light_count() + 1)
+        );
         assert!(checkpoint_count > 0, "fallback must remain cooperative");
         assert_eq!(first.channels, second.channels);
         assert_ne!(first.channels[0], SHADOWMASK_CHANNEL_DROPPED);
@@ -2473,10 +2114,10 @@ mod tests {
 
         assert!(assignment.used_fallback);
         assert_eq!(assignment.exact_nodes_visited, 1);
-        assert_eq!(assignment.fallback_lights_considered, graph.len());
+        assert_eq!(assignment.fallback_lights_considered, graph.light_count());
         assert_eq!(
             assignment.fallback_operations,
-            graph.len() * (graph.len() + 1)
+            graph.light_count() * (graph.light_count() + 1)
         );
         assert_valid_channel_assignment(&graph, &assignment.channels);
     }
@@ -2484,7 +2125,7 @@ mod tests {
     #[test]
     fn iterative_exact_search_handles_large_colorable_order_without_call_stack_depth() {
         const LIGHT_COUNT: usize = 4096;
-        let graph = vec![vec![false; LIGHT_COUNT]; LIGHT_COUNT];
+        let graph = OverlapGraph::new(LIGHT_COUNT);
         let active = vec![true; LIGHT_COUNT];
         let mut budget = ExactColorBudget::new(LIGHT_COUNT + 1);
         let mut operation_count = 0;
@@ -2501,31 +2142,6 @@ mod tests {
         assert_eq!(result, ExactColorResult::Colored);
         assert_eq!(budget.visited, LIGHT_COUNT + 1);
         assert!(channels.iter().all(|&channel| channel == 0));
-    }
-
-    #[test]
-    fn dense_graph_construction_checkpoints_inside_edge_pairs() {
-        const LIGHT_COUNT: usize = 48;
-        let membership = ShadowmaskMembership {
-            by_light: (0..LIGHT_COUNT)
-                .map(|compact_light_index| {
-                    vec![ShadowmaskMembershipTexel {
-                        global_texel_index: 0,
-                        compact_light_index: compact_light_index as u32,
-                        raw_visibility: 1.0,
-                    }]
-                })
-                .collect(),
-        };
-        let mut checkpoints = 0;
-
-        let graph = overlap_graph_controlled(&membership, || checkpoints += 1);
-
-        assert!(graph[0][LIGHT_COUNT - 1]);
-        assert!(
-            checkpoints >= 1,
-            "dense per-texel edge construction must reach its inner-work checkpoint"
-        );
     }
 
     #[test]
@@ -2595,6 +2211,708 @@ mod tests {
             4
         );
         assert_valid_channel_assignment(&graph, &channels);
+    }
+
+    #[test]
+    fn analytic_coverage_matches_baked_coverage_on_multilayer_golden() {
+        let (geometry, bvh, primitives, charts, placements, lights, _) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+
+        for test_light in &lights {
+            let baked = lightmap_layer::bake_light_layer(
+                test_light,
+                &shared,
+                &bvh,
+                &primitives,
+                &geometry,
+                AREA_SAMPLES,
+                &test_control(),
+            );
+            let baked_coverage: Vec<_> = baked
+                .texels
+                .iter()
+                .filter(|texel| !(texel.raw_visibility < 0.0))
+                .map(|texel| (texel.layer, texel.idx))
+                .collect();
+            let mut analytic_coverage = Vec::new();
+            for chart_index in 0..shared.placements.len() {
+                lightmap_layer::visit_light_chart_coverage_controlled(
+                    test_light,
+                    &shared,
+                    chart_index,
+                    &test_control(),
+                    |texel| analytic_coverage.push((texel.layer, texel.idx)),
+                );
+            }
+
+            assert_eq!(analytic_coverage, baked_coverage);
+        }
+    }
+
+    #[test]
+    fn shadowmask_graph_storage_is_one_byte_per_light_pair() {
+        let graph = OverlapGraph::new(338);
+
+        assert_eq!(graph.storage_bytes(), 338 * 338);
+        assert_eq!(graph.storage_bytes(), 114_244);
+    }
+
+    #[test]
+    fn shadowmask_graph_storage_is_layer_count_independent() {
+        let one_layer_graph = OverlapGraph::new(37);
+        let many_layer_graph = OverlapGraph::new(37);
+
+        assert_eq!(one_layer_graph.storage_bytes(), 37 * 37);
+        assert_eq!(many_layer_graph.storage_bytes(), 37 * 37);
+    }
+
+    #[test]
+    fn shadowmask_chart_prune_is_coverage_superset() {
+        let mut near = light(5.0);
+        near.origin = DVec3::new(0.5, 1.0, 0.5);
+        let mut remote = light(4.0);
+        remote.origin = DVec3::new(100.5, 1.0, 0.5);
+        let mut unreachable = light(3.0);
+        unreachable.origin = DVec3::new(500.5, 1.0, 0.5);
+        let lights = vec![near, remote, unreachable];
+
+        let mut remote_chart = one_texel_chart();
+        remote_chart.origin = Vec3::new(100.0, 0.0, 0.0);
+        let charts = vec![one_texel_chart(), remote_chart];
+        let placements = vec![
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 0,
+            },
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 1,
+            },
+        ];
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let geometry = quad_geometry();
+        let world_aabb = lightmap_layer::geometry_world_aabb(&geometry);
+        let mut rejected_pairs = 0;
+
+        for (chart_index, chart) in charts.iter().enumerate() {
+            let chart_aabb = chart_world_aabb(chart);
+            for test_light in &lights {
+                if chart_may_receive_light(test_light, chart_aabb, world_aabb) {
+                    continue;
+                }
+                rejected_pairs += 1;
+                let mut covered_texels = 0;
+                lightmap_layer::for_each_light_layer_chart_texel(&shared, chart_index, |sample| {
+                    covered_texels += usize::from(light_texel_is_covered(
+                        test_light,
+                        sample.world_p,
+                        sample.surface_normal,
+                    ));
+                });
+                assert_eq!(
+                    covered_texels, 0,
+                    "a rejected light/chart pair contained analytic coverage"
+                );
+            }
+        }
+
+        assert!(rejected_pairs > 0, "fixture must exercise prune rejection");
+    }
+
+    // Regression: pruning used the f64 source origin while coverage rounded it
+    // to f32, dropping a finite high-coordinate overlap edge and its masks.
+    #[test]
+    fn shadowmask_chart_prune_preserves_high_coordinate_coverage_edge_and_masks() {
+        let mut chart = one_texel_chart();
+        chart.origin = Vec3::new(16_777_216.0, 0.0, 0.0);
+        let charts = vec![chart];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let mut rounded_origin = light(5.0);
+        rounded_origin.origin = DVec3::new(16_777_217.0, 0.05, 0.5);
+        rounded_origin.falloff_range = 0.1;
+        let mut exact_origin = light(4.0);
+        exact_origin.origin = DVec3::new(16_777_216.0, 0.05, 0.5);
+        exact_origin.falloff_range = 0.1;
+        let lights = vec![rounded_origin, exact_origin];
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let geometry = quad_geometry();
+        let world_aabb = lightmap_layer::geometry_world_aabb(&geometry);
+
+        assert!(chart_may_receive_light(
+            &lights[0],
+            chart_world_aabb(&charts[0]),
+            world_aabb,
+        ));
+
+        let mut shared_covered_texel = None;
+        lightmap_layer::for_each_light_layer_chart_texel(&shared, 0, |sample| {
+            if light_texel_is_covered(&lights[0], sample.world_p, sample.surface_normal)
+                && light_texel_is_covered(&lights[1], sample.world_p, sample.surface_normal)
+            {
+                shared_covered_texel = Some((sample.idx, sample.layer));
+            }
+        });
+        let (covered_idx, covered_layer) =
+            shared_covered_texel.expect("both lights must cover one chart texel");
+
+        let chart_order = [0];
+        let (pruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            true,
+        );
+        let (unpruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            false,
+        );
+
+        assert!(pruned_graph.overlaps(0, 1));
+        assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
+
+        let layers = [
+            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.25)]),
+            layer(5, 5, 1, &[(covered_idx, covered_layer, 0.5)]),
+        ];
+        let mut fill = ShadowmaskFill::new(5, 5, 1, 2, &selected, &pruned_graph, None, None);
+        for (compact_index, layer) in layers.iter().enumerate() {
+            fill.write_partition(compact_index, layer);
+        }
+        let section = fill.finish();
+        let first_channel = section.channels[0];
+        let second_channel = section.channels[1];
+        let global_texel_index = covered_idx as usize + covered_layer as usize * 25;
+
+        assert_ne!(first_channel, SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(second_channel, SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(first_channel, second_channel);
+        assert_eq!(
+            section.data[shadowmask_data_offset(global_texel_index, first_channel).unwrap()],
+            64
+        );
+        assert_eq!(
+            section.data[shadowmask_data_offset(global_texel_index, second_channel).unwrap()],
+            128
+        );
+    }
+
+    #[test]
+    fn pruned_zero_coverage_light_keeps_node_and_channel_table() {
+        let (geometry, bvh, primitives, charts, placements, mut lights, _) =
+            top_level_multilayer_five_way_inputs();
+        lights.truncate(2);
+        let mut remote = light(4.5);
+        remote.origin = DVec3::new(100.5, 1.0, 0.5);
+        lights.insert(1, remote);
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let chart_order: Vec<_> = (0..charts.len()).collect();
+        let (pruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            true,
+        );
+        let (unpruned_graph, _) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &geometry,
+            &test_control(),
+            &chart_order,
+            false,
+        );
+
+        assert_eq!(pruned_graph.light_count(), 3);
+        assert_eq!(pruned_graph.snapshot(), unpruned_graph.snapshot());
+        assert!(charts.iter().all(|chart| !chart_may_receive_light(
+            lights.get(1).expect("remote selected light"),
+            chart_world_aabb(chart),
+            lightmap_layer::geometry_world_aabb(&geometry),
+        )));
+
+        let layers: Vec<_> = lights
+            .iter()
+            .map(|test_light| {
+                lightmap_layer::bake_light_layer(
+                    test_light,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &geometry,
+                    AREA_SAMPLES,
+                    &test_control(),
+                )
+            })
+            .collect();
+        let mut pruned_fill = ShadowmaskFill::new(
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            lights.len(),
+            &selected,
+            &pruned_graph,
+            None,
+            None,
+        );
+        let mut unpruned_fill = ShadowmaskFill::new(
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            lights.len(),
+            &selected,
+            &unpruned_graph,
+            None,
+            None,
+        );
+        for (compact_index, layer) in layers.iter().enumerate() {
+            pruned_fill.write_partition(compact_index, layer);
+            unpruned_fill.write_partition(compact_index, layer);
+        }
+        let pruned_section = pruned_fill.finish();
+        let unpruned_section = unpruned_fill.finish();
+
+        assert_ne!(pruned_section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
+        assert_eq!(pruned_section.channels, unpruned_section.channels);
+        assert_eq!(pruned_section.to_bytes(), unpruned_section.to_bytes());
+    }
+
+    fn analytic_graph_fixture() -> (
+        GeometryResult,
+        Vec<Chart>,
+        Vec<ChartPlacement>,
+        Vec<MapLight>,
+    ) {
+        let mut remote_chart = one_texel_chart();
+        remote_chart.origin = Vec3::new(100.0, 0.0, 0.0);
+        let charts = vec![one_texel_chart(), one_texel_chart(), remote_chart];
+        let placements = vec![
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 0,
+            },
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 1,
+            },
+            ChartPlacement {
+                x: 0,
+                y: 0,
+                layer: 2,
+            },
+        ];
+        let mut lights = vec![light(5.0), light(4.0), light(3.0)];
+        lights[0].origin = DVec3::new(0.5, 1.0, 0.5);
+        lights[1].origin = DVec3::new(0.5, 1.0, 0.5);
+        lights[2].origin = DVec3::new(100.5, 1.0, 0.5);
+        (quad_geometry(), charts, placements, lights)
+    }
+
+    #[test]
+    fn analytic_graph_respects_cross_layer_overlap_and_disjoint_reuse() {
+        let (geometry, charts, placements, lights) = analytic_graph_fixture();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let graph = build_analytic_overlap_graph(&selected, &shared, &geometry, &test_control());
+        let assignment = assign_channels_with_drops_controlled(
+            &graph,
+            &selected,
+            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+            || {},
+        );
+
+        assert!(graph.overlaps(0, 1));
+        assert!(!graph.overlaps(0, 2));
+        assert!(!graph.overlaps(1, 2));
+        assert_ne!(assignment.channels[0], assignment.channels[1]);
+        assert!(assignment.channels[..2].contains(&assignment.channels[2]));
+    }
+
+    #[test]
+    fn analytic_graph_is_order_and_worker_count_independent() {
+        let (geometry, charts, placements, lights) = analytic_graph_fixture();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let forward: Vec<_> = (0..charts.len()).collect();
+        let reverse: Vec<_> = forward.iter().copied().rev().collect();
+        let one_worker = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let four_workers = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let (forward_graph, _) = one_worker.install(|| {
+            build_analytic_overlap_graph_in_order(
+                &selected,
+                &shared,
+                &geometry,
+                &test_control(),
+                &forward,
+                true,
+            )
+        });
+        let (reverse_graph, _) = four_workers.install(|| {
+            build_analytic_overlap_graph_in_order(
+                &selected,
+                &shared,
+                &geometry,
+                &test_control(),
+                &reverse,
+                true,
+            )
+        });
+
+        assert_eq!(forward_graph.snapshot(), reverse_graph.snapshot());
+        let forward_channels = assign_channels_with_drops_controlled(
+            &forward_graph,
+            &selected,
+            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+            || {},
+        )
+        .channels;
+        let reverse_channels = assign_channels_with_drops_controlled(
+            &reverse_graph,
+            &selected,
+            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+            || {},
+        )
+        .channels;
+        assert_eq!(forward_channels, reverse_channels);
+    }
+
+    #[test]
+    fn shadowmask_coloring_waits_for_complete_graph() {
+        let (geometry, charts, placements, lights) = analytic_graph_fixture();
+        let shared = SharedAtlas {
+            charts: &charts[..2],
+            placements: &placements[..2],
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let selected: Vec<_> = lights[..2]
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let progress = StageProgress::indeterminate();
+        let governor = Arc::new(Governor::new(1, false));
+        let control = BakeControl::new(Arc::clone(&governor), &progress);
+        let pool = ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let entries = Arc::new(AtomicUsize::new(0));
+        let (second_tx, second_rx) = mpsc::channel();
+        let released = Arc::new((Mutex::new(false), Condvar::new()));
+        let hook_entries = Arc::clone(&entries);
+        let hook_released = Arc::clone(&released);
+        governor.set_enter_hook(Arc::new(move || {
+            if hook_entries.fetch_add(1, Ordering::Relaxed) == 1 {
+                second_tx.send(()).unwrap();
+                let (lock, changed) = &*hook_released;
+                let released = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                drop(
+                    changed
+                        .wait_while(released, |released| !*released)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+            }
+        }));
+        let (coloring_tx, coloring_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let graph = pool.install(|| {
+                    build_analytic_overlap_graph(&selected, &shared, &geometry, &control)
+                });
+                coloring_tx.send(()).unwrap();
+                assign_channels_with_drops_controlled(
+                    &graph,
+                    &selected,
+                    SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
+                    || {},
+                )
+            });
+
+            second_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("second graph item did not reach its deterministic barrier");
+            assert_eq!(progress.completed(), 1);
+            assert!(matches!(
+                coloring_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            let (lock, changed) = &*released;
+            *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            changed.notify_all();
+            coloring_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("coloring did not start after the graph joined");
+        });
+    }
+
+    #[test]
+    fn shadowmask_progress_advances_during_graph_pass() {
+        let (geometry, charts, placements, lights) = analytic_graph_fixture();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+
+        build_analytic_overlap_graph(&selected, &shared, &geometry, &control);
+
+        assert_eq!(progress.completed(), charts.len());
+    }
+
+    #[test]
+    fn shadowmask_graph_pause_and_permit_retarget_preserve_output() {
+        let (geometry, charts, placements, lights) = analytic_graph_fixture();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let selected: Vec<_> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, test_light)| (index, index as u32, test_light))
+            .collect();
+        let baseline = build_analytic_overlap_graph(
+            &selected,
+            &shared,
+            &geometry,
+            &BakeControl::unrestricted(),
+        );
+        let progress = StageProgress::indeterminate();
+        let governor = Arc::new(Governor::new(2, false));
+        let control = BakeControl::new(Arc::clone(&governor), &progress);
+        let pool = ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let released = Arc::new((Mutex::new(false), Condvar::new()));
+        let hook_released = Arc::clone(&released);
+        governor.set_enter_hook(Arc::new(move || {
+            admitted_tx.send(()).unwrap();
+            let (lock, changed) = &*hook_released;
+            let released = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(
+                changed
+                    .wait_while(released, |released| !*released)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }));
+        let (done_tx, done_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let graph = pool.install(|| {
+                    build_analytic_overlap_graph(&selected, &shared, &geometry, &control)
+                });
+                done_tx.send(graph.snapshot()).unwrap();
+            });
+
+            admitted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            admitted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            governor.set_paused(true);
+            governor.set_permits(1);
+            let (lock, changed) = &*released;
+            *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            changed.notify_all();
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while progress.completed() < 2 && std::time::Instant::now() < deadline {
+                thread::yield_now();
+            }
+            assert_eq!(progress.completed(), 2);
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+
+            governor.set_paused(false);
+            let retargeted = done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("retargeted graph pass deadlocked after resume");
+            assert_eq!(retargeted, baseline.snapshot());
+        });
+    }
+
+    #[test]
+    #[ignore = "explicit mini-warren graph-prune measurement"]
+    fn measure_mini_warren_shadowmask_graph_reach_fraction() {
+        let mut fixture = load_fixture("stress-warren-hallway-inspection-mini");
+        let lights = fixture.lights.clone();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+            static_lights: &static_lights,
+            alpha_lights: &alpha_lights,
+            params: crate::map_data::EntityShadowParams::default(),
+        });
+        let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.04, &[])
+            .expect("mini-warren atlas planning");
+        let shared = shared_from_prepared(&prepared);
+        let selected: Vec<_> = selection
+            .light_indices
+            .iter()
+            .enumerate()
+            .filter_map(|(selection_index, &alpha_index)| {
+                alpha_lights
+                    .entries()
+                    .get(alpha_index as usize)
+                    .map(|entry| (selection_index, alpha_index, entry.light))
+            })
+            .collect();
+        let chart_order: Vec<_> = (0..shared.charts.len()).collect();
+        let (_, stats) = build_analytic_overlap_graph_in_order(
+            &selected,
+            &shared,
+            &fixture.geometry,
+            &BakeControl::unrestricted(),
+            &chart_order,
+            true,
+        );
+        let kept_fraction =
+            stats.candidate_light_chart_pairs as f64 / stats.light_chart_pairs.max(1) as f64;
+
+        eprintln!(
+            "mini-warren analytic graph prune kept {}/{} light-chart pairs ({:.2}%) across {} selected lights and {} charts",
+            stats.candidate_light_chart_pairs,
+            stats.light_chart_pairs,
+            kept_fraction * 100.0,
+            selected.len(),
+            shared.charts.len(),
+        );
+        assert!(stats.light_chart_pairs > 0);
+        assert!(stats.candidate_light_chart_pairs < stats.light_chart_pairs);
+    }
+
+    #[test]
+    fn shadowmask_fixture_is_deterministic_across_rebuilds_and_workers() {
+        let mut fixture = load_fixture("gate-heavily-lit");
+        let lights = fixture.lights.clone();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+            static_lights: &static_lights,
+            alpha_lights: &alpha_lights,
+            params: crate::map_data::EntityShadowParams::default(),
+        });
+        assert!(!selection.light_indices.is_empty());
+        let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[])
+            .expect("gate-heavily-lit atlas planning");
+        let (bvh, primitives, _) = build_bvh(&fixture.geometry).unwrap();
+        let shared = shared_from_prepared(&prepared);
+        let one_worker = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let many_workers = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let one_progress = StageProgress::indeterminate();
+        let one_control = BakeControl::new(Arc::new(Governor::new(1, false)), &one_progress);
+        let many_progress = StageProgress::indeterminate();
+        let many_control = BakeControl::new(Arc::new(Governor::new(4, false)), &many_progress);
+
+        let one = one_worker
+            .install(|| {
+                bake_shadowmask_atlas(
+                    Some(&selection),
+                    &alpha_lights,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &fixture.geometry,
+                    1,
+                    &one_control,
+                )
+            })
+            .expect("one-worker named-fixture shadowmask");
+        let many = many_workers
+            .install(|| {
+                bake_shadowmask_atlas(
+                    Some(&selection),
+                    &alpha_lights,
+                    &shared,
+                    &bvh,
+                    &primitives,
+                    &fixture.geometry,
+                    1,
+                    &many_control,
+                )
+            })
+            .expect("many-worker named-fixture shadowmask");
+
+        assert_eq!(one.to_bytes(), many.to_bytes());
+        assert_eq!(one_progress.completed(), one_progress.total().unwrap());
+        assert_eq!(many_progress.completed(), many_progress.total().unwrap());
     }
 
     #[test]
@@ -2694,6 +3012,15 @@ mod tests {
             TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
             "cache-backed streaming bake must match the pre-streaming golden"
         );
+        let cold_section_key = shadowmask_key(&selection, &shared, &input_hashes);
+        let stored_section = cold_cache
+            .get(&cold_section_key)
+            .expect("cache miss stores the streamed whole section");
+        assert_eq!(
+            stored_section.as_slice(),
+            TOP_LEVEL_MULTILAYER_FIVE_WAY_GOLDEN.as_slice(),
+            "streamed whole-section cache bytes must match the section wire format"
+        );
 
         // Copy every warm light/layer partition to a fresh cache so the next
         // call must take a section miss while reusing every raw-visibility
@@ -2754,7 +3081,177 @@ mod tests {
     }
 
     #[test]
-    fn window_sizes_bound_resident_layers_and_preserve_shadowmask_bytes() {
+    fn shadowmask_cache_miss_allocates_one_output_and_streams_without_a_second_payload() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+
+        reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
+        let cold = bake_shadowmask_atlas(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            AREA_SAMPLES,
+            &test_control(),
+        );
+        assert!(cold.is_some());
+        assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 0);
+
+        let cache_dir = fresh_cache_dir("one_output_allocation");
+        let cache = StageCache::new(&cache_dir).unwrap();
+        reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
+        let cached_miss = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &test_control(),
+        );
+        assert!(cached_miss.is_some());
+        assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 1);
+
+        let no_alpha_lights = AlphaLightsNs::from_lights(&[]);
+        let filtered_selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let filtered_cache_dir = fresh_cache_dir("filtered_one_output_allocation");
+        let filtered_cache = StageCache::new(&filtered_cache_dir).unwrap();
+        reset_shadowmask_output_allocation_count();
+        reset_shadowmask_streamed_cache_write_count();
+        let filtered = bake_shadowmask_atlas_cached(
+            Some(&filtered_selection),
+            &no_alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&filtered_cache),
+            &test_control(),
+        );
+        assert!(filtered.is_some());
+        assert_eq!(shadowmask_output_allocation_count(), 1);
+        assert_eq!(shadowmask_streamed_cache_write_count(), 1);
+
+        let _ = std::fs::remove_dir_all(cache_dir);
+        let _ = std::fs::remove_dir_all(filtered_cache_dir);
+    }
+
+    #[test]
+    fn dropped_light_partitions_are_cached_then_hit_next_compile() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let cold_dir = fresh_cache_dir("dropped_partition_cold");
+        let cold_cache = StageCache::new(&cold_dir).unwrap();
+        let cold = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cold_cache),
+            &test_control(),
+        )
+        .unwrap();
+        let dropped = cold
+            .channels
+            .iter()
+            .position(|&channel| channel == SHADOWMASK_CHANNEL_DROPPED)
+            .expect("five-way overlap drops one selected light");
+
+        let warm_dir = fresh_cache_dir("dropped_partition_warm");
+        let warm_cache = StageCache::new(&warm_dir).unwrap();
+        for (compact_index, test_light) in lights.iter().enumerate() {
+            for target_layer in 0..layer_count_from_shared(&shared) {
+                let hash = lightmap_layer::layer_input_hash(
+                    test_light,
+                    &shared,
+                    &primitives,
+                    &geometry,
+                    DENSITY,
+                    AREA_SAMPLES,
+                    target_layer,
+                );
+                let key = CacheKey::new(
+                    "lightmap_layer",
+                    lightmap_layer::LAYER_FORMAT_VERSION,
+                    &hash,
+                );
+                let bytes = cold_cache.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "selected light {compact_index} layer {target_layer} was not cached; dropped={}",
+                        compact_index == dropped
+                    )
+                });
+                warm_cache.put(&key, &bytes);
+            }
+        }
+
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let hook_admissions = Arc::clone(&admissions);
+        let governor = Arc::new(Governor::new(4, false));
+        governor.set_enter_hook(Arc::new(move || {
+            hook_admissions.fetch_add(1, Ordering::Relaxed);
+        }));
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(governor, &progress);
+        let warm = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&warm_cache),
+            &control,
+        )
+        .unwrap();
+
+        assert_eq!(warm.to_bytes(), cold.to_bytes());
+        assert_eq!(
+            admissions.load(Ordering::Relaxed),
+            shared.placements.len(),
+            "only analytic graph charts should enter; every selected partition, including the dropped light, must hit"
+        );
+        let _ = std::fs::remove_dir_all(cold_dir);
+        let _ = std::fs::remove_dir_all(warm_dir);
+    }
+
+    // Regression: assembling a partition while its full cold chart batch was
+    // retained made a four-partition window physically hold five payloads.
+    #[test]
+    fn window_sizes_physically_bound_resident_layers_and_preserve_shadowmask_bytes() {
         let (geometry, bvh, primitives, charts, placements, lights, selection) =
             top_level_multilayer_five_way_inputs();
         let shared = SharedAtlas {
@@ -2781,9 +3278,9 @@ mod tests {
             );
             let section = section.expect("selected lights produce a shadowmask section");
 
-            assert!(
-                resident_high_water <= window,
-                "W={window} must bound resident per-light payloads"
+            assert_eq!(
+                resident_high_water, window,
+                "W={window} must be the physical high-water mark, including assembled partitions"
             );
             assert_eq!(
                 section.to_bytes().as_slice(),
@@ -2827,9 +3324,16 @@ mod tests {
             .expect("eight-worker pool");
 
         let (admitted_tx, admitted_rx) = mpsc::channel();
+        let admission_sequence = Arc::new(AtomicUsize::new(0));
         let released = Arc::new((Mutex::new(false), Condvar::new()));
+        let hook_admission_sequence = Arc::clone(&admission_sequence);
         let hook_released = Arc::clone(&released);
         governor.set_enter_hook(Arc::new(move || {
+            // The analytic graph's lone chart item precedes the light/chart
+            // batch this regression is measuring.
+            if hook_admission_sequence.fetch_add(1, Ordering::Relaxed) == 0 {
+                return;
+            }
             admitted_tx
                 .send(())
                 .expect("admission coordinator is waiting");
@@ -2944,7 +3448,7 @@ mod tests {
     }
 
     #[test]
-    fn reversed_completion_membership_keeps_compact_selection_bytes() {
+    fn reversed_partition_fill_keeps_compact_selection_bytes() {
         let lights = [(0, light(5.0)), (1, light(4.0)), (2, light(3.0))];
         let selected: Vec<(usize, u32, &MapLight)> = lights
             .iter()
@@ -2958,18 +3462,12 @@ mod tests {
         ];
         let submission_order = build_shadowmask_from_layers(1, 1, 1, 3, &selected, &layers);
 
-        // Simulate C, B, A finishing after their fixed compact indexes were
-        // assigned. Buckets are addressed by compact index, not append order.
-        let mut completion_order = ShadowmaskMembership::for_light_count(selected.len());
+        let graph = overlap_graph_from_layers(&layers);
+        let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, 3, &selected, &graph, None, None);
         for compact_light_index in [2, 1, 0] {
-            record_layer_membership(
-                &mut completion_order,
-                compact_light_index,
-                &layers[compact_light_index],
-                1,
-            );
+            reversed_fill.write_partition(compact_light_index, &layers[compact_light_index]);
         }
-        let reversed = build_shadowmask_from_membership(1, 1, 1, 3, &selected, &completion_order);
+        let reversed = reversed_fill.finish();
 
         assert_eq!(reversed.to_bytes(), submission_order.to_bytes());
     }
@@ -3103,6 +3601,17 @@ mod tests {
         .expect("cached all-filtered selection still emits an empty section");
 
         assert_eq!(cached_section, section);
+        let invalid_hashes: Vec<_> = (0..layer_count_from_shared(&shared))
+            .map(|target_layer| invalid_selected_light_hash(0, target_layer))
+            .collect();
+        let section_key = shadowmask_key(&selection, &shared, &invalid_hashes);
+        assert_eq!(
+            cache
+                .get(&section_key)
+                .expect("all-filtered route stores the streamed whole section"),
+            section.to_bytes(),
+            "all-filtered cache bytes must match the section wire format"
+        );
         assert_eq!(cached_progress.total(), None);
         assert_eq!(cached_progress.completed(), 0);
         let _ = std::fs::remove_dir_all(cache_dir);
@@ -3142,6 +3651,67 @@ mod tests {
         assert_eq!(section.channels[0], SHADOWMASK_CHANNEL_DROPPED);
         assert_ne!(section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
         assert_eq!(section.data[section.channels[1] as usize], 64);
+    }
+
+    // Regression: the compatibility route only checked this alignment in debug
+    // builds, so release could emit a section with inconsistent channel data.
+    #[test]
+    #[should_panic(expected = "shadowmask selected light/layer slices must align")]
+    fn preloaded_layer_bake_rejects_missing_layer_for_selected_light() {
+        let first_light = light(5.0);
+        let second_light = light(4.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0, 1],
+        };
+        let selected = vec![(0usize, 0u32, &first_light), (1usize, 1u32, &second_light)];
+        let layers = vec![layer(1, 1, 1, &[(0, 0, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    }
+
+    // Regression: the compatibility route only checked this alignment in debug
+    // builds, so release could retain a layer with no selected-light channel.
+    #[test]
+    #[should_panic(expected = "shadowmask selected light/layer slices must align")]
+    fn preloaded_layer_bake_rejects_layer_without_selected_light() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![
+            layer(1, 1, 1, &[(0, 0, 0.25)]),
+            layer(1, 1, 1, &[(0, 0, 0.5)]),
+        ];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
+    }
+
+    // Regression: a preloaded texel in a later layer could overwrite layer one.
+    #[test]
+    #[should_panic(expected = "preloaded shadowmask texel index")]
+    fn preloaded_layer_bake_rejects_texel_index_outside_its_plane() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![layer(1, 1, 2, &[(1, 0, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 2, &selected, &layers);
+    }
+
+    #[test]
+    #[should_panic(expected = "preloaded shadowmask texel layer")]
+    fn preloaded_layer_bake_rejects_texel_layer_outside_atlas() {
+        let valid_light = light(5.0);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let selected = vec![(0usize, 0u32, &valid_light)];
+        let layers = vec![layer(1, 1, 1, &[(0, 1, 0.25)])];
+
+        let _ = bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers);
     }
 
     #[test]
@@ -3288,7 +3858,7 @@ mod tests {
     }
 
     #[test]
-    fn shadowmask_atlas_cache_miss_reuses_existing_layers_and_stores_section() {
+    fn pre_analytic_layer_cache_is_reused_without_rebake() {
         let mut test_light = light(5.0);
         test_light.origin = DVec3::new(0.25, 1.0, 0.25);
         let lights = vec![test_light];
@@ -3342,6 +3912,165 @@ mod tests {
             expected
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shadowmask_cache_epochs_remain_pre_analytic_values() {
+        assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 2);
+        assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 5);
+    }
+
+    #[test]
+    fn shadowmask_final_progress_unit_follows_section_memo_write() {
+        let dir = fresh_cache_dir("final_progress_order");
+        let cache = StageCache::new(&dir).unwrap();
+        let key = CacheKey::new(
+            SHADOWMASK_ATLAS_STAGE_ID,
+            SHADOWMASK_ATLAS_STAGE_VERSION,
+            &[7; 32],
+        );
+        let section = shadowmask_section(1, 1, 1, vec![0], 255);
+        let progress = StageProgress::with_total(1);
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+
+        cache_shadowmask_section_then_complete(&cache, &key, &section, &control, true, || {
+            assert!(cache.get(&key).is_some());
+            assert_eq!(progress.completed(), 0);
+        });
+
+        assert_eq!(progress.completed(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+
+        let light = light(1.0);
+        let selected = vec![(0, 0, &light)];
+        let graph = OverlapGraph::new(1);
+        let uncached_progress = StageProgress::with_total(2);
+        let uncached_control =
+            BakeControl::new(Arc::new(Governor::new(1, false)), &uncached_progress);
+        let fill =
+            ShadowmaskFill::new(1, 1, 1, 1, &selected, &graph, Some(&uncached_control), None);
+        assert_eq!(uncached_progress.completed(), 1);
+        let uncached_section = fill.finish();
+        assert_eq!(uncached_progress.completed(), 1);
+        assert_eq!(uncached_section.data.len(), 4);
+        uncached_control.advance(1);
+        assert_eq!(uncached_progress.completed(), 2);
+    }
+
+    #[test]
+    fn shadowmask_publishes_one_total_and_completes_with_section() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(4, false)), &progress);
+
+        let section = bake_shadowmask_atlas(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            AREA_SAMPLES,
+            &control,
+        );
+
+        assert!(section.is_some());
+        let total = progress
+            .total()
+            .expect("stage publishes a determinate total");
+        assert_eq!(total, shadowmask_progress_total(lights.len(), &shared));
+        assert_eq!(progress.completed(), total);
+    }
+
+    #[test]
+    fn one_light_change_reruns_graph_and_reuses_unchanged_partitions() {
+        let (geometry, bvh, primitives, charts, placements, lights, selection) =
+            top_level_multilayer_five_way_inputs();
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let cache_dir = fresh_cache_dir("one_light_change");
+        let cache = StageCache::new(&cache_dir).unwrap();
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &test_control(),
+        )
+        .unwrap();
+
+        let mut changed_lights = lights.clone();
+        changed_lights[2].intensity += 0.5;
+        let changed_alpha_lights = AlphaLightsNs::from_lights(&changed_lights);
+        let changed_hashes: Vec<_> = (0..layer_count_from_shared(&shared))
+            .map(|target_layer| {
+                lightmap_layer::layer_input_hash(
+                    &changed_lights[2],
+                    &shared,
+                    &primitives,
+                    &geometry,
+                    DENSITY,
+                    AREA_SAMPLES,
+                    target_layer,
+                )
+            })
+            .collect();
+        for hash in &changed_hashes {
+            let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
+            assert!(cache.get(&key).is_none());
+        }
+
+        let admissions = Arc::new(AtomicUsize::new(0));
+        let hook_admissions = Arc::clone(&admissions);
+        let governor = Arc::new(Governor::new(4, false));
+        governor.set_enter_hook(Arc::new(move || {
+            hook_admissions.fetch_add(1, Ordering::Relaxed);
+        }));
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(governor, &progress);
+        let changed = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &changed_alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geometry,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+            &control,
+        );
+
+        assert!(changed.is_some());
+        assert_eq!(progress.completed(), progress.total().unwrap());
+        assert_eq!(
+            admissions.load(Ordering::Relaxed),
+            shared.placements.len() * 2,
+            "the changed section must rerun one graph chart item and one changed-light bake item per chart; unchanged partitions must hit"
+        );
+        for hash in &changed_hashes {
+            let key = CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash);
+            assert!(cache.get(&key).is_some());
+        }
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 
     #[test]

@@ -7,6 +7,9 @@ use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sprite_collection::derive_collection_id;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_combat_model::{
+    AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, OpenAuthorizedShot, projectile_timeout_budget_ticks,
+};
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, LifetimeCurve};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
@@ -24,8 +27,8 @@ use postretro_foundation::{
 };
 
 use super::super::{
-    OpenAuthorizedShot, PostMovementCommand, ReloadDelivery, RemotePawnCommand,
-    RemoteProjectileFireRejection, RemoteProjectilePresentationLaunch,
+    PostMovementCommand, ReloadDelivery, RemotePawnCommand, RemoteProjectileFireRejection,
+    RemoteProjectilePresentationLaunch,
 };
 use super::impact::apply_authorized_weapon_impact_damage;
 use super::machine::tick_weapon_machine;
@@ -203,13 +206,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     None if knockback.is_none() => Vec3::ZERO,
                     None => continue,
                 };
-                (
-                    false,
-                    fire_origin,
-                    None,
-                    crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
-                    None,
-                )
+                (false, fire_origin, None, MAX_OPEN_SHOT_AGE_TICKS, None)
             }
             ResolutionMode::Projectile => {
                 let Some(projectile) = projectile.as_ref() else {
@@ -279,7 +276,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                     true,
                     fire_origin,
                     Some(projectile_direction),
-                    crate::netcode::projectile_timeout_budget_ticks(
+                    projectile_timeout_budget_ticks(
                         range,
                         projectile.speed,
                         projectile.lifetime_ms / 1000.0,
@@ -295,7 +292,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             None
         };
         authorized.push(OpenAuthorizedShot {
-            shot: super::super::AuthorizedShot {
+            shot: AuthorizedShot {
                 shot_id,
                 pawn: remote.pawn,
                 weapon,

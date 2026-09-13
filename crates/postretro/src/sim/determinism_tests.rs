@@ -21,7 +21,6 @@ use crate::collision::moving::MoverCollider;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
-use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 use crate::scripting_systems::reaction_scheduler::{
     ReactionScheduler, register_reaction_control_primitives,
@@ -36,6 +35,7 @@ use crate::trigger_bindings::{
 use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
 use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
+use postretro_combat_model::ShotId;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};

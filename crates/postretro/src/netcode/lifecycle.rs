@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 
+use postretro_combat_model::CarriedState;
+#[cfg(test)]
+use postretro_combat_model::{AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, ShotId};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
 use postretro_foundation::NavAgentParams;
@@ -82,7 +85,7 @@ pub(crate) enum SlotPawnSource<'a> {
         placement: &'a MapEntity,
         descriptors: &'a [EntityTypeDescriptor],
         agent_params: Option<NavAgentParams>,
-        carried_loadout: Option<&'a super::CarriedState>,
+        carried_loadout: Option<&'a CarriedState>,
     },
 }
 
@@ -826,9 +829,9 @@ mod tests {
                 net_id
             })
             .collect();
-        let shot_id = crate::netcode::ShotId::from_parts(pawn_net, 5);
+        let shot_id = ShotId::from_parts(pawn_net, 5);
         open_shots.record(
-            crate::netcode::AuthorizedShot {
+            AuthorizedShot {
                 knockback: None,
                 shot_id,
                 pawn,
@@ -846,7 +849,7 @@ mod tests {
                 projectile_tick_seconds: None,
                 is_projectile: false,
                 fire_origin: glam::Vec3::ZERO,
-                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );
@@ -1111,9 +1114,9 @@ mod tests {
         let old_pawn_net = allocator.network_id_for_entity(old_pawn).unwrap();
         let old_weapon_net = allocator.stamp(old_weapon);
         replicable.register(old_weapon);
-        let shot_id = crate::netcode::ShotId::from_parts(old_pawn_net, 9);
+        let shot_id = ShotId::from_parts(old_pawn_net, 9);
         open_shots.record(
-            crate::netcode::AuthorizedShot {
+            AuthorizedShot {
                 knockback: None,
                 shot_id,
                 pawn: old_pawn,
@@ -1131,7 +1134,7 @@ mod tests {
                 projectile_tick_seconds: None,
                 is_projectile: false,
                 fire_origin: glam::Vec3::ZERO,
-                timeout_budget_ticks: crate::netcode::MAX_OPEN_SHOT_AGE_TICKS,
+                timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
             },
             CLIENT_A,
         );

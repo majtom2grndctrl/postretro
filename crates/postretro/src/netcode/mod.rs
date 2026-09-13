@@ -124,8 +124,7 @@ pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
     host_register_world_items,
 };
-pub(crate) use seat::{CarriedState, SeatTable, finish_host_poll, restore_carried_health};
-pub(crate) use tuning_payload::{TuningPayload, WieldableTuningPayload};
+pub(crate) use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub(crate) const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
@@ -139,6 +138,14 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
+use postretro_combat_model::{
+    AuthorizedShot, HIT_RANGE_TOLERANCE, OpenAuthorizedShot, ShotId, TuningPayload,
+    WieldableTuningPayload,
+};
+#[cfg(test)]
+use postretro_combat_model::{
+    MAX_OPEN_SHOT_AGE_TICKS, TUNING_PAYLOAD_EPOCH, projectile_timeout_budget_ticks,
+};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
@@ -147,10 +154,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, FactionRegistry,
     FactionSentimentState, SlotTable, Transform, WorldPointPresentationSpawn,
 };
-use postretro_foundation::{
-    KnockbackDescriptor, NavAgentParams, PlayerMovementComponent, SplashDescriptor,
-    WeaponPlacementDescriptor,
-};
+use postretro_foundation::{NavAgentParams, PlayerMovementComponent, WeaponPlacementDescriptor};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -455,105 +459,7 @@ pub(crate) struct NetworkIdAllocator {
     reverse: HashMap<NetworkId, EntityId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ShotId(u64);
-
-impl ShotId {
-    pub(crate) fn from_parts(pawn: NetworkId, client_tick: u32) -> Self {
-        Self((u64::from(pawn.0) << 32) | u64::from(client_tick))
-    }
-
-    pub(crate) fn from_raw(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    pub(crate) fn raw(self) -> u64 {
-        self.0
-    }
-
-    fn client_tick(self) -> u32 {
-        self.0 as u32
-    }
-}
-
-pub(crate) const HIT_RANGE_TOLERANCE: f32 = 1.25;
-pub(crate) const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
-/// Two seconds comfortably covers the conditioned co-op link's RTT and leaves
-/// room for a delayed rendered-frame declaration after projectile travel.
-const PROJECTILE_RTT_MARGIN_TICKS: u32 = 120;
 const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AuthorizedShot {
-    pub(crate) shot_id: ShotId,
-    pub(crate) pawn: EntityId,
-    pub(crate) weapon: EntityId,
-    pub(crate) fire_tick: u32,
-    pub(crate) damage: f32,
-    pub(crate) range: f32,
-    pub(crate) pellet_count: usize,
-    pub(crate) credit_source: String,
-    /// Direct impulse tuning captured at FIRE; never taken from client hit data.
-    pub(crate) knockback: Option<KnockbackDescriptor>,
-    /// Immutable projectile-impact tuning captured at FIRE. Host hit intake
-    /// must not reread a weapon that may have changed or despawned in flight.
-    pub(crate) splash: Option<SplashDescriptor>,
-    /// Collision radius captured with the projectile launch. It is host-only
-    /// authority data used to reproduce the local swept-contact geometry.
-    pub(crate) projectile_radius: Option<f32>,
-    /// Frozen projectile flight facts. Splash intake replays this ray only as
-    /// far as host time, range, and lifetime permit; the client's point never
-    /// selects the detonation position.
-    pub(crate) projectile_direction: Option<Vec3>,
-    pub(crate) projectile_speed: Option<f32>,
-    pub(crate) projectile_lifetime_seconds: Option<f32>,
-    pub(crate) projectile_tick_seconds: Option<f32>,
-    /// Frozen at FIRE because the weapon may be switched or despawned before a
-    /// later projectile declaration arrives. This authority data never crosses
-    /// the wire.
-    pub(crate) is_projectile: bool,
-    pub(crate) fire_origin: Vec3,
-    pub(crate) timeout_budget_ticks: u32,
-}
-
-/// Keep a projectile declaration open through its maximum authored travel time
-/// plus a deliberately generous return-trip margin. The `u32` serial tick clock
-/// is wrap-aware only through half its range, so cap an absurd authored lifetime
-/// there rather than accidentally retaining an open shot forever at wrap.
-pub(crate) fn projectile_timeout_budget_ticks(
-    range: f32,
-    speed: f32,
-    lifetime_seconds: f32,
-    tick_dt_seconds: f32,
-) -> u32 {
-    let travel_seconds = if range.is_finite()
-        && range >= 0.0
-        && speed.is_finite()
-        && speed > 0.0
-        && lifetime_seconds.is_finite()
-        && lifetime_seconds >= 0.0
-        && tick_dt_seconds.is_finite()
-        && tick_dt_seconds > 0.0
-    {
-        (f64::from(range) / f64::from(speed)).min(f64::from(lifetime_seconds))
-    } else {
-        return MAX_OPEN_SHOT_AGE_TICKS;
-    };
-    let max_budget = u32::MAX / 2;
-    // Promote before dividing. Finite f32 authoring bounds can overflow either
-    // division in f32 even though the corresponding duration is representable
-    // well enough to saturate this bounded host-side retention budget.
-    let travel_ticks = (travel_seconds / f64::from(tick_dt_seconds)).ceil();
-    let travel_ticks = travel_ticks
-        .min(f64::from(max_budget - PROJECTILE_RTT_MARGIN_TICKS))
-        .max(0.0) as u32;
-    MAX_OPEN_SHOT_AGE_TICKS.max(travel_ticks.saturating_add(PROJECTILE_RTT_MARGIN_TICKS))
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OpenAuthorizedShot {
-    pub(crate) shot: AuthorizedShot,
-    pub(crate) owner_client_id: u64,
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct OpenAuthorizedShots {
@@ -2560,7 +2466,9 @@ mod tests {
     use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
     use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
-    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_foundation::{
+        FireMode, KnockbackDescriptor, ResolutionMode, SplashDescriptor, WeaponDescriptor,
+    };
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
     // approximate comparison for computed/converted floats).
@@ -3149,8 +3057,8 @@ mod tests {
         let encoded = install_test_tuning(&mut tuning, &mut generation);
         let accepted_generation = generation;
         let unknown_epoch = String::from_utf8(encoded).unwrap().replacen(
-            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH),
-            &format!("\"epoch\":{}", tuning_payload::TUNING_PAYLOAD_EPOCH + 1),
+            &format!("\"epoch\":{TUNING_PAYLOAD_EPOCH}"),
+            &format!("\"epoch\":{}", TUNING_PAYLOAD_EPOCH + 1),
             1,
         );
 

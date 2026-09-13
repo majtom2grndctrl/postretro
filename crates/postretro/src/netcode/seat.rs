@@ -4,6 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use postretro_combat_model::CarriedState;
+#[cfg(test)]
+use postretro_combat_model::restore_carried_health;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::weapon::WeaponComponent;
@@ -23,30 +26,6 @@ const SEAT_NAMESPACE_SIZE: u32 = u16::MAX as u32 + 1;
 /// identity. The clock is driven once per render frame, including Frontend and
 /// Loading frames where the fixed simulation does not run.
 pub(crate) const HOLD_WINDOW: Duration = Duration::from_secs(30);
-
-/// State retained by a session seat when its current pawn leaves a level.
-///
-/// A missing record deliberately seeds no defaults on a fresh seat.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CarriedState {
-    pub(crate) health_current: Option<f32>,
-    pub(crate) reserve: AmmoReserve,
-    pub(crate) wieldables: [Option<String>; WIELDABLE_SLOT_CAPACITY],
-    pub(crate) magazines: [Option<u32>; WIELDABLE_SLOT_CAPACITY],
-    pub(crate) active_slot: usize,
-}
-
-impl Default for CarriedState {
-    fn default() -> Self {
-        Self {
-            health_current: None,
-            reserve: AmmoReserve::new(),
-            wieldables: std::array::from_fn(|_| None),
-            magazines: [None; WIELDABLE_SLOT_CAPACITY],
-            active_slot: 0,
-        }
-    }
-}
 
 /// One exhaustive binding site for every carried field.
 ///
@@ -76,24 +55,6 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 5] {
         CarriedField::Magazines(magazines),
         CarriedField::ActiveSlot(active_slot),
     ]
-}
-
-/// Restore carried health after descriptor materialization.
-///
-/// Missing and nonpositive values keep the descriptor default so a fresh or
-/// dead seat never materializes a dead pawn.
-pub(crate) fn restore_carried_health(
-    carried: Option<&CarriedState>,
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-) {
-    let Some(health_current) = carried
-        .and_then(|state| state.health_current)
-        .filter(|health| *health > 0.0)
-    else {
-        return;
-    };
-    postretro_entities::components::health::set_health_absolute(registry, pawn, health_current);
 }
 
 /// Future rejoin-hold expiry measured against the session's accumulated clock.

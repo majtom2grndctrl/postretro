@@ -7,6 +7,9 @@ use super::data_archetype::{
     find_descriptor, spawn_descriptor_instance,
 };
 use super::wieldable_inventory::{acquire_wieldable_at, release_wieldable};
+use postretro_combat_model::{
+    CarriedState, TuningPayload, WieldableTuningPayload, restore_carried_health,
+};
 use postretro_entities::components::inventory::Inventory;
 #[cfg(test)]
 use postretro_entities::components::mesh::MeshComponent;
@@ -16,8 +19,6 @@ use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::{MAX_PELLET_COUNT, NavAgentParams};
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
-
-use crate::netcode::{TuningPayload, WieldableTuningPayload};
 
 /// Spawn ONE descriptor-backed networked-slot player pawn from a `player_spawn`
 /// placement (M15 Phase 3 Task 4). This is the host-authoritative remote-pawn
@@ -57,7 +58,7 @@ pub(crate) fn spawn_net_slot_pawn_with_carried_loadout(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
-    carried_loadout: Option<&crate::netcode::CarriedState>,
+    carried_loadout: Option<&CarriedState>,
 ) -> Option<EntityId> {
     let entity_class = placement
         .key_values
@@ -91,7 +92,7 @@ pub(crate) fn spawn_net_slot_pawn_with_carried_loadout(
         return None;
     };
 
-    crate::netcode::restore_carried_health(carried_loadout, registry, id);
+    restore_carried_health(carried_loadout, registry, id);
 
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
     // `getEntityProperty` works uniformly for net-slot pawns, matching the
@@ -993,7 +994,7 @@ mod tests {
         });
         let mut registry = EntityRegistry::new();
 
-        let carried = crate::netcode::CarriedState {
+        let carried = CarriedState {
             health_current: Some(29.0),
             ..Default::default()
         };
@@ -1025,7 +1026,7 @@ mod tests {
         raise_ms: u32,
     ) -> TuningPayload {
         let mut wieldables = std::array::from_fn(|_| None);
-        wieldables[slot] = Some(crate::netcode::WieldableTuningPayload {
+        wieldables[slot] = Some(WieldableTuningPayload {
             canonical_name: canonical_name.to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
@@ -1308,7 +1309,7 @@ mod tests {
             .expect("descriptor inventory materializes its default wieldable");
 
         let mut tuning = tuning_for_slot(2, "host_ion_rifle", 220.0, 340.0, 55, 80);
-        tuning.wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
+        tuning.wieldables[0] = Some(WieldableTuningPayload {
             canonical_name: "local_pistol".to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,
@@ -1411,7 +1412,7 @@ mod tests {
         reg.set_component(weapon_id, live_weapon).unwrap();
 
         let mut wieldables = std::array::from_fn(|_| None);
-        wieldables[0] = Some(crate::netcode::WieldableTuningPayload {
+        wieldables[0] = Some(WieldableTuningPayload {
             canonical_name: "reference_pistol".to_string(),
             placement: postretro_foundation::WeaponPlacementDescriptor::default(),
             muzzle_offset: None,

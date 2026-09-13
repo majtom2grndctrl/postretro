@@ -4,6 +4,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
+use postretro_combat_model::TuningPayload;
 use postretro_foundation::Seat;
 use postretro_net::wire::JoinSeedValue;
 

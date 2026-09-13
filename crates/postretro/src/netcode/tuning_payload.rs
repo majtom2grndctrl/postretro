@@ -1,98 +1,11 @@
 //! Engine-side codec for host-resolved pawn tuning and weapon placement.
 //!
-//! The net crate carries these bytes opaquely. Keeping the descriptor types here
+//! The net crate carries these bytes opaquely. Keeping the JSON codec here
 //! avoids a wire mirror that would make the transport registry-aware.
 
-use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
-use postretro_foundation::{
-    FireMode, PlayerMovementDescriptor, ResolutionMode, WeaponPlacementDescriptor,
-};
-use serde::{Deserialize, Serialize};
+use postretro_combat_model::{TUNING_PAYLOAD_EPOCH, TuningPayload};
+use serde::Deserialize;
 use thiserror::Error;
-
-/// Bump whenever the payload's semantic contract changes. This is independent
-/// of the bitcode wire version because the payload itself is JSON.
-pub(crate) const TUNING_PAYLOAD_EPOCH: u32 = 9;
-
-/// Host-resolved values for one occupied wieldable slot.
-///
-/// The archetype is part of the payload because a connected client owns local
-/// wieldable instances. It needs the canonical identity to materialize each
-/// slot and select its presentation without consulting a host-only entity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WieldableTuningPayload {
-    pub(crate) canonical_name: String,
-    /// Effective host placement after mod-default and per-weapon resolution.
-    pub(crate) placement: WeaponPlacementDescriptor,
-    /// Host-authored model-local projectile origin. Clients pair this with
-    /// `placement` from this same row rather than consulting local content.
-    pub(crate) muzzle_offset: Option<[f32; 3]>,
-    pub(crate) range: f32,
-    pub(crate) cooldown_ms: f32,
-    pub(crate) pellet_count: u32,
-    pub(crate) spread_degrees: f32,
-    pub(crate) bloom_per_shot_degrees: f32,
-    pub(crate) bloom_max_degrees: f32,
-    pub(crate) bloom_decay_degrees_per_second: f32,
-    pub(crate) bloom_decay_delay_ms: f32,
-    pub(crate) movement_spread_degrees: f32,
-    pub(crate) spread_vertical_bias: f32,
-    pub(crate) fire_mode: FireMode,
-    pub(crate) resolution: ResolutionMode,
-    pub(crate) lower_ms: u32,
-    pub(crate) raise_ms: u32,
-}
-
-/// Host-resolved tuning for one participating pawn.
-///
-/// Movement is optional for pawn classes without a movement descriptor. The
-/// wieldable array is capacity-sized so a slot's identity survives empty
-/// positions. `movement.view_feel` is always cleared because view feel is local
-/// presentation rather than predicted simulation tuning.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct TuningPayload {
-    epoch: u32,
-    pub(crate) movement: Option<PlayerMovementDescriptor>,
-    pub(crate) wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
-}
-
-impl TuningPayload {
-    pub(crate) fn new(
-        mut movement: Option<PlayerMovementDescriptor>,
-        wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
-    ) -> Self {
-        if let Some(descriptor) = movement.as_mut() {
-            descriptor.view_feel = None;
-        }
-        Self {
-            epoch: TUNING_PAYLOAD_EPOCH,
-            movement,
-            wieldables,
-        }
-    }
-
-    pub(crate) fn placement_for_slot(&self, slot: usize) -> Option<&WeaponPlacementDescriptor> {
-        self.wieldables
-            .get(slot)?
-            .as_ref()
-            .map(|wieldable| &wieldable.placement)
-    }
-
-    pub(crate) fn placement_for_archetype(
-        &self,
-        archetype: &str,
-    ) -> Option<&WeaponPlacementDescriptor> {
-        self.wieldables
-            .iter()
-            .flatten()
-            .find(|wieldable| wieldable.canonical_name == archetype)
-            .map(|wieldable| &wieldable.placement)
-    }
-
-    pub(crate) fn muzzle_for_slot(&self, slot: usize) -> Option<&[f32; 3]> {
-        self.wieldables.get(slot)?.as_ref()?.muzzle_offset.as_ref()
-    }
-}
 
 #[derive(Debug, Error)]
 pub(crate) enum TuningPayloadError {
@@ -153,10 +66,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use postretro_combat_model::WieldableTuningPayload;
+    use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FireMode, ForgivenessParams,
-        GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SpeedParams,
-        ViewFeelParams,
+        GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode, SlideParams,
+        SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -292,11 +207,8 @@ mod tests {
             min_duration_ms: 120.0,
         });
         assert!(descriptor.view_feel.is_some());
-        let payload = TuningPayload {
-            epoch: TUNING_PAYLOAD_EPOCH,
-            movement: Some(descriptor),
-            wieldables: weapon_slots(),
-        };
+        let payload =
+            TuningPayload::new_for_test_preserving_view_feel(Some(descriptor), weapon_slots());
 
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();

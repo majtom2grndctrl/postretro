@@ -21,7 +21,6 @@ use crate::collision::{COS_WALKABLE, CollisionWorld, cast_ray};
 use crate::kinematic_mover::{self, MoverTickStateTable};
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
-use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::{
     HitZoneStore, model_matrix, sample_world_pose_for_probe,
@@ -36,6 +35,7 @@ use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 #[cfg(test)]
 use crate::weapon;
 use crate::weapon::FireButtonState;
+use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;

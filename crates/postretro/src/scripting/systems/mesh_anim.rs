@@ -16,7 +16,7 @@ use postretro_render_data::cone_frustum::Aabb;
 
 /// One model's clip table: authored clip name → glTF index, plus each clip's
 /// duration by index (parallel to the glTF clip list). Built at level load from
-/// the renderer's [`postretro_render_cpu::mesh_pass::ClipMetadata`] and used both to
+/// [`postretro_model::ClipMetadata`] and used both to
 /// resolve a state's `clip_index` and to read a clip's duration for the
 /// state-elapsed completion query.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -32,7 +32,7 @@ impl ModelClipTable {
     /// Build a clip table from the renderer's clip metadata (glTF index order).
     /// A duplicate authored name keeps the FIRST occurrence (lowest glTF index),
     /// matching the cache-side `clip_by_name` contract.
-    pub(crate) fn from_metadata(meta: &[postretro_render_cpu::mesh_pass::ClipMetadata]) -> Self {
+    pub(crate) fn from_metadata(meta: &[postretro_model::ClipMetadata]) -> Self {
         let mut by_name = HashMap::with_capacity(meta.len());
         let mut durations = Vec::with_capacity(meta.len());
         for (index, clip) in meta.iter().enumerate() {
@@ -85,7 +85,7 @@ impl MeshClipTables {
     pub(crate) fn insert_with_bounds(
         &mut self,
         handle: ModelHandle,
-        meta: &[postretro_render_cpu::mesh_pass::ClipMetadata],
+        meta: &[postretro_model::ClipMetadata],
         bounds: Aabb,
     ) {
         self.bounds.insert(handle.clone(), bounds);

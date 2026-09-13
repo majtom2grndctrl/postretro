@@ -7,7 +7,7 @@ use postretro_entities::{
     EntityId, EntityRegistry, PresentationEasing, PresentationFacts, PresentationSpawn,
     PresentationTemplateHandle,
 };
-use postretro_renderer::PresentationDrawInput;
+use postretro_foundation::PresentationDrawInput;
 
 use crate::presentation_projection::project_world_to_screen;
 

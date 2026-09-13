@@ -15,6 +15,7 @@ image.workspace = true
 log.workspace = true
 pollster.workspace = true
 postretro-entities.workspace = true
+postretro-foundation.workspace = true
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader.workspace = true
 postretro-lighting.workspace = true

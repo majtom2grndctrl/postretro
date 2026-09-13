@@ -3888,6 +3888,7 @@ dependencies = [
  "naga",
  "pollster",
  "postretro-entities",
+ "postretro-foundation",
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-lighting",

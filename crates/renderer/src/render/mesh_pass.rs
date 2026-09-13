@@ -428,7 +428,7 @@ pub(super) struct UploadedModel {
     pose_stack: postretro_model::pose_modifier::PoseModifierStack,
 }
 
-pub use postretro_render_cpu::mesh_pass::ClipMetadata;
+pub use postretro_model::ClipMetadata;
 
 /// One captured `"smooth"`-interrupt snapshot: the per-joint local-TRS pose
 /// frozen at the interrupt instant, tagged with the entered state's entry stamp.

@@ -1,0 +1,14 @@
+[package]
+name = "postretro-netcode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Authoritative gameplay replication for Postretro"
+license.workspace = true
+
+[features]
+# Cross-crate simulation test seams. Runtime consumers never enable this.
+test-support = []
+dev-tools = []
+
+[dependencies]

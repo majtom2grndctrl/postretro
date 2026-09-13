@@ -1,15 +1,10 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
-// Movable navigation agent collide-and-slide harness, driven each tick by the
-// steering system in `agent_steering`.
-// See: context/lib/movement.md §1, context/lib/entity_model.md §7
-mod agent;
 // Per-tick navigation-agent steering: replan budget, waypoint following, and
 // separation, built on the `agent` harness and `nav::find_path`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
-mod agent_steering;
 mod audio;
 mod camera;
 #[cfg(test)]
@@ -20,30 +15,25 @@ mod candidate_cull {
 mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
-mod collision;
-mod combat_positioning;
+use postretro_sim::collision;
 mod content_hash;
 // App-side diagnostics for baked door-to-portal occluder associations. Keeps
 // the render-only blocked portal buffer inspectable without changing gameplay.
 #[cfg(feature = "dev-tools")]
 mod door_occluder_diagnostics;
-pub(crate) use sim::frame_timing;
-mod fx;
-mod grant;
-mod health;
-mod impact_effects;
-mod impact_policy;
+pub(crate) use postretro_sim::frame_timing;
+use postretro_sim::{impact_effects, impact_policy};
 mod input;
-mod kinematic_mover;
+use postretro_sim::kinematic_mover;
 mod mod_digest;
-mod movement;
+use postretro_sim::movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]
 mod mover_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
-mod nav;
+use postretro_sim::nav;
 // Engine-side netcode glue: role selection, the optional endpoint held by `App`,
 // game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
 // The ONLY engine code that touches the registry on behalf of replication.
@@ -63,38 +53,32 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
-pub(crate) use sim::{
-    presentation_pool, presentation_projection, resolve_mesh_entity_bindings,
-    resolve_mesh_entity_bindings_for_entities,
+use postretro_sim::weapon;
+pub(crate) use postretro_sim::{
+    presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
 };
-mod weapon;
 
 mod render;
 mod runtime_movers;
-mod scripting;
+use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
-mod sim;
-mod spawner;
-mod sprite_collection;
+use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
-mod trigger_bindings;
-mod trigger_commands;
+use postretro_sim::trigger_bindings;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
-mod trigger_pools;
-mod trigger_system;
+use postretro_sim::{trigger_pools, trigger_system};
 mod view_feel;
 
 #[cfg(test)]
-mod alloc_probe;
+use postretro_sim::alloc_probe;
 
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
 // `scripting` tree via `#[path]` without pulling in wgpu/engine-dependent code.
-#[path = "scripting/systems/mod.rs"]
 mod scripting_systems;
 
 // Test-only counting global allocator. `#[global_allocator]` must annotate a

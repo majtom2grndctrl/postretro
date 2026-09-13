@@ -39,8 +39,9 @@ The user's diagnosis or framing is a hypothesis. Route through `context/lib/inde
 | Basis | Whether the defect's cause holds in source, or whether the requested capability already exists in some form. Cheapest place to discover a different problem than the one requested. |
 | Premise | The claim about the code each candidate decision rests on. One claim, one agent, answered with the symbol. |
 | Commitment | What the repo already decided that touches this — `plans/done/` and `context/lib/`, grepped by concept (ownership, authority, mechanism-vs-policy), not by subsystem. |
-| Precedent | A sibling feature with the same shape. Where "follows X exactly" becomes a cheap decision. |
+| Precedent | A sibling feature with the same shape. Candidate reuse, not proof of equivalent semantics. |
 | Doors | What the shape opens or closes later — adjacent drafts, the roadmap. |
+| Lifetime | For resource-bound work, which large representations coexist across the lifetime defined in `context/lib/development_guide.md` §1.4. |
 
 Habits that keep hypotheses from becoming facts:
 
@@ -64,6 +65,8 @@ Usually after step 2 — a grounded question is short and a hypothetical one was
 
 State the observable evidence, split into automated and manual — visual, playtest, audio, network, runtime diagnostics. Name edges, not steady state: start, stop, reverse, zero iterations, two on one tick, a timer across a reset. Pin both sides of every predicate — the case it must refuse and the case it must permit; a guard tested only where it refuses passes while over-tight. Run each row against the Problem: if it could pass with the defect still present, it measures something adjacent.
 
+For resource-bound work, read `context/lib/testing_guide.md` §Resource bounds. Carry its proof and measurement requirements into the handoff.
+
 ### 6. Choose the route
 
 Route by the cost of a wrong decision after code exists, not by breadth. Work that crosses movement, scripting, content, and networking can still be a direct build when its decisions are settled and cheap to reverse.
@@ -85,9 +88,11 @@ Routing is provisional. `/validate-plan` can still return *Not a spec* or *Under
 2. Keep one owner for shared contracts, integration, and commits.
 3. Delegate bounded slices only with the full handoff and routed context; workers do not commit.
 4. Run focused tests during implementation; confirm filters matched tests.
-5. Run `/preflight`, then `/review-panel` → `/fix-review-findings` → focused retest until new concrete findings stop.
-6. Record each proof row's result and any outstanding manual proof in the PR body, under the handoff block. No silent gaps.
-7. Land durable decisions in `context/lib/` with the change. A direct build defers the record; it does not skip it.
+5. Run a review-readiness gate: format check, checks for touched crates, and focused tests. Confirm filters matched. Do not run the full workspace suite.
+6. Run `/review-panel` → `/fix-review-findings` → focused retest until no new finding appears.
+7. Run `/preflight` once as the final gate.
+8. Record each proof row's result and any outstanding manual proof in the PR body, under the handoff block. No silent gaps.
+9. Land durable decisions in `context/lib/` with the change. A direct build defers the record; it does not skip it.
 
 ## Handoff
 

@@ -132,6 +132,12 @@ Game engine code is full of floating-point math (positions, UVs, colors, interpo
 
 Game logic tests must control time. Inject a fixed delta time rather than reading wall-clock time. This makes tests reproducible and eliminates timing-dependent flakiness.
 
+### Resource bounds
+
+Resource proof covers the full lifetime in [Development Guide](./development_guide.md) §1.4. Observe production, buffering, serialization, persistence, return, and cleanup. A custom allocation seam proves only allocations routed through that seam.
+
+Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
+
 ### No GPU context in tests
 
 Tests run via `cargo test` with no window and no GPU context. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GPU layer is verified by running the engine.
@@ -149,7 +155,7 @@ Some suites are expensive and must not be run reflexively:
 
 **Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake probes twice and weight large volumes far more heavily.
 
-**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`. Narrow to a single target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+**Default verification while iterating.** Run `cargo check` plus targeted tests for the touched crate or module: `cargo test -p <crate> <name_filter>`. Narrow to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary. Run full `cargo test` once, as the final coordinator gate after integration, review, and fixes.
 
 **Read the test count, not the exit status.** A target-and-filter pair matching nothing prints `0 passed` and exits `ok` — a pass and a no-op look identical at a glance. `--lib` on a binary crate is the standing trap: `postretro-level-compiler` exposes only texture helpers from its lib, so the compiler internals (map parsing, entity dispatch) live in the `prl-build` bin target and `--lib` reaches none of them. Use `--bin prl-build` there. Whatever the target, confirm the count matches the tests you meant to run.
 

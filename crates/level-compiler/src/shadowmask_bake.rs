@@ -184,6 +184,7 @@ fn bake_shadowmask_atlas_with_window(
         &selected,
         &graph,
         Some(control),
+        Some(resident_layers),
     );
     fill_uncached_shadowmask_partitions(
         &mut fill,
@@ -364,6 +365,7 @@ fn bake_shadowmask_atlas_cached_with_window(
         &selected,
         &graph,
         Some(control),
+        Some(resident_layers),
     );
     fill_cached_shadowmask_partitions(
         &mut fill,
@@ -376,7 +378,6 @@ fn bake_shadowmask_atlas_cached_with_window(
         cache,
         &selected_layer_input_hashes,
         control,
-        resident_layers,
     );
     let section = fill.finish();
     cache_shadowmask_section_then_complete(
@@ -845,8 +846,9 @@ fn cache_shadowmask_section_then_complete(
     }
 }
 
-/// Bake one atlas layer at a time, retaining at most W selected-light
-/// partitions before each partition is written directly into the final output.
+/// Bake one atlas layer at a time, retaining at most W selected-light chart
+/// payloads and consuming them directly into the final output. Assembling a
+/// full partition here would overlap it with the batch that supplied it.
 #[allow(clippy::too_many_arguments)]
 fn fill_uncached_shadowmask_partitions(
     fill: &mut ShadowmaskFill,
@@ -906,20 +908,12 @@ fn fill_uncached_shadowmask_partitions(
                 .collect();
             let mut chart_outputs = chart_outputs.into_iter();
             for compact_light_index in batch_start..batch_end {
-                let texels = (0..target_charts.len())
-                    .flat_map(|_| {
-                        chart_outputs
-                            .next()
-                            .expect("one ordered output is required for every chart task")
-                    })
-                    .collect();
-                let partition = LightmapLayer {
-                    atlas_width: shared.atlas_width,
-                    atlas_height: shared.atlas_height,
-                    layer_count,
-                    texels,
-                };
-                fill.write_partition(compact_light_index, &partition);
+                for _ in 0..target_charts.len() {
+                    let chart_texels = chart_outputs
+                        .next()
+                        .expect("one ordered output is required for every chart task");
+                    fill.write_texels(compact_light_index, &chart_texels);
+                }
                 if target_layer + 1 == layer_count && compact_light_index != 0 {
                     control.advance(1);
                 }
@@ -945,7 +939,6 @@ fn fill_cached_shadowmask_partitions(
     cache: &StageCache,
     layer_input_hashes: &[Vec<[u8; 32]>],
     control: &BakeControl,
-    resident_layers: &ResidentLayerTracker,
 ) {
     let layer_count = layer_count_from_shared(shared);
     debug_assert_eq!(
@@ -1006,7 +999,6 @@ fn fill_cached_shadowmask_partitions(
                     partition
                 }
             };
-            let _resident_partition = resident_layers.acquire();
             fill.write_partition(compact_light_index, &partition);
             drop(partition);
             if target_layer + 1 == layer_count && compact_light_index != 0 {
@@ -1071,6 +1063,7 @@ fn build_shadowmask_from_layers(
         selected,
         &graph,
         None,
+        None,
     );
     for (compact_light_index, layer) in layers.iter().enumerate() {
         fill.write_partition(compact_light_index, layer);
@@ -1114,6 +1107,7 @@ struct ShadowmaskFill<'a> {
     channels: Vec<u8>,
     data: Vec<u8>,
     control: Option<&'a BakeControl>,
+    resident_layers: Option<&'a ResidentLayerTracker>,
 }
 
 impl<'a> ShadowmaskFill<'a> {
@@ -1126,6 +1120,7 @@ impl<'a> ShadowmaskFill<'a> {
         selected: &[(usize, u32, &MapLight)],
         graph: &OverlapGraph,
         control: Option<&'a BakeControl>,
+        resident_layers: Option<&'a ResidentLayerTracker>,
     ) -> Self {
         Self::new_with_assignment_checkpoint(
             width,
@@ -1135,6 +1130,7 @@ impl<'a> ShadowmaskFill<'a> {
             selected,
             graph,
             control,
+            resident_layers,
             || {
                 if let Some(control) = control {
                     control.governor().checkpoint();
@@ -1152,6 +1148,7 @@ impl<'a> ShadowmaskFill<'a> {
         selected: &[(usize, u32, &MapLight)],
         graph: &OverlapGraph,
         control: Option<&'a BakeControl>,
+        resident_layers: Option<&'a ResidentLayerTracker>,
         assignment_checkpoint: impl FnOnce(),
     ) -> Self {
         debug_assert_eq!(selected.len(), graph.light_count());
@@ -1191,15 +1188,24 @@ impl<'a> ShadowmaskFill<'a> {
             channels,
             data: allocate_shadowmask_output(data_len),
             control,
+            resident_layers,
         }
     }
 
     fn write_partition(&mut self, compact_light_index: usize, partition: &LightmapLayer) {
+        // Count the actual full partition at its consumer boundary. The cold
+        // path's chart payloads are already charged, so assembling a partition
+        // on top of them would raise the measured high-water mark above W.
+        let _resident_partition = self.resident_layers.map(ResidentLayerTracker::acquire);
+        self.write_texels(compact_light_index, &partition.texels);
+    }
+
+    fn write_texels(&mut self, compact_light_index: usize, texels: &[LayerTexel]) {
         let channel = self.compact_channels[compact_light_index];
         if channel == SHADOWMASK_CHANNEL_DROPPED {
             return;
         }
-        for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
+        for chunk in texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
             if let Some(control) = self.control {
                 control.governor().checkpoint();
             }
@@ -1889,6 +1895,7 @@ mod tests {
                 &selected,
                 &graph,
                 Some(&control),
+                None,
                 || {
                     control.governor().checkpoint_with_wait_observer(|| {
                         waiting_tx.send(()).expect("test coordinator is waiting");
@@ -2400,7 +2407,7 @@ mod tests {
             layer(5, 5, 1, &[(covered_idx, covered_layer, 0.25)]),
             layer(5, 5, 1, &[(covered_idx, covered_layer, 0.5)]),
         ];
-        let mut fill = ShadowmaskFill::new(5, 5, 1, 2, &selected, &pruned_graph, None);
+        let mut fill = ShadowmaskFill::new(5, 5, 1, 2, &selected, &pruned_graph, None, None);
         for (compact_index, layer) in layers.iter().enumerate() {
             fill.write_partition(compact_index, layer);
         }
@@ -2489,6 +2496,7 @@ mod tests {
             &selected,
             &pruned_graph,
             None,
+            None,
         );
         let mut unpruned_fill = ShadowmaskFill::new(
             shared.atlas_width,
@@ -2497,6 +2505,7 @@ mod tests {
             lights.len(),
             &selected,
             &unpruned_graph,
+            None,
             None,
         );
         for (compact_index, layer) in layers.iter().enumerate() {
@@ -3239,8 +3248,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(warm_dir);
     }
 
+    // Regression: assembling a partition while its full cold chart batch was
+    // retained made a four-partition window physically hold five payloads.
     #[test]
-    fn window_sizes_bound_resident_layers_and_preserve_shadowmask_bytes() {
+    fn window_sizes_physically_bound_resident_layers_and_preserve_shadowmask_bytes() {
         let (geometry, bvh, primitives, charts, placements, lights, selection) =
             top_level_multilayer_five_way_inputs();
         let shared = SharedAtlas {
@@ -3267,9 +3278,9 @@ mod tests {
             );
             let section = section.expect("selected lights produce a shadowmask section");
 
-            assert!(
-                resident_high_water <= window,
-                "W={window} must bound resident per-light payloads"
+            assert_eq!(
+                resident_high_water, window,
+                "W={window} must be the physical high-water mark, including assembled partitions"
             );
             assert_eq!(
                 section.to_bytes().as_slice(),
@@ -3452,7 +3463,7 @@ mod tests {
         let submission_order = build_shadowmask_from_layers(1, 1, 1, 3, &selected, &layers);
 
         let graph = overlap_graph_from_layers(&layers);
-        let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, 3, &selected, &graph, None);
+        let mut reversed_fill = ShadowmaskFill::new(1, 1, 1, 3, &selected, &graph, None, None);
         for compact_light_index in [2, 1, 0] {
             reversed_fill.write_partition(compact_light_index, &layers[compact_light_index]);
         }
@@ -3936,7 +3947,8 @@ mod tests {
         let uncached_progress = StageProgress::with_total(2);
         let uncached_control =
             BakeControl::new(Arc::new(Governor::new(1, false)), &uncached_progress);
-        let fill = ShadowmaskFill::new(1, 1, 1, 1, &selected, &graph, Some(&uncached_control));
+        let fill =
+            ShadowmaskFill::new(1, 1, 1, 1, &selected, &graph, Some(&uncached_control), None);
         assert_eq!(uncached_progress.completed(), 1);
         let uncached_section = fill.finish();
         assert_eq!(uncached_progress.completed(), 1);

@@ -1,0 +1,14 @@
+[package]
+name = "postretro-combat-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Combat domain data shared by Postretro crates"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+postretro-net.workspace = true
+postretro-foundation.workspace = true
+postretro-entities.workspace = true

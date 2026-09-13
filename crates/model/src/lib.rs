@@ -18,6 +18,17 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
+/// One authored animation clip's lookup metadata.
+///
+/// The glTF loader computes this CPU-only record while it owns clip names and
+/// durations. Game simulation uses it to resolve authored animation states;
+/// render crates re-export it for their existing model-cache APIs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipMetadata {
+    pub name: String,
+    pub duration: f32,
+}
+
 /// A model identity: the raw `MeshComponent.model` string a mesh entity renders.
 ///
 /// Map-authored paths are assumed already canonical, so this is the verbatim

@@ -6,18 +6,26 @@
 // See: context/lib/scripting.md
 
 pub(crate) mod ai;
+#[path = "../frame_systems/attachments.rs"]
 pub(crate) mod attachments;
+#[path = "../frame_systems/emitter_bridge.rs"]
 pub(crate) mod emitter_bridge;
 pub(crate) mod flash_decay;
+#[path = "../frame_systems/fog_volume_bridge.rs"]
 pub(crate) mod fog_volume_bridge;
 pub(crate) mod health;
 pub(crate) mod hit_zones;
+#[path = "../frame_systems/input_mode.rs"]
 pub(crate) mod input_mode;
+#[path = "../frame_systems/light_bridge.rs"]
 pub(crate) mod light_bridge;
 pub(crate) mod mesh_anim;
+#[path = "../frame_systems/mesh_render.rs"]
 pub(crate) mod mesh_render;
+#[path = "../frame_systems/particle_render.rs"]
 pub(crate) mod particle_render;
 pub(crate) mod particle_sim;
+#[path = "../frame_systems/presentation_cells.rs"]
 pub(crate) mod presentation_cells;
 pub(crate) mod reaction_scheduler;
 #[cfg(test)]

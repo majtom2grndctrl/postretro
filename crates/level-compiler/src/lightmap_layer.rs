@@ -10,6 +10,8 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
+#[cfg(test)]
+use crate::lightmap_bake::light_texel_is_covered;
 use crate::lightmap_bake::{
     Chart, CompositedAtlas, effective_direction_texel_scale,
     light_texel_contribution_and_visibility, segment_clear, texel_seed,
@@ -72,6 +74,14 @@ pub struct LayerTexel {
     /// has no direct term here. This feeds the shadowmask bake and is not folded
     /// into Lightmap section output except through `irradiance`/`weighted_dir`.
     pub raw_visibility: f32,
+}
+
+/// One atlas location covered by a light before visibility is sampled.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoveredChartTexel {
+    pub idx: u32,
+    pub layer: u32,
 }
 
 // Pins the fixed codec stride: `to_bytes`/`from_bytes` cast the blob directly
@@ -405,22 +415,94 @@ pub(crate) fn bake_light_layer_chart_controlled(
     area_sample_count: u32,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
+    let chart = &atlas.charts[face_idx];
+    let capacity = if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
+        let (width, height) = chart_interior_dims(chart);
+        (width * height) as usize
+    } else {
+        0
+    };
+    let mut texels = Vec::with_capacity(capacity);
+    for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
+        let (irr, weighted_dir, raw_visibility) = light_texel_contribution_and_visibility(
+            light,
+            sample.world_p,
+            sample.surface_normal,
+            sample.seed,
+            area_sample_count,
+            |from, to| segment_clear(bvh, primitives, geometry, from, to),
+        );
+
+        texels.push(LayerTexel {
+            idx: sample.idx,
+            layer: sample.layer,
+            irradiance: irr.to_array(),
+            weighted_dir: weighted_dir.to_array(),
+            fallback_normal: sample.surface_normal.to_array(),
+            raw_visibility: raw_visibility.unwrap_or(-1.0),
+        });
+    });
+    texels
+}
+
+/// Walk one `(light, chart)` using the exact lightmap raster path, retaining
+/// only texels with a direct contribution before visibility is sampled.
+#[cfg(test)]
+pub(crate) fn visit_light_chart_coverage_controlled(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    control: &BakeControl,
+    mut visit_covered: impl FnMut(CoveredChartTexel),
+) {
+    for_each_light_layer_chart_texel_controlled(atlas, face_idx, control, |sample| {
+        if light_texel_is_covered(light, sample.world_p, sample.surface_normal) {
+            visit_covered(CoveredChartTexel {
+                idx: sample.idx,
+                layer: sample.layer,
+            });
+        }
+    });
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChartWalkSample {
+    pub idx: u32,
+    pub layer: u32,
+    pub world_p: Vec3,
+    pub surface_normal: Vec3,
+    pub seed: u64,
+}
+
+pub(crate) fn for_each_light_layer_chart_texel_controlled(
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    control: &BakeControl,
+    sample_texel: impl FnMut(ChartWalkSample),
+) {
     // Parallel bake work must enter once at its outermost boundary so pause
     // and the shared concurrency cap apply to every chart.
     let _permit = control.governor().enter();
+    for_each_light_layer_chart_texel(atlas, face_idx, sample_texel);
+    control.advance(1);
+}
+
+/// Walk one chart without acquiring a governor permit. Callers that include
+/// prune/setup work in the same parallel item acquire the permit outside this
+/// helper, then use this exact raster loop.
+pub(crate) fn for_each_light_layer_chart_texel(
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    mut sample_texel: impl FnMut(ChartWalkSample),
+) {
     let placement = &atlas.placements[face_idx];
     let chart = &atlas.charts[face_idx];
     if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
-        // Degenerate charts still consume one progress unit while the permit is
-        // held; their ordered slot is an empty buffer.
-        control.advance(1);
-        return Vec::new();
+        return;
     }
 
     let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = chart_interior_dims(chart);
-    let mut texels = Vec::with_capacity((interior_w * interior_h) as usize);
-
     for ty in 0..interior_h {
         for tx in 0..interior_w {
             let atlas_x = placement.x as i32 + padding + tx;
@@ -433,27 +515,16 @@ pub(crate) fn bake_light_layer_chart_controlled(
             let surface_normal = chart.normal;
             let seed = texel_seed(atlas_x as u32, atlas_y as u32);
 
-            let (irr, weighted_dir, raw_visibility) = light_texel_contribution_and_visibility(
-                light,
+            let sample = ChartWalkSample {
+                idx,
+                layer: placement.layer,
                 world_p,
                 surface_normal,
                 seed,
-                area_sample_count,
-                |from, to| segment_clear(bvh, primitives, geometry, from, to),
-            );
-
-            texels.push(LayerTexel {
-                idx,
-                layer: placement.layer,
-                irradiance: irr.to_array(),
-                weighted_dir: weighted_dir.to_array(),
-                fallback_normal: surface_normal.to_array(),
-                raw_visibility: raw_visibility.unwrap_or(-1.0),
-            });
+            };
+            sample_texel(sample);
         }
     }
-    control.advance(1);
-    texels
 }
 
 /// Composite per-light layers into the pre-BC6H atlas, reproducing
@@ -1071,6 +1142,103 @@ mod tests {
             }
         }
         order
+    }
+
+    #[test]
+    fn analytic_coverage_matches_baked_coverage_fixture_matrix() {
+        let light = point_light([0.5, 1.0, 0.5], 4.0);
+        let samples = [
+            ("visible", Vec3::new(0.5, 0.0, 0.5), Vec3::Y, true, true),
+            (
+                "fully occluded",
+                Vec3::new(0.5, 0.0, 0.5),
+                Vec3::Y,
+                false,
+                true,
+            ),
+            (
+                "beyond falloff",
+                Vec3::new(20.0, 0.0, 20.0),
+                Vec3::Y,
+                true,
+                false,
+            ),
+            (
+                "backfacing",
+                Vec3::new(0.5, 0.0, 0.5),
+                -Vec3::Y,
+                true,
+                false,
+            ),
+        ];
+
+        for (name, world_p, normal, trace_is_clear, expected_coverage) in samples {
+            let analytic = light_texel_is_covered(&light, world_p, normal);
+            let (_, _, raw_visibility) =
+                crate::lightmap_bake::light_texel_contribution_and_visibility(
+                    &light,
+                    world_p,
+                    normal,
+                    7,
+                    AREA_SAMPLES,
+                    |_, _| trace_is_clear,
+                );
+            assert_eq!(analytic, raw_visibility.is_some(), "{name}");
+            assert_eq!(analytic, expected_coverage, "{name}");
+        }
+
+        let contributing_point = Vec3::new(0.5, 0.0, 0.5);
+        assert!(light_texel_is_covered(&light, contributing_point, Vec3::Y));
+    }
+
+    #[test]
+    fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
+        let geometry = two_quad_geometry();
+        let charts = vec![Chart {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0, 0.0],
+            uv_extent: [0.0, 1.0],
+            normal: Vec3::Y,
+            width_texels: 5,
+            height_texels: 5,
+            leaf_index: 0,
+        }];
+        let placements = vec![ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        }];
+        let shared = SharedAtlas {
+            charts: &charts,
+            placements: &placements,
+            atlas_width: 5,
+            atlas_height: 5,
+        };
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let light = point_light([0.5, 1.0, 0.5], 4.0);
+        let baked = bake_light_layer_chart_controlled(
+            &light,
+            &shared,
+            0,
+            &bvh,
+            &primitives,
+            &geometry,
+            AREA_SAMPLES,
+            &BakeControl::unrestricted(),
+        );
+        let mut analytic = Vec::new();
+        visit_light_chart_coverage_controlled(
+            &light,
+            &shared,
+            0,
+            &BakeControl::unrestricted(),
+            |texel| analytic.push(texel),
+        );
+
+        assert!(baked.is_empty());
+        assert!(analytic.is_empty());
     }
 
     /// The production warm fold reproduces the cold monolith on a synthetic

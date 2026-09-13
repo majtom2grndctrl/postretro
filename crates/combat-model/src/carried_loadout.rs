@@ -1,3 +1,6 @@
+// Carried-seat and tuning-payload types shared by gameplay and netcode.
+// See: context/lib/networking.md
+
 use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::{

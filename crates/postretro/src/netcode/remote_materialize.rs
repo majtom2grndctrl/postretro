@@ -2,6 +2,7 @@
 // for local and remote player entities.
 // See: context/lib/networking.md
 
+use postretro_combat_model::TuningPayload;
 use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor};
@@ -147,7 +148,7 @@ pub(super) fn materialize_armed_local_pawn(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     host_movement: Option<&postretro_foundation::PlayerMovementDescriptor>,
-    host_tuning: Option<&super::TuningPayload>,
+    host_tuning: Option<&TuningPayload>,
     rebuild_movement: bool,
 ) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");

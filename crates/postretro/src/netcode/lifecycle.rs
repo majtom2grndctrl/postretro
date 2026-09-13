@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use postretro_combat_model::CarriedState;
 #[cfg(test)]
 use postretro_combat_model::{AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, ShotId};
 use postretro_entities::components::inventory::Inventory;
@@ -84,7 +85,7 @@ pub(crate) enum SlotPawnSource<'a> {
         placement: &'a MapEntity,
         descriptors: &'a [EntityTypeDescriptor],
         agent_params: Option<NavAgentParams>,
-        carried_loadout: Option<&'a super::CarriedState>,
+        carried_loadout: Option<&'a CarriedState>,
     },
 }
 

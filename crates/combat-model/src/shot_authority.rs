@@ -1,3 +1,6 @@
+// Shot-authorization types shared by simulation and netcode.
+// See: context/lib/networking.md
+
 use glam::Vec3;
 use postretro_entities::EntityId;
 use postretro_foundation::{KnockbackDescriptor, SplashDescriptor};

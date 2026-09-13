@@ -64,7 +64,7 @@ imports the VM host directly: `scripting::primitives::store::{read,write}_store_
 store, dispatches reactions, resolves data archetypes — it *is* the runtime. A
 standalone AI crate requires decomposing the VM runtime (sink store + reaction
 dispatch to `scripting-core`, invert the `sim ↔ AiRuntime` seam behind a trait,
-invert the host→systems registration). That is milestone M4, not a near-term lift.
+invert the host→systems registration). That is milestone M3, not a near-term lift.
 
 ## The `simulate` seam is extraction-ready and data-injected
 
@@ -77,7 +77,7 @@ The body's only in-binary up-call is `crate::impact_effects::tick_deferred_effec
 `input`/`frame_timing`/`render`. The shipped `context/plans/done/M15--p0-headless-sim-seam/`
 began this formalization. Its one concrete coupling to AI is a `&mut
 scripting_systems::ai::AiRuntime` parameter (`sim/mod.rs:400,457`) — intra-crate
-today; a trait if AI ever leaves (M4).
+today; a trait if AI ever leaves (M3).
 
 ## Up-edges: the fused cluster is nearly self-contained
 
@@ -136,4 +136,4 @@ isolation, acyclicity-by-compile, behavior-preservation), not reviewer trust. Th
 `layering_invariants_hold` test fails `cargo test` on an upward edge or widened
 chokepoint. `context/lib/development_guide.md` §Target shape names the `postretro-sim`
 crate (collision moves in) and a combat-model crate as the documented target; this
-epic realizes both and adds `postretro-netcode` and (M4) `postretro-ai`.
+epic realizes both and adds `postretro-netcode` and (M3) `postretro-ai`.

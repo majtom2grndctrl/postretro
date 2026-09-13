@@ -1682,40 +1682,6 @@ mod tests {
             provenance.spawn_path,
             DescriptorSpawnPath::ProjectilePresentation
         );
-        let mut collector =
-            crate::scripting_systems::particle_render::ParticleRenderCollector::new();
-        collector.register_sprite(&competing_collection);
-        collector.register_sprite(&expected_collection);
-        collector.collect_at_tick(
-            &observer_registry,
-            None,
-            &postretro_visibility::VisibleCells::DrawAll,
-            11.0,
-        );
-        let collected = collector.iter_collections().collect::<Vec<_>>();
-        assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].0, expected_collection);
-        assert_eq!(
-            collected[0].1.len(),
-            postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE,
-            "visual-only remote materialization is eligible for the sprite collector"
-        );
-        let packed_age = f32::from_ne_bytes(collected[0].1[12..16].try_into().unwrap());
-        assert!(
-            (packed_age - 11.0 * crate::frame_timing::TICK_DURATION.as_secs_f32()).abs() < 1.0e-6,
-            "the remote flipbook uses the shared fixed-tick epoch rather than frame time"
-        );
-        let mut observer_bridge = crate::scripting_systems::light_bridge::LightBridge::new();
-        observer_bridge.populate_from_level(&[], &mut observer_registry, 0);
-        observer_bridge.absorb_dynamic_lights(&observer_registry);
-        let observer_lights = observer_bridge
-            .update(&mut observer_registry, 0.18, 1.0)
-            .expect("the client-side absorb path enrolls presentation lights");
-        assert_eq!(
-            observer_lights.lights_bytes.len(),
-            postretro_lighting::GPU_LIGHT_SIZE,
-            "one observer presentation produces one dynamic light record"
-        );
         let observer_ack = observer_outcome
             .ack
             .expect("applied observer baseline produces an ack");

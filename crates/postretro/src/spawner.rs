@@ -21,11 +21,24 @@ use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 
-use crate::netcode::MAX_DELAY_MICROS;
 use crate::scripting::builtins::data_archetype::{
     ai_capsule_center_from_feet_offset, attach_descriptor_components,
 };
 use crate::scripting::map_entity::MapEntity;
+
+/// Fixed enemy attack windup after runtime spawn, in milliseconds.
+///
+/// This is gameplay policy, not interpolation policy. It intentionally starts
+/// at the present interpolation ceiling (250 ms) but may grow independently.
+pub(crate) const SPAWN_ATTACK_WINDUP_MS: f32 = 250.0;
+
+#[cfg(test)]
+pub(crate) fn spawn_windup_covers_interpolation_ceiling(
+    windup_ms: f32,
+    interpolation_ceiling_micros: u64,
+) -> bool {
+    windup_ms >= interpolation_ceiling_micros as f32 / 1000.0
+}
 
 #[derive(Debug)]
 pub(crate) struct SpawnContextState {
@@ -262,7 +275,7 @@ fn spawn_resolved_spawners(
             // enemy cannot attack before remote interpolation's maximum delay
             // has elapsed and the remote presentation has had time to arrive.
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
-                let windup_ms = MAX_DELAY_MICROS as f32 / 1000.0;
+                let windup_ms = SPAWN_ATTACK_WINDUP_MS;
                 for attack_name in brain.graph.attacks.keys() {
                     brain
                         .attack_cooldown_remaining_ms
@@ -538,7 +551,7 @@ mod tests {
             (spawned_forward - Vec3::X).length() < 1e-5,
             "the fixture starts the spawned enemy facing its live target"
         );
-        let seed = MAX_DELAY_MICROS as f32 / 1000.0;
+        let seed = SPAWN_ATTACK_WINDUP_MS;
         let cooldowns = &registry
             .get_component::<BrainComponent>(enemy)
             .expect("spawned enemy retains its brain")

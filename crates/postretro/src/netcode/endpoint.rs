@@ -8,10 +8,6 @@ use postretro_combat_model::TuningPayload;
 use postretro_foundation::Seat;
 use postretro_net::wire::JoinSeedValue;
 
-use crate::scripting::state_persistence::{
-    overlay_client_local_per_owner_state, sync_client_per_owner_projection,
-};
-
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
 ///
@@ -217,7 +213,7 @@ impl ClientSessionStatus {
 
 const SESSION_OPEN_SEATS_SLOT: &str = "session.openSeats";
 
-fn apply_client_session_roster(
+pub(crate) fn apply_client_session_roster(
     session_status: &mut ClientSessionStatus,
     slot_table: &mut SlotTable,
     roster: SessionRosterMessage,
@@ -372,173 +368,6 @@ pub(crate) enum WorldLessPoll {
     Failed,
 }
 
-/// Route every server Control variant through the one client-side drain. Control
-/// is reliable and ordered, so splitting relevel, diagnostic, and tuning drains
-/// would let one consumer steal another consumer's message.
-pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
-    for control in controls {
-        match control {
-            ServerControlMessage::SwitchAccepted(accepted) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Accepted(accepted));
-                apply_client_switch_resolution(session, resolution);
-            }
-            ServerControlMessage::SwitchRefused(refusal) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let Some(endpoint) = session.net_endpoint.as_mut() else {
-                    continue;
-                };
-                let resolution = endpoint.take_switch_outcome(SwitchOutcome::Refused(refusal));
-                apply_client_switch_resolution(session, resolution);
-            }
-            ServerControlMessage::Relevel(catalog_id) => {
-                app.follow_relevel_catalog(catalog_id);
-            }
-            ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
-                // Admission failure is terminal, so this is the client-visible
-                // diagnostic for a player who cannot join the host.
-                log::error!(
-                    "[Net] incompatible host: {}",
-                    DivergenceReason::Closing(cause)
-                );
-            }
-            ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
-                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
-                if let Some(session) = app.session.as_mut()
-                    && let Some(endpoint) = session.net_endpoint.as_mut()
-                {
-                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-                    endpoint.demote_client_state(&mut registry);
-                    registry.clear_presentation_spawns();
-                    drop(registry);
-                    session.gameplay_input_latch.clear();
-                    session.presentation_pool.clear_world_instances();
-                    session.client_overlay_facts.clear();
-                }
-                app.client_fire_resolutions.clear();
-                app.client_predicted_shots.clear();
-            }
-            ServerControlMessage::Tuning(bytes) => {
-                let script_ctx = app
-                    .session
-                    .as_ref()
-                    .map(|session| session.scripting.script_ctx.clone());
-                let descriptors = script_ctx
-                    .as_ref()
-                    .map(|script_ctx| script_ctx.data_registry.borrow().entities.clone())
-                    .unwrap_or_default();
-                if let Some(session) = app.session.as_mut()
-                    && let Some(endpoint) = session.net_endpoint.as_mut()
-                {
-                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
-                }
-            }
-            ServerControlMessage::SessionRoster(roster) => {
-                let Some(session) = app.session.as_mut() else {
-                    continue;
-                };
-                let (changed, open_seats, newly_assigned_seat) = {
-                    let Some(NetEndpoint::Client { session_status, .. }) =
-                        session.net_endpoint.as_mut()
-                    else {
-                        continue;
-                    };
-                    let previous_seat = session_status.local_seat();
-                    let (changed, open_seats) = apply_client_session_roster(
-                        session_status,
-                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                        roster,
-                    );
-                    let local_seat = session_status.local_seat();
-                    let newly_assigned_seat = if previous_seat != local_seat {
-                        local_seat
-                    } else {
-                        None
-                    };
-                    (changed, open_seats, newly_assigned_seat)
-                };
-                if let (Some(local_seat), Some(persisted)) =
-                    (newly_assigned_seat, session.persisted_state.as_ref())
-                {
-                    let identity = session.scripting.script_runtime.store_identity().cloned();
-                    let membership = session
-                        .scripting
-                        .script_runtime
-                        .committed_store_slots()
-                        .clone();
-                    for warning in overlay_client_local_per_owner_state(
-                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                        persisted,
-                        identity.as_ref(),
-                        &membership,
-                        session.player_options.player_id,
-                        local_seat,
-                    ) {
-                        log::warn!("[State] {warning}");
-                    }
-                }
-                if let Some(local_seat) = newly_assigned_seat {
-                    // Control and snapshot channels are independently ordered.
-                    // If owner-private state arrived first, seat assignment must
-                    // project that retained scalar without waiting for a delta.
-                    sync_client_per_owner_projection(
-                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                        local_seat,
-                    );
-                }
-                if changed {
-                    log::info!("[Net] {open_seats} session seats remain open");
-                }
-            }
-        }
-    }
-}
-
-fn apply_client_switch_resolution(
-    session: &mut crate::session::Session,
-    resolution: CurrentSwitchResolution,
-) {
-    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
-        CurrentSwitchResolution::None => return,
-        CurrentSwitchResolution::Accepted { last_weapon_slot } => {
-            session
-                .gameplay_input_latch
-                .wieldable_selection_mut()
-                .confirm_latest_declaration(last_weapon_slot);
-            return;
-        }
-        CurrentSwitchResolution::Refused {
-            target_slot,
-            rollback_slot,
-            last_weapon_slot,
-        } => (target_slot, rollback_slot, last_weapon_slot),
-    };
-    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    let Some(pawn) = registry.local_player_movement_pawn() else {
-        return;
-    };
-    let applied =
-        crate::sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot);
-    if !applied {
-        return;
-    }
-    let active_slot = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.active_slot);
-    drop(registry);
-    let selection = session.gameplay_input_latch.wieldable_selection_mut();
-    selection.reset_to_active_with_last(active_slot, last_weapon_slot);
-}
-
 impl NetEndpoint {
     /// Connected-client state needed by main-thread-only private persistence.
     /// The roster's seat is session-scoped and selects a live value only; the
@@ -592,7 +421,10 @@ impl NetEndpoint {
         }
     }
 
-    fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
+    pub(crate) fn take_switch_outcome(
+        &mut self,
+        outcome: SwitchOutcome,
+    ) -> CurrentSwitchResolution {
         let Self::Client {
             pending_switch_declarations,
             ..
@@ -888,7 +720,7 @@ impl NetEndpoint {
         pending_switch_declarations.clear();
     }
 
-    fn install_tuning_payload(
+    pub(crate) fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
         registry: &mut EntityRegistry,

@@ -95,7 +95,8 @@ pub(crate) fn is_replicable(set: &ReplicableSet, id: EntityId) -> bool {
 /// Stamps each replicable `EntityId` to its stable `NetworkId` via the allocator.
 /// Only registered entities are produced; component payload order is stable so the
 /// net crate's wire-mirror equality dirty-check is order-stable.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
 pub(crate) fn produce_owned_snapshots(
     registry: &EntityRegistry,
     set: &ReplicableSet,

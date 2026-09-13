@@ -22,6 +22,19 @@ use postretro_net::wire::{
 };
 
 const SEAT_NAMESPACE_SIZE: u32 = u16::MAX as u32 + 1;
+
+/// Drop every mod-store value owned by seats that have actually left the
+/// session. Disconnect holds deliberately retain values until expiry releases
+/// the seat, so callers pass only the releases emitted by the seat ledger.
+pub(crate) fn clear_released_seat_slot_values(
+    slot_table: &mut postretro_entities::SlotTable,
+    released_seats: impl IntoIterator<Item = Seat>,
+) {
+    for seat in released_seats {
+        slot_table.clear_per_seat_values(seat);
+    }
+}
+
 /// Time a disconnected remote seat remains reclaimable by its asserted player
 /// identity. The clock is driven once per render frame, including Frontend and
 /// Loading frames where the fixed simulation does not run.
@@ -1615,7 +1628,7 @@ mod tests {
             .expect("matching claim reclaims the held seat");
         assert_eq!(reclaimed.seat, original);
         assert!(reclaimed.released_seats.is_empty());
-        crate::clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
+        clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
         assert_eq!(
             slots.get("currency.xp").unwrap().per_seat_value(original),
             Some(&SlotValue::Number(80.0)),
@@ -1627,7 +1640,7 @@ mod tests {
             Some(original)
         );
         seats.advance_hold_clock(HOLD_WINDOW);
-        crate::clear_released_seat_slot_values(&mut slots, seats.release_expired_holds());
+        clear_released_seat_slot_values(&mut slots, seats.release_expired_holds());
         assert_eq!(
             slots.get("currency.xp").unwrap().per_seat_value(original),
             Some(&SlotValue::Number(0.0)),
@@ -1693,7 +1706,7 @@ mod tests {
 
         assert_eq!(reclaimed.seat, recent);
         assert_eq!(reclaimed.released_seats, vec![stale]);
-        crate::clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
+        clear_released_seat_slot_values(&mut slots, reclaimed.released_seats);
         assert_eq!(
             slots.get("currency.xp").unwrap().per_seat_value(stale),
             Some(&SlotValue::Number(0.0)),

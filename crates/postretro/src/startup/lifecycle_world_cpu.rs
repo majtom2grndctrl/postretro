@@ -14,51 +14,6 @@ use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
 };
 
-/// Attach the descriptor-authored `player.health` validation range before either
-/// network role builds its replicated-state schema. The selected descriptor matches
-/// `spawn_from_player_starts`: placements are visited in map order, `entity_class`
-/// defaults to `"player"`, unknown/non-movement descriptors do not become the local
-/// movement pawn, and the first movement descriptor is authoritative.
-///
-/// This deliberately resolves from shared authoring data rather than the registry.
-/// Connected clients suppress their boot pawn until the host baseline arrives, but
-/// must still fingerprint the same range as the listen host.
-pub(crate) fn install_descriptor_player_health_range(
-    slot_table: &mut postretro_entities::SlotTable,
-    spawn_points: &[crate::scripting::map_entity::MapEntity],
-    descriptors: &[postretro_entities::EntityTypeDescriptor],
-) {
-    for spawn in spawn_points {
-        let entity_class = spawn
-            .key_values
-            .get("entity_class")
-            .map(String::as_str)
-            .unwrap_or("player");
-        let Some(descriptor) = descriptors
-            .iter()
-            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
-        else {
-            continue;
-        };
-        if descriptor.movement.is_none() {
-            continue;
-        }
-        let Some(health) = descriptor.health.as_ref() else {
-            return;
-        };
-        if let Err(err) = slot_table.set_engine_numeric_range(
-            "player.health",
-            postretro_entities::NumericRange {
-                min: 0.0,
-                max: health.max,
-            },
-        ) {
-            log::warn!("[Loader] failed to set player.health range: {err}");
-        }
-        return;
-    }
-}
-
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// collision world + kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
@@ -288,7 +243,7 @@ pub(crate) fn install_world_cpu(
     // validated. Resolve the authored player-health range from the shared map
     // placement + descriptor table, not from a role-specific materialized pawn: a
     // connected client intentionally suppresses its boot pawn.
-    install_descriptor_player_health_range(
+    crate::sim::install_descriptor_player_health_range(
         &mut script_ctx.slot_table.borrow_mut(),
         &spawn_points,
         &descriptors,

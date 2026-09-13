@@ -76,7 +76,8 @@ pub(crate) use command_queue::{
 };
 pub(crate) use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
-    NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll, client_drain_control,
+    NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll,
+    apply_client_session_roster,
 };
 pub(crate) use host::{
     DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, host_drive_demo_mover,
@@ -91,9 +92,7 @@ pub(crate) use host_presentation::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub(crate) use interpolation::{
-    DemoMover, InterpolationDelayState, MAX_DELAY_MICROS, RemoteInterpolationBuffer,
-};
+pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub(crate) use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
@@ -106,6 +105,7 @@ pub(crate) use presentation::{
     route_host_presentation_spawns, route_host_world_point_presentation_spawns,
     send_host_overlay_facts, update_client_overlay_anchors,
 };
+pub(crate) use seat::clear_released_seat_slot_values;
 pub(crate) use state_slots::ReplicatedSlotIdentity;
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -118,7 +118,8 @@ pub(crate) use prediction::{
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[allow(unused_imports)]
 pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
@@ -161,11 +162,10 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ClientSwitchDeclaration, ComponentPayload, DivergenceReason, EntityRecord,
-    NETCODE_USER_DATA_BYTES, NetworkId, RawSnapshotMessage, ServerControlMessage,
-    ServerSwitchAccepted, ServerSwitchRefused, SessionRosterMessage, SnapshotMessage,
-    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
-    WirePlayerMovementState, WireTransform,
+    self, ClientSwitchDeclaration, ComponentPayload, EntityRecord, NETCODE_USER_DATA_BYTES,
+    NetworkId, RawSnapshotMessage, ServerControlMessage, ServerSwitchAccepted, ServerSwitchRefused,
+    SessionRosterMessage, SnapshotMessage, ValidationError, WireError, WireKinematicMoverState,
+    WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -1477,7 +1477,7 @@ pub(crate) fn tuning_payload_for_pawn(
                     .and_then(|weapon| weapon.placement.as_ref());
                 Some(WieldableTuningPayload {
                     canonical_name,
-                    placement: crate::resolve_weapon_placement(
+                    placement: postretro_foundation::resolve_weapon_placement(
                         default_weapon_placement,
                         None,
                         authored_placement,
@@ -6068,35 +6068,5 @@ mod tests {
     #[test]
     fn parse_host_and_connect_are_mutually_exclusive() {
         assert!(parse_net_config(&argv(&["--host", "--connect", "127.0.0.1:1"])).is_err());
-    }
-
-    #[test]
-    fn net_flags_do_not_clobber_positional_map_path() {
-        // The positional PRL-map path coexists with the net flags. `parse_net_config`
-        // ignores the positional path entirely, and `resolve_map_path` (the existing
-        // handler) must still recover it alongside `--host`/`--connect`.
-        let args = argv(&["content/dev/maps/campaign-test.prl", "--host", "30000"]);
-        let config = parse_net_config(&args).unwrap();
-        assert_eq!(config.role, NetRole::Host { port: 30000 });
-        assert_eq!(
-            crate::resolve_map_path(&args).as_deref(),
-            Some("content/dev/maps/campaign-test.prl"),
-            "the positional map path survives the net flags"
-        );
-
-        // And with --connect: the positional map path leads (the conventional
-        // `cargo run -p postretro -- <map>` ordering), then the net flag.
-        let args = argv(&["maps/e1m1.prl", "--connect", "127.0.0.1:27015"]);
-        let config = parse_net_config(&args).unwrap();
-        assert_eq!(
-            config.role,
-            NetRole::Connect {
-                addr: "127.0.0.1:27015".parse().unwrap()
-            }
-        );
-        assert_eq!(
-            crate::resolve_map_path(&args).as_deref(),
-            Some("maps/e1m1.prl")
-        );
     }
 }

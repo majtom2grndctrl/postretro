@@ -27,7 +27,7 @@ mod content_hash;
 // the render-only blocked portal buffer inspectable without changing gameplay.
 #[cfg(feature = "dev-tools")]
 mod door_occluder_diagnostics;
-mod frame_timing;
+pub(crate) use sim::frame_timing;
 mod fx;
 mod grant;
 mod health;
@@ -63,8 +63,10 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
-mod presentation_pool;
-mod presentation_projection;
+pub(crate) use sim::{
+    presentation_pool, presentation_projection, resolve_mesh_entity_bindings,
+    resolve_mesh_entity_bindings_for_entities,
+};
 mod weapon;
 
 mod render;
@@ -133,8 +135,8 @@ use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
     collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
-    retain_saved_per_owner_state, save_persisted_state, state_path,
-    sync_client_per_owner_projection,
+    overlay_client_local_per_owner_state, retain_saved_per_owner_state, save_persisted_state,
+    state_path, sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -155,7 +157,12 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{
     ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
 };
-use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
+#[cfg(test)]
+use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
+use postretro_foundation::{
+    ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor, resolve_weapon_placement,
+};
+use postretro_net::wire::{DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::fire_named_event;
@@ -209,6 +216,166 @@ fn append_tick_weapon_script_events(
             .into_iter()
             .map(PendingWeaponScriptEvent::Reload),
     );
+}
+
+/// Route client Control messages through App-owned composition. Netcode owns
+/// transport state and registry replication; level following, input latches,
+/// presentation pools, and client-local UI state remain above that boundary.
+fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
+    for control in controls {
+        match control {
+            ServerControlMessage::SwitchAccepted(accepted) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution =
+                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Accepted(accepted));
+                apply_client_switch_resolution(session, resolution);
+            }
+            ServerControlMessage::SwitchRefused(refusal) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution =
+                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Refused(refusal));
+                apply_client_switch_resolution(session, resolution);
+            }
+            ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
+                log::error!(
+                    "[Net] incompatible host: {}",
+                    DivergenceReason::Closing(cause)
+                );
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.demote_client_state(&mut registry);
+                    registry.clear_presentation_spawns();
+                    drop(registry);
+                    session.gameplay_input_latch.clear();
+                    session.presentation_pool.clear_world_instances();
+                    session.client_overlay_facts.clear();
+                }
+                app.client_fire_resolutions.clear();
+                app.client_predicted_shots.clear();
+            }
+            ServerControlMessage::Tuning(bytes) => {
+                let script_ctx = app
+                    .session
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.clone());
+                let descriptors = script_ctx
+                    .as_ref()
+                    .map(|script_ctx| script_ctx.data_registry.borrow().entities.clone())
+                    .unwrap_or_default();
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
+                }
+            }
+            ServerControlMessage::SessionRoster(roster) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let (changed, open_seats, newly_assigned_seat) = {
+                    let Some(netcode::NetEndpoint::Client { session_status, .. }) =
+                        session.net_endpoint.as_mut()
+                    else {
+                        continue;
+                    };
+                    let previous_seat = session_status.local_seat();
+                    let (changed, open_seats) = netcode::apply_client_session_roster(
+                        session_status,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        roster,
+                    );
+                    let local_seat = session_status.local_seat();
+                    let newly_assigned_seat = (previous_seat != local_seat)
+                        .then_some(local_seat)
+                        .flatten();
+                    (changed, open_seats, newly_assigned_seat)
+                };
+                if let (Some(local_seat), Some(persisted)) =
+                    (newly_assigned_seat, session.persisted_state.as_ref())
+                {
+                    let identity = session.scripting.script_runtime.store_identity().cloned();
+                    let membership = session
+                        .scripting
+                        .script_runtime
+                        .committed_store_slots()
+                        .clone();
+                    for warning in overlay_client_local_per_owner_state(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        persisted,
+                        identity.as_ref(),
+                        &membership,
+                        session.player_options.player_id,
+                        local_seat,
+                    ) {
+                        log::warn!("[State] {warning}");
+                    }
+                }
+                if let Some(local_seat) = newly_assigned_seat {
+                    sync_client_per_owner_projection(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        local_seat,
+                    );
+                }
+                if changed {
+                    log::info!("[Net] {open_seats} session seats remain open");
+                }
+            }
+        }
+    }
+}
+
+fn apply_client_switch_resolution(
+    session: &mut session::Session,
+    resolution: netcode::CurrentSwitchResolution,
+) {
+    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
+        netcode::CurrentSwitchResolution::None => return,
+        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
+            session
+                .gameplay_input_latch
+                .wieldable_selection_mut()
+                .confirm_latest_declaration(last_weapon_slot);
+            return;
+        }
+        netcode::CurrentSwitchResolution::Refused {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot),
+    };
+    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return;
+    };
+    if !sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot) {
+        return;
+    }
+    let active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.active_slot);
+    drop(registry);
+    session
+        .gameplay_input_latch
+        .wieldable_selection_mut()
+        .reset_to_active_with_last(active_slot, last_weapon_slot);
 }
 
 /// Resolve host-local mover transition edges to the authored named-reaction
@@ -361,138 +528,6 @@ fn distinct_mesh_models(registry: &postretro_entities::EntityRegistry) -> Vec<St
         }
     }
     ordered
-}
-
-/// Resolve every animated mesh entity's declared state map against the level's
-/// clip tables, filling each `AnimationState.clip_index` (name → glTF index),
-/// and resolve descriptor-authored attachment sockets from the game-side loaded
-/// model table. Clip resolution remains animation-gated; attachment resolution
-/// deliberately also visits stateless and rigid holders.
-///
-/// Runs at level load with a mutable registry, after the model sweep built the
-/// clip tables — so every state's index is concrete before the first frame.
-fn resolve_mesh_entity_bindings(
-    registry: &mut postretro_entities::EntityRegistry,
-    tables: &scripting_systems::mesh_anim::MeshClipTables,
-    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
-) {
-    use postretro_entities::{ComponentKind, ComponentValue};
-
-    // Collect ids first so the mutable per-entity writes do not alias the
-    // immutable iteration borrow. Mesh entity counts are small.
-    let needing_resolution: Vec<postretro_entities::EntityId> = registry
-        .iter_with_kind(ComponentKind::Mesh)
-        .filter_map(|(id, value)| match value {
-            ComponentValue::Mesh(mesh)
-                if mesh.animation.is_some() || !mesh.attachments.is_empty() =>
-            {
-                Some(id)
-            }
-            _ => None,
-        })
-        .collect();
-
-    resolve_mesh_entity_bindings_for_entities(registry, tables, hit_zone_store, needing_resolution);
-}
-
-/// Resolve clip indices and attachment bindings for a known set of newly
-/// materialized mesh entities. Runtime spawners call this through their
-/// session-owned pending-id queue after descriptor attachment; their models were
-/// already uploaded at level install.
-fn resolve_mesh_entity_bindings_for_entities(
-    registry: &mut postretro_entities::EntityRegistry,
-    tables: &scripting_systems::mesh_anim::MeshClipTables,
-    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
-    entity_ids: impl IntoIterator<Item = postretro_entities::EntityId>,
-) {
-    use postretro_entities::ComponentKind;
-    use postretro_entities::components::mesh::AttachmentBinding;
-    use postretro_model::gltf_loader::SocketBinding;
-
-    for id in entity_ids {
-        if !matches!(
-            registry.has_component_kind(id, ComponentKind::Mesh),
-            Ok(true)
-        ) {
-            continue;
-        }
-        let Ok(mut component) = registry
-            .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
-            .cloned()
-        else {
-            continue;
-        };
-        let model_name = component.model.clone();
-        let handle = postretro_model::ModelHandle::from(model_name.clone());
-        if let Some(anim) = component.animation.as_mut() {
-            match tables.get(&handle) {
-                Some(table) => {
-                    let missing =
-                        scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
-                    for m in &missing {
-                        log::warn!(
-                            "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
-                             the model — state unusable (switching to it no-ops)",
-                            m.state,
-                            model_name,
-                            m.clip,
-                        );
-                    }
-                }
-                None => {
-                    // Model never uploaded (load failed): no clips resolve. Warn once
-                    // for the model, leave every state unresolved.
-                    log::warn!(
-                        "[Model] mesh entity references uncached model '{}' — animation states \
-                         unresolved",
-                        model_name,
-                    );
-                    for state in anim.states.values_mut() {
-                        state.clip_index = None;
-                    }
-                }
-            }
-        }
-
-        for attachment in &mut component.attachments {
-            // An attachment model must have made it through the same model
-            // sweep as its holder. The game-side store records successful loads,
-            // so absence covers missing and failed paths without a placeholder.
-            // The renderer already emitted the single path-level load diagnostic.
-            if hit_zone_store.get_by_name(&attachment.model).is_none() {
-                attachment.binding = AttachmentBinding::Unresolved;
-                continue;
-            }
-
-            let binding = hit_zone_store
-                .get(&handle)
-                .and_then(|holder| holder.sockets.get(&attachment.socket));
-            match binding {
-                Some(SocketBinding::SkinnedJoint(joint)) => {
-                    attachment.binding = AttachmentBinding::Skinned(*joint);
-                }
-                Some(SocketBinding::RigidRest(rest)) => {
-                    attachment.binding = AttachmentBinding::Rigid(*rest);
-                }
-                None => {
-                    attachment.binding = AttachmentBinding::Unresolved;
-                    let warning_key = format!(
-                        "attachment-socket:{model_name}:{}:{}",
-                        attachment.socket, attachment.model
-                    );
-                    if hit_zone_store.mark_attachment_resolution_warning(warning_key) {
-                        log::warn!(
-                            "[Model] holder model '{}' has no socket '{}' for attachment model '{}' — attachment unresolved",
-                            model_name,
-                            attachment.socket,
-                            attachment.model,
-                        );
-                    }
-                }
-            }
-        }
-        let _ = registry.set_component(id, component);
-    }
 }
 
 /// Resolve presentation attached by the listen-host accept lifecycle after the
@@ -1497,39 +1532,6 @@ fn viewmodel_asset_for_archetype<'a>(
         .as_ref()?;
     let viewmodel = weapon.viewmodel.as_deref()?.trim();
     (!viewmodel.is_empty()).then_some((viewmodel, weapon.placement.clone()))
-}
-
-const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
-
-/// Resolve authored first-person weapon placement by whole descriptor. Future
-/// character and per-instance tiers are intentionally parameters only in v1;
-/// callers pass `None` until their real storage homes exist.
-fn resolve_weapon_placement(
-    mod_default: Option<&WeaponPlacementDescriptor>,
-    character: Option<&WeaponPlacementDescriptor>,
-    weapon: Option<&WeaponPlacementDescriptor>,
-    instance: Option<&WeaponPlacementDescriptor>,
-) -> WeaponPlacementDescriptor {
-    instance
-        .or(weapon)
-        .or(character)
-        .or(mod_default)
-        .cloned()
-        .unwrap_or_else(legacy_weapon_placement)
-}
-
-/// The descriptor form of the legacy hard-coded `BASE_OFFSET`. Keeping the
-/// authored labels here means the normal conversion path produces precisely
-/// the same transform for an entirely unauthored weapon.
-fn legacy_weapon_placement() -> WeaponPlacementDescriptor {
-    WeaponPlacementDescriptor {
-        offset: postretro_foundation::PlacementOffset {
-            right: BASE_OFFSET.x,
-            up: BASE_OFFSET.y,
-            forward: -BASE_OFFSET.z,
-        },
-        rotation: postretro_foundation::PlacementRotation::default(),
-    }
 }
 
 /// Camera-space placement of the first-person model. World camera yaw/pitch
@@ -4824,7 +4826,7 @@ impl App {
             session.per_owner_save_timer.observe_connection(connected);
         }
         if let netcode::WorldLessPoll::Client(controls) = &poll {
-            netcode::client_drain_control(self, controls.clone());
+            client_drain_control(self, controls.clone());
         }
         if matches!(poll, netcode::WorldLessPoll::Failed)
             && let Some(session) = self.session.as_mut()
@@ -4832,7 +4834,7 @@ impl App {
                 (session.net_endpoint.as_mut(), session.seat_table.as_mut())
         {
             // Hold expiry is session-clock work, not successful socket-I/O work.
-            clear_released_seat_slot_values(
+            netcode::clear_released_seat_slot_values(
                 &mut script_ctx.slot_table.borrow_mut(),
                 netcode::finish_host_poll(server, seats),
             );
@@ -4922,7 +4924,7 @@ impl App {
                     );
                     continue;
                 };
-                clear_released_seat_slot_values(
+                netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     admission.released_seats,
                 );
@@ -5017,7 +5019,7 @@ impl App {
                 }
             }
             if let Some(seats) = seat_table {
-                clear_released_seat_slot_values(
+                netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     netcode::finish_host_poll(server, seats),
                 );
@@ -6280,7 +6282,7 @@ impl App {
                 _ => Vec::new(),
             }
         };
-        netcode::client_drain_control(self, client_controls);
+        client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -6424,7 +6426,7 @@ impl App {
                                             );
                                             continue;
                                         };
-                                        clear_released_seat_slot_values(
+                                        netcode::clear_released_seat_slot_values(
                                             &mut script_ctx.slot_table.borrow_mut(),
                                             admission.released_seats,
                                         );
@@ -6660,7 +6662,7 @@ impl App {
                             }
                         }
                         if let Some(seats) = seat_table {
-                            clear_released_seat_slot_values(
+                            netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
                                 netcode::finish_host_poll(server, seats),
                             );
@@ -6671,7 +6673,7 @@ impl App {
                         if let Some(seats) = seat_table {
                             // A persistently failing socket must not freeze
                             // session-clock hold expiry or its roster update.
-                            clear_released_seat_slot_values(
+                            netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
                                 netcode::finish_host_poll(server, seats),
                             );
@@ -8503,18 +8505,6 @@ fn capture_player_spawn_placements(
     }
 }
 
-/// Drop every mod-store value owned by seats that have actually left the
-/// session. Disconnect holds deliberately do not call this: a reclaim must
-/// observe the same seat-keyed values until expiry releases that seat.
-fn clear_released_seat_slot_values(
-    slot_table: &mut postretro_entities::SlotTable,
-    released_seats: impl IntoIterator<Item = Seat>,
-) {
-    for seat in released_seats {
-        slot_table.clear_per_seat_values(seat);
-    }
-}
-
 #[cfg(feature = "dev-tools")]
 fn drawable_visible_cell_mask(
     leaf_count: usize,
@@ -10011,7 +10001,7 @@ mod tests {
         let legacy = glam::Mat4::from_scale_rotation_translation(
             Vec3::ONE,
             Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Quat::from_rotation_z(roll),
-            BASE_OFFSET + bob_offset,
+            LEGACY_WEAPON_PLACEMENT.camera_space().0 + bob_offset,
         );
         let absent_placement = resolve_weapon_placement(None, None, None, None);
         let absent = viewmodel_camera_space_transform(
@@ -13484,6 +13474,40 @@ mod tests {
             12,
             "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
+    }
+
+    #[test]
+    fn net_flags_do_not_clobber_positional_map_path() {
+        // The positional PRL-map path belongs to the binary's CLI lifecycle.
+        // Net parsing must ignore it while `resolve_map_path` preserves it.
+        let args = [
+            "postretro",
+            "content/dev/maps/campaign-test.prl",
+            "--host",
+            "30000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(config.role, netcode::NetRole::Host { port: 30000 });
+        assert_eq!(
+            resolve_map_path(&args).as_deref(),
+            Some("content/dev/maps/campaign-test.prl")
+        );
+
+        let args = ["postretro", "maps/e1m1.prl", "--connect", "127.0.0.1:27015"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(
+            config.role,
+            netcode::NetRole::Connect {
+                addr: "127.0.0.1:27015".parse().unwrap()
+            }
+        );
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
     }
 
     // --- Animation clock accumulation (scripting.md §10.3) ---

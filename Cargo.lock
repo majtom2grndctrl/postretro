@@ -3690,6 +3690,7 @@ dependencies = [
  "postretro-renderer",
  "postretro-script-compiler",
  "postretro-scripting-core",
+ "postretro-sim",
  "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
@@ -3848,6 +3849,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "postretro-netcode"
+version = "0.1.0"
+
+[[package]]
 name = "postretro-render-cpu"
 version = "0.1.0"
 dependencies = [
@@ -3944,6 +3949,37 @@ dependencies = [
  "rquickjs",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-sim"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "env_logger",
+ "glam",
+ "log",
+ "parry3d",
+ "postretro-combat-model",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-level-compiler",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-lighting",
+ "postretro-model",
+ "postretro-net",
+ "postretro-netcode",
+ "postretro-render-data",
+ "postretro-script-compiler",
+ "postretro-scripting-core",
+ "postretro-test-log-capture",
+ "postretro-ui",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

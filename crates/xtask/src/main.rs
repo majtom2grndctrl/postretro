@@ -980,7 +980,7 @@ fn run_postretro(engine_args: Vec<OsString>) -> Result<i32, String> {
         .current_dir(&workspace_root)
         .arg("run")
         .arg("-p")
-        .arg("postretro")
+        .arg("postretro-sim")
         .arg("--bin")
         .arg("postretro")
         .args(run_args.cargo_run_args)

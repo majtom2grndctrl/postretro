@@ -24,7 +24,8 @@ Inspect `context/plans/ready/` and `context/plans/in-progress/`.
 | Compact `plan.md` says `active` | Resume the first unfinished task. |
 | Resumable `plan.md` says `proposed` | Report the plan and wait for owner approval. |
 | Resumable `plan.md` says `approved` | Resume the first unfinished task. |
-| All tasks done | Resume at **Preflight and review**. |
+| `plan.md` says `test-ready` | Report the external runbook and wait for the blocking result. |
+| All tasks done | Resume at **Review and final preflight**. |
 | `plan.md` says `blocked` | Report the block and wait for the owner. |
 
 When the owner resolves a block, apply only the authorized wording or decision. Return to the step that raised it and re-run that check. Set the mode's normal status only after the block clears.
@@ -118,17 +119,32 @@ Resumable mode commits each completed task with its `plan.md` update. Do not cre
 
 A false Decision premise remains a blocked stop. A Path change remains a Correction. A material Decision or Acceptance change requires owner direction. A clarification that preserves their meaning does not.
 
-## Preflight and review
+## Review and final preflight
 
-Run `/preflight` after integration. Then run `/review-panel` and `/fix-review-findings` as a review → fix → focused retest loop. Repeat only while new concrete findings appear.
+After integration, run a review-readiness gate:
 
-Mechanical fixes proceed. Findings that change a Decision or Acceptance row go to the owner. After fixes, run the full relevant gate once.
+- `cargo fmt --check`.
+- `cargo check` for touched crates.
+- Focused tests for touched behavior. Confirm every filter matched tests.
+
+Do not run `/preflight` or the full workspace suite yet.
+
+Run `/review-panel` and `/fix-review-findings` as a review → fix → focused retest loop. Repeat only for a new concrete finding.
+
+Apply mechanical fixes. Send findings that change a Decision or Acceptance row to the owner.
+
+After focused retests pass, run `/preflight` once as the final gate. Never run the full workspace suite earlier. Add or select a focused integration test when a seam needs broader proof.
 
 ## Land
 
 Add a result column to the AC-to-proof table. Record pass, fail, or outstanding manual proof for every row. No silent gaps.
 
-Update durable `context/lib/` contracts. Move the brief to `context/plans/done/`. Commit the move, plan, and context updates with the final coherent change.
+External manual proof never becomes an inferred pass.
+
+- If the brief permits landing first, set `status: landed-with-gaps`. Record the test runbook and each outstanding row.
+- If the proof blocks landing, set `status: test-ready`. Leave the brief in `in-progress/` until the result arrives.
+
+When landing, update durable `context/lib/` contracts. Move the brief to `context/plans/done/`. Commit the move, plan, and context updates together. A `test-ready` brief stops before this step.
 
 Add trial notes only when the owner is evaluating the process:
 

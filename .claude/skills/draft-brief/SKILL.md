@@ -53,6 +53,8 @@ The handoff's verified facts are the floor, not the ceiling. Use subagents only 
 
 Findings that inform but don't decide go to a sibling `research.md`. Lifecycle diagrams go there too; keep one in the brief only when it is the clearest statement of a decision.
 
+For resource-bound work, read `context/lib/development_guide.md` §1.4 and `context/lib/testing_guide.md` §Resource bounds. Put detailed accounting in `research.md`. Pin only the resulting bound and proof in the brief.
+
 ### 3. Write the brief
 
 ```markdown
@@ -97,7 +99,8 @@ functions do not appear here.
 
 ## Path
 Non-binding. Research distilled to what would change the executor's plan.
-- Seams and precedents to build on, by symbol.
+- Seams and precedents to investigate, by symbol. Exact reuse follows
+  `context/lib/context_style_guide.md` §Spec Completeness.
 - The shape chosen and the strongest rival, one sentence each.
 - The first slice: the thinnest path that falsifies the riskiest assumption.
 - Files past ~800 lines this extends: split first, behavior-preserving, own commit.
@@ -107,6 +110,8 @@ Non-binding. Research distilled to what would change the executor's plan.
 - <question> — owner: <who> — **blocks build**
 - <question> — **delegated**: the executor decides and reports it in the plan of record
 ```
+
+External stress and performance rows follow `context/lib/testing_guide.md` §Resource bounds.
 
 **Decisions vs Path.** For each sentence: if the executor deviates from it, is that a defect or a note in the plan of record? Defect → Decisions. Note → Path. "Descriptor surface follows `dash`/`crouch` exactly" is a Decision; where the entry branch sits inside `normal_intent` is Path.
 
@@ -126,6 +131,8 @@ Non-binding. Research distilled to what would change the executor's plan.
 - Every Acceptance row: could it pass on a build that leaves the Problem unsolved — the defect present, the capability absent? Yes → it is measuring something adjacent; reword it, or label it a regression guard.
 - Every Decision: which Acceptance row would fail if it were violated? None → it is either a Path hint wearing a decision's clothes, or an AC is missing.
 - Every Decision premise about the code: read this session, cited by symbol.
+- Every exact-reuse Path claim meets `context/lib/context_style_guide.md` §Spec Completeness.
+- Every resource bound: proof covers buffering, serialization, persistence, return, and cleanup, not only the central algorithm.
 - Every "not doing": would a reader assume this brief owed it? If so, it carries a warrant.
 - The Scripting surface example, if present: an Acceptance row runs it, and every name in it either resolves against the SDK or is one this brief adds.
 - Open questions: each is marked **blocks build** or **delegated**. No unmarked entries.

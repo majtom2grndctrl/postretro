@@ -155,6 +155,8 @@ Define what you're defining, completely. A spec with scattered "TBD" markers pus
 
 **Constraints, not solutions, for low-level details.** Memory layouts, buffer offsets, and struct field positions are implementation concerns — the implementor sees the full picture when they land. State the constraint ("stride must stay 48") not the solution ("field goes at offset 36"). Prescribing a layout prematurely creates conflicts when two specs claim the same bytes in a shared struct.
 
+**Precedents are candidates, not obligations.** Ground the precedent's input domain, rejection behavior, precision, lifetime, and consumers against the required invariant. Mandate reuse only when those semantics match. Otherwise state the property to preserve and cite the precedent to investigate.
+
 ## Document Structure
 
 **Orientation block.** Start each context file with: when to read this, key invariant, related files. Lets any reader (human or agent) decide in seconds whether to keep reading.

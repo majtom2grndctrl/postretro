@@ -1,4 +1,5 @@
 // Directional lightmap baker.
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::HashSet;
 use std::sync::Mutex;

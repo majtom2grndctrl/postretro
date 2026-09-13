@@ -133,9 +133,9 @@ lives inside `postretro-sim`.
   `Encode`/`Decode`, or serde `Serialize`/`Deserialize` for JSON payloads) and field
   layout (`networking.md`).
 - [ ] No net-new `unsafe` (pre-existing `unsafe` travels with moved code).
-- [ ] Each extraction PR quotes before/after warm-edit timings vs. the
-  `gameplay-stack--baseline-boundary-prep` baseline for its targeted loop. A split
-  that fails to improve its loop meaningfully pauses later structural phases.
+- [ ] Each extraction PR names the rebuild unit it shrank. Timings are reported when
+  cheap, never as a gate: the M1 baseline is `cargo check` only, which times the
+  compiler frontend, not the codegen and link where the dev loop's cost sits.
 
 ## Milestones
 
@@ -149,28 +149,55 @@ Establish warm-edit measurement; stand up `postretro-combat-model`; sink the
 shot-authority and carried-loadout type families into it, inverting the two
 `sim/scripting → netcode` up-edge families to down-edges. Low risk, small LOC out of
 the binary. **Testable outcome:** `postretro-combat-model` is a workspace member with
-real consumers; the cycle's netcode up-edges are gone; the baseline quotes the
-warm-edit numbers M2–M4 must beat. **Owner reviews these numbers before M2.**
+real consumers; the two sunk type families no longer point up into `netcode`; the
+baseline records the pre-move `cargo check` reference.
 
 ### M2 — `postretro-sim`
 Move the fixed-tick core + collision + scripting host/systems into one crate. The
-contained cycle is now `scripting ↔ sim` only (intra-crate, legal). Sever the small
-binary up-edges (`research.md`: `TICK_DURATION`, `InputMode`, the `render` mover
-structs, the `session`/`App` reach-ins, `fx`-reactions) as boundary-prep, re-grounded.
-Largest, highest-risk step — built solo. **Testable outcome:** editing a
-non-gameplay binary file recompiles no `postretro-sim`; `cargo tree` isolation holds.
+contained cycle is now `scripting ↔ sim` only (intra-crate, legal). Largest,
+highest-risk step — built solo.
+
+Boundary-prep, re-grounded at open. `research.md`'s list has drifted: `session` and
+`App` no longer reach in from the cluster, and two edges it never named do.
+
+| Up-edge | Reached from |
+|---|---|
+| `frame_timing::TICK_DURATION` | `scripting/systems/{reaction_scheduler,particle_render}.rs` |
+| `input::InputMode` | `scripting/systems/input_mode.rs` |
+| `fx::{emitter,fog}_reactions` | `scripting/reactions/{mod,registry}.rs` |
+| `netcode::MAX_DELAY_MICROS` | `spawner.rs` — the one cluster→netcode up-edge M1 left behind |
+| `resolve_weapon_placement` (`main.rs`) | `sim/weapon_stage/commands.rs` |
+
+Test modules cost more than any of these. Five files import netcode harness types
+(`MovementOwners`, `NetworkIdAllocator`, `OpenAuthorizedShots`, `SeatTable`,
+`HostCommandQueues`), and `postretro-sim` cannot dev-depend on a bin crate. Either
+those tests move up to the binary — widening the sim API they reach through — or the
+harness types sink first. Settle which before the move, not during it.
+
+**Testable outcome:** editing a binary-only file recompiles no `postretro-sim`;
+`cargo tree` isolation holds.
 
 ### M3 — `postretro-netcode`
 Lift netcode above `postretro-sim`. With the shared types already sunk (M1), its
-edges into sim/scripting are down-edges; this is now a clean lift. **Testable
-outcome:** touching `scripting/systems/ai/` (once still in sim) does not rebuild
-`postretro-netcode`; compare to the M1 baseline.
+edges into sim/scripting are down-edges; this is now a clean lift. Netcode also
+reaches into the binary root through nine symbols — `App`, `session`,
+`clear_released_seat_slot_values`, `resolve_map_path`,
+`resolve_mesh_entity_bindings_for_entities`, `resolve_weapon_placement`,
+`presentation_pool`, `startup`, `frame_timing` — a larger boundary-prep than
+`research.md` records.
+
+**Testable outcome:** `postretro-netcode` is a crate above `postretro-sim`; no netcode
+module remains in the binary. An AI edit still rebuilds netcode: AI lives in sim until
+M4, and Cargo rebuilds every dependent of a changed crate. The AI-loop win lands at M4,
+not here.
 
 ### M4 — `postretro-ai` (the scripting-VM decomposition)
 Carve enemy AI out of `postretro-sim` into its own crate: sink `primitives::store`
 and reaction dispatch to `scripting-core`; invert the `sim ↔ AiRuntime` seam behind a
-trait; invert the host→systems registration. **Testable outcome:** an AI-logic edit
-recompiles `postretro-ai` + relinks; rebuilds neither `postretro-sim` nor
+trait; invert the host→systems registration. **Boundary-prep:** `netcode/mod.rs` calls
+`scripting_systems::ai::locomotion_animation`. While that edge stands, netcode rebuilds
+on every AI edit and the milestone's outcome does not land. **Testable outcome:** an
+AI-logic edit recompiles `postretro-ai` + relinks; rebuilds neither `postretro-sim` nor
 `postretro-netcode`. **Detail-on-open:** M4's exact seam is designed when reached —
 its shape depends on what M2/M3 reveal. This milestone is committed scope, not its
 current design.
@@ -239,6 +266,7 @@ AI is inseparable from the scripting runtime until the M4 decomposition.
   JSON payload — the move preserves both derives; `CarriedState` and every shot-authority
   type derive no codec. As later milestones move more wire types, confirm each per-type
   against the global AC.
-- **`fx`-reactions placement** (M2). Move the emitter/fog reaction registrars into
-  `postretro-sim`, or sink the `fx` presentation data below it. Affects whether
-  `postretro-sim` grows an `fx` dependency.
+- **`fx`-reactions placement** (M2). Resolved from source: the binary's `fx` is entirely
+  emitter/fog reaction primitives over `entities` and `scripting-core` — the presentation
+  data it once held now lives in `postretro-render-cpu::fx`. It moves into `postretro-sim`
+  whole, adding no dependency edge.

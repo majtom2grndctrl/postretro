@@ -59,9 +59,11 @@ block with `bytemuck`:
 doc) and `bake_light_layer_chart_controlled` walks every texel of every chart for every light.
 The branch's analytic graph pass measured its light-AABB × chart-AABB prune on another fixture
 at 8.18 % of light-chart pairs kept; the reach spike measured 4–6 % of the static light set
-reaching a receiver on its fixture. Either figure puts sparse-at-4-bytes against
-dense-at-48-bytes near two orders of magnitude, so campaign-test's 5.46 GB of layers becomes
-tens of MB. The campaign-test fraction is measured in stride 1, not inherited.
+reaching a receiver on its fixture. Neither is a light/*texel* fraction, which is what the
+payload ratio actually turns on, and `shadowmask-cold-working-set`'s own research says not to
+size from published reach fractions. They establish that the win is large, not how large: the
+acceptance row asserts a tenth of dense, well short of either figure. The campaign-test
+fraction is measured in stride 1, not inherited.
 
 No compression exists anywhere in the crate (`Cargo.toml` has no flate2/zstd/lz4/snap);
 `put`/`write_entry` write bytes verbatim under a 44-byte frame (`PRC2` magic, `u64` length,
@@ -152,7 +154,7 @@ tens of GB, sparse or not. So: selection final → graph and coloring → fused 
 
 | Site | Walk | Rays | Shares with the fused walk |
 |---|---|---|---|
-| `bake_face_chart` (cold lightmap) | own raster loop, identical to the walk's | all static lights, discards `v` via `light_texel_contribution` | walk and rays |
+| `bake_face_chart` — two callers: `bake_atlas_layer_controlled` (shipping cold path) and `bake_monolithic_atlas_controlled` (byte-identity reference) | own raster loop, identical to the walk's | all static lights, discards `v` via `light_texel_contribution` | walk and rays — but only the shipping caller may move to the walk; moving both collapses the gate into a tautology |
 | `bake_light_layer_chart_controlled` (warm layer writer) | the walk | one light | walk and rays |
 | shadowmask fill (branch) | reads layer entries or bakes via the same chart function | selected lights | walk and rays |
 | `animated_light_weight_maps.rs` | own loop over the same charts | animated lights, SplitMix64 texel seed vs the lightmap's FNV-1a | walk only |

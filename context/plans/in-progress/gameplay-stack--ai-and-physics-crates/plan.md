@@ -1,7 +1,7 @@
 # gameplay-stack--ai-and-physics-crates — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 630c5554b
 
 ## Corrections

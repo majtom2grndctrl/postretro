@@ -87,7 +87,6 @@ pub enum StageId {
     BvhBuild,
     CellVisibility,
     NavMesh,
-    LightmapBake,
     ShBake,
     DeltaShBake,
     DirectShBake,
@@ -95,8 +94,10 @@ pub enum StageId {
     EntityShadowLights,
     DirectShDeltaBake,
     BillboardDirectScatterBake,
-    ShadowmaskAtlas,
     ChunkLightList,
+    AtlasPreparation,
+    LightmapBake,
+    ShadowmaskAtlas,
     AnimatedLightChunks,
     AnimatedWeightMaps,
     SdfAtlasBake,
@@ -124,7 +125,6 @@ impl StageId {
             Self::BvhBuild => "BVH Build",
             Self::CellVisibility => "Cell Visibility",
             Self::NavMesh => "NavMesh",
-            Self::LightmapBake => "Lightmap Bake",
             Self::ShBake => "SH Bake",
             Self::DeltaShBake => "Delta SH Bake",
             Self::DirectShBake => "Direct SH Bake",
@@ -132,8 +132,10 @@ impl StageId {
             Self::EntityShadowLights => "EntityShadowLights",
             Self::DirectShDeltaBake => "Direct SH Delta Bake",
             Self::BillboardDirectScatterBake => "Billboard Direct Scatter Bake",
-            Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::ChunkLightList => "ChunkLightList",
+            Self::AtlasPreparation => "Atlas Preparation",
+            Self::LightmapBake => "Lightmap Bake",
+            Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::AnimatedLightChunks => "AnimLightChunks",
             Self::AnimatedWeightMaps => "AnimWeightMaps",
             Self::SdfAtlasBake => "SDF Atlas Bake",
@@ -153,7 +155,6 @@ impl StageId {
             Self::BvhBuild => "BVH build...",
             Self::CellVisibility => "Cell visibility bake...",
             Self::NavMesh => "NavMesh bake...",
-            Self::LightmapBake => "Lightmap bake...",
             Self::ShBake => "SH volume bake...",
             Self::DeltaShBake => "Delta SH volume bake...",
             Self::DirectShBake => "Direct SH volume bake...",
@@ -161,8 +162,10 @@ impl StageId {
             Self::EntityShadowLights => "Entity shadow light selection...",
             Self::DirectShDeltaBake => "Direct SH delta volume bake...",
             Self::BillboardDirectScatterBake => "Billboard direct scatter bake...",
-            Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::ChunkLightList => "Chunk light list bake...",
+            Self::AtlasPreparation => "Atlas preparation...",
+            Self::LightmapBake => "Lightmap bake...",
+            Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::AnimatedLightChunks => "Animated light chunks...",
             Self::AnimatedWeightMaps => "Animated light weight maps...",
             Self::SdfAtlasBake => "SDF atlas bake...",
@@ -172,7 +175,7 @@ impl StageId {
     }
 }
 
-pub(crate) const ORDERED_STAGES: [StageId; 24] = [
+pub(crate) const ORDERED_STAGES: [StageId; 25] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -182,7 +185,6 @@ pub(crate) const ORDERED_STAGES: [StageId; 24] = [
     StageId::BvhBuild,
     StageId::CellVisibility,
     StageId::NavMesh,
-    StageId::LightmapBake,
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,
@@ -190,8 +192,10 @@ pub(crate) const ORDERED_STAGES: [StageId; 24] = [
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
     StageId::BillboardDirectScatterBake,
-    StageId::ShadowmaskAtlas,
     StageId::ChunkLightList,
+    StageId::AtlasPreparation,
+    StageId::LightmapBake,
+    StageId::ShadowmaskAtlas,
     StageId::AnimatedLightChunks,
     StageId::AnimatedWeightMaps,
     StageId::SdfAtlasBake,
@@ -869,10 +873,6 @@ fn run_after_parsing(
         navmesh_section.is_some(),
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
-    let lightmap_progress = StageProgress::indeterminate();
-    reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
-    let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
@@ -882,35 +882,6 @@ fn run_after_parsing(
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
     };
-    let (lightmap_bake_output, final_lightmap_density) = lightmap_stage::bake(
-        args,
-        &map_data,
-        stage_cache.as_ref(),
-        &lightmap_control,
-        &mut geo_result,
-        &static_baked_lights,
-        &bvh,
-        &bvh_primitives,
-        &lightmap_config,
-    )?;
-    let lightmap_bake::LightmapBakeOutput {
-        section: lightmap_section,
-        charts: face_charts,
-        placements: face_placements,
-        atlas_width,
-        atlas_height,
-        layer_count: static_atlas_layer_count,
-    } = lightmap_bake_output;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::LightmapBake,
-        stage_start,
-        !static_baked_lights.is_empty() && !face_placements.is_empty(),
-    );
-    if args.verbose {
-        lightmap_bake::log_stats(&lightmap_section, static_light_count);
-    }
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
@@ -1659,6 +1630,86 @@ fn run_after_parsing(
         }
     }
 
+    // This graph bake intentionally runs before atlas preparation. Its geometry
+    // reads are position-only; observing pre-UV geometry keeps density and
+    // scale-region edits from churning an otherwise identical whole-section key.
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ChunkLightList);
+    let chunk_light_list_section = {
+        let inputs = chunk_light_list_bake::ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            lights: &alpha_lights_ns,
+            tree: &result.tree,
+            portals: &generated_portals,
+            exterior_leaves: &exterior_leaves,
+        };
+        chunk_light_list_bake::bake_chunk_light_list_cached(
+            &inputs,
+            chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
+            chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
+            stage_cache.as_ref(),
+        )
+        .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
+    };
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ChunkLightList,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
+    let prepared_atlas = lightmap_stage::prepare(
+        &map_data,
+        &mut geo_result,
+        &static_baked_lights,
+        &lightmap_config,
+    )?;
+    let final_lightmap_density = lightmap_config.lightmap_density;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::AtlasPreparation,
+        stage_start,
+        !prepared_atlas.charts.is_empty(),
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
+    let lightmap_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
+    let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
+    let lightmap_bake_output = lightmap_stage::bake_prepared(
+        args,
+        stage_cache.as_ref(),
+        &lightmap_control,
+        &mut geo_result,
+        &static_baked_lights,
+        &bvh,
+        &bvh_primitives,
+        &lightmap_config,
+        prepared_atlas,
+    )?;
+    let lightmap_bake::LightmapBakeOutput {
+        section: lightmap_section,
+        charts: face_charts,
+        placements: face_placements,
+        atlas_width,
+        atlas_height,
+        layer_count: static_atlas_layer_count,
+    } = lightmap_bake_output;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::LightmapBake,
+        stage_start,
+        !static_baked_lights.is_empty() && !face_placements.is_empty(),
+    );
+    if args.verbose {
+        lightmap_bake::log_stats(&lightmap_section, static_light_count);
+    }
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     // Shadowmask layers now bake charts in parallel. They must share the live
     // governor, but not the completed LightmapBake progress stage: that stage
@@ -1709,33 +1760,6 @@ fn run_after_parsing(
             log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
         }
     }
-
-    let stage_start = begin_stage(reporter.as_ref(), StageId::ChunkLightList);
-    let chunk_light_list_section = {
-        let inputs = chunk_light_list_bake::ChunkLightListInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            lights: &alpha_lights_ns,
-            tree: &result.tree,
-            portals: &generated_portals,
-            exterior_leaves: &exterior_leaves,
-        };
-        chunk_light_list_bake::bake_chunk_light_list_cached(
-            &inputs,
-            chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
-            chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
-            stage_cache.as_ref(),
-        )
-        .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
-    };
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::ChunkLightList,
-        stage_start,
-        true,
-    );
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
@@ -2669,8 +2693,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 24);
-        assert_eq!(with_sdf.len(), 24);
+        assert_eq!(without_sdf.len(), 25);
+        assert_eq!(with_sdf.len(), 25);
         assert_eq!(
             without_sdf
                 .iter()
@@ -2686,7 +2710,6 @@ mod tests {
                 (StageId::BvhBuild, "BVH Build"),
                 (StageId::CellVisibility, "Cell Visibility"),
                 (StageId::NavMesh, "NavMesh"),
-                (StageId::LightmapBake, "Lightmap Bake"),
                 (StageId::ShBake, "SH Bake"),
                 (StageId::DeltaShBake, "Delta SH Bake"),
                 (StageId::DirectShBake, "Direct SH Bake"),
@@ -2697,8 +2720,10 @@ mod tests {
                     StageId::BillboardDirectScatterBake,
                     "Billboard Direct Scatter Bake",
                 ),
-                (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
                 (StageId::ChunkLightList, "ChunkLightList"),
+                (StageId::AtlasPreparation, "Atlas Preparation"),
+                (StageId::LightmapBake, "Lightmap Bake"),
+                (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
                 (StageId::AnimatedLightChunks, "AnimLightChunks"),
                 (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
                 (StageId::SdfAtlasBake, "SDF Atlas Bake"),
@@ -2718,6 +2743,31 @@ mod tests {
             .expect("planned stages include SDF atlas bake");
         assert!(!without_sdf[sdf_index].predicted_present);
         assert!(with_sdf[sdf_index].predicted_present);
+
+        let stage_index = |id| {
+            without_sdf
+                .iter()
+                .position(|stage| stage.id == id)
+                .expect("stage is planned")
+        };
+        let atlas_index = stage_index(StageId::AtlasPreparation);
+        for sh_stage in [
+            StageId::ShBake,
+            StageId::DeltaShBake,
+            StageId::DirectShBake,
+            StageId::AnimatedDirectShBake,
+            StageId::EntityShadowLights,
+            StageId::DirectShDeltaBake,
+            StageId::BillboardDirectScatterBake,
+            StageId::ChunkLightList,
+        ] {
+            assert!(
+                stage_index(sh_stage) < atlas_index,
+                "{sh_stage:?} must complete before atlas preparation"
+            );
+        }
+        assert!(atlas_index < stage_index(StageId::LightmapBake));
+        assert!(stage_index(StageId::LightmapBake) < stage_index(StageId::ShadowmaskAtlas));
     }
 
     #[test]

@@ -22,7 +22,7 @@ const PARSE_STAGES: &[StageId] = &[
     StageId::DataScript,
     StageId::TextureValidation,
 ];
-const WORLD_STAGES: &[StageId] = &[
+const WORLD_GEOMETRY_STAGES: &[StageId] = &[
     StageId::Partitioning,
     StageId::Visibility,
     StageId::Geometry,
@@ -30,8 +30,7 @@ const WORLD_STAGES: &[StageId] = &[
     StageId::CellVisibility,
     StageId::NavMesh,
 ];
-const LIGHTING_STAGES: &[StageId] = &[
-    StageId::LightmapBake,
+const SH_LIGHTING_STAGES: &[StageId] = &[
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,
@@ -39,8 +38,11 @@ const LIGHTING_STAGES: &[StageId] = &[
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
     StageId::BillboardDirectScatterBake,
+];
+const ATLAS_WORLD_STAGES: &[StageId] = &[StageId::ChunkLightList, StageId::AtlasPreparation];
+const LIGHTMAP_LIGHTING_STAGES: &[StageId] = &[
+    StageId::LightmapBake,
     StageId::ShadowmaskAtlas,
-    StageId::ChunkLightList,
     StageId::AnimatedLightChunks,
     StageId::AnimatedWeightMaps,
 ];
@@ -57,11 +59,19 @@ const STEP_SECTIONS: &[StepSection] = &[
     },
     StepSection {
         label: "World",
-        stages: WORLD_STAGES,
+        stages: WORLD_GEOMETRY_STAGES,
     },
     StepSection {
         label: "Lighting",
-        stages: LIGHTING_STAGES,
+        stages: SH_LIGHTING_STAGES,
+    },
+    StepSection {
+        label: "World",
+        stages: ATLAS_WORLD_STAGES,
+    },
+    StepSection {
+        label: "Lighting",
+        stages: LIGHTMAP_LIGHTING_STAGES,
     },
     StepSection {
         label: "Pack",
@@ -346,6 +356,10 @@ mod tests {
             section_index(StageId::EntityShadowLights),
             section_index(StageId::DirectShDeltaBake)
         );
+        assert_eq!(
+            STEP_SECTIONS[section_index(StageId::AtlasPreparation).unwrap()].label,
+            "World"
+        );
     }
 
     #[test]
@@ -354,7 +368,7 @@ mod tests {
         state.begin_step(StageId::EntityShadowLights);
         state.begin_step(StageId::DirectShDeltaBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/7"));
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
         assert!(!text.contains("Parse 0/3\nParsing"));
@@ -367,7 +381,9 @@ mod tests {
         let text = rendered(&mut state, 40, 30);
         assert!(text.contains("Parse 0/3"));
         assert!(text.contains("World 0/6"));
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/7"));
+        assert!(text.contains("World 0/2"));
+        assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("Pack 0/3"));
         assert!(text.contains("Lightmap Bake"));
     }
@@ -390,9 +406,19 @@ mod tests {
             }
         ));
         assert!(matches!(rows[5], StepRow::Spacer));
-        assert!(matches!(rows[6], StepRow::Step(_)));
+        assert!(matches!(rows[6], StepRow::Header { label: "World", .. }));
+        assert!(matches!(rows[7], StepRow::Spacer));
+        assert!(matches!(
+            rows[8],
+            StepRow::Header {
+                label: "Lighting",
+                ..
+            }
+        ));
+        assert!(matches!(rows[9], StepRow::Spacer));
+        assert!(matches!(rows[10], StepRow::Step(_)));
 
-        let StepRow::Step(step) = &rows[6] else {
+        let StepRow::Step(step) = &rows[10] else {
             unreachable!("the open section separates its header from the first step");
         };
         assert_eq!(step_line(step).spans[0].content, "  ");
@@ -417,14 +443,26 @@ mod tests {
             StageId::AnimatedDirectShBake,
             StageId::EntityShadowLights,
             StageId::DirectShDeltaBake,
-            StageId::AnimatedLightChunks,
-            StageId::AnimatedWeightMaps,
+            StageId::BillboardDirectScatterBake,
         ] {
             state.step_mut(stage).unwrap().status = StepStatus::Skipped;
             assert_eq!(open_section(&state), Some(2));
         }
+        for stage in [StageId::ChunkLightList, StageId::AtlasPreparation] {
+            state.step_mut(stage).unwrap().status = StepStatus::Skipped;
+            assert_eq!(open_section(&state), Some(3));
+        }
+        for stage in [
+            StageId::LightmapBake,
+            StageId::ShadowmaskAtlas,
+            StageId::AnimatedLightChunks,
+            StageId::AnimatedWeightMaps,
+        ] {
+            state.step_mut(stage).unwrap().status = StepStatus::Skipped;
+            assert_eq!(open_section(&state), Some(4));
+        }
         state.step_mut(StageId::TextureMips).unwrap().status = StepStatus::Skipped;
-        assert_eq!(open_section(&state), Some(3));
+        assert_eq!(open_section(&state), Some(5));
     }
 
     #[test]
@@ -450,7 +488,7 @@ mod tests {
             step.status = StepStatus::Done;
         }
         let text = rendered(&mut state, 40, 30);
-        assert_eq!(open_section(&state), Some(3));
+        assert_eq!(open_section(&state), Some(5));
         assert!(text.contains("Pack 3/3"));
         assert!(!text.contains(ACTIVITY_FRAMES[0]));
     }
@@ -501,7 +539,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("!   Lightmap Bake"));
     }
 

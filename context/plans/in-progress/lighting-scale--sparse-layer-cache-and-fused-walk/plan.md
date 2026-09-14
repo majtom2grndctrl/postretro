@@ -62,7 +62,7 @@ read at: a6ebb7938
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Freeze the independent lightmap reference and extract the oversized lightmap, shadowmask, and pipeline stage responsibilities along behavior-preserving seams; add the two-fixture cold-stage-versus-reference gate before changing the writer | integrating executor | — | |
+| 1 | Freeze the independent lightmap reference and extract the oversized lightmap, shadowmask, and pipeline stage responsibilities along behavior-preserving seams; add the two-fixture cold-stage-versus-reference gate before changing the writer | integrating executor | — | complete |
 | 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | |
 | 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | |
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | |
@@ -77,3 +77,18 @@ Pending implementation. Before landing, the owner must run one `prl-build --rele
 `stress-warren-hallway-inspection.map` on Windows at lightmap density `0.04`, capture peak process
 working set out of band, and report success/failure plus the peak. The exact command and expected
 output artifact will be filled in after Task 7 against the final CLI surface.
+
+## Execution log
+
+### Task 1 — complete
+
+- Extracted the frozen monolithic reference to `lightmap_bake/reference.rs`, cached-stage
+  orchestration to `pipeline/lightmap_stage.rs`, and shadowmask fill mechanics to
+  `shadowmask_bake/fill.rs` without changing production behavior.
+- Added an automated source guard preventing the reference module from naming the future fused
+  walk entry point.
+- Extended the cold-stage/reference gate across single- and multi-layer fixtures and both
+  uncompressed and BC6H section encodings.
+- Proof: focused compiler check; oracle-isolation and worker-count determinism tests; the expanded
+  `layered_cold_bake_matches_reference_and_repeats_byte_identically` gate; and the ignored real-map
+  `lightmap_composite_equals_monolithic_on_fixtures` gate all pass.

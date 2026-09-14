@@ -65,6 +65,12 @@ size from published reach fractions. They establish that the win is large, not h
 acceptance row asserts a tenth of dense, well short of either figure. The campaign-test
 fraction is measured in stride 1, not inherited.
 
+A sparse record costs 8 bytes per reached texel, not 4: the visibility plus an index, because
+position is no longer implicit the way it is in a dense block. That bounds the worst case
+independently of reach — at 100 % reach, 8 against 48 is a sixth, so campaign-test's 5.46 GB of
+layers becomes at most 0.91 GB. Every reach fraction below 100 % improves on that. The bound is
+what makes stride 1 a valid stopping point without waiting for the measurement.
+
 No compression exists anywhere in the crate (`Cargo.toml` has no flate2/zstd/lz4/snap);
 `put`/`write_entry` write bytes verbatim under a 44-byte frame (`PRC2` magic, `u64` length,
 blake3). The branch adds `put_streamed` for peak RAM, not disk.

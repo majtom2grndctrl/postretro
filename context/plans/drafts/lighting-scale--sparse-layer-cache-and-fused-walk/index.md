@@ -12,10 +12,11 @@ do what §Build Cache says: on `campaign-test.map` a no-edit rebuild takes 102 s
 from an empty cache, the start-of-build sweep evicts nearly every entry the previous build
 wrote, and the build re-bakes most layer partitions and every SH group (`research.md`). Cause:
 cache recency is file mtime, bumped on read, and the shadowmask stage re-reads its selected
-lights' `lightmap_layer` entries after every other stage has written — so the sweep keeps a
-budget's worth of 150 MB layer entries, the cheapest bytes in the cache to re-bake, and evicts
-every small memo. A layer entry is 48 bytes per covered texel per light, of which 4 needed a
-ray; the rest is light-independent coverage or a Lambert term the compositor can recompute.
+lights' `lightmap_layer` entries after the lightmap and SH stages have written — so the sweep
+keeps a budget's worth of 150 MB layer entries, the cheapest bytes in the cache to re-bake, and
+evicts every small memo. A layer entry is 48 bytes per covered texel per light, of which 4
+needed a ray; the rest is light-independent coverage or a Lambert term the compositor can
+recompute.
 The re-read exists because the lightmap bake, the shadowmask fill, and the layer writer each
 walk the same charts and trace the same rays. Two factors compound: the payload size is why
 the sweep runs at all, and the re-read is why it evicts the wrong entries. None of it is
@@ -27,38 +28,53 @@ than re-bakes, and `.prl` bytes are unchanged.
 
 - **One brief, two strides, each a complete shape.** Stride 1 ships the sparse layer payload
   and the budget warning; it fixes the thrash alone and is the stopping point if the
-  collaborator handoff arrives first. Stride 2 hoists atlas preparation, moves the SH block
-  above it, and fuses the three chart walks into one multi-sink pass, which buys what stride 1
-  does not: the duplicated trace leaves every `--release` compile, and the SH keys stop moving.
-  Neither fixes the thrash; stride 1 already did.
-  The stride-1 writer is a sink over the chart-walk primitive the branch already added, so
-  stride 2 adds sinks rather than rewriting the writer; two briefs would land either a writer
-  stride 2 rewrites or a walk with one sink nothing exercises.
+  collaborator handoff arrives first. That stopping point does not rest on the reach fraction:
+  a sparse record costs 8 bytes per reached texel — an index and the visibility, where dense
+  needs no index because position is implicit — against 48 dense per covered texel. So sparse
+  is at most a sixth even if every texel is reached: campaign-test's 5.46 GB of layers becomes
+  at most 0.91 GB, and the whole cache fits the 2 GiB budget. Only the tenth-of-dense row
+  depends on reach. Stride 2 hoists atlas preparation, moves the SH block above it, and fuses
+  the three chart walks into one multi-sink pass, which buys what stride 1 does not: the
+  duplicated trace leaves every `--release` compile, and the SH keys stop moving. Neither
+  fixes the thrash; stride 1 already did. The stride-1 writer is a sink over the chart-walk
+  primitive the branch already added, so stride 2 adds sinks rather than rewriting the writer;
+  two briefs would land either a writer stride 2 rewrites or a walk with one sink nothing
+  exercises.
 - **Sparse, not narrow.** A `lightmap_layer` entry stores, per reached texel, only the raw
   soft visibility — including zero for fully occluded texels, and NaN. Reached is the analytic
-  pre-ray coverage predicate the branch tested equal to baked coverage, so presence in the
-  entry *is* shadowmask membership. Coverage, fallback normal, world position and seed are not
-  stored; the compositor re-runs the same deterministic walk over the atlas it already holds.
-  Diverges from `perf-warm-lightmap-section-cache`'s deferral of value-sparse layers: the
-  compositor branches it feared rewriting now sit behind the branch's walk primitive and
-  equivalence test. If that equivalence ever fails, presence-is-membership fails with it: the
-  fallback is to treat the analytic predicate as a pre-filter that must be a superset and emit
-  on the baked predicate, keeping correctness at the cost of the skip. Undo cost is a format
-  bump.
+  pre-ray coverage predicate, so presence in the entry *is* shadowmask membership. These are
+  not two functions tested equal: the shadowmask's coverage predicate and the bake's early
+  return are one call, and the branch's equivalence test pins it against baked coverage light
+  by light. Coverage, fallback normal, world position and seed are not stored; the compositor
+  re-runs the same deterministic walk over the atlas it already holds. Diverges from
+  `perf-warm-lightmap-section-cache`'s deferral of value-sparse layers: the compositor branches
+  it feared rewriting now sit behind that walk primitive and test. Should the identity ever be
+  broken, presence-is-membership breaks with it; the fallback is to treat the analytic
+  predicate as a pre-filter that must be a superset and emit on the baked predicate, keeping
+  correctness at the cost of the skip. Undo cost is a format bump.
 - **Reconstruction reproduces the dense fold term for term.** Per covered texel, lights fold in
   global order. A stored visibility above zero yields the shadowed irradiance and weighted
   direction from the unshadowed Lambert term evaluated with the walk's own inputs; a stored
   visibility at or below zero yields exactly zero for both, never the product; an absent light
   adds nothing, which is bit-identical to the dense layer's explicit `+0.0` because the
   accumulator starts at positive zero (`research.md` §Reconstruction is exact).
-- **Both lightmap cache epochs bump**, per §Build Cache's bump rule: the layer payload changes
-  and irradiance synthesis moves from bake to composite. The shadowmask memo folds the layer
-  epoch and invalidates with it.
+- **Both lightmap cache epochs bump.** The layer payload changes, and irradiance synthesis
+  moves from bake into composite — each stage's own computation changes, which is what
+  §Build Cache's bump rule keys on. The section bump is redundant for invalidation, since the
+  section key already folds the layer epoch, but it keeps each epoch honest about what its
+  stage computes. The shadowmask memo folds the layer epoch and invalidates with it; the test
+  pinning the current layer epoch value updates with the bump.
 - **The layer cache stays the shadowmask's single raw-mask source**, consumed as the sparse
   record with quantization unchanged. In stride 2 it is no longer read from a later stage: the
-  fill consumes the partition the lightmap fold holds in memory.
+  fill consumes the partition the lightmap fold holds in memory. The two memos miss
+  independently — the section key folds every layer hash, the shadowmask key only the selected
+  lights' — so a selection-only edit, a lost shadowmask memo, or a shadowmask-only epoch bump
+  can hit the section and miss the shadowmask, leaving no fold to consume. The lightmap stage
+  therefore probes the shadowmask memo before taking its own section hit, and folds regardless
+  when the shadowmask memo misses. One reader either way, and no second path into the cache.
 - **Atlas preparation becomes its own stage, and the SH block runs before it.** Chart planning,
-  packing, and the vertex split are not ray work, and three stages consume only their output.
+  packing, and the vertex split are not ray work; the lightmap bake, shadowmask fill, animated
+  light chunks, and animated weight maps all read only the charts and placements they produce.
   Every SH-block consumer reads vertex positions through the index buffer or as an AABB fold
   and nothing the split changes, so SH outputs are bit-identical either side of it. The move
   is required, not cosmetic: the fill needs the selected-light set, which the direct SH delta
@@ -66,11 +82,13 @@ than re-bakes, and `.prl` bytes are unchanged.
   straight into its channel — the shadowmask brief's residency invariants leave nowhere to
   park a per-light raw record. By construction the SH-block keys then hash pre-UV geometry, so
   density and scale-region edits stop invalidating SH, with no hand-written key logic.
-- **One walk, several sinks, cold and warm alike.** Per layer, chart, texel, and light,
-  coverage, Lambert term and visibility are computed once and offered to the lightmap
+- **One walk, several sinks, cold and warm alike.** Per layer, chart, texel, and light, the
+  Lambert term and the visibility ray are computed once and offered to the lightmap
   accumulator, the shadowmask channel fill for selected lights, and — warm only — the sparse
-  writer. The cold `--release` path keeps its inline per-texel light sum as a sink over the
-  same walk: "exact ship source of truth" constrains values, not the call graph.
+  writer. Coverage is still evaluated twice: the analytic graph pass needs it per chart and
+  light before the walk begins, and that pass stays. Ray work is what the walk shares. The
+  cold `--release` path keeps its inline per-texel light sum as a sink over the same walk:
+  "exact ship source of truth" constrains values, not the call graph.
 - **One warning closes the observability gap.** When the entries a build read or wrote total
   more than `--cache-max-size`, the build ends with one `log::warn!` naming both figures.
   Warn, because the default level hides info and the prune and hit/miss lines are exactly what
@@ -109,9 +127,11 @@ Byte identity — the contract; the existing gates pass today:
 - [ ] Whole-file determinism holds at one worker and many; the shadowmask section is
   byte-identical across cold, warm miss, warm partition miss, and whole-section hit.
 - [ ] The warm fallback with no layer-bearing lights still emits one uncovered plane.
-- [ ] The byte-identity reference stays independent of the fused walk:
-  `bake_monolithic_atlas_controlled` reaches no walk code, and a defect injected into the walk
-  fails the cold gate instead of passing it. Without this the gate compares the walk to itself.
+- [ ] The byte-identity reference stays independent of the fused walk: the reference module
+  references no walk entry point. Shared leaf kernels are excluded — the per-texel contribution,
+  soft visibility, the texel seed, the chart texel position. Both sides call those today and
+  after, so a defect there passes either way. Without this row the gate compares the walk to
+  itself.
 - [ ] The frozen reference is compared against the cold stage output on the same two fixtures
   the end-to-end row uses, so a walk defect that only real chart layouts expose cannot pass
   walk-versus-walk.
@@ -129,13 +149,16 @@ Reconstruction edges — both sides of each predicate:
 - [ ] Contributions at the two representable values straddling the coverage epsilon: lower
   absent, upper present, using the baker's own comparison.
 
-Cache behaviour:
+Cache behaviour. The lightmap path's layer hit/miss lines are verbose-gated and the shadowmask
+path's are not, and `compiler-log-hygiene` will move both to debug — so rows below that count
+reads run verbose or count through a test-only counter, never by scraping a default-level build:
 
 - [ ] On a named multi-layer fixture, total bytes written under the layer stage id are below a
   tenth of the dense figure, asserted from the entries written.
 - [ ] A no-edit rebuild reads no layer entry and hits both lightmap memos; a one-light edit
-  reads each unaffected partition exactly once and re-bakes only the edited light's partitions.
-  Asserted on captured log lines.
+  re-bakes only the edited light's partitions and reads each unaffected partition once per
+  consumer in stride 1, exactly once after stride 2. For a selected light the shadowmask fill
+  is the second consumer until fusion removes it (`research.md` P5).
 - [ ] A decodable partition whose indices fall outside the layer's covered set, exceed its
   covered count, or are not strictly increasing is a soft miss that re-bakes — never used,
   never an error.
@@ -155,8 +178,8 @@ Stride 2 — order and fusion:
   scale-region edit hits every SH-block memo while missing the lightmap ones.
 - [ ] A fixture whose selection is cleared because the direct SH delta section is absent emits
   no shadowmask section and fills no channel, bytes unchanged.
-- [ ] After the lightmap fold completes, no stage reads a layer entry, cold or warm. Asserted
-  on captured log lines.
+- [ ] After the lightmap fold completes, no stage reads a layer entry, cold or warm. Counted
+  the same way as the cache rows above.
 - [ ] Lightmap section memo hit with shadowmask memo miss — a selection-only edit, or a
   shadowmask memo lost while the section memo survived: the shadowmask section equals the cold
   bytes, no partition is re-baked, each selected partition is read at most once, and no layer
@@ -176,6 +199,9 @@ Stride 2 — order and fusion:
   bytes after each run, entries evicted at the sweep, `lightmap_section` and `sh_group` hit
   counts, lightmap and SH stage times. Headline: the no-edit rerun evicts nothing it then
   needs, both lightmap memos hit, every SH group hits.
+- [ ] At the fusion commit, a defect injected into the walk fails the cold gate rather than
+  passing it. Manual because automating it needs a test-only perturbation hook in the walk,
+  which this brief does not add.
 - [ ] After stride 2, the cold shadowmask stage on the same map costs graph pass plus encode —
   no re-trace — and the whole cold build is no slower than before.
 - [ ] After stride 2, one `--release` compile of `stress-warren-hallway-inspection.map` at
@@ -205,11 +231,12 @@ Stride 2 — order and fusion:
   same kernel proves nothing.
 - The warning: tally bytes in `StageCache::get` on hit and in `put`; report from `main.rs`
   against `args.cache_max_bytes`.
-- Rivals, rejected: a narrow dense record (roughly 6× against sparse's order-of-magnitude
-  claim, and the re-read stays); a per-layout coverage side table (a second copy of the walk);
-  a stage-class prune (scaffolding); an end-of-build live-set prune (sweeping what this build
-  actually used defeats the mtime inversion, but leaves the payload size that creates the
-  eviction pressure); compression (decode on the fold).
+- Rivals, rejected: a narrow dense record (6× at every reach fraction, where sparse matches
+  that only in the worst case and beats it as reach drops — and the re-read stays either way);
+  a per-layout coverage side table (a second copy of the walk); a stage-class prune
+  (scaffolding); an end-of-build live-set prune (sweeping what this build actually used
+  defeats the mtime inversion, but leaves the payload size that creates the eviction pressure);
+  compression (decode on the fold).
 - First slice: the sparse partition plus reconstruction under today's fold, gated by the new
   end-to-end cold-versus-warm row — it falsifies the riskiest assumption before any stage moves.
 - `lightmap_bake.rs`, `lightmap_layer.rs`, `shadowmask_bake.rs` and `pipeline.rs` are far past

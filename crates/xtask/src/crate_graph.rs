@@ -534,5 +534,15 @@ mod tests {
             net_deps.is_empty(),
             "`postretro-net` must have no internal dependencies, found: {net_deps:?}"
         );
+
+        // 5. AI is policy above sim. Only the application binary may depend on
+        //    it; a sim or netcode edge would restore the rebuild coupling this
+        //    crate boundary exists to remove.
+        let ai_dependents = graph.reachable("postretro-ai", Direction::Dependents);
+        assert_eq!(
+            ai_dependents,
+            vec!["postretro".to_string()],
+            "only the `postretro` binary may depend on `postretro-ai`"
+        );
     }
 }

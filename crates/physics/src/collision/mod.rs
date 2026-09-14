@@ -361,6 +361,12 @@ pub fn cast_ray(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collision_world_is_thread_shareable() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CollisionWorld>();
+    }
     use parry3d::math::Vector;
 
     /// Two-triangle floor at y=0 spanning the XZ plane from (-1,-1) to (1,1).

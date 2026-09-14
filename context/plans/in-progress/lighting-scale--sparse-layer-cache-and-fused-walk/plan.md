@@ -66,7 +66,7 @@ read at: a6ebb7938
 | 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | complete |
 | 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | complete |
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | complete |
-| 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | |
+| 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | complete |
 | 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | |
 | 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | |
 | 8 | Receive the owner's Windows stress result, update durable build-pipeline contracts and the AC result column, move the brief to `done/`, and land | integrating executor + owner | 7 | |
@@ -145,3 +145,24 @@ output artifact will be filled in after Task 7 against the final CLI surface.
   while both edits produce distinct lightmap section hashes; cold layered/reference and ignored
   real-fixture equivalence gates pass; the complete compiler suite passes (1,169 passed,
   5 ignored).
+
+### Task 5 — complete
+
+- Replaced the split cold/warm lightmap and later shadowmask paths with one fused prepared-atlas
+  stage. The shadowmask whole-section memo, analytic graph, and deterministic channel assignment
+  resolve before the lightmap memo and before any visibility ray; each live sparse partition is
+  then offered to the ordered lightmap fold and selected shadow channel without a later cache read
+  or a second trace.
+- Independent memo behavior is explicit: both whole-section hits read zero layers; a lightmap hit
+  plus shadowmask miss reads only the selected partition once per atlas layer; a one-light edit
+  misses only that light's partitions while every unaffected partition is read exactly once.
+  A shadowmask hit now makes its fill sink a no-op during a lightmap miss, closing the warm-edit
+  panic found by the integration matrix.
+- Shadowmask-owned graph/fill/encode/cache-write time is separated from the shared ray work in the
+  Build Summary. Lightmap and fused-shadow progress totals complete exactly, and a finalized empty
+  selection emits no shadowmask. The all-SDF cached fallback remains one uncovered plane.
+- Proof: the fused stage matches the frozen two-pass reference for lightmap and shadowmask bytes in
+  BC6H and RGBA16F modes across cold one-worker, cold four-worker, warm-empty, warm-hit,
+  one-light-partition-miss, and selection-only rekey paths. The multi-layer channel-assignment
+  barrier golden and production no-edit smoke pass. The complete compiler suite passes (1,173
+  passed, 5 ignored; integration tests 2 passed, 2 ignored).

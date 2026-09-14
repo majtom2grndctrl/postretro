@@ -27,10 +27,9 @@ use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
     chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
-    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer,
-    map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake,
-    sh_coarsen, sh_density, sh_group, shadowmask_bake, texture_mips, texture_validation,
-    trigger_volumes, visibility,
+    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, map_data,
+    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
+    sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
 };
 
 /// Resolve an open-edge sample to its assembly provenance, when the source
@@ -1676,21 +1675,36 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
 
+    // Shadowmask memo probing, graph construction, and channel assignment must
+    // finish before the fused ray walk. Its progress is accumulated off-screen
+    // here, then reported in canonical stage order after Lightmap Bake; the
+    // returned timing counts only shadowmask-owned work and excludes shared rays.
+    let shadowmask_progress = StageProgress::indeterminate();
+    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
     let lightmap_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
     let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
-    let lightmap_bake_output = lightmap_stage::bake_prepared(
+    let fused_lighting = lightmap_stage::bake_fused_prepared(
         args,
         stage_cache.as_ref(),
         &lightmap_control,
+        &shadowmask_control,
         &mut geo_result,
         &static_baked_lights,
+        &alpha_lights_ns,
+        delta_sections.entity_shadow_lights.as_ref(),
         &bvh,
         &bvh_primitives,
         &lightmap_config,
         prepared_atlas,
     )?;
+    let lightmap_stage::FusedLightingOutput {
+        lightmap: lightmap_bake_output,
+        shadowmask: shadowmask_atlas_section,
+        shadowmask_elapsed,
+    } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
         charts: face_charts,
@@ -1699,53 +1713,28 @@ fn run_after_parsing(
         atlas_height,
         layer_count: static_atlas_layer_count,
     } = lightmap_bake_output;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::LightmapBake,
-        stage_start,
-        !static_baked_lights.is_empty() && !face_placements.is_empty(),
-    );
+    let fused_elapsed = stage_start.elapsed();
+    timings.push((
+        StageId::LightmapBake.label(),
+        fused_elapsed.saturating_sub(shadowmask_elapsed),
+    ));
+    if !static_baked_lights.is_empty() && !face_placements.is_empty() {
+        reporter.finish_stage(StageId::LightmapBake);
+    } else {
+        reporter.skip_stage(StageId::LightmapBake);
+    }
     if args.verbose {
         lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
-    // Shadowmask layers now bake charts in parallel. They must share the live
-    // governor, but not the completed LightmapBake progress stage: that stage
-    // has already finished and its published total covers different work.
-    let shadowmask_progress = StageProgress::indeterminate();
-    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
-    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-    let shadowmask_atlas_section = if delta_sections.entity_shadow_lights.is_some() {
-        let shared = lightmap_layer::SharedAtlas {
-            charts: &face_charts,
-            placements: &face_placements,
-            atlas_width,
-            atlas_height,
-        };
-        shadowmask_bake::bake_shadowmask_atlas_cached(
-            delta_sections.entity_shadow_lights.as_ref(),
-            &alpha_lights_ns,
-            &shared,
-            &bvh,
-            &bvh_primitives,
-            &geo_result,
-            final_lightmap_density,
-            args.soft_shadow_samples,
-            stage_cache.as_ref(),
-            &shadowmask_control,
-        )
+    reporter.begin_stage(StageId::ShadowmaskAtlas);
+    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress);
+    timings.push((StageId::ShadowmaskAtlas.label(), shadowmask_elapsed));
+    if shadowmask_atlas_section.is_some() {
+        reporter.finish_stage(StageId::ShadowmaskAtlas);
     } else {
-        None
-    };
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::ShadowmaskAtlas,
-        stage_start,
-        shadowmask_atlas_section.is_some(),
-    );
+        reporter.skip_stage(StageId::ShadowmaskAtlas);
+    }
     if args.verbose {
         if let Some(ref section) = shadowmask_atlas_section {
             log::info!(

@@ -1819,13 +1819,9 @@ fn run_after_parsing(
         // construction) are deterministic given geometry + lights + density — the
         // section bytes faithfully capture those derived inputs.
         //
-        // Deliberate divergence from the lightmap/sh stages: those hash a
-        // pre-bake geometry clone, but this hashes the post-mutation `geo_result`.
-        // That's correct here — the weight-map bake consumes the mutated geometry,
-        // and the mutations (`split_shared_vertices`, UV assignment) are
-        // idempotent and deterministic, so post-mutation geometry is a stable
-        // function of the inputs. Do not "fix" this to a pre-bake clone; it would
-        // hash geometry the bake doesn't actually consume.
+        // Weight maps run after atlas preparation and consume `geo_result` with
+        // split vertices and assigned atlas UVs. Hash that same prepared geometry
+        // so the cache key matches the bake inputs.
         let wm_input_hash = {
             let mut buf = postcard::to_allocvec(&animated_chunk_lights)
                 .expect("postcard serialize animated_chunk_lights");

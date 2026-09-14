@@ -182,8 +182,8 @@ pub struct LightmapBakeOutput {
 /// edge dilation, before any irradiance/direction byte encoding.
 ///
 /// This is the **byte-identity comparison seam** for the incremental-bake cache:
-/// both the monolithic bake ([`bake_lightmap`]) and the per-light layer
-/// compositor ([`crate::lightmap_layer::composite_layers`]) yield a
+/// both the frozen monolithic oracle ([`reference::bake_monolithic_atlas`])
+/// and the per-light layer compositor ([`crate::lightmap_layer::composite_layers`]) yield a
 /// `CompositedAtlas`, and the cache's exactness gate asserts the two are equal
 /// here — before the lossy BC6H encode. Equality at this seam means the warm
 /// composite reproduces the cold bake bit-for-bit.
@@ -337,10 +337,11 @@ impl CompositedAtlas {
     }
 }
 
-/// Cheap pre-bake setup: chart planning, shelf packing, and writing lightmap
-/// UVs back into the geometry. Returned by [`prepare_atlas`] and consumed by
-/// both the warm per-light composite path and the cold whole-atlas bake —
-/// called once before either branch, so the atlas layout is shared.
+/// Cheap pre-bake setup: chart planning, MaxRects packing across atlas layers,
+/// and writing lightmap UVs back into geometry. Returned by [`prepare_atlas`]
+/// and consumed by both the warm per-light composite path and the cold
+/// whole-atlas bake — called once before either branch, so the atlas layout is
+/// shared.
 #[derive(Debug)]
 pub struct PreparedAtlas {
     pub charts: Vec<Chart>,
@@ -1571,13 +1572,12 @@ pub(crate) fn light_texel_is_covered(
 
 /// One light's contribution to a single atlas texel: the shadowed irradiance
 /// (RGB) and the unnormalized weighted direction (`to_light * luminance`),
-/// the exact two terms `bake_face_chart` accumulates per light before the
-/// per-texel `irr` sum and `weighted_dir.normalize()`.
+/// the exact two terms the frozen monolithic reference accumulates per light
+/// before the per-texel `irr` sum and `weighted_dir.normalize()`.
 ///
-/// Factored out so the monolithic bake (`bake_face_chart`, summing over all
-/// lights) and the per-light layer bake (`crate::lightmap_layer`, calling it
-/// once) share byte-identical math — the cache's bit-for-bit composite gate
-/// depends on both paths producing the same float terms in the same order.
+/// Factored out so the frozen reference and generic per-light consumers share
+/// byte-identical math — the cache's bit-for-bit composite gate depends on both
+/// paths producing the same float terms in the same order.
 ///
 /// `trace(from, to)` is the segment-clear closure the caller wraps around its
 /// own `segment_clear`; it returns `(Vec3::ZERO, Vec3::ZERO)` when the light

@@ -1,5 +1,5 @@
 // Compiler subprocess contracts for reporter selection, plain output, and deterministic bakes.
-// See: context/plans/in-progress/level-compiler-tui/index.md
+// See: context/lib/build_pipeline.md §Progress reporting, controls, and logging
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -90,6 +90,37 @@ fn compile_fixture_with_irradiance_format(
         .arg(jobs.to_string());
     if uncompressed_irradiance {
         command.arg("--uncompressed-irradiance");
+    }
+    command.output().expect("spawn prl-build")
+}
+
+fn compile_fixture_for_layer_cache_order(
+    input: &Path,
+    output: &Path,
+    cache_dir: Option<&Path>,
+    uncompressed_irradiance: bool,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    command
+        .env("RUST_LOG", "info")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .arg("--no-tui")
+        .arg("--verbose")
+        .arg("--sh-probe-spacing")
+        .arg("4")
+        .arg("--lightmap-density")
+        .arg("0.25")
+        .arg("-j")
+        .arg("1");
+    if uncompressed_irradiance {
+        command.arg("--uncompressed-irradiance");
+    }
+    if let Some(cache_dir) = cache_dir {
+        command.arg("--cache-dir").arg(cache_dir);
+    } else {
+        command.arg("--no-cache");
     }
     command.output().expect("spawn prl-build")
 }
@@ -308,6 +339,100 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     assert_eq!(
         warning_counts[0], warning_counts[1],
         "throttling must not change the warning tally",
+    );
+}
+
+// Regression: shadowmask reporting and later packing once lived far enough
+// from lightmap composition that a second layer-cache traversal could hide
+// after the fused stage had returned.
+#[test]
+#[ignore = "one cold and one warm full-pipeline prl-build bake; run on demand with -- --ignored"]
+fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
+    let workspace = workspace_root();
+    let fixture = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        fixture.is_file(),
+        "fixture map missing: {}",
+        fixture.display()
+    );
+
+    let temp = TempBuildDir::new();
+    let cold =
+        compile_fixture_for_layer_cache_order(&fixture, &temp.0.join("cold.prl"), None, false);
+    assert_success(&cold, 1);
+    let cold_stderr = String::from_utf8_lossy(&cold.stderr);
+    let cold_shadow_stage = cold_stderr
+        .find("Shadowmask atlas bake...")
+        .expect("cold build must reach the post-lightmap shadowmask stage");
+    let cold_packing_stage = cold_stderr
+        .find("Packing and writing...")
+        .expect("cold build must reach the later packing stage");
+    assert!(
+        !cold_stderr.contains("[cache] lightmap_layer "),
+        "the cache-disabled cold path must never attempt a layer-cache read:\n{cold_stderr}"
+    );
+    assert!(
+        cold_shadow_stage < cold_packing_stage,
+        "the cold proof must traverse shadowmask reporting before later packing"
+    );
+
+    let cache_dir = temp.0.join("cache");
+    let seeded = compile_fixture_for_layer_cache_order(
+        &fixture,
+        &temp.0.join("seeded.prl"),
+        Some(&cache_dir),
+        false,
+    );
+    assert_success(&seeded, 1);
+
+    let warm = compile_fixture_for_layer_cache_order(
+        &fixture,
+        &temp.0.join("warm.prl"),
+        Some(&cache_dir),
+        true,
+    );
+    assert_success(&warm, 1);
+    let warm_stderr = String::from_utf8_lossy(&warm.stderr);
+    let shadow_stage = warm_stderr
+        .find("Shadowmask atlas bake...")
+        .expect("warm build must reach the post-lightmap shadowmask stage");
+    let packing_stage = warm_stderr
+        .find("Packing and writing...")
+        .expect("warm build must reach the later packing stage");
+    assert!(
+        shadow_stage < packing_stage,
+        "shadowmask reporting must precede packing"
+    );
+
+    let layer_accesses: Vec<_> = warm_stderr
+        .match_indices("[cache] lightmap_layer ")
+        .map(|(offset, _)| offset)
+        .collect();
+    assert!(
+        !layer_accesses.is_empty(),
+        "the re-keyed warm section must exercise layer-cache probes:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stderr.contains("[cache] lightmap_section miss"),
+        "the irradiance-format change must miss the whole lightmap memo:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stderr.contains("[cache] lightmap_layer hit"),
+        "the irradiance-format change must retain and read an unchanged layer cache entry:\n{warm_stderr}"
+    );
+    assert!(
+        layer_accesses.iter().all(|&offset| offset < shadow_stage),
+        "all warm layer-cache probes must finish inside Lightmap Bake, before later shadow/packing flow:\n{warm_stderr}"
+    );
+
+    let warm_bytes = std::fs::read(temp.0.join("warm.prl")).expect("read warm pipeline output");
+    let mut warm_cursor = Cursor::new(warm_bytes);
+    let warm_meta = read_container(&mut warm_cursor).expect("decode warm pipeline output");
+    assert!(
+        warm_meta
+            .find_section(SectionId::ShadowmaskAtlas as u32)
+            .is_some(),
+        "the warm proof fixture must exercise and pack ShadowmaskAtlas"
     );
 }
 

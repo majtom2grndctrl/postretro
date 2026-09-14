@@ -52,8 +52,8 @@ pub const LIGHTMAP_SECTION_VERSION: u32 = 3;
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerTexel {
     /// Within-layer linear atlas texel index (`y * atlas_width + x`). The atlas
-    /// layer is carried separately in `layer`, so this index is NOT a global
-    /// index across layers.
+    /// layer is carried by `LightmapLayer.target_layer`, so this index is NOT a
+    /// global index across layers.
     pub idx: u32,
     /// Raw soft visibility for this light at this analytically covered texel.
     pub raw_visibility: f32,
@@ -120,8 +120,8 @@ const _: () = assert!(std::mem::size_of::<LayerTexel>() == 8);
 pub struct LightmapLayer {
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Number of atlas array layers this layer's texels span. Shared across all
-    /// of a build's layers (they all bake against the same atlas layout).
+    /// Shared atlas array layer count. Every partition in this build bakes
+    /// against the same atlas layout.
     pub layer_count: u32,
     /// Atlas array layer shared by every texel record in this partition.
     pub target_layer: u32,
@@ -326,9 +326,9 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 ///
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
 /// light: same chart interior walk, same `texel_seed`, same
-/// `light_texel_contribution` (which itself shares the monolithic Lambert +
-/// soft-visibility math). Directional lights use this same path, producing a
-/// full-atlas (non-sparse) layer.
+/// `light_texel_contribution_and_visibility` helper (which shares the
+/// monolithic Lambert + soft-visibility math). Directional lights use this
+/// same path, producing a full-atlas (non-sparse) layer.
 ///
 /// The sparse set is the subset of chart interiors reached by this light before
 /// visibility. The compositor derives atlas coverage and fallback normals from
@@ -547,8 +547,8 @@ pub(crate) fn for_each_light_layer_chart_texel(
         for tx in 0..interior_w {
             let atlas_x = placement.x as i32 + padding + tx;
             let atlas_y = placement.y as i32 + padding + ty;
-            // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
-            // not folded into `idx`.
+            // Within-layer index — the atlas layer lives in the enclosing
+            // `LightmapLayer.target_layer`, not folded into `idx`.
             let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
 
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
@@ -856,6 +856,12 @@ pub fn validate_layer_partition(
             return Err(format!(
                 "texel {record_index} idx {} is outside the covered chart interiors on layer {target_layer}",
                 texel.idx
+            ));
+        }
+        let visibility = texel.raw_visibility;
+        if !visibility.is_nan() && (!visibility.is_finite() || !(0.0..=1.0).contains(&visibility)) {
+            return Err(format!(
+                "texel {record_index} raw visibility {visibility} is outside 0..=1 or infinite"
             ));
         }
         if previous.is_some_and(|previous| texel.idx <= previous) {
@@ -1970,6 +1976,22 @@ mod tests {
         outside_chart.texels[0].idx = 0;
         outside_chart.texels.sort_unstable_by_key(|texel| texel.idx);
         assert!(validate_layer_partition(&outside_chart, &shared, 0).is_err());
+
+        let mut nan_visibility = missing.clone();
+        nan_visibility.texels[0].raw_visibility = f32::from_bits(0x7fc0_1234);
+        assert!(
+            validate_layer_partition(&nan_visibility, &shared, 0).is_ok(),
+            "NaN visibility remains a valid sparse record"
+        );
+
+        for (visibility, name) in [(f32::INFINITY, "+infinity"), (2.0, "above one")] {
+            let mut invalid_visibility = missing.clone();
+            invalid_visibility.texels[0].raw_visibility = visibility;
+            assert!(
+                validate_layer_partition(&invalid_visibility, &shared, 0).is_err(),
+                "{name} visibility must become a semantic cache miss"
+            );
+        }
     }
 
     #[test]

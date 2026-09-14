@@ -1,4 +1,5 @@
 //! Lightmap stage orchestration, isolated from the top-level compiler pipeline.
+//! See: context/lib/build_pipeline.md.
 
 use std::time::Duration;
 
@@ -96,9 +97,7 @@ pub(super) fn bake_fused_prepared(
         .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
         .collect();
     let total = prepared.placements.len().saturating_mul(layer_lights.len());
-    if total != 0 {
-        lightmap_control.publish_total(total);
-    }
+    lightmap_control.publish_total(total);
 
     let mut layer_input_hashes =
         Vec::with_capacity(prepared.layer_count as usize * layer_lights.len());
@@ -368,6 +367,7 @@ mod tests {
     use glam::DVec3;
     use log::Level;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
     use postretro_level_format::texture_names::TextureNamesSection;
     use postretro_test_log_capture::LogCapture;
     use rayon::ThreadPoolBuilder;
@@ -448,6 +448,43 @@ mod tests {
         }
     }
 
+    /// Two large, separate leaves that each fit one 64² atlas layer but do
+    /// not fit together. The fused-path matrix relies on production atlas
+    /// preparation assigning the second face to layer 1.
+    fn two_layer_geometry() -> GeometryResult {
+        let mut first = quad_geometry();
+        for vertex in &mut first.geometry.vertices {
+            vertex.position[0] *= 12.0;
+            vertex.position[2] *= 12.0;
+        }
+
+        let mut second = quad_geometry();
+        for vertex in &mut second.geometry.vertices {
+            vertex.position[0] = vertex.position[0] * 12.0 + 16.0;
+            vertex.position[2] *= 12.0;
+        }
+        second.geometry.faces[0].leaf_index = 1;
+
+        let vertex_offset = first.geometry.vertices.len() as u32;
+        let index_offset = first.geometry.indices.len() as u32;
+        first.geometry.vertices.extend(second.geometry.vertices);
+        first.geometry.indices.extend(
+            second
+                .geometry
+                .indices
+                .into_iter()
+                .map(|index| index + vertex_offset),
+        );
+        first.geometry.faces.extend(second.geometry.faces);
+        first
+            .face_index_ranges
+            .extend(second.face_index_ranges.into_iter().map(|mut range| {
+                range.index_offset += index_offset;
+                range
+            }));
+        first
+    }
+
     fn point_light(origin: DVec3, color: [f32; 3]) -> MapLight {
         MapLight {
             origin,
@@ -499,7 +536,29 @@ mod tests {
         lightmap_control: &BakeControl,
         shadowmask_control: &BakeControl,
     ) -> FusedLightingOutput {
-        let mut geometry = quad_geometry();
+        run_fused_with_geometry(
+            args,
+            cache,
+            lights,
+            selection,
+            config,
+            lightmap_control,
+            shadowmask_control,
+            quad_geometry(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_fused_with_geometry(
+        args: &Args,
+        cache: Option<&StageCache>,
+        lights: &[MapLight],
+        selection: Option<&EntityShadowLightsSection>,
+        config: &LightmapConfig,
+        lightmap_control: &BakeControl,
+        shadowmask_control: &BakeControl,
+        mut geometry: GeometryResult,
+    ) -> FusedLightingOutput {
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
         let static_lights = StaticBakedLights::from_lights(lights);
         let alpha_lights = AlphaLightsNs::from_lights(lights);
@@ -534,7 +593,7 @@ mod tests {
         selection: &EntityShadowLightsSection,
         config: &LightmapConfig,
     ) -> (Vec<u8>, Vec<u8>, u32) {
-        let output = run_fused(
+        let output = run_fused_with_geometry(
             args,
             cache,
             lights,
@@ -542,6 +601,7 @@ mod tests {
             config,
             &BakeControl::unrestricted(),
             &BakeControl::unrestricted(),
+            two_layer_geometry(),
         );
         let shadowmask = output
             .shadowmask
@@ -560,12 +620,37 @@ mod tests {
         lights: &[MapLight],
         selection: &EntityShadowLightsSection,
         config: &LightmapConfig,
-    ) -> (Vec<u8>, Vec<u8>, u32) {
-        ThreadPoolBuilder::new()
+    ) -> ((Vec<u8>, Vec<u8>, u32), Option<usize>, usize) {
+        let progress = StageProgress::indeterminate();
+        let governor = Arc::new(Governor::new(workers, false));
+        let output = ThreadPoolBuilder::new()
             .num_threads(workers)
             .build()
             .expect("build fused fixture pool")
-            .install(|| fused_outputs(args, cache, lights, selection, config))
+            .install(|| {
+                run_fused_with_geometry(
+                    args,
+                    cache,
+                    lights,
+                    Some(selection),
+                    config,
+                    &BakeControl::new(governor, &progress),
+                    &BakeControl::unrestricted(),
+                    two_layer_geometry(),
+                )
+            });
+        let shadowmask = output
+            .shadowmask
+            .expect("selected fixture lights must emit a shadowmask");
+        (
+            (
+                output.lightmap.section.to_bytes(),
+                shadowmask.to_bytes(),
+                output.lightmap.layer_count,
+            ),
+            progress.total(),
+            progress.completed(),
+        )
     }
 
     fn reference_outputs(
@@ -573,7 +658,7 @@ mod tests {
         selection: &EntityShadowLightsSection,
         config: &LightmapConfig,
     ) -> (Vec<u8>, Vec<u8>) {
-        let mut geometry = quad_geometry();
+        let mut geometry = two_layer_geometry();
         let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
         let static_lights = StaticBakedLights::from_lights(lights);
         let alpha_lights = AlphaLightsNs::from_lights(lights);
@@ -618,37 +703,90 @@ mod tests {
         (lightmap.section.to_bytes(), shadowmask.to_bytes())
     }
 
+    fn assert_two_selected_channels_overlap_on_layer_one(bytes: &[u8]) {
+        let shadowmask =
+            ShadowmaskAtlasSection::from_bytes(bytes).expect("fused shadowmask bytes must decode");
+        assert_eq!(shadowmask.layer_count, 2);
+        assert_ne!(shadowmask.channels[0], SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(shadowmask.channels[1], SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(
+            shadowmask.channels[0], shadowmask.channels[1],
+            "overlapping selected lights must occupy distinct channels"
+        );
+        let layer_plane_bytes = shadowmask.width as usize * shadowmask.height as usize * 4;
+        let layer_one = &shadowmask.data[layer_plane_bytes..];
+        assert!(
+            layer_one.chunks_exact(4).any(|texel| {
+                texel[shadowmask.channels[0] as usize] != 0
+                    && texel[shadowmask.channels[1] as usize] != 0
+            }),
+            "both selected lights must write their assigned channels at one overlapping layer-1 texel"
+        );
+    }
+
     #[test]
     fn fused_cold_warm_and_selection_only_paths_match_reference_bytes() {
         let args = test_args();
         let lights = vec![
-            point_light(DVec3::new(0.2, 1.0, 0.35), [1.0, 0.25, 0.1]),
-            point_light(DVec3::new(0.85, 1.5, 0.75), [0.1, 0.35, 1.0]),
+            point_light(DVec3::new(13.0, 8.0, 5.0), [1.0, 0.25, 0.1]),
+            point_light(DVec3::new(15.0, 9.0, 7.0), [0.1, 0.35, 1.0]),
+            point_light(DVec3::new(14.0, 7.0, 6.0), [0.2, 1.0, 0.3]),
         ];
+        let mut lights = lights;
+        for light in &mut lights {
+            light.falloff_range = 40.0;
+        }
         let initial_selection = EntityShadowLightsSection {
-            light_indices: vec![0],
+            light_indices: vec![0, 1],
         };
         let edited_selection = EntityShadowLightsSection {
-            light_indices: vec![1],
+            light_indices: vec![1, 0],
         };
 
         for uncompressed in [false, true] {
             let config = config(uncompressed);
             let reference = reference_outputs(&lights, &initial_selection, &config);
-            let cold =
+            let (cold, cold_total, cold_completed) =
                 fused_outputs_with_workers(1, &args, None, &lights, &initial_selection, &config);
-            let parallel_cold =
+            let (parallel_cold, parallel_total, parallel_completed) =
                 fused_outputs_with_workers(4, &args, None, &lights, &initial_selection, &config);
+            assert_eq!(cold.2, 2, "fixture must exercise atlas layer 1");
+            let expected_partitions = lights.len() * cold.2 as usize;
+            assert_eq!(cold_total, Some(expected_partitions));
+            assert_eq!(cold_completed, expected_partitions);
+            assert_eq!(parallel_total, Some(expected_partitions));
+            assert_eq!(parallel_completed, expected_partitions);
             assert_eq!(cold.0, reference.0, "cold fused lightmap bytes changed");
             assert_eq!(cold.1, reference.1, "cold fused shadowmask bytes changed");
             assert_eq!(parallel_cold, cold);
 
+            assert_two_selected_channels_overlap_on_layer_one(&cold.1);
+
             let dir = fresh_cache_dir(if uncompressed { "rgba16f" } else { "bc6h" });
             let cache = StageCache::new(&dir).expect("create fused test cache");
+            let warm_miss_logs = LogCapture::start();
             let warm_miss =
                 fused_outputs(&args, Some(&cache), &lights, &initial_selection, &config);
             assert_eq!(warm_miss.0, reference.0, "warm miss lightmap mismatch");
             assert_eq!(warm_miss.1, reference.1, "warm miss shadowmask mismatch");
+            warm_miss_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
+            warm_miss_logs.assert_logged_once(Level::Info, "[cache] lightmap_section miss");
+            let warm_miss_records = warm_miss_logs.records();
+            assert_eq!(
+                warm_miss_records
+                    .iter()
+                    .filter(|record| record.message.contains("[cache] lightmap_layer miss"))
+                    .count(),
+                expected_partitions,
+                "an empty warm cache must bake each light/layer partition exactly once"
+            );
+            assert!(
+                warm_miss_records
+                    .iter()
+                    .all(|record| !record.message.contains("[cache] lightmap_layer hit")),
+                "an empty warm cache cannot load a lightmap partition"
+            );
+            drop(warm_miss_logs);
 
             let no_edit_logs = LogCapture::start();
             let warm_hit = fused_outputs(&args, Some(&cache), &lights, &initial_selection, &config);
@@ -660,7 +798,7 @@ mod tests {
             drop(no_edit_logs);
 
             let mut one_light_edit = lights.clone();
-            one_light_edit[1].intensity = 0.875;
+            one_light_edit[2].intensity = 0.875;
             let edit_reference = reference_outputs(&one_light_edit, &initial_selection, &config);
             let edit_logs = LogCapture::start();
             let edited = fused_outputs(
@@ -683,7 +821,11 @@ mod tests {
                 .iter()
                 .filter(|record| record.message.contains("[cache] lightmap_layer miss"))
                 .count();
-            assert_eq!(layer_hits, edited.2 as usize);
+            assert_eq!(
+                layer_hits,
+                (lights.len() - 1) * edited.2 as usize,
+                "the unedited partitions must each load exactly once"
+            );
             assert_eq!(layer_misses, edited.2 as usize);
             drop(edit_logs);
 
@@ -699,6 +841,7 @@ mod tests {
                 selection_only.1, edited_reference.1,
                 "selection-only fused shadowmask must match cold reference bytes"
             );
+            assert_two_selected_channels_overlap_on_layer_one(&selection_only.1);
             selection_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
             selection_logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
             selection_logs.assert_not_logged(Level::Info, "[cache] lightmap_layer miss");
@@ -711,7 +854,8 @@ mod tests {
                 })
                 .count();
             assert_eq!(
-                layer_hits, selection_only.2 as usize,
+                layer_hits,
+                initial_selection.light_indices.len() * selection_only.2 as usize,
                 "selection-only shadow rebuild must read exactly one selected partition per layer"
             );
             drop(selection_logs);
@@ -784,22 +928,24 @@ mod tests {
         let dir = fresh_cache_dir("all_sdf");
         let cache = StageCache::new(&dir).expect("create all-SDF test cache");
 
+        let first_progress = StageProgress::indeterminate();
         let first = run_fused(
             &args,
             Some(&cache),
             &lights,
             None,
             &config,
-            &BakeControl::unrestricted(),
+            &BakeControl::new(Arc::new(Governor::new(1, false)), &first_progress),
             &BakeControl::unrestricted(),
         );
+        let second_progress = StageProgress::indeterminate();
         let second = run_fused(
             &args,
             Some(&cache),
             &lights,
             None,
             &config,
-            &BakeControl::unrestricted(),
+            &BakeControl::new(Arc::new(Governor::new(1, false)), &second_progress),
             &BakeControl::unrestricted(),
         );
         assert_eq!(first.lightmap.section.layer_count, 1);
@@ -809,6 +955,10 @@ mod tests {
         );
         assert!(first.shadowmask.is_none());
         assert!(second.shadowmask.is_none());
+        assert_eq!(first_progress.total(), Some(0));
+        assert_eq!(first_progress.completed(), 0);
+        assert_eq!(second_progress.total(), Some(0));
+        assert_eq!(second_progress.completed(), 0);
 
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);

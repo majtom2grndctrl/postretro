@@ -68,15 +68,42 @@ read at: a6ebb7938
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | complete |
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | complete |
 | 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | complete |
-| 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | |
+| 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | complete |
 | 8 | Receive the owner's Windows stress result, update durable build-pipeline contracts and the AC result column, move the brief to `done/`, and land | integrating executor + owner | 7 | |
 
 ## External runbook
 
-Pending implementation. Before landing, the owner must run one `prl-build --release` compile of
-`stress-warren-hallway-inspection.map` on Windows at lightmap density `0.04`, capture peak process
-working set out of band, and report success/failure plus the peak. The exact command and expected
-output artifact will be filled in after Task 7 against the final CLI surface.
+Before landing, the owner must run the final compiler on Windows against the hallway stress map at
+lightmap density `0.04`, with the compiler's exact-build `--release` mode enabled, and report the
+exit code plus peak working set. From the repository root in PowerShell:
+
+```powershell
+cargo build --release -p postretro-level-compiler
+$output = Join-Path $env:TEMP "stress-warren-hallway-inspection-density-004.prl"
+$arguments = @(
+    "content/dev/maps/stress-warren-hallway-inspection.map",
+    "-o", $output,
+    "--release",
+    "--no-tui",
+    "--lightmap-density", "0.04"
+)
+$process = Start-Process -FilePath ".\target\release\prl-build.exe" `
+    -ArgumentList $arguments -PassThru -NoNewWindow
+$peakBytes = [int64]0
+while (-not $process.HasExited) {
+    $process.Refresh()
+    $peakBytes = [Math]::Max($peakBytes, $process.PeakWorkingSet64)
+    Start-Sleep -Milliseconds 100
+}
+$process.WaitForExit()
+$peakMiB = [Math]::Round($peakBytes / 1MB, 1)
+"exit_code=$($process.ExitCode) peak_working_set_bytes=$peakBytes peak_working_set_mib=$peakMiB output=$output"
+if ($process.ExitCode -ne 0 -or -not (Test-Path $output)) { exit 1 }
+```
+
+Expected artifact: `%TEMP%\stress-warren-hallway-inspection-density-004.prl`. Save the final output
+line and confirm that the artifact exists and is non-empty. This external result is the only
+remaining landing gate and also closes the prior brief's pending Windows memory rows.
 
 ## Execution log
 
@@ -197,3 +224,25 @@ output artifact will be filled in after Task 7 against the final CLI surface.
   row is graph/fill/encode only and demonstrates that the shipping path performs no second trace.
 - Focused readiness plus the complete compiler suite pass. No automated or local-manual blocker
   remains; the Windows owner measurement is still the explicit external landing gate.
+
+### Task 7 — complete
+
+- The required review panel traced cache/sparse-layer code, frozen-reference and shadow-fill code,
+  pipeline/reporting code, and the end-to-end fused seam. It found no production ordering,
+  independent-memo, byte-identity, or second-trace defect. One pre-existing same-key temporary-file
+  concurrency concern was rejected as out of scope and non-fatal because streamed cache writes
+  already degrade to warnings rather than propagating I/O errors.
+- Fixed the actionable findings: cached sparse visibility now soft-misses on infinities and finite
+  values outside `0..=1` while preserving NaN and negative zero; all-SDF Lightmap progress publishes
+  an explicit completed `0/0`; stale source and durable-context comments now describe the shipped
+  sparse/fused contracts.
+- Strengthened the fused matrix with a production-prepared two-layer fixture and overlapping
+  selected lights on layer 1. Added an ignored cold/warm full-pipeline CLI regression that rekeys
+  only the whole lightmap section via irradiance format, observes retained layer-cache hits, proves
+  every layer access precedes ShadowmaskAtlas, and reaches Packing with a packed shadowmask.
+- Focused remediation gate: `cargo check -p postretro-level-compiler`; 44 `lightmap_layer` tests;
+  3 `pipeline::lightmap_stage` tests; the ignored no-late-read CLI contract; and the adjacent ignored
+  deterministic summary contract all pass.
+- Required preflight: `cargo fmt --check` passes after applying rustfmt's two mechanical layout
+  changes; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passes; the complete
+  workspace `cargo test` passes. The Windows peak-working-set runbook above is ready for the owner.

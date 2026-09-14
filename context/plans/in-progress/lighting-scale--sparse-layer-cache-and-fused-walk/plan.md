@@ -64,7 +64,7 @@ read at: a6ebb7938
 |---|---|---|---|---|
 | 1 | Freeze the independent lightmap reference and extract the oversized lightmap, shadowmask, and pipeline stage responsibilities along behavior-preserving seams; add the two-fixture cold-stage-versus-reference gate before changing the writer | integrating executor | — | complete |
 | 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | complete |
-| 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | |
+| 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | complete |
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | |
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | |
 | 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | |
@@ -106,3 +106,25 @@ output artifact will be filled in after Task 7 against the final CLI surface.
 - Proof: sparse codec/edge/size suites, all lightmap-layer tests, all shadowmask tests, the ignored
   real-map monolithic equivalence gate, and the complete 1,169-test `prl-build` suite pass. The
   named forced-multi-layer payload is below one tenth of its former dense-record bytes.
+
+### Task 3 — complete
+
+- `StageCache` clones now share a per-build map of successfully read/written cache digests and
+  their on-disk byte sizes. Repeated touches and write-then-read paths therefore count each key
+  once, including the entry header.
+- The CLI reports that deduplicated live set after both successful and failed plain/TUI builds,
+  but emits exactly one warning only when it exceeds the configured budget. Exact `--release`
+  and explicit `--no-cache` paths have no cache handle and remain silent.
+- Proof: compiler check plus the focused live-set deduplication, exact warning text/count,
+  under-budget silence, and exact-build reporting-seam tests pass.
+- Stride-1 campaign measurement (`campaign-test.map`, 4 workers, density 0.04, default 2 GiB
+  budget, fresh scratch cache; light edit was entity 14 intensity 150 -> 151 and was restored):
+  - empty cache: 7,415 entries, 391,312 KiB allocated (about 382 MiB), 0 evictions;
+    `lightmap_section` 0 hit / 1 miss, `sh_group` 0 hit / 3,306 misses; Lightmap 27.60s,
+    SH 74.96s, total 186.55s;
+  - no edit: unchanged 7,415 entries and 391,312 KiB, 0 evictions;
+    `lightmap_section` 1 hit / 0 misses, `sh_group` 3,306 hits / 0 misses; Lightmap 0.09s,
+    SH 0.47s, total 4.51s;
+  - one-light edit: 8,437 entries, 497,172 KiB allocated (492,946,862 apparent bytes),
+    0 evictions; `lightmap_section` 0 hit / 1 miss, `sh_group` 2,292 hits / 1,014 misses;
+    Lightmap 7.25s, SH 37.81s, total 51.64s.

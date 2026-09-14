@@ -1,7 +1,7 @@
 # gameplay-stack--ai-and-physics-crates — plan of record
 
 mode: resumable
-status: in-progress
+status: landed-with-gaps
 read at: 630c5554b
 
 ## Corrections
@@ -28,34 +28,34 @@ read at: 630c5554b
 - Post-split AI edit (`crates/ai/src/facing.rs` timestamp only): rebuilt only `postretro-ai` and the binary in 4.02s; sim and netcode were isolated as required.
 - Post-split sim-proper edit (`crates/sim/src/impact_policy.rs` timestamp only): rebuilt sim, netcode, AI, and the binary in 6.73s.
 - Post-split physics edit (`crates/physics/src/lib.rs` timestamp only): rebuilt physics, sim, netcode, AI, and the binary in 7.15s.
-- Post-fix test identity audit: **pending coordinator capture**. Run `audit-test-identities.sh` from `evidence/README.md`, retain the baseline/post snapshots and comparison report, then record the actual post count and SHA-256 from `evidence/test-identities/comparison/summary.txt`. Do not reuse the earlier unretained 7,251-name observation as final proof.
+- Post-fix test identity audit passed at baseline `ffff98fead791b2ee7dc502157c3b31dbdf7ea7d` versus post `7c18d11a060884c65887ae06659a08574150a7a6`. The retained target-qualified comparison has 7,407 baseline and 7,415 post occurrences, zero missing identities, eight additions, and zero ignored-status changes; the unqualified unique sets contain 7,246 and 7,254 names respectively. Full counts and checksums are retained in `evidence/test-identities/comparison/summary.txt`.
 
 ## AC-to-proof
 
 | AC | Proof | Status |
 |---|---|---|
-| A1 workspace build/test/dev-tools | Final `/preflight`, plus `cargo build -p postretro --features dev-tools` | historical pass — coordinator refresh pending after the new evidence tests |
+| A1 workspace build/test/dev-tools | Final `/preflight`, plus `cargo build -p postretro --features dev-tools` | passed — final formatting, clippy with `-D warnings`, and full workspace tests are green; workspace and dev-tools builds passed in the landing gate |
 | A2 AI dependent invariant and regenerated graph | Focused `layering_invariants_hold`; `cargo run -p xtask -- crate-graph --check`; inspect generated `context/lib/crate-graph.md` | passed — 1/1; generated graph current |
 | A3 AI normal dependency tree | `cargo tree -p postretro-ai -e normal` plus forbidden-name grep | passed — direct sim/foundation/physics edges present; forbidden runtime/render names absent |
 | A4 netcode excludes AI | `cargo tree -p postretro-netcode -e normal` plus `postretro-ai` negative grep | passed |
 | A5 physics dependency and reverse-dependency trees | `cargo tree -p postretro-physics -e normal`; `cargo tree -i postretro-physics` with exact workspace dependent comparison | passed — reverse workspace set is sim, netcode, AI, binary |
 | A6 rebuild isolation | Warm timestamp-only `cargo build -p postretro --timings` probes for one AI file and one physics file; compare compiled package sets | observed in local warm-cache spots — compiled sets matched the expected boundaries, but raw logs/timing pages were not retained; use `evidence/README.md` for an auditable repeat |
 | A7 extracted paths absent from sim | Scripted negative `rg`/path-existence gate for the five named paths | passed — no matches |
-| A8 test-name superset | Run `audit-test-identities.sh` per `evidence/README.md`; retain pre/post complete and ignored captures plus comparison outputs | pending coordinator capture — fill actual counts/checksums from `comparison/summary.txt`; require empty `missing.txt` and `ignored-status-changes.txt` |
-| A9 M15 Phase 0 determinism | Run `test_tick_runner_nav_bridge_preserves_section_and_path_queries`, then the retained `simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order` and full determinism filter with nonzero matched counts. The scenarios/assertions are retained; invocation is ported through the test-only duplicate-sim identity bridge. | pending coordinator rerun — prior 33/33 covered the retained scenarios, but the new direct bridge-fidelity proof has not run |
+| A8 test-name superset | Run `audit-test-identities.sh` in an external workspace per `evidence/README.md`; retain revisions, manifests, canonical target-qualified complete/ignored identities, checksums, counts, and difference reports | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored before and after, zero ignored-status changes; compact proof bundle retained |
+| A9 M15 Phase 0 determinism | Run `test_tick_runner_nav_bridge_preserves_section_and_path_queries`, then the retained `simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order` and full determinism filter with nonzero matched counts. The scenarios/assertions are retained; invocation is ported through the test-only duplicate-sim identity bridge. | passed — direct bridge-fidelity proof 1/1 and final full workspace suite green; retained determinism harness remains present in the audited identity superset |
 | A10 ORD-2/ORD-3 production-host ordering | Relocated `postretro-ai` focused tests using sim's concrete `AiHost` implementation under `test-support` | passed in AI 234/234 suite |
 | A11 ORD-1 registry-exhaustion refusal | Relocated focused log-capture test through the concrete sim host: no cooldown, spawn, or event and exactly one warning | passed in AI 234/234 suite |
-| A12 ORD-4 sentiment borrow/order | Direct `sim_tick_decays_sentiment_before_same_tick_ai_target_selection` and `faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo` tests through the production tick/host composition: decay visible before AI, effect write borrow-safe, next-tick visibility | pending coordinator run — tests added after the recorded AI suite |
+| A12 ORD-4 sentiment borrow/order | Direct `sim_tick_decays_sentiment_before_same_tick_ai_target_selection` and `faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo` tests through the production tick/host composition: decay visible before AI, effect write borrow-safe, next-tick visibility | passed — new direct decay-before-AI proof 1/1 and final full workspace suite green |
 | A13 `Send + Sync` assertions | Compile-time assertion tests for `postretro_sim::nav::NavGraph` and `postretro_physics::collision::CollisionWorld` | passed — 1/1 each |
 | A14 MT design note and unchanged unsafe count | Grep the committed note path; repeat the exact 17-match unsafe command and diff normalized results, allowing only path relocation of the approved probe | passed — routed note present; 17 matches unchanged |
 | A15 every visibility widening has a cross-crate consumer | Diff-derived list of `pub(crate)` → `pub`, checked by a scripted cross-crate reference scan and manual review | passed — unused nav widenings reverted; every remaining owner API has a sim, AI, or binary consumer |
 | A16 warm timing report | Record pre/post AI and sim-proper timing totals and compiled package sets in this plan | reported — local warm-cache spot measurements only; no raw timing artifacts were retained, so use `evidence/README.md` for an auditable repeat |
-| M1 campaign presentation plus AI behavior | Owner runs `campaign-test.prl` for load/play/presentation and `movement-feel.prl` for descriptor-backed AI/faction behavior | manual-blocking |
-| M2 locomotion/rest animation including no-locomotion edge | Owner observes movement-feel animations; direct `no_locomotion_graph_restores_authored_playback_rate_through_sim_tick` supplies the literal no-locomotion proof | manual-blocking; direct test pending coordinator run |
-| M3 concurrent-attack visual smoke | Owner observes concurrent attacks in-engine; `impact_time_faction_write_reaches_all_brains_on_the_next_tick` supplies exact same-fixed-tick dual-resolution proof | manual-blocking; automated proof retained |
-| M4 dev-tools launch and AI debug | Owner, `--features dev-tools` launch and chase/brain debug interaction | manual-blocking |
-| M5 co-op join/reconcile/level-change/remote animation | Owner, two-session co-op runbook | manual-blocking |
-| M6 frame-time no regression | Owner, pinned `campaign-test.prl` before/after capture using the same machine/settings | manual-blocking |
+| M1 campaign presentation plus AI behavior | Owner runs `campaign-test.prl` for load/play/presentation and `movement-feel.prl` for descriptor-backed AI/faction behavior | passed — owner reported manual pass |
+| M2 locomotion/rest animation including no-locomotion edge | Owner observes movement-feel animations; direct `no_locomotion_graph_restores_authored_playback_rate_through_sim_tick` supplies the literal no-locomotion proof | passed — owner reported visual pass; direct no-locomotion proof 1/1 |
+| M3 concurrent-attack visual smoke | Owner observes concurrent attacks in-engine; `impact_time_faction_write_reaches_all_brains_on_the_next_tick` supplies exact same-fixed-tick dual-resolution proof | passed — owner reported visual pass; automated exact-tick proof retained and full suite green |
+| M4 dev-tools launch and AI debug | Owner, `--features dev-tools` launch and chase/brain debug interaction | passed — owner reported manual pass |
+| M5 co-op join/reconcile/level-change/remote animation | Owner, two-session co-op runbook | owner-deferred gap — join, replication, reconciliation, and remote animation passed; host-driven level change failed; regression provenance unresolved; follow-up brief will be drafted separately |
+| M6 frame-time no regression | Owner, pinned `campaign-test.prl` before/after capture using the same machine/settings | passed — owner reported no regression; numeric capture was not supplied |
 
 ## Tasks
 
@@ -65,33 +65,47 @@ read at: 630c5554b
 | 2 | Extract `collision`, `movement`, and `kinematic_mover` wholesale into `postretro-physics`; preserve test-only alloc/death seams behind `test-support`; update direct consumers and run focused physics/sim tests | integrating executor | 1 | done — physics 197/197, sim mover commands 14/14, cross-crate auto-close 1/1; physics/sim/netcode/binary checks and normal forward/reverse trees passed |
 | 3 | Sink locomotion/rest graph queries and faction/tolerance field constants to foundation; update sim and netcode consumers with focused graph/client-apply tests | integrating executor | 2 | done — sim locomotion 12/12 and netcode remote-walk application 2/2 passed; foundation/sim/netcode checks clean |
 | 4 | Extract the AI module and full `ai_tests.rs` into `postretro-ai`; invert both sim tick entry points behind the injected closure; update binary/dev-tools and every sim/netcode test harness without adding a production netcode→AI edge | integrating executor | 1, 2, 3 | done — AI 234/234, sim determinism 33/33, netcode migrated harnesses 4/4 + 6/6 + 2/2; sim/netcode/dev-tools test checks clean; normal sim/netcode trees exclude AI |
-| 5 | Add `Send + Sync` guards, the MT-readiness note, layering/graph gates, dependency-tree checks, path/unsafe/public-widening audits, test-set comparison, and post-split timing probes | integrating executor | 4 | in progress — graph/trees/paths/unsafe/public API audits completed; durable identity/ignored-status audit awaits coordinator capture; local timing spot measurements are recorded with repeat instructions |
-| 6 | Run review-readiness checks, `/review-panel` → `/fix-review-findings` focused retest loops, then `/preflight` once; fill the landing table and publish the blocking manual runbook as `test-ready` | integrating executor | 5 | in progress — prior review/preflight was green; coordinator must run the new direct proofs and identity audit, refresh evidence, then restore `test-ready` |
-| 7 | After owner supplies every blocking manual result, update durable context, move the brief to `done/`, and commit the landing state | integrating executor | 6, owner proof | pending |
+| 5 | Add `Send + Sync` guards, the MT-readiness note, layering/graph gates, dependency-tree checks, path/unsafe/public-widening audits, test-set comparison, and post-split timing probes | integrating executor | 4 | done — structural audits passed; durable complete/ignored identity evidence retained with zero missing identities or ignored-status changes; local timing spot measurements recorded with repeat instructions |
+| 6 | Run review-readiness checks, `/review-panel` → `/fix-review-findings` focused retest loops, then `/preflight` once; fill the landing table and publish the blocking manual runbook as `test-ready` | integrating executor | 5 | done — custom extraction panel findings fixed and re-reviewed; direct proofs, identity audit, formatting, clippy, and full workspace tests passed; brief restored to `test-ready` |
+| 7 | After owner supplies every blocking manual result, update durable context, move the brief to `done/`, and commit the landing state | integrating executor | 6, owner proof | done — owner accepted M1–M4 and M6, explicitly deferred the M5 level-change failure to a separate brief, and authorized landing with that recorded gap |
 
 ## Manual proof policy
 
-All six manual rows are treated as blocking because the brief does not authorize landing first. After automated proof and review pass, set `status: test-ready` and stop with exact run commands, fixtures, expected observations, and a place for the owner to report each result. No manual row becomes an inferred pass.
+All six manual rows were blocking at the test-ready checkpoint. No manual row becomes an inferred pass. The owner reported M1–M4 and M6 as passing, then explicitly deferred M5's host-driven level-change failure to a separate brief and authorized this brief to land with that gap.
+
+## Landing
+
+Automated acceptance and M1–M4/M6 passed. M5 remains an explicit non-pass: host-driven level change failed while the rest of the co-op runbook passed. On 2026-09-14 the owner authorized deferring that issue to a separately drafted brief and landing this extraction without classifying the failure as new or pre-existing.
 
 ## Landing evidence
 
-Captured on 2026-09-14 after the earlier review/fix loop. This table is historical until the pending identity audit and newly added direct proofs are run.
+Captured on 2026-09-14 after the review/fix loops and final evidence refresh.
 
 | Gate | Command or evidence | Result |
 |---|---|---|
-| Review panel | architecture, correctness, API-boundary, test-quality, and final hygiene lenses | passed — final reviewers reported no findings |
+| Review panel | AI host ordering, physics semantic equivalence, extraction architecture/contracts, cross-slice runtime/network integration, test/evidence adversary, and hygiene/drift lenses | passed after fixes — final re-reviews reported no findings |
 | Workspace build | `cargo build --workspace` | passed |
 | Dev-tools build | `cargo build -p postretro --features dev-tools` | passed |
 | Formatting | `cargo fmt --check` | passed |
 | Lints | `cargo clippy --target-dir target/preflight-clippy -- -D warnings` | passed |
-| Full tests | `cargo test` | historical pass; coordinator refresh pending after the new evidence tests |
+| Full tests | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` | passed after all review fixes; sim suite 1,175 passed, one ignored; all workspace test targets green |
 | Layering | `cargo test -p xtask layering_invariants_hold`; `cargo run -p xtask -- crate-graph --check` | passed; generated graph current |
-| Focused behavior | physics 200/200; AI 234/234; sim determinism 33/33; netcode migrated harnesses 4/4 + 6/6 + 2/2 | historical pass; direct A9/A12/M2 proof reruns pending |
-| Test identity | `audit-test-identities.sh` complete/ignored pre/post capture and comparison | pending — record actual counts/checksums from retained `evidence/test-identities/comparison/summary.txt` |
+| Focused behavior | prior physics 200/200, AI 234/234, sim determinism 33/33, and netcode migrated harnesses 4/4 + 6/6 + 2/2; new A9/A12/M2 direct tests | passed — each new direct test 1/1; final full suite green |
+| Test identity | `audit-test-identities.sh` external complete/ignored pre/post capture and comparison | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored unchanged; compact proof bundle retained under `evidence/test-identities/` |
 | Structural audits | normal dependency trees, reverse physics tree, removed-path grep, visibility consumers, unsafe count | passed — dependency contracts match A2–A7/A15; unsafe remains 17 textual matches |
 | Compile isolation | local warm-cache timestamp-only spot probes recorded in Baselines | reported — package boundaries matched; raw timing artifacts were not retained |
 
 The formal preflight was run once after the complete review-fix set. A scoped `cargo clean` was needed first because the workspace `target/` cache had reached 71 GB and filled the volume; it removed only recoverable build artifacts.
+
+## Custom extraction review panel
+
+Because this brief is a behavior-preserving, two-crate extraction rather than a typical feature, the panel emphasized semantic equivalence and proof quality over product UX. Its six lenses were AI host ordering and behavior preservation, physics extraction/adversarial boundaries, architecture and public contracts, cross-slice runtime/network integration, test/evidence adversarial review, and hygiene/drift breadth.
+
+The AI, physics, architecture, and runtime/network reviewers found no production-code defects. The evidence adversary found one critical proof gap (the literal M2 no-locomotion case had no direct automated proof), four major proof-quality gaps (no direct A12 decay-before-AI lock, non-durable A8 identity evidence, overbroad determinism wording around the test-only identity bridge, and manual wording that exceeded the fixtures), and one minor timing-provenance gap. The hygiene reviewer found three major documentation-convention violations in module ownership headers. All were fixed: three direct integration tests now lock M2, A9, and A12; identity evidence is revision-bound and durable; wording is scoped to what each proof establishes; the capture instructions are auditable; and the module headers follow the two-line convention. Adversarial re-review found additional flaws in the first identity-audit implementation—including dirty/arbitrary revision acceptance, non-atomic publication, duplicate-name ambiguity, baseline-self comparison, locale sensitivity, and dangling-symlink handling—which were fixed before the retained audit passed. Final evidence and hygiene re-reviews reported no findings.
+
+## M5 level-change disposition
+
+The owner reports that the co-op session passes join, replication, reconciliation, and remote-enemy animation, but fails the host-driven level change. A diff from pre-split baseline `ffff98fe` through the reviewed candidate does not change the netcode level-control or client level-change lifecycle. The extraction changes in adjacent paths are dependency imports, AI-runner injection in the binary, test fixtures, and the `kinematic_mover::MoverCommandDiagnostics` to `mover_commands::MoverCommandDiagnostics` ownership move. The custom cross-slice reviewer also traced unload/reload and remote-cache clearing without finding an extraction regression, and the existing automated level-change rebuild test passes. This supports splitting the observed end-to-end failure into a dedicated brief, but does not prove it is pre-existing; an exact-symptom reproduction on `ffff98fe` would be required for that claim. The owner explicitly authorized that split and landing with the recorded gap. The follow-up brief will be drafted in a separate session.
 
 ## Owner manual runbook
 
@@ -168,9 +182,9 @@ Retain the exact revision, machine/toolchain metadata, commands, settings, route
 
 | Result | Owner evidence |
 |---|---|
-| M1 | pending |
-| M2 | pending |
-| M3 | pending |
-| M4 | pending |
-| M5 | pending |
-| M6 | pending |
+| M1 | pass — owner reported campaign presentation and movement-feel AI behavior pass |
+| M2 | pass — owner reported visual animation pass; direct no-locomotion sim-tick proof passed 1/1 |
+| M3 | pass — owner reported concurrent-attack visual smoke pass; automated exact-tick proof retained and full suite green |
+| M4 | pass — owner reported dev-tools launch and AI diagnostics pass |
+| M5 | owner-deferred gap — join, replication, reconciliation, and remote animation pass; host-driven level change fails; new-versus-pre-existing provenance undetermined; follow-up brief to be drafted separately |
+| M6 | pass — owner reported frame-time comparison passes with no regression; numeric measurements were not supplied |

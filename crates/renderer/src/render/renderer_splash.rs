@@ -7,21 +7,7 @@
 
 use super::*;
 
-/// One live, app-projected passive presentation instance for this render frame.
-/// The app owns its lifetime and producer-stamped facts; the renderer owns its
-/// template layout and font measurement before folding the resulting draw data
-/// into the UI composition.
-#[derive(Debug, Clone)]
-pub struct PresentationDrawInput {
-    pub instance_id: u64,
-    pub template: postretro_entities::PresentationTemplateHandle,
-    pub facts: postretro_entities::PresentationFacts,
-    pub anchor: [f32; 2],
-    pub opacity: f32,
-    /// False when the live instance is camera-culled. The renderer still
-    /// advances its retained facts/tweens, but emits no draw items this frame.
-    pub visible: bool,
-}
+pub use postretro_foundation::PresentationDrawInput;
 
 impl Renderer {
     /// Present an acquired frame handle. Surface ownership stays inside the

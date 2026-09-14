@@ -607,7 +607,7 @@ mod tests {
             &mut slot_table,
             &crate::trigger_commands::TriggerFireContext::default(),
         );
-        let command_count = execution.commands.len();
+        let command_count = execution.command_count();
         let steps = execution
             .residual()
             .and_then(|handle| table.residual(handle))

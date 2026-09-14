@@ -1189,7 +1189,7 @@ fn mint_identity(args: Vec<OsString>) -> Result<i32, String> {
         .current_dir(&workspace_root)
         .arg("run")
         .arg("-p")
-        .arg("postretro")
+        .arg("postretro-sim")
         .arg("--bin")
         .arg("mint-identity")
         .arg("--")

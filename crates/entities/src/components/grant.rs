@@ -278,7 +278,7 @@ mod tests {
             credit_call_sites,
             vec![
                 PathBuf::from("entities/src/components/grant.rs"),
-                PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
+                PathBuf::from("sim/src/scripting/builtins/wieldable_inventory.rs"),
             ],
             "post-spawn reserve writes must route through grant_ammo; descriptor spawn seeding is the sole exception"
         );
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             exact_write_call_sites,
             vec![PathBuf::from(
-                "postretro/src/scripting/builtins/wieldable_inventory.rs"
+                "sim/src/scripting/builtins/wieldable_inventory.rs"
             )],
             "exact reserve writes are reserved for carried-state restoration"
         );

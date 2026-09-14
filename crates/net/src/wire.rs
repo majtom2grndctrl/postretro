@@ -11,7 +11,7 @@
 // This crate is `postretro`-free and glam-free by design: mirror types use plain
 // `[f32; N]` / `f32` / `bool`, never the engine or glam types they shadow. The
 // engine-side conversions (`ComponentValue::Transform` <-> `WireTransform`,
-// `SimCommand` <-> `InputCommand`) live in `crate::netcode` in the engine, not
+// `SimCommand` <-> `InputCommand`) live in `postretro-netcode`, not
 // here.
 //
 // Phase 2 splits the snapshot into a *raw encoded boundary* and a *typed apply
@@ -175,7 +175,7 @@ pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 13;
 ///
 /// `rotation` mirrors the engine quaternion in **`[x, y, z, w]` order**. The
 /// engine-side conversion (which knows glam's `Quat` component order) lives in
-/// `crate::netcode`; here it is just four floats in that fixed order.
+/// `postretro-netcode`; here it is just four floats in that fixed order.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct WireTransform {
     pub position: [f32; 3],

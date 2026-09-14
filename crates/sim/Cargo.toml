@@ -1,0 +1,58 @@
+[package]
+name = "postretro-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Fixed-tick gameplay simulation and scripting host for Postretro"
+license.workspace = true
+
+[features]
+dev-tools = []
+test-support = [
+    "dep:postretro-test-log-capture",
+    "postretro-entities/test-support",
+    "postretro-combat-model/test-support",
+]
+
+[dependencies]
+directories.workspace = true
+env_logger.workspace = true
+glam.workspace = true
+log.workspace = true
+parry3d.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+postretro-combat-model.workspace = true
+postretro-entities = { workspace = true, features = ["script-ffi"] }
+postretro-foundation.workspace = true
+postretro-level-format.workspace = true
+postretro-level-loader.workspace = true
+postretro-lighting = { workspace = true, features = ["script-ffi"] }
+postretro-model.workspace = true
+postretro-net.workspace = true
+postretro-render-data.workspace = true
+postretro-scripting-core.workspace = true
+postretro-test-log-capture = { workspace = true, optional = true }
+
+[dev-dependencies]
+postretro-combat-model = { workspace = true, features = ["test-support"] }
+postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
+postretro-level-compiler.workspace = true
+postretro-netcode = { workspace = true, features = ["test-support"] }
+postretro-script-compiler = { path = "../script-compiler" }
+postretro-test-log-capture.workspace = true
+postretro-ui.workspace = true
+mlua.workspace = true
+proptest.workspace = true
+rquickjs.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "gen-script-types"
+path = "src/bin/gen_script_types.rs"
+
+[[bin]]
+name = "mint-identity"
+path = "src/bin/mint_identity.rs"

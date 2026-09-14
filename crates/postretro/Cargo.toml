@@ -78,6 +78,8 @@ postretro-combat-model = { workspace = true }
 postretro-scripting-core = { workspace = true }
 postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
+postretro-sim.workspace = true
+postretro-netcode.workspace = true
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
 # Pinned to 0.34 for the binary's `egui-winit` integration with winit 0.30.
@@ -93,7 +95,9 @@ dev-tools = [
     "dep:egui-winit",
     "postretro-level-loader/dev-tools",
     "postretro-net/dev-tools",
+    "postretro-netcode/dev-tools",
     "postretro-renderer/dev-tools",
+    "postretro-sim/dev-tools",
 ]
 # Headless batch mode for AI-agent and content-CI use. Gates modules only —
 # no optional deps, no egui, independent of dev-tools.
@@ -105,6 +109,12 @@ observe-live = []
 # Static offscreen frame capture for content CI. Gates binary-only modules and
 # adds no dependencies or UI surface.
 capture = []
+# Narrow cross-crate seams used by binary-owned tests after the gameplay split.
+# Production callers never enable this feature.
+test-support = [
+    "postretro-netcode/test-support",
+    "postretro-sim/test-support",
+]
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }
@@ -114,6 +124,8 @@ postretro-test-log-capture.workspace = true
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
+postretro-sim = { workspace = true, features = ["test-support"] }
+postretro-netcode = { workspace = true, features = ["test-support"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by
 # `scripts-build`, without spawning the sidecar process during unit tests.
 postretro-script-compiler = { path = "../script-compiler" }
@@ -151,14 +163,6 @@ tempfile = "3"
 [[bin]]
 name = "postretro"
 path = "src/main.rs"
-
-[[bin]]
-name = "gen-script-types"
-path = "src/bin/gen_script_types.rs"
-
-[[bin]]
-name = "mint-identity"
-path = "src/bin/mint_identity.rs"
 
 [[test]]
 name = "capture_frame"

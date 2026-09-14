@@ -8,8 +8,6 @@ mod lifecycle_sprite_collections;
 #[path = "lifecycle_world_cpu.rs"]
 mod lifecycle_world_cpu;
 
-#[cfg(test)]
-pub(crate) use lifecycle_world_cpu::install_descriptor_player_health_range;
 pub(crate) use lifecycle_world_cpu::install_world_cpu;
 
 use std::path::{Component, Path, PathBuf};
@@ -1576,15 +1574,15 @@ mod tests {
                 non_ai_archetype: 1,
             }
         );
-        let state = context.state();
-        assert_eq!(state.resolved_enemy_descriptors.len(), 1);
-        assert!(state.resolved_enemy_descriptors.contains_key("cultist"));
-        assert_eq!(state.agent_params, Some(params));
-        drop(state);
+        let descriptors = context.resolved_enemy_descriptors_for_test();
+        assert_eq!(descriptors.len(), 1);
+        assert!(descriptors.contains_key("cultist"));
+        assert_eq!(context.agent_params_for_test(), Some(params));
+        drop(descriptors);
 
         // A new level drops stale descriptor entries and warning dedup state.
         resolve_spawners_for_level(&mut registry, &[], None, &context);
-        assert!(context.state().resolved_enemy_descriptors.is_empty());
+        assert!(context.resolved_enemy_descriptors_for_test().is_empty());
     }
 
     #[test]
@@ -2462,6 +2460,23 @@ mod tests {
             trap,
             report: installed.report,
         }
+    }
+
+    // The connected-client install policy belongs to binary lifecycle
+    // coverage: netcode receives the resulting registry but must not depend on
+    // this App-side installation fixture.
+    #[test]
+    fn connected_client_trigger_pool_install_keeps_authored_trigger_unarmed() {
+        let installed = install_connected_client_trigger_pool_fixture();
+        assert_eq!(installed.report, TriggerPoolInstallReport::default());
+        assert!(
+            !installed
+                .registry
+                .get_component::<TriggerVolumeComponent>(installed.trap)
+                .expect("client trap remains live")
+                .armed,
+            "the connected client does not rerun the host pool roll",
+        );
     }
 
     struct CpuFixture {
@@ -3443,7 +3458,7 @@ mod tests {
             wire_version: 3,
         };
         let logs = crate::scripting::reactions::log_capture::capture(|| {
-            crate::netcode::client_drain_control(
+            crate::client_drain_control(
                 &mut app,
                 vec![postretro_net::wire::ServerControlMessage::Divergence(
                     postretro_net::wire::DivergenceReason::Closing(

@@ -190,7 +190,8 @@ Stride 2 — order and fusion:
 - [ ] The lightmap stage publishes one real total covering the fused work; the shadowmask stage
   publishes one real total covering graph pass and encode; neither overshoots.
 - [ ] The Build Summary stage order changes deliberately: the summary-contract test is updated
-  to the new order, not loosened.
+  to the new order, not loosened. The TUI step sections flatten to the stage list in the same
+  order, with atlas preparation under World.
 
 ### Manual
 
@@ -221,7 +222,11 @@ Stride 2 — order and fusion:
 - Hoisting: `prepare_atlas` is called from the warm block in `pipeline.rs` and inside
   `bake_lightmap_controlled`; both take a prepared atlas afterwards. The SH block reads
   geometry, tree, exterior leaves, BVH and lights only, so it moves as a unit. `StageId`
-  declaration order and `label` drive the Build Summary.
+  declaration order and `label` drive the Build Summary. The TUI's step sections are a second
+  ordering the compiler does not check; a test pins them against the stage list, so they move
+  with it. Atlas preparation joins the World section, not Lighting — chart planning and packing
+  trace no rays, and keeping Lighting to the ray-tracing stages is what makes its header mean
+  something once the SH bakes run first.
 - Coloring before the walk: the branch's `build_analytic_overlap_graph` and
   `shadowmask_bake/assignment.rs` already precede the fill; keep them, move the fill into a
   walk sink. Cold fusion routes only the shipping path — `bake_atlas_layer_controlled` —

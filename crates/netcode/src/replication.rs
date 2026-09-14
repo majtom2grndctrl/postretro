@@ -21,7 +21,7 @@ use super::{
     transform_to_wire,
 };
 
-/// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
+/// The Phase 2 replicable set: entities `postretro-netcode` has explicitly registered
 /// as authoritative networked gameplay objects — slot-owned movement pawns, the
 /// host's own pawn, networked AI enemies, and host world items. This set is the
 /// registration mechanism the predicate consults.
@@ -69,7 +69,7 @@ impl ReplicableSet {
 /// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
 /// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
 /// networked AI enemies, and world items — the authoritative networked gameplay objects
-/// `crate::netcode` registers). The Phase 1 all-`Transform` walk is deliberately
+/// `postretro-netcode` registers). The Phase 1 all-`Transform` walk is deliberately
 /// *not* reused.
 ///
 /// Registration is the allow-list, so deterministic client-local / baked

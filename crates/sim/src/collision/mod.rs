@@ -112,13 +112,13 @@ impl CollisionWorld {
         *self = Self::new();
     }
 
-    #[cfg(test)]
-    pub(crate) fn triangle_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn triangle_count(&self) -> usize {
         self.mesh.triangles().len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn vertex_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn vertex_count(&self) -> usize {
         self.mesh.vertices().len()
     }
 }

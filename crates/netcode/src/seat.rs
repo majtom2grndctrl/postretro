@@ -162,6 +162,11 @@ impl SeatTable {
         self.session_id
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn session_id_for_test(&self) -> SessionId {
+        self.session_id()
+    }
+
     /// Whether this durable seat still belongs to the active session. Queued
     /// owner-slot reactions retain a copied `Seat`, so the app drain must check
     /// this before writing rather than recreating state for a released seat.
@@ -433,6 +438,11 @@ impl SeatTable {
                 connected: seat == Seat(0) || self.client_bindings.contains_key(&seat),
             })
             .collect()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn roster_entries_for_test(&self) -> Vec<RosterEntry> {
+        self.roster_entries()
     }
 
     fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {

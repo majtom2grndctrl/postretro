@@ -9,7 +9,7 @@ use postretro_entities::{
 };
 use postretro_foundation::PresentationDrawInput;
 
-use crate::presentation_projection::project_world_to_screen;
+use super::presentation_projection::project_world_to_screen;
 
 /// Production budget for transient spawn presentation. Keyed overlays receive
 /// their own independently bounded map configured by their descriptor.
@@ -223,11 +223,6 @@ impl PresentationPool {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn live_counts(&self) -> (usize, usize) {
-        (self.spawns.len(), self.overlays.len())
-    }
-
     /// Create or refresh one target-keyed overlay. Its cap is separate from
     /// the spawn ring's `capacity`; neither archetype can evict the other.
     pub fn refresh_overlay(
@@ -369,6 +364,11 @@ impl PresentationPool {
     pub fn clear_world_instances(&mut self) {
         self.spawns.clear();
         self.overlays.clear();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn live_counts(&self) -> (usize, usize) {
+        (self.spawns.len(), self.overlays.len())
     }
 
     #[cfg(test)]

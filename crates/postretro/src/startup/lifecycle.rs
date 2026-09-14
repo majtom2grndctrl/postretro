@@ -1574,15 +1574,15 @@ mod tests {
                 non_ai_archetype: 1,
             }
         );
-        let state = context.state();
-        assert_eq!(state.resolved_enemy_descriptors.len(), 1);
-        assert!(state.resolved_enemy_descriptors.contains_key("cultist"));
-        assert_eq!(state.agent_params, Some(params));
-        drop(state);
+        let descriptors = context.resolved_enemy_descriptors_for_test();
+        assert_eq!(descriptors.len(), 1);
+        assert!(descriptors.contains_key("cultist"));
+        assert_eq!(context.agent_params_for_test(), Some(params));
+        drop(descriptors);
 
         // A new level drops stale descriptor entries and warning dedup state.
         resolve_spawners_for_level(&mut registry, &[], None, &context);
-        assert!(context.state().resolved_enemy_descriptors.is_empty());
+        assert!(context.resolved_enemy_descriptors_for_test().is_empty());
     }
 
     #[test]

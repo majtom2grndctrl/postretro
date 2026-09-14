@@ -1363,24 +1363,24 @@ mod tests {
         let mut store = HitZoneStore::new();
         store.insert_for_test(
             ModelHandle::from(model),
-            crate::scripting_systems::hit_zones::ModelHitZones {
-                skeleton: Arc::new(Skeleton {
+            crate::scripting_systems::hit_zones::ModelHitZones::for_test(
+                Arc::new(Skeleton {
                     joints: vec![Joint {
                         parent: None,
                         inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
                         rest_local: RestLocal::default(),
                     }],
                 }),
-                clips: Arc::new(Vec::new()),
-                joint_zones: vec![Some(JointZone {
+                Arc::new(Vec::new()),
+                vec![Some(JointZone {
                     tag: "core".to_string(),
                     radius: Some(0.25),
                 })],
-                sockets: std::collections::HashMap::new(),
-                derived_bound: Some(Aabb::default()),
-                legs: Vec::new(),
-                pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-            },
+                std::collections::HashMap::new(),
+                Some(Aabb::default()),
+                Vec::new(),
+                Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
+            ),
         );
         store
     }
@@ -1436,15 +1436,15 @@ mod tests {
         let mut store = HitZoneStore::new();
         store.insert_for_test(
             ModelHandle::from(model),
-            crate::scripting_systems::hit_zones::ModelHitZones {
-                skeleton: Arc::new(skeleton),
-                clips: Arc::new(vec![clip]),
-                joint_zones: vec![None, None],
-                sockets: std::collections::HashMap::new(),
-                derived_bound: None,
-                legs: Vec::new(),
-                pose_stack: Arc::new(pose_stack),
-            },
+            crate::scripting_systems::hit_zones::ModelHitZones::for_test(
+                Arc::new(skeleton),
+                Arc::new(vec![clip]),
+                vec![None, None],
+                std::collections::HashMap::new(),
+                None,
+                Vec::new(),
+                Arc::new(pose_stack),
+            ),
         );
         store
     }

@@ -210,7 +210,7 @@ pub(crate) struct Session {
     /// `--host`/`--connect` role's transport is constructed. A malformed net flag
     /// or a failed transport construction degrades to single-player rather than
     /// blocking boot. The net subsystem never touches the registry —
-    /// `crate::netcode` owns that seam. See: context/lib/networking.md.
+    /// `postretro-netcode` owns that seam. See: context/lib/networking.md.
     pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
 
     /// Durable local/listen-host player seats. Connected clients intentionally
@@ -695,9 +695,12 @@ mod tests {
 
         assert_eq!(identity_error, Some("entropy unavailable"));
         assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
-        assert_eq!(seats.session_id(), postretro_net::wire::SessionId([0; 16]));
         assert_eq!(
-            seats.roster_entries(),
+            seats.session_id_for_test(),
+            postretro_net::wire::SessionId([0; 16])
+        );
+        assert_eq!(
+            seats.roster_entries_for_test(),
             vec![postretro_net::wire::RosterEntry {
                 seat: 0,
                 connected: true,

@@ -8,7 +8,10 @@ use postretro_entities::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub mod data_archetype;
+#[cfg(not(feature = "test-support"))]
 pub(crate) mod entity_spawner;
+#[cfg(feature = "test-support")]
+pub mod entity_spawner;
 pub mod net_descriptor;
 pub(crate) mod prop_mesh;
 pub(crate) mod wieldable_inventory;

@@ -305,10 +305,18 @@ impl HitZoneStore {
         }
     }
 
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn mark_attachment_resolution_warning(&self, key: String) -> bool {
+        self.attachment_resolution_warnings.borrow_mut().insert(key)
+    }
+
     /// Record a load-time attachment diagnostic if it has not already been
     /// emitted for this level. Returns `true` exactly for the first occurrence
     /// of `key`; callers own the corresponding log message.
-    pub(crate) fn mark_attachment_resolution_warning(&self, key: String) -> bool {
+    ///
+    /// Exposed only to cross-crate test harnesses.
+    #[cfg(feature = "test-support")]
+    pub fn mark_attachment_resolution_warning(&self, key: String) -> bool {
         self.attachment_resolution_warnings.borrow_mut().insert(key)
     }
 
@@ -340,8 +348,8 @@ impl HitZoneStore {
         self.models.insert(handle.as_str().to_owned(), model);
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_pose_modified_for_test(&mut self, handle: ModelHandle) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mark_pose_modified_for_test(&mut self, handle: ModelHandle) {
         self.pose_modified_models.insert(handle);
     }
 

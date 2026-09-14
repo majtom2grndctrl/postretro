@@ -12,7 +12,7 @@ use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 
 /// FGD `classname` this handler binds to.
-pub(crate) const CLASSNAME: &str = "entity_spawner";
+pub const CLASSNAME: &str = "entity_spawner";
 
 fn archetype_from_entity(entity: &MapEntity) -> String {
     match entity.key_values.get("archetype") {
@@ -56,7 +56,7 @@ fn count_from_entity(entity: &MapEntity) -> u32 {
 
 /// Spawn an inert, unresolved spawner configuration. Its tags are attached at
 /// `try_spawn`, and the common dispatch layer writes the raw KVP table.
-pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Option<EntityId> {
+pub fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Option<EntityId> {
     let transform = Transform {
         position: entity.origin,
         rotation: entity.rotation_quat(),

@@ -1,7 +1,7 @@
 # gameplay-stack--sim-and-netcode-crates — plan of record
 
 mode: resumable
-status: approved
+status: test-ready
 read at: 01d12d66
 
 ## Corrections
@@ -16,27 +16,27 @@ read at: 01d12d66
 
 | AC | Proof | Status | Result |
 |---|---|---|---|
-| `cargo build --workspace`, `cargo test --workspace`, and `cargo build -p postretro --features dev-tools` pass | final preflight | achievable as stated | |
-| `layering_invariants_hold` and regenerated `crate-graph.md` pass and list both crates | focused invariant test; `xtask crate-graph --write --check` | achievable as stated | |
-| sim normal tree excludes render stack and netcode, while includes VM runtimes through scripting-core | `cargo tree -p postretro-sim -e normal` | achievable as stated | |
-| netcode normal tree includes sim and excludes render stack | `cargo tree -p postretro-netcode -e normal` | achievable as stated | |
-| sim library omits netcode but sim test targets link it | `cargo build -p postretro-sim`; `cargo test -p postretro-sim --no-run` | achievable as stated | |
-| binary/sim/netcode edit isolation holds | warm-build `touch` experiment with Cargo recompilation evidence | achievable as stated | |
-| no moved module remains under `crates/postretro/src/` | path audit plus grep gate | achievable as stated | |
-| no test is lost and every moved test is named | workspace test count comparison; per-test move ledger below | achievable as stated | |
-| M15 Phase 0 determinism harness is unchanged and passes | focused `postretro-sim` determinism test | achievable as stated | |
-| `gen-script-types` preserves `sdk/types/` bytes and committed typedef test passes | byte comparison and focused typedef test | achievable as stated | |
-| xtask `mint-identity` invokes the sim binary and produces a mod sidecar at the unchanged SDK depth | focused xtask wrapper test | achievable as stated | |
-| weapon placement preserves legacy and instance-authored precedence | focused foundation/sim/netcode placement tests | achievable as stated | |
-| spawned-enemy windup is 250 ms and preserves larger cooldown | focused spawner test | achievable as stated | |
-| windup guard is one-way against netcode interpolation ceiling | focused cross-crate netcode test | achievable as stated | |
-| allocation guards still arm through sim's crate-root allocator | focused alloc-probe test with deliberate guarded allocation | achievable as stated | |
-| every `pub(crate)` widening has an external caller | review/audit of each changed public item | achievable as stated | |
-| campaign-test plays identically | owner, in-engine runbook | manual-visual | |
-| animated clips and hit zones work on moving animated enemies | owner, in-engine runbook | manual-visual | |
-| lights, fog, emitters, particles, and damage overlays present correctly | owner, in-engine runbook | manual-visual | |
-| dev-tools launch and debug panel draw | owner, in-engine runbook | manual-visual | |
-| co-op joins, replicates, reconciles, and survives host level change | owner, two-process loopback runbook | manual-network | |
+| `cargo build --workspace`, `cargo test --workspace`, and `cargo build -p postretro --features dev-tools` pass | final preflight | achievable as stated | pass — fmt, clippy `-D warnings`, and workspace tests pass; dev-tools checks pass |
+| `layering_invariants_hold` and regenerated `crate-graph.md` pass and list both crates | focused invariant test; `xtask crate-graph --write --check` | achievable as stated | pass |
+| sim normal tree excludes render stack and netcode, while includes VM runtimes through scripting-core | `cargo tree -p postretro-sim -e normal` | achievable as stated | pass |
+| netcode normal tree includes sim and excludes render stack | `cargo tree -p postretro-netcode -e normal` | achievable as stated | pass |
+| sim library omits netcode but sim test targets link it | `cargo build -p postretro-sim`; `cargo test -p postretro-sim --no-run` | achievable as stated | pass |
+| binary/sim/netcode edit isolation holds | warm-build `touch` experiment with Cargo recompilation evidence | achievable as stated | pass |
+| no moved module remains under `crates/postretro/src/` | path audit plus grep gate | achievable as stated | pass |
+| no test is lost and every moved test is named | workspace test count comparison; per-test move ledger below | achievable as stated | pass — full workspace suite passes |
+| M15 Phase 0 determinism harness is unchanged and passes | focused `postretro-sim` determinism test | achievable as stated | pass |
+| `gen-script-types` preserves `sdk/types/` bytes and committed typedef test passes | byte comparison and focused typedef test | achievable as stated | pass |
+| xtask `mint-identity` invokes the sim binary and produces a mod sidecar at the unchanged SDK depth | focused xtask wrapper test | achievable as stated | pass |
+| weapon placement preserves legacy and instance-authored precedence | focused foundation/sim/netcode placement tests | achievable as stated | pass |
+| spawned-enemy windup is 250 ms and preserves larger cooldown | focused spawner test | achievable as stated | pass |
+| windup guard is one-way against netcode interpolation ceiling | focused cross-crate netcode test | achievable as stated | pass |
+| allocation guards still arm through sim's crate-root allocator | focused alloc-probe test with deliberate guarded allocation | achievable as stated | pass |
+| every `pub(crate)` widening has an external caller | review/audit of each changed public item | achievable as stated | pass — review-panel and test-support audit |
+| campaign-test plays identically | owner, in-engine runbook | manual-visual | outstanding |
+| animated clips and hit zones work on moving animated enemies | owner, in-engine runbook | manual-visual | outstanding |
+| lights, fog, emitters, particles, and damage overlays present correctly | owner, in-engine runbook | manual-visual | outstanding |
+| dev-tools launch and debug panel draw | owner, in-engine runbook | manual-visual | outstanding |
+| co-op joins, replicates, reconciles, and survives host level change | owner, two-process loopback runbook | manual-network | outstanding |
 
 ## Tasks
 
@@ -47,7 +47,7 @@ read at: 01d12d66
 | 3 | Create and transplant `postretro-sim` wholesale: collision, fixed-tick systems, scripting runtime/handlers, bins, allocator, manifests, and public seams; retain only deliberate test-support access. | integrating executor | 2 | complete — `cargo check -p postretro --bin postretro`; `cargo check -p postretro-sim --bins`; sim normal tree excludes the render stack and netcode; relocated generator preserves both SDK type-file hashes. Sim test-target compilation is intentionally completed with Task 4, when its retained netcode harness moves into the temporary crate. |
 | 4 | Create and transplant `postretro-netcode` wholesale above sim. Move only the `ingest_hit_declaration_for_test` callers from `sim/weapon_stage.rs` and `scripting/systems/ai_tests.rs` into netcode-owned harness coverage (retain their unrelated source-adjacent tests), then move/drop every remaining binary-only test reach and complete the per-test move ledger. | integrating executor | 3 | complete — `cargo check -p postretro-netcode`; `cargo check -p postretro --bin postretro`; `cargo test -p postretro-sim --no-run`; moved ingress harness (6 passed) and snapshot harness (2 passed) run in netcode. |
 | 5 | Integrate binary orchestration and durable docs (`development_guide.md` target shape and `scripting.md` command examples); verify dependency trees, isolation, graph, targeted behavior, code visibility audit, and all automated acceptance before review. | integrating executor | 4 | complete — graph regenerated and `layering_invariants_hold` passed; normal tree audit keeps sim below netcode and outside the render/UI stack; binary/sim/netcode touch probes rebuilt exactly their intended dependents; moved-source path audit was empty; formatting and touched-crate checks passed; typedef, determinism, allocator, placement, windup, and mint-identity focused tests passed. The netcode crate now keeps its sim imports private rather than re-exporting the sim API. |
-| 6 | Run review-panel → fix-review-findings → focused retest, then final preflight; record automated results and leave manual runbook evidence explicitly outstanding or land after it arrives. | integrating executor | 5 | pending |
+| 6 | Run review-panel → fix-review-findings → focused retest, then final preflight; record automated results and leave manual runbook evidence explicitly outstanding or land after it arrives. | integrating executor | 5 | complete — panel found xtask/dev-tools/visibility seams and stale moved-path test guards; all fixed through focused retests. Final `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, and `cargo test --quiet` pass. |
 
 ## Remaining execution list
 

@@ -129,7 +129,7 @@ pub(crate) fn paint_trigger_overlay_labels(ctx: &egui::Context, labels: &[Trigge
             egui::Color32::from_rgb(255, 170, 100)
         };
         for &(start, end) in &label.projected_edges {
-            painter.line_segment([start, end], egui::Stroke::new(1.0, color));
+            painter.line_segment([start, end], egui::Stroke::new(1.0_f32, color));
         }
         let Some(position) = label.screen_position else {
             continue;

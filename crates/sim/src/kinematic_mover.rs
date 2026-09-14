@@ -19,7 +19,7 @@ mod commands;
 
 pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
-#[cfg(test)]
+#[cfg(all(test, not(feature = "test-support")))]
 pub(crate) use commands::apply_mover_command;
 #[cfg(feature = "test-support")]
 pub use commands::apply_mover_command_for_test as apply_mover_command;

@@ -35,6 +35,43 @@ pub use impact::{
     lifetime as impact_lifetime, spawn_impact_effect_at, spawn_projectile_impact_light,
 };
 
+/// Minimal weapon construction used by binary-owned gameplay orchestration tests.
+#[cfg(feature = "test-support")]
+pub mod test_fixtures {
+    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+
+    pub fn weapon_component(fire_mode: FireMode, cooldown_ms: f32) -> WeaponComponent {
+        WeaponComponent::from_descriptor(&WeaponDescriptor {
+            knockback: None,
+            damage: 25.0,
+            pellet_count: 1,
+            spread_degrees: 0.0,
+            bloom_per_shot_degrees: 0.0,
+            bloom_max_degrees: 0.0,
+            bloom_decay_degrees_per_second: 0.0,
+            bloom_decay_delay_ms: 0.0,
+            movement_spread_degrees: 0.0,
+            spread_vertical_bias: 0.0,
+            range: 10.0,
+            cooldown_ms,
+            fire_mode,
+            resolution: ResolutionMode::Hitscan,
+            projectile: None,
+            splash: None,
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            placement: None,
+            muzzle_offset: None,
+            resource: None,
+            lower_ms: 0,
+            raise_ms: 0,
+            block_during_reload: None,
+        })
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ActivationOutcome {

@@ -309,6 +309,12 @@ pub struct ClientTimeSync {
     pub(crate) estimator: ClockEstimator,
 }
 
+impl Default for ClientTimeSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientTimeSync {
     pub fn new() -> Self {
         Self {

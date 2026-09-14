@@ -1,7 +1,7 @@
 # gameplay-stack--sim-and-netcode-crates — plan of record
 
 mode: resumable
-status: test-ready
+status: landed
 read at: 01d12d66
 
 ## Corrections
@@ -32,11 +32,11 @@ read at: 01d12d66
 | windup guard is one-way against netcode interpolation ceiling | focused cross-crate netcode test | achievable as stated | pass |
 | allocation guards still arm through sim's crate-root allocator | focused alloc-probe test with deliberate guarded allocation | achievable as stated | pass |
 | every `pub(crate)` widening has an external caller | review/audit of each changed public item | achievable as stated | pass — review-panel and test-support audit |
-| campaign-test plays identically | owner, in-engine runbook | manual-visual | outstanding |
-| animated clips and hit zones work on moving animated enemies | owner, in-engine runbook | manual-visual | outstanding |
-| lights, fog, emitters, particles, and damage overlays present correctly | owner, in-engine runbook | manual-visual | outstanding |
-| dev-tools launch and debug panel draw | owner, in-engine runbook | manual-visual | outstanding |
-| co-op joins, replicates, reconciles, and survives host level change | owner, two-process loopback runbook | manual-network | outstanding |
+| campaign-test plays identically | owner, in-engine runbook | manual-visual | pass — owner verified |
+| animated clips and hit zones work on moving animated enemies | owner, in-engine runbook | manual-visual | pass — owner verified |
+| lights, fog, emitters, particles, and damage overlays present correctly | owner, in-engine runbook | manual-visual | pass — owner verified |
+| dev-tools launch and debug panel draw | owner, in-engine runbook | manual-visual | pass — owner verified |
+| co-op joins, replicates, reconciles, and survives host level change | owner, two-process loopback runbook | manual-network | pass — owner verified |
 
 ## Tasks
 
@@ -49,9 +49,9 @@ read at: 01d12d66
 | 5 | Integrate binary orchestration and durable docs (`development_guide.md` target shape and `scripting.md` command examples); verify dependency trees, isolation, graph, targeted behavior, code visibility audit, and all automated acceptance before review. | integrating executor | 4 | complete — graph regenerated and `layering_invariants_hold` passed; normal tree audit keeps sim below netcode and outside the render/UI stack; binary/sim/netcode touch probes rebuilt exactly their intended dependents; moved-source path audit was empty; formatting and touched-crate checks passed; typedef, determinism, allocator, placement, windup, and mint-identity focused tests passed. The netcode crate now keeps its sim imports private rather than re-exporting the sim API. |
 | 6 | Run review-panel → fix-review-findings → focused retest, then final preflight; record automated results and leave manual runbook evidence explicitly outstanding or land after it arrives. | integrating executor | 5 | complete — initial panel found xtask/dev-tools/visibility seams and stale moved-path test guards; a custom full-diff extraction panel then restored six production remote-hit harnesses (including same-tick AI retaliation), re-gated the unsafe allocator to test support, and corrected transport/gameplay ownership docs. Focused regressions plus final `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, and `cargo test --quiet` pass. |
 
-## Remaining execution list
+## Landing
 
-1. Complete Task 6: review-panel and fix loop, focused retests, one final preflight, and an explicit manual test-ready or landed-with-gaps result.
+All automated and owner-run manual acceptance proof passed. Brief landed on the feature branch.
 
 ## Per-test move ledger
 

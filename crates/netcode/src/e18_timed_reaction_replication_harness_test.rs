@@ -578,7 +578,7 @@ impl TimedAlarmHarness {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let use_edges = HashMap::new();
         simulate_tick(
@@ -590,7 +590,7 @@ impl TimedAlarmHarness {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[RemotePawnCommand {

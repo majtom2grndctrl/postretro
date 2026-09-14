@@ -1,0 +1,31 @@
+[package]
+name = "postretro-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Host-side enemy behavior evaluation for Postretro"
+license.workspace = true
+
+[features]
+test-support = ["postretro-sim/test-support"]
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+
+postretro-entities.workspace = true
+postretro-foundation.workspace = true
+postretro-physics.workspace = true
+postretro-sim.workspace = true
+
+[dev-dependencies]
+mlua.workspace = true
+parry3d.workspace = true
+postretro-level-format.workspace = true
+postretro-net.workspace = true
+postretro-physics = { workspace = true, features = ["test-support"] }
+postretro-scripting-core.workspace = true
+postretro-sim = { workspace = true, features = ["test-support"] }
+postretro-test-log-capture.workspace = true
+rquickjs.workspace = true
+serde_json.workspace = true

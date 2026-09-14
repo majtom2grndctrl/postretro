@@ -3676,6 +3676,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -3704,6 +3705,26 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "winit",
+]
+
+[[package]]
+name = "postretro-ai"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "mlua",
+ "parry3d",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-level-format",
+ "postretro-net",
+ "postretro-physics",
+ "postretro-scripting-core",
+ "postretro-sim",
+ "postretro-test-log-capture",
+ "rquickjs",
+ "serde_json",
 ]
 
 [[package]]
@@ -3859,6 +3880,7 @@ dependencies = [
  "glam",
  "log",
  "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -3997,6 +4019,7 @@ dependencies = [
  "log",
  "mlua",
  "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",

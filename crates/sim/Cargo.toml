@@ -7,7 +7,7 @@ description = "Fixed-tick gameplay simulation and scripting host for Postretro"
 license.workspace = true
 
 [features]
-dev-tools = []
+dev-tools = ["postretro-physics/test-support"]
 test-support = [
     "dep:postretro-test-log-capture",
     "postretro-entities/test-support",
@@ -38,6 +38,7 @@ postretro-scripting-core.workspace = true
 postretro-test-log-capture = { workspace = true, optional = true }
 
 [dev-dependencies]
+postretro-ai = { workspace = true, features = ["test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-level-compiler.workspace = true

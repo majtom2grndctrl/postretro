@@ -38,7 +38,6 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use crate::collision::CollisionWorld;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
-use crate::scripting_systems::ai::AiRuntime;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{
@@ -51,6 +50,7 @@ use crate::{
     OpenAuthorizedShots, PendingHitDeclarations, host_take_ready_hit_declarations,
     ingest_hit_declaration_for_test,
 };
+use postretro_ai::AiRuntime;
 
 const CLIENT_ID: u64 = 7;
 const TICK_DT: f32 = 1.0 / 60.0;
@@ -104,7 +104,7 @@ impl HostSimulation {
             0.0,
             (0.0, 0.0),
             &mut self.progress,
-            &mut self.ai,
+            postretro_ai::tick_runner!(&mut self.ai),
             &[],
             &mut self.movers,
             remote,

@@ -278,7 +278,7 @@ struct SimHarness {
     hit_zones: HitZoneStore,
     active_wieldable: EntityId,
     progress: ProgressTracker,
-    ai_runtime: crate::scripting_systems::ai::AiRuntime,
+    ai_runtime: postretro_ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     trigger_system: TriggerSystem,
@@ -634,7 +634,7 @@ impl SimHarness {
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
-            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
+            ai_runtime: postretro_ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             trigger_system: TriggerSystem::default(),
@@ -697,7 +697,7 @@ impl SimHarness {
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
-            &mut self.ai_runtime,
+            postretro_ai::test_tick_runner!(&mut self.ai_runtime),
             &self.mover_colliders,
             &mut self.mover_states,
             &remote_pawn_commands,
@@ -1151,7 +1151,7 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         .expect("spawned enemy carries entity state")
         .set(
             postretro_foundation::FACTION_STATE_FIELD,
-            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+            postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
         );
     registry
         .set_component(
@@ -1521,7 +1521,7 @@ fn spawn_driven_agent(
         .expect("driven agent carries entity state")
         .set(
             postretro_foundation::FACTION_STATE_FIELD,
-            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+            postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
         );
     registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
@@ -1564,7 +1564,7 @@ fn run_driven_agent_sim_tick(
     nav_graph: &NavGraph,
     anim_time: f64,
     progress: &mut ProgressTracker,
-    ai_runtime: &mut crate::scripting_systems::ai::AiRuntime,
+    ai_runtime: &mut postretro_ai::AiRuntime,
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
@@ -1597,7 +1597,7 @@ fn run_driven_agent_sim_tick(
         None,
         anim_time,
         progress,
-        ai_runtime,
+        postretro_ai::test_tick_runner!(ai_runtime),
         &[],
         mover_states,
         &[],
@@ -1656,7 +1656,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
@@ -1713,7 +1713,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     // values as the non-walk setup above. A runtime cache is registry-scoped,
     // so use a fresh one rather than intentionally treating this new entity as
     // a hot graph replacement.
-    ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    ai_runtime = postretro_ai::AiRuntime::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
@@ -2181,7 +2181,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let hit_zones = HitZoneStore::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -3551,7 +3551,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3585,7 +3585,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3627,7 +3627,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3661,7 +3661,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3709,7 +3709,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3743,7 +3743,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3796,7 +3796,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3830,7 +3830,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],

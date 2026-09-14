@@ -3645,7 +3645,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
 
         let events = simulate_tick(
@@ -3657,7 +3657,7 @@ mod tests {
             Some(weapon),
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],

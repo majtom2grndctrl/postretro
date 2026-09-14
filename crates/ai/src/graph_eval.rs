@@ -348,8 +348,8 @@ mod statechart_tests {
 
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
-    use crate::scripting_systems::ai::brain_programs::bind_graph;
-    use crate::scripting_systems::ai::candidate_scope::CandidateScope;
+    use crate::brain_programs::bind_graph;
+    use crate::candidate_scope::CandidateScope;
 
     fn activity(
         animation: &str,

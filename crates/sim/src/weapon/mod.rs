@@ -297,19 +297,19 @@ pub struct WeaponImpact {
 /// only an immutable registry borrow.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectileLaunch {
-    pub(crate) origin: Vec3,
-    pub(crate) direction: Vec3,
-    pub(crate) speed: f32,
-    pub(crate) radius: f32,
-    pub(crate) range: f32,
-    pub(crate) lifetime: f32,
-    pub(crate) damage: f32,
-    pub(crate) knockback_impulse: Vec3,
-    pub(crate) credit_source: String,
-    pub(crate) descriptor: ProjectileDescriptor,
+    pub origin: Vec3,
+    pub direction: Vec3,
+    pub speed: f32,
+    pub radius: f32,
+    pub range: f32,
+    pub lifetime: f32,
+    pub damage: f32,
+    pub knockback_impulse: Vec3,
+    pub credit_source: String,
+    pub descriptor: ProjectileDescriptor,
     /// Impact-composed radial damage snapshot, independent from projectile
     /// travel tuning and retained by the spawned projectile.
-    pub(crate) splash: Option<SplashDescriptor>,
+    pub splash: Option<SplashDescriptor>,
 }
 
 impl ProjectileLaunch {

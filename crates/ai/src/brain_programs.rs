@@ -7,13 +7,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor,
+};
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
     BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType,
     ProjectileDescriptor, ResolutionMode, SplashDescriptor, bind,
 };
-use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use super::brain_scope::BrainScope;
 use super::candidate_scope::CandidateScope;

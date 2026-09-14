@@ -21,7 +21,7 @@ mod clearance;
 /// built in lockstep and stay equal-length by construction; `mandatory_waypoints[i]`
 /// marks `points[i]` as a clearance-mandated corner the consumer must not shortcut.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NavPath {
+pub struct NavPath {
     points: Vec<Vec3>,
     mandatory_waypoints: Vec<bool>,
 }
@@ -37,7 +37,7 @@ impl NavPath {
     /// Split into the parallel `(points, mandatory_waypoints)` vectors. The two
     /// are always equal length (see the `NavPath` invariant); consumers index
     /// them together.
-    pub(crate) fn into_parts(self) -> (Vec<Vec3>, Vec<bool>) {
+    pub fn into_parts(self) -> (Vec<Vec3>, Vec<bool>) {
         (self.points, self.mandatory_waypoints)
     }
 }
@@ -80,7 +80,7 @@ impl Deref for NavPath {
 /// connects their regions. A reachable goal yields a path whose first/last
 /// waypoints are `start`/`goal` (or their disk-boundary standoffs); a goal in the
 /// start region is a trivial two-point `[start, goal]`.
-pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
+pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
     // that may cross solid geometry. Reject it rather than emit a path through a

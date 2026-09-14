@@ -32,48 +32,48 @@ const RING_DIRECTIONS: [Vec3; 8] = [
     Vec3::new(0.70710677, 0.0, -0.70710677),
 ];
 const RADIAL_MULTIPLIERS: [f32; 3] = [1.0, 0.75, 1.25];
-pub(crate) const PATH_LENGTH_SCORE_WEIGHT: f32 = 0.05;
-pub(crate) const COMBAT_SLOT_SWITCH_MARGIN: f32 = 1.0;
+pub const PATH_LENGTH_SCORE_WEIGHT: f32 = 0.05;
+pub const COMBAT_SLOT_SWITCH_MARGIN: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct CombatQuery<'a> {
-    pub(crate) claimant_id: u32,
-    pub(crate) agent_pos: Vec3,
-    pub(crate) engagement_radius: f32,
-    pub(crate) target_pos: Vec3,
+pub struct CombatQuery<'a> {
+    pub claimant_id: u32,
+    pub agent_pos: Vec3,
+    pub engagement_radius: f32,
+    pub target_pos: Vec3,
     /// Offset from the candidate slot's grounded center to the shared enemy
     /// eye point, derived once by `ai::perception`.
-    pub(crate) enemy_eye_offset: Vec3,
+    pub enemy_eye_offset: Vec3,
     /// Shared selected-target aim point derived by `ai::perception`.
-    pub(crate) target_aim: Vec3,
-    pub(crate) combat_slot: Option<Vec3>,
-    pub(crate) scan_challengers: bool,
-    pub(crate) other_agents: &'a [CombatAgentSnapshot],
-    pub(crate) nav_graph: &'a NavGraph,
-    pub(crate) collision_world: &'a CollisionWorld,
-    pub(crate) path_length_score_weight: f32,
+    pub target_aim: Vec3,
+    pub combat_slot: Option<Vec3>,
+    pub scan_challengers: bool,
+    pub other_agents: &'a [CombatAgentSnapshot],
+    pub nav_graph: &'a NavGraph,
+    pub collision_world: &'a CollisionWorld,
+    pub path_length_score_weight: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CombatAgentSnapshot {
-    pub(crate) claimant_id: u32,
-    pub(crate) position: Vec3,
+pub struct CombatAgentSnapshot {
+    pub claimant_id: u32,
+    pub position: Vec3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CombatCandidate {
-    pub(crate) position: Vec3,
-    pub(crate) score: f32,
-    pub(crate) attack_band_error: f32,
-    pub(crate) path_cost: f32,
-    pub(crate) generation_index: usize,
-    pub(crate) is_incumbent: bool,
+pub struct CombatCandidate {
+    pub position: Vec3,
+    pub score: f32,
+    pub attack_band_error: f32,
+    pub path_cost: f32,
+    pub generation_index: usize,
+    pub is_incumbent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CombatAssignment {
-    pub(crate) claimant_id: u32,
-    pub(crate) candidate: Option<CombatCandidate>,
+pub struct CombatAssignment {
+    pub claimant_id: u32,
+    pub candidate: Option<CombatCandidate>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,11 +85,11 @@ struct CombatProposal {
 }
 
 #[cfg(test)]
-pub(crate) fn select_combat_position(query: &CombatQuery<'_>) -> Option<CombatCandidate> {
+pub fn select_combat_position(query: &CombatQuery<'_>) -> Option<CombatCandidate> {
     combat_candidates(query).into_iter().next()
 }
 
-pub(crate) fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatAssignment> {
+pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatAssignment> {
     struct Pending {
         query_index: usize,
         claimant_id: u32,
@@ -187,7 +187,7 @@ pub(crate) fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<
         .collect()
 }
 
-pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
+pub fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
     if !query.agent_pos.is_finite()
         || !query.target_pos.is_finite()
         || !query.enemy_eye_offset.is_finite()

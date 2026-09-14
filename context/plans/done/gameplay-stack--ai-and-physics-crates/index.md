@@ -23,30 +23,32 @@ Developer-raised, the epic's final milestone. After M2 the gameplay monolith did
 ## Acceptance
 
 ### Automated
-- [ ] `cargo build --workspace`, `cargo test --workspace`, and `cargo build -p postretro --features dev-tools` pass.
-- [ ] `layering_invariants_hold` gains an assertion that only the binary depends on `postretro-ai` (dependents of `postretro-ai` are exactly `[postretro]`) — locking out both sim and netcode in one check; a sim→ai or netcode→ai edge trips it. Regenerated `crate-graph.md` lists `postretro-ai` and `postretro-physics`.
-- [ ] `cargo tree -p postretro-ai -e normal` shows sim, foundation, and physics; none of wgpu, winit, glyphon, renderer, render-cpu, visibility, or netcode.
-- [ ] `cargo tree -p postretro-netcode -e normal` shows no `postretro-ai`.
-- [ ] `cargo tree -p postretro-physics -e normal` shows only foundation/entities and parry3d/level types — none of sim, netcode, ai, renderer, or wgpu; `cargo tree -i postretro-physics` lists exactly sim, netcode, ai, and the binary.
-- [ ] Rebuild isolation, both sides pinned: after a warm build, touching an ai file recompiles `postretro-ai` and relinks the binary but recompiles neither sim nor netcode; touching a physics file recompiles physics, sim, netcode, ai, and the binary.
-- [ ] `scripting_systems/ai/`, `ai_tests.rs`, `collision/`, `movement/`, and `kinematic_mover*` no longer exist under `crates/sim/src/` (grep gate).
-- [ ] `audit-test-identities.sh` captures complete and ignored workspace `--list` output at pre-split checkpoint `ffff98fe` and post-split HEAD into the brief's durable `evidence/test-identities/` directory. Its documented normalization permits only the two module moves and one semantic test rename. Comparison reports checksums, counts, missing and added identities, and fails for any missing baseline identity or ignored-status change.
-- [ ] The M15 Phase 0 determinism scenarios and assertions pass after their invocation is ported through the test-only duplicate-sim identity bridge. `test_tick_runner_nav_bridge_preserves_section_and_path_queries` proves the bridge retains the serialized navigation section, path queries, and runner-visible AI behavior before the retained determinism harness runs.
-- [ ] The relocated same-batch ordering tests run in `postretro-ai` against the production sim-backed `AiHost` (not a stub): melee damage is read by `is_quiescent` before `on_impact`, and a target killed, despawned, or recovered by an earlier outcome rejects a later same-tick attacker. (research pins ORD-2, ORD-3)
-- [ ] `spawn_projectile` returning None mid-attack (registry exhausted) commits no cooldown, pushes no presentation spawn, raises no attack event, and warns once — asserted through the production `AiHost`. (research pin ORD-1)
-- [ ] Sentiment decay runs before AI's read view, and an impact policy writing the sentiment overlay during outcome application does not panic (the live `RefCell` view is dropped before effect calls) — through the real `AiHost` seam. Direct proofs: `sim_tick_decays_sentiment_before_same_tick_ai_target_selection` and `faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo`. (research pin ORD-4)
-- [ ] `Send + Sync` static assertions on `NavGraph` and `CollisionWorld` are present and compile.
-- [ ] The MT-readiness design note exists (grep gate on its path), and the workspace `unsafe` count is unchanged from pre-split (grep gate).
-- [ ] A scripted grep confirms every `pub(crate)` → `pub` widening introduced by the split has a reference from another crate (no widening left dead — Rust's dead-code lint does not fire on unused `pub`).
-- [ ] Local warm-cache `cargo build --timings` spot measurements are recorded before and after for one ai edit and one sim-proper edit (reported, not gated). Each future comparison retains the console log, Cargo timing page, revision, toolchain, machine, profile, target directory, probe file, and cache mode per `evidence/README.md`.
+- [x] `cargo build --workspace`, `cargo test --workspace`, and `cargo build -p postretro --features dev-tools` pass.
+- [x] `layering_invariants_hold` gains an assertion that only the binary depends on `postretro-ai` (dependents of `postretro-ai` are exactly `[postretro]`) — locking out both sim and netcode in one check; a sim→ai or netcode→ai edge trips it. Regenerated `crate-graph.md` lists `postretro-ai` and `postretro-physics`.
+- [x] `cargo tree -p postretro-ai -e normal` shows sim, foundation, and physics; none of wgpu, winit, glyphon, renderer, render-cpu, visibility, or netcode.
+- [x] `cargo tree -p postretro-netcode -e normal` shows no `postretro-ai`.
+- [x] `cargo tree -p postretro-physics -e normal` shows only foundation/entities and parry3d/level types — none of sim, netcode, ai, renderer, or wgpu; `cargo tree -i postretro-physics` lists exactly sim, netcode, ai, and the binary.
+- [x] Rebuild isolation, both sides pinned: after a warm build, touching an ai file recompiles `postretro-ai` and relinks the binary but recompiles neither sim nor netcode; touching a physics file recompiles physics, sim, netcode, ai, and the binary.
+- [x] `scripting_systems/ai/`, `ai_tests.rs`, `collision/`, `movement/`, and `kinematic_mover*` no longer exist under `crates/sim/src/` (grep gate).
+- [x] `audit-test-identities.sh` captures complete and ignored workspace `--list` output at pre-split checkpoint `ffff98fe` and post-split HEAD in an external workspace. Its documented normalization permits only the two module moves and one semantic test rename. The brief retains a compact proof bundle: revisions, manifests, canonical target-qualified identities, checksums, counts, and missing/added/ignored-status reports. Comparison fails for any missing baseline identity or ignored-status change.
+- [x] The M15 Phase 0 determinism scenarios and assertions pass after their invocation is ported through the test-only duplicate-sim identity bridge. `test_tick_runner_nav_bridge_preserves_section_and_path_queries` proves the bridge retains the serialized navigation section, path queries, and runner-visible AI behavior before the retained determinism harness runs.
+- [x] The relocated same-batch ordering tests run in `postretro-ai` against the production sim-backed `AiHost` (not a stub): melee damage is read by `is_quiescent` before `on_impact`, and a target killed, despawned, or recovered by an earlier outcome rejects a later same-tick attacker. (research pins ORD-2, ORD-3)
+- [x] `spawn_projectile` returning None mid-attack (registry exhausted) commits no cooldown, pushes no presentation spawn, raises no attack event, and warns once — asserted through the production `AiHost`. (research pin ORD-1)
+- [x] Sentiment decay runs before AI's read view, and an impact policy writing the sentiment overlay during outcome application does not panic (the live `RefCell` view is dropped before effect calls) — through the real `AiHost` seam. Direct proofs: `sim_tick_decays_sentiment_before_same_tick_ai_target_selection` and `faction_sentiment_backstab_brawl_decay_reaction_persistence_and_fifo`. (research pin ORD-4)
+- [x] `Send + Sync` static assertions on `NavGraph` and `CollisionWorld` are present and compile.
+- [x] The MT-readiness design note exists (grep gate on its path), and the workspace `unsafe` count is unchanged from pre-split (grep gate).
+- [x] A scripted grep confirms every `pub(crate)` → `pub` widening introduced by the split has a reference from another crate (no widening left dead — Rust's dead-code lint does not fire on unused `pub`).
+- [x] Local warm-cache `cargo build --timings` spot measurements are recorded before and after for one ai edit and one sim-proper edit (reported, not gated). Each future comparison retains the console log, Cargo timing page, revision, toolchain, machine, profile, target directory, probe file, and cache mode per `evidence/README.md`.
 
 ### Manual
-- [ ] `campaign-test.prl` loads, plays, and presents identically. `movement-feel.prl` separately proves enemy engagement, targeting, facing, attacks, faction crossfire, and retaliation because campaign-test has no descriptor-backed AI placement.
-- [ ] Animated enemies in `movement-feel.prl` play locomotion and rest clips. The direct `no_locomotion_graph_restores_authored_playback_rate_through_sim_tick` test proves the no-locomotion edge through the real sim tick.
-- [ ] Visual concurrent-attack smoke test: in `movement-feel.prl`, two enemies visibly complete attacks in the same combat interval without a dropped impact or stuck attacker. Exact same-fixed-tick dual resolution is automated by `impact_time_faction_write_reaches_all_brains_on_the_next_tick`. (The `spawn_projectile`-returns-None refusal edge fires only under registry exhaustion and remains automated.)
-- [ ] A `--features dev-tools` launch starts and its AI debug (chase-agent retarget, brain debug) works.
+- [x] `campaign-test.prl` loads, plays, and presents identically. `movement-feel.prl` separately proves enemy engagement, targeting, facing, attacks, faction crossfire, and retaliation because campaign-test has no descriptor-backed AI placement.
+- [x] Animated enemies in `movement-feel.prl` play locomotion and rest clips. The direct `no_locomotion_graph_restores_authored_playback_rate_through_sim_tick` test proves the no-locomotion edge through the real sim tick.
+- [x] Visual concurrent-attack smoke test: in `movement-feel.prl`, two enemies visibly complete attacks in the same combat interval without a dropped impact or stuck attacker. Exact same-fixed-tick dual resolution is automated by `impact_time_faction_write_reaches_all_brains_on_the_next_tick`. (The `spawn_projectile`-returns-None refusal edge fires only under registry exhaustion and remains automated.)
+- [x] A `--features dev-tools` launch starts and its AI debug (chase-agent retarget, brain debug) works.
 - [ ] A co-op session joins, replicates, reconciles, and survives a host level change; remote enemies animate client-side locomotion (the relocated `locomotion_animation`).
-- [ ] Frame-time on campaign-test.prl shows no runtime regression versus the pre-split build.
+- [x] Frame-time on campaign-test.prl shows no runtime regression versus the pre-split build.
+
+M5 remains unchecked: join, replication, reconciliation, and remote animation passed, but host-driven level change failed. The owner deferred that unresolved issue to a separately drafted brief and authorized this extraction to land with the recorded gap.
 
 ## Path
 

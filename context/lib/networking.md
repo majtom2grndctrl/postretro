@@ -10,7 +10,7 @@ Authoritative client-server co-op uses client-side prediction and reconciliation
 
 ## Crate boundary and ownership
 
-Netcode lives in the `postretro-net` crate (`crates/net/`): the wire codec, the polled transport, the wire-side replication and state-slot trackers, time sync, and the dev-only latency harness. The dependency arrow points **one way** — `postretro → postretro-net`. The net crate never depends on the engine.
+`postretro-net` (`crates/net/`) is transport-only: wire codec, polled transport, time sync, and the dev-only latency harness. `postretro-netcode` is the registry-owning gameplay replication layer. It owns wire-side replication and state-slot tracking. The dependency direction is `postretro-netcode → postretro-net`; neither crate depends on the engine.
 
 `postretro-net` is **glam-free and postretro-free by construction.** Wire types use plain `[f32; N]` / `f32` / `bool` — never glam or engine types. The crate is never handed an `EntityRegistry` and has no notion of entities, components, or game state. It moves opaque, typed messages.
 

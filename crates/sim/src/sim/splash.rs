@@ -204,7 +204,7 @@ pub fn emit_splash_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::{Isometry, Point};
+    use parry3d::math::Point;
     use parry3d::shape::TriMesh;
     use postretro_entities::Transform;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -241,10 +241,7 @@ mod tests {
             Point::new(x, 1.0, 1.0),
             Point::new(x, -1.0, 1.0),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]))
     }
 
     #[test]

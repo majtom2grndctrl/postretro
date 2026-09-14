@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
-use parry3d::math::{Isometry, Point};
+use parry3d::math::Point;
 use parry3d::shape::TriMesh;
 
 use super::{SimCommand, simulate_tick};
@@ -474,10 +474,7 @@ fn floor_world() -> CollisionWorld {
         Point::new(-500.0, 0.0, 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
 }
 
 fn position_error(a: &HarnessSnapshot, b: &HarnessSnapshot) -> f32 {

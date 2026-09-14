@@ -23,7 +23,7 @@ use serde::Deserialize;
 
 use crate::grant::{GrantAmmoArgs, GrantHealthArgs};
 use crate::health::reactions::ApplyDamageArgs;
-use crate::kinematic_mover::{MoverCommandDiagnostics, MoverSetSpinRateArgs};
+use crate::mover_commands::{MoverCommandDiagnostics, MoverSetSpinRateArgs};
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
 use crate::scripting::reactions::enemy_state::UpdateEnemyStateArgs;
 #[cfg(test)]

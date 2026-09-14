@@ -11,7 +11,7 @@
 
 use super::*;
 
-use parry3d::math::{Isometry, Point};
+use parry3d::math::Point;
 use parry3d::query::PointQuery;
 use parry3d::shape::TriMesh;
 use postretro_entities::Transform;
@@ -164,10 +164,7 @@ impl LWall {
         push_wall(self.bx0, self.bz1, self.bx1, self.bz1); // +Z face (z = bz1)
 
         let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(mesh)
     }
 
     /// Hand-built navmesh covering the floor MINUS the obstacle footprint as an
@@ -266,10 +263,7 @@ impl FreestandingWall {
         tris.push([base, base + 2, base + 1]);
         tris.push([base, base + 3, base + 2]);
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
     }
 
     fn navmesh(&self) -> NavMeshSection {
@@ -390,10 +384,7 @@ impl ConcaveCorner {
         // for the fixed-handedness recovery slide.
         push_wall(self.corner, self.corner, self.wall_end, self.corner);
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
     }
 
     fn navmesh(&self) -> NavMeshSection {
@@ -504,7 +495,7 @@ fn goal_projected_xz_progress(start: Vec3, end: Vec3, heading: Vec3) -> f32 {
 /// clearance the funnel promises.
 fn static_mesh_clearance(world: &CollisionWorld, waypoint: Vec3, capsule_center_y: f32) -> f32 {
     let point = Point::new(waypoint.x, capsule_center_y, waypoint.z);
-    let projection = world.mesh.project_point(&world.isometry, &point, false);
+    let projection = world.mesh().project_point(world.isometry(), &point, false);
     (point - projection.point).norm()
 }
 

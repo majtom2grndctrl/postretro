@@ -6,7 +6,7 @@ use glam::{Vec2, Vec3};
 mod carry;
 mod dispatch;
 mod intents;
-pub(crate) mod knockback;
+pub mod knockback;
 mod mover_carry;
 mod scope;
 mod substrate;
@@ -4292,7 +4292,7 @@ mod tests {
         // six fields authored as expressions. Arm the alloc probe around the full
         // `dash_intent` call — the snapshot refresh is itself alloc-free, so the
         // wider window is a strictly stronger assertion.
-        use crate::alloc_probe::AllocSnapshot;
+        use postretro_sim::alloc_probe::AllocSnapshot;
 
         let world = flat_floor_and_wall_world();
         // Author every expression-capable field as an expression so all six bound

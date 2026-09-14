@@ -15,7 +15,7 @@ mod candidate_cull {
 mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
-use postretro_sim::collision;
+use postretro_physics::collision;
 mod content_hash;
 // App-side diagnostics for baked door-to-portal occluder associations. Keeps
 // the render-only blocked portal buffer inspectable without changing gameplay.
@@ -24,9 +24,10 @@ mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod input;
-use postretro_sim::kinematic_mover;
+use postretro_physics::kinematic_mover;
+use postretro_sim::mover_commands;
 mod mod_digest;
-use postretro_sim::movement;
+use postretro_physics::movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]

@@ -25,6 +25,7 @@ postretro-entities.workspace = true
 postretro-foundation.workspace = true
 postretro-model.workspace = true
 postretro-net.workspace = true
+postretro-physics.workspace = true
 postretro-scripting-core.workspace = true
 postretro-sim.workspace = true
 

@@ -212,6 +212,12 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     report
 }
 
+/// Cross-crate fixture seam for physics blocking tests.
+#[cfg(feature = "test-support")]
+pub fn sweep_deaths_for_test(registry: &mut EntityRegistry) {
+    let _ = sweep_deaths(registry);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

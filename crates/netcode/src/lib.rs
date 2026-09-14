@@ -9,14 +9,14 @@
 // Simulation dependencies stay private to this crate. The established internal
 // paths keep the moved modules readable without re-exporting sim's API from
 // the higher netcode layer.
-pub(crate) use postretro_sim::{
-    collision, impact_policy, kinematic_mover, movement, presentation_pool, scripting,
-    scripting_systems, sim, sprite_collection, weapon,
-};
+pub(crate) use postretro_physics::{collision, kinematic_mover, movement};
 #[cfg(test)]
 pub(crate) use postretro_sim::{
     frame_timing, impact_effects, spawner, trigger_bindings, trigger_commands, trigger_pools,
     trigger_system,
+};
+pub(crate) use postretro_sim::{
+    impact_policy, presentation_pool, scripting, scripting_systems, sim, sprite_collection, weapon,
 };
 extern crate self as netcode;
 

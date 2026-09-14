@@ -12,9 +12,8 @@ use postretro_foundation::PlayerMovementComponent;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use crate::kinematic_mover::{
-    MoverAutoCloseTimers, MoverCommandDiagnostics, apply_mover_command_to_known_movers,
-};
+use crate::kinematic_mover::MoverAutoCloseTimers;
+use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_known_movers};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
 /// Stable player identity for per-player trigger state and event ordering.

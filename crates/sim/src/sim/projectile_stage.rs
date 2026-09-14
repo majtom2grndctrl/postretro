@@ -560,7 +560,6 @@ fn projectile_collision_excludes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::deferred_effect::{
         DeferredEffectComponent, DeferredEffectKind,
@@ -776,10 +775,7 @@ mod tests {
             Point::new(1.0, 1.0, z),
             Point::new(-1.0, 1.0, z),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]))
     }
 
     fn wall_at_x(x: f32) -> CollisionWorld {
@@ -789,10 +785,7 @@ mod tests {
             Point::new(x, 4.0, 4.0),
             Point::new(x, -4.0, 4.0),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]))
     }
 
     #[test]

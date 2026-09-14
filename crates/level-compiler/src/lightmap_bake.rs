@@ -445,22 +445,6 @@ pub fn bake_lightmap_controlled(
     control: &BakeControl,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
     let texel_density = config.lightmap_density;
-    let area_sample_count = config.area_sample_count;
-
-    // Short-circuit on empty geometry: nothing for the atlas prep to do and the per-texel pass
-    // would allocate zero-sized buffers.
-    if inputs.geometry.geometry.vertices.is_empty() || inputs.geometry.geometry.faces.is_empty() {
-        return Ok(LightmapBakeOutput {
-            section: LightmapSection::placeholder(),
-            charts: Vec::new(),
-            placements: Vec::new(),
-            atlas_width: 1,
-            atlas_height: 1,
-            layer_count: 1,
-        });
-    }
-
-    let static_lights_empty = inputs.lights.is_empty();
     let prepared = prepare_atlas(
         inputs.geometry,
         inputs.lights,
@@ -468,10 +452,26 @@ pub fn bake_lightmap_controlled(
         inputs.scale_regions,
     )?;
 
+    bake_prepared_lightmap_controlled(inputs, config, prepared, control)
+}
+
+/// Bake a directional lightmap from an atlas prepared by an earlier pipeline
+/// stage. This is the production seam used when SH work must observe geometry
+/// before lightmap UV assignment while the lightmap bake consumes that exact
+/// prepared layout afterward.
+pub fn bake_prepared_lightmap_controlled(
+    inputs: &mut LightmapBakeCtx<'_>,
+    config: &LightmapConfig,
+    prepared: PreparedAtlas,
+    control: &BakeControl,
+) -> Result<LightmapBakeOutput, LightmapBakeError> {
+    let texel_density = config.lightmap_density;
+    let area_sample_count = config.area_sample_count;
+
     // No static lights, or atlas prep produced no placements → emit a placeholder section but
     // return the planned charts/placements so downstream animated-light passes still have
     // per-face UV bounds.
-    if static_lights_empty || prepared.placements.is_empty() {
+    if inputs.lights.is_empty() || prepared.placements.is_empty() {
         return Ok(LightmapBakeOutput {
             section: LightmapSection::placeholder(),
             charts: prepared.charts,

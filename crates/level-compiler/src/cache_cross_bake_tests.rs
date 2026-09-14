@@ -49,7 +49,11 @@ use crate::direct_sh_bake::{
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights, StaticBakedLights};
-use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight, ShadowType};
+use crate::lightmap_bake;
+use crate::lightmap_layer::{self, SharedAtlas};
+use crate::map_data::{
+    FalloffModel, LightAnimation, LightType, MapLight, MapLightmapScaleRegion, ShadowType,
+};
 use crate::partition::{Aabb, BspLeaf, BspTree};
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -622,6 +626,105 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
         bake_chunk_light_list_cached(&empty_inputs, 8.0, 64, Some(&cache))
             .expect("P9 corrupt placeholder cache is a miss"),
         placeholder
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
+    let geometry = cube_geometry();
+    let density_geometry = geometry.clone();
+    let scale_geometry = geometry.clone();
+    let pre_atlas_hash = crate::sh_group::geometry_content_hash(&geometry);
+    assert_eq!(
+        pre_atlas_hash,
+        crate::sh_group::geometry_content_hash(&density_geometry)
+    );
+    assert_eq!(
+        pre_atlas_hash,
+        crate::sh_group::geometry_content_hash(&scale_geometry)
+    );
+
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("pre-atlas BVH");
+    let tree = empty_tree();
+    let exterior = HashSet::new();
+    let lights = vec![light(DVec3::new(0.0, 3.0, 0.0), false)];
+    let alpha = AlphaLightsNs::from_lights(&lights);
+    let chunk_inputs = |geometry| ChunkLightListInputs {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry,
+        lights: &alpha,
+        tree: &tree,
+        portals: &[],
+        exterior_leaves: &exterior,
+    };
+    let (dir, cache) = fresh_cache("pre_atlas_density_scale");
+    bake_chunk_light_list_cached(&chunk_inputs(&geometry), 8.0, 64, Some(&cache))
+        .expect("seed pre-atlas chunk memo");
+    let capture = LogCapture::start();
+    bake_chunk_light_list_cached(&chunk_inputs(&density_geometry), 8.0, 64, Some(&cache))
+        .expect("density edit keeps pre-atlas chunk memo");
+    bake_chunk_light_list_cached(&chunk_inputs(&scale_geometry), 8.0, 64, Some(&cache))
+        .expect("scale edit keeps pre-atlas chunk memo");
+    assert_eq!(
+        capture
+            .records()
+            .iter()
+            .filter(|record| {
+                record.level == Level::Info
+                    && record.message.contains("[cache] chunk_light_list hit")
+            })
+            .count(),
+        2
+    );
+
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let mut base_after_atlas = geometry.clone();
+    let mut density_after_atlas = density_geometry.clone();
+    let mut scale_after_atlas = scale_geometry.clone();
+    let base = lightmap_bake::prepare_atlas(&mut base_after_atlas, &static_lights, 0.5, &[])
+        .expect("base atlas");
+    let density = lightmap_bake::prepare_atlas(&mut density_after_atlas, &static_lights, 0.25, &[])
+        .expect("density-edited atlas");
+    let region = MapLightmapScaleRegion {
+        min: [-10.0; 3],
+        max: [10.0; 3],
+        planes: Vec::new(),
+        scale: 2.0,
+    };
+    let scale =
+        lightmap_bake::prepare_atlas(&mut scale_after_atlas, &static_lights, 0.5, &[region])
+            .expect("scale-region-edited atlas");
+    let section_hash =
+        |prepared: &lightmap_bake::PreparedAtlas, geometry: &GeometryResult, density: f32| {
+            let shared = SharedAtlas {
+                charts: &prepared.charts,
+                placements: &prepared.placements,
+                atlas_width: prepared.atlas_width,
+                atlas_height: prepared.atlas_height,
+            };
+            let layer_hash = lightmap_layer::layer_input_hash(
+                &lights[0],
+                &shared,
+                &primitives,
+                geometry,
+                density,
+                4,
+                0,
+            );
+            lightmap_layer::section_input_hash(&[layer_hash], &shared, density, true, 1)
+        };
+    let base_section = section_hash(&base, &base_after_atlas, 0.5);
+    assert_ne!(
+        base_section,
+        section_hash(&density, &density_after_atlas, 0.25),
+        "density edit must miss the lightmap memo"
+    );
+    assert_ne!(
+        base_section,
+        section_hash(&scale, &scale_after_atlas, 0.5),
+        "scale-region edit must miss the lightmap memo"
     );
     let _ = std::fs::remove_dir_all(dir);
 }

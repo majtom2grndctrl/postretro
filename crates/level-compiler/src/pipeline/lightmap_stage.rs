@@ -8,14 +8,28 @@ use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedLights;
-use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig};
+use crate::lightmap_bake::{self, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::{MapData, MapLight, ShadowType};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn bake(
-    args: &Args,
+pub(super) fn prepare(
     map_data: &MapData,
+    geometry: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    config: &LightmapConfig,
+) -> anyhow::Result<PreparedAtlas> {
+    lightmap_bake::prepare_atlas(
+        geometry,
+        static_lights,
+        config.lightmap_density,
+        &map_data.lightmap_scale_regions,
+    )
+    .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn bake_prepared(
+    args: &Args,
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
     geometry: &mut GeometryResult,
@@ -23,12 +37,11 @@ pub(super) fn bake(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
-) -> anyhow::Result<(LightmapBakeOutput, f32)> {
-    let density = config.lightmap_density;
+    prepared: PreparedAtlas,
+) -> anyhow::Result<LightmapBakeOutput> {
     let output = if let Some(cache) = stage_cache {
         bake_cached(
             args,
-            map_data,
             cache,
             control,
             geometry,
@@ -36,6 +49,7 @@ pub(super) fn bake(
             bvh,
             primitives,
             config,
+            prepared,
         )?
     } else {
         let mut ctx = lightmap_bake::LightmapBakeCtx {
@@ -43,18 +57,17 @@ pub(super) fn bake(
             primitives,
             geometry,
             lights: static_lights,
-            scale_regions: &map_data.lightmap_scale_regions,
+            scale_regions: &[],
         };
-        lightmap_bake::bake_lightmap_controlled(&mut ctx, config, control)
+        lightmap_bake::bake_prepared_lightmap_controlled(&mut ctx, config, prepared, control)
             .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
     };
-    Ok((output, density))
+    Ok(output)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn bake_cached(
     args: &Args,
-    map_data: &MapData,
     cache: &StageCache,
     control: &BakeControl,
     geometry: &mut GeometryResult,
@@ -62,15 +75,9 @@ fn bake_cached(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
+    prepared: PreparedAtlas,
 ) -> anyhow::Result<LightmapBakeOutput> {
     let density = config.lightmap_density;
-    let prepared = lightmap_bake::prepare_atlas(
-        geometry,
-        static_lights,
-        density,
-        &map_data.lightmap_scale_regions,
-    )
-    .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
 
     if static_lights.is_empty() || prepared.placements.is_empty() {
         return Ok(LightmapBakeOutput {

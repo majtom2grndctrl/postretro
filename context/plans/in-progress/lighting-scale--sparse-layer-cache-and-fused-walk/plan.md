@@ -65,7 +65,7 @@ read at: a6ebb7938
 | 1 | Freeze the independent lightmap reference and extract the oversized lightmap, shadowmask, and pipeline stage responsibilities along behavior-preserving seams; add the two-fixture cold-stage-versus-reference gate before changing the writer | integrating executor | — | complete |
 | 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | complete |
 | 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | complete |
-| 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | |
+| 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | complete |
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | |
 | 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | |
 | 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | |
@@ -128,3 +128,20 @@ output artifact will be filled in after Task 7 against the final CLI surface.
   - one-light edit: 8,437 entries, 497,172 KiB allocated (492,946,862 apparent bytes),
     0 evictions; `lightmap_section` 0 hit / 1 miss, `sh_group` 2,292 hits / 1,014 misses;
     Lightmap 7.25s, SH 37.81s, total 51.64s.
+
+### Task 4 — complete
+
+- Split atlas planning/packing plus vertex UV assignment into a separately reported
+  `Atlas Preparation` stage, and added a prepared-atlas bake entry point shared by exact and
+  cached lightmap paths.
+- Reordered the full SH/delta/entity-selection/billboard-scatter block and `ChunkLightList`
+  before atlas preparation. Their hashes now observe pre-UV geometry, while lightmap,
+  shadowmask, animated chunks, and weight maps consume the prepared layout afterward.
+- Updated the exact 25-stage Build Summary contract. The TUI's contiguous total partition now
+  uses pre/post-atlas Lighting groups with a World atlas group, so flattening remains exactly
+  equal to pipeline order and `Atlas Preparation` is classified under World.
+- Proof: the exact planned-stage and TUI partition/render suites pass; a cross-bake
+  density/scale regression proves stable pre-atlas SH geometry and two `ChunkLightList` hits
+  while both edits produce distinct lightmap section hashes; cold layered/reference and ignored
+  real-fixture equivalence gates pass; the complete compiler suite passes (1,169 passed,
+  5 ignored).

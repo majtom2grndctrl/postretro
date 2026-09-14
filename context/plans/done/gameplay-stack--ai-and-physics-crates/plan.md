@@ -20,15 +20,15 @@ read at: 630c5554b
 
 ## Baselines
 
-- Pre-split workspace test-name set: `baseline-test-names.txt`, 7,246 unique names, SHA-256 `5558dfc222033782254fb915d70ccd6f26234d0c78c216c510689ad63ee4210a`.
+- Pre-split workspace test-name set: 7,246 unique names, SHA-256 `5558dfc222033782254fb915d70ccd6f26234d0c78c216c510689ad63ee4210a`.
 - Pre-split textual Rust `unsafe` count: 17 `rg -n '\bunsafe\b' crates --glob '*.rs'` matches. The only actual unsafe block/impl is the previously approved `crates/sim/src/alloc_probe.rs`; the remaining matches are prose or test strings.
-- The following timings are local warm-cache spot measurements from one machine. Raw Cargo timing pages, console logs, and machine metadata were not retained, so the elapsed values are reported observations rather than independently auditable artifacts. Future comparisons use the exact capture template in `evidence/README.md`.
+- The following timings are local warm-cache spot measurements from one machine. Raw Cargo timing pages, console logs, and machine metadata were not retained, so the elapsed values are reported observations rather than independently auditable artifacts.
 - Pre-split AI edit (`scripting_systems/ai/mod.rs` timestamp only): `cargo build -p postretro --timings` rebuilt sim, netcode, and the binary in 5.65s.
 - Pre-split sim-proper edit (`impact_policy.rs` timestamp only): `cargo build -p postretro --timings` rebuilt sim, netcode, and the binary in 4.67s.
 - Post-split AI edit (`crates/ai/src/facing.rs` timestamp only): rebuilt only `postretro-ai` and the binary in 4.02s; sim and netcode were isolated as required.
 - Post-split sim-proper edit (`crates/sim/src/impact_policy.rs` timestamp only): rebuilt sim, netcode, AI, and the binary in 6.73s.
 - Post-split physics edit (`crates/physics/src/lib.rs` timestamp only): rebuilt physics, sim, netcode, AI, and the binary in 7.15s.
-- Post-fix test identity audit passed at baseline `ffff98fead791b2ee7dc502157c3b31dbdf7ea7d` versus post `7c18d11a060884c65887ae06659a08574150a7a6`. The retained target-qualified comparison has 7,407 baseline and 7,415 post occurrences, zero missing identities, eight additions, and zero ignored-status changes; the unqualified unique sets contain 7,246 and 7,254 names respectively. Full counts and checksums are retained in `evidence/test-identities/comparison/summary.txt`.
+- Post-fix test identity audit passed at baseline `ffff98fead791b2ee7dc502157c3b31dbdf7ea7d` versus post `7c18d11a060884c65887ae06659a08574150a7a6`. The target-qualified comparison has 7,407 baseline and 7,415 post occurrences, zero missing identities, eight additions, and zero ignored-status changes; the unqualified unique sets contain 7,246 and 7,254 names respectively. Method, counts, checksums, and additions are retained in `evidence/test-identities.md`.
 
 ## AC-to-proof
 
@@ -39,9 +39,9 @@ read at: 630c5554b
 | A3 AI normal dependency tree | `cargo tree -p postretro-ai -e normal` plus forbidden-name grep | passed — direct sim/foundation/physics edges present; forbidden runtime/render names absent |
 | A4 netcode excludes AI | `cargo tree -p postretro-netcode -e normal` plus `postretro-ai` negative grep | passed |
 | A5 physics dependency and reverse-dependency trees | `cargo tree -p postretro-physics -e normal`; `cargo tree -i postretro-physics` with exact workspace dependent comparison | passed — reverse workspace set is sim, netcode, AI, binary |
-| A6 rebuild isolation | Warm timestamp-only `cargo build -p postretro --timings` probes for one AI file and one physics file; compare compiled package sets | observed in local warm-cache spots — compiled sets matched the expected boundaries, but raw logs/timing pages were not retained; use `evidence/README.md` for an auditable repeat |
+| A6 rebuild isolation | Warm timestamp-only `cargo build -p postretro --timings` probes for one AI file and one physics file; compare compiled package sets | observed in local warm-cache spots — compiled sets matched the expected boundaries, but raw logs/timing pages were not retained |
 | A7 extracted paths absent from sim | Scripted negative `rg`/path-existence gate for the five named paths | passed — no matches |
-| A8 test-name superset | Run `audit-test-identities.sh` in an external workspace per `evidence/README.md`; retain revisions, manifests, canonical target-qualified complete/ignored identities, checksums, counts, and difference reports | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored before and after, zero ignored-status changes; compact proof bundle retained |
+| A8 test-name superset | One-time external, revision-bound complete/ignored identity audit; retain method, revisions, checksums, counts, and every added identity in `evidence/test-identities.md` | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored before and after, zero ignored-status changes; summary retained |
 | A9 M15 Phase 0 determinism | Run `test_tick_runner_nav_bridge_preserves_section_and_path_queries`, then the retained `simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order` and full determinism filter with nonzero matched counts. The scenarios/assertions are retained; invocation is ported through the test-only duplicate-sim identity bridge. | passed — direct bridge-fidelity proof 1/1 and final full workspace suite green; retained determinism harness remains present in the audited identity superset |
 | A10 ORD-2/ORD-3 production-host ordering | Relocated `postretro-ai` focused tests using sim's concrete `AiHost` implementation under `test-support` | passed in AI 234/234 suite |
 | A11 ORD-1 registry-exhaustion refusal | Relocated focused log-capture test through the concrete sim host: no cooldown, spawn, or event and exactly one warning | passed in AI 234/234 suite |
@@ -49,7 +49,7 @@ read at: 630c5554b
 | A13 `Send + Sync` assertions | Compile-time assertion tests for `postretro_sim::nav::NavGraph` and `postretro_physics::collision::CollisionWorld` | passed — 1/1 each |
 | A14 MT design note and unchanged unsafe count | Grep the committed note path; repeat the exact 17-match unsafe command and diff normalized results, allowing only path relocation of the approved probe | passed — routed note present; 17 matches unchanged |
 | A15 every visibility widening has a cross-crate consumer | Diff-derived list of `pub(crate)` → `pub`, checked by a scripted cross-crate reference scan and manual review | passed — unused nav widenings reverted; every remaining owner API has a sim, AI, or binary consumer |
-| A16 warm timing report | Record pre/post AI and sim-proper timing totals and compiled package sets in this plan | reported — local warm-cache spot measurements only; no raw timing artifacts were retained, so use `evidence/README.md` for an auditable repeat |
+| A16 warm timing report | Record pre/post AI and sim-proper timing totals and compiled package sets in this plan | reported — local warm-cache spot measurements only; no raw timing artifacts were retained |
 | M1 campaign presentation plus AI behavior | Owner runs `campaign-test.prl` for load/play/presentation and `movement-feel.prl` for descriptor-backed AI/faction behavior | passed — owner reported manual pass |
 | M2 locomotion/rest animation including no-locomotion edge | Owner observes movement-feel animations; direct `no_locomotion_graph_restores_authored_playback_rate_through_sim_tick` supplies the literal no-locomotion proof | passed — owner reported visual pass; direct no-locomotion proof 1/1 |
 | M3 concurrent-attack visual smoke | Owner observes concurrent attacks in-engine; `impact_time_faction_write_reaches_all_brains_on_the_next_tick` supplies exact same-fixed-tick dual-resolution proof | passed — owner reported visual pass; automated exact-tick proof retained and full suite green |
@@ -91,7 +91,7 @@ Captured on 2026-09-14 after the review/fix loops and final evidence refresh.
 | Full tests | `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` | passed after all review fixes; sim suite 1,175 passed, one ignored; all workspace test targets green |
 | Layering | `cargo test -p xtask layering_invariants_hold`; `cargo run -p xtask -- crate-graph --check` | passed; generated graph current |
 | Focused behavior | prior physics 200/200, AI 234/234, sim determinism 33/33, and netcode migrated harnesses 4/4 + 6/6 + 2/2; new A9/A12/M2 direct tests | passed — each new direct test 1/1; final full suite green |
-| Test identity | `audit-test-identities.sh` external complete/ignored pre/post capture and comparison | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored unchanged; compact proof bundle retained under `evidence/test-identities/` |
+| Test identity | one-time external complete/ignored pre/post identity audit | passed — 7,407 baseline versus 7,415 post target-qualified occurrences; zero missing, eight added, 18 ignored unchanged; self-contained summary retained in `evidence/test-identities.md` |
 | Structural audits | normal dependency trees, reverse physics tree, removed-path grep, visibility consumers, unsafe count | passed — dependency contracts match A2–A7/A15; unsafe remains 17 textual matches |
 | Compile isolation | local warm-cache timestamp-only spot probes recorded in Baselines | reported — package boundaries matched; raw timing artifacts were not retained |
 

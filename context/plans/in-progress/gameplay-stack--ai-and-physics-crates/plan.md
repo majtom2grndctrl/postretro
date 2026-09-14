@@ -54,7 +54,7 @@ read at: 630c5554b
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Introduce sim's synchronous effects-only `AiHost` trait and concrete production host in place; route AI outcome effects through it and prove ORD-1–4 with focused existing tests before moving files | integrating executor | — | pending |
+| 1 | Introduce sim's synchronous effects-only `AiHost` trait and concrete production host in place; route AI outcome effects through it and prove ORD-1–4 with focused existing tests before moving files | integrating executor | — | done — host seam compiled; exhaustion 1/1, same-batch 6/6, faction-write 1/1, sentiment harness 1/1 passed |
 | 2 | Extract `collision`, `movement`, and `kinematic_mover` wholesale into `postretro-physics`; preserve test-only alloc/death seams behind `test-support`; update direct consumers and run focused physics/sim tests | integrating executor | 1 | pending |
 | 3 | Sink locomotion/rest graph queries and faction/tolerance field constants to foundation; update sim and netcode consumers with focused graph/client-apply tests | integrating executor | 2 | pending |
 | 4 | Extract the AI module and full `ai_tests.rs` into `postretro-ai`; invert both sim tick entry points behind the injected closure; update binary/dev-tools and every sim/netcode test harness without adding a production netcode→AI edge | integrating executor | 1, 2, 3 | pending |

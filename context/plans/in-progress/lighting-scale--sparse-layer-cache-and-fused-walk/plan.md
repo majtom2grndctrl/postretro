@@ -1,7 +1,7 @@
 # lighting-scale--sparse-layer-cache-and-fused-walk — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: a6ebb7938
 
 ## Corrections

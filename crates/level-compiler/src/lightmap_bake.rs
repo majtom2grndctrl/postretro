@@ -1553,7 +1553,7 @@ pub(crate) fn light_contribution_and_direction(
 /// The direct-contribution floor shared by the lightmap bake and analytic
 /// shadowmask coverage. Keeping the comparison in one helper prevents graph
 /// membership from drifting away from the bake's `Option` boundary.
-const LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED: f32 = 1.0e-12;
+pub(crate) const LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED: f32 = 1.0e-12;
 
 pub(crate) fn contribution_covers_shadowmask(contribution_squared: f32) -> bool {
     contribution_squared > LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED

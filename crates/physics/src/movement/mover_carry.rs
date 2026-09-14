@@ -10,7 +10,7 @@ use crate::collision::moving::{
     deepest_mover_penetration, deepest_mover_push_penetration,
     deepest_mover_push_penetration_excluding_swept,
 };
-use crate::collision::{CollisionWorld, cast_capsule};
+use crate::collision::{CollisionWorld, cast_capsule_parry};
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 pub(super) fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
@@ -136,7 +136,7 @@ pub(crate) fn mover_push_is_blocked_by_static(
     capsule: &Capsule,
     penetration: MoverPenetration,
 ) -> bool {
-    cast_capsule(
+    cast_capsule_parry(
         static_world,
         Point::new(position.x, position.y, position.z),
         capsule,

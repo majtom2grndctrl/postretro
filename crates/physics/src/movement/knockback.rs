@@ -4,7 +4,7 @@ use postretro_foundation::KnockbackResponse;
 
 /// Linear fractional damping, with a small stop threshold so control recovers
 /// after a damped shove. A zero drag preserves arbitrarily small authored pushes.
-pub(crate) fn decay(velocity: &mut Vec3, response: &KnockbackResponse, grounded: bool, dt: f32) {
+pub fn decay(velocity: &mut Vec3, response: &KnockbackResponse, grounded: bool, dt: f32) {
     let drag = if grounded {
         response.ground_drag
     } else {
@@ -19,7 +19,7 @@ pub(crate) fn decay(velocity: &mut Vec3, response: &KnockbackResponse, grounded:
 /// Apply the same contact-plane projection to the external layer as to total
 /// velocity. Keeping both in the same frame avoids reconstructing a phantom
 /// reverse velocity when next tick subtracts the protected layer.
-pub(crate) fn project(velocity: &mut Vec3, normal: Vec3) {
+pub fn project(velocity: &mut Vec3, normal: Vec3) {
     *velocity -= normal * velocity.dot(normal);
 }
 

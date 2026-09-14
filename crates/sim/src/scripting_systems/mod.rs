@@ -5,7 +5,6 @@
 //
 // See: context/lib/scripting.md
 
-pub mod ai;
 pub mod flash_decay;
 pub mod health;
 pub mod hit_zones;

@@ -32,6 +32,10 @@ pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
 /// Whether deferred lifecycle state has committed this entity to removal.
 /// The registry id remains live until the frame-end pass, so consumers must
 /// inspect this state before applying a precomputed target outcome.
+///
+/// This is a narrow cross-crate read seam: netcode must reject late hit
+/// declarations for an entity whose deferred removal is already committed,
+/// even though the registry id remains live until the frame-end pass.
 pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<DeferredEffectComponent>(entity)
@@ -46,7 +50,7 @@ pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: Ent
 
 /// A damage target must carry positive finite health and have no terminal
 /// lifecycle commitment. Healthless presentation targets remain ineligible.
-pub(crate) fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
+pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(|health| !is_depleted(health))
@@ -210,6 +214,12 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     }
 
     report
+}
+
+/// Cross-crate fixture seam for physics blocking tests.
+#[cfg(feature = "test-support")]
+pub fn sweep_deaths_for_test(registry: &mut EntityRegistry) {
+    let _ = sweep_deaths(registry);
 }
 
 #[cfg(test)]

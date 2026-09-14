@@ -27,8 +27,8 @@ pub(crate) fn register_health_reaction_primitives(registry: &mut ReactionPrimiti
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ApplyDamageArgs {
-    pub(crate) amount: f32,
+pub struct ApplyDamageArgs {
+    pub amount: f32,
 }
 
 /// Apply `args.amount` of damage to every target via the contextual damage
@@ -44,7 +44,7 @@ pub(crate) struct ApplyDamageArgs {
 ///
 /// The handler never despawns: a target whose HP reaches zero is resolved by
 /// the next death-sweep pass.
-pub(crate) fn dispatch(
+pub fn dispatch(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
     args: &ApplyDamageArgs,

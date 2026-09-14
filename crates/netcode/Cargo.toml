@@ -25,13 +25,15 @@ postretro-entities.workspace = true
 postretro-foundation.workspace = true
 postretro-model.workspace = true
 postretro-net.workspace = true
+postretro-physics.workspace = true
 postretro-scripting-core.workspace = true
 postretro-sim.workspace = true
 
 [dev-dependencies]
-parry3d.workspace = true
+postretro-ai = { workspace = true, features = ["test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-net = { workspace = true, features = ["dev-tools"] }
+postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-test-log-capture.workspace = true

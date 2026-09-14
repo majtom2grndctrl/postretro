@@ -21,7 +21,7 @@ pub use crate::fx::fog_reactions::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
 
-pub use crate::kinematic_mover::register_sequenced_mover_primitives;
+pub use crate::mover_commands::register_sequenced_mover_primitives;
 pub use crate::trigger_system::register_sequenced_trigger_primitives;
 
 pub fn register_spawner_reaction_primitives(
@@ -33,10 +33,10 @@ pub fn register_spawner_reaction_primitives(
 
 pub fn register_mover_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
-    diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    diagnostics: crate::mover_commands::MoverCommandDiagnostics,
     auto_close_timers: crate::kinematic_mover::MoverAutoCloseTimers,
 ) {
-    crate::kinematic_mover::register_mover_reaction_primitives(
+    crate::mover_commands::register_mover_reaction_primitives(
         registry,
         diagnostics,
         auto_close_timers,
@@ -45,7 +45,7 @@ pub fn register_mover_reaction_primitives(
 
 pub fn register_trigger_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
-    diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    diagnostics: crate::mover_commands::MoverCommandDiagnostics,
 ) {
     crate::trigger_system::register_trigger_reaction_primitives(registry, diagnostics);
 }

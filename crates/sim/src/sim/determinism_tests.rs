@@ -10,9 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use glam::{EulerRot, Vec2, Vec3};
-use parry3d::math::{Isometry, Point};
-use parry3d::shape::TriMesh;
-use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 use proptest::prelude::*;
 
 use super::{RemotePawnCommand, SimCommand, TickEvents, simulate_tick};
@@ -278,7 +276,7 @@ struct SimHarness {
     hit_zones: HitZoneStore,
     active_wieldable: EntityId,
     progress: ProgressTracker,
-    ai_runtime: crate::scripting_systems::ai::AiRuntime,
+    ai_runtime: postretro_ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     trigger_system: TriggerSystem,
@@ -634,7 +632,7 @@ impl SimHarness {
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
-            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
+            ai_runtime: postretro_ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             trigger_system: TriggerSystem::default(),
@@ -697,7 +695,7 @@ impl SimHarness {
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
-            &mut self.ai_runtime,
+            postretro_ai::test_tick_runner!(&mut self.ai_runtime),
             &self.mover_colliders,
             &mut self.mover_states,
             &remote_pawn_commands,
@@ -1150,8 +1148,8 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         .entity_state_mut(id)
         .expect("spawned enemy carries entity state")
         .set(
-            crate::scripting_systems::ai::FACTION_STATE_FIELD,
-            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+            postretro_foundation::FACTION_STATE_FIELD,
+            postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
         );
     registry
         .set_component(
@@ -1336,20 +1334,17 @@ fn floor_world() -> CollisionWorld {
 /// impact rather than silently missing above the floor.
 fn determinism_world() -> CollisionWorld {
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, -40.0),
-        Point::new(500.0, 0.0, -40.0),
-        Point::new(500.0, 500.0, -40.0),
-        Point::new(-500.0, 500.0, -40.0),
+        Vec3::new(-500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, -40.0),
+        Vec3::new(500.0, 0.0, -40.0),
+        Vec3::new(500.0, 500.0, -40.0),
+        Vec3::new(-500.0, 500.0, -40.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 /// A large ground plane tilted about the world Z axis: surface height `y =
@@ -1360,16 +1355,13 @@ fn determinism_world() -> CollisionWorld {
 fn sloped_floor_world(slope: f32) -> CollisionWorld {
     let y = |x: f32| slope * x;
     let points = vec![
-        Point::new(-500.0, y(-500.0), -500.0),
-        Point::new(500.0, y(500.0), -500.0),
-        Point::new(500.0, y(500.0), 500.0),
-        Point::new(-500.0, y(-500.0), 500.0),
+        Vec3::new(-500.0, y(-500.0), -500.0),
+        Vec3::new(500.0, y(500.0), -500.0),
+        Vec3::new(500.0, y(500.0), 500.0),
+        Vec3::new(-500.0, y(-500.0), 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 fn open_floor_nav_graph() -> NavGraph {
@@ -1393,6 +1385,127 @@ fn open_floor_nav_graph() -> NavGraph {
         }],
         portals: vec![],
     })
+}
+
+#[test]
+fn test_tick_runner_nav_bridge_preserves_section_and_path_queries() {
+    let section = NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [-2.0, 0.25, -3.0],
+        cell_size: 0.5,
+        dim_x: 20,
+        dim_z: 12,
+        agent_radius: 0.2,
+        agent_height: 1.7,
+        step_height: 0.35,
+        max_slope_deg: 37.0,
+        regions: vec![
+            NavRegion {
+                x0: 0,
+                z0: 0,
+                x1: 4,
+                z1: 4,
+                floor_y_min: 0.2,
+                floor_y_max: 0.3,
+            },
+            NavRegion {
+                x0: 4,
+                z0: 0,
+                x1: 8,
+                z1: 4,
+                floor_y_min: 0.3,
+                floor_y_max: 0.4,
+            },
+            NavRegion {
+                x0: 8,
+                z0: 0,
+                x1: 12,
+                z1: 4,
+                floor_y_min: 0.4,
+                floor_y_max: 0.5,
+            },
+        ],
+        portals: vec![
+            NavPortal {
+                region_a: 0,
+                region_b: 1,
+                left: [0.0, 0.3, -1.0],
+                right: [0.0, 0.3, -3.0],
+            },
+            NavPortal {
+                region_a: 1,
+                region_b: 2,
+                left: [2.0, 0.4, -1.0],
+                right: [2.0, 0.4, -3.0],
+            },
+        ],
+    };
+    let source = NavGraph::from_section(&section);
+    let carried = source.to_section_for_test();
+    let rebuilt = postretro_ai::__postretro_sim::nav::NavGraph::from_section(&carried);
+
+    assert_eq!(
+        carried.to_bytes(),
+        section.to_bytes(),
+        "the bridge must carry every serialized grid, agent, region, and portal field",
+    );
+    assert_eq!(
+        rebuilt.to_section_for_test().to_bytes(),
+        section.to_bytes(),
+        "the runner-side graph must reconstruct the exact navigation input",
+    );
+
+    let start = Vec3::new(-1.0, 0.25, -2.0);
+    let goal = Vec3::new(3.0, 0.45, -2.0);
+    let source_path = crate::nav::find_path(&source, start, goal)
+        .expect("source graph connects the three-region corridor");
+    let rebuilt_path = postretro_ai::__postretro_sim::nav::find_path(&rebuilt, start, goal)
+        .expect("runner-side graph retains the same corridor");
+    assert_eq!(source_path.len(), rebuilt_path.len());
+    for (source_point, rebuilt_point) in source_path.iter().zip(rebuilt_path.iter()) {
+        assert!(
+            source_point.distance(*rebuilt_point) <= POSITION_EPSILON,
+            "runner-side path point {rebuilt_point:?} diverged from source {source_point:?}",
+        );
+    }
+
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let target;
+    let enemy;
+    {
+        let mut registry = registry.borrow_mut();
+        target = spawn_player(&mut registry, goal + Vec3::Y * 0.76);
+        enemy = spawn_driven_agent(
+            &mut registry,
+            start + Vec3::Y * 0.96,
+            ALERT_STATE,
+            "locomotion",
+        );
+    }
+    let world = floor_world();
+    let mut progress = ProgressTracker::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut mover_states = MoverTickStateTable::default();
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &HitZoneStore::new(),
+        &source,
+        1.0,
+        &mut progress,
+        &mut ai_runtime,
+        &mut mover_states,
+    );
+
+    let registry = registry.borrow();
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("runner preserves the driven brain output");
+    assert_eq!(brain.acquired_target, Some(target));
+    assert!(
+        brain.target_reachable,
+        "AI must observe the rebuilt graph's connected path through the runner",
+    );
 }
 
 /// A direct-graph brain staged directly into one of its declared states.
@@ -1526,8 +1639,8 @@ fn spawn_driven_agent(
         .entity_state_mut(enemy)
         .expect("driven agent carries entity state")
         .set(
-            crate::scripting_systems::ai::FACTION_STATE_FIELD,
-            crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
+            postretro_foundation::FACTION_STATE_FIELD,
+            postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
         );
     registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
@@ -1570,7 +1683,7 @@ fn run_driven_agent_sim_tick(
     nav_graph: &NavGraph,
     anim_time: f64,
     progress: &mut ProgressTracker,
-    ai_runtime: &mut crate::scripting_systems::ai::AiRuntime,
+    ai_runtime: &mut postretro_ai::AiRuntime,
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
@@ -1603,7 +1716,7 @@ fn run_driven_agent_sim_tick(
         None,
         anim_time,
         progress,
-        ai_runtime,
+        postretro_ai::test_tick_runner!(ai_runtime),
         &[],
         mover_states,
         &[],
@@ -1662,7 +1775,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
@@ -1719,7 +1832,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     // values as the non-walk setup above. A runtime cache is registry-scoped,
     // so use a fresh one rather than intentionally treating this new entity as
     // a hot graph replacement.
-    ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    ai_runtime = postretro_ai::AiRuntime::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
@@ -1839,6 +1952,70 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
             .as_ref(),
         before.as_ref(),
         "a sub-epsilon post-steering rate change must leave rebase state untouched",
+    );
+}
+
+#[test]
+fn no_locomotion_graph_restores_authored_playback_rate_through_sim_tick() {
+    let mut graph = enemy_graph(3.5, "unused-locomotion");
+    graph.envelope.activities.remove(ALERT_STATE);
+    assert_eq!(
+        postretro_foundation::locomotion_animation(&graph),
+        None,
+        "a graph containing only rest, attack, and death has no locomotion activity",
+    );
+
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let enemy = {
+        let mut registry = registry.borrow_mut();
+        let enemy = registry.spawn(Transform {
+            position: Vec3::new(5.0, 1.21, 5.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(enemy, brain_in_state(&graph, ATTACK_STATE))
+            .expect("no-locomotion brain should attach");
+        registry
+            .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
+            .expect("no-locomotion agent should attach");
+        let mut mesh = driven_agent_mesh("attack");
+        mesh.animation
+            .as_mut()
+            .expect("driven mesh carries animation")
+            .rate = RATE_MIN;
+        registry
+            .set_component(enemy, mesh)
+            .expect("no-locomotion mesh should attach");
+        enemy
+    };
+
+    let world = floor_world();
+    let nav_graph = open_floor_nav_graph();
+    let mut progress = ProgressTracker::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut mover_states = MoverTickStateTable::default();
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &HitZoneStore::new(),
+        &nav_graph,
+        1.0,
+        &mut progress,
+        &mut ai_runtime,
+        &mut mover_states,
+    );
+
+    let rate = registry
+        .borrow()
+        .get_component::<MeshComponent>(enemy)
+        .expect("driven enemy keeps its mesh")
+        .animation
+        .as_ref()
+        .expect("driven enemy keeps animation")
+        .rate;
+    assert!(
+        (rate - 1.0).abs() <= ACCURACY_EPSILON,
+        "the genuine sim rate pass must restore the authored rate, got {rate}",
     );
 }
 
@@ -2187,7 +2364,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let hit_zones = HitZoneStore::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -3557,7 +3734,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3591,7 +3768,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3633,7 +3810,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3667,7 +3844,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3715,7 +3892,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3749,7 +3926,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3802,7 +3979,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3836,7 +4013,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_runtime,
+        postretro_ai::test_tick_runner!(&mut ai_runtime),
         &mover_colliders,
         &mut mover_states,
         &[],

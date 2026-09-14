@@ -9,8 +9,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
-use parry3d::math::Point;
-use parry3d::shape::TriMesh;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -38,7 +36,6 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use crate::collision::CollisionWorld;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
-use crate::scripting_systems::ai::AiRuntime;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sim::touch::TouchSystem;
 use crate::sim::{
@@ -51,6 +48,7 @@ use crate::{
     OpenAuthorizedShots, PendingHitDeclarations, host_take_ready_hit_declarations,
     ingest_hit_declaration_for_test,
 };
+use postretro_ai::AiRuntime;
 
 const CLIENT_ID: u64 = 7;
 const TICK_DT: f32 = 1.0 / 60.0;
@@ -104,7 +102,7 @@ impl HostSimulation {
             0.0,
             (0.0, 0.0),
             &mut self.progress,
-            &mut self.ai,
+            postretro_ai::tick_runner!(&mut self.ai),
             &[],
             &mut self.movers,
             remote,
@@ -349,15 +347,15 @@ fn provenance(name: &str) -> DescriptorProvenance {
 }
 
 fn wall(z: f32) -> CollisionWorld {
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(
+    CollisionWorld::from_triangles_for_test(
         vec![
-            Point::new(-1.0, -1.0, z),
-            Point::new(1.0, -1.0, z),
-            Point::new(1.0, 1.0, z),
-            Point::new(-1.0, 1.0, z),
+            Vec3::new(-1.0, -1.0, z),
+            Vec3::new(1.0, -1.0, z),
+            Vec3::new(1.0, 1.0, z),
+            Vec3::new(-1.0, 1.0, z),
         ],
         vec![[0, 1, 2], [0, 2, 3]],
-    ))
+    )
 }
 
 fn authorization(events: &TickEvents) -> OpenAuthorizedShot {

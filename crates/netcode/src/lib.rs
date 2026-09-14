@@ -9,15 +9,18 @@
 // Simulation dependencies stay private to this crate. The established internal
 // paths keep the moved modules readable without re-exporting sim's API from
 // the higher netcode layer.
-pub(crate) use postretro_sim::{
-    collision, impact_policy, kinematic_mover, movement, presentation_pool, scripting,
-    scripting_systems, sim, sprite_collection, weapon,
-};
+pub(crate) use postretro_physics::{collision, kinematic_mover, movement};
 #[cfg(test)]
 pub(crate) use postretro_sim::{
     frame_timing, impact_effects, spawner, trigger_bindings, trigger_commands, trigger_pools,
     trigger_system,
 };
+pub(crate) use postretro_sim::{
+    impact_policy, presentation_pool, scripting, sim, sprite_collection, weapon,
+};
+pub(crate) mod scripting_systems {
+    pub(crate) use postretro_sim::scripting_systems::*;
+}
 extern crate self as netcode;
 
 use std::collections::VecDeque;
@@ -1059,7 +1062,7 @@ pub fn client_receive_and_apply(
                 let walk_reference = descriptor.and_then(|descriptor| {
                     let mesh = descriptor.mesh.as_ref()?;
                     let graph = descriptor.behavior.as_ref()?;
-                    let locomotion = scripting_systems::ai::locomotion_animation(graph)?;
+                    let locomotion = postretro_foundation::locomotion_animation(graph)?;
                     let state = mesh.animations.get(locomotion)?;
                     let derived_travel_speed = hit_zone_store
                         .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
@@ -2486,8 +2489,7 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::Point;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
     use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
@@ -3724,13 +3726,13 @@ mod tests {
 
     fn wall_at_x(x: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(x, -1.0, -1.0),
-            Point::new(x, 1.0, -1.0),
-            Point::new(x, 1.0, 1.0),
-            Point::new(x, -1.0, 1.0),
+            Vec3::new(x, -1.0, -1.0),
+            Vec3::new(x, 1.0, -1.0),
+            Vec3::new(x, 1.0, 1.0),
+            Vec3::new(x, -1.0, 1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     struct HitIngestFixture {

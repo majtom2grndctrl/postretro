@@ -19,7 +19,6 @@ directories.workspace = true
 env_logger.workspace = true
 glam.workspace = true
 log.workspace = true
-parry3d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -32,15 +31,18 @@ postretro-level-loader.workspace = true
 postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-model.workspace = true
 postretro-net.workspace = true
+postretro-physics.workspace = true
 postretro-render-data.workspace = true
 postretro-scripting-core.workspace = true
 postretro-test-log-capture = { workspace = true, optional = true }
 
 [dev-dependencies]
+postretro-ai = { workspace = true, features = ["test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-level-compiler.workspace = true
 postretro-netcode = { workspace = true, features = ["test-support"] }
+postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-script-compiler = { path = "../script-compiler" }
 postretro-test-log-capture.workspace = true
 postretro-ui.workspace = true

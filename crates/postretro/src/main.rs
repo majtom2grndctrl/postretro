@@ -15,7 +15,7 @@ mod candidate_cull {
 mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
-use postretro_sim::collision;
+use postretro_physics::collision;
 mod content_hash;
 // App-side diagnostics for baked door-to-portal occluder associations. Keeps
 // the render-only blocked portal buffer inspectable without changing gameplay.
@@ -24,9 +24,10 @@ mod door_occluder_diagnostics;
 pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod input;
-use postretro_sim::kinematic_mover;
+use postretro_physics::kinematic_mover;
+use postretro_sim::mover_commands;
 mod mod_digest;
-use postretro_sim::movement;
+use postretro_physics::movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]
@@ -718,9 +719,9 @@ pub(crate) struct App {
     /// (a chasing enemy whose agent found no path) is separate, keyed by a
     /// typed `HashSet<EntityId>` rather than a formatted string so the
     /// per-tick check never allocates, and pruned each tick against the live
-    /// brain set. Lives on `App` (the AI tick owner), threaded into
-    /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai/mod.rs.
-    ai_runtime: crate::scripting_systems::ai::AiRuntime,
+    /// brain set. Lives on `App` (the AI tick owner), bound into simulation's
+    /// injected callback via `postretro_ai::tick_runner`.
+    ai_runtime: postretro_ai::AiRuntime,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`
     /// while the cursor is released (UI mode). Tracked *state*, never queued:
@@ -2992,7 +2993,7 @@ impl ApplicationHandler for App {
                             frame_anim_time,
                             presentation_camera_aim,
                             progress_tracker,
-                            &mut self.ai_runtime,
+                            postretro_ai::tick_runner!(&mut self.ai_runtime),
                             &self.kinematic_mover_colliders,
                             &mut self.kinematic_mover_tick_states,
                             &remote_pawn_commands,
@@ -10970,7 +10971,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
@@ -11007,7 +11008,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_runtime,
+                postretro_ai::tick_runner!(&mut ai_runtime),
                 &mover_colliders,
                 &mut mover_states,
                 &remote_inputs,
@@ -11746,7 +11747,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
@@ -11782,7 +11783,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::tick_runner!(&mut ai_runtime),
             &mover_colliders,
             &mut mover_states,
             &remote_inputs,

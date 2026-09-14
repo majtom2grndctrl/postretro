@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec3;
-use parry3d::math::{Point, Vector};
 use postretro_entities::components::projectile::ProjectileComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform, WorldPointPresentationSpawn,
@@ -177,8 +176,8 @@ pub fn advance(
 }
 
 /// Return the origin for a splash static-world sightline. `WorldHit::normal`
-/// comes from parry's second shape (the static trimesh), so its outward normal
-/// points to the projectile side at a non-penetrating contact.
+/// is the engine collision cast's static-world contact normal, oriented toward
+/// the projectile side at a non-penetrating hit.
 pub fn projectile_splash_occlusion_origin(projectile_radius: f32, impact: &WeaponImpact) -> Vec3 {
     if projectile_radius != 0.0 || impact.target.is_some() {
         return impact.point;
@@ -502,18 +501,12 @@ fn nearest_projectile_hit(
     active_projectile: Option<EntityId>,
     owner_pawn: EntityId,
 ) -> Option<NearestProjectileHit> {
-    let world_hit = cast_sphere_exact(
-        collision_world,
-        Point::new(origin.x, origin.y, origin.z),
-        radius,
-        Vector::new(direction.x, direction.y, direction.z),
-        range,
-    )
-    .map(|hit| WorldHit {
-        toi: hit.time_of_impact.max(0.0),
-        point: origin + direction * hit.time_of_impact.max(0.0),
-        normal: Vec3::new(hit.normal2.x, hit.normal2.y, hit.normal2.z),
-    });
+    let world_hit =
+        cast_sphere_exact(collision_world, origin, radius, direction, range).map(|hit| WorldHit {
+            toi: hit.time_of_impact.max(0.0),
+            point: origin + direction * hit.time_of_impact.max(0.0),
+            normal: hit.normal,
+        });
     let entity_hit = nearest_entity_hit_ignoring(
         registry,
         hit_zone_store,
@@ -560,8 +553,7 @@ fn projectile_collision_excludes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::Isometry;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
     use postretro_entities::components::deferred_effect::{
         DeferredEffectComponent, DeferredEffectKind,
     };
@@ -771,28 +763,22 @@ mod tests {
 
     fn wall_at_z(z: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(-1.0, -1.0, z),
-            Point::new(1.0, -1.0, z),
-            Point::new(1.0, 1.0, z),
-            Point::new(-1.0, 1.0, z),
+            Vec3::new(-1.0, -1.0, z),
+            Vec3::new(1.0, -1.0, z),
+            Vec3::new(1.0, 1.0, z),
+            Vec3::new(-1.0, 1.0, z),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, vec![[0, 1, 2], [0, 2, 3]])
     }
 
     fn wall_at_x(x: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(x, -4.0, -4.0),
-            Point::new(x, 4.0, -4.0),
-            Point::new(x, 4.0, 4.0),
-            Point::new(x, -4.0, 4.0),
+            Vec3::new(x, -4.0, -4.0),
+            Vec3::new(x, 4.0, -4.0),
+            Vec3::new(x, 4.0, 4.0),
+            Vec3::new(x, -4.0, 4.0),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, vec![[0, 1, 2], [0, 2, 3]])
     }
 
     #[test]

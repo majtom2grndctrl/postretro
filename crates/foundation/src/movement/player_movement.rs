@@ -1,7 +1,7 @@
 // Player movement component: live state carried on the player entity.
 // Owns `MovementState` (per-tick intent dispatcher) and `refresh_on_landing`
 // (unified ability-budget landing-refresh point). Materialized at spawn from
-// `PlayerMovementDescriptor`; mutated each tick by `crate::movement::tick`.
+// `PlayerMovementDescriptor`; mutated each tick by the physics-owned movement tick.
 //
 // See: context/lib/entity_model.md §7 (collision/movement)
 //      context/lib/movement.md §4 (state-machine seam)

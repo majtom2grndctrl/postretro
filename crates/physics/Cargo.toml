@@ -1,0 +1,24 @@
+[package]
+name = "postretro-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Collision, movement, and kinematic-mover substrate for Postretro"
+license.workspace = true
+
+[features]
+test-support = ["postretro-entities/test-support"]
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+parry3d.workspace = true
+
+postretro-entities.workspace = true
+postretro-foundation.workspace = true
+postretro-level-format.workspace = true
+postretro-level-loader.workspace = true
+
+[dev-dependencies]
+postretro-entities = { workspace = true, features = ["test-support"] }
+postretro-sim = { workspace = true, features = ["test-support"] }

@@ -15,10 +15,6 @@ winit.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 
-# Collision (parry3d trimesh + ray queries). nalgebra types are confined to
-# the `collision` module per the entity_model.md §7 invariant.
-parry3d = { workspace = true }
-
 # Audio
 kira.workspace = true
 
@@ -64,6 +60,7 @@ log.workspace = true
 env_logger.workspace = true
 
 # Workspace members
+postretro-ai.workspace = true
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader = { workspace = true }
 postretro-model = { workspace = true }
@@ -78,6 +75,7 @@ postretro-combat-model = { workspace = true }
 postretro-scripting-core = { workspace = true }
 postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
+postretro-physics.workspace = true
 postretro-sim.workspace = true
 postretro-netcode.workspace = true
 
@@ -124,6 +122,7 @@ postretro-test-log-capture.workspace = true
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
+postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-netcode = { workspace = true, features = ["test-support"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by

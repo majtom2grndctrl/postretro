@@ -200,7 +200,7 @@ fn run_headless_inner(
     //    tracker (above), the AI-warning set, the mover tick states, and the
     //    animation clock advanced by dt each tick.
     let registry = script_ctx.registry.clone();
-    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::new();
     let mut anim_time: f64 = 0.0;
     let mut prev_fire_active = false;
     // Seeded from tick 0's effective aim (not just `0.0`) so a `ticks: 0` run —
@@ -283,7 +283,7 @@ fn run_headless_inner(
             None,
             anim_time,
             &mut progress_tracker,
-            &mut ai_runtime,
+            postretro_ai::tick_runner!(&mut ai_runtime),
             &mover_colliders,
             &mut mover_tick_states,
             &[], // no remote pawns headless

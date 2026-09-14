@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
-use crate::scripting_systems::ai::FACTION_STATE_FIELD;
+use postretro_foundation::FACTION_STATE_FIELD;
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///

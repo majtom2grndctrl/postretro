@@ -1021,7 +1021,7 @@ fn update_brain_animation_playback_rates(
         // Calibration is `measured_ground_speed / effective_travel_speed`; a
         // state with neither an override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion = scripting_systems::ai::locomotion_animation(&brain.graph)
+        let is_locomotion = postretro_foundation::locomotion_animation(&brain.graph)
             .is_some_and(|locomotion| animation.current_state == locomotion);
         let rate_input = if is_locomotion && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);

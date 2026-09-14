@@ -190,7 +190,7 @@ fn resume_recovered_brain_presentation(registry: &mut EntityRegistry, target: En
     let Ok(mut brain) = registry.get_component::<BrainComponent>(target).cloned() else {
         return;
     };
-    let rest = crate::scripting_systems::ai::rest_animation(&brain.graph).map(str::to_string);
+    let rest = postretro_foundation::rest_animation(&brain.graph).map(str::to_string);
     // The deferred period preserves the last locomotion velocity and graph
     // state. Invalidate the animation latch so the following AI tick reselects
     // the state-appropriate rest, travel, or action clip instead of leaving this

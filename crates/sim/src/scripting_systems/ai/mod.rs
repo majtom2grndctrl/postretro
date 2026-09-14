@@ -55,13 +55,14 @@ use crate::weapon::ProjectileLaunch;
 use brain_programs::BrainPrograms;
 use combat_slots::resolve_combat_slots;
 use engine_floor::SteeringIntent;
-pub use graph_eval::locomotion_animation;
-pub(crate) use graph_eval::rest_animation;
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry,
     FactionSentimentState, LiveFactionSentiment, Transform,
+};
+pub use postretro_foundation::{
+    ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD, locomotion_animation, rest_animation,
 };
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use targeting::TargetPawn;
@@ -90,14 +91,6 @@ use targeting::{acquisition_due, select_target, target_candidate, target_offers}
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
-/// Interim `@state` field supplying the engine's fresh-acquisition hostility
-/// floor. Guards consume the durable `@brain.targetHostile` fact instead of
-/// binding directly to this storage detail.
-pub(crate) const FACTION_STATE_FIELD: &str = "faction";
-/// Optional per-archetype retaliation tolerance. This engine-owned storage is
-/// intentionally not an authored guard vocabulary; candidate guards consume
-/// only the resolved `@candidate.tolerance` fact.
-pub(crate) const ARCHETYPE_TOLERANCE_STATE_FIELD: &str = "archetype_tolerance";
 /// Compatibility tolerance for a relationship without authored pair or
 /// archetype data. No finite normal damage total can exceed it, so retaliation
 /// remains inert until content deliberately lowers a tolerance.

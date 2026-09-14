@@ -17,7 +17,6 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::scripting_systems::ai::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
 use postretro_combat_model::{CarriedState, restore_carried_health};
 #[cfg(test)]
 use postretro_entities::AmmoReserve;
@@ -40,6 +39,7 @@ use postretro_entities::provenance::{
     parse_bool,
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_foundation::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
 use postretro_foundation::{NavAgentParams, ProjectileBodyVisual};
 #[cfg(test)]
 use postretro_scripting_core::data_descriptors::WeaponResource;

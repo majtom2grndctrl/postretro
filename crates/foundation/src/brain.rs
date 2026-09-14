@@ -22,6 +22,14 @@ use crate::ir::{
 /// (`@brain.hasTarget` is authored `brain.hasTarget`).
 pub const BRAIN_INPUT_PREFIX: &str = "@brain.";
 
+/// Interim entity-state field supplying the engine's numeric faction index.
+/// This is shared by descriptor materialization, simulation, AI, and snapshot
+/// application while authored guards consume the durable brain facts instead.
+pub const FACTION_STATE_FIELD: &str = "faction";
+
+/// Optional per-archetype retaliation tolerance stored in entity state.
+pub const ARCHETYPE_TOLERANCE_STATE_FIELD: &str = "archetype_tolerance";
+
 /// `true` while the enemy has a selected target this tick.
 ///
 /// This is the sole authoritative target-presence test. Target-side facts read

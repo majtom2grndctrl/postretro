@@ -34,6 +34,8 @@ mod mover_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 use postretro_sim::nav;
+#[cfg(feature = "dev-tools")]
+use postretro_sim::set_debug_agent_destination;
 // Engine-side netcode glue: role selection, the optional endpoint held by `App`,
 // game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
 // The ONLY engine code that touches the registry on behalf of replication.
@@ -69,6 +71,8 @@ mod session;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
 use postretro_sim::trigger_bindings;
+#[cfg(test)]
+use postretro_sim::trigger_commands;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
 use postretro_sim::{trigger_pools, trigger_system};
@@ -1611,7 +1615,7 @@ fn update_debug_chase_agent_destination(
         .and_then(|id| registry.get_component::<Transform>(id).ok())
         .map(|t| t.position)
         .unwrap_or(fallback_target);
-    agent_steering::set_destination(registry, agent, target);
+    set_debug_agent_destination(registry, agent, target);
 }
 
 /// Whether clean exit should save the global persistent-slot projection. A
@@ -10095,7 +10099,7 @@ mod tests {
             .unwrap();
         let weapon_id = registry.spawn(postretro_entities::Transform::default());
         let mut component =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component.cooldown_remaining_ms = 72.0;
         registry.set_component(weapon_id, component).unwrap();
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
@@ -10157,10 +10161,10 @@ mod tests {
         let weapon_a = registry.spawn(postretro_entities::Transform::default());
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
         let mut component_a =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component_a.cooldown_remaining_ms = 80.0;
         let mut component_b =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component_b.cooldown_remaining_ms = 11.0;
         registry.set_component(weapon_a, component_a).unwrap();
         registry.set_component(weapon_b, component_b).unwrap();
@@ -10241,7 +10245,7 @@ mod tests {
         cooldown_remaining_ms: f32,
         cooldown_ms: f32,
     ) -> postretro_entities::components::weapon::WeaponComponent {
-        let mut component = weapon::tests::weapon_component(fire_mode, cooldown_ms);
+        let mut component = weapon::test_fixtures::weapon_component(fire_mode, cooldown_ms);
         component.cooldown_remaining_ms = cooldown_remaining_ms;
         component
     }
@@ -10682,13 +10686,19 @@ mod tests {
         registry
             .set_component(
                 first,
-                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+                weapon::test_fixtures::weapon_component(
+                    postretro_foundation::FireMode::Semi,
+                    100.0,
+                ),
             )
             .unwrap();
         registry
             .set_component(
                 third,
-                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+                weapon::test_fixtures::weapon_component(
+                    postretro_foundation::FireMode::Semi,
+                    100.0,
+                ),
             )
             .unwrap();
         let mut inventory = Inventory::default();
@@ -11546,7 +11556,7 @@ mod tests {
     /// one-shot latch withholds the first command until the pending buffer reaches that
     /// depth, so a single ingested fire would not otherwise resolve immediately.
     fn prime_remote_buildup(queues: &mut netcode::HostCommandQueues, client_id: u64, tick: u32) {
-        queues.ingest(
+        queues.ingest_for_test(
             client_id,
             &postretro_net::wire::InputCommand {
                 client_tick: tick,
@@ -11575,13 +11585,13 @@ mod tests {
     fn o27_unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
         let registry = postretro_entities::EntityRegistry::new();
-        let mut allocator = netcode::NetworkIdAllocator::new();
-        allocator.stamp(pawn);
+        let mut allocator = netcode::NetworkIdAllocator::for_test();
+        allocator.stamp_for_test(pawn);
         let mut weaponless_fire_logged = std::collections::HashSet::new();
-        let mut owners = netcode::MovementOwners::new();
-        owners.set(pawn, 7);
-        let mut queues = netcode::HostCommandQueues::new();
-        queues.ingest(
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::default();
+        queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
                 client_tick: 33,
@@ -11658,12 +11668,12 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory).unwrap();
 
-        let mut allocator = netcode::NetworkIdAllocator::new();
-        allocator.stamp(pawn);
-        let mut owners = netcode::MovementOwners::new();
-        owners.set(pawn, 7);
-        let mut queues = netcode::HostCommandQueues::new();
-        queues.ingest(
+        let mut allocator = netcode::NetworkIdAllocator::for_test();
+        allocator.stamp_for_test(pawn);
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::default();
+        queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
                 client_tick: 33,
@@ -12849,15 +12859,15 @@ mod tests {
     ) -> scripting_systems::hit_zones::ModelHitZones {
         use std::sync::Arc;
 
-        scripting_systems::hit_zones::ModelHitZones {
-            skeleton: Arc::new(postretro_model::skeleton::Skeleton::default()),
-            clips: Arc::new(Vec::new()),
-            joint_zones: Vec::new(),
+        scripting_systems::hit_zones::ModelHitZones::for_test(
+            Arc::new(postretro_model::skeleton::Skeleton::default()),
+            Arc::new(Vec::new()),
+            Vec::new(),
             sockets,
-            derived_bound: None,
-            legs: Vec::new(),
-            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-        }
+            None,
+            Vec::new(),
+            Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
+        )
     }
 
     fn attachment_resolution_store(

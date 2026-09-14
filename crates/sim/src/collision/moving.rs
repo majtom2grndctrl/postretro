@@ -147,6 +147,11 @@ impl MoverCollider {
             local_radius,
         })
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mover_id(&self) -> u32 {
+        self.mover_id
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

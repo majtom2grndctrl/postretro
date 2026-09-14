@@ -118,6 +118,8 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub use prediction::ClientPrediction;
+#[cfg(feature = "test-support")]
+pub use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
     route_host_presentation_spawns, route_host_world_point_presentation_spawns,
@@ -621,6 +623,11 @@ impl NetworkIdAllocator {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn for_test() -> Self {
+        Self::new()
+    }
+
     fn reset_for_level_unload(&mut self) {
         self.map.clear();
         self.reverse.clear();
@@ -637,6 +644,11 @@ impl NetworkIdAllocator {
         self.map.insert(id, net_id);
         self.reverse.insert(net_id, id);
         net_id
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn stamp_for_test(&mut self, id: EntityId) -> NetworkId {
+        self.stamp(id)
     }
 
     /// Drop the dead `EntityId -> NetworkId` mapping for an entity that no longer
@@ -2405,9 +2417,9 @@ impl std::error::Error for SnapshotDecodeError {}
 /// `dev-tools`-gated: the only consumer is the client debug-capsule draw, which
 /// lives behind the same feature (the debug-line renderer is `dev-tools` only).
 #[cfg(feature = "dev-tools")]
-pub(crate) const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
+pub const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
 #[cfg(feature = "dev-tools")]
-pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
+pub const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 
 /// Collect world-space positions for meshless replicated-entity debug wireframes.
 /// On the CLIENT, checks each non-local `NetworkId -> EntityId` mapping. On the HOST,
@@ -2428,10 +2440,7 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// `dev-tools`-gated: the sole consumer is the host/client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
 #[cfg(feature = "dev-tools")]
-pub(crate) fn remote_entity_positions(
-    endpoint: &NetEndpoint,
-    registry: &EntityRegistry,
-) -> Vec<Vec3> {
+pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry) -> Vec<Vec3> {
     match endpoint {
         // Client: draw only non-local mapped entities. The local predicted pawn is
         // also in the map, but it is camera/prediction driven and must not get a

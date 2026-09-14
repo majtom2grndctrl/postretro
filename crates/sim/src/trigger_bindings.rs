@@ -117,11 +117,18 @@ pub struct TriggerBindingExecution {
     residual: Option<TriggerResidualHandle>,
     #[cfg(test)]
     pub(crate) commands: Vec<BoundTriggerCommandKind>,
+    #[cfg(feature = "test-support")]
+    command_count: usize,
 }
 
 impl TriggerBindingExecution {
     pub fn residual(self) -> Option<TriggerResidualHandle> {
         self.residual
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn command_count(&self) -> usize {
+        self.command_count
     }
 }
 
@@ -384,7 +391,31 @@ impl TriggerBindingTable {
         self.bound_edges.insert((trigger, edge));
     }
 
+    #[cfg(not(feature = "test-support"))]
     pub(crate) fn execute(
+        &self,
+        trigger: EntityId,
+        edge: TriggerEventEdge,
+        registry: &mut EntityRegistry,
+        slot_table: &mut SlotTable,
+        fire_context: &TriggerFireContext,
+    ) -> TriggerBindingExecution {
+        self.execute_inner(trigger, edge, registry, slot_table, fire_context)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn execute(
+        &self,
+        trigger: EntityId,
+        edge: TriggerEventEdge,
+        registry: &mut EntityRegistry,
+        slot_table: &mut SlotTable,
+        fire_context: &TriggerFireContext,
+    ) -> TriggerBindingExecution {
+        self.execute_inner(trigger, edge, registry, slot_table, fire_context)
+    }
+
+    fn execute_inner(
         &self,
         trigger: EntityId,
         edge: TriggerEventEdge,
@@ -397,6 +428,8 @@ impl TriggerBindingTable {
                 residual: None,
                 #[cfg(test)]
                 commands: Vec::new(),
+                #[cfg(feature = "test-support")]
+                command_count: 0,
             };
         };
         #[cfg(test)]
@@ -416,6 +449,8 @@ impl TriggerBindingTable {
             residual: binding.residual,
             #[cfg(test)]
             commands,
+            #[cfg(feature = "test-support")]
+            command_count: binding.commands.len(),
         }
     }
 
@@ -435,6 +470,8 @@ impl TriggerBindingTable {
                 residual: None,
                 #[cfg(test)]
                 commands: Vec::new(),
+                #[cfg(feature = "test-support")]
+                command_count: 0,
             };
         };
         let Some(dispatch_scope) = self.dispatch_scope.as_ref() else {
@@ -445,6 +482,8 @@ impl TriggerBindingTable {
                 residual: binding.residual,
                 #[cfg(test)]
                 commands: Vec::new(),
+                #[cfg(feature = "test-support")]
+                command_count: binding.commands.len(),
             };
         };
         let mut dispatch_scope = dispatch_scope.borrow_mut();
@@ -466,6 +505,8 @@ impl TriggerBindingTable {
             residual: binding.residual,
             #[cfg(test)]
             commands,
+            #[cfg(feature = "test-support")]
+            command_count: binding.commands.len(),
         }
     }
 
@@ -476,7 +517,7 @@ impl TriggerBindingTable {
     /// Whether this trigger edge has an active binding from its brush event or
     /// a composed manifest trigger event.
     #[cfg(feature = "dev-tools")]
-    pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerEventEdge) -> bool {
+    pub fn is_bound(&self, trigger: EntityId, edge: TriggerEventEdge) -> bool {
         self.bindings.contains_key(&(trigger, edge))
     }
 

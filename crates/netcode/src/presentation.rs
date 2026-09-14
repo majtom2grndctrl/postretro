@@ -43,7 +43,7 @@ const CLIENT_OVERLAY_PENDING_TTL_SECONDS: f64 = 0.5;
 /// A decoded overlay fact separated from the wire envelope so the adverse-order
 /// behavior is directly testable without transport or registry setup.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ClientOverlayFact {
+pub struct ClientOverlayFact {
     enemy_id: NetworkId,
     health_fraction: f32,
     shield_fraction: f32,
@@ -70,7 +70,7 @@ struct ClientOverlayHitbox {
 }
 
 impl ClientOverlayFact {
-    pub(crate) fn new(
+    pub fn new(
         enemy_id: NetworkId,
         health_fraction: f32,
         shield_fraction: f32,
@@ -184,8 +184,8 @@ impl ClientOverlayFactState {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) fn terminal_len(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn terminal_len(&self) -> usize {
         self.terminal_ids.len()
     }
 
@@ -194,8 +194,8 @@ impl ClientOverlayFactState {
         self.advance_terminal_ttl(frame_dt_seconds);
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_len(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_len(&self) -> usize {
         self.pending_live_facts.len()
     }
 }
@@ -675,7 +675,7 @@ fn retry_pending_client_overlay_facts(
 /// Apply one decoded overlay fact. This is intentionally a plain state seam:
 /// callers provide the replication-map result and visual anchor, while facts
 /// only ever come from the host-pushed payload.
-pub(crate) fn ingest_client_overlay_fact(
+pub fn ingest_client_overlay_fact(
     state: &mut ClientOverlayFactState,
     pool: &mut PresentationPool,
     fact: ClientOverlayFact,

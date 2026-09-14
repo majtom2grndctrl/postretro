@@ -49,6 +49,11 @@ impl MovementOwners {
         self.owners.insert(pawn, client_id);
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn set_for_test(&mut self, pawn: EntityId, client_id: u64) {
+        self.set(pawn, client_id);
+    }
+
     /// The owning client of `pawn`, if any.
     pub fn owner_of(&self, pawn: EntityId) -> Option<u64> {
         self.owners.get(&pawn).copied()
@@ -424,6 +429,11 @@ impl HostCommandQueues {
         };
         let state = self.clients.entry(client_id).or_default();
         state.enqueue(sanitized)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn ingest_for_test(&mut self, client_id: u64, raw: &InputCommand) -> bool {
+        self.ingest(client_id, raw)
     }
 
     /// Resolve exactly one command for `client_id`'s pawn this fixed tick, applying

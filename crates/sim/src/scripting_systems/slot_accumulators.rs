@@ -87,8 +87,8 @@ impl SlotAccumulatorBindings {
         self.programs.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_empty(&self) -> bool {
         self.programs.is_empty() && self.scope.is_none() && self.script_ctx.is_none()
     }
 }

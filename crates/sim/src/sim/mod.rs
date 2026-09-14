@@ -124,8 +124,7 @@ pub fn normalize_wieldable_inventory(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)]
-pub(crate) fn run_local_weapon_fire_for_test(
+pub fn run_local_weapon_fire_for_test(
     registry: &Rc<RefCell<EntityRegistry>>,
     pawn: EntityId,
     command: &crate::weapon::WeaponFireCommand,

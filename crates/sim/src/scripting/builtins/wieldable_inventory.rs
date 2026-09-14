@@ -589,8 +589,8 @@ mod tests {
         assert_eq!(
             fill_sites,
             vec![
-                PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
-                PathBuf::from("postretro/src/scripting/builtins/wieldable_inventory.rs"),
+                PathBuf::from("sim/src/scripting/builtins/wieldable_inventory.rs"),
+                PathBuf::from("sim/src/scripting/builtins/wieldable_inventory.rs"),
             ],
             "live inventory slot fills must route through composition or acquire_wieldable_at"
         );

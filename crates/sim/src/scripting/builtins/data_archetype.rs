@@ -274,7 +274,7 @@ fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> bool {
 /// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
 /// descriptor carries a brain block. This is the *pre-materialization* mirror of
 /// the live-component predicate
-/// `crate::netcode::descriptor_class::is_networked_ai_enemy`,
+/// `postretro-netcode`'s live networked-enemy predicate,
 /// which can only inspect those components AFTER an entity exists: a brain block
 /// is the sole thing `attach_descriptor_components` keys the `Brain` + `Agent`
 /// attachment on, so [`descriptor_carries_brain`] holds exactly when that

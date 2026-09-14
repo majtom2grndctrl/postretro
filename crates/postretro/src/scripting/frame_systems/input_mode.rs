@@ -165,7 +165,7 @@ impl InputModeTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::primitives::store::read_store_slot;
+    use postretro_scripting_core::store_bridge::read_store_slot;
 
     fn read_mode(ctx: &ScriptCtx) -> String {
         match read_store_slot(ctx, MODE_SLOT).unwrap() {

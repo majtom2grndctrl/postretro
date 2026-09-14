@@ -106,8 +106,22 @@ impl SpawnContext {
         self.state.borrow_mut().can_materialize_runtime_spawns = enabled;
     }
 
-    pub fn state(&self) -> std::cell::Ref<'_, SpawnContextState> {
+    fn state(&self) -> std::cell::Ref<'_, SpawnContextState> {
         self.state.borrow()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_enemy_descriptors_for_test(
+        &self,
+    ) -> std::cell::Ref<'_, HashMap<String, EntityTypeDescriptor>> {
+        std::cell::Ref::map(self.state.borrow(), |state| {
+            &state.resolved_enemy_descriptors
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn agent_params_for_test(&self) -> Option<NavAgentParams> {
+        self.state.borrow().agent_params
     }
 
     pub fn take_pending_mesh_clip_resolves(&self) -> Vec<EntityId> {
@@ -169,7 +183,26 @@ pub(crate) fn spawn_from_spawner_tag(
 
 /// The ordinary named-event drain already resolved Transform targets. Retain
 /// only spawners, then converge on the same executor as the trigger route.
+#[cfg(not(feature = "test-support"))]
 pub(crate) fn spawn_from_spawner_targets(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    context: &SpawnContext,
+) {
+    spawn_from_spawner_targets_inner(registry, targets, context);
+}
+
+/// Test-support access for binary-owned spawner materialization tests.
+#[cfg(feature = "test-support")]
+pub fn spawn_from_spawner_targets(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    context: &SpawnContext,
+) {
+    spawn_from_spawner_targets_inner(registry, targets, context);
+}
+
+fn spawn_from_spawner_targets_inner(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
     context: &SpawnContext,

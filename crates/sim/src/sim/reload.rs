@@ -6,7 +6,13 @@ use postretro_entities::{EntityId, EntityRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReloadDelivery {
+    #[cfg(feature = "test-support")]
+    pub pawn: EntityId,
+    #[cfg(not(feature = "test-support"))]
     pub(crate) pawn: EntityId,
+    #[cfg(feature = "test-support")]
+    pub weapon: EntityId,
+    #[cfg(not(feature = "test-support"))]
     pub(crate) weapon: EntityId,
     pub outcome: ReloadOutcome,
 }

@@ -510,12 +510,12 @@ fn validate_preloaded_layer_texels(
 ) {
     let plane = texel_plane_len(atlas_width, atlas_height);
     for layer in layers {
+        assert!(
+            layer.target_layer < layer_count,
+            "preloaded shadowmask partition layer {} exceeds atlas layer count {layer_count}",
+            layer.target_layer
+        );
         for texel in &layer.texels {
-            assert!(
-                texel.layer < layer_count,
-                "preloaded shadowmask texel layer {} exceeds atlas layer count {layer_count}",
-                texel.layer
-            );
             assert!(
                 (texel.idx as usize) < plane,
                 "preloaded shadowmask texel index {} exceeds atlas plane length {plane}",
@@ -914,7 +914,7 @@ fn fill_uncached_shadowmask_partitions(
                     let chart_texels = chart_outputs
                         .next()
                         .expect("one ordered output is required for every chart task");
-                    fill.write_texels(compact_light_index, &chart_texels);
+                    fill.write_texels(compact_light_index, target_layer, &chart_texels);
                 }
                 if target_layer + 1 == layer_count && compact_light_index != 0 {
                     control.advance(1);
@@ -1086,12 +1086,13 @@ fn overlap_graph_from_layers(layers: &[LightmapLayer]) -> OverlapGraph {
 }
 
 fn layers_overlap(a: &LightmapLayer, b: &LightmapLayer) -> bool {
+    if a.target_layer != b.target_layer {
+        return false;
+    }
     a.texels.iter().any(|a_texel| {
         raw_visibility_is_covered(a_texel.raw_visibility)
             && b.texels.iter().any(|b_texel| {
-                raw_visibility_is_covered(b_texel.raw_visibility)
-                    && a_texel.layer == b_texel.layer
-                    && a_texel.idx == b_texel.idx
+                raw_visibility_is_covered(b_texel.raw_visibility) && a_texel.idx == b_texel.idx
             })
     })
 }
@@ -1194,14 +1195,11 @@ mod tests {
             atlas_width: width,
             atlas_height: height,
             layer_count,
+            target_layer: texels.first().map_or(0, |texel| texel.1),
             texels: texels
                 .iter()
-                .map(|&(idx, layer, visibility)| LayerTexel {
+                .map(|&(idx, _, visibility)| LayerTexel {
                     idx,
-                    layer,
-                    irradiance: [0.0; 3],
-                    weighted_dir: [0.0; 3],
-                    fallback_normal: [0.0, 1.0, 0.0],
                     raw_visibility: visibility,
                 })
                 .collect(),
@@ -1525,7 +1523,7 @@ mod tests {
     enum BadCachedLayer {
         Metadata,
         TexelBounds,
-        MissingTexel,
+        OutsideCoveredSet,
         DuplicateTexel,
     }
 
@@ -1553,11 +1551,11 @@ mod tests {
                     (0, layer_count_from_shared(shared), 0.5),
                 ],
             ),
-            BadCachedLayer::MissingTexel => {
+            BadCachedLayer::OutsideCoveredSet => {
                 let mut partition =
                     cached_partition_with_visibility(light, shared, bvh, primitives, geo, 0.25);
                 assert!(partition.texels.len() > 1, "fixture needs multiple texels");
-                partition.texels.remove(partition.texels.len() / 2);
+                partition.texels[0].idx = 0;
                 partition
             }
             BadCachedLayer::DuplicateTexel => {
@@ -1693,6 +1691,29 @@ mod tests {
         assert_ne!(section.channels[0], section.channels[1]);
         assert_eq!(section.data[section.channels[0] as usize], 0);
         assert_eq!(section.data[section.channels[1] as usize], 255);
+    }
+
+    #[test]
+    fn sparse_absence_is_not_membership_and_occluded_presence_writes_zero() {
+        let lights = [(0, light(5.0)), (1, light(4.0))];
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(selection_index, (index, light))| (selection_index, *index, light))
+            .collect();
+        let absent = layer(1, 1, 1, &[]);
+        let occluded = layer(1, 1, 1, &[(0, 0, 0.0)]);
+        assert!(!layers_overlap(&absent, &occluded));
+
+        let section = build_shadowmask_from_layers(1, 1, 1, 2, &selected, &[absent, occluded]);
+        assert_eq!(
+            section.channels[0], section.channels[1],
+            "an absent record must not create an overlap edge"
+        );
+        assert_eq!(
+            section.data[section.channels[1] as usize], 0,
+            "a present fully occluded record must write channel byte zero"
+        );
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -2082,11 +2103,14 @@ mod tests {
                 AREA_SAMPLES,
                 &test_control(),
             );
-            let baked_coverage: Vec<_> = baked
-                .texels
+            let mut baked_coverage: Vec<_> = baked
                 .iter()
-                .filter(|texel| !(texel.raw_visibility < 0.0))
-                .map(|texel| (texel.layer, texel.idx))
+                .flat_map(|partition| {
+                    partition
+                        .texels
+                        .iter()
+                        .map(|texel| (partition.target_layer, texel.idx))
+                })
                 .collect();
             let mut analytic_coverage = Vec::new();
             for chart_index in 0..shared.placements.len() {
@@ -2099,6 +2123,8 @@ mod tests {
                 );
             }
 
+            baked_coverage.sort_unstable();
+            analytic_coverage.sort_unstable();
             assert_eq!(analytic_coverage, baked_coverage);
         }
     }
@@ -2224,7 +2250,7 @@ mod tests {
             if light_texel_is_covered(&lights[0], sample.world_p, sample.surface_normal)
                 && light_texel_is_covered(&lights[1], sample.world_p, sample.surface_normal)
             {
-                shared_covered_texel = Some((sample.idx, sample.layer));
+                shared_covered_texel = Some((sample.idx, shared.placements[0].layer));
             }
         });
         let (covered_idx, covered_layer) =
@@ -2356,9 +2382,11 @@ mod tests {
             None,
             None,
         );
-        for (compact_index, layer) in layers.iter().enumerate() {
-            pruned_fill.write_partition(compact_index, layer);
-            unpruned_fill.write_partition(compact_index, layer);
+        for (compact_index, partitions) in layers.iter().enumerate() {
+            for partition in partitions {
+                pruned_fill.write_partition(compact_index, partition);
+                unpruned_fill.write_partition(compact_index, partition);
+            }
         }
         let pruned_section = pruned_fill.finish();
         let unpruned_section = unpruned_fill.finish();
@@ -2778,14 +2806,20 @@ mod tests {
             .map(|(selection_index, (alpha_index, light))| (selection_index, *alpha_index, light))
             .collect();
         let layers = vec![
-            layer(2, 1, 2, &[(0, 0, 0.25), (1, 1, 0.6)]),
+            layer(2, 1, 2, &[(0, 0, 0.25)]),
             layer(2, 1, 2, &[(0, 0, 0.5)]),
             layer(2, 1, 2, &[(0, 0, 0.75)]),
             layer(2, 1, 2, &[(0, 0, 1.0)]),
             layer(2, 1, 2, &[(0, 0, 0.0)]),
         ];
 
-        let section = build_shadowmask_from_layers(2, 1, 2, 5, &selected, &layers);
+        let graph = overlap_graph_from_layers(&layers);
+        let mut fill = ShadowmaskFill::new(2, 1, 2, 5, &selected, &graph, None, None);
+        for (compact_index, partition) in layers.iter().enumerate() {
+            fill.write_partition(compact_index, partition);
+        }
+        fill.write_partition(0, &layer(2, 1, 2, &[(1, 1, 0.6)]));
+        let section = fill.finish();
 
         // Captured from the pre-streaming layer composite: two atlas layers,
         // five selected masks sharing a texel (the lowest intensity drops), and
@@ -3550,7 +3584,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "preloaded shadowmask texel layer")]
+    #[should_panic(expected = "preloaded shadowmask partition layer")]
     fn preloaded_layer_bake_rejects_texel_layer_outside_atlas() {
         let valid_light = light(5.0);
         let selection = EntityShadowLightsSection {
@@ -3611,6 +3645,9 @@ mod tests {
             .iter()
             .map(|(_, _, light)| {
                 bake_light_layer(light, &shared, &bvh, &primitives, &geo, 4, &test_control())
+                    .into_iter()
+                    .next()
+                    .expect("fixture has one atlas layer")
             })
             .collect();
 
@@ -3763,9 +3800,10 @@ mod tests {
     }
 
     #[test]
-    fn shadowmask_cache_epochs_remain_pre_analytic_values() {
+    fn shadowmask_cache_epochs_pin_sparse_layer_values() {
         assert_eq!(SHADOWMASK_ATLAS_STAGE_VERSION, 2);
-        assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 5);
+        assert_eq!(lightmap_layer::LAYER_FORMAT_VERSION, 6);
+        assert_eq!(lightmap_layer::LIGHTMAP_SECTION_VERSION, 3);
     }
 
     #[test]
@@ -4067,10 +4105,10 @@ mod tests {
     }
 
     #[test]
-    fn shadowmask_atlas_layer_cache_rejects_missing_texel() {
+    fn shadowmask_atlas_layer_cache_rejects_outside_covered_set() {
         assert_cached_layer_rejected_and_rebaked(
-            "missing_layer_texel",
-            BadCachedLayer::MissingTexel,
+            "outside_covered_set",
+            BadCachedLayer::OutsideCoveredSet,
         );
     }
 

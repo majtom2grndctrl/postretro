@@ -63,7 +63,7 @@ read at: a6ebb7938
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Freeze the independent lightmap reference and extract the oversized lightmap, shadowmask, and pipeline stage responsibilities along behavior-preserving seams; add the two-fixture cold-stage-versus-reference gate before changing the writer | integrating executor | — | complete |
-| 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | |
+| 2 | Implement the sparse 8-byte partition codec, bounds/monotone validation, analytic reconstruction, both cache-epoch bumps, and the full byte/edge/size/end-to-end test matrix | integrating executor | 1 | complete |
 | 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | |
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | |
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | |
@@ -92,3 +92,17 @@ output artifact will be filled in after Task 7 against the final CLI surface.
 - Proof: focused compiler check; oracle-isolation and worker-count determinism tests; the expanded
   `layered_cold_bake_matches_reference_and_repeats_byte_identically` gate; and the ignored real-map
   `lightmap_composite_equals_monolithic_on_fixtures` gate all pass.
+
+### Task 2 — complete
+
+- Replaced the 48-byte dense layer record with the interleaved 8-byte
+  `{ texel_index, raw_visibility }` record and moved `target_layer` into the partition header.
+- Sparse writers now omit analytically unreached texels while retaining zero and NaN visibility;
+  warm folding reconstructs the exact unshadowed term without tracing, and derives coverage plus
+  fallback normals from the prepared chart walk.
+- Validation now accepts empty/sparse partitions and rejects wrong-layer, out-of-bounds,
+  out-of-covered-set, duplicate, and non-increasing records as soft misses. Layer and section
+  epochs are pinned at 6 and 3, with prior-epoch miss coverage.
+- Proof: sparse codec/edge/size suites, all lightmap-layer tests, all shadowmask tests, the ignored
+  real-map monolithic equivalence gate, and the complete 1,169-test `prl-build` suite pass. The
+  named forced-multi-layer payload is below one tenth of its former dense-record bytes.

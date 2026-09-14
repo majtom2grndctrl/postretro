@@ -116,10 +116,19 @@ impl<'a> ShadowmaskFill<'a> {
         partition: &LightmapLayer,
     ) {
         let _resident_partition = self.resident_layers.map(ResidentLayerTracker::acquire);
-        self.write_texels(compact_light_index, &partition.texels);
+        self.write_texels(
+            compact_light_index,
+            partition.target_layer,
+            &partition.texels,
+        );
     }
 
-    pub(super) fn write_texels(&mut self, compact_light_index: usize, texels: &[LayerTexel]) {
+    pub(super) fn write_texels(
+        &mut self,
+        compact_light_index: usize,
+        target_layer: u32,
+        texels: &[LayerTexel],
+    ) {
         let channel = self.compact_channels[compact_light_index];
         if channel == SHADOWMASK_CHANNEL_DROPPED {
             return;
@@ -129,10 +138,7 @@ impl<'a> ShadowmaskFill<'a> {
                 control.governor().checkpoint();
             }
             for texel in chunk {
-                if !raw_visibility_is_covered(texel.raw_visibility) {
-                    continue;
-                }
-                let global_texel_index = (texel.layer as usize)
+                let global_texel_index = (target_layer as usize)
                     .checked_mul(self.plane)
                     .and_then(|offset| offset.checked_add(texel.idx as usize))
                     .expect("shadowmask global texel index exceeds addressable memory");

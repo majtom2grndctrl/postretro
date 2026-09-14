@@ -210,7 +210,7 @@ fn compose_cached_layers(
     let density = config.lightmap_density;
     if layer_lights.is_empty() {
         let mut fallback =
-            lightmap_layer::composite_layers(&[], prepared.atlas_width, prepared.atlas_height);
+            lightmap_layer::empty_composite(prepared.atlas_width, prepared.atlas_height);
         fallback.dilate();
         return fallback.encode_section(
             density,
@@ -227,10 +227,8 @@ fn compose_cached_layers(
             .iter()
             .filter(|placement| placement.layer == target_layer)
             .count();
-        let mut accumulator = lightmap_layer::IncrementalLayerAccumulator::zeroed(
-            prepared.atlas_width,
-            prepared.atlas_height,
-        );
+        let mut accumulator =
+            lightmap_layer::IncrementalLayerAccumulator::for_atlas_layer(shared, target_layer);
         let hash_offset = target_layer as usize * layer_lights.len();
         for (light, input_hash) in layer_lights
             .iter()
@@ -286,7 +284,7 @@ fn compose_cached_layers(
                     partition
                 }
             };
-            accumulator.fold_partition(&partition, target_layer);
+            accumulator.fold_partition(light, &partition, shared);
             drop(partition);
         }
         let mut plane = accumulator.finish();

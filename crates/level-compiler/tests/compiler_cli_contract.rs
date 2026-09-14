@@ -33,7 +33,6 @@ const SUMMARY_LABELS: &[&str] = &[
     "ShadowmaskAtlas",
     "AnimLightChunks",
     "AnimWeightMaps",
-    "SDF Atlas Bake",
     "TextureMips",
     "Packing",
     "Total",
@@ -264,7 +263,7 @@ fn warning_count(stdout: &str) -> usize {
 #[ignore = "two cold prl-build bakes; run on demand with -- --ignored"]
 fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     let workspace = workspace_root();
-    let input = workspace.join("content/dev/maps/test_animated_weight_maps_single.map");
+    let input = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
     assert!(input.is_file(), "fixture map missing: {}", input.display());
 
     let temp = TempBuildDir::new();

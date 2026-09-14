@@ -47,6 +47,7 @@ mod targeting;
 #[path = "../ai_tests.rs"]
 mod ai_tests;
 
+use crate::ai_host::{AiHost, SimAiHost};
 use crate::collision::CollisionWorld;
 use crate::nav::NavGraph;
 use crate::sim::EnemyProjectilePresentationSpawn;
@@ -367,8 +368,22 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     runtime: &mut AiRuntime,
     tick_dt: f32,
     inputs: AiTickInputs<'_>,
-    on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> AiTickResult {
+    let mut host = SimAiHost::new(&mut on_impact);
+    run_ai_tick_with_host(registry, runtime, tick_dt, inputs, &mut host)
+}
+
+pub(crate) fn run_ai_tick_with_host<H>(
+    registry: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    tick_dt: f32,
+    inputs: AiTickInputs<'_>,
+    host: &mut H,
+) -> AiTickResult
+where
+    H: AiHost + ?Sized,
+{
     let AiTickInputs {
         nav_graph,
         collision_world,
@@ -408,7 +423,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // A terminal impact effect or queued despawn leaves the id live
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
-            if crate::scripting_systems::health::is_quiescent(registry, id) {
+            if host.is_quiescent(registry, id) {
                 return None;
             }
             let ComponentValue::Brain(brain) = value else {
@@ -446,12 +461,5 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
 
-    apply::apply_outcomes(
-        registry,
-        outcomes,
-        tick_dt,
-        warned,
-        blocked_warned,
-        on_impact,
-    )
+    apply::apply_outcomes(registry, outcomes, tick_dt, warned, blocked_warned, host)
 }

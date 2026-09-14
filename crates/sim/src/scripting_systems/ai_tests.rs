@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
+use log::Level;
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
@@ -71,6 +72,7 @@ use postretro_scripting_core::data_descriptors::{
     PlayerMovementDescriptor, SpeedParams,
 };
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+use postretro_test_log_capture::LogCapture;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -10513,6 +10515,57 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
     assert_eq!(credit.source_id, "enemy.rifle");
     assert_eq!(credit.last_attacker, Some(enemy));
     assert_eq!(credit.last_weapon, Some(enemy));
+}
+
+// Regression: a failed projectile spawn used to consume the AI fire latch and
+// publish presentation/event work even though the registry rejected the body.
+#[test]
+fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let _pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    registry.set_test_capacity_limit(2);
+
+    let capture = LogCapture::start();
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+        },
+        |_| {},
+    );
+
+    capture.assert_logged_once(
+        Level::Warn,
+        "[Weapon] entity registry exhausted; dropping projectile launch",
+    );
+    assert!(result.events.is_empty());
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(brain.activity_attack_count(0), Some(0));
+    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
 }
 
 #[test]

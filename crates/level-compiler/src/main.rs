@@ -466,6 +466,19 @@ fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
     }
 }
 
+fn run_with_cache_report<T>(
+    stage_cache: Option<cache::StageCache>,
+    budget_bytes: u64,
+    run: impl FnOnce(Option<cache::StageCache>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let report_handle = stage_cache.clone();
+    let result = run(stage_cache);
+    if let Some(cache) = report_handle {
+        cache.warn_if_live_set_exceeds(budget_bytes);
+    }
+    result
+}
+
 fn should_run_config_screen(reporter_mode: ReporterMode, args: &Args) -> bool {
     reporter_mode == ReporterMode::Tui && !args.quality_flag_supplied
 }
@@ -512,7 +525,9 @@ fn main() -> anyhow::Result<()> {
             let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
             let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
-            let result = pipeline::run(&args, stage_cache, started, pipeline_reporter, governor);
+            let result = run_with_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
+                pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
+            });
             if result.is_err() {
                 reporter::Reporter::finalize_failure(reporter.as_ref());
             }
@@ -557,29 +572,35 @@ fn main() -> anyhow::Result<()> {
             match tui_session {
                 Some(session) => tui::run_tui_after_config(session, log_sink.clone(), move || {
                     let stage_cache = construct_stage_cache(&args);
+                    let cache_max_bytes = args.cache_max_bytes;
                     let bake = move |reporter, governor| {
-                        pipeline::run_prepared(
-                            &args,
-                            stage_cache,
-                            started,
-                            reporter,
-                            governor,
-                            prepared,
-                        )
+                        run_with_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
+                            pipeline::run_prepared(
+                                &args,
+                                stage_cache,
+                                started,
+                                reporter,
+                                governor,
+                                prepared,
+                            )
+                        })
                     };
                     (planned, log_sink, governor, bake)
                 }),
                 None => {
                     let stage_cache = construct_stage_cache(&args);
+                    let cache_max_bytes = args.cache_max_bytes;
                     tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
-                        pipeline::run_prepared(
-                            &args,
-                            stage_cache,
-                            started,
-                            reporter,
-                            governor,
-                            prepared,
-                        )
+                        run_with_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
+                            pipeline::run_prepared(
+                                &args,
+                                stage_cache,
+                                started,
+                                reporter,
+                                governor,
+                                prepared,
+                            )
+                        })
                     })
                 }
             }
@@ -2645,6 +2666,16 @@ mod tests {
             stage_cache_is_enabled(&args),
             "rapid iteration must derive a warm Some(stage_cache) path"
         );
+    }
+
+    #[test]
+    fn exact_build_cache_report_seam_is_silent() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let capture = LogCapture::start();
+        run_with_cache_report(None, 0, |_| Ok(())).unwrap();
+        capture.assert_not_logged(Level::Warn, "[cache] build read/wrote");
     }
 
     /// `--release` and `--no-cache` together parse without error (identical

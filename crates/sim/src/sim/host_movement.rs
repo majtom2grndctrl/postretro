@@ -100,8 +100,7 @@ mod tests {
     use super::*;
     use crate::collision::CollisionWorld;
     use glam::Vec2;
-    use parry3d::math::{Isometry, Point};
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
 
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
@@ -113,16 +112,13 @@ mod tests {
 
     fn floor_world() -> CollisionWorld {
         let points = vec![
-            Point::new(-500.0, 0.0, -500.0),
-            Point::new(500.0, 0.0, -500.0),
-            Point::new(500.0, 0.0, 500.0),
-            Point::new(-500.0, 0.0, 500.0),
+            Vec3::new(-500.0, 0.0, -500.0),
+            Vec3::new(500.0, 0.0, -500.0),
+            Vec3::new(500.0, 0.0, 500.0),
+            Vec3::new(-500.0, 0.0, 500.0),
         ];
         let triangles = vec![[0, 2, 1], [0, 3, 2]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn descriptor() -> PlayerMovementDescriptor {

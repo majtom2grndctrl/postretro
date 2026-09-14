@@ -16,9 +16,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::{EulerRot, Mat4, Vec3};
-use parry3d::math::{Point, Vector};
 
 use crate::agent_steering;
+use crate::ai_host::{AiTickInputs, AiTickResult, SimAiHost};
 use crate::collision::moving::{
     CombinedCollisionWorld, MoverCollider, MoverPoseSource, cast_ray_combined,
 };
@@ -412,7 +412,7 @@ pub struct TriggerCommandFire {
 }
 
 #[allow(clippy::too_many_arguments, dead_code)]
-pub fn simulate_tick(
+pub fn simulate_tick<AiResult>(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -421,7 +421,7 @@ pub fn simulate_tick(
     _legacy_active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
-    ai_runtime: &mut scripting_systems::ai::AiRuntime,
+    run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -430,7 +430,10 @@ pub fn simulate_tick(
     tick_dt: f32,
     trigger_context: Option<TriggerTickContext<'_>>,
     on_impact: impl FnMut(&mut EntityRegistry),
-) -> TickEvents {
+) -> TickEvents
+where
+    AiResult: Into<AiTickResult>,
+{
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
@@ -445,7 +448,7 @@ pub fn simulate_tick(
         anim_time,
         (0.0, 0.0),
         _progress_tracker,
-        ai_runtime,
+        run_ai,
         mover_colliders,
         mover_tick_states,
         remote_pawn_commands,
@@ -470,7 +473,7 @@ pub fn simulate_tick(
 /// Headless callers retain the wrapper above and intentionally use the neutral
 /// camera; production local-player presentation passes the live camera aim here.
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_tick_with_presentation_aim(
+pub fn simulate_tick_with_presentation_aim<AiResult>(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -480,7 +483,7 @@ pub fn simulate_tick_with_presentation_aim(
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
-    ai_runtime: &mut scripting_systems::ai::AiRuntime,
+    mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -498,7 +501,10 @@ pub fn simulate_tick_with_presentation_aim(
     trigger_context: Option<TriggerTickContext<'_>>,
     mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
-) -> TickEvents {
+) -> TickEvents
+where
+    AiResult: Into<AiTickResult>,
+{
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
@@ -723,11 +729,11 @@ pub fn simulate_tick_with_presentation_aim(
     );
     let ai_result = {
         let mut registry = registry.borrow_mut();
-        scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
+        let mut host = SimAiHost::new(&mut on_impact);
+        run_ai(
             &mut registry,
-            ai_runtime,
             tick_dt,
-            scripting_systems::ai::AiTickInputs {
+            AiTickInputs {
                 nav_graph,
                 collision_world: Some(collision_world),
                 descriptors,
@@ -735,11 +741,14 @@ pub fn simulate_tick_with_presentation_aim(
                 factions,
                 faction_sentiment,
             },
-            &mut on_impact,
+            &mut host,
         )
+        .into()
     };
-    let ai = ai_result.events;
-    let enemy_projectile_spawns = ai_result.projectile_spawns;
+    let AiTickResult {
+        events: ai,
+        projectile_spawns: enemy_projectile_spawns,
+    } = ai_result;
 
     let post_movement_command = post_movement(&registry);
 
@@ -1021,7 +1030,7 @@ fn update_brain_animation_playback_rates(
         // Calibration is `measured_ground_speed / effective_travel_speed`; a
         // state with neither an override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion = scripting_systems::ai::locomotion_animation(&brain.graph)
+        let is_locomotion = postretro_foundation::locomotion_animation(&brain.graph)
             .is_some_and(|locomotion| animation.current_state == locomotion);
         let rate_input = if is_locomotion && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
@@ -1448,16 +1457,11 @@ fn probe_foot(
 
     let ray_origin = foot_world + Vec3::Y * upward_allowance;
     let max_toi = upward_allowance + downward_reach;
-    let origin = Point::new(ray_origin.x, ray_origin.y, ray_origin.z);
-    let down = Vector::new(0.0, -1.0, 0.0);
+    let origin = ray_origin;
+    let down = Vec3::NEG_Y;
     // Static-only fast path; fold movers in only when present.
     let hit = if mover_colliders.is_empty() {
-        cast_ray(collision_world, origin, down, max_toi).map(|h| {
-            (
-                h.time_of_impact,
-                Vec3::new(h.normal.x, h.normal.y, h.normal.z),
-            )
-        })
+        cast_ray(collision_world, origin, down, max_toi).map(|h| (h.time_of_impact, h.normal))
     } else {
         cast_ray_combined(
             collision_world,
@@ -1547,7 +1551,7 @@ pub use host_movement::run_host_movement_tick;
 pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
-#[cfg(any(test, feature = "dev-tools"))]
+#[cfg(test)]
 pub(crate) mod predict_reconcile;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via
@@ -2112,7 +2116,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = MoverTickStateTable::default();
         simulate_tick(
@@ -2124,7 +2128,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &mover_colliders,
             &mut mover_states,
             remote,
@@ -2184,7 +2188,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let mut touch_system = TouchSystem::default();
         let edges = HashMap::new();
@@ -2199,7 +2203,7 @@ mod tests {
             0.0,
             (0.0, 0.0),
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],
@@ -2301,7 +2305,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let mut touch_system = TouchSystem::default();
         let mut trigger_system = TriggerSystem::default();
@@ -2321,7 +2325,7 @@ mod tests {
             0.0,
             (0.0, 0.0),
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],
@@ -2430,7 +2434,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         simulate_tick(
             registry,
@@ -2441,7 +2445,7 @@ mod tests {
             Some(weapon),
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],
@@ -2617,7 +2621,7 @@ mod tests {
         bridge.insert_for_test(source_trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
         let mut trigger_system = TriggerSystem::default();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
@@ -2632,7 +2636,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],
@@ -2754,7 +2758,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],
@@ -2878,7 +2882,7 @@ mod tests {
             }
             let mut trigger_system = TriggerSystem::default();
             let mut progress = ProgressTracker::new();
-            let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+            let mut ai_runtime = postretro_ai::AiRuntime::new();
             let mut mover_states = MoverTickStateTable::default();
             let use_edges = HashMap::new();
 
@@ -2891,7 +2895,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_runtime,
+                postretro_ai::test_tick_runner!(&mut ai_runtime),
                 &[],
                 &mut mover_states,
                 &[],
@@ -2968,7 +2972,7 @@ mod tests {
             let world = CollisionWorld::new();
             let hit_zones = HitZoneStore::new();
             let mut progress = ProgressTracker::new();
-            let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+            let mut ai_runtime = postretro_ai::AiRuntime::new();
             let mut mover_states = MoverTickStateTable::default();
             simulate_tick(
                 registry.clone(),
@@ -2979,7 +2983,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_runtime,
+                postretro_ai::test_tick_runner!(&mut ai_runtime),
                 &[],
                 &mut mover_states,
                 &[],
@@ -3056,7 +3060,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let events = simulate_tick(
             registry.clone(),
@@ -3067,7 +3071,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_runtime,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
             &mut mover_states,
             &[],

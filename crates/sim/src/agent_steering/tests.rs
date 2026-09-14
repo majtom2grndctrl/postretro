@@ -11,9 +11,7 @@
 
 use super::*;
 
-use parry3d::math::{Isometry, Point};
-use parry3d::query::PointQuery;
-use parry3d::shape::TriMesh;
+use glam::Vec3;
 use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
@@ -130,15 +128,15 @@ impl LWall {
     /// Collision world: the floor quad plus the four vertical side faces of the
     /// obstacle box (each two-sided so an agent on either side is blocked).
     fn collision_world(&self) -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         // Floor quad.
         let base = points.len() as u32;
-        points.push(Point::new(0.0, 0.0, 0.0));
-        points.push(Point::new(self.extent, 0.0, 0.0));
-        points.push(Point::new(self.extent, 0.0, self.extent));
-        points.push(Point::new(0.0, 0.0, self.extent));
+        points.push(Vec3::new(0.0, 0.0, 0.0));
+        points.push(Vec3::new(self.extent, 0.0, 0.0));
+        points.push(Vec3::new(self.extent, 0.0, self.extent));
+        points.push(Vec3::new(0.0, 0.0, self.extent));
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
 
@@ -146,10 +144,10 @@ impl LWall {
         // y=0 to y=height.
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, self.height, z1));
-            points.push(Point::new(x0, self.height, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, self.height, z1));
+            points.push(Vec3::new(x0, self.height, z0));
             // Front + back winding so the agent is blocked from either side.
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
@@ -163,11 +161,7 @@ impl LWall {
         push_wall(self.bx0, self.bz0, self.bx0, self.bz1); // -X face (x = bx0)
         push_wall(self.bx0, self.bz1, self.bx1, self.bz1); // +Z face (z = bz1)
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Hand-built navmesh covering the floor MINUS the obstacle footprint as an
@@ -244,32 +238,29 @@ impl FreestandingWall {
     }
 
     fn collision_world(&self) -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         let base = points.len() as u32;
-        points.push(Point::new(0.0, 0.0, 0.0));
-        points.push(Point::new(8.0, 0.0, 0.0));
-        points.push(Point::new(8.0, 0.0, 11.0));
-        points.push(Point::new(0.0, 0.0, 11.0));
+        points.push(Vec3::new(0.0, 0.0, 0.0));
+        points.push(Vec3::new(8.0, 0.0, 0.0));
+        points.push(Vec3::new(8.0, 0.0, 11.0));
+        points.push(Vec3::new(0.0, 0.0, 11.0));
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
 
         let base = points.len() as u32;
-        points.push(Point::new(3.0, 0.0, 2.0));
-        points.push(Point::new(3.0, 0.0, 7.0));
-        points.push(Point::new(3.0, self.height, 7.0));
-        points.push(Point::new(3.0, self.height, 2.0));
+        points.push(Vec3::new(3.0, 0.0, 2.0));
+        points.push(Vec3::new(3.0, 0.0, 7.0));
+        points.push(Vec3::new(3.0, self.height, 7.0));
+        points.push(Vec3::new(3.0, self.height, 2.0));
         // Both windings keep collision solid from either lane.
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
         tris.push([base, base + 2, base + 1]);
         tris.push([base, base + 3, base + 2]);
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     fn navmesh(&self) -> NavMeshSection {
@@ -360,23 +351,23 @@ impl ConcaveCorner {
     }
 
     fn collision_world(&self) -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         let base = points.len() as u32;
-        points.push(Point::new(self.floor_min, 0.0, self.floor_min));
-        points.push(Point::new(self.floor_max, 0.0, self.floor_min));
-        points.push(Point::new(self.floor_max, 0.0, self.floor_max));
-        points.push(Point::new(self.floor_min, 0.0, self.floor_max));
+        points.push(Vec3::new(self.floor_min, 0.0, self.floor_min));
+        points.push(Vec3::new(self.floor_max, 0.0, self.floor_min));
+        points.push(Vec3::new(self.floor_max, 0.0, self.floor_max));
+        points.push(Vec3::new(self.floor_min, 0.0, self.floor_max));
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
 
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, self.height, z1));
-            points.push(Point::new(x0, self.height, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, self.height, z1));
+            points.push(Vec3::new(x0, self.height, z0));
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
             tris.push([base, base + 2, base + 1]);
@@ -390,10 +381,7 @@ impl ConcaveCorner {
         // for the fixed-handedness recovery slide.
         push_wall(self.corner, self.corner, self.wall_end, self.corner);
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     fn navmesh(&self) -> NavMeshSection {
@@ -503,9 +491,8 @@ fn goal_projected_xz_progress(start: Vec3, end: Vec3, heading: Vec3) -> f32 {
 /// so testing the raw waypoint Y would measure the floor rather than the wall
 /// clearance the funnel promises.
 fn static_mesh_clearance(world: &CollisionWorld, waypoint: Vec3, capsule_center_y: f32) -> f32 {
-    let point = Point::new(waypoint.x, capsule_center_y, waypoint.z);
-    let projection = world.mesh.project_point(&world.isometry, &point, false);
-    (point - projection.point).norm()
+    let point = Vec3::new(waypoint.x, capsule_center_y, waypoint.z);
+    (point - world.project_point_for_test(point, false)).length()
 }
 
 fn portal_midpoint(portal: &NavPortal) -> Vec3 {

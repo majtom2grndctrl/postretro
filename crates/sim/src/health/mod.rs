@@ -1,3 +1,3 @@
 // Health subsystem reaction surface.
 
-pub(crate) mod reactions;
+pub mod reactions;

@@ -927,9 +927,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use glam::Vec3;
     use log::Level;
-    use parry3d::math::Point;
-    use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::{
         ComponentKind, PresentationPresenter, PresentationTemplateHandle, Transform,
@@ -983,15 +982,15 @@ mod tests {
     }
 
     fn splash_wall_at_x(x: f32) -> crate::collision::CollisionWorld {
-        crate::collision::CollisionWorld::from_trimesh_for_test(TriMesh::new(
+        crate::collision::CollisionWorld::from_triangles_for_test(
             vec![
-                Point::new(x, -2.0, -2.0),
-                Point::new(x, 2.0, -2.0),
-                Point::new(x, 2.0, 2.0),
-                Point::new(x, -2.0, 2.0),
+                Vec3::new(x, -2.0, -2.0),
+                Vec3::new(x, 2.0, -2.0),
+                Vec3::new(x, 2.0, 2.0),
+                Vec3::new(x, -2.0, 2.0),
             ],
             vec![[0, 1, 2], [0, 2, 3]],
-        ))
+        )
     }
 
     fn connect_presentation_client(

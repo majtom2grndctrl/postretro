@@ -245,7 +245,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         observe_live,
         remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
         crouch_toggle_active: false,
-        ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
+        ai_runtime: postretro_ai::AiRuntime::new(),
         cursor_pos: None,
         nav_stick_tracker: input::StickNavTracker::new(),
         frame_timing: FrameTiming::new(initial_state),

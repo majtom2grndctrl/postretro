@@ -10,13 +10,12 @@ use super::{
     AiTickResult, AttackOutcome, ENEMY_ATTACK_EVENT, ENEMY_ATTACK_SOURCE_ID, LocomotionIntent,
 };
 use crate::agent_steering;
-use crate::sim::{EnemyProjectilePresentationSpawn, spawn_projectile};
+use crate::ai_host::AiHost;
+use crate::sim::EnemyProjectilePresentationSpawn;
 use glam::Quat;
 use postretro_entities::Transform;
 use postretro_entities::components::brain::BrainComponent;
-use postretro_entities::components::health::{
-    DamageContext, DamageProducer, apply_damage_with_context,
-};
+use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_foundation::DamagePayload;
 use std::borrow::Cow;
@@ -39,14 +38,17 @@ fn commit_attack_fire(
 }
 
 /// Pass 3: mutate the registry from resolved enemy outcomes.
-pub(super) fn apply_outcomes(
+pub(super) fn apply_outcomes<H>(
     registry: &mut postretro_entities::EntityRegistry,
     outcomes: Vec<super::EnemyOutcome>,
     tick_dt: f32,
     warned: &mut std::collections::HashSet<String>,
     blocked_warned: &mut std::collections::HashSet<postretro_entities::EntityId>,
-    mut on_impact: impl FnMut(&mut postretro_entities::EntityRegistry),
-) -> super::AiTickResult {
+    host: &mut H,
+) -> super::AiTickResult
+where
+    H: AiHost + ?Sized,
+{
     let mut events: Vec<Cow<'static, str>> = Vec::new();
     let mut projectile_spawns = Vec::new();
     // Once an entity crosses the terminal simulation gate in this batch, a
@@ -67,7 +69,7 @@ pub(super) fn apply_outcomes(
         // later actor. Keep every compute snapshot published above, but do not
         // let that actor's stale outcome produce any observable work.
         if invalidated_entities.contains(&outcome.id)
-            || crate::scripting_systems::health::is_quiescent(registry, outcome.id)
+            || host.is_quiescent(registry, outcome.id)
             || registry
                 .get_component::<BrainComponent>(outcome.id)
                 .is_err()
@@ -192,7 +194,7 @@ pub(super) fn apply_outcomes(
                         pending.attack_name,
                         pending.cooldown_ms,
                     ) {
-                        apply_damage_with_context(
+                        host.apply_damage(
                             registry,
                             target.entity,
                             &DamagePayload {
@@ -210,10 +212,10 @@ pub(super) fn apply_outcomes(
                         // Observe the direct damage result before impact policy
                         // dispatch can synchronously recover it. Death-sweep
                         // latching remains downstream and untouched.
-                        if crate::scripting_systems::health::is_quiescent(registry, target.entity) {
+                        if host.is_quiescent(registry, target.entity) {
                             invalidated_entities.insert(target.entity);
                         }
-                        on_impact(registry);
+                        host.on_impact(registry);
                         true
                     } else {
                         false
@@ -227,7 +229,7 @@ pub(super) fn apply_outcomes(
                     // impact path uses this id only as engine-internal damage
                     // context provenance, never as a weapon lookup.
                     let projectile =
-                        spawn_projectile(registry, outcome.id, outcome.id, *launch, None);
+                        host.spawn_projectile(registry, outcome.id, outcome.id, *launch);
                     if let Some(projectile) = projectile
                         && commit_attack_fire(
                             registry,

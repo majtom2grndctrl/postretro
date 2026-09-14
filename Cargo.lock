@@ -3675,7 +3675,7 @@ dependencies = [
  "mlua",
  "notify",
  "notify-debouncer-full",
- "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -3686,6 +3686,7 @@ dependencies = [
  "postretro-model",
  "postretro-net",
  "postretro-netcode",
+ "postretro-physics",
  "postretro-render-cpu",
  "postretro-render-data",
  "postretro-renderer",
@@ -3703,6 +3704,25 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "winit",
+]
+
+[[package]]
+name = "postretro-ai"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "mlua",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-level-format",
+ "postretro-net",
+ "postretro-physics",
+ "postretro-scripting-core",
+ "postretro-sim",
+ "postretro-test-log-capture",
+ "rquickjs",
+ "serde_json",
 ]
 
 [[package]]
@@ -3857,18 +3877,33 @@ dependencies = [
  "getrandom 0.3.4",
  "glam",
  "log",
- "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
  "postretro-model",
  "postretro-net",
+ "postretro-physics",
  "postretro-scripting-core",
  "postretro-sim",
  "postretro-test-log-capture",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-physics"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "parry3d",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-sim",
 ]
 
 [[package]]
@@ -3980,7 +4015,7 @@ dependencies = [
  "glam",
  "log",
  "mlua",
- "parry3d",
+ "postretro-ai",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -3991,6 +4026,7 @@ dependencies = [
  "postretro-model",
  "postretro-net",
  "postretro-netcode",
+ "postretro-physics",
  "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",

@@ -3,9 +3,11 @@
 // `select_transition`.
 
 use postretro_entities::components::brain::BrainComponent;
+#[cfg(test)]
+use postretro_foundation::BehaviorGraphDescriptor;
 use postretro_foundation::{
-    ActionVerb, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorLayerDescriptor,
-    BehaviorSelectorEntry, IrValue, MotionVerb, eval_value,
+    ActionVerb, BehaviorActivityDescriptor, BehaviorLayerDescriptor, BehaviorSelectorEntry,
+    IrValue, MotionVerb, eval_value, is_locomotion_activity, rest_animation,
 };
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
@@ -322,11 +324,6 @@ pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option
     leaf.animation.as_deref()
 }
 
-fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
-    matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
-        || activity.motion.is_some_and(MotionVerb::is_position_goal)
-}
-
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
     match motion {
         MotionVerb::ChaseTarget => SteeringIntent::Chase,
@@ -336,30 +333,6 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
         | MotionVerb::Hold => SteeringIntent::Clear,
         MotionVerb::Freeze => SteeringIntent::Hold,
     }
-}
-
-pub fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
-    graph
-        .envelope
-        .activities
-        .values()
-        .find(|activity| {
-            activity.animation.is_some()
-                && (is_locomotion_activity(activity)
-                    || matches!(
-                        activity.layers.get("move"),
-                        Some(BehaviorLayerDescriptor::Selector(_))
-                    ))
-        })
-        .and_then(|activity| activity.animation.as_deref())
-}
-
-pub(crate) fn rest_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
-    graph
-        .envelope
-        .activities
-        .get(&graph.envelope.initial)
-        .and_then(|activity| activity.animation.as_deref())
 }
 
 #[cfg(test)]
@@ -375,8 +348,8 @@ mod statechart_tests {
 
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
-    use crate::scripting_systems::ai::brain_programs::bind_graph;
-    use crate::scripting_systems::ai::candidate_scope::CandidateScope;
+    use crate::brain_programs::bind_graph;
+    use crate::candidate_scope::CandidateScope;
 
     fn activity(
         animation: &str,

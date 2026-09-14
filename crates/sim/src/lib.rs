@@ -6,18 +6,20 @@
 #![deny(unsafe_code)]
 
 mod agent;
-mod agent_steering;
+pub mod agent_steering;
+pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]
 pub mod alloc_probe;
-pub mod collision;
-mod combat_positioning;
+pub mod combat_positioning;
 mod fx;
 mod grant;
-mod health;
+#[cfg(not(feature = "test-support"))]
+pub(crate) mod health;
+#[cfg(feature = "test-support")]
+pub mod health;
 pub mod impact_effects;
 pub mod impact_policy;
-pub mod kinematic_mover;
-pub mod movement;
+pub mod mover_commands;
 pub mod nav;
 pub mod scripting;
 pub mod scripting_systems;
@@ -30,12 +32,15 @@ pub mod trigger_pools;
 pub mod trigger_system;
 pub mod weapon;
 
+pub(crate) use postretro_physics::{collision, kinematic_mover, movement};
+
 pub use sim::{
     frame_timing, presentation_pool, resolve_mesh_entity_bindings,
     resolve_mesh_entity_bindings_for_entities,
 };
 
-/// Retarget the dev-tools chase agent without exposing the steering subsystem.
+/// Retarget the dev-tools chase agent through a narrow dev-tools facade; `agent_steering`
+/// remains public for the AI boundary.
 #[cfg(feature = "dev-tools")]
 pub fn set_debug_agent_destination(
     registry: &mut postretro_entities::EntityRegistry,

@@ -20,20 +20,30 @@ use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
-/// Maximum number of agents that may recompute a path in a single tick. Bounds
-/// the per-frame pathfinding cost regardless of how many agents simultaneously
-/// want a fresh route — overflow waits for a later tick (the staleness gate
-/// keeps each waiting agent eligible). Sized for a handful of active pursuers
-/// per fixed tick; raise it only behind a measured pathfinding bottleneck.
-pub(crate) const REPLAN_BUDGET_PER_TICK: u32 = 4;
+mod tick_diagnostics {
+    /// Maximum number of agents that may recompute a path in a single tick.
+    /// Bounds the per-frame pathfinding cost regardless of how many agents
+    /// simultaneously want a fresh route.
+    pub const REPLAN_BUDGET_PER_TICK: u32 = 4;
 
-/// Ticks an agent must wait between path recomputations for the SAME
-/// destination. A live path is refreshed at most this often; a FAILED plan
-/// (no route) is likewise gated by this window so a permanently-blocked agent
-/// costs at most one replan per window rather than one every tick (the
-/// replan-starvation gate). A destination move bypasses this (resets the
-/// cooldown to 0), so a newly-issued order plans on the next tick.
-pub(crate) const REPLAN_STALENESS_TICKS: u32 = 30;
+    /// Ticks an agent must wait between path recomputations for the same
+    /// destination, including retries after a failed plan.
+    pub const REPLAN_STALENESS_TICKS: u32 = 30;
+
+    /// Observable result of one steering tick. `replans` makes the per-tick
+    /// replan bound testable.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct AgentTickResult {
+        pub replans: u32,
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub use tick_diagnostics::{AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS};
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use tick_diagnostics::{
+    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS,
+};
 
 /// Arrival radius as a multiple of the agent capsule radius. The cursor advances
 /// to the next waypoint once the agent is within `ARRIVAL_RADIUS_FACTOR * radius`
@@ -90,7 +100,7 @@ const MANDATORY_EASING_PROGRESS_EPSILON: f32 = STUCK_PROGRESS_EPSILON * 0.05;
 const STEERING_ACCEL_PER_SPEED: f32 = 8.0;
 
 /// Maximum path-following heading rotation, in radians/sec.
-pub(crate) const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
+pub const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
 
 /// Corridor lookahead as a multiple of the agent capsule radius. This exceeds
 /// the waypoint-reached radius so agents can lead a corner, but stays below the
@@ -155,16 +165,8 @@ const SEPARATION_RADIUS_FACTOR: f32 = 2.5;
 /// separation nudges agents apart without overwhelming goal-directed steering.
 const SEPARATION_STRENGTH: f32 = 0.6;
 
-/// Observable result of one steering tick. `replans` makes the per-tick replan
-/// bound testable: it is the count of agents that actually recomputed a path
-/// this tick, which must never exceed [`REPLAN_BUDGET_PER_TICK`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct AgentTickResult {
-    pub(crate) replans: u32,
-}
-
-/// Read-back of one agent's path-following state. The enemy-AI tick
-/// (`scripting/systems/ai/mod.rs`) reads this to decide AI behavior; every field
+/// Read-back of one agent's path-following state. The `postretro-ai` policy
+/// tick (`crates/ai/src/lib.rs`) reads this to decide AI behavior; every field
 /// is derived from the live component, never recomputed here.
 ///
 /// The steering-API surface (`set_destination`/`clear_destination`/`path_state`
@@ -192,24 +194,24 @@ pub(crate) struct AgentTickResult {
 /// state is transient by design: retries ride the replan cooldown plus the
 /// drift/topology/direct-routable admission clauses.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AgentPathState {
+pub struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
-    pub(crate) has_destination: bool,
+    pub has_destination: bool,
     /// The agent holds a non-empty path toward that destination.
-    pub(crate) has_path: bool,
+    pub has_path: bool,
     /// The agent reached its destination (within the arrival radius).
-    pub(crate) arrived: bool,
+    pub arrived: bool,
     /// The agent has a destination but pathfinding found no route to it AND it
     /// holds no path to keep following (see the struct doc: a failed refresh
     /// keeps the previous route, so `blocked` implies `!has_path`).
-    pub(crate) blocked: bool,
+    pub blocked: bool,
     /// XZ distance from the agent's current position to its destination.
     /// `0.0` when there is no destination.
-    pub(crate) distance_to_destination: f32,
+    pub distance_to_destination: f32,
     /// Current agent position (capsule center, world space).
-    pub(crate) position: Vec3,
+    pub position: Vec3,
     /// Live agent velocity (world space) after the last tick.
-    pub(crate) velocity: Vec3,
+    pub velocity: Vec3,
 }
 
 /// Set (or replace) an agent's destination.
@@ -223,8 +225,8 @@ pub(crate) struct AgentPathState {
 /// and rebuilds the path under the per-tick replan budget. This function only
 /// updates the target; it does not touch the plan.
 ///
-/// This decoupling is the crux of the chase loop: the primary consumer
-/// (`scripting/systems/ai/mod.rs`) re-issues the player's position EVERY tick
+/// This decoupling is the crux of the chase loop: the `postretro-ai` policy
+/// tick (`crates/ai/src/lib.rs`) re-issues the player's position EVERY tick
 /// while chasing. If this wiped the path on each change, chasers beyond the
 /// per-tick replan budget would end the tick with an empty path and freeze;
 /// preserving the path lets them keep following their last route
@@ -234,7 +236,7 @@ pub(crate) struct AgentPathState {
 /// A non-finite `pos` is rejected as a silent no-op (matching `find_path`'s
 /// finiteness guard) so a NaN/inf target never enters the steering state. Also a
 /// silent no-op when the entity has no agent component.
-pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
+pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
     if !pos.is_finite() {
         return;
     }
@@ -252,7 +254,7 @@ pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, po
 /// Clear an agent's destination: drops the path and stops the agent (it keeps
 /// its grounded state but no longer steers). No-op when the entity has no agent
 /// component.
-pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
+pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
     };
@@ -274,7 +276,7 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
 /// Read one agent's path-following state. Returns `None` when the entity has no
 /// agent component (or is stale). The position is read from the agent's
 /// `Transform`; the rest from the agent component.
-pub(crate) fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPathState> {
+pub fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPathState> {
     let component = registry.get_component::<AgentComponent>(agent).ok()?;
     let position = registry
         .get_component::<Transform>(agent)
@@ -317,7 +319,29 @@ struct AgentSnapshot {
 ///
 /// Returns the count of agents that recomputed a path this tick — bounded by
 /// [`REPLAN_BUDGET_PER_TICK`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn tick(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    nav_graph: Option<&NavGraph>,
+    gravity: f32,
+    dt: f32,
+) -> AgentTickResult {
+    tick_impl(registry, collision_world, nav_graph, gravity, dt)
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) fn tick(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    nav_graph: Option<&NavGraph>,
+    gravity: f32,
+    dt: f32,
+) -> AgentTickResult {
+    tick_impl(registry, collision_world, nav_graph, gravity, dt)
+}
+
+fn tick_impl(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     nav_graph: Option<&NavGraph>,

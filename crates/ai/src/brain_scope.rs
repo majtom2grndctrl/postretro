@@ -4,9 +4,10 @@
 
 // The scope pairs the fixed `@brain.*` facts the engine computes each tick with
 // the `@state.*` per-entity leaves impact policies write, so an authored guard
-// reads both through one namespace. It lives in the binary, beside the AI tick,
-// because it names entity components — `postretro-foundation`, which owns the
-// name table and the declaration-time twin (`BrainValidationScope`), cannot.
+// reads both through one namespace. It lives in the AI policy crate, beside the
+// AI tick, because it names entity components — `postretro-foundation`, which
+// owns the name table and the declaration-time twin (`BrainValidationScope`),
+// cannot.
 // Both scopes resolve names through `resolve_brain_input`, so they cannot
 // disagree about which names exist or what they project to.
 //

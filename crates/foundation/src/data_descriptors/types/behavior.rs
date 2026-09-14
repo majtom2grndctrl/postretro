@@ -146,3 +146,37 @@ where
 mod recursive;
 
 pub use recursive::*;
+
+/// Whether an activity represents locomotion rather than an action-bearing
+/// combat phase.
+pub fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
+    matches!(activity.motion, Some(MotionVerb::ChaseTarget)) && activity.action.is_none()
+        || activity.motion.is_some_and(MotionVerb::is_position_goal)
+}
+
+/// Resolve the graph's authored locomotion animation, including a composite
+/// activity whose `move` layer selects locomotion per tick.
+pub fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
+    graph
+        .envelope
+        .activities
+        .values()
+        .find(|activity| {
+            activity.animation.is_some()
+                && (is_locomotion_activity(activity)
+                    || matches!(
+                        activity.layers.get("move"),
+                        Some(BehaviorLayerDescriptor::Selector(_))
+                    ))
+        })
+        .and_then(|activity| activity.animation.as_deref())
+}
+
+/// Resolve the animation authored on the graph's initial activity.
+pub fn rest_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
+    graph
+        .envelope
+        .activities
+        .get(&graph.envelope.initial)
+        .and_then(|activity| activity.animation.as_deref())
+}

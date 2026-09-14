@@ -1,32 +1,11 @@
-// Engine-owned enemy brain tick: snapshot/compute/apply passes over enemy
-// behavior graphs — target steering, damage, animation, and facing.
-// See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
-//      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
+// Engine-owned enemy brain tick evaluates authored behavior graphs.
+// See: context/lib/entity_model.md §7c · context/lib/scripting.md §11
 
-// Mods declare the state graph; Rust executes it. Every brain carries an
-// authored `BehaviorGraphDescriptor`, and this module drives exactly one
-// evaluator over it. There is no live VM at tick: guards are IR programs bound
-// once per graph into the evaluator's side-table (`brain_programs.rs`) and read
-// through a refreshed scope (`brain_scope.rs`).
-//
-// The split of duties: `graph_eval.rs` owns the pure selection and the verb
-// vocabulary, `targeting.rs` owns target selection, and this module layers the
-// registry reads/writes — steering, damage, facing, animation — on top. The
-// engine floor (stride, target selection, hysteresis, combat slots, the aggro
-// gate) sits UPSTREAM of guard evaluation and is not authorable.
-//
-// For each admitted live brain, exactly one authored-state condition suppresses
-// guard evaluation: a closed aggro gate. It stands the brain down to its graph's
-// `initial` state with steering cleared and reads neither targeting nor guards.
-// Everything else — including having no target at all — evaluates the whole
-// guard set, with the no-target
-// facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel)
-// projected into the scope. That is what lets a sealed-closet enemy that gets
-// shot flinch on an authored interrupt while it has nobody to chase.
+#![deny(unsafe_code)]
 
-use std::borrow::Cow;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+#[cfg(any(test, feature = "test-support"))]
+use std::{borrow::Cow, cell::RefCell};
 
 use glam::{Quat, Vec3};
 
@@ -44,25 +23,45 @@ mod steering;
 mod targeting;
 
 #[cfg(test)]
-#[path = "../ai_tests.rs"]
+#[path = "ai_tests.rs"]
 mod ai_tests;
 
-use crate::collision::CollisionWorld;
-use crate::nav::NavGraph;
-use crate::sim::EnemyProjectilePresentationSpawn;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use postretro_entities as __postretro_entities;
+pub(crate) use postretro_physics::collision;
+#[cfg(test)]
+pub(crate) use postretro_physics::{kinematic_mover, movement};
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use postretro_sim as __postretro_sim;
+pub(crate) use postretro_sim::{
+    agent_steering, ai_host, combat_positioning, nav, scripting, scripting_systems, sim, weapon,
+};
+#[cfg(test)]
+pub(crate) use postretro_sim::{
+    alloc_probe, health, impact_effects, impact_policy, sprite_collection,
+};
+
+#[cfg(any(test, feature = "test-support"))]
+use crate::ai_host::SimAiHost;
+use crate::ai_host::{AiHost, AiTickInputs, AiTickResult};
 use crate::weapon::ProjectileLaunch;
+#[cfg(any(test, feature = "test-support"))]
+use crate::{collision::CollisionWorld, nav::NavGraph};
 use brain_programs::BrainPrograms;
 use combat_slots::resolve_combat_slots;
 use engine_floor::SteeringIntent;
-pub use graph_eval::locomotion_animation;
-pub(crate) use graph_eval::rest_animation;
 use perception::LosGraceState;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, FactionRegistry,
-    FactionSentimentState, LiveFactionSentiment, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, LiveFactionSentiment, Transform,
 };
-use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
+#[cfg(any(test, feature = "test-support"))]
+use postretro_entities::{FactionRegistry, FactionSentimentState};
+use postretro_foundation::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
+#[cfg(test)]
+use postretro_foundation::{locomotion_animation, rest_animation};
 use targeting::TargetPawn;
 
 #[cfg(test)]
@@ -73,6 +72,8 @@ use brain_scope::BrainFacts;
 use engine_floor::POSITION_GOAL_ARRIVAL_EPSILON;
 #[cfg(test)]
 use graph_eval::{engages_active, select_transition_path, steering_for};
+#[cfg(test)]
+use postretro_entities::DEFAULT_ENEMY_FACTION_INDEX as ENEMY_DEFAULT_FACTION;
 #[cfg(test)]
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
@@ -86,26 +87,13 @@ use targeting::{acquisition_due, select_target, target_candidate, target_offers}
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
 /// names it raised and the app drains them through the sequence-aware named
 /// dispatcher after the tick loop settles.
-pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
+pub const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
-/// Interim `@state` field supplying the engine's fresh-acquisition hostility
-/// floor. Guards consume the durable `@brain.targetHostile` fact instead of
-/// binding directly to this storage detail.
-pub(crate) const FACTION_STATE_FIELD: &str = "faction";
-/// Optional per-archetype retaliation tolerance. This engine-owned storage is
-/// intentionally not an authored guard vocabulary; candidate guards consume
-/// only the resolved `@candidate.tolerance` fact.
-pub(crate) const ARCHETYPE_TOLERANCE_STATE_FIELD: &str = "archetype_tolerance";
 /// Compatibility tolerance for a relationship without authored pair or
 /// archetype data. No finite normal damage total can exceed it, so retaliation
 /// remains inert until content deliberately lowers a tolerance.
 pub const DEFAULT_RETALIATION_TOLERANCE: f32 = f32::MAX;
-/// Host-owned brain-bearing enemies begin in faction one. Player pawns leave
-/// the emergent state field absent and therefore read as faction zero.
-#[cfg(test)]
-pub(crate) const ENEMY_DEFAULT_FACTION: f32 = postretro_entities::DEFAULT_ENEMY_FACTION_INDEX;
-
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and a locomotion state plays its
 /// own travel animation; at or below it the enemy is treated as stopped, faces
@@ -114,7 +102,7 @@ pub(crate) const ENEMY_DEFAULT_FACTION: f32 = postretro_entities::DEFAULT_ENEMY_
 const MOVE_SPEED_EPSILON: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct LocomotionIntent {
+pub(crate) struct LocomotionIntent {
     moving: bool,
     speed_xz_sq: f32,
 }
@@ -125,7 +113,7 @@ impl LocomotionIntent {
         speed_xz_sq: 0.0,
     };
 
-    pub(super) fn from_velocity(velocity: Vec3) -> Self {
+    pub(crate) fn from_velocity(velocity: Vec3) -> Self {
         let speed_xz_sq = velocity.x * velocity.x + velocity.z * velocity.z;
         Self {
             moving: speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON,
@@ -138,7 +126,7 @@ impl LocomotionIntent {
 /// mutable writes (steering, damage, animation) happen after the walk completes.
 /// The compute pass CONSUMES these — the brain is moved into its outcome rather
 /// than cloned a second time, which matters because a brain carries its graph.
-pub(super) struct EnemySnapshot {
+pub(crate) struct EnemySnapshot {
     id: EntityId,
     position: Vec3,
     rotation: Quat,
@@ -147,34 +135,34 @@ pub(super) struct EnemySnapshot {
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
 /// a second pass under `&mut registry`.
-pub(super) struct EnemyOutcome {
-    pub(super) id: EntityId,
+pub(crate) struct EnemyOutcome {
+    pub(crate) id: EntityId,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
-    pub(super) position: Vec3,
-    pub(super) target: Option<TargetPawn>,
+    pub(crate) position: Vec3,
+    pub(crate) target: Option<TargetPawn>,
     /// Canonical enemy-eye/target-aim LOS endpoints. Passing them as data keeps
     /// combat positioning registry-decoupled and aligned with the fire gate.
-    pub(super) enemy_eye_offset: Vec3,
-    pub(super) target_aim: Option<Vec3>,
-    pub(super) brain: BrainComponent,
+    pub(crate) enemy_eye_offset: Vec3,
+    pub(crate) target_aim: Option<Vec3>,
+    pub(crate) brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
-    pub(super) engaged: bool,
+    pub(crate) engaged: bool,
     /// The facing direction evaluated in the compute pass and written in apply.
     /// Carrying it across the pass boundary lets the fire gate inspect this
     /// tick's exact post-slew heading rather than the previous tick's rotation.
     facing_direction: Option<Vec3>,
-    pub(super) combat_slot: Option<Vec3>,
+    pub(crate) combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
-    pub(super) prior_acquired_target: Option<EntityId>,
+    pub(crate) prior_acquired_target: Option<EntityId>,
     /// A replacement graph or invalid restored path was reseated this tick.
     /// Its state identity was resolved by name even when the resulting numeric
     /// index stayed equal.
-    pub(super) graph_reseated: bool,
+    pub(crate) graph_reseated: bool,
     /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -184,8 +172,8 @@ pub(super) struct EnemyOutcome {
     attack: Option<PendingAttack>,
     /// The selected offense action's standoff before and after this tick's
     /// transition. Combat slots are path-relative, not root-graph-relative.
-    pub(super) prior_standoff_distance: f32,
-    pub(super) standoff_distance: f32,
+    pub(crate) prior_standoff_distance: f32,
+    pub(crate) standoff_distance: f32,
     /// The entered state's authored `on_enter` address, present only on the tick
     /// the brain entered it.
     on_enter: Option<String>,
@@ -195,13 +183,13 @@ pub(super) struct EnemyOutcome {
 /// their direct-damage path; weapon attacks carry the launch materialized by
 /// the apply pass, after the immutable evaluator has released its registry
 /// borrow.
-pub(super) struct PendingAttack {
+pub(crate) struct PendingAttack {
     attack_name: String,
     cooldown_ms: f32,
     effect: AttackOutcome,
 }
 
-pub(super) enum AttackOutcome {
+pub(crate) enum AttackOutcome {
     Contact {
         damage: f32,
     },
@@ -211,35 +199,6 @@ pub(super) enum AttackOutcome {
         /// entities never stand in for a materialized wieldable descriptor.
         descriptor_class: String,
     },
-}
-
-/// Host-only output from the AI stage. Event addresses retain their existing
-/// post-tick dispatch path, while standalone enemy projectile ids carry the
-/// resolved weapon class to the listen-host presentation mirror.
-pub(crate) struct AiTickResult {
-    pub(crate) events: Vec<Cow<'static, str>>,
-    pub(crate) projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
-}
-
-/// Borrowed world data read by one host-side AI tick.
-///
-/// The descriptor slice and its generation are one snapshot: callers must
-/// obtain both from the same data-registry borrow. Keeping the world data
-/// borrowed makes this a stack-only view with no per-tick allocation or
-/// ownership transfer.
-pub(crate) struct AiTickInputs<'a> {
-    pub(crate) nav_graph: Option<&'a NavGraph>,
-    pub(crate) collision_world: Option<&'a CollisionWorld>,
-    pub(crate) descriptors: &'a [EntityTypeDescriptor],
-    pub(crate) descriptor_generation: u64,
-    /// Immutable manifest baseline. The App borrows this from the same
-    /// `DataRegistry` snapshot as descriptors, so a tick cannot observe a new
-    /// faction matrix beside stale content.
-    pub(crate) factions: &'a FactionRegistry,
-    /// Engine-owned live sentiment state. This is deliberately the RefCell
-    /// handle, not an already-borrowed view: impact effects may write it after
-    /// AI compute within the same tick.
-    pub(crate) faction_sentiment: &'a RefCell<FactionSentimentState>,
 }
 
 /// The AI tick's run-long state, owned by `App` across ticks.
@@ -305,6 +264,63 @@ impl Default for AiRuntime {
     }
 }
 
+/// Bind an application-owned runtime into simulation's injected AI callback.
+/// Expanding at the call site lets Rust infer the callback's independent
+/// registry, world-input, and host borrow lifetimes.
+#[macro_export]
+macro_rules! tick_runner {
+    ($runtime:expr) => {
+        |registry, tick_dt, inputs, host| {
+            $crate::run_ai_tick_with_host(registry, $runtime, tick_dt, inputs, host)
+        }
+    };
+}
+
+/// Adapt `postretro-sim`'s unit-test crate identity to AI's normal sim
+/// dependency. Cargo compiles those as distinct crate instances in the
+/// sim(dev) -> AI -> sim(normal) cycle, even though their lower-layer entity,
+/// collision, and descriptor values are shared.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! test_tick_runner {
+    ($runtime:expr) => {
+        |registry, tick_dt, inputs, host| {
+            let rebuilt_nav = inputs.nav_graph.map(|graph| {
+                $crate::__postretro_sim::nav::NavGraph::from_section(&graph.to_section_for_test())
+            });
+            let external_inputs = $crate::__postretro_sim::ai_host::AiTickInputs {
+                nav_graph: rebuilt_nav.as_ref(),
+                collision_world: inputs.collision_world,
+                descriptors: inputs.descriptors,
+                descriptor_generation: inputs.descriptor_generation,
+                factions: inputs.factions,
+                faction_sentiment: inputs.faction_sentiment,
+            };
+            let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
+                host.on_impact(registry)
+            };
+            let mut concrete_host =
+                $crate::__postretro_sim::ai_host::SimAiHost::new(&mut on_impact);
+            let result = $crate::run_ai_tick_with_host(
+                registry,
+                $runtime,
+                tick_dt,
+                external_inputs,
+                &mut concrete_host,
+            );
+            (
+                result.events,
+                result
+                    .projectile_spawns
+                    .into_iter()
+                    .map(|spawn| (spawn.projectile, spawn.descriptor_class))
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+}
+
 /// Drive every enemy brain one tick. Returns the event addresses raised this
 /// tick — one [`ENEMY_ATTACK_EVENT`] per enemy that attacked, plus each entered
 /// state's authored `on_enter` after a transition/reseat — for the app's
@@ -327,8 +343,8 @@ impl Default for AiRuntime {
 ///    cooldown, range, live-target, LOS, and post-slew-facing gates.
 /// 5. On an activity change or locomotion stop/resume, request the one animation
 ///    state resolved from the active nested path.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn run_ai_tick(
+#[cfg(any(test, feature = "test-support"))]
+pub fn run_ai_tick(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
     tick_dt: f32,
@@ -336,6 +352,7 @@ pub(crate) fn run_ai_tick(
     run_ai_tick_with_navigation(registry, runtime, tick_dt, None, None)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn run_ai_tick_with_navigation(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
@@ -362,13 +379,28 @@ pub(crate) fn run_ai_tick_with_navigation(
     .events
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn run_ai_tick_with_navigation_and_impact(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
     tick_dt: f32,
     inputs: AiTickInputs<'_>,
-    on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> AiTickResult {
+    let mut host = SimAiHost::new(&mut on_impact);
+    run_ai_tick_with_host(registry, runtime, tick_dt, inputs, &mut host)
+}
+
+pub fn run_ai_tick_with_host<H>(
+    registry: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    tick_dt: f32,
+    inputs: AiTickInputs<'_>,
+    host: &mut H,
+) -> AiTickResult
+where
+    H: AiHost,
+{
     let AiTickInputs {
         nav_graph,
         collision_world,
@@ -408,7 +440,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             // A terminal impact effect or queued despawn leaves the id live
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
-            if crate::scripting_systems::health::is_quiescent(registry, id) {
+            if host.is_quiescent(registry, id) {
                 return None;
             }
             let ComponentValue::Brain(brain) = value else {
@@ -446,12 +478,5 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
     resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
 
-    apply::apply_outcomes(
-        registry,
-        outcomes,
-        tick_dt,
-        warned,
-        blocked_warned,
-        on_impact,
-    )
+    apply::apply_outcomes(registry, outcomes, tick_dt, warned, blocked_warned, host)
 }

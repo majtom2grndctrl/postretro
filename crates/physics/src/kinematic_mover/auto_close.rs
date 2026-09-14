@@ -58,7 +58,7 @@ impl MoverAutoCloseTimers {
     /// Observe a command after the deterministic applier has run. A re-trigger
     /// only resets an already-open hold; it cannot manufacture an auto-close
     /// countdown for a mover which has not reached its open terminus.
-    pub(crate) fn observe_command(
+    pub fn observe_command(
         &self,
         entity: EntityId,
         mover: &KinematicMoverComponent,
@@ -89,7 +89,7 @@ impl MoverAutoCloseTimers {
     /// ping-pong mover otherwise reverses in its shared driver at the endpoint,
     /// so the host holds it there until expiry; a once mover is already held by
     /// its normal completed phase.
-    pub(crate) fn arm_opened_termini(
+    pub fn arm_opened_termini(
         &self,
         registry: &mut EntityRegistry,
         events: &[(MoverEventKind, u32)],
@@ -148,7 +148,7 @@ impl MoverAutoCloseTimers {
     /// Advance all active host timers immediately before the host blocking
     /// decision. If both select a phase mutation on this tick, the blocking pass
     /// runs afterward and therefore wins by design.
-    pub(crate) fn tick(&self, registry: &mut EntityRegistry, tick_dt: f32) {
+    pub fn tick(&self, registry: &mut EntityRegistry, tick_dt: f32) {
         let elapsed_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
             tick_dt * 1000.0
         } else {
@@ -190,8 +190,8 @@ impl MoverAutoCloseTimers {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn remaining_ms(&self, entity: EntityId) -> Option<f32> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn remaining_ms(&self, entity: EntityId) -> Option<f32> {
         self.state
             .borrow()
             .countdowns

@@ -6,7 +6,7 @@ mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
 // the primary production caller is the agent steering tick (`agent_steering`),
 // and combat positioning (`combat_positioning`) also queries it.
-pub(crate) use path::find_path;
+pub use path::find_path;
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
 // `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.
@@ -17,6 +17,8 @@ pub(crate) use path::find_path;
 mod bake_contract_tests;
 
 use glam::Vec3;
+#[cfg(any(test, feature = "test-support"))]
+use postretro_level_format::navmesh::NAVMESH_VERSION;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
 
 pub use postretro_foundation::NavAgentParams;
@@ -24,7 +26,7 @@ pub use postretro_foundation::NavAgentParams;
 /// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
 /// the pathfinding query (edge cost, heuristic) and downstream steering/AI so the
 /// engine has one definition of "ground distance".
-pub(crate) fn distance_xz(a: Vec3, b: Vec3) -> f32 {
+pub fn distance_xz(a: Vec3, b: Vec3) -> f32 {
     let dx = a.x - b.x;
     let dz = a.z - b.z;
     (dx * dx + dz * dz).sqrt()
@@ -171,6 +173,25 @@ impl NavGraph {
             portals: section.portals.clone(),
             region_portals,
             region_components,
+        }
+    }
+
+    /// Recreate the immutable source section for the sim unit-test crate-identity
+    /// adapter. Production never serializes or rebuilds a graph per tick.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn to_section_for_test(&self) -> NavMeshSection {
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: self.grid.origin,
+            cell_size: self.grid.cell_size,
+            dim_x: self.grid.dim_x,
+            dim_z: self.grid.dim_z,
+            agent_radius: self.agent.radius,
+            agent_height: self.agent.height,
+            step_height: self.agent.step_height,
+            max_slope_deg: self.agent.max_slope_deg,
+            regions: self.regions.iter().map(|region| region.cell).collect(),
+            portals: self.portals.clone(),
         }
     }
 
@@ -359,6 +380,12 @@ impl NavGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nav_graph_is_thread_shareable() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NavGraph>();
+    }
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavPortal, NavRegion};
 
     /// Single region, non-zero origin and cell size, so the cell→world decode

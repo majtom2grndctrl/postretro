@@ -5,8 +5,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
-use parry3d::math::{Isometry, Point};
-use parry3d::shape::TriMesh;
 
 use super::{SimCommand, simulate_tick};
 use crate::collision::CollisionWorld;
@@ -135,7 +133,7 @@ struct SimHarness {
     hit_zones: HitZoneStore,
     active_wieldable: EntityId,
     progress: ProgressTracker,
-    ai_runtime: crate::scripting_systems::ai::AiRuntime,
+    ai_runtime: postretro_ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     role_ids: Vec<(Role, EntityId)>,
@@ -169,7 +167,7 @@ impl SimHarness {
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
-            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
+            ai_runtime: postretro_ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             role_ids,
@@ -188,7 +186,7 @@ impl SimHarness {
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
-            &mut self.ai_runtime,
+            postretro_ai::test_tick_runner!(&mut self.ai_runtime),
             &self.mover_colliders,
             &mut self.mover_states,
             &[],
@@ -335,16 +333,13 @@ fn player_descriptor() -> PlayerMovementDescriptor {
 
 fn floor_world() -> CollisionWorld {
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 fn recorded_command_stream() -> Vec<RecordedCommand> {

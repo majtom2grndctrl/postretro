@@ -11,8 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
-use parry3d::math::{Isometry, Point};
-use parry3d::shape::TriMesh;
+use log::Level;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
@@ -71,6 +70,7 @@ use postretro_scripting_core::data_descriptors::{
     PlayerMovementDescriptor, SpeedParams,
 };
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+use postretro_test_log_capture::LogCapture;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -386,28 +386,22 @@ fn spawn_enemy(
 
 fn wall_world(x: f32, min_y: f32, max_y: f32) -> CollisionWorld {
     let points = vec![
-        Point::new(x, min_y, -1.0),
-        Point::new(x, max_y, -1.0),
-        Point::new(x, max_y, 1.0),
-        Point::new(x, min_y, 1.0),
+        Vec3::new(x, min_y, -1.0),
+        Vec3::new(x, max_y, -1.0),
+        Vec3::new(x, max_y, 1.0),
+        Vec3::new(x, min_y, 1.0),
     ];
-    CollisionWorld {
-        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_triangles_for_test(points, vec![[0u32, 1, 2], [0, 2, 3]])
 }
 
 fn floor_world(y: f32) -> CollisionWorld {
     let points = vec![
-        Point::new(-2.0, y, -2.0),
-        Point::new(2.0, y, -2.0),
-        Point::new(2.0, y, 2.0),
-        Point::new(-2.0, y, 2.0),
+        Vec3::new(-2.0, y, -2.0),
+        Vec3::new(2.0, y, -2.0),
+        Vec3::new(2.0, y, 2.0),
+        Vec3::new(-2.0, y, 2.0),
     ];
-    CollisionWorld {
-        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_triangles_for_test(points, vec![[0u32, 1, 2], [0, 2, 3]])
 }
 
 fn set_enemy_hitbox(reg: &mut EntityRegistry, enemy: EntityId, hitbox: Hitbox) {
@@ -2226,7 +2220,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         0.0,
         (0.0, 0.0),
         &mut progress,
-        &mut runtime,
+        crate::tick_runner!(&mut runtime),
         &[],
         &mut mover_states,
         &[],
@@ -2388,7 +2382,7 @@ impl FactionSentimentHarness {
             0.0,
             (0.0, 0.0),
             &mut self.progress,
-            &mut self.ai,
+            crate::tick_runner!(&mut self.ai),
             &[],
             &mut self.mover_states,
             &[],
@@ -2477,6 +2471,66 @@ impl FactionSentimentHarness {
             .expect("fixture projectile attaches");
         projectile
     }
+}
+
+#[test]
+fn sim_tick_decays_sentiment_before_same_tick_ai_target_selection() {
+    const STARTING_HOSTILITY: f32 = -0.01;
+    const TICK_DT: f32 = 0.1;
+
+    let mut harness = FactionSentimentHarness::new(faction_sentiment_policy(Vec::new()));
+    let cabal = harness
+        .factions
+        .index_for_name(SENTIMENT_CABAL)
+        .expect("fixture cabal resolves");
+    let resistance = harness
+        .factions
+        .index_for_name(SENTIMENT_RESISTANCE)
+        .expect("fixture resistance resolves");
+    let cabal_enemy = harness.spawn_enemy(cabal, Vec3::ZERO);
+    let resistance_enemy = harness.spawn_enemy(resistance, Vec3::new(10.0, 0.0, 0.0));
+    harness
+        .ctx
+        .faction_sentiment
+        .borrow_mut()
+        .set(
+            cabal,
+            resistance,
+            STARTING_HOSTILITY,
+            harness.factions.sentiment(cabal, resistance),
+        )
+        .expect("fixture hostility diverges from the friendly baseline");
+    {
+        let overlay = harness.ctx.faction_sentiment.borrow();
+        let live = LiveFactionSentiment::new(&harness.factions, &overlay);
+        assert!(
+            live.sentiment(cabal, resistance) < 0.0,
+            "the pre-tick value must make resistance a hostile candidate",
+        );
+    }
+    assert_eq!(
+        think_stride_for_distance(10.0),
+        1,
+        "the hostile pre-decay candidate must be scanned on this tick",
+    );
+
+    harness.tick(TICK_DT);
+
+    let decayed = harness
+        .ctx
+        .faction_sentiment
+        .borrow()
+        .get(cabal, resistance)
+        .expect("one tick remains short of the positive baseline");
+    assert!(
+        decayed > 0.0,
+        "the fixed delta must cross the hostility threshold before AI reads it, got {decayed}",
+    );
+    assert_eq!(
+        enemy_acquired_target(&harness.ctx.registry.borrow(), cabal_enemy),
+        None,
+        "this tick's concrete-host AI decision must see the decayed friendly value, not acquire {resistance_enemy:?}",
+    );
 }
 
 /// Full consumer proof for faction sentiment: the actual projectile stage feeds
@@ -2727,7 +2781,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         0.0,
         (0.0, 0.0),
         &mut progress,
-        &mut runtime,
+        crate::tick_runner!(&mut runtime),
         &[],
         &mut mover_states,
         &[],
@@ -3070,7 +3124,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
     assert_eq!(policy_fires, 1);
     assert_eq!(player_hp(&registry, target), 92.0);
     assert!(
-        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target)
     );
     assert_eq!(
         registry
@@ -4847,16 +4901,13 @@ impl OpenFloor {
     /// grounded and slide freely across it.
     fn collision_world(&self) -> CollisionWorld {
         let points = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(self.extent, 0.0, 0.0),
-            Point::new(self.extent, 0.0, self.extent),
-            Point::new(0.0, 0.0, self.extent),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(self.extent, 0.0, 0.0),
+            Vec3::new(self.extent, 0.0, self.extent),
+            Vec3::new(0.0, 0.0, self.extent),
         ];
         let tris = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Single navmesh region covering the whole floor. Unit cells, origin at
@@ -4902,18 +4953,18 @@ impl JumpableCorral {
 
     fn collision_world() -> CollisionWorld {
         let mut points = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
-            Point::new(0.0, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, Self::EXTENT),
         ];
         let mut tris = vec![[0u32, 1, 2], [0, 2, 3]];
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, Self::WALL_HEIGHT, z1));
-            points.push(Point::new(x0, Self::WALL_HEIGHT, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, Self::WALL_HEIGHT, z1));
+            points.push(Vec3::new(x0, Self::WALL_HEIGHT, z0));
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
             tris.push([base, base + 2, base + 1]);
@@ -4943,10 +4994,7 @@ impl JumpableCorral {
             Self::INTERIOR_MIN,
             Self::INTERIOR_MIN,
         );
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     fn nav_graph() -> NavGraph {
@@ -6307,20 +6355,20 @@ impl CornerArena {
     const HEIGHT: f32 = 3.0;
 
     fn collision_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
-            Point::new(0.0, 0.0, Self::EXTENT),
+        let mut points: Vec<Vec3> = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, Self::EXTENT),
         ];
         let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
 
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, Self::HEIGHT, z1));
-            points.push(Point::new(x0, Self::HEIGHT, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, Self::HEIGHT, z1));
+            points.push(Vec3::new(x0, Self::HEIGHT, z0));
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
             tris.push([base, base + 2, base + 1]);
@@ -6329,10 +6377,7 @@ impl CornerArena {
         push_wall(Self::WALL_X, 0.0, Self::WALL_X, Self::WALL_Z); // box -X face
         push_wall(Self::WALL_X, Self::WALL_Z, Self::EXTENT, Self::WALL_Z); // box +Z face
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Regions stop half a unit short of the box faces (cell 0.5):
@@ -7577,7 +7622,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
         "all brains read targetDied=false during the compute pass before damage lands"
     );
 
-    crate::scripting_systems::health::sweep_deaths(&mut registry);
+    crate::scripting_systems::health::sweep_deaths_for_test(&mut registry);
     assert!(
         registry
             .get_component::<HealthComponent>(pawn)
@@ -8825,10 +8870,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
 fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     use mlua::LuaSerdeExt as _;
 
-    const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
-    const BRAIN_LUAU_SRC: &str = include_str!("../../../../sdk/lib/brain.luau");
+    const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
     const ENTITIES_LUAU_SRC: &str =
-        include_str!("../../../../content/dev/scripts/reference-enemy.luau");
+        include_str!("../../../content/dev/scripts/reference-enemy.luau");
 
     let lua = mlua::Lua::new();
     let runtime: mlua::Table = lua
@@ -10513,6 +10558,57 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
     assert_eq!(credit.source_id, "enemy.rifle");
     assert_eq!(credit.last_attacker, Some(enemy));
     assert_eq!(credit.last_weapon, Some(enemy));
+}
+
+// Regression: a failed projectile spawn used to consume the AI fire latch and
+// publish presentation/event work even though the registry rejected the body.
+#[test]
+fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
+    let graph = standing_projectile_attack_graph("enemy.rifle");
+    let descriptors = [projectile_weapon_descriptor(
+        "enemy.rifle",
+        2.0,
+        13.0,
+        300.0,
+    )];
+    let mut registry = EntityRegistry::new();
+    let _pawn = spawn_player(&mut registry, Vec3::X);
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "strike"),
+        50.0,
+    );
+    registry.set_test_capacity_limit(2);
+
+    let capture = LogCapture::start();
+    let result = run_ai_tick_with_navigation_and_impact(
+        &mut registry,
+        &mut AiRuntime::new(),
+        0.016,
+        AiTickInputs {
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &descriptors,
+            descriptor_generation: 1,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+        },
+        |_| {},
+    );
+
+    capture.assert_logged_once(
+        Level::Warn,
+        "[Weapon] entity registry exhausted; dropping projectile launch",
+    );
+    assert!(result.events.is_empty());
+    assert!(result.projectile_spawns.is_empty());
+    assert!(projectile_ids(&registry).is_empty());
+    let brain = registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("rejected actor keeps its brain");
+    assert_eq!(brain.activity_attack_count(0), Some(0));
+    assert!(brain.attack_cooldown_remaining_ms.get("attack").is_none());
 }
 
 #[test]

@@ -8,7 +8,7 @@ use postretro_entities::{
     TriggerVolumeComponent,
 };
 
-use crate::kinematic_mover::MoverCommandDiagnostics;
+use crate::mover_commands::MoverCommandDiagnostics;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 

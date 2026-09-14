@@ -35,8 +35,8 @@ pub enum ContactClassification {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedCastHit {
-    pub(crate) time_of_impact: f32,
-    pub(crate) normal: Vec3,
+    pub time_of_impact: f32,
+    pub normal: Vec3,
     pub(crate) source: CollisionSource,
     pub(crate) mover_id: Option<u32>,
     pub(crate) mover_linear_velocity: Vec3,

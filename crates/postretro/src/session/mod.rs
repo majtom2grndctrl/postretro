@@ -239,7 +239,7 @@ pub(crate) struct Session {
 pub(crate) struct ScriptingCore {
     /// Per-level warning deduplication shared by mover and trigger command
     /// routes. Registries retain clones across reloads; level unload clears it.
-    pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    pub(crate) command_diagnostics: crate::mover_commands::MoverCommandDiagnostics,
 
     /// Host-only auto-close countdowns. This side table intentionally does not
     /// participate in snapshots, digests, or the connected-client simulation.
@@ -727,7 +727,7 @@ fn build_scripting_core(
     timings: &mut StartupTimings,
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
-    let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
+    let command_diagnostics = crate::mover_commands::MoverCommandDiagnostics::default();
     let auto_close_timers = crate::kinematic_mover::MoverAutoCloseTimers::default();
     let spawn_context = crate::spawner::SpawnContext::default();
     let mut script_registry = PrimitiveRegistry::new();

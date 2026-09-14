@@ -341,7 +341,6 @@ fn ground_stick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
 
     /// Agent capsule fixture: 0.35 m radius, 1.8 m total height, 0.4 m step.
@@ -385,10 +384,7 @@ mod tests {
         tris.push([base, base + 2, base + 3]);
 
         let mesh = TriMesh::new(points, tris);
-        CollisionWorld {
-            mesh,
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(mesh)
     }
 
     /// Resting height of a grounded capsule: its center sits

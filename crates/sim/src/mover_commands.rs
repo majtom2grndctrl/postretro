@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use glam::Vec3;
 use postretro_entities::{
     BlockPolicy, EntityId, EntityRegistry, KinematicMoverComponent, MoverCommand,
 };
@@ -13,7 +12,7 @@ use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimiti
 use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 use serde::Deserialize;
 
-use super::{MoverAutoCloseTimers, mover_is_at_waypoint, path_coordinate, reanchor_direction};
+use crate::kinematic_mover::{MoverAutoCloseTimers, apply_mover_command};
 
 /// Per-level warning deduplication shared by mover command routes whose
 /// registries survive level reloads.
@@ -42,111 +41,6 @@ impl MoverCommandDiagnostics {
             );
         }
     }
-}
-
-/// Apply a declarative command through the shared every-peer mover applier.
-///
-/// `SetBlockPolicy` is the sole exception: it writes a host-only, off-wire
-/// field. Clients still apply it through the shared applier, but never read the
-/// field, leaving their replicated phase identical to a client that did not.
-/// The applier otherwise has no registry, clock, RNG, or host-role dependency,
-/// so commands produce the same next phase for every simulation peer.
-pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
-    match command {
-        MoverCommand::Start => {
-            mover.blocked = false;
-            if mover.completed || (mover.started && mover.wait_remaining_ms <= 0.0) {
-                return;
-            }
-            mover.started = true;
-            mover.wait_remaining_ms = 0.0;
-        }
-        MoverCommand::Stop => {
-            if !mover.started {
-                return;
-            }
-            mover.started = false;
-        }
-        MoverCommand::Reverse => {
-            mover.blocked = false;
-            if mover.waypoints.len() < 2 {
-                return;
-            }
-            reanchor_direction(mover, if mover.direction_sign >= 0 { -1 } else { 1 });
-            mover.started = true;
-            mover.completed = false;
-            mover.wait_remaining_ms = 0.0;
-        }
-        MoverCommand::GoToPathNode(name) => {
-            let mut matches = mover
-                .waypoint_names
-                .iter()
-                .enumerate()
-                .filter_map(|(index, waypoint_name)| (waypoint_name == name).then_some(index));
-            let Some(target) = matches.next() else {
-                log::warn!(
-                    "[Mover] go_to_path_node for mover {} references unknown waypoint `{name}`; skipping",
-                    mover.mover_id
-                );
-                return;
-            };
-            if matches.next().is_some() || target > usize::from(u16::MAX) {
-                log::warn!(
-                    "[Mover] go_to_path_node for mover {} cannot uniquely resolve waypoint `{name}`; skipping",
-                    mover.mover_id
-                );
-                return;
-            }
-            let target = target as u16;
-            mover.blocked = false;
-            if mover_is_at_waypoint(mover, target) {
-                return;
-            }
-
-            let direction = if path_coordinate(mover)
-                .map(|coordinate| f32::from(target) > coordinate)
-                .unwrap_or(target > mover.segment_index)
-            {
-                1
-            } else {
-                -1
-            };
-            reanchor_direction(mover, direction);
-            mover.target_segment = Some(target);
-            mover.started = true;
-            mover.completed = false;
-            mover.wait_remaining_ms = 0.0;
-        }
-        MoverCommand::SetSpinRate(rate_deg_s) => {
-            if !rate_deg_s.is_finite() {
-                log::warn!(
-                    "[Mover] set_spin_rate for mover {} has non-finite rate; skipping",
-                    mover.mover_id
-                );
-                return;
-            }
-            if *rate_deg_s != 0.0
-                && (!mover.spin_axis.is_finite()
-                    || mover.spin_axis.normalize_or_zero() == Vec3::ZERO)
-            {
-                log::warn!(
-                    "[Mover] set_spin_rate for mover {} requires a non-zero spin axis; skipping",
-                    mover.mover_id
-                );
-                return;
-            }
-            mover.spin_target_rate_rad_s = rate_deg_s.to_radians();
-        }
-        MoverCommand::SetBlockPolicy(policy) => {
-            mover.block_policy = *policy;
-        }
-    }
-}
-
-/// Cross-crate test-support entry point for deterministic mover-command fixtures.
-#[cfg(feature = "test-support")]
-pub fn apply_mover_command_for_test(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
-    apply_mover_command(mover, command);
 }
 
 /// Apply one command to an already-resolved tag target set. Non-movers remain
@@ -433,6 +327,9 @@ mod tests {
     use super::*;
     use glam::{Quat, Vec3};
     use postretro_entities::{KinematicMoverMode, ScriptCtx};
+    use postretro_physics::kinematic_mover::{
+        MoverTickStateTable, advance_mover_phase_one_tick, run_kinematic_mover_tick,
+    };
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
     fn sample_mover(mode: KinematicMoverMode, wait_ms: f32) -> KinematicMoverComponent {
@@ -613,8 +510,8 @@ mod tests {
                 &MoverCommand::SetSpinRate(180.0),
                 None,
             );
-            let mut tick_states = super::super::MoverTickStateTable::default();
-            super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+            let mut tick_states = MoverTickStateTable::default();
+            run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
 
             let after = registry
                 .get_component::<KinematicMoverComponent>(entity)
@@ -661,8 +558,8 @@ mod tests {
             &MoverCommand::SetSpinRate(180.0),
             None,
         );
-        let mut tick_states = super::super::MoverTickStateTable::default();
-        super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+        let mut tick_states = MoverTickStateTable::default();
+        run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
 
         let mover = registry
             .get_component::<KinematicMoverComponent>(entity)
@@ -706,7 +603,7 @@ mod tests {
 
         assert_eq!(mover, stopped);
         let mut transform = transform_at(Vec3::ZERO);
-        let pose = super::super::advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+        let pose = advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
         assert_eq!(mover.spin_angle_rad, 0.0);
         assert_eq!(pose.angular_velocity, Vec3::ZERO);
         assert_eq!(pose.tick_rotation_delta, Quat::IDENTITY);

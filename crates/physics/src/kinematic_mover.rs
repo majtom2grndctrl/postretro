@@ -15,19 +15,11 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 
 mod auto_close;
 mod blocking;
-mod commands;
+mod command;
 
 pub use auto_close::MoverAutoCloseTimers;
 pub use blocking::{MoverBlockingState, MoverEventKind, run_mover_blocking_pass};
-#[cfg(all(test, not(feature = "test-support")))]
-pub(crate) use commands::apply_mover_command;
-#[cfg(feature = "test-support")]
-pub use commands::apply_mover_command_for_test as apply_mover_command;
-pub use commands::{
-    MoverCommandDiagnostics, MoverSetSpinRateArgs, apply_mover_command_to_known_movers,
-    apply_mover_command_to_targets, register_mover_reaction_primitives,
-    register_sequenced_mover_primitives,
-};
+pub use command::apply_mover_command;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoverTickState {

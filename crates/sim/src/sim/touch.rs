@@ -459,9 +459,9 @@ fn sphere_fits_world(collision_world: &CollisionWorld, position: Vec3, radius: f
         &sphere_isometry,
         &Vector::zeros(),
         &sphere,
-        &collision_world.isometry,
+        collision_world.isometry(),
         &Vector::zeros(),
-        &collision_world.mesh,
+        collision_world.mesh(),
         options,
     )
     .is_ok_and(|hit| hit.is_some());
@@ -469,8 +469,8 @@ fn sphere_fits_world(collision_world: &CollisionWorld, position: Vec3, radius: f
         && intersection_test(
             &sphere_isometry,
             &sphere,
-            &collision_world.isometry,
-            &collision_world.mesh,
+            collision_world.isometry(),
+            collision_world.mesh(),
         )
         .is_ok_and(|intersects| !intersects)
 }
@@ -741,10 +741,7 @@ mod tests {
             Point::new(100.0, 0.0, 100.0),
             Point::new(-100.0, 0.0, 100.0),
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0, 1, 2], [0, 2, 3]]))
     }
 
     fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
@@ -2233,18 +2230,15 @@ mod tests {
     fn drop_on_inclined_walkable_floor_offsets_along_normal_with_clearance() {
         let slope = 0.3_f32;
         let surface_y = |x: f32| slope * x;
-        let world = CollisionWorld {
-            mesh: TriMesh::new(
-                vec![
-                    Point::new(-100.0, surface_y(-100.0), -100.0),
-                    Point::new(100.0, surface_y(100.0), -100.0),
-                    Point::new(100.0, surface_y(100.0), 100.0),
-                    Point::new(-100.0, surface_y(-100.0), 100.0),
-                ],
-                vec![[0, 2, 1], [0, 3, 2]],
-            ),
-            isometry: Isometry::identity(),
-        };
+        let world = CollisionWorld::from_trimesh_for_test(TriMesh::new(
+            vec![
+                Point::new(-100.0, surface_y(-100.0), -100.0),
+                Point::new(100.0, surface_y(100.0), -100.0),
+                Point::new(100.0, surface_y(100.0), 100.0),
+                Point::new(-100.0, surface_y(-100.0), 100.0),
+            ],
+            vec![[0, 2, 1], [0, 3, 2]],
+        ));
         let pawn_transform = Transform {
             position: Vec3::new(0.0, 1.2, 0.0),
             rotation: Quat::IDENTITY,
@@ -2275,22 +2269,19 @@ mod tests {
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
         };
-        let world = CollisionWorld {
-            mesh: TriMesh::new(
-                vec![
-                    Point::new(-100.0, 0.0, -100.0),
-                    Point::new(100.0, 0.0, -100.0),
-                    Point::new(100.0, 0.0, 100.0),
-                    Point::new(-100.0, 0.0, 100.0),
-                    Point::new(-1.0, 0.0, -1.05),
-                    Point::new(1.0, 0.0, -1.05),
-                    Point::new(1.0, 2.0, -1.05),
-                    Point::new(-1.0, 2.0, -1.05),
-                ],
-                vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
-            ),
-            isometry: Isometry::identity(),
-        };
+        let world = CollisionWorld::from_trimesh_for_test(TriMesh::new(
+            vec![
+                Point::new(-100.0, 0.0, -100.0),
+                Point::new(100.0, 0.0, -100.0),
+                Point::new(100.0, 0.0, 100.0),
+                Point::new(-100.0, 0.0, 100.0),
+                Point::new(-1.0, 0.0, -1.05),
+                Point::new(1.0, 0.0, -1.05),
+                Point::new(1.0, 2.0, -1.05),
+                Point::new(-1.0, 2.0, -1.05),
+            ],
+            vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+        ));
 
         let position = resolve_drop_position(
             &world,
@@ -2317,21 +2308,18 @@ mod tests {
             7,
         );
         held_item(&mut registry, pawn, item);
-        let world = CollisionWorld {
-            mesh: TriMesh::new(
-                vec![
-                    Point::new(-100.0, 0.0, -100.0),
-                    Point::new(100.0, 0.0, -100.0),
-                    Point::new(100.0, 0.0, 100.0),
-                    Point::new(-100.0, 0.0, 100.0),
-                    Point::new(-2.0, 0.0, 0.25),
-                    Point::new(2.0, 0.0, 0.25),
-                    Point::new(0.0, 3.0, 0.25),
-                ],
-                vec![[0, 1, 2], [0, 2, 3], [4, 5, 6]],
-            ),
-            isometry: Isometry::identity(),
-        };
+        let world = CollisionWorld::from_trimesh_for_test(TriMesh::new(
+            vec![
+                Point::new(-100.0, 0.0, -100.0),
+                Point::new(100.0, 0.0, -100.0),
+                Point::new(100.0, 0.0, 100.0),
+                Point::new(-100.0, 0.0, 100.0),
+                Point::new(-2.0, 0.0, 0.25),
+                Point::new(2.0, 0.0, 0.25),
+                Point::new(0.0, 3.0, 0.25),
+            ],
+            vec![[0, 1, 2], [0, 2, 3], [4, 5, 6]],
+        ));
         let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
         let players = players(&[(PlayerId::Local(pawn), pawn)]);
         let mut system = TouchSystem::default();
@@ -2431,18 +2419,15 @@ mod tests {
         held_item(&mut registry, pawn, item);
         let slope = 2.0_f32;
         let surface_y = |x: f32| slope * x;
-        let world = CollisionWorld {
-            mesh: TriMesh::new(
-                vec![
-                    Point::new(-100.0, surface_y(-100.0), -100.0),
-                    Point::new(100.0, surface_y(100.0), -100.0),
-                    Point::new(100.0, surface_y(100.0), 100.0),
-                    Point::new(-100.0, surface_y(-100.0), 100.0),
-                ],
-                vec![[0, 2, 1], [0, 3, 2]],
-            ),
-            isometry: Isometry::identity(),
-        };
+        let world = CollisionWorld::from_trimesh_for_test(TriMesh::new(
+            vec![
+                Point::new(-100.0, surface_y(-100.0), -100.0),
+                Point::new(100.0, surface_y(100.0), -100.0),
+                Point::new(100.0, surface_y(100.0), 100.0),
+                Point::new(-100.0, surface_y(-100.0), 100.0),
+            ],
+            vec![[0, 2, 1], [0, 3, 2]],
+        ));
         let descriptors = [drop_descriptor("ion", TouchMode::Auto, 0.1)];
         let players = players(&[(PlayerId::Local(pawn), pawn)]);
         let mut system = TouchSystem::default();

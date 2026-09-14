@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
 use log::Level;
-use parry3d::math::{Isometry, Point};
+use parry3d::math::Point;
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
@@ -393,10 +393,7 @@ fn wall_world(x: f32, min_y: f32, max_y: f32) -> CollisionWorld {
         Point::new(x, max_y, 1.0),
         Point::new(x, min_y, 1.0),
     ];
-    CollisionWorld {
-        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]))
 }
 
 fn floor_world(y: f32) -> CollisionWorld {
@@ -406,10 +403,7 @@ fn floor_world(y: f32) -> CollisionWorld {
         Point::new(2.0, y, 2.0),
         Point::new(-2.0, y, 2.0),
     ];
-    CollisionWorld {
-        mesh: TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]))
 }
 
 fn set_enemy_hitbox(reg: &mut EntityRegistry, enemy: EntityId, hitbox: Hitbox) {
@@ -4855,10 +4849,7 @@ impl OpenFloor {
             Point::new(0.0, 0.0, self.extent),
         ];
         let tris = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
     }
 
     /// Single navmesh region covering the whole floor. Unit cells, origin at
@@ -4945,10 +4936,7 @@ impl JumpableCorral {
             Self::INTERIOR_MIN,
             Self::INTERIOR_MIN,
         );
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
     }
 
     fn nav_graph() -> NavGraph {
@@ -6331,10 +6319,7 @@ impl CornerArena {
         push_wall(Self::WALL_X, 0.0, Self::WALL_X, Self::WALL_Z); // box -X face
         push_wall(Self::WALL_X, Self::WALL_Z, Self::EXTENT, Self::WALL_Z); // box +Z face
 
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
     }
 
     /// Regions stop half a unit short of the box faces (cell 0.5):

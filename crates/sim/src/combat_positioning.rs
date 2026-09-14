@@ -324,7 +324,7 @@ fn compare_proposals(a: &CombatProposal, b: &CombatProposal) -> Ordering {
 mod tests {
     use super::*;
     use crate::nav::find_path;
-    use parry3d::math::{Isometry, Point};
+    use parry3d::math::Point;
     use parry3d::shape::TriMesh;
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
@@ -401,10 +401,7 @@ mod tests {
             Point::new(-20.0, 0.0, 20.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     fn floor_with_wall_at_west_candidate() -> CollisionWorld {
@@ -419,10 +416,7 @@ mod tests {
             Point::new(3.0, 0.0, 6.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
-        CollisionWorld {
-            mesh: TriMesh::new(std::mem::take(&mut points), triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(std::mem::take(&mut points), triangles))
     }
 
     fn floor_with_los_wall() -> CollisionWorld {
@@ -437,10 +431,7 @@ mod tests {
             Point::new(4.0, 0.0, 6.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     fn floor_with_target_los_cage() -> CollisionWorld {
@@ -478,10 +469,7 @@ mod tests {
             [16, 17, 18],
             [16, 18, 19],
         ];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     fn query<'a>(

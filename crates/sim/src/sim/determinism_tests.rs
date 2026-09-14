@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use glam::{EulerRot, Vec2, Vec3};
-use parry3d::math::{Isometry, Point};
+use parry3d::math::Point;
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 use proptest::prelude::*;
@@ -1346,10 +1346,7 @@ fn determinism_world() -> CollisionWorld {
         Point::new(-500.0, 500.0, -40.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
 }
 
 /// A large ground plane tilted about the world Z axis: surface height `y =
@@ -1366,10 +1363,7 @@ fn sloped_floor_world(slope: f32) -> CollisionWorld {
         Point::new(-500.0, y(-500.0), 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld {
-        mesh: TriMesh::new(points, triangles),
-        isometry: Isometry::identity(),
-    }
+    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
 }
 
 fn open_floor_nav_graph() -> NavGraph {

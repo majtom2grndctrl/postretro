@@ -11,7 +11,7 @@
 //! # Boundary
 //!
 //! `CollisionWorld` is Rust-only; not exposed to scripts. nalgebra types
-//! stay within the engine crate — `mesh` and `isometry` are `pub(crate)`.
+//! stay behind read-only accessors on [`CollisionWorld`].
 //! Subsystem-boundary coordinates use `glam::Vec3`.
 //!
 //! Queries call `parry3d::query::*` free functions directly. There is no
@@ -39,6 +39,14 @@ pub struct CollisionWorld {
 }
 
 impl CollisionWorld {
+    pub fn mesh(&self) -> &TriMesh {
+        &self.mesh
+    }
+
+    pub fn isometry(&self) -> &Isometry<f32> {
+        &self.isometry
+    }
+
     /// Build a static world from an already-validated mesh for cross-crate
     /// harnesses. Production population remains [`Self::populate_from_level`].
     #[cfg(any(test, feature = "test-support"))]
@@ -134,13 +142,13 @@ impl Default for CollisionWorld {
 /// value, so the swept capsule never actually touches geometry — it rests
 /// `SKIN_DISTANCE` away. The slide loop in `movement::tick` relies on this
 /// separation for clearance; do not duplicate the offset by pushing again.
-pub(crate) const SKIN_DISTANCE: f32 = 0.02;
+pub const SKIN_DISTANCE: f32 = 0.02;
 
 /// A surface counts as walkable when its contact normal points mostly upward.
 /// Mirrors the small agent harness's floor test so placement queries and agent
-/// movement agree about walls vs. floors. Exposed `pub(crate)` so the fixed-tick
+/// movement agree about walls vs. floors. Exposed so the fixed-tick
 /// foot ground-probe step applies the same floor-vs-wall threshold movement uses.
-pub(crate) const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
+pub const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
 
 /// Small lift margin used by placement ground probes. Matches the agent harness
 /// so "within the step envelope" means the same thing for selection and motion.
@@ -149,10 +157,10 @@ const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 /// Capsule geometry for static placement checks. The capsule axis is world +Y,
 /// matching [`cast_capsule`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CapsulePlacement {
-    pub(crate) radius: f32,
-    pub(crate) half_height: f32,
-    pub(crate) step_height: f32,
+pub struct CapsulePlacement {
+    pub radius: f32,
+    pub half_height: f32,
+    pub step_height: f32,
 }
 
 impl CapsulePlacement {
@@ -173,7 +181,7 @@ impl CapsulePlacement {
         )
     }
 
-    pub(crate) fn rest_offset(self) -> f32 {
+    pub fn rest_offset(self) -> f32 {
         self.half_height + self.radius + SKIN_DISTANCE
     }
 }
@@ -181,7 +189,7 @@ impl CapsulePlacement {
 /// Static-world-only capsule placement query. Returns the grounded capsule
 /// center when a capsule near `center` can rest on walkable floor without
 /// penetrating static geometry.
-pub(crate) fn capsule_static_placement_center(
+pub fn capsule_static_placement_center(
     world: &CollisionWorld,
     center: glam::Vec3,
     placement: CapsulePlacement,
@@ -255,7 +263,7 @@ fn capsule_walkable_floor_center(
 /// Capsule × TriMesh (always supported by parry3d). Returning `None` on `Err`
 /// rather than panicking avoids a `Result` return type that would add noise at
 /// every call site for a condition that cannot occur.
-pub(crate) fn cast_capsule(
+pub fn cast_capsule(
     world: &CollisionWorld,
     pos: Point<f32>,
     capsule: &Capsule,
@@ -285,7 +293,7 @@ pub(crate) fn cast_capsule(
 
 /// Sweep a sphere using its exact authored radius. Unlike movement capsule
 /// casts, projectile casts add no skin distance: proximity is not impact.
-pub(crate) fn cast_sphere_exact(
+pub fn cast_sphere_exact(
     world: &CollisionWorld,
     pos: Point<f32>,
     radius: f32,
@@ -338,7 +346,7 @@ pub fn line_of_sight(eye: glam::Vec3, aim: glam::Vec3, world: &CollisionWorld) -
 /// (with normal). `solid = true` so the ray exits a triangle hit on the back
 /// face — matches the conventions used by the movement code's ground-stick
 /// fallback.
-pub(crate) fn cast_ray(
+pub fn cast_ray(
     world: &CollisionWorld,
     origin: Point<f32>,
     dir: Vector<f32>,

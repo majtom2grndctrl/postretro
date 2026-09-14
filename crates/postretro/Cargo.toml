@@ -78,6 +78,7 @@ postretro-combat-model = { workspace = true }
 postretro-scripting-core = { workspace = true }
 postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
+postretro-physics.workspace = true
 postretro-sim.workspace = true
 postretro-netcode.workspace = true
 

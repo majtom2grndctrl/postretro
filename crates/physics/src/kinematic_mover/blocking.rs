@@ -2622,7 +2622,7 @@ mod tests {
         run_pass(&mut registry); // First overlap hit lands immediately.
         run_pass(&mut registry);
         run_pass(&mut registry); // The second hit reaches zero HP.
-        crate::scripting_systems::health::sweep_deaths(&mut registry);
+        postretro_sim::scripting_systems::health::sweep_deaths_for_test(&mut registry);
         run_pass(&mut registry);
         run_pass(&mut registry); // The latched enemy still receives overkill damage.
         drop(run_pass);

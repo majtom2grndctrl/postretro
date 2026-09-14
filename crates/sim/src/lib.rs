@@ -10,15 +10,13 @@ mod agent_steering;
 pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]
 pub mod alloc_probe;
-pub mod collision;
 mod combat_positioning;
 mod fx;
 mod grant;
 mod health;
 pub mod impact_effects;
 pub mod impact_policy;
-pub mod kinematic_mover;
-pub mod movement;
+pub mod mover_commands;
 pub mod nav;
 pub mod scripting;
 pub mod scripting_systems;
@@ -30,6 +28,8 @@ pub mod trigger_commands;
 pub mod trigger_pools;
 pub mod trigger_system;
 pub mod weapon;
+
+pub use postretro_physics::{collision, kinematic_mover, movement};
 
 pub use sim::{
     frame_timing, presentation_pool, resolve_mesh_entity_bindings,

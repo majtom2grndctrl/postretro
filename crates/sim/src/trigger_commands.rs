@@ -9,7 +9,7 @@ use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
 
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
-use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_targets};
+use crate::mover_commands::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
 use crate::scripting::reactions::enemy_state::{
     UpdateEnemyStateArgs, apply_update_enemy_state_to_brain,

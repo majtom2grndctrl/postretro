@@ -1254,7 +1254,6 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::projectile::ProjectileComponent;
@@ -1524,10 +1523,7 @@ pub(crate) mod tests {
             Point::new(-1.0, 1.0, z),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     fn lateral_wall_world_at(x: f32) -> CollisionWorld {
@@ -1538,10 +1534,7 @@ pub(crate) mod tests {
             Point::new(x, 1.0, -1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     fn ground_world() -> CollisionWorld {
@@ -1552,10 +1545,7 @@ pub(crate) mod tests {
             Point::new(-2.0, 0.0, 2.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld {
-            mesh: TriMesh::new(points, triangles),
-            isometry: Isometry::identity(),
-        }
+        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
     }
 
     #[test]

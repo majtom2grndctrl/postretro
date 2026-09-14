@@ -1227,7 +1227,7 @@ fn reaction_uses_trigger_sentinel(
 
 fn build_trigger_bindings(
     script_ctx: &postretro_entities::ScriptCtx,
-    command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    command_diagnostics: crate::mover_commands::MoverCommandDiagnostics,
     spawn_context: crate::spawner::SpawnContext,
 ) -> TriggerBindingTable {
     TriggerBindingTable::build_with_script_ctx_and_diagnostics(
@@ -1407,7 +1407,7 @@ pub(crate) struct WorldInstallProducts {
 pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) world: &'a postretro_level_loader::LevelWorld,
     pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
-    pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    pub(crate) command_diagnostics: crate::mover_commands::MoverCommandDiagnostics,
     /// Current mod-wide auto-close default. Static level-install input only.
     pub(crate) mover_auto_close_ms: f32,
     /// Session-owned VM-free resolved descriptor cache for entity spawners.

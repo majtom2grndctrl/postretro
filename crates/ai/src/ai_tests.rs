@@ -2473,6 +2473,66 @@ impl FactionSentimentHarness {
     }
 }
 
+#[test]
+fn sim_tick_decays_sentiment_before_same_tick_ai_target_selection() {
+    const STARTING_HOSTILITY: f32 = -0.01;
+    const TICK_DT: f32 = 0.1;
+
+    let mut harness = FactionSentimentHarness::new(faction_sentiment_policy(Vec::new()));
+    let cabal = harness
+        .factions
+        .index_for_name(SENTIMENT_CABAL)
+        .expect("fixture cabal resolves");
+    let resistance = harness
+        .factions
+        .index_for_name(SENTIMENT_RESISTANCE)
+        .expect("fixture resistance resolves");
+    let cabal_enemy = harness.spawn_enemy(cabal, Vec3::ZERO);
+    let resistance_enemy = harness.spawn_enemy(resistance, Vec3::new(10.0, 0.0, 0.0));
+    harness
+        .ctx
+        .faction_sentiment
+        .borrow_mut()
+        .set(
+            cabal,
+            resistance,
+            STARTING_HOSTILITY,
+            harness.factions.sentiment(cabal, resistance),
+        )
+        .expect("fixture hostility diverges from the friendly baseline");
+    {
+        let overlay = harness.ctx.faction_sentiment.borrow();
+        let live = LiveFactionSentiment::new(&harness.factions, &overlay);
+        assert!(
+            live.sentiment(cabal, resistance) < 0.0,
+            "the pre-tick value must make resistance a hostile candidate",
+        );
+    }
+    assert_eq!(
+        think_stride_for_distance(10.0),
+        1,
+        "the hostile pre-decay candidate must be scanned on this tick",
+    );
+
+    harness.tick(TICK_DT);
+
+    let decayed = harness
+        .ctx
+        .faction_sentiment
+        .borrow()
+        .get(cabal, resistance)
+        .expect("one tick remains short of the positive baseline");
+    assert!(
+        decayed > 0.0,
+        "the fixed delta must cross the hostility threshold before AI reads it, got {decayed}",
+    );
+    assert_eq!(
+        enemy_acquired_target(&harness.ctx.registry.borrow(), cabal_enemy),
+        None,
+        "this tick's concrete-host AI decision must see the decayed friendly value, not acquire {resistance_enemy:?}",
+    );
+}
+
 /// Full consumer proof for faction sentiment: the actual projectile stage feeds
 /// the policy runtime before AI, authored reaction writes land at frame end,
 /// persistence rekeys the sparse overlay by faction name, and duplicate impact

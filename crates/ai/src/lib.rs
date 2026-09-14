@@ -1,28 +1,5 @@
-// Engine-owned enemy brain tick: snapshot/compute/apply passes over enemy
-// behavior graphs — target steering, damage, animation, and facing.
-// See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
-//      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
-
-// Mods declare the state graph; Rust executes it. Every brain carries an
-// authored `BehaviorGraphDescriptor`, and this module drives exactly one
-// evaluator over it. There is no live VM at tick: guards are IR programs bound
-// once per graph into the evaluator's side-table (`brain_programs.rs`) and read
-// through a refreshed scope (`brain_scope.rs`).
-//
-// The split of duties: `graph_eval.rs` owns the pure selection and the verb
-// vocabulary, `targeting.rs` owns target selection, and this module layers the
-// registry reads/writes — steering, damage, facing, animation — on top. The
-// engine floor (stride, target selection, hysteresis, combat slots, the aggro
-// gate) sits UPSTREAM of guard evaluation and is not authorable.
-//
-// For each admitted live brain, exactly one authored-state condition suppresses
-// guard evaluation: a closed aggro gate. It stands the brain down to its graph's
-// `initial` state with steering cleared and reads neither targeting nor guards.
-// Everything else — including having no target at all — evaluates the whole
-// guard set, with the no-target
-// facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel)
-// projected into the scope. That is what lets a sealed-closet enemy that gets
-// shot flinch on an authored interrupt while it has nobody to chase.
+// Engine-owned enemy brain tick evaluates authored behavior graphs.
+// See: context/lib/entity_model.md §7c · context/lib/scripting.md §11
 
 #![deny(unsafe_code)]
 

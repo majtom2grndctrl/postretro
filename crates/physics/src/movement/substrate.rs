@@ -7,7 +7,7 @@ use parry3d::shape::Capsule;
 
 use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::{
-    CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined, cast_ray_combined,
+    CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined_parry, cast_ray_combined_parry,
 };
 use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
@@ -528,7 +528,7 @@ fn cast_capsule_query(
     dir: Vector<f32>,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
-    cast_capsule_combined(
+    cast_capsule_combined_parry(
         collision.static_world,
         collision.movers,
         collision.poses,
@@ -545,7 +545,7 @@ fn cast_ray_query(
     dir: Vector<f32>,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
-    cast_ray_combined(
+    cast_ray_combined_parry(
         collision.static_world,
         collision.movers,
         collision.poses,

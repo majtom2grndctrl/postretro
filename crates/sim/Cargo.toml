@@ -7,7 +7,7 @@ description = "Fixed-tick gameplay simulation and scripting host for Postretro"
 license.workspace = true
 
 [features]
-dev-tools = ["postretro-physics/test-support"]
+dev-tools = []
 test-support = [
     "dep:postretro-test-log-capture",
     "postretro-entities/test-support",
@@ -19,7 +19,6 @@ directories.workspace = true
 env_logger.workspace = true
 glam.workspace = true
 log.workspace = true
-parry3d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

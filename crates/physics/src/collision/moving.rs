@@ -10,9 +10,12 @@ use parry3d::na::{Quaternion, Translation3, UnitQuaternion};
 use parry3d::query::{
     Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes, contact,
 };
-use parry3d::shape::{Capsule, TriMesh};
+use parry3d::shape::{Capsule as ParryCapsule, TriMesh};
 
-use super::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use super::{
+    COS_WALKABLE, CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule_parry,
+    cast_ray_parry,
+};
 use postretro_entities::Transform;
 
 const HIT_TOI_TIE_EPSILON: f32 = 1.0e-5;
@@ -155,7 +158,7 @@ impl MoverCollider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MoverPenetration {
+pub(crate) struct MoverPenetration {
     pub(crate) mover_id: u32,
     pub(crate) normal: Vec3,
     pub(crate) depth: f32,
@@ -165,12 +168,34 @@ pub fn cast_capsule_combined(
     static_world: &CollisionWorld,
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: CollisionCapsule,
+    dir: Vec3,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
+    let capsule = capsule.parry();
+    cast_capsule_combined_parry(
+        static_world,
+        movers,
+        poses,
+        Point::new(pos.x, pos.y, pos.z),
+        &capsule,
+        Vector::new(dir.x, dir.y, dir.z),
+        max_toi,
+    )
+}
+
+pub(crate) fn cast_capsule_combined_parry(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
     pos: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
     dir: Vector<f32>,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
-    let mut nearest = cast_capsule(static_world, pos, capsule, dir, max_toi).map(static_shape_hit);
+    let mut nearest =
+        cast_capsule_parry(static_world, pos, capsule, dir, max_toi).map(static_shape_hit);
 
     for mover in movers {
         let Some(pose) = poses.pose(mover.mover_id) else {
@@ -205,11 +230,29 @@ pub fn cast_ray_combined(
     static_world: &CollisionWorld,
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
+    origin: Vec3,
+    dir: Vec3,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
+    cast_ray_combined_parry(
+        static_world,
+        movers,
+        poses,
+        Point::new(origin.x, origin.y, origin.z),
+        Vector::new(dir.x, dir.y, dir.z),
+        max_toi,
+    )
+}
+
+pub(crate) fn cast_ray_combined_parry(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
     origin: Point<f32>,
     dir: Vector<f32>,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
-    let mut nearest = cast_ray(static_world, origin, dir, max_toi).map(static_ray_hit);
+    let mut nearest = cast_ray_parry(static_world, origin, dir, max_toi).map(static_ray_hit);
     let ray = Ray::new(origin, dir);
 
     for mover in movers {
@@ -227,11 +270,11 @@ pub fn cast_ray_combined(
     nearest
 }
 
-pub fn deepest_mover_penetration(
+pub(crate) fn deepest_mover_penetration(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
     pos: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
     let capsule_iso = Isometry::translation(pos.x, pos.y, pos.z);
     let mut deepest: Option<MoverPenetration> = None;
@@ -267,20 +310,20 @@ pub fn deepest_mover_penetration(
     deepest
 }
 
-pub fn deepest_mover_push_penetration(
+pub(crate) fn deepest_mover_push_penetration(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
     pos: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
     deepest_mover_push_penetration_inner(movers, poses, pos, capsule, None)
 }
 
-pub fn deepest_mover_push_penetration_excluding_swept(
+pub(crate) fn deepest_mover_push_penetration_excluding_swept(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
     pos: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
     excluded_mover_id: u32,
 ) -> Option<MoverPenetration> {
     deepest_mover_push_penetration_inner(movers, poses, pos, capsule, Some(excluded_mover_id))
@@ -290,7 +333,7 @@ fn deepest_mover_push_penetration_inner(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
     pos: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
     excluded_swept_mover_id: Option<u32>,
 ) -> Option<MoverPenetration> {
     let capsule_iso = Isometry::translation(pos.x, pos.y, pos.z);
@@ -329,7 +372,7 @@ fn mover_swept_sphere_may_reach_capsule(
     mover: &MoverCollider,
     pose: MoverPose,
     capsule_position: Point<f32>,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
 ) -> bool {
     let scale = pose.transform.scale.abs().max_element();
     let mover_radius = mover.local_radius * scale;
@@ -369,7 +412,7 @@ fn mover_swept_sphere_may_reach_capsule(
 fn sweep_mover_against_capsule(
     mover: &MoverCollider,
     pose: MoverPose,
-    capsule: &Capsule,
+    capsule: &ParryCapsule,
     capsule_iso: &Isometry<f32>,
     deepest: &mut Option<MoverPenetration>,
 ) {
@@ -844,8 +887,8 @@ mod tests {
         .unwrap()
     }
 
-    fn test_capsule() -> Capsule {
-        Capsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25)
+    fn test_capsule() -> ParryCapsule {
+        ParryCapsule::new(Point::new(0.0, -0.5, 0.0), Point::new(0.0, 0.5, 0.0), 0.25)
     }
 
     #[test]
@@ -855,8 +898,8 @@ mod tests {
         let origin = Point::new(0.0, 2.0, 0.0);
         let dir = Vector::new(0.0, -1.0, 0.0);
 
-        let direct = cast_ray(&world, origin, dir, 10.0).unwrap();
-        let combined = cast_ray_combined(&world, &[], &poses, origin, dir, 10.0).unwrap();
+        let direct = cast_ray_parry(&world, origin, dir, 10.0).unwrap();
+        let combined = cast_ray_combined_parry(&world, &[], &poses, origin, dir, 10.0).unwrap();
 
         assert_eq!(combined.source, CollisionSource::Static);
         assert!((combined.time_of_impact - direct.time_of_impact).abs() < EPS);
@@ -868,6 +911,26 @@ mod tests {
     }
 
     #[test]
+    fn combined_ray_glam_adapter_preserves_hit_data() {
+        let world = floor_world(0.0);
+        let poses = TestPoseSource::default();
+
+        let hit = cast_ray_combined(
+            &world,
+            &[],
+            &poses,
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::NEG_Y,
+            10.0,
+        )
+        .expect("engine-native combined ray should hit the floor");
+
+        assert!((hit.time_of_impact - 2.0).abs() < EPS);
+        assert!((hit.normal - Vec3::Y).length() < EPS);
+        assert_eq!(hit.source, CollisionSource::Static);
+    }
+
+    #[test]
     fn static_line_of_sight_ignores_a_mover_that_blocks_the_combined_ray() {
         let world = CollisionWorld::new();
         let movers = [local_wall_collider(42)];
@@ -876,7 +939,7 @@ mod tests {
         let eye = Vec3::new(0.0, 1.0, 0.0);
         let aim = Vec3::new(2.0, 1.0, 0.0);
 
-        let combined = cast_ray_combined(
+        let combined = cast_ray_combined_parry(
             &world,
             &movers,
             &poses,
@@ -900,9 +963,9 @@ mod tests {
         let origin = Point::new(0.0, 2.0, 0.0);
         let dir = Vector::new(0.0, -1.0, 0.0);
 
-        let direct = cast_capsule(&world, origin, &capsule, dir, 10.0).unwrap();
+        let direct = cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
         let combined =
-            cast_capsule_combined(&world, &[], &poses, origin, &capsule, dir, 10.0).unwrap();
+            cast_capsule_combined_parry(&world, &[], &poses, origin, &capsule, dir, 10.0).unwrap();
 
         assert_eq!(combined.source, CollisionSource::Static);
         assert!((combined.time_of_impact - direct.time_of_impact).abs() < EPS);
@@ -925,7 +988,7 @@ mod tests {
             Vec3::new(0.0, 0.15, 0.0),
         );
 
-        let hit = cast_ray_combined(
+        let hit = cast_ray_combined_parry(
             &world,
             &movers,
             &poses,
@@ -952,7 +1015,7 @@ mod tests {
         poses.insert(42, Vec3::new(0.0, 3.0, 0.0), Vec3::ZERO, Vec3::ZERO);
         let capsule = test_capsule();
 
-        let hit = cast_capsule_combined(
+        let hit = cast_capsule_combined_parry(
             &world,
             &movers,
             &poses,
@@ -974,7 +1037,7 @@ mod tests {
         let mut poses = TestPoseSource::default();
         poses.insert(42, Vec3::new(0.0, -3.0, 0.0), Vec3::Y, Vec3::Y * 0.1);
 
-        let hit = cast_ray_combined(
+        let hit = cast_ray_combined_parry(
             &world,
             &movers,
             &poses,

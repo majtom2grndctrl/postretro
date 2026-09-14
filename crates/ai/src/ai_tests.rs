@@ -12,8 +12,6 @@ use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
 use log::Level;
-use parry3d::math::Point;
-use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
@@ -388,22 +386,22 @@ fn spawn_enemy(
 
 fn wall_world(x: f32, min_y: f32, max_y: f32) -> CollisionWorld {
     let points = vec![
-        Point::new(x, min_y, -1.0),
-        Point::new(x, max_y, -1.0),
-        Point::new(x, max_y, 1.0),
-        Point::new(x, min_y, 1.0),
+        Vec3::new(x, min_y, -1.0),
+        Vec3::new(x, max_y, -1.0),
+        Vec3::new(x, max_y, 1.0),
+        Vec3::new(x, min_y, 1.0),
     ];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]))
+    CollisionWorld::from_triangles_for_test(points, vec![[0u32, 1, 2], [0, 2, 3]])
 }
 
 fn floor_world(y: f32) -> CollisionWorld {
     let points = vec![
-        Point::new(-2.0, y, -2.0),
-        Point::new(2.0, y, -2.0),
-        Point::new(2.0, y, 2.0),
-        Point::new(-2.0, y, 2.0),
+        Vec3::new(-2.0, y, -2.0),
+        Vec3::new(2.0, y, -2.0),
+        Vec3::new(2.0, y, 2.0),
+        Vec3::new(-2.0, y, 2.0),
     ];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, vec![[0u32, 1, 2], [0, 2, 3]]))
+    CollisionWorld::from_triangles_for_test(points, vec![[0u32, 1, 2], [0, 2, 3]])
 }
 
 fn set_enemy_hitbox(reg: &mut EntityRegistry, enemy: EntityId, hitbox: Hitbox) {
@@ -3066,7 +3064,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
     assert_eq!(policy_fires, 1);
     assert_eq!(player_hp(&registry, target), 92.0);
     assert!(
-        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target,)
+        crate::scripting_systems::health::is_terminally_committed_to_removal(&registry, target)
     );
     assert_eq!(
         registry
@@ -4843,13 +4841,13 @@ impl OpenFloor {
     /// grounded and slide freely across it.
     fn collision_world(&self) -> CollisionWorld {
         let points = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(self.extent, 0.0, 0.0),
-            Point::new(self.extent, 0.0, self.extent),
-            Point::new(0.0, 0.0, self.extent),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(self.extent, 0.0, 0.0),
+            Vec3::new(self.extent, 0.0, self.extent),
+            Vec3::new(0.0, 0.0, self.extent),
         ];
         let tris = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Single navmesh region covering the whole floor. Unit cells, origin at
@@ -4895,18 +4893,18 @@ impl JumpableCorral {
 
     fn collision_world() -> CollisionWorld {
         let mut points = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
-            Point::new(0.0, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, Self::EXTENT),
         ];
         let mut tris = vec![[0u32, 1, 2], [0, 2, 3]];
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, Self::WALL_HEIGHT, z1));
-            points.push(Point::new(x0, Self::WALL_HEIGHT, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, Self::WALL_HEIGHT, z1));
+            points.push(Vec3::new(x0, Self::WALL_HEIGHT, z0));
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
             tris.push([base, base + 2, base + 1]);
@@ -4936,7 +4934,7 @@ impl JumpableCorral {
             Self::INTERIOR_MIN,
             Self::INTERIOR_MIN,
         );
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     fn nav_graph() -> NavGraph {
@@ -6297,20 +6295,20 @@ impl CornerArena {
     const HEIGHT: f32 = 3.0;
 
     fn collision_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, 0.0),
-            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
-            Point::new(0.0, 0.0, Self::EXTENT),
+        let mut points: Vec<Vec3> = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, 0.0),
+            Vec3::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Vec3::new(0.0, 0.0, Self::EXTENT),
         ];
         let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
 
         let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
             let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, Self::HEIGHT, z1));
-            points.push(Point::new(x0, Self::HEIGHT, z0));
+            points.push(Vec3::new(x0, 0.0, z0));
+            points.push(Vec3::new(x1, 0.0, z1));
+            points.push(Vec3::new(x1, Self::HEIGHT, z1));
+            points.push(Vec3::new(x0, Self::HEIGHT, z0));
             tris.push([base, base + 1, base + 2]);
             tris.push([base, base + 2, base + 3]);
             tris.push([base, base + 2, base + 1]);
@@ -6319,7 +6317,7 @@ impl CornerArena {
         push_wall(Self::WALL_X, 0.0, Self::WALL_X, Self::WALL_Z); // box -X face
         push_wall(Self::WALL_X, Self::WALL_Z, Self::EXTENT, Self::WALL_Z); // box +Z face
 
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, tris))
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Regions stop half a unit short of the box faces (cell 0.5):

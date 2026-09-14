@@ -14,8 +14,6 @@
 #![cfg(test)]
 
 use glam::{Vec2, Vec3};
-use parry3d::math::Point;
-use parry3d::shape::TriMesh;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -91,13 +89,13 @@ pub(crate) const DRAIN_SETTLE_TICKS: u32 = 30;
 /// scenario about prediction/reconciliation, not terrain interaction.
 pub(crate) fn floor_world() -> CollisionWorld {
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 /// Flat floor joined continuously to a downhill facet at `z = -1`. Forward
@@ -106,19 +104,19 @@ pub(crate) fn floor_world() -> CollisionWorld {
 pub(crate) fn faceted_slope_world(slope: f32) -> CollisionWorld {
     let far_y = slope * (-500.0 + 1.0);
     let points = vec![
-        Point::new(-500.0, far_y, -500.0),
-        Point::new(500.0, far_y, -500.0),
-        Point::new(500.0, 0.0, -1.0),
-        Point::new(-500.0, 0.0, -1.0),
-        Point::new(-500.0, 0.0, -1.0),
-        Point::new(500.0, 0.0, -1.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
+        Vec3::new(-500.0, far_y, -500.0),
+        Vec3::new(500.0, far_y, -500.0),
+        Vec3::new(500.0, 0.0, -1.0),
+        Vec3::new(-500.0, 0.0, -1.0),
+        Vec3::new(-500.0, 0.0, -1.0),
+        Vec3::new(500.0, 0.0, -1.0),
+        Vec3::new(500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, 500.0),
     ];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(
+    CollisionWorld::from_triangles_for_test(
         points,
         vec![[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]],
-    ))
+    )
 }
 
 pub(crate) fn faceted_floor_height(slope: f32, z: f32) -> f32 {

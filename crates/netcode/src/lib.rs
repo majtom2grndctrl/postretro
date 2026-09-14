@@ -2489,8 +2489,7 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::math::Point;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
     use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponComponent};
@@ -3727,13 +3726,13 @@ mod tests {
 
     fn wall_at_x(x: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(x, -1.0, -1.0),
-            Point::new(x, 1.0, -1.0),
-            Point::new(x, 1.0, 1.0),
-            Point::new(x, -1.0, 1.0),
+            Vec3::new(x, -1.0, -1.0),
+            Vec3::new(x, 1.0, -1.0),
+            Vec3::new(x, 1.0, 1.0),
+            Vec3::new(x, -1.0, 1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     struct HitIngestFixture {

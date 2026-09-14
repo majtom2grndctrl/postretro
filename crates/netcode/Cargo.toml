@@ -30,7 +30,6 @@ postretro-scripting-core.workspace = true
 postretro-sim.workspace = true
 
 [dev-dependencies]
-parry3d.workspace = true
 postretro-ai = { workspace = true, features = ["test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }

@@ -19,6 +19,12 @@ use crate::weapon::ProjectileLaunch;
 
 /// Effects AI may apply synchronously while publishing one tick's outcomes.
 pub trait AiHost {
+    /// Materialize one projectile completely before returning its id.
+    ///
+    /// `Some(id)` means the entity and all gameplay components described by
+    /// `launch` are live in `registry`. `None` means materialization failed and
+    /// the registry is unchanged: no partial entity, presentation spawn, attack
+    /// event, or caller-side shot/cooldown commit may be inferred from failure.
     fn spawn_projectile(
         &mut self,
         registry: &mut EntityRegistry,
@@ -27,6 +33,9 @@ pub trait AiHost {
         launch: ProjectileLaunch,
     ) -> Option<EntityId>;
 
+    /// Apply damage synchronously through the contextual health chokepoint.
+    /// Every later host call in this AI batch must observe the resulting health
+    /// and lifecycle state.
     fn apply_damage(
         &mut self,
         registry: &mut EntityRegistry,
@@ -35,8 +44,15 @@ pub trait AiHost {
         context: DamageContext,
     );
 
+    /// Observe whether `entity` must reject further same-batch AI outcomes.
+    ///
+    /// Quiescent means depleted health or a committed terminal lifecycle effect;
+    /// it is observable immediately after [`Self::apply_damage`] and after an
+    /// inline impact callback mutates lifecycle state.
     fn is_quiescent(&self, registry: &EntityRegistry, entity: EntityId) -> bool;
 
+    /// Complete impact dispatch inline before returning. Any health, despawn,
+    /// recovery, or sentiment writes are visible to the next AI outcome.
     fn on_impact(&mut self, registry: &mut EntityRegistry);
 }
 
@@ -57,36 +73,73 @@ pub struct AiTickInputs<'a> {
     pub faction_sentiment: &'a RefCell<FactionSentimentState>,
 }
 
-/// Host-only output from the AI stage.
+/// Finalized host-only output from exactly one AI stage invocation.
+///
+/// `events` contains only named events committed by successful outcomes during
+/// this invocation. `projectile_spawns` contains exactly the successfully
+/// materialized enemy projectiles that require presentation, in commit order;
+/// failed spawn attempts appear in neither collection. Once returned, the host
+/// has completed all synchronous damage and impact work for those outcomes.
 pub struct AiTickResult {
     pub events: Vec<Cow<'static, str>>,
     pub projectile_spawns: Vec<EnemyProjectilePresentationSpawn>,
 }
 
-/// Production adapter used by the fixed-tick simulation seam.
-pub struct SimAiHost<'a, F> {
-    on_impact: &'a mut F,
+/// Bridge only for the duplicate sim crate identity compiled by sim's own
+/// dev-dependency cycle through `postretro-ai`. Production runners return
+/// `AiTickResult` directly and never allocate or rebuild projectile output.
+#[cfg(any(test, feature = "test-support"))]
+impl From<(Vec<Cow<'static, str>>, Vec<(EntityId, String)>)> for AiTickResult {
+    fn from(
+        (events, projectile_spawns): (Vec<Cow<'static, str>>, Vec<(EntityId, String)>),
+    ) -> Self {
+        Self {
+            events,
+            projectile_spawns: projectile_spawns
+                .into_iter()
+                .map(
+                    |(projectile, descriptor_class)| EnemyProjectilePresentationSpawn {
+                        projectile,
+                        descriptor_class,
+                    },
+                )
+                .collect(),
+        }
+    }
 }
 
-impl<'a, F> SimAiHost<'a, F>
-where
-    F: FnMut(&mut EntityRegistry),
-{
-    pub fn new(on_impact: &'a mut F) -> Self {
+/// Production adapter used by the fixed-tick simulation seam.
+pub struct SimAiHost<'a> {
+    on_impact: &'a mut dyn FnMut(&mut EntityRegistry),
+}
+
+impl<'a> SimAiHost<'a> {
+    fn from_callback(on_impact: &'a mut impl FnMut(&mut EntityRegistry)) -> Self {
         Self { on_impact }
     }
 
-    /// Reach the production adapter from the extracted AI crate's tests.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn for_test(on_impact: &'a mut F) -> Self {
-        Self::new(on_impact)
+    #[cfg(feature = "test-support")]
+    pub fn new(on_impact: &'a mut impl FnMut(&mut EntityRegistry)) -> Self {
+        Self::from_callback(on_impact)
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn new(on_impact: &'a mut impl FnMut(&mut EntityRegistry)) -> Self {
+        Self::from_callback(on_impact)
+    }
+
+    fn invoke_on_impact(&mut self, registry: &mut EntityRegistry) {
+        (self.on_impact)(registry);
+    }
+
+    /// Forward impact work across the test-only duplicate-crate bridge.
+    #[cfg(feature = "test-support")]
+    pub fn on_impact(&mut self, registry: &mut EntityRegistry) {
+        self.invoke_on_impact(registry);
     }
 }
 
-impl<F> AiHost for SimAiHost<'_, F>
-where
-    F: FnMut(&mut EntityRegistry),
-{
+impl AiHost for SimAiHost<'_> {
     fn spawn_projectile(
         &mut self,
         registry: &mut EntityRegistry,
@@ -112,6 +165,6 @@ where
     }
 
     fn on_impact(&mut self, registry: &mut EntityRegistry) {
-        (self.on_impact)(registry);
+        self.invoke_on_impact(registry);
     }
 }

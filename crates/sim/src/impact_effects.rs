@@ -115,7 +115,27 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
 /// `Some(0.0)` is still deferred: only an absent `afterMs` is immediate. That
 /// distinction makes the first countdown decrement unambiguously belong to a
 /// later game-logic tick.
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn set_health(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    value: f32,
+    after_ms: Option<f32>,
+) {
+    set_health_inner(registry, target, value, after_ms);
+}
+
+#[cfg(feature = "test-support")]
 pub fn set_health(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    value: f32,
+    after_ms: Option<f32>,
+) {
+    set_health_inner(registry, target, value, after_ms);
+}
+
+fn set_health_inner(
     registry: &mut EntityRegistry,
     target: EntityId,
     value: f32,
@@ -174,7 +194,25 @@ fn despawn_inner(registry: &mut EntityRegistry, target: EntityId, after_ms: Opti
 /// Switch a declared mesh animation state synchronously while the target is
 /// still live. This deliberately bypasses tag-targeted reaction/app-drain
 /// dispatch so an in-group `playAnim` following `despawn()` still lands.
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn play_animation(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    state: &str,
+) -> SwitchResult {
+    play_animation_inner(registry, target, state)
+}
+
+#[cfg(feature = "test-support")]
 pub fn play_animation(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    state: &str,
+) -> SwitchResult {
+    play_animation_inner(registry, target, state)
+}
+
+fn play_animation_inner(
     registry: &mut EntityRegistry,
     target: EntityId,
     state: &str,
@@ -205,7 +243,17 @@ fn resume_recovered_brain_presentation(registry: &mut EntityRegistry, target: En
 /// Advance active deferred-effect queues after the weapon and enemy-melee
 /// damage chokepoints. The caller supplies fixed-tick seconds; script-facing
 /// milliseconds are stored as integer microseconds.
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32) {
+    tick_deferred_effects_inner(registry, tick_dt);
+}
+
+#[cfg(feature = "test-support")]
 pub fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32) {
+    tick_deferred_effects_inner(registry, tick_dt);
+}
+
+fn tick_deferred_effects_inner(registry: &mut EntityRegistry, tick_dt: f32) {
     let dt_us = tick_micros(tick_dt);
     let mut active = registry.take_active_deferred_effects();
     let mut retained = 0;

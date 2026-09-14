@@ -10,8 +10,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use glam::{EulerRot, Vec2, Vec3};
-use parry3d::math::Point;
-use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 use proptest::prelude::*;
 
@@ -1336,17 +1334,17 @@ fn floor_world() -> CollisionWorld {
 /// impact rather than silently missing above the floor.
 fn determinism_world() -> CollisionWorld {
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, -40.0),
-        Point::new(500.0, 0.0, -40.0),
-        Point::new(500.0, 500.0, -40.0),
-        Point::new(-500.0, 500.0, -40.0),
+        Vec3::new(-500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, -500.0),
+        Vec3::new(500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, 500.0),
+        Vec3::new(-500.0, 0.0, -40.0),
+        Vec3::new(500.0, 0.0, -40.0),
+        Vec3::new(500.0, 500.0, -40.0),
+        Vec3::new(-500.0, 500.0, -40.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 /// A large ground plane tilted about the world Z axis: surface height `y =
@@ -1357,13 +1355,13 @@ fn determinism_world() -> CollisionWorld {
 fn sloped_floor_world(slope: f32) -> CollisionWorld {
     let y = |x: f32| slope * x;
     let points = vec![
-        Point::new(-500.0, y(-500.0), -500.0),
-        Point::new(500.0, y(500.0), -500.0),
-        Point::new(500.0, y(500.0), 500.0),
-        Point::new(-500.0, y(-500.0), 500.0),
+        Vec3::new(-500.0, y(-500.0), -500.0),
+        Vec3::new(500.0, y(500.0), -500.0),
+        Vec3::new(500.0, y(500.0), 500.0),
+        Vec3::new(-500.0, y(-500.0), 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+    CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
 fn open_floor_nav_graph() -> NavGraph {

@@ -8,9 +8,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use glam::{Mat4, Vec3};
-use parry3d::math::{Isometry, Point, Vector};
-use parry3d::query::RayCast;
-use parry3d::shape::{Ball, Capsule};
 
 use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -667,9 +664,8 @@ fn max_abs_component(value: Vec3) -> f32 {
 // it walks every TARGETABLE entity and returns the nearest hit. "Targetable"
 // walks the union of Health-bearing damage targets and Mesh-only presentation
 // targets with zone-bearing skinned models. The weapon's hitscan delegates here;
-// so can any future system (no weapon/camera type in the signature). nalgebra
-// never leaves this section — it is converted to/from glam at the `parry3d`
-// boundary.
+// so can any future system (no weapon/camera type in the signature). The
+// narrow phase crosses into physics through its glam-only query boundary.
 // ---------------------------------------------------------------------------
 
 /// One resolved entity hit along a ray. `toi` is the ray parameter (distance,
@@ -1534,10 +1530,8 @@ fn pose_rest(skeleton: &Skeleton, out: &mut Vec<Mat4>) {
 
 /// Ray-test a segment-defined capsule (or a ball, for a zero-length leaf joint).
 /// `a`/`b_world` are the world-space segment endpoints; `None` `b_world` means a
-/// leaf joint → a [`Ball`] of `radius` at `a`. Uses `parry3d` ray casting with
-/// the shape placed by an `Isometry` translation (the shape carries its own
-/// segment geometry, so the placement is a pure translate — no `+Y` `cast_capsule`
-/// convention). Returns `(toi, world normal)` clamped to `range`, or `None`.
+/// leaf joint → a sphere of `radius` at `a`. Returns `(toi, world normal)`
+/// clamped to `range`, or `None`.
 fn ray_capsule_or_ball(
     origin: Vec3,
     direction: Vec3,
@@ -1546,39 +1540,9 @@ fn ray_capsule_or_ball(
     radius: f32,
     range: f32,
 ) -> Option<(f32, Vec3)> {
-    let ray = parry3d::query::Ray::new(
-        Point::new(origin.x, origin.y, origin.z),
-        Vector::new(direction.x, direction.y, direction.z),
-    );
-
-    // Place the shape at the origin; its geometry is defined directly in world
-    // space (capsule segment endpoints, or a ball at `a`). nalgebra stays here.
-    let isometry = Isometry::identity();
-
-    let intersection = match b_world {
-        Some(b) if (b - a).length() > 1.0e-6 => {
-            let capsule =
-                Capsule::new(Point::new(a.x, a.y, a.z), Point::new(b.x, b.y, b.z), radius);
-            capsule.cast_ray_and_get_normal(&isometry, &ray, range, true)
-        }
-        // Leaf joint (or a degenerate zero-length segment): a sphere at `a`.
-        _ => {
-            let ball = Ball::new(radius);
-            let ball_at = Isometry::translation(a.x, a.y, a.z);
-            ball.cast_ray_and_get_normal(&ball_at, &ray, range, true)
-        }
-    }?;
-
-    let toi = intersection.time_of_impact;
-    if toi > range {
-        return None;
-    }
-    let normal = Vec3::new(
-        intersection.normal.x,
-        intersection.normal.y,
-        intersection.normal.z,
-    );
-    Some((toi, normal))
+    let hit =
+        crate::collision::cast_ray_against_segment(origin, direction, a, b_world, radius, range)?;
+    Some((hit.time_of_impact, hit.normal))
 }
 
 /// Ray-vs-AABB slab test. Returns the entry time-of-impact (clamped to
@@ -1638,8 +1602,8 @@ pub(crate) fn ray_aabb_slab(
 
 #[cfg(test)]
 mod tests {
-    // `Mat4`, `Quat`, `Vec3`, and the `parry3d` / sample-param imports come
-    // through `super::*` (the module's own imports).
+    // `Mat4`, `Quat`, `Vec3`, and sample-param imports come through `super::*`
+    // (the module's own imports).
     use super::*;
 
     use postretro_model::skeleton::{Interp, Joint, JointTracks, RestLocal, Track};

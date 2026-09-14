@@ -28,17 +28,16 @@ use postretro_foundation::{KnockbackResponse, NavAgentParams};
 /// path/cursor, and `destination` are the live fields the steering system
 /// writes each tick.
 ///
-/// `radius`/`height` are the *total* capsule dimensions. The parry `Capsule`
-/// the collide-and-slide harness builds takes a HALF-HEIGHT (center to one
-/// endpoint, excluding the end-cap sphere): `height / 2.0 - radius`, mirroring
-/// the player movement capsule construction (`movement::integrate_collision`).
+/// `radius`/`height` describe the engine-owned collision capsule, with `height`
+/// measured end-cap to end-cap. Its center-to-cylinder-endpoint span is
+/// `height / 2.0 - radius`, matching the player collision capsule semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentComponent {
     /// Capsule radius, in world units. Seeded from `NavAgentParams::radius`.
     pub radius: f32,
-    /// Total capsule height (end-cap to end-cap), in world units. Seeded from
-    /// `NavAgentParams::height`. Convert to a parry half-height with
-    /// `height / 2.0 - radius` before building a `parry3d::shape::Capsule`.
+    /// Total collision-capsule height (end-cap to end-cap), in world units.
+    /// Seeded from `NavAgentParams::height`. The collision world derives its
+    /// center-to-cylinder-endpoint span as `height / 2.0 - radius`.
     pub height: f32,
     /// Maximum vertical step the agent can climb in one tick, in world units.
     /// Seeded from `NavAgentParams::step_height` (NOT the radius as a
@@ -187,14 +186,13 @@ impl AgentComponent {
         Self::new(params.radius, params.height, params.step_height, move_speed)
     }
 
-    /// parry half-height for this capsule: distance from the capsule center to
-    /// one cylinder endpoint, EXCLUDING the hemispherical end cap. Mirrors the
-    /// player movement capsule (`height / 2.0 - radius`). The collide-and-slide
-    /// harness builds its `parry3d::shape::Capsule` from this.
+    /// Collision-capsule center-to-cylinder-endpoint span, excluding the
+    /// hemispherical end cap. This mirrors the player capsule's
+    /// `height / 2.0 - radius` world-collision semantics.
     pub fn half_height(&self) -> f32 {
         // A well-baked agent has `radius < height / 2`, so the cylinder section is
-        // non-negative. A bad bake (`radius >= height / 2`) would invert the parry
-        // capsule endpoints and silently mis-shape collide-and-slide; clamp at 0 so
+        // non-negative. A bad bake (`radius >= height / 2`) would invert the
+        // capsule endpoints and silently mis-shape world collision; clamp at 0 so
         // the worst case degrades to a sphere rather than an inverted capsule.
         debug_assert!(
             self.height / 2.0 - self.radius >= 0.0,
@@ -295,7 +293,7 @@ mod tests {
 
     #[test]
     fn half_height_excludes_end_cap_sphere() {
-        // parry half-height = height/2 - radius (player-capsule convention).
+        // Engine-owned collision-capsule half-height = height/2 - radius.
         let agent = AgentComponent::new(0.35, 1.8, 0.4, 5.0);
         assert!((agent.half_height() - (0.9 - 0.35)).abs() < 1e-6);
     }

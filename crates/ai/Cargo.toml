@@ -20,7 +20,6 @@ postretro-sim.workspace = true
 
 [dev-dependencies]
 mlua.workspace = true
-parry3d.workspace = true
 postretro-level-format.workspace = true
 postretro-net.workspace = true
 postretro-physics = { workspace = true, features = ["test-support"] }

@@ -67,7 +67,7 @@ read at: a6ebb7938
 | 3 | Add deduplicated per-build cache live-set accounting and the exactly-once over-budget warning; prove no-cache/release silence and complete the Stride-1 campaign measurement | integrating executor | 2 | complete |
 | 4 | Add the Atlas Preparation stage, move the SH/delta/selection/billboard-scatter block and `ChunkLightList` before it, remove post-UV SH key churn, and update exact reporter/TUI order contracts | integrating executor | 3 | complete |
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | complete |
-| 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | |
+| 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | complete |
 | 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | |
 | 8 | Receive the owner's Windows stress result, update durable build-pipeline contracts and the AC result column, move the brief to `done/`, and land | integrating executor + owner | 7 | |
 
@@ -166,3 +166,34 @@ output artifact will be filled in after Task 7 against the final CLI surface.
   one-light-partition-miss, and selection-only rekey paths. The multi-layer channel-assignment
   barrier golden and production no-edit smoke pass. The complete compiler suite passes (1,173
   passed, 5 ignored; integration tests 2 passed, 2 ignored).
+
+### Task 6 — complete
+
+- The independent-oracle fault injection was exercised by temporarily forcing the first fused
+  partition visibility to zero. `fused_cold_warm_and_selection_only_paths_match_reference_bytes`
+  failed on the cold lightmap-byte assertion, the mutation was removed, and the same gate passed
+  cleanly. The worktree was clean after restoration.
+- The ignored whole-file CLI determinism gate now uses
+  `specular-shadowmask-capture.map`, a real fixture with both fused outputs instead of the former
+  no-static-light fixture. One-worker and four-worker cold PRLs are byte-identical; exact summary
+  order and lightmap progress contracts pass.
+- Post-fusion three-run campaign measurement (`campaign-test.map`, 4 workers, density 0.04,
+  default 2 GiB budget, fresh scratch cache; entity 14 intensity 150 -> 151 and restored):
+  - empty cache: 7,415 entries, 391,312 KiB allocated, 0 evictions; the diagnostic confirmation
+    observed `lightmap_section` 0/1 hit/miss, `shadowmask_atlas` 0/1, `lightmap_layer` 0/36,
+    and `sh_group` 0/3,306. Comparable first-sample stages were Lightmap 28.73s, ShadowmaskAtlas
+    0.40s, SH 74.83s, total 189.77s;
+  - no edit: unchanged 7,415 entries and 391,312 KiB, 0 evictions; `lightmap_section` 1/0,
+    `shadowmask_atlas` 1/0, no layer reads, `sh_group` 3,306/0; Lightmap 0.05s,
+    ShadowmaskAtlas 0.12s, SH 0.77s, total 4.59s;
+  - one-light edit: 8,437 entries, 497,172 KiB allocated, 0 evictions;
+    `lightmap_section` 0/1, `shadowmask_atlas` 1/0, `lightmap_layer` 32/4, and `sh_group`
+    2,292/1,014; Lightmap 7.39s, ShadowmaskAtlas 0.13s, SH 37.22s, total 51.06s.
+- A second empty-cache diagnostic sample was retained as host-load evidence rather than selected
+  as the headline: SH rose to 93.51s and total to 231.79s. The first cached cold sample was 1.7%
+  above the stride-1 186.55s total, while the one-light loop improved from 51.64s to 51.06s.
+  The required cache-disabled `--release` campaign run resolved the cold-path comparison:
+  Lightmap 33.12s, ShadowmaskAtlas 0.21s, SH 66.00s, total 129.43s. The sub-second shadowmask
+  row is graph/fill/encode only and demonstrates that the shipping path performs no second trace.
+- Focused readiness plus the complete compiler suite pass. No automated or local-manual blocker
+  remains; the Windows owner measurement is still the explicit external landing gate.

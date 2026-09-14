@@ -47,10 +47,10 @@ the live tree when opened (detail-on-open).
 - Breaking the `scripting ↔ sim ↔ netcode` cycle by sinking the two shared type
   families (shot-authority, carried-loadout) into `postretro-combat-model`.
 - Moving collision into `postretro-sim`, per §Target shape.
-- The deeper scripting-VM decomposition (M3) that makes enemy AI its own
-  fast-rebuilding crate: sinking the VM store + reaction-dispatch primitives to
-  `scripting-core`, inverting the `sim ↔ AiRuntime` seam behind a trait, inverting
-  the host→systems registration.
+- Carving enemy AI into its own fast-rebuilding `postretro-ai` crate (M3), plus a
+  `postretro-physics` leaf (collision, movement, kinematic movers) below sim. On the
+  merged M2 tree AI is already VM-decoupled, so M3 is a tick-seam inversion behind an
+  `AiHost` trait — not the VM decomposition the target graph below sketches (see M3).
 
 ### Out of scope
 - Runtime/behavior changes, PRL wire-format changes, scripting-semantics or
@@ -83,7 +83,7 @@ lives inside `postretro-sim`.
      state_slots, lifecycle          netcode → sim / ai / scripting-runtime:
                  │                   all DOWN-edges once the cluster sits below
                  ▼
-             postretro-sim*  ◄────►  postretro-ai*   (M3; sim↔ai via trait seam)
+             postretro-sim*  ◄───  postretro-ai*   (M3; ai ABOVE sim — sim→ai inverted via AiHost trait)
      fixed-tick core: weapon_stage · movement · collision (moved in) · nav ·
      triggers · kinematic_mover · projectile · impact_policy/effects · spawner ·
      frame_timing · presentation pool · scripting host + systems (hit_zones,
@@ -92,8 +92,8 @@ lives inside `postretro-sim`.
                  ▼                             ▼
         postretro-combat-model*          scripting-core
      stat/resource/augment/damage        VM host: mlua/rquickjs, primitives::store,
-     taxonomy + shot-authority (sunk)    reaction_dispatch (M3 sinks store+dispatch
-     + carried-loadout (sunk)            further down here)
+     taxonomy + shot-authority (sunk)    reaction_dispatch + store (already here;
+     + carried-loadout (sunk)            M3 needs no further VM sink)
                  │             │                 │
                  ▼             ▼                 ▼
                 entities  ◄─────────────  foundation          net
@@ -118,9 +118,9 @@ lives inside `postretro-sim`.
   are sunk. Largest single module (43K), lowest churn (23 commits) — evicting it
   from the AI rebuild unit is the core goal.
 - **`postretro-ai*`** (M3) — enemy behavior graphs, targeting, perception, the
-  `AiRuntime`, reaction dispatch invocation. Sibling to `postretro-sim` over
-  `combat-model`/`scripting-core`. The churn locus, isolated so an AI edit rebuilds
-  neither sim nor netcode.
+  `AiRuntime` and AI tick. Sits **above** `postretro-sim` (ai→sim down-edge for
+  nav/collision/weapon/spawn; sim→ai inverted via the injected `AiHost` trait). The
+  churn locus, isolated so an AI edit rebuilds neither sim nor netcode.
 
 ## Global acceptance criteria (every spec inherits)
 
@@ -190,16 +190,18 @@ dev-depend on a bin: those tests move up or shed the reach.
 rebuilds netcode: AI lives in sim until M3, and Cargo rebuilds every dependent of a
 changed crate. The AI-loop win lands at M3, not here.
 
-### M3 — `postretro-ai` (the scripting-VM decomposition)
-Carve enemy AI out of `postretro-sim` into its own crate: sink `primitives::store`
-and reaction dispatch to `scripting-core`; invert the `sim ↔ AiRuntime` seam behind a
-trait; invert the host→systems registration. **Boundary-prep:** `netcode/mod.rs` calls
-`scripting_systems::ai::locomotion_animation`. While that edge stands, netcode rebuilds
-on every AI edit and the milestone's outcome does not land. **Testable outcome:** an
-AI-logic edit recompiles `postretro-ai` + relinks; rebuilds neither `postretro-sim` nor
-`postretro-netcode`. **Detail-on-open:** M3's exact seam is designed when reached —
-its shape depends on what M2 reveals. This milestone is committed scope, not its
-current design.
+### M3 — `postretro-ai` + `postretro-physics` (`gameplay-stack--ai-and-physics-crates`, promoted)
+Re-grounded on the merged M2 tree, the "scripting-VM decomposition" framing this hub
+sketches elsewhere is **superseded**: enemy AI holds no script-store or reaction-dispatch
+state (`scripting-core` owns both), `AiRuntime` is plain data, and no host→systems
+registration exists. M3 carves `postretro-ai` **above** `postretro-sim` by inverting the
+injected `simulate_tick` → AI edge behind a synchronous `AiHost` effects trait (so sim never
+depends on ai), sinks two graph-query helpers + two state constants to `foundation` (severing
+the one `netcode → ai` edge, `locomotion_animation`), and extracts a `postretro-physics` leaf
+— collision, movement, kinematic movers — below sim to shrink the sim compilation unit and
+set up multi-threaded pathfinding. **Testable outcome:** an AI-logic edit recompiles
+`postretro-ai` + relinks; rebuilds neither `postretro-sim` nor `postretro-netcode`. Fully
+detailed in the promoted brief.
 
 ## Execution model
 
@@ -207,10 +209,10 @@ Build specs sequentially in dependency order — one spec or brief per build, lo
 crate first. Per spec: (1) re-ground against the live tree; (2) update the spec;
 (3) build; (4) run the full global-AC gate before the next spec opens. Do not
 deep-ground later specs now — they change as lower crates land (detail-on-open).
-Parallelism is the exception (genuinely file-disjoint boundary-prep only). The M3
-scripting-VM decomposition is deliberately left as a target with sketched seams, not
-a detailed design — designing it before the sim/ai boundary exists would bake in
-guesses the earlier cuts will falsify.
+Parallelism is the exception (genuinely file-disjoint boundary-prep only). M3 is now
+designed and promoted (`gameplay-stack--ai-and-physics-crates`): the M2 re-grounding
+replaced the sketched VM decomposition with a tick-seam inversion behind an `AiHost`
+trait plus a `postretro-physics` leaf — the earlier cuts falsified the guess, as intended.
 
 ## Decisions
 
@@ -220,10 +222,11 @@ guesses the earlier cuts will falsify.
    depend down on, off the `entities` chokepoint and VM-free — and the natural home for
    combat-model-domain math to consolidate into later. Justified by the cycle-break
    alone; the consolidation is a separate, out-of-scope effort. (M1.)
-2. **AI stays inside `postretro-sim` through M2; carved out at M3.** AI is fused to
-   the VM runtime and to `sim::spawn_projectile` (`research.md`); a leaf AI crate
-   needs the VM decomposition. Co-location resolves the `sim ↔ ai` cycle for free
-   until M3 inverts it deliberately. Principle: don't force a boundary blocked by
+2. **AI stays inside `postretro-sim` through M2; carved out at M3.** AI is coupled to
+   `sim::spawn_projectile` and the fixed-tick core (`research.md`), so co-location
+   resolves the `sim ↔ ai` cycle for free until M3 inverts it deliberately. (The epic
+   first assumed AI was fused to the VM runtime and M3 a VM decomposition; the M2
+   re-grounding overturned that — see M3.) Principle: don't force a boundary blocked by
    source coupling; sequence it behind the decomposition that unblocks it.
 3. **`postretro-netcode` on top, not left in the binary.** §Target shape names only
    `postretro-sim` + combat-model; source shows netcode is the largest, lowest-churn
@@ -257,15 +260,16 @@ measured compile pressure justifies the lift." This epic:
   binary-bound because they call collision — resolved by moving collision into
   `postretro-sim`.
 
-At promotion, update §Target shape to name the netcode and ai crates and record that
-AI is inseparable from the scripting runtime until the M3 decomposition.
+§Target shape (updated on the M2-merge base) names the netcode and ai crates and
+records that AI, though still in sim, is VM-decoupled — M3 is a tick-seam inversion
+behind an `AiHost` trait plus a `postretro-physics` leaf, not a VM decomposition.
 
 ## Open questions
 
-- **M3 seam shape.** Where the inverted `sim ↔ AiRuntime` trait is defined
-  (`combat-model`, `scripting-core`, or a new seam crate), and how much of
-  `primitives::store` / reaction dispatch sinks to `scripting-core`. Deferred to M3
-  re-grounding by design (Execution model).
+- **M3 seam shape.** Resolved by the M2 re-grounding: the `AiHost` effects trait is
+  defined in `postretro-sim` and injected by the binary (ai sits above sim); and no
+  further VM sink is needed — `primitives::store` and reaction dispatch already live in
+  `scripting-core`. See the promoted M3 brief.
 - **`restore_carried_health` placement.** Resolved from source (M1): it names only
   `CarriedState`/`EntityRegistry`/`EntityId` + entities' `set_health_absolute`, so it
   travels with the structs into combat-model and the netcode seat re-export drops it.

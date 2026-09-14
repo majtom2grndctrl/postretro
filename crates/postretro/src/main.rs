@@ -38,7 +38,7 @@ use postretro_sim::nav;
 // game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
-mod netcode;
+use postretro_netcode as netcode;
 // Localhost-only, bytes-only transport for windowed live introspection. The
 // main-thread service that parses requests is added separately.
 #[cfg(feature = "observe-live")]

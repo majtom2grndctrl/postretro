@@ -31,7 +31,7 @@ use super::{
 /// component-kind exclusions below. An entity not in this set does not replicate,
 /// even if it carries a `Transform` (the Phase 1 all-`Transform` walk is gone).
 #[derive(Debug, Default)]
-pub(crate) struct ReplicableSet {
+pub struct ReplicableSet {
     registered: HashSet<EntityId>,
 }
 
@@ -296,7 +296,7 @@ pub(crate) fn kinematic_mover_state_to_wire(
 /// Host-gated by the caller (it only runs inside the `NetEndpoint::Host` arm). Reads the
 /// registry through the borrow the caller threads in and touches only the replication
 /// bookkeeping — it never reaches into `App`.
-pub(crate) fn host_register_map_enemies(
+pub fn host_register_map_enemies(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -342,7 +342,7 @@ pub(crate) fn host_register_map_enemies(
 ///
 /// Reload-safe and idempotent: stale mover entity ids from a prior level are
 /// unregistered and forgotten before this level's loaded movers are stamped.
-pub(crate) fn host_register_loaded_movers(
+pub fn host_register_loaded_movers(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -386,7 +386,7 @@ pub(crate) fn host_register_loaded_movers(
 /// stale-id prologue removes entries that no longer carry `TouchableComponent` before
 /// registering the current world-item set. Held wieldables have no touchable component
 /// and are therefore never registered by this path.
-pub(crate) fn host_register_world_items(
+pub fn host_register_world_items(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,

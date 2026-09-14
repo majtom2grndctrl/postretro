@@ -11,20 +11,20 @@ use postretro_net::wire::JoinSeedValue;
 /// seat. The buffer belongs in the binary because only engine code can validate
 /// durable keys and mutate per-seat slot values.
 #[derive(Debug, Default)]
-pub(crate) struct HostJoinSeeds {
+pub struct HostJoinSeeds {
     pending: HashMap<u64, BTreeMap<String, JoinSeedValue>>,
     consumed: HashSet<u64>,
     reclaimed: HashSet<u64>,
 }
 
-pub(crate) enum JoinSeedArrival {
+pub enum JoinSeedArrival {
     Buffered,
     Apply(BTreeMap<String, JoinSeedValue>),
     DroppedConsumed,
     DroppedReclaimed,
 }
 
-pub(crate) enum ParticipationSeed {
+pub enum ParticipationSeed {
     None,
     Apply(BTreeMap<String, JoinSeedValue>),
     DroppedReclaimed,
@@ -34,7 +34,7 @@ impl HostJoinSeeds {
     /// Route one transport poll through the seed lifecycle before the caller
     /// applies participation edges. Treat an entry edge as not-yet-participating
     /// so its seed stays buffered until the admitted seat is known.
-    pub(crate) fn route_poll(
+    pub fn route_poll(
         &mut self,
         poll: &ServerPoll,
         mut is_participating: impl FnMut(u64) -> bool,
@@ -80,7 +80,7 @@ impl HostJoinSeeds {
 
     /// Mark an admission that reclaimed a held seat. That seat's carried live
     /// state wins over every persisted seed from the reconnecting client.
-    pub(crate) fn mark_reclaimed(&mut self, client_id: u64) {
+    pub fn mark_reclaimed(&mut self, client_id: u64) {
         self.pending.remove(&client_id);
         self.reclaimed.insert(client_id);
     }
@@ -113,7 +113,7 @@ impl HostJoinSeeds {
     /// materializes. No seed leaves a single late-arrival opportunity open: the
     /// first real seed received after defaults is still applied, then duplicates
     /// are rejected.
-    pub(crate) fn on_participating(&mut self, client_id: u64) -> ParticipationSeed {
+    pub fn on_participating(&mut self, client_id: u64) -> ParticipationSeed {
         if self.reclaimed.contains(&client_id) {
             self.pending.remove(&client_id);
             self.consumed.insert(client_id);
@@ -127,7 +127,7 @@ impl HostJoinSeeds {
     }
 
     /// Transport ids are short-lived. Never retain their seed state after close.
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
+    pub fn remove_client(&mut self, client_id: u64) {
         self.pending.remove(&client_id);
         self.consumed.remove(&client_id);
         self.reclaimed.remove(&client_id);

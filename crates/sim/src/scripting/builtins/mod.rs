@@ -15,8 +15,8 @@ pub(crate) mod wieldable_inventory;
 
 // Shared descriptor/placement builders used by both `data_archetype`'s own
 // `mod tests` and the netcode-side agreement test. See testing_guide.md §4.
-#[cfg(test)]
-pub(crate) mod data_archetype_test_fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub mod data_archetype_test_fixtures;
 
 // Used by `main.rs` for the level-load sweep. The `gen-script-types` bin
 // includes the scripting tree via `#[path]` but never references this

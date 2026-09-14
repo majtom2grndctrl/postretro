@@ -2462,6 +2462,23 @@ mod tests {
         }
     }
 
+    // The connected-client install policy belongs to binary lifecycle
+    // coverage: netcode receives the resulting registry but must not depend on
+    // this App-side installation fixture.
+    #[test]
+    fn connected_client_trigger_pool_install_keeps_authored_trigger_unarmed() {
+        let installed = install_connected_client_trigger_pool_fixture();
+        assert_eq!(installed.report, TriggerPoolInstallReport::default());
+        assert!(
+            !installed
+                .registry
+                .get_component::<TriggerVolumeComponent>(installed.trap)
+                .expect("client trap remains live")
+                .armed,
+            "the connected client does not rerun the host pool roll",
+        );
+    }
+
     struct CpuFixture {
         name: &'static str,
         reaction_name: &'static str,

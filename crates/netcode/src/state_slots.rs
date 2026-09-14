@@ -73,7 +73,7 @@ impl ReplicatedWireShape {
 /// This is deliberately a snapshot passed from `ScriptRuntime` callers, never a
 /// path that reads `identity.json` while building a network schema.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ReplicatedSlotIdentity<'a> {
+pub struct ReplicatedSlotIdentity<'a> {
     mod_id: Option<Cow<'a, str>>,
     ledger: Option<Cow<'a, StoreIdentityLedger>>,
     committed_store_slots: Cow<'a, BTreeSet<String>>,
@@ -93,7 +93,7 @@ impl<'a> ReplicatedSlotIdentity<'a> {
         }
     }
 
-    pub(crate) fn borrowed(
+    pub fn borrowed(
         mod_id: Option<&'a str>,
         ledger: Option<&'a StoreIdentityLedger>,
         committed_store_slots: &'a BTreeSet<String>,
@@ -554,7 +554,7 @@ impl FactionSentimentReplication {
 /// The schema is the only place the engine maps `StateSlotId <-> dotted name`; the
 /// net tracker never sees a name. Both peers build the schema identically from the
 /// same content, so a fingerprint match is the cross-peer agreement gate.
-pub(crate) struct HostStateReplication {
+pub struct HostStateReplication {
     /// Built lazily after each committed staged-manifest generation, then reused until
     /// the next reset. `None` until built.
     schema: Option<ReplicatedSlotSchema>,
@@ -601,7 +601,7 @@ impl HostStateReplication {
 
     /// Register a participating client so it receives state records. This is idempotent
     /// and re-registers every current participant after a schema rebuild.
-    pub(crate) fn register_client(&mut self, client_id: u64) {
+    pub fn register_client(&mut self, client_id: u64) {
         self.tracker.register_client(client_id);
         self.faction_sentiment.register_client(client_id);
     }
@@ -1033,7 +1033,7 @@ struct PendingSlotWrite {
 /// baseline. Lives on the `NetEndpoint::Client` variant; the snapshot receive path
 /// validates the whole state batch against the schema, applies all-or-nothing through
 /// the engine store-write path, and returns the acks + refresh requests to send back.
-pub(crate) struct ClientStateApply {
+pub struct ClientStateApply {
     schema: Option<ReplicatedSlotSchema>,
     /// The lowered net schema (fingerprint + per-slot descriptors), built once
     /// alongside `schema` and reused so per-snapshot validation does not re-lower it.
@@ -3634,27 +3634,11 @@ mod tests {
         );
     }
 
-    /// Read a numeric UI slot value from the REAL UI read-snapshot projection, or
-    /// `None` if absent. Pins the exact production destination contract by routing
-    /// through `crate::App::build_ui_slot_snapshot` — the slot-table → `slot_values`
-    /// projection that feeds `UiReadSnapshot` — rather than a hand-mirrored copy.
-    fn ui_snapshot_number(slot_table: &SlotTable, name: &str) -> Option<f32> {
-        crate::App::build_ui_slot_snapshot(slot_table)
-            .get(name)
-            .and_then(|value| match value {
-                SlotValue::Number(n) => Some(*n),
-                _ => None,
-            })
-    }
-
-    // Acceptance metric (AC-1): after applying the first full state baseline through the
-    // REAL host production → client apply glue, the REAL UI read snapshot
-    // (`App::build_ui_slot_snapshot` → `slot_values`) carries both `player.health` and
-    // `player.maxHealth` — the connected client no longer renders them as missing. This
-    // is a true seam-crossing test: the apply path writes the slot table, the UI path
-    // reads it, and the value must survive the crossing.
+    // The binary owns the UI read-snapshot projection test. This netcode-local
+    // half retains the host production → client apply fixture without reaching
+    // `App::build_ui_slot_snapshot` across the crate boundary.
     #[test]
-    fn first_baseline_populates_ui_read_snapshot_player_health_slots() {
+    fn first_baseline_populates_owner_private_player_health_slots() {
         let host_table = owner_private_player_table();
         let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 100.0);
 
@@ -3672,15 +3656,18 @@ mod tests {
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
 
-        // A fresh client table whose player slots have NO value yet: the UI read
-        // snapshot must not carry them before the baseline lands.
+        // A fresh client table whose player slots have no value yet.
         let mut client_table = owner_private_player_table();
         client_table.get_mut("player.health").unwrap().value = None;
         client_table.get_mut("player.maxHealth").unwrap().value = None;
         assert!(
-            ui_snapshot_number(&client_table, "player.health").is_none()
-                && ui_snapshot_number(&client_table, "player.maxHealth").is_none(),
-            "before the baseline the player health slots are missing from the UI snapshot"
+            client_table.get("player.health").unwrap().value.is_none()
+                && client_table
+                    .get("player.maxHealth")
+                    .unwrap()
+                    .value
+                    .is_none(),
+            "before the baseline the owner-private player slots are unset"
         );
 
         let mut client = ClientStateApply::new();
@@ -3692,17 +3679,22 @@ mod tests {
             &records,
         );
 
-        let health = ui_snapshot_number(&client_table, "player.health")
-            .expect("player.health present in the UI read snapshot after the first baseline");
-        let max_health = ui_snapshot_number(&client_table, "player.maxHealth")
-            .expect("player.maxHealth present in the UI read snapshot after the first baseline");
+        let Some(SlotValue::Number(health)) = client_table.get("player.health").unwrap().value
+        else {
+            panic!("player.health is present after the first baseline");
+        };
+        let Some(SlotValue::Number(max_health)) =
+            client_table.get("player.maxHealth").unwrap().value
+        else {
+            panic!("player.maxHealth is present after the first baseline");
+        };
         assert!(
             (health - 75.0).abs() < 1e-4,
-            "player.health reached the UI snapshot with the replicated value, got {health}"
+            "player.health receives the replicated value, got {health}"
         );
         assert!(
             (max_health - 100.0).abs() < 1e-4,
-            "player.maxHealth reached the UI snapshot with the replicated value, got {max_health}"
+            "player.maxHealth receives the replicated value, got {max_health}"
         );
     }
 

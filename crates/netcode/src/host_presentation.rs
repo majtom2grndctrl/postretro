@@ -46,7 +46,7 @@ pub(crate) const PRESENTATION_DELAY_TICKS: u32 = INPUT_BUFFER_TARGET as u32;
 /// host presentation write (which is `Transform`-only), so they are left absent/zero;
 /// dense per-tick samples keep the presentation in the buffer's interpolate branch, never
 /// the velocity-extrapolation branch.
-pub(crate) fn record_client_pawn_poses(
+pub fn record_client_pawn_poses(
     buffer: &mut RemoteInterpolationBuffer,
     owners: &MovementOwners,
     allocator: &NetworkIdAllocator,
@@ -84,7 +84,7 @@ pub(crate) fn record_client_pawn_poses(
 /// tick loop but before the next frame's restore — e.g. a same-`EntityId` respawn or
 /// teleport of a still-owned pawn — is not in the buffer yet and would be silently
 /// reverted by this function on the very next frame.
-pub(crate) fn restore_client_pawn_authoritative_poses(
+pub fn restore_client_pawn_authoritative_poses(
     buffer: &RemoteInterpolationBuffer,
     owners: &MovementOwners,
     allocator: &NetworkIdAllocator,
@@ -111,7 +111,7 @@ pub(crate) fn restore_client_pawn_authoritative_poses(
 ///
 /// `current_tick` is the host's authoritative tick after the fixed-tick loop, i.e. one
 /// past the newest recorded sample; `alpha` is the render sub-tick accumulator fraction.
-pub(crate) fn present_client_pawns(
+pub fn present_client_pawns(
     buffer: &RemoteInterpolationBuffer,
     owners: &MovementOwners,
     allocator: &NetworkIdAllocator,

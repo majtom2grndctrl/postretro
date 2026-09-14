@@ -39,6 +39,16 @@ pub struct CollisionWorld {
 }
 
 impl CollisionWorld {
+    /// Build a static world from an already-validated mesh for cross-crate
+    /// harnesses. Production population remains [`Self::populate_from_level`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_trimesh_for_test(mesh: TriMesh) -> Self {
+        Self {
+            mesh,
+            isometry: Isometry::identity(),
+        }
+    }
+
     /// Initialize with a structurally valid 1-triangle mesh. `parry3d::TriMesh`
     /// requires at least one triangle; the placeholder is placed at `x = 1e6` —
     /// far outside any plausible game-space origin — so an unpopulated world

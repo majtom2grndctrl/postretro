@@ -1000,12 +1000,12 @@ fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
     );
 }
 
-// E18 Task 5: the host alone performs the pinned pool install. Its selected
-// trigger fires through the normal authoritative trigger evaluator and bound
-// reaction executor before the spawned enemy follows the established
-// host→client consequence path. No pool state or new wire field is introduced.
+// E18 Task 5: the host's selected trigger fires through the normal
+// authoritative trigger evaluator and bound reaction executor before the
+// spawned enemy follows the established host→client consequence path. The
+// binary lifecycle owns the separate connected-client pool-install assertion.
 #[test]
-fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger_state() {
+fn host_armed_trap_pool_spawn_reaches_client() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
     let trap = h.host_registry.spawn(Transform::default());
     h.host_registry
@@ -1094,21 +1094,6 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
     );
     assert_eq!(report.seed, Some(17));
     assert_eq!(report.pools[0].selected, [trap]);
-
-    // Install the client map through the real lifecycle seam. The seeded policy
-    // would arm this sole member if the connected-client suppression gate failed.
-    let client_install =
-        crate::startup::lifecycle::install_connected_client_trigger_pool_fixture_for_test();
-    assert_eq!(client_install.report, Default::default());
-    let client_trap = client_install.trap;
-    h.client_registry = client_install.registry;
-    assert!(
-        !h.client_registry
-            .get_component::<TriggerVolumeComponent>(client_trap)
-            .expect("client trap remains live")
-            .armed,
-        "the client does not rerun the host pool roll",
-    );
 
     let player = h.host_registry.spawn(Transform {
         position: Vec3::new(0.0, 1.0, 0.0),

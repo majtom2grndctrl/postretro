@@ -437,7 +437,7 @@ mod tests {
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy,
     };
-    use postretro_render_cpu::mesh_pass::ClipMetadata;
+    use postretro_model::ClipMetadata;
 
     const EPS: f32 = 1.0e-4;
 

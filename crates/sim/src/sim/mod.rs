@@ -62,7 +62,7 @@ use postretro_foundation::{
 };
 use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use projectile_stage::advance;
 pub use projectile_stage::{
     PredictedProjectileResolution, ProjectileContactEvent, advance_predicted,
@@ -1539,7 +1539,7 @@ pub use reload::{
 };
 pub use weapon_stage::apply_authorized_weapon_impact_damage;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub use host_movement::run_host_movement_tick;
 
 // `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can

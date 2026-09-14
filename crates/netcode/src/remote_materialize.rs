@@ -509,15 +509,15 @@ mod tests {
     fn test_hit_zones(
         sockets: HashMap<String, postretro_model::gltf_loader::SocketBinding>,
     ) -> crate::scripting_systems::hit_zones::ModelHitZones {
-        crate::scripting_systems::hit_zones::ModelHitZones {
-            skeleton: Arc::new(postretro_model::skeleton::Skeleton::default()),
-            clips: Arc::new(Vec::new()),
-            joint_zones: Vec::new(),
+        crate::scripting_systems::hit_zones::ModelHitZones::for_test(
+            Arc::new(postretro_model::skeleton::Skeleton::default()),
+            Arc::new(Vec::new()),
+            Vec::new(),
             sockets,
-            derived_bound: None,
-            legs: Vec::new(),
-            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-        }
+            None,
+            Vec::new(),
+            Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
+        )
     }
 
     fn attachment_store() -> crate::scripting_systems::hit_zones::HitZoneStore {

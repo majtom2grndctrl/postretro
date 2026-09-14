@@ -687,9 +687,9 @@ mod tests {
     use postretro_test_log_capture::LogCapture;
 
     use super::*;
-    use crate::netcode::SeatTable;
     use crate::scripting::builtins::wieldable_inventory::compose_wieldable_inventory_from_slots;
     use crate::scripting::map_entity::MapEntity;
+    use postretro_netcode::SeatTable;
 
     fn movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
@@ -2088,7 +2088,7 @@ mod tests {
             Some(item),
             "the later carry harvest reads the instance acquired by the touch pass"
         );
-        let mut seats = SeatTable::from_test_session_id([0x16; 16]);
+        let mut seats = SeatTable::local_only();
         seats.bind_pawn(&mut registry, Seat(0), pawn);
         seats.harvest_pawn(&registry, pawn);
         let carried = seats

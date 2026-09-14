@@ -143,6 +143,12 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
     }
 }
 
+/// Cross-crate test-support entry point for deterministic mover-command fixtures.
+#[cfg(feature = "test-support")]
+pub fn apply_mover_command_for_test(mover: &mut KinematicMoverComponent, command: &MoverCommand) {
+    apply_mover_command(mover, command);
+}
+
 /// Apply one command to an already-resolved tag target set. Non-movers remain
 /// untouched so a mixed tag cannot accidentally gain a mover component.
 pub fn apply_mover_command_to_targets(

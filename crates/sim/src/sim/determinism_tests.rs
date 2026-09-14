@@ -42,7 +42,7 @@ use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
-    RATE_MIN, resolve_pending_animation_stamps,
+    RATE_MIN,
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{
@@ -2048,85 +2048,6 @@ fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallbac
             case.label
         );
     }
-}
-
-// Regression: host-owned player pawns have no Brain component, so their descriptor
-// default used to remain idle on every serialized snapshot while clients predicted
-// walking from velocity.
-#[test]
-fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() {
-    let mut registry = EntityRegistry::new();
-    let pawn = registry.spawn(Transform::default());
-    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
-    movement.velocity = Vec3::new(3.0, 0.0, 0.0);
-    registry.set_component(pawn, movement).unwrap();
-
-    let mut states = HashMap::new();
-    states.insert(
-        "idle".to_string(),
-        AnimationState {
-            clip: "idle".to_string(),
-            looping: true,
-            crossfade_ms: 50.0,
-            interrupt: InterruptPolicy::Smooth,
-            travel_speed: None,
-            clip_index: Some(0),
-        },
-    );
-    states.insert(
-        "walk_forward".to_string(),
-        AnimationState {
-            clip: "walk".to_string(),
-            looping: true,
-            crossfade_ms: 50.0,
-            interrupt: InterruptPolicy::Smooth,
-            travel_speed: Some(2.0),
-            clip_index: Some(1),
-        },
-    );
-    registry
-        .set_component(
-            pawn,
-            MeshComponent::animated(
-                "player-model".to_string(),
-                MeshAnimation::new(states, "idle".to_string()),
-            ),
-        )
-        .unwrap();
-    // The normal frame path resolves the descriptor's initial animation stamp
-    // before locomotion can crossfade away from it.
-    resolve_pending_animation_stamps(&mut registry, 0.5);
-
-    super::update_player_animation_locomotion(&mut registry, &HitZoneStore::new(), 1.0);
-
-    let animation = registry
-        .get_component::<MeshComponent>(pawn)
-        .unwrap()
-        .animation
-        .as_ref()
-        .unwrap();
-    assert_eq!(animation.current_state, "walk_forward");
-    assert!(
-        animation.previous_state.is_some(),
-        "switch uses authored crossfade"
-    );
-    assert!((animation.rate - 1.5).abs() <= 1.0e-6);
-
-    let mut replicable = crate::netcode::ReplicableSet::new();
-    replicable.register(pawn);
-    let mut allocator = crate::netcode::NetworkIdAllocator::new();
-    let snapshots = crate::netcode::produce_owned_snapshots(
-        &registry,
-        &replicable,
-        &mut allocator,
-        &crate::netcode::MovementOwners::new(),
-        &crate::netcode::HostCommandQueues::new(),
-    );
-    assert!(snapshots[0].components.iter().any(|payload| matches!(
-        payload,
-        postretro_net::wire::ComponentPayload::MeshAnimationState(state)
-            if state.current_state == "walk_forward"
-    )));
 }
 
 // Regression: runtime-spawned host enemies enter the first rate pass before

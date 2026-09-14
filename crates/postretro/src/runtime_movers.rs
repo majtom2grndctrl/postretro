@@ -1118,7 +1118,7 @@ mod tests {
             .collect();
 
         assert_eq!(colliders.len(), 1);
-        assert_eq!(colliders[0].mover_id, 7);
+        assert_eq!(colliders[0].mover_id(), 7);
     }
 
     #[test]

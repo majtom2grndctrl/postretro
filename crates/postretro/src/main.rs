@@ -1,15 +1,10 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
-// Movable navigation agent collide-and-slide harness, driven each tick by the
-// steering system in `agent_steering`.
-// See: context/lib/movement.md §1, context/lib/entity_model.md §7
-mod agent;
 // Per-tick navigation-agent steering: replan budget, waypoint following, and
 // separation, built on the `agent` harness and `nav::find_path`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
-mod agent_steering;
 mod audio;
 mod camera;
 #[cfg(test)]
@@ -20,35 +15,32 @@ mod candidate_cull {
 mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
-mod collision;
-mod combat_positioning;
+use postretro_sim::collision;
 mod content_hash;
 // App-side diagnostics for baked door-to-portal occluder associations. Keeps
 // the render-only blocked portal buffer inspectable without changing gameplay.
 #[cfg(feature = "dev-tools")]
 mod door_occluder_diagnostics;
-mod frame_timing;
-mod fx;
-mod grant;
-mod health;
-mod impact_effects;
-mod impact_policy;
+pub(crate) use postretro_sim::frame_timing;
+use postretro_sim::{impact_effects, impact_policy};
 mod input;
-mod kinematic_mover;
+use postretro_sim::kinematic_mover;
 mod mod_digest;
-mod movement;
+use postretro_sim::movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]
 mod mover_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
-mod nav;
+use postretro_sim::nav;
+#[cfg(feature = "dev-tools")]
+use postretro_sim::set_debug_agent_destination;
 // Engine-side netcode glue: role selection, the optional endpoint held by `App`,
 // game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
-mod netcode;
+use postretro_netcode as netcode;
 // Localhost-only, bytes-only transport for windowed live introspection. The
 // main-thread service that parses requests is added separately.
 #[cfg(feature = "observe-live")]
@@ -63,36 +55,34 @@ mod observability;
 #[cfg(feature = "capture")]
 mod capture;
 mod options;
-mod presentation_pool;
-mod presentation_projection;
-mod weapon;
+use postretro_sim::weapon;
+pub(crate) use postretro_sim::{
+    presentation_pool, resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities,
+};
 
 mod render;
 mod runtime_movers;
-mod scripting;
+use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
-mod sim;
-mod spawner;
-mod sprite_collection;
+use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
-mod trigger_bindings;
-mod trigger_commands;
+use postretro_sim::trigger_bindings;
+#[cfg(test)]
+use postretro_sim::trigger_commands;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
-mod trigger_pools;
-mod trigger_system;
+use postretro_sim::{trigger_pools, trigger_system};
 mod view_feel;
 
 #[cfg(test)]
-mod alloc_probe;
+use postretro_sim::alloc_probe;
 
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
 // `scripting` tree via `#[path]` without pulling in wgpu/engine-dependent code.
-#[path = "scripting/systems/mod.rs"]
 mod scripting_systems;
 
 // Test-only counting global allocator. `#[global_allocator]` must annotate a
@@ -133,8 +123,8 @@ use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
     collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
-    retain_saved_per_owner_state, save_persisted_state, state_path,
-    sync_client_per_owner_projection,
+    overlay_client_local_per_owner_state, retain_saved_per_owner_state, save_persisted_state,
+    state_path, sync_client_per_owner_projection,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -155,7 +145,12 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{
     ComponentKind, ComponentValue, ScriptCtx, SystemReactionCommand, Transform,
 };
-use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
+#[cfg(test)]
+use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
+use postretro_foundation::{
+    ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor, resolve_weapon_placement,
+};
+use postretro_net::wire::{DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::fire_named_event;
@@ -209,6 +204,166 @@ fn append_tick_weapon_script_events(
             .into_iter()
             .map(PendingWeaponScriptEvent::Reload),
     );
+}
+
+/// Route client Control messages through App-owned composition. Netcode owns
+/// transport state and registry replication; level following, input latches,
+/// presentation pools, and client-local UI state remain above that boundary.
+fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
+    for control in controls {
+        match control {
+            ServerControlMessage::SwitchAccepted(accepted) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution =
+                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Accepted(accepted));
+                apply_client_switch_resolution(session, resolution);
+            }
+            ServerControlMessage::SwitchRefused(refusal) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let Some(endpoint) = session.net_endpoint.as_mut() else {
+                    continue;
+                };
+                let resolution =
+                    endpoint.take_switch_outcome(netcode::SwitchOutcome::Refused(refusal));
+                apply_client_switch_resolution(session, resolution);
+            }
+            ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
+                log::error!(
+                    "[Net] incompatible host: {}",
+                    DivergenceReason::Closing(cause)
+                );
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.demote_client_state(&mut registry);
+                    registry.clear_presentation_spawns();
+                    drop(registry);
+                    session.gameplay_input_latch.clear();
+                    session.presentation_pool.clear_world_instances();
+                    session.client_overlay_facts.clear();
+                }
+                app.client_fire_resolutions.clear();
+                app.client_predicted_shots.clear();
+            }
+            ServerControlMessage::Tuning(bytes) => {
+                let script_ctx = app
+                    .session
+                    .as_ref()
+                    .map(|session| session.scripting.script_ctx.clone());
+                let descriptors = script_ctx
+                    .as_ref()
+                    .map(|script_ctx| script_ctx.data_registry.borrow().entities.clone())
+                    .unwrap_or_default();
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
+                }
+            }
+            ServerControlMessage::SessionRoster(roster) => {
+                let Some(session) = app.session.as_mut() else {
+                    continue;
+                };
+                let (changed, open_seats, newly_assigned_seat) = {
+                    let Some(netcode::NetEndpoint::Client { session_status, .. }) =
+                        session.net_endpoint.as_mut()
+                    else {
+                        continue;
+                    };
+                    let previous_seat = session_status.local_seat();
+                    let (changed, open_seats) = netcode::apply_client_session_roster(
+                        session_status,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        roster,
+                    );
+                    let local_seat = session_status.local_seat();
+                    let newly_assigned_seat = (previous_seat != local_seat)
+                        .then_some(local_seat)
+                        .flatten();
+                    (changed, open_seats, newly_assigned_seat)
+                };
+                if let (Some(local_seat), Some(persisted)) =
+                    (newly_assigned_seat, session.persisted_state.as_ref())
+                {
+                    let identity = session.scripting.script_runtime.store_identity().cloned();
+                    let membership = session
+                        .scripting
+                        .script_runtime
+                        .committed_store_slots()
+                        .clone();
+                    for warning in overlay_client_local_per_owner_state(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        persisted,
+                        identity.as_ref(),
+                        &membership,
+                        session.player_options.player_id,
+                        local_seat,
+                    ) {
+                        log::warn!("[State] {warning}");
+                    }
+                }
+                if let Some(local_seat) = newly_assigned_seat {
+                    sync_client_per_owner_projection(
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                        local_seat,
+                    );
+                }
+                if changed {
+                    log::info!("[Net] {open_seats} session seats remain open");
+                }
+            }
+        }
+    }
+}
+
+fn apply_client_switch_resolution(
+    session: &mut session::Session,
+    resolution: netcode::CurrentSwitchResolution,
+) {
+    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
+        netcode::CurrentSwitchResolution::None => return,
+        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
+            session
+                .gameplay_input_latch
+                .wieldable_selection_mut()
+                .confirm_latest_declaration(last_weapon_slot);
+            return;
+        }
+        netcode::CurrentSwitchResolution::Refused {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot),
+    };
+    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return;
+    };
+    if !sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot) {
+        return;
+    }
+    let active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.active_slot);
+    drop(registry);
+    session
+        .gameplay_input_latch
+        .wieldable_selection_mut()
+        .reset_to_active_with_last(active_slot, last_weapon_slot);
 }
 
 /// Resolve host-local mover transition edges to the authored named-reaction
@@ -361,138 +516,6 @@ fn distinct_mesh_models(registry: &postretro_entities::EntityRegistry) -> Vec<St
         }
     }
     ordered
-}
-
-/// Resolve every animated mesh entity's declared state map against the level's
-/// clip tables, filling each `AnimationState.clip_index` (name → glTF index),
-/// and resolve descriptor-authored attachment sockets from the game-side loaded
-/// model table. Clip resolution remains animation-gated; attachment resolution
-/// deliberately also visits stateless and rigid holders.
-///
-/// Runs at level load with a mutable registry, after the model sweep built the
-/// clip tables — so every state's index is concrete before the first frame.
-fn resolve_mesh_entity_bindings(
-    registry: &mut postretro_entities::EntityRegistry,
-    tables: &scripting_systems::mesh_anim::MeshClipTables,
-    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
-) {
-    use postretro_entities::{ComponentKind, ComponentValue};
-
-    // Collect ids first so the mutable per-entity writes do not alias the
-    // immutable iteration borrow. Mesh entity counts are small.
-    let needing_resolution: Vec<postretro_entities::EntityId> = registry
-        .iter_with_kind(ComponentKind::Mesh)
-        .filter_map(|(id, value)| match value {
-            ComponentValue::Mesh(mesh)
-                if mesh.animation.is_some() || !mesh.attachments.is_empty() =>
-            {
-                Some(id)
-            }
-            _ => None,
-        })
-        .collect();
-
-    resolve_mesh_entity_bindings_for_entities(registry, tables, hit_zone_store, needing_resolution);
-}
-
-/// Resolve clip indices and attachment bindings for a known set of newly
-/// materialized mesh entities. Runtime spawners call this through their
-/// session-owned pending-id queue after descriptor attachment; their models were
-/// already uploaded at level install.
-fn resolve_mesh_entity_bindings_for_entities(
-    registry: &mut postretro_entities::EntityRegistry,
-    tables: &scripting_systems::mesh_anim::MeshClipTables,
-    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
-    entity_ids: impl IntoIterator<Item = postretro_entities::EntityId>,
-) {
-    use postretro_entities::ComponentKind;
-    use postretro_entities::components::mesh::AttachmentBinding;
-    use postretro_model::gltf_loader::SocketBinding;
-
-    for id in entity_ids {
-        if !matches!(
-            registry.has_component_kind(id, ComponentKind::Mesh),
-            Ok(true)
-        ) {
-            continue;
-        }
-        let Ok(mut component) = registry
-            .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
-            .cloned()
-        else {
-            continue;
-        };
-        let model_name = component.model.clone();
-        let handle = postretro_model::ModelHandle::from(model_name.clone());
-        if let Some(anim) = component.animation.as_mut() {
-            match tables.get(&handle) {
-                Some(table) => {
-                    let missing =
-                        scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
-                    for m in &missing {
-                        log::warn!(
-                            "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
-                             the model — state unusable (switching to it no-ops)",
-                            m.state,
-                            model_name,
-                            m.clip,
-                        );
-                    }
-                }
-                None => {
-                    // Model never uploaded (load failed): no clips resolve. Warn once
-                    // for the model, leave every state unresolved.
-                    log::warn!(
-                        "[Model] mesh entity references uncached model '{}' — animation states \
-                         unresolved",
-                        model_name,
-                    );
-                    for state in anim.states.values_mut() {
-                        state.clip_index = None;
-                    }
-                }
-            }
-        }
-
-        for attachment in &mut component.attachments {
-            // An attachment model must have made it through the same model
-            // sweep as its holder. The game-side store records successful loads,
-            // so absence covers missing and failed paths without a placeholder.
-            // The renderer already emitted the single path-level load diagnostic.
-            if hit_zone_store.get_by_name(&attachment.model).is_none() {
-                attachment.binding = AttachmentBinding::Unresolved;
-                continue;
-            }
-
-            let binding = hit_zone_store
-                .get(&handle)
-                .and_then(|holder| holder.sockets.get(&attachment.socket));
-            match binding {
-                Some(SocketBinding::SkinnedJoint(joint)) => {
-                    attachment.binding = AttachmentBinding::Skinned(*joint);
-                }
-                Some(SocketBinding::RigidRest(rest)) => {
-                    attachment.binding = AttachmentBinding::Rigid(*rest);
-                }
-                None => {
-                    attachment.binding = AttachmentBinding::Unresolved;
-                    let warning_key = format!(
-                        "attachment-socket:{model_name}:{}:{}",
-                        attachment.socket, attachment.model
-                    );
-                    if hit_zone_store.mark_attachment_resolution_warning(warning_key) {
-                        log::warn!(
-                            "[Model] holder model '{}' has no socket '{}' for attachment model '{}' — attachment unresolved",
-                            model_name,
-                            attachment.socket,
-                            attachment.model,
-                        );
-                    }
-                }
-            }
-        }
-        let _ = registry.set_component(id, component);
-    }
 }
 
 /// Resolve presentation attached by the listen-host accept lifecycle after the
@@ -1499,39 +1522,6 @@ fn viewmodel_asset_for_archetype<'a>(
     (!viewmodel.is_empty()).then_some((viewmodel, weapon.placement.clone()))
 }
 
-const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
-
-/// Resolve authored first-person weapon placement by whole descriptor. Future
-/// character and per-instance tiers are intentionally parameters only in v1;
-/// callers pass `None` until their real storage homes exist.
-fn resolve_weapon_placement(
-    mod_default: Option<&WeaponPlacementDescriptor>,
-    character: Option<&WeaponPlacementDescriptor>,
-    weapon: Option<&WeaponPlacementDescriptor>,
-    instance: Option<&WeaponPlacementDescriptor>,
-) -> WeaponPlacementDescriptor {
-    instance
-        .or(weapon)
-        .or(character)
-        .or(mod_default)
-        .cloned()
-        .unwrap_or_else(legacy_weapon_placement)
-}
-
-/// The descriptor form of the legacy hard-coded `BASE_OFFSET`. Keeping the
-/// authored labels here means the normal conversion path produces precisely
-/// the same transform for an entirely unauthored weapon.
-fn legacy_weapon_placement() -> WeaponPlacementDescriptor {
-    WeaponPlacementDescriptor {
-        offset: postretro_foundation::PlacementOffset {
-            right: BASE_OFFSET.x,
-            up: BASE_OFFSET.y,
-            forward: -BASE_OFFSET.z,
-        },
-        rotation: postretro_foundation::PlacementRotation::default(),
-    }
-}
-
 /// Camera-space placement of the first-person model. World camera yaw/pitch
 /// intentionally do not appear here: [`viewmodel_world_transform`] applies the
 /// render camera afterward. Render-rate bob, sway, and tilt are composed at this
@@ -1625,7 +1615,7 @@ fn update_debug_chase_agent_destination(
         .and_then(|id| registry.get_component::<Transform>(id).ok())
         .map(|t| t.position)
         .unwrap_or(fallback_target);
-    agent_steering::set_destination(registry, agent, target);
+    set_debug_agent_destination(registry, agent, target);
 }
 
 /// Whether clean exit should save the global persistent-slot projection. A
@@ -4824,7 +4814,7 @@ impl App {
             session.per_owner_save_timer.observe_connection(connected);
         }
         if let netcode::WorldLessPoll::Client(controls) = &poll {
-            netcode::client_drain_control(self, controls.clone());
+            client_drain_control(self, controls.clone());
         }
         if matches!(poll, netcode::WorldLessPoll::Failed)
             && let Some(session) = self.session.as_mut()
@@ -4832,7 +4822,7 @@ impl App {
                 (session.net_endpoint.as_mut(), session.seat_table.as_mut())
         {
             // Hold expiry is session-clock work, not successful socket-I/O work.
-            clear_released_seat_slot_values(
+            netcode::clear_released_seat_slot_values(
                 &mut script_ctx.slot_table.borrow_mut(),
                 netcode::finish_host_poll(server, seats),
             );
@@ -4922,7 +4912,7 @@ impl App {
                     );
                     continue;
                 };
-                clear_released_seat_slot_values(
+                netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     admission.released_seats,
                 );
@@ -5017,7 +5007,7 @@ impl App {
                 }
             }
             if let Some(seats) = seat_table {
-                clear_released_seat_slot_values(
+                netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     netcode::finish_host_poll(server, seats),
                 );
@@ -6280,7 +6270,7 @@ impl App {
                 _ => Vec::new(),
             }
         };
-        netcode::client_drain_control(self, client_controls);
+        client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -6424,7 +6414,7 @@ impl App {
                                             );
                                             continue;
                                         };
-                                        clear_released_seat_slot_values(
+                                        netcode::clear_released_seat_slot_values(
                                             &mut script_ctx.slot_table.borrow_mut(),
                                             admission.released_seats,
                                         );
@@ -6660,7 +6650,7 @@ impl App {
                             }
                         }
                         if let Some(seats) = seat_table {
-                            clear_released_seat_slot_values(
+                            netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
                                 netcode::finish_host_poll(server, seats),
                             );
@@ -6671,7 +6661,7 @@ impl App {
                         if let Some(seats) = seat_table {
                             // A persistently failing socket must not freeze
                             // session-clock hold expiry or its roster update.
-                            clear_released_seat_slot_values(
+                            netcode::clear_released_seat_slot_values(
                                 &mut script_ctx.slot_table.borrow_mut(),
                                 netcode::finish_host_poll(server, seats),
                             );
@@ -8503,18 +8493,6 @@ fn capture_player_spawn_placements(
     }
 }
 
-/// Drop every mod-store value owned by seats that have actually left the
-/// session. Disconnect holds deliberately do not call this: a reclaim must
-/// observe the same seat-keyed values until expiry releases that seat.
-fn clear_released_seat_slot_values(
-    slot_table: &mut postretro_entities::SlotTable,
-    released_seats: impl IntoIterator<Item = Seat>,
-) {
-    for seat in released_seats {
-        slot_table.clear_per_seat_values(seat);
-    }
-}
-
 #[cfg(feature = "dev-tools")]
 fn drawable_visible_cell_mask(
     leaf_count: usize,
@@ -10011,7 +9989,7 @@ mod tests {
         let legacy = glam::Mat4::from_scale_rotation_translation(
             Vec3::ONE,
             Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Quat::from_rotation_z(roll),
-            BASE_OFFSET + bob_offset,
+            LEGACY_WEAPON_PLACEMENT.camera_space().0 + bob_offset,
         );
         let absent_placement = resolve_weapon_placement(None, None, None, None);
         let absent = viewmodel_camera_space_transform(
@@ -10121,7 +10099,7 @@ mod tests {
             .unwrap();
         let weapon_id = registry.spawn(postretro_entities::Transform::default());
         let mut component =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component.cooldown_remaining_ms = 72.0;
         registry.set_component(weapon_id, component).unwrap();
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
@@ -10183,10 +10161,10 @@ mod tests {
         let weapon_a = registry.spawn(postretro_entities::Transform::default());
         let weapon_b = registry.spawn(postretro_entities::Transform::default());
         let mut component_a =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component_a.cooldown_remaining_ms = 80.0;
         let mut component_b =
-            weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
+            weapon::test_fixtures::weapon_component(postretro_foundation::FireMode::Semi, 100.0);
         component_b.cooldown_remaining_ms = 11.0;
         registry.set_component(weapon_a, component_a).unwrap();
         registry.set_component(weapon_b, component_b).unwrap();
@@ -10267,7 +10245,7 @@ mod tests {
         cooldown_remaining_ms: f32,
         cooldown_ms: f32,
     ) -> postretro_entities::components::weapon::WeaponComponent {
-        let mut component = weapon::tests::weapon_component(fire_mode, cooldown_ms);
+        let mut component = weapon::test_fixtures::weapon_component(fire_mode, cooldown_ms);
         component.cooldown_remaining_ms = cooldown_remaining_ms;
         component
     }
@@ -10708,13 +10686,19 @@ mod tests {
         registry
             .set_component(
                 first,
-                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+                weapon::test_fixtures::weapon_component(
+                    postretro_foundation::FireMode::Semi,
+                    100.0,
+                ),
             )
             .unwrap();
         registry
             .set_component(
                 third,
-                weapon::tests::weapon_component(postretro_foundation::FireMode::Semi, 100.0),
+                weapon::test_fixtures::weapon_component(
+                    postretro_foundation::FireMode::Semi,
+                    100.0,
+                ),
             )
             .unwrap();
         let mut inventory = Inventory::default();
@@ -11572,7 +11556,7 @@ mod tests {
     /// one-shot latch withholds the first command until the pending buffer reaches that
     /// depth, so a single ingested fire would not otherwise resolve immediately.
     fn prime_remote_buildup(queues: &mut netcode::HostCommandQueues, client_id: u64, tick: u32) {
-        queues.ingest(
+        queues.ingest_for_test(
             client_id,
             &postretro_net::wire::InputCommand {
                 client_tick: tick,
@@ -11601,13 +11585,13 @@ mod tests {
     fn o27_unowned_remote_firing_slot_logs_once_as_warning_and_stays_unarmed() {
         let pawn = postretro_entities::EntityId::from_raw(17);
         let registry = postretro_entities::EntityRegistry::new();
-        let mut allocator = netcode::NetworkIdAllocator::new();
-        allocator.stamp(pawn);
+        let mut allocator = netcode::NetworkIdAllocator::for_test();
+        allocator.stamp_for_test(pawn);
         let mut weaponless_fire_logged = std::collections::HashSet::new();
-        let mut owners = netcode::MovementOwners::new();
-        owners.set(pawn, 7);
-        let mut queues = netcode::HostCommandQueues::new();
-        queues.ingest(
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::default();
+        queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
                 client_tick: 33,
@@ -11684,12 +11668,12 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory).unwrap();
 
-        let mut allocator = netcode::NetworkIdAllocator::new();
-        allocator.stamp(pawn);
-        let mut owners = netcode::MovementOwners::new();
-        owners.set(pawn, 7);
-        let mut queues = netcode::HostCommandQueues::new();
-        queues.ingest(
+        let mut allocator = netcode::NetworkIdAllocator::for_test();
+        allocator.stamp_for_test(pawn);
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::default();
+        queues.ingest_for_test(
             7,
             &postretro_net::wire::InputCommand {
                 client_tick: 33,
@@ -12875,15 +12859,15 @@ mod tests {
     ) -> scripting_systems::hit_zones::ModelHitZones {
         use std::sync::Arc;
 
-        scripting_systems::hit_zones::ModelHitZones {
-            skeleton: Arc::new(postretro_model::skeleton::Skeleton::default()),
-            clips: Arc::new(Vec::new()),
-            joint_zones: Vec::new(),
+        scripting_systems::hit_zones::ModelHitZones::for_test(
+            Arc::new(postretro_model::skeleton::Skeleton::default()),
+            Arc::new(Vec::new()),
+            Vec::new(),
             sockets,
-            derived_bound: None,
-            legs: Vec::new(),
-            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
-        }
+            None,
+            Vec::new(),
+            Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
+        )
     }
 
     fn attachment_resolution_store(
@@ -13484,6 +13468,40 @@ mod tests {
             12,
             "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
+    }
+
+    #[test]
+    fn net_flags_do_not_clobber_positional_map_path() {
+        // The positional PRL-map path belongs to the binary's CLI lifecycle.
+        // Net parsing must ignore it while `resolve_map_path` preserves it.
+        let args = [
+            "postretro",
+            "content/dev/maps/campaign-test.prl",
+            "--host",
+            "30000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(config.role, netcode::NetRole::Host { port: 30000 });
+        assert_eq!(
+            resolve_map_path(&args).as_deref(),
+            Some("content/dev/maps/campaign-test.prl")
+        );
+
+        let args = ["postretro", "maps/e1m1.prl", "--connect", "127.0.0.1:27015"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let config = netcode::parse_net_config(&args).unwrap();
+        assert_eq!(
+            config.role,
+            netcode::NetRole::Connect {
+                addr: "127.0.0.1:27015".parse().unwrap()
+            }
+        );
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
     }
 
     // --- Animation clock accumulation (scripting.md §10.3) ---

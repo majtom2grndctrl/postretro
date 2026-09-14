@@ -1,7 +1,7 @@
 # Networking
 
 > **Read this when:** working on multiplayer, replication, the wire/codec format, the netcode transport, or the host/client role model.
-> **Key invariant:** the net crate is registry-blind — it moves typed snapshots and never mutates entity state. `crate::netcode` (engine) is the sole replication path that touches the `EntityRegistry`.
+> **Key invariant:** the transport crate is registry-blind — it moves typed snapshots and never mutates entity state. `postretro-netcode` is the sole replication path that touches the `EntityRegistry`.
 > **Related:** [Architecture Index](./index.md) · [Entity Model](./entity_model.md) §6 · [Development Guide](./development_guide.md) §4.2 · [Scripting](./scripting.md) §11
 
 ---
@@ -14,7 +14,7 @@ Netcode lives in the `postretro-net` crate (`crates/net/`): the wire codec, the 
 
 `postretro-net` is **glam-free and postretro-free by construction.** Wire types use plain `[f32; N]` / `f32` / `bool` — never glam or engine types. The crate is never handed an `EntityRegistry` and has no notion of entities, components, or game state. It moves opaque, typed messages.
 
-The engine owns the other half of the contract in `crate::netcode`. That module is the *only* engine code that touches the registry on behalf of replication, and it owns everything that must know both sides: the role model, the `NetworkId↔EntityId` maps, and the wire↔engine type conversions (the glam-aware `Transform`↔`WireTransform` translation, the `ComponentKind→u16` mapping). The split is deliberate: the net crate stays a reusable, engine-agnostic transport, and all registry mutation stays in game logic.
+`postretro-netcode` owns the other half of the contract. That crate is the *only* code that touches the registry on behalf of replication, and it owns everything that must know both sides: the role model, the `NetworkId↔EntityId` maps, and the wire↔engine type conversions (the glam-aware `Transform`↔`WireTransform` translation, the `ComponentKind→u16` mapping). The split is deliberate: the transport crate stays reusable and engine-agnostic, while registry mutation stays in gameplay logic.
 
 ## Transport contract — polled, non-blocking
 
@@ -53,7 +53,7 @@ The wire codec is **bitcode**, pinned to an exact version. bitcode owns endianne
 1. **Never persist bitcode bytes.** The format is not a storage format. It exists only between two live, version-matched peers.
 2. **Every connection is gated on the handshake** before any bitcode payload is decoded (see *Handshake* below). A version-mismatched peer is refused before a single message is interpreted.
 
-**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`**. Current entity payloads cover `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`. `MeshAnimationState` carries only current state name; descriptor mesh data stays local. The engine↔wire conversion lives in `crate::netcode`; the mirror types know nothing about glam component order or serde tags.
+**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`**. Current entity payloads cover `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`. `MeshAnimationState` carries only current state name; descriptor mesh data stays local. The engine↔wire conversion lives in `postretro-netcode`; the mirror types know nothing about glam component order or serde tags.
 
 This discriminant equality is a load-bearing contract across the crate boundary: the net side and the engine side independently assert it (drift-guard tests on both sides), because a divergence silently mis-tags components on the wire. New payload variants are added in engine `ComponentKind` numeric order.
 
@@ -202,7 +202,7 @@ The roster publishes no lower than admitted. Admission is a compatibility gate, 
 
 ## Game-logic-owned apply invariant
 
-The net crate emits typed snapshots and **never mutates the registry.** All registry-touching replication lives in `crate::netcode`, which owns the two halves of the data path:
+The transport crate emits typed snapshots and **never mutates the registry.** All registry-touching replication lives in `postretro-netcode`, which owns the two halves of the data path:
 
 - **Host serialize:** walk the authoritative replicable set, stamp each `EntityId` to its stable `NetworkId`, convert to wire mirrors, and build per-client baseline/delta/despawn records. Borrows the registry **immutably**.
 - **Client apply:** apply `FullBaseline`, `Delta`, and `Despawn` through the mapped `NetworkId→EntityId` state machine. Full baselines materialize or refresh entities; deltas mutate only when the referenced baseline is held; despawns remove mapped entities idempotently and drop their mappings.
@@ -271,7 +271,7 @@ sudo tc qdisc del dev lo root netem
 
 ### Manual loopback recipe — movement prediction (host + client over `lo`)
 
-The deterministic in-memory harness (`netcode::predict_reconcile_harness`) is the automated gate; this is its manual real-socket complement, for eyeballing the *feel* of prediction/reconciliation that automated tests cannot judge. Use a map with a descriptor-backed player pawn — `content/dev/maps/campaign-test.prl` (a `player_spawn` placement resolves to the `"player"` descriptor) — so the host materializes a real movement pawn on accept.
+The deterministic in-memory harness (`postretro-netcode::predict_reconcile_harness`) is the automated gate; this is its manual real-socket complement, for eyeballing the *feel* of prediction/reconciliation that automated tests cannot judge. Use a map with a descriptor-backed player pawn — `content/dev/maps/campaign-test.prl` (a `player_spawn` placement resolves to the `"player"` descriptor) — so the host materializes a real movement pawn on accept.
 
 Run two processes locally over `lo`:
 
@@ -436,7 +436,7 @@ only during the render-collect window. Per frame: **record** after each tick's m
 serialization), and **present** the delayed pose after serialization. The path runs only
 on `NetEndpoint::Host` and only for pawns in `MovementOwners` — the host's own pawn is not
 an owner, so it keeps its live single-tick presentation. Engine glue lives in
-`netcode::host_presentation`; the buffer is owned by the `Host` endpoint.
+`postretro-netcode::host_presentation`; the buffer is owned by the `Host` endpoint.
 
 ## Weapon placement is content, not client-local
 

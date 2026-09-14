@@ -2,13 +2,8 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use postretro_level_loader::LevelWorld;
+pub use postretro_model::ClipMetadata;
 use postretro_visibility::VisibleCells;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClipMetadata {
-    pub name: String,
-    pub duration: f32,
-}
 
 /// Pure cull decision for one skinned-mesh instance — GPU-free, unit-testable.
 ///

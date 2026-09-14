@@ -57,6 +57,24 @@ pub enum PresentationFact {
 /// to renderer state.
 pub type PresentationFacts = BTreeMap<String, PresentationFact>;
 
+/// One live, app-projected passive presentation instance for a render frame.
+///
+/// The app owns its lifetime and producer-stamped facts; the renderer consumes
+/// this VM-free input to resolve template layout and font measurement. Keeping
+/// the record beside its field types prevents simulation from naming renderer
+/// types merely to hand presentation data across the app/renderer boundary.
+#[derive(Debug, Clone)]
+pub struct PresentationDrawInput {
+    pub instance_id: u64,
+    pub template: PresentationTemplateHandle,
+    pub facts: PresentationFacts,
+    pub anchor: [f32; 2],
+    pub opacity: f32,
+    /// False when the live instance is camera-culled. The renderer still
+    /// advances retained facts/tweens, but emits no draw items this frame.
+    pub visible: bool,
+}
+
 /// Opaque source identity stamped by an impact presenter. The packed value
 /// avoids a foundation dependency on the entity registry while retaining the
 /// sender choice required by a future addressed transport path.

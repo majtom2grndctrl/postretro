@@ -14,10 +14,11 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 
 - **Layer 0 (leaves):** foundation, level-format, net, render-data, test-log-capture
 - **Layer 1:** entities, level-compiler, level-loader, model, script-compiler
-- **Layer 2:** scripting-core, visibility, xtask
+- **Layer 2:** combat-model, scripting-core, visibility, xtask
 - **Layer 3:** lighting, render-cpu, ui
-- **Layer 4:** renderer
-- **Layer 5:** postretro
+- **Layer 4:** renderer, sim
+- **Layer 5:** netcode
+- **Layer 6:** postretro
 
 ## Dependents
 
@@ -25,17 +26,21 @@ Crates ranked by how many workspace crates depend on them directly —
 the compile chokepoints. Changing a public type in a high-ranked crate
 recompiles every dependent.
 
-- **level-format** — 9 dependents (postretro, level-compiler, level-loader, model, render-cpu, renderer, script-compiler, scripting-core, xtask)
-- **entities** — 6 dependents (postretro, lighting, render-cpu, renderer, scripting-core, ui)
-- **render-data** — 6 dependents (postretro, level-loader, lighting, model, render-cpu, renderer)
-- **foundation** — 5 dependents (postretro, entities, lighting, model, scripting-core)
-- **level-loader** — 5 dependents (postretro, lighting, render-cpu, renderer, visibility)
-- **scripting-core** — 4 dependents (postretro, lighting, renderer, ui)
-- **model** — 3 dependents (postretro, render-cpu, renderer)
+- **level-format** — 11 dependents (postretro, level-compiler, level-loader, lighting, model, render-cpu, renderer, script-compiler, scripting-core, sim, xtask)
+- **entities** — 9 dependents (postretro, combat-model, lighting, netcode, render-cpu, renderer, scripting-core, sim, ui)
+- **foundation** — 9 dependents (postretro, combat-model, entities, lighting, model, netcode, renderer, scripting-core, sim)
+- **render-data** — 7 dependents (postretro, level-loader, lighting, model, render-cpu, renderer, sim)
+- **level-loader** — 6 dependents (postretro, lighting, render-cpu, renderer, sim, visibility)
+- **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, xtask)
+- **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
+- **net** — 4 dependents (postretro, combat-model, netcode, sim)
+- **combat-model** — 3 dependents (postretro, netcode, sim)
+- **lighting** — 3 dependents (postretro, renderer, sim)
 - **visibility** — 3 dependents (postretro, render-cpu, renderer)
-- **lighting** — 2 dependents (postretro, renderer)
 - **render-cpu** — 2 dependents (postretro, renderer)
+- **sim** — 2 dependents (postretro, netcode)
 - **ui** — 2 dependents (postretro, renderer)
 - **level-compiler** — 1 dependent (xtask)
-- **net** — 1 dependent (postretro)
+- **netcode** — 1 dependent (postretro)
 - **renderer** — 1 dependent (postretro)
+- **test-log-capture** — 1 dependent (sim)

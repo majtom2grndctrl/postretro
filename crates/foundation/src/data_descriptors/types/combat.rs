@@ -348,6 +348,40 @@ impl WeaponPlacementDescriptor {
     }
 }
 
+/// The historical unauthored first-person weapon placement, expressed through
+/// the same descriptor shape as authored content. Keeping this below sim and
+/// netcode makes both authority paths resolve an omitted placement identically.
+pub const LEGACY_WEAPON_PLACEMENT: WeaponPlacementDescriptor = WeaponPlacementDescriptor {
+    offset: PlacementOffset {
+        right: 0.32,
+        up: -0.28,
+        forward: 0.62,
+    },
+    rotation: PlacementRotation {
+        yaw: 0.0,
+        pitch: 0.0,
+        roll: 0.0,
+    },
+};
+
+/// Resolve authored first-person placement by whole descriptor.
+///
+/// Future character and per-instance tiers are parameters now so their future
+/// storage homes cannot change the stable precedence chain.
+pub fn resolve_weapon_placement(
+    mod_default: Option<&WeaponPlacementDescriptor>,
+    character: Option<&WeaponPlacementDescriptor>,
+    weapon: Option<&WeaponPlacementDescriptor>,
+    instance: Option<&WeaponPlacementDescriptor>,
+) -> WeaponPlacementDescriptor {
+    instance
+        .or(weapon)
+        .or(character)
+        .or(mod_default)
+        .cloned()
+        .unwrap_or_else(|| LEGACY_WEAPON_PLACEMENT.clone())
+}
+
 /// Authored weapon component preset. This is descriptor-owned tuning data:
 /// maps do not override these params, and the runtime materializes a separate
 /// wieldable instance entity from the descriptor at player spawn.
@@ -1710,6 +1744,47 @@ mod tests {
                 .expect_err("non-finite placement rejects");
             assert!(error.to_string().contains(field), "{error}");
         }
+    }
+
+    #[test]
+    fn weapon_placement_resolution_uses_instance_to_mod_precedence_then_legacy() {
+        let placement = |right| WeaponPlacementDescriptor {
+            offset: PlacementOffset {
+                right,
+                ..PlacementOffset::default()
+            },
+            rotation: PlacementRotation::default(),
+        };
+        let mod_default = placement(1.0);
+        let character = placement(2.0);
+        let weapon = placement(3.0);
+        let instance = placement(4.0);
+
+        assert_eq!(
+            resolve_weapon_placement(
+                Some(&mod_default),
+                Some(&character),
+                Some(&weapon),
+                Some(&instance),
+            ),
+            instance
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), Some(&character), Some(&weapon), None),
+            weapon
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), Some(&character), None, None),
+            character
+        );
+        assert_eq!(
+            resolve_weapon_placement(Some(&mod_default), None, None, None),
+            mod_default
+        );
+        assert_eq!(
+            resolve_weapon_placement(None, None, None, None),
+            LEGACY_WEAPON_PLACEMENT
+        );
     }
 
     #[test]

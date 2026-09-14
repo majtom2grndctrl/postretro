@@ -17,8 +17,9 @@ budget's worth of 150 MB layer entries, the cheapest bytes in the cache to re-ba
 every small memo. A layer entry is 48 bytes per covered texel per light, of which 4 needed a
 ray; the rest is light-independent coverage or a Lambert term the compositor can recompute.
 The re-read exists because the lightmap bake, the shadowmask fill, and the layer writer each
-walk the same charts and trace the same rays. The duplication is the thrash mechanism, and
-none of it is visible at default verbosity. When this is done, a warm edit-and-rebake loop on
+walk the same charts and trace the same rays. Two factors compound: the payload size is why
+the sweep runs at all, and the re-read is why it evicts the wrong entries. None of it is
+visible at default verbosity. When this is done, a warm edit-and-rebake loop on
 campaign-test-class maps fits the default budget, a no-edit rebuild is dominated by hits rather
 than re-bakes, and `.prl` bytes are unchanged.
 
@@ -27,7 +28,9 @@ than re-bakes, and `.prl` bytes are unchanged.
 - **One brief, two strides, each a complete shape.** Stride 1 ships the sparse layer payload
   and the budget warning; it fixes the thrash alone and is the stopping point if the
   collaborator handoff arrives first. Stride 2 hoists atlas preparation, moves the SH block
-  above it, and fuses the three chart walks into one multi-sink pass, removing the re-read.
+  above it, and fuses the three chart walks into one multi-sink pass, which buys what stride 1
+  does not: the duplicated trace leaves every `--release` compile, and the SH keys stop moving.
+  Neither fixes the thrash; stride 1 already did.
   The stride-1 writer is a sink over the chart-walk primitive the branch already added, so
   stride 2 adds sinks rather than rewriting the writer; two briefs would land either a writer
   stride 2 rewrites or a walk with one sink nothing exercises.
@@ -38,7 +41,10 @@ than re-bakes, and `.prl` bytes are unchanged.
   stored; the compositor re-runs the same deterministic walk over the atlas it already holds.
   Diverges from `perf-warm-lightmap-section-cache`'s deferral of value-sparse layers: the
   compositor branches it feared rewriting now sit behind the branch's walk primitive and
-  equivalence test. Undo cost is a format bump.
+  equivalence test. If that equivalence ever fails, presence-is-membership fails with it: the
+  fallback is to treat the analytic predicate as a pre-filter that must be a superset and emit
+  on the baked predicate, keeping correctness at the cost of the skip. Undo cost is a format
+  bump.
 - **Reconstruction reproduces the dense fold term for term.** Per covered texel, lights fold in
   global order. A stored visibility above zero yields the shadowed irradiance and weighted
   direction from the unshadowed Lambert term evaluated with the walk's own inputs; a stored
@@ -71,8 +77,8 @@ than re-bakes, and `.prl` bytes are unchanged.
   a collaborator never saw. At build end, not at the sweep: the sweep cannot know the live
   set; the build can.
 - **No compression, no prune policy.** The sparse payload is far under budget without either;
-  compression adds decode CPU to the fold, and a stage-class prune is scaffolding stride 2
-  makes moot that would ship as permanent policy.
+  compression adds decode CPU to the fold; a stage-class prune would ship as permanent policy
+  to relieve an eviction pressure that stride 1 removes outright, once the payload fits.
 - **Layer placement.** Compiler-internal, dev-local cache and stage topology. No runtime, no
   PRL section, no constant outside the cache epochs.
 
@@ -103,6 +109,9 @@ Byte identity — the contract; the existing gates pass today:
 - [ ] Whole-file determinism holds at one worker and many; the shadowmask section is
   byte-identical across cold, warm miss, warm partition miss, and whole-section hit.
 - [ ] The warm fallback with no layer-bearing lights still emits one uncovered plane.
+- [ ] The byte-identity reference stays independent of the fused walk:
+  `bake_monolithic_atlas_controlled` reaches no walk code, and a defect injected into the walk
+  fails the cold gate instead of passing it. Without this the gate compares the walk to itself.
 
 Reconstruction edges — both sides of each predicate:
 
@@ -176,13 +185,18 @@ Stride 2 — order and fusion:
   declaration order and `label` drive the Build Summary.
 - Coloring before the walk: the branch's `build_analytic_overlap_graph` and
   `shadowmask_bake/assignment.rs` already precede the fill; keep them, move the fill into a
-  walk sink. Cold fusion replaces `bake_face_chart`'s raster loop with the walk plus sinks;
-  `bake_monolithic_atlas_controlled` stays as the test oracle, untouched.
+  walk sink. Cold fusion routes only the shipping path — `bake_atlas_layer_controlled` —
+  through the walk plus sinks. `bake_face_chart` is called by that path *and* by
+  `bake_monolithic_atlas_controlled`, so the byte-identity reference keeps its own frozen copy
+  of the current raster loop rather than following the walk: a gate whose two sides run the
+  same kernel proves nothing.
 - The warning: tally bytes in `StageCache::get` on hit and in `put`; report from `main.rs`
   against `args.cache_max_bytes`.
-- Rivals, rejected: a narrow dense record (roughly 6× where sparse is roughly 100×, and the
-  re-read stays); a per-layout coverage side table (a second copy of the walk); a stage-class
-  prune (scaffolding); compression (decode on the fold).
+- Rivals, rejected: a narrow dense record (roughly 6× against sparse's order-of-magnitude
+  claim, and the re-read stays); a per-layout coverage side table (a second copy of the walk);
+  a stage-class prune (scaffolding); an end-of-build live-set prune (sweeping what this build
+  actually used defeats the mtime inversion, but leaves the payload size that creates the
+  eviction pressure); compression (decode on the fold).
 - First slice: the sparse partition plus reconstruction under today's fold, gated by the new
   end-to-end cold-versus-warm row — it falsifies the riskiest assumption before any stage moves.
 - `lightmap_bake.rs`, `lightmap_layer.rs`, `shadowmask_bake.rs` and `pipeline.rs` are far past
@@ -195,5 +209,8 @@ Stride 2 — order and fusion:
   **delegated**: the decision is presence semantics, not bytes.
 - Whether `ChunkLightList` moves above atlas preparation with the SH block — **delegated**.
 - The reach fraction on campaign-test, hence the measured payload ratio — **delegated**:
-  measured in stride 1 and recorded in the plan of record; the figures in `research.md` are
-  from other fixtures.
+  measured in stride 1 and recorded in the plan of record. The 8.18% figure in `research.md` is
+  light/*chart* pairs on mini-warren; the payload ratio turns on the light/*texel* fraction,
+  which can differ materially, and `shadowmask-cold-working-set`'s research says not to size
+  from published reach fractions. The cache-bytes row asserts a tenth of dense, which holds
+  well short of the chart-pair figure.

@@ -79,6 +79,7 @@ postretro-scripting-core = { workspace = true }
 postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
 postretro-sim.workspace = true
+postretro-netcode.workspace = true
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
 # Pinned to 0.34 for the binary's `egui-winit` integration with winit 0.30.

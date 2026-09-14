@@ -27,7 +27,7 @@ use super::{NetworkIdAllocator, ReplicableSet};
 /// registry bumps the generation on despawn, so a reused slot's pawn is a distinct
 /// entity.
 #[derive(Debug, Default)]
-pub(crate) struct SlotPawns {
+pub struct SlotPawns {
     pawns: HashMap<u64, EntityId>,
     /// Last materialized sibling ids for each slot pawn. Inventory remains the
     /// authority while the pawn is live; this is only a teardown fallback when
@@ -45,11 +45,11 @@ impl SlotPawns {
     /// The pawn entity for a slot, if one is registered. Used by lifecycle tests and
     /// available to the host owner-lookup path.
     #[allow(dead_code)]
-    pub(crate) fn pawn_for(&self, client_id: u64) -> Option<EntityId> {
+    pub fn pawn_for(&self, client_id: u64) -> Option<EntityId> {
         self.pawns.get(&client_id).copied()
     }
 
-    pub(crate) fn remove_client(&mut self, client_id: u64) -> Option<(EntityId, Vec<EntityId>)> {
+    pub fn remove_client(&mut self, client_id: u64) -> Option<(EntityId, Vec<EntityId>)> {
         self.pawns.remove(&client_id).map(|pawn| {
             let wieldables = self.wieldables.remove(&client_id).unwrap_or_default();
             (pawn, wieldables)

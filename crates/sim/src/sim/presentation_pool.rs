@@ -404,7 +404,7 @@ impl PresentationPool {
         ids
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn overlay_facts(&self, entity: EntityId) -> Option<&PresentationFacts> {
         self.overlays.get(&entity).map(|overlay| &overlay.facts)
     }
@@ -414,7 +414,7 @@ impl PresentationPool {
         self.overlays.get(&entity).map(|overlay| overlay.suppressed)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn overlay_anchor(&self, entity: EntityId) -> Option<glam::Vec3> {
         self.overlays
             .get(&entity)

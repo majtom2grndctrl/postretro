@@ -32,8 +32,8 @@ use crate::scripting::map_entity::MapEntity;
 /// at the present interpolation ceiling (250 ms) but may grow independently.
 pub const SPAWN_ATTACK_WINDUP_MS: f32 = 250.0;
 
-#[cfg(test)]
-pub(crate) fn spawn_windup_covers_interpolation_ceiling(
+#[cfg(any(test, feature = "test-support"))]
+pub fn spawn_windup_covers_interpolation_ceiling(
     windup_ms: f32,
     interpolation_ceiling_micros: u64,
 ) -> bool {

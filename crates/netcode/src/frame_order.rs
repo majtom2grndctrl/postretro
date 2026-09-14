@@ -26,7 +26,7 @@
 /// trips on it (tests and the dev engine build both run with debug assertions on).
 #[derive(Debug)]
 #[must_use = "the crossing stage consumes this witness; dropping it skips crossing detection"]
-pub(crate) struct SnapshotsApplied {
+pub struct SnapshotsApplied {
     engine_frame: u64,
 }
 
@@ -35,7 +35,7 @@ pub(crate) struct SnapshotsApplied {
 /// Implemented by `App` (the production frame) and by the headless co-op harness, so
 /// both drive the same production-owned stage order rather than each hand-sequencing
 /// its own.
-pub(crate) trait ReplicatedStateFrame {
+pub trait ReplicatedStateFrame {
     /// Poll the endpoint and apply every snapshot received this frame — entity records
     /// into the registry, replicated state-slot records into the slot table. Inert for
     /// single-player and for a host with no inbound snapshots.
@@ -47,7 +47,7 @@ pub(crate) trait ReplicatedStateFrame {
 }
 
 /// Run the frame's snapshot-apply stage and mint the witness the crossing stage needs.
-pub(crate) fn run_snapshot_apply_stage<F>(
+pub fn run_snapshot_apply_stage<F>(
     frame: &mut F,
     engine_frame: u64,
     frame_dt: f32,
@@ -60,7 +60,7 @@ where
 }
 
 /// Run the frame's crossing-detection stage, consuming this frame's apply witness.
-pub(crate) fn run_crossing_stage<F>(
+pub fn run_crossing_stage<F>(
     frame: &mut F,
     engine_frame: u64,
     applied: SnapshotsApplied,

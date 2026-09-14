@@ -26,7 +26,7 @@ const SEAT_NAMESPACE_SIZE: u32 = u16::MAX as u32 + 1;
 /// Drop every mod-store value owned by seats that have actually left the
 /// session. Disconnect holds deliberately retain values until expiry releases
 /// the seat, so callers pass only the releases emitted by the seat ledger.
-pub(crate) fn clear_released_seat_slot_values(
+pub fn clear_released_seat_slot_values(
     slot_table: &mut postretro_entities::SlotTable,
     released_seats: impl IntoIterator<Item = Seat>,
 ) {
@@ -80,12 +80,12 @@ pub(crate) struct HoldDeadline(pub(crate) Duration);
 /// caller owns mod-slot storage, so released losers travel with the admission
 /// result instead of being hidden inside the seat table.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct SeatAdmission {
-    pub(crate) seat: Seat,
-    pub(crate) released_seats: Vec<Seat>,
+pub struct SeatAdmission {
+    pub seat: Seat,
+    pub released_seats: Vec<Seat>,
     /// Whether this connection reclaimed an in-hold seat whose per-owner values
     /// remain live and must not be overwritten by a persisted join seed.
-    pub(crate) reclaimed: bool,
+    pub reclaimed: bool,
 }
 
 /// Durable host-local player identities for one running session.
@@ -94,7 +94,7 @@ pub(crate) struct SeatAdmission {
 /// on admission and is never reused, while a client binding and a pawn binding
 /// may disappear and later be replaced.
 #[derive(Debug)]
-pub(crate) struct SeatTable {
+pub struct SeatTable {
     session_id: SessionId,
     next_seat: u32,
     carried: HashMap<Seat, Option<CarriedState>>,
@@ -123,7 +123,7 @@ pub(crate) struct SeatTable {
 impl SeatTable {
     /// Create the table for a single-player or listen-host session, reserving
     /// seat zero for the local player.
-    pub(crate) fn new() -> Result<Self, getrandom::Error> {
+    pub fn new() -> Result<Self, getrandom::Error> {
         let mut session_id = [0; 16];
         getrandom::fill(&mut session_id)?;
         Ok(Self::with_session_id(SessionId(session_id)))
@@ -132,7 +132,7 @@ impl SeatTable {
     /// Create the local carry ledger used when session identity entropy is
     /// unavailable. Its sentinel id must never be published; the caller keeps
     /// networking disabled for this session.
-    pub(crate) fn local_only() -> Self {
+    pub fn local_only() -> Self {
         Self::with_session_id(SessionId([0; 16]))
     }
 
@@ -165,7 +165,7 @@ impl SeatTable {
     /// Whether this durable seat still belongs to the active session. Queued
     /// owner-slot reactions retain a copied `Seat`, so the app drain must check
     /// this before writing rather than recreating state for a released seat.
-    pub(crate) fn contains_seat(&self, seat: Seat) -> bool {
+    pub fn contains_seat(&self, seat: Seat) -> bool {
         self.carried.contains_key(&seat)
     }
 
@@ -174,7 +174,7 @@ impl SeatTable {
     /// The caller is the sole frame-timing seam. Polling can happen more than
     /// once on a Splash or install-completion frame, so poll drains must never
     /// advance this clock themselves.
-    pub(crate) fn advance_hold_clock(&mut self, frame_dt: Duration) {
+    pub fn advance_hold_clock(&mut self, frame_dt: Duration) {
         self.hold_clock = self.hold_clock.saturating_add(frame_dt);
     }
 
@@ -183,7 +183,7 @@ impl SeatTable {
     /// A held seat is reclaimable only by exact equality of the opaque player
     /// id from the stored and incoming claims. A live holder is never displaced:
     /// a second connection asserting that id mints a fresh seat instead.
-    pub(crate) fn admit_or_reclaim(
+    pub fn admit_or_reclaim(
         &mut self,
         client_id: u64,
         claim: Option<ConnectClaim>,
@@ -300,7 +300,7 @@ impl SeatTable {
     }
 
     #[must_use]
-    pub(crate) fn seat_for_client(&self, client_id: u64) -> Option<Seat> {
+    pub fn seat_for_client(&self, client_id: u64) -> Option<Seat> {
         self.client_bindings
             .iter()
             .find_map(|(seat, bound)| (*bound == client_id).then_some(*seat))
@@ -335,7 +335,7 @@ impl SeatTable {
     /// before a transport disconnect is observed. The seat binding survives
     /// long enough to provide the final harvest and despawn route.
     #[must_use]
-    pub(crate) fn pawn_for_client(&self, client_id: u64) -> Option<EntityId> {
+    pub fn pawn_for_client(&self, client_id: u64) -> Option<EntityId> {
         let seat = self.seat_for_client(client_id)?;
         self.pawn_bindings.get(&seat).copied()
     }
@@ -345,7 +345,7 @@ impl SeatTable {
     /// This deliberately does not harvest: lifecycle cleanup owns pawn
     /// destruction and harvests immediately before it. A drop while demoted or
     /// Loading can have no lifecycle event, but still reaches this transport edge.
-    pub(crate) fn hold_disconnected_client(
+    pub fn hold_disconnected_client(
         &mut self,
         registry: &mut EntityRegistry,
         client_id: u64,
@@ -449,7 +449,7 @@ impl SeatTable {
     /// A seat this table never minted binds nothing at all — the reverse index
     /// stays in lockstep with that no-op rather than gaining an owner the seat
     /// ledger does not know about.
-    pub(crate) fn bind_pawn(&mut self, registry: &mut EntityRegistry, seat: Seat, pawn: EntityId) {
+    pub fn bind_pawn(&mut self, registry: &mut EntityRegistry, seat: Seat, pawn: EntityId) {
         if self.carried.contains_key(&seat) {
             self.set_pawn_binding(registry, seat, Some(pawn));
             if let Some(placement) = self.level_spawn_placements.get(&pawn).copied() {
@@ -460,7 +460,7 @@ impl SeatTable {
 
     /// Capture one level-spawned pawn's authored placement before simulation
     /// can move it away from that origin.
-    pub(crate) fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
+    pub fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
         self.level_spawn_placements.insert(pawn, placement);
     }
 
@@ -468,7 +468,18 @@ impl SeatTable {
     ///
     /// Lookup is by pawn identity, not current client binding: a same-poll
     /// disconnect/rebind cannot make the old dying pawn write into the new one.
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn harvest_pawn(&mut self, registry: &EntityRegistry, pawn: EntityId) {
+        self.harvest_pawn_inner(registry, pawn);
+    }
+
+    /// Test-support access for cross-crate level-transition harnesses.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn harvest_pawn(&mut self, registry: &EntityRegistry, pawn: EntityId) {
+        self.harvest_pawn_inner(registry, pawn);
+    }
+
+    fn harvest_pawn_inner(&mut self, registry: &EntityRegistry, pawn: EntityId) {
         let Some(seat) = registry.seat_for_pawn(pawn) else {
             return;
         };
@@ -547,7 +558,7 @@ impl SeatTable {
 
     /// Harvest every currently bound pawn. Missing pawns/components preserve
     /// their prior records exactly.
-    pub(crate) fn harvest_bound_pawns(&mut self, registry: &EntityRegistry) {
+    pub fn harvest_bound_pawns(&mut self, registry: &EntityRegistry) {
         let pawns: Vec<EntityId> = self.pawn_bindings.values().copied().collect();
         for pawn in pawns {
             self.harvest_pawn(registry, pawn);
@@ -555,7 +566,7 @@ impl SeatTable {
     }
 
     #[must_use]
-    pub(crate) fn carried_state(&self, seat: Seat) -> Option<&CarriedState> {
+    pub fn carried_state(&self, seat: Seat) -> Option<&CarriedState> {
         self.carried.get(&seat).and_then(Option::as_ref)
     }
 
@@ -569,7 +580,7 @@ impl SeatTable {
     /// path anyway covers the reverse order and any seat whose pawn was never
     /// despawned — entity indices are recycled, so a surviving entry could later
     /// be matched by an unrelated entity.
-    pub(crate) fn clear_pawn_bindings_for_level_unload(&mut self, registry: &mut EntityRegistry) {
+    pub fn clear_pawn_bindings_for_level_unload(&mut self, registry: &mut EntityRegistry) {
         for seat in self.pawn_bindings.keys().copied().collect::<Vec<_>>() {
             self.set_pawn_binding(registry, seat, None);
         }
@@ -579,7 +590,7 @@ impl SeatTable {
 
     /// Resolve live placement occupancy from durable pawn associations, not
     /// from positions that movement changes on the first simulation tick.
-    pub(crate) fn occupied_live_placements(
+    pub fn occupied_live_placements(
         &self,
         registry: &EntityRegistry,
         placement_count: usize,
@@ -607,7 +618,7 @@ impl SeatTable {
     /// `live_placements` deliberately comes from the spawning path rather than
     /// from seat bindings alone: map installation may leave live player pawns
     /// that are not currently represented by a remote connection binding.
-    pub(crate) fn assign_placement(
+    pub fn assign_placement(
         &mut self,
         seat: Seat,
         placement_count: usize,
@@ -696,7 +707,7 @@ pub(crate) fn publish_dirty_roster(server: &mut NetServer, seats: &mut SeatTable
 /// Reclaim is resolved by the admission batch before this function runs, so a
 /// connection arriving on its deadline frame keeps its held seat. Expiry and
 /// roster publication then happen together at this sole post-drain seam.
-pub(crate) fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) -> Vec<Seat> {
+pub fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) -> Vec<Seat> {
     let released_seats = seats.release_expired_holds();
     publish_dirty_roster(server, seats);
     released_seats

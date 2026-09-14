@@ -20,11 +20,6 @@ use crate::scripting_systems::hit_zones::nearest_entity_hit;
 use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
-#[cfg(test)]
-use crate::{
-    camera::Camera,
-    input::{Action, ActionSnapshot, ButtonState},
-};
 
 mod damage;
 mod impact;
@@ -280,6 +275,40 @@ pub struct ProjectileLaunch {
     pub(crate) splash: Option<SplashDescriptor>,
 }
 
+impl ProjectileLaunch {
+    /// Construct immutable launch facts for cross-crate simulation harnesses.
+    /// Production launch construction stays coupled to weapon resolution.
+    #[cfg(any(test, feature = "test-support"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_test(
+        origin: Vec3,
+        direction: Vec3,
+        speed: f32,
+        radius: f32,
+        range: f32,
+        lifetime: f32,
+        damage: f32,
+        knockback_impulse: Vec3,
+        credit_source: String,
+        descriptor: ProjectileDescriptor,
+        splash: Option<SplashDescriptor>,
+    ) -> Self {
+        Self {
+            origin,
+            direction,
+            speed,
+            radius,
+            range,
+            lifetime,
+            damage,
+            knockback_impulse,
+            credit_source,
+            descriptor,
+            splash,
+        }
+    }
+}
+
 const MUZZLE_DIRECTION_EPSILON_SQUARED: f32 = 1.0e-12;
 
 /// Compose a model-local muzzle point through steady viewmodel placement and
@@ -350,40 +379,6 @@ pub enum WeaponFireAuthorization {
     Accepted,
     Rejected,
     Empty,
-}
-
-#[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
-#[cfg(test)]
-pub fn tick(
-    registry: &mut EntityRegistry,
-    active_wieldable: Option<EntityId>,
-    snapshot: &ActionSnapshot,
-    camera: &Camera,
-    collision_world: &CollisionWorld,
-    hit_zone_store: &HitZoneStore,
-    anim_time: f64,
-    fire: WeaponFireAuthorization,
-) -> WeaponFireEvents {
-    let shoot = snapshot.button(Action::Shoot);
-    let (aim_origin, aim_direction) = camera.aim_ray();
-    let command = WeaponFireCommand {
-        button: FireButtonState {
-            pressed: shoot == ButtonState::Pressed,
-            active: shoot.is_active(),
-        },
-        aim_origin,
-        aim_direction,
-        can_fire: true,
-    };
-    tick_resolved(
-        registry,
-        active_wieldable,
-        &command,
-        collision_world,
-        hit_zone_store,
-        anim_time,
-        fire,
-    )
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -1222,7 +1217,6 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::input::{Binding, InputSystem, PhysicalInput};
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -1232,9 +1226,32 @@ pub(crate) mod tests {
         AmmoResource, ProjectileBodyVisual, ProjectileVisual, ReloadStyle, WeaponDescriptor,
         WeaponResource,
     };
-    use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
+
+    /// Minimal fixed-tick aim fixture. Weapon tests exercise simulation rays,
+    /// not the binary camera implementation.
+    pub(crate) struct TestAim {
+        origin: Vec3,
+        direction: Vec3,
+    }
+
+    impl TestAim {
+        pub(crate) fn forward(origin: Vec3) -> Self {
+            Self {
+                origin,
+                direction: Vec3::NEG_Z,
+            }
+        }
+
+        fn ray(&self) -> (Vec3, Vec3) {
+            (self.origin, self.direction)
+        }
+    }
+
+    /// Input binding is binary-owned; simulation tests supply the resolved
+    /// fixed-tick button state directly.
+    pub(crate) struct TestFireInput;
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < EPSILON
@@ -1380,17 +1397,22 @@ pub(crate) mod tests {
     pub(crate) fn fire_tick(
         registry: &mut EntityRegistry,
         active_wieldable: Option<EntityId>,
-        snapshot: &ActionSnapshot,
-        camera: &Camera,
+        button: &FireButtonState,
+        aim: &TestAim,
         world: &CollisionWorld,
         _tick_dt: f32,
     ) -> WeaponFireEvents {
         let store = HitZoneStore::new();
-        tick(
+        let (aim_origin, aim_direction) = aim.ray();
+        tick_resolved(
             registry,
             active_wieldable,
-            snapshot,
-            camera,
+            &WeaponFireCommand {
+                button: *button,
+                aim_origin,
+                aim_direction,
+                can_fire: true,
+            },
             world,
             &store,
             0.0,
@@ -1442,16 +1464,15 @@ pub(crate) mod tests {
         id
     }
 
-    pub(crate) fn input_system() -> InputSystem {
-        InputSystem::new(vec![Binding::new(
-            PhysicalInput::MouseButton(MouseButton::Left),
-            Action::Shoot,
-        )])
+    pub(crate) fn input_system() -> TestFireInput {
+        TestFireInput
     }
 
-    pub(crate) fn shoot_snapshot(input: &mut InputSystem, active: bool) -> ActionSnapshot {
-        input.set_physical_input(PhysicalInput::MouseButton(MouseButton::Left), active);
-        input.snapshot()
+    pub(crate) fn shoot_snapshot(_input: &mut TestFireInput, active: bool) -> FireButtonState {
+        FireButtonState {
+            pressed: active,
+            active,
+        }
     }
 
     pub(crate) fn wall_world() -> CollisionWorld {
@@ -1908,7 +1929,7 @@ pub(crate) mod tests {
     fn hitscan_world_hit_returns_impact_point_normal_and_damage_payload() {
         let mut registry = EntityRegistry::new();
         let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -1945,7 +1966,7 @@ pub(crate) mod tests {
             upward_bias: 0.5,
         });
         let weapon_id = spawn_weapon(&mut registry, component);
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
         let events = fire_tick(
@@ -1970,8 +1991,8 @@ pub(crate) mod tests {
     fn legacy_single_pellet_keeps_exact_axis_and_one_impact_event() {
         let mut registry = EntityRegistry::new();
         let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
-        let (_, aim_direction) = camera.aim_ray();
+        let camera = TestAim::forward(Vec3::ZERO);
+        let (_, aim_direction) = camera.ray();
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2007,7 +2028,7 @@ pub(crate) mod tests {
         component.pellet_count = 8;
         component.spread_degrees = 0.0;
         let weapon_id = spawn_weapon(&mut registry, component);
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2369,7 +2390,7 @@ pub(crate) mod tests {
     #[test]
     fn inactive_or_missing_wieldable_does_not_fire() {
         let mut registry = EntityRegistry::new();
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = CollisionWorld::new();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2410,7 +2431,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         // Empty world: no wall, so the entity is the only contender.
         let world = CollisionWorld::new();
         let mut input = input_system();
@@ -2454,7 +2475,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2485,7 +2506,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2516,7 +2537,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = CollisionWorld::new();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2548,7 +2569,7 @@ pub(crate) mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2593,7 +2614,7 @@ pub(crate) mod tests {
             .set_component(corpse, health)
             .expect("health component update should succeed");
 
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2660,18 +2681,23 @@ pub(crate) mod tests {
     pub(crate) fn fire_tick_with(
         registry: &mut EntityRegistry,
         active_wieldable: Option<EntityId>,
-        snapshot: &ActionSnapshot,
-        camera: &Camera,
+        button: &FireButtonState,
+        aim: &TestAim,
         world: &CollisionWorld,
         store: &HitZoneStore,
         anim_time: f64,
         _tick_dt: f32,
     ) -> WeaponFireEvents {
-        tick(
+        let (aim_origin, aim_direction) = aim.ray();
+        tick_resolved(
             registry,
             active_wieldable,
-            snapshot,
-            camera,
+            &WeaponFireCommand {
+                button: *button,
+                aim_origin,
+                aim_direction,
+                can_fire: true,
+            },
             world,
             store,
             anim_time,
@@ -2796,7 +2822,7 @@ pub(crate) mod tests {
         // Head sphere (r=0.5) at the entity, placed on the -Z ray at z=-4.
         let store = head_zone_store("mob", 0.5);
         let target = spawn_zone_entity(&mut registry, "mob", Vec3::new(0.0, 0.0, -4.0));
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = CollisionWorld::new(); // empty world: the zone is the only contender
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2830,7 +2856,7 @@ pub(crate) mod tests {
         let store = head_zone_store("mob", 0.5);
         // Zone entity BEHIND the wall (wall at z=-5; entity at z=-8).
         spawn_zone_entity(&mut registry, "mob", Vec3::new(0.0, 0.0, -8.0));
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = wall_world();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);
@@ -2871,7 +2897,7 @@ pub(crate) mod tests {
             .expect("facility resolves the entity directly");
 
         // The weapon path for the same ray.
-        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let camera = TestAim::forward(Vec3::ZERO);
         let world = CollisionWorld::new();
         let mut input = input_system();
         let pressed = shoot_snapshot(&mut input, true);

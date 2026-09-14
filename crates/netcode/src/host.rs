@@ -9,7 +9,7 @@ use postretro_entities::FactionSentimentState;
 /// `server_echo_time_us` carried in a time-sync echo. Equal to the estimator's
 /// [`timesync::DEFAULT_MICROS_PER_TICK`]; kept here so `main.rs` builds the
 /// telemetry stamp without importing the net const directly.
-pub(crate) const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
+pub const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
 
 /// Snapshot send cadence: one snapshot per client every second 60 Hz sim tick
 /// (30 Hz). The host ingests the registry every sim tick (so dirty detection sees
@@ -26,7 +26,7 @@ pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 2;
 /// Advance the authoritative host tick and retain whether this redraw crossed a
 /// snapshot-cadence edge. Catch-up frames call this once per completed fixed tick,
 /// while the post-loop serializer consumes the accumulated `snapshot_due` bit once.
-pub(crate) fn complete_host_fixed_tick(tick: &mut u32, snapshot_due: &mut bool) {
+pub fn complete_host_fixed_tick(tick: &mut u32, snapshot_due: &mut bool) {
     *tick = tick.wrapping_add(1);
     *snapshot_due |= *tick % SNAPSHOT_TICK_INTERVAL == 0;
 }
@@ -40,7 +40,7 @@ pub(crate) fn complete_host_fixed_tick(tick: &mut u32, snapshot_due: &mut bool) 
 /// gate rather than a CLI flag or FGD entity: the mover is a throwaway demo fixture,
 /// not an authored gameplay object, so it must not grow a permanent CLI/script/FGD
 /// surface (entity_model.md §4 — no authored archetype).
-pub(crate) struct DemoMoverState {
+pub struct DemoMoverState {
     enabled: bool,
     entity: Option<EntityId>,
 }
@@ -48,7 +48,7 @@ pub(crate) struct DemoMoverState {
 impl DemoMoverState {
     /// Read the demo-mover activation from the environment. `POSTRETRO_NET_DEMO_MOVER=1`
     /// turns it on; anything else (unset, empty, other value) leaves it off.
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         let enabled = std::env::var("POSTRETRO_NET_DEMO_MOVER")
             .map(|v| v == "1")
             .unwrap_or(false);
@@ -68,7 +68,7 @@ impl DemoMoverState {
 /// / `set_component`. The mover is a `Transform`-only entity (no movement payload), so
 /// on the client it replicates as the dumb mover whose interpolation-buffer starvation
 /// path holds the last pose.
-pub(crate) fn host_drive_demo_mover(
+pub fn host_drive_demo_mover(
     registry: &mut EntityRegistry,
     demo_mover: &mut DemoMoverState,
     allocator: &mut NetworkIdAllocator,
@@ -106,7 +106,7 @@ pub(crate) fn host_drive_demo_mover(
 /// is still encoded at most once for `tick`, even if a caller reaches this path
 /// more than once before another fixed tick completes.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn host_replicate(
+pub fn host_replicate(
     registry: &EntityRegistry,
     slot_table: &SlotTable,
     faction_sentiment: &FactionSentimentState,
@@ -206,7 +206,7 @@ pub(crate) fn host_replicate(
 ///
 /// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
 /// threads in the mutable registry borrow so this module never reaches into `App`.
-pub(crate) fn host_handle_accept(
+pub fn host_handle_accept(
     registry: &mut EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -227,7 +227,7 @@ pub(crate) fn host_handle_accept(
 /// layer. The carried-loadout parameter remains entirely Task 5-owned; this
 /// helper receives only the already-chosen map placement index.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn host_handle_accept_descriptor_at_placement(
+pub fn host_handle_accept_descriptor_at_placement(
     registry: &mut EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -322,7 +322,7 @@ pub(crate) fn host_handle_accept_descriptor_at_placement(
 ///
 /// Game-logic-owned: it reads the registry through the borrow the caller threads in and
 /// only touches host bookkeeping; it never reaches into `App`.
-pub(crate) fn host_register_own_pawn(
+pub fn host_register_own_pawn(
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     host_pawn: &mut Option<EntityId>,
@@ -352,7 +352,7 @@ pub(crate) fn host_register_own_pawn(
 /// Remove the listen host's prior local pawn from replication and weapon ownership.
 /// Level install calls this when the replacement map has no player spawn, so stale
 /// ownership cannot survive merely because there is no new pawn to register.
-pub(crate) fn host_unregister_own_pawn(
+pub fn host_unregister_own_pawn(
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     host_pawn: &mut Option<EntityId>,
@@ -378,7 +378,7 @@ pub(crate) fn host_unregister_own_pawn(
 /// the `Host` endpoint variant, out of reach here). Empty when no exit cleaned up a
 /// stamped pawn.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn host_handle_lifecycle(
+pub fn host_handle_lifecycle(
     registry: &mut EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -444,7 +444,7 @@ pub(crate) fn host_handle_lifecycle(
 /// lives on the `Host` endpoint variant, out of reach here). `None` when no pawn
 /// was cleaned up or the pawn was never stamped.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn host_handle_transport_disconnect(
+pub fn host_handle_transport_disconnect(
     registry: &mut EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,

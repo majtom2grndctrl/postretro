@@ -42,7 +42,7 @@ use postretro_foundation::PlayerMovementComponent;
 /// skipped (a stale id from a despawn racing the command queue); they contribute no
 /// events and no write. The caller is responsible for ordering: the host runs this
 /// BEFORE AI/agent/weapon/death, matching `simulate_tick`'s movement-first order.
-pub(crate) fn run_host_movement_tick(
+pub fn run_host_movement_tick(
     registry: &mut EntityRegistry,
     collision: &impl MovementCollisionSource,
     gravity: f32,

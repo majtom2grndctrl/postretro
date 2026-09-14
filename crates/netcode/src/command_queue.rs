@@ -35,7 +35,7 @@ use postretro_entities::{EntityId, EntityRegistry};
 /// `EntitySnapshot.owner_client_id`. Kept here (engine side) — the net crate never
 /// sees an `EntityId`. Owned by the `Host` endpoint alongside the command queues.
 #[derive(Debug, Default)]
-pub(crate) struct MovementOwners {
+pub struct MovementOwners {
     owners: HashMap<EntityId, u64>,
 }
 
@@ -50,7 +50,7 @@ impl MovementOwners {
     }
 
     /// The owning client of `pawn`, if any.
-    pub(crate) fn owner_of(&self, pawn: EntityId) -> Option<u64> {
+    pub fn owner_of(&self, pawn: EntityId) -> Option<u64> {
         self.owners.get(&pawn).copied()
     }
 
@@ -72,7 +72,7 @@ impl MovementOwners {
 /// only the presentation dirties; draining it resolves the current active instance
 /// from the pawn's [`Inventory`] rather than retaining a second pawn-to-weapon map.
 #[derive(Debug, Default)]
-pub(crate) struct WeaponOwners {
+pub struct WeaponOwners {
     attachment_dirty: HashSet<EntityId>,
 }
 
@@ -84,7 +84,7 @@ impl WeaponOwners {
     /// Mark `pawn` for an attachment refresh. Call this after inventory
     /// materialization, repoint, and pawn removal; the queue intentionally does no
     /// implicit change detection because the inventory is the sole active source.
-    pub(crate) fn mark_attachment_dirty(&mut self, pawn: EntityId) {
+    pub fn mark_attachment_dirty(&mut self, pawn: EntityId) {
         self.attachment_dirty.insert(pawn);
     }
 
@@ -107,17 +107,14 @@ impl WeaponOwners {
             .collect()
     }
 
-    pub(crate) fn has_attachment_changes(&self) -> bool {
+    pub fn has_attachment_changes(&self) -> bool {
         !self.attachment_dirty.is_empty()
     }
 }
 
 /// Resolve the active inventory instance for a live pawn. This is the one shared
 /// lookup for fire, replication, HUD projections, and presentation plumbing.
-pub(crate) fn active_wieldable_for_pawn(
-    registry: &EntityRegistry,
-    pawn: EntityId,
-) -> Option<EntityId> {
+pub fn active_wieldable_for_pawn(registry: &EntityRegistry, pawn: EntityId) -> Option<EntityId> {
     registry
         .get_component::<Inventory>(pawn)
         .ok()
@@ -352,7 +349,7 @@ impl ClientCommandState {
 /// endpoint variant. Intake sanitizes and queues; the movement stage resolves one
 /// command per pawn per fixed tick through the deterministic gap policy.
 #[derive(Debug, Default)]
-pub(crate) struct HostCommandQueues {
+pub struct HostCommandQueues {
     clients: HashMap<u64, ClientCommandState>,
     /// Off-by-default per-client resolution/jump diagnostics (see `netdiag`). Reset
     /// with the queue on level unload; inert unless `postretro::netdiag=debug`.
@@ -383,21 +380,21 @@ pub(crate) struct ResolvedCommand {
 /// Movement consumes `command.movement`; host FIRE/reload consumes the same command's
 /// weapon intent later in the sim weapon stage.
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedPawnCommand {
-    pub(crate) pawn: EntityId,
-    pub(crate) client_id: u64,
-    pub(crate) command: SimCommand,
+pub struct ResolvedPawnCommand {
+    pub pawn: EntityId,
+    pub client_id: u64,
+    pub command: SimCommand,
     /// Camera pitch from the resolved, host-authorized input command. Presentation
     /// consumes it locally; snapshot production reads the same queue state.
-    pub(crate) aim_pitch: f32,
-    pub(crate) client_tick: u32,
+    pub aim_pitch: f32,
+    pub client_tick: u32,
     #[allow(dead_code)]
-    pub(crate) source: ResolutionSource,
+    pub source: ResolutionSource,
 }
 
 /// How a fixed tick's command was resolved by the gap policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResolutionSource {
+pub enum ResolutionSource {
     /// A real queued command for the expected tick.
     Real,
     /// The previous command, held across a missing tick (within [`INPUT_HOLD_TICKS`]).
@@ -761,7 +758,7 @@ impl HostCommandQueues {
     }
 
     /// Drop a client's queue + cursor on slot close. Idempotent.
-    pub(crate) fn remove_client(&mut self, client_id: u64) {
+    pub fn remove_client(&mut self, client_id: u64) {
         self.clients.remove(&client_id);
     }
 }
@@ -775,7 +772,7 @@ impl HostCommandQueues {
 /// the host's substitute for `local_movement_pawn`: every authoritative pawn is named
 /// explicitly, including the listen host's own pawn (which the caller appends
 /// separately with its locally-sampled input).
-pub(crate) fn host_resolve_remote_commands(
+pub fn host_resolve_remote_commands(
     owners: &MovementOwners,
     command_queues: &mut HostCommandQueues,
 ) -> Vec<ResolvedPawnCommand> {

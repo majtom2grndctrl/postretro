@@ -27,8 +27,8 @@ pub(crate) mod enemy_state;
 pub mod registry;
 pub mod system_commands;
 
-#[cfg(test)]
-pub(crate) mod log_capture;
+#[cfg(any(test, feature = "test-support"))]
+pub mod log_capture;
 
 pub(crate) use postretro_scripting_core::reaction_registry::ReactionError;
 

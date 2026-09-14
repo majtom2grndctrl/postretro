@@ -6,7 +6,7 @@ use postretro_test_log_capture::LogCapture;
 
 /// Run `f` with a fresh thread-local capture buffer; return the records
 /// emitted during the call. Records emitted on other threads are not captured.
-pub(crate) fn capture<F: FnOnce()>(f: F) -> Vec<(Level, String)> {
+pub fn capture<F: FnOnce()>(f: F) -> Vec<(Level, String)> {
     let capture = LogCapture::start();
     f();
     capture

@@ -64,7 +64,7 @@ struct EndpointPublication {
 /// carry only Transform, provenance, and visual components; this side table is the
 /// deliberately non-gameplay flight driver.
 #[derive(Debug, Default)]
-pub(crate) struct HostProjectilePresentations {
+pub struct HostProjectilePresentations {
     flights: HashMap<EntityId, PresentationFlight>,
 }
 
@@ -80,7 +80,7 @@ impl HostProjectilePresentations {
     /// Retain a validated contact endpoint on the matching remote-fire visual.
     /// Unknown or already-retired shots are ignored, so contact state cannot leak
     /// forward into a later presentation.
-    pub(crate) fn note_contact(&mut self, shot_id: ShotId, point: Vec3) {
+    pub fn note_contact(&mut self, shot_id: ShotId, point: Vec3) {
         for flight in self.flights.values_mut() {
             if let PresentationFlight::StraightLine {
                 shot_id: live,
@@ -98,7 +98,7 @@ impl HostProjectilePresentations {
     /// Record that a listen-host gameplay projectile resolved a real contact.
     /// Only a live matching mirror retains it; a host with no participants has no
     /// mirror and therefore no historic marker to replay after a later join.
-    pub(crate) fn note_gameplay_contact(&mut self, projectile: EntityId, point: Vec3) {
+    pub fn note_gameplay_contact(&mut self, projectile: EntityId, point: Vec3) {
         for flight in self.flights.values_mut() {
             if let PresentationFlight::FollowGameplay {
                 source,
@@ -115,7 +115,7 @@ impl HostProjectilePresentations {
 
     /// Spawn and register a remote-fire visual, excluding the firing client before
     /// that recipient's next snapshot can establish a baseline for it.
-    pub(crate) fn spawn_remote(
+    pub fn spawn_remote(
         &mut self,
         registry: &mut EntityRegistry,
         allocator: &mut NetworkIdAllocator,
@@ -164,7 +164,7 @@ impl HostProjectilePresentations {
     /// intentionally attaches no visual components to this entity: the host already
     /// renders the gameplay source, while recipients materialize visuals locally
     /// from the replicated descriptor class.
-    pub(crate) fn mirror_local_gameplay_projectile(
+    pub fn mirror_local_gameplay_projectile(
         &mut self,
         registry: &mut EntityRegistry,
         allocator: &mut NetworkIdAllocator,
@@ -233,7 +233,7 @@ impl HostProjectilePresentations {
 
     /// Mirror every enemy projectile surfaced by one fixed tick. Each source keeps
     /// its own resolved weapon class; registry exhaustion refuses only that mirror.
-    pub(crate) fn mirror_enemy_gameplay_projectiles(
+    pub fn mirror_enemy_gameplay_projectiles(
         &mut self,
         registry: &mut EntityRegistry,
         allocator: &mut NetworkIdAllocator,
@@ -260,7 +260,7 @@ impl HostProjectilePresentations {
     /// Mark each live pose as represented by the baseline replication just
     /// ingested. This is not a delivery signal: endpoint retirement still waits
     /// for recipient acknowledgments of that exact-or-newer baseline.
-    pub(crate) fn mark_current_poses_ingested(&mut self) {
+    pub fn mark_current_poses_ingested(&mut self) {
         for flight in self.flights.values_mut() {
             match flight {
                 PresentationFlight::FollowGameplay { pose_dirty, .. }
@@ -275,7 +275,7 @@ impl HostProjectilePresentations {
     /// completion holds while shot authorization remains open. Every terminal pose
     /// then remains replicated until all intended recipients acknowledge its current
     /// baseline; only the following tombstone may retire it.
-    pub(crate) fn advance(
+    pub fn advance(
         &mut self,
         registry: &mut EntityRegistry,
         allocator: &mut NetworkIdAllocator,
@@ -1516,19 +1516,19 @@ mod tests {
             &mut registry,
             pawn,
             weapon,
-            weapon::ProjectileLaunch {
-                knockback_impulse: Vec3::ZERO,
-                origin: Vec3::new(1.0, 2.0, 3.0),
-                direction: Vec3::NEG_Z,
-                speed: projectile.speed,
-                radius: projectile.radius,
-                range: 12.0,
-                lifetime: projectile.lifetime_ms / 1_000.0,
-                damage: 10.0,
-                credit_source: "weapon.test.remote".to_string(),
-                descriptor: projectile.clone(),
-                splash: None,
-            },
+            weapon::ProjectileLaunch::for_test(
+                Vec3::new(1.0, 2.0, 3.0),
+                Vec3::NEG_Z,
+                projectile.speed,
+                projectile.radius,
+                12.0,
+                projectile.lifetime_ms / 1_000.0,
+                10.0,
+                Vec3::ZERO,
+                "weapon.test.remote".to_string(),
+                projectile.clone(),
+                None,
+            ),
             None,
         )
         .expect("host local projectile spawns");

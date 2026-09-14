@@ -129,9 +129,9 @@ pub(crate) struct RemotePlayerLocomotionReference {
 /// The maps retain `NetworkId` identity until the caller joins them to the client
 /// mapping, keeping remote avatar state outside the entity component vocabulary.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ClientPresentationInputs {
-    pub(crate) aim_pitches: HashMap<NetworkId, f32>,
-    pub(crate) heading_yaws: HashMap<NetworkId, f32>,
+pub struct ClientPresentationInputs {
+    pub aim_pitches: HashMap<NetworkId, f32>,
+    pub heading_yaws: HashMap<NetworkId, f32>,
 }
 
 const MIN_PRESENTED_HORIZONTAL_SPEED_SQ: f32 = 1.0e-8;
@@ -180,7 +180,7 @@ struct PendingRepair {
 /// sequence + acked server tick. The single owner of client-side replication state
 /// and the only client code that mutates the registry on replication's behalf.
 #[derive(Debug, Default)]
-pub(crate) struct ClientReplication {
+pub struct ClientReplication {
     /// `NetworkId -> EntityId` for every entity this client has spawned from a full
     /// baseline and not yet despawned.
     map: HashMap<NetworkId, EntityId>,
@@ -482,14 +482,14 @@ pub(crate) struct ApplyOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct MoverCorrection {
-    pub(crate) network_id: NetworkId,
-    pub(crate) mover_id: u32,
-    pub(crate) magnitude: f32,
+pub struct MoverCorrection {
+    pub network_id: NetworkId,
+    pub mover_id: u32,
+    pub magnitude: f32,
     /// Authoritative/predicted-to-target-tick mover state that replaced the
     /// client's live phase. App refreshes its live pose table from this before
     /// input carry or render presentation can consume stale angular motion.
-    pub(crate) authoritative_state: crate::kinematic_mover::MoverTickState,
+    pub authoritative_state: crate::kinematic_mover::MoverTickState,
 }
 
 impl ClientReplication {
@@ -583,7 +583,7 @@ impl ClientReplication {
 
     /// Resolve a client-local entity to the host-assigned `NetworkId`, if this
     /// entity is currently mapped by replication.
-    pub(crate) fn network_id_for_entity(&self, entity_id: EntityId) -> Option<NetworkId> {
+    pub fn network_id_for_entity(&self, entity_id: EntityId) -> Option<NetworkId> {
         self.reverse_map.get(&entity_id).copied()
     }
 
@@ -607,7 +607,7 @@ impl ClientReplication {
     /// Shared-visible active weapon for the recipient-local pawn. Connected clients
     /// have no host-side weapon entity or `WeaponOwners` entry, so first-person
     /// presentation resolves the descriptor directly from this replicated identity.
-    pub(crate) fn local_active_weapon_archetype(&self) -> Option<&str> {
+    pub fn local_active_weapon_archetype(&self) -> Option<&str> {
         let local_pawn = self.local_pawn?;
         self.active_weapon_archetypes
             .get(&local_pawn)
@@ -2049,7 +2049,7 @@ impl ClientReplication {
     /// Maps each live client-local entity id back to its network identity for the
     /// pose-input pass. The map is copied at the App boundary so the presentation
     /// system remains a registry-only CPU path.
-    pub(crate) fn entity_network_ids(&self) -> HashMap<EntityId, NetworkId> {
+    pub fn entity_network_ids(&self) -> HashMap<EntityId, NetworkId> {
         self.reverse_map.clone()
     }
 
@@ -2101,7 +2101,7 @@ impl ClientReplication {
 
     /// Server tick carried by the latest accepted snapshot. Presentation clocks
     /// use this until time-sync has enough samples to provide a fractional estimate.
-    pub(crate) fn latest_server_tick(&self) -> Option<u32> {
+    pub fn latest_server_tick(&self) -> Option<u32> {
         self.latest_sequence.map(|_| self.acked_server_tick)
     }
 

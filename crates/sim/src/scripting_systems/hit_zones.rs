@@ -86,6 +86,29 @@ pub struct ModelHitZones {
 }
 
 impl ModelHitZones {
+    /// Build retained CPU pose data for cross-crate harnesses. Production
+    /// instances originate from the glTF loader.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(
+        skeleton: Arc<Skeleton>,
+        clips: Arc<Vec<AnimationClip>>,
+        joint_zones: Vec<Option<JointZone>>,
+        sockets: HashMap<String, SocketBinding>,
+        derived_bound: Option<Aabb>,
+        legs: Vec<LegChain>,
+        pose_stack: Arc<PoseModifierStack>,
+    ) -> Self {
+        Self {
+            skeleton,
+            clips,
+            joint_zones,
+            sockets,
+            derived_bound,
+            legs,
+            pose_stack,
+        }
+    }
+
     /// True when this model carries at least one authored joint zone. A derived
     /// bound may still be absent when the zone set is untrustworthy, in which
     /// case consumers degrade to the coarse authored fallback.
@@ -312,8 +335,8 @@ impl HitZoneStore {
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
     /// (the weapon delegation tests) that cannot reach the private `models` map.
     /// Production installs go through [`insert_from_load`](Self::insert_from_load).
-    #[cfg(test)]
-    pub(crate) fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
         self.models.insert(handle.as_str().to_owned(), model);
     }
 

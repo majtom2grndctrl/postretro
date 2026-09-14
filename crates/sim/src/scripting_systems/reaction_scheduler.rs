@@ -638,8 +638,8 @@ impl ReactionScheduler {
     }
 
     /// Number of parked (not-yet-landed) instances (test observability).
-    #[cfg(test)]
-    pub(crate) fn pending_len(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_len(&self) -> usize {
         self.state.borrow().instances.len()
     }
 

@@ -152,8 +152,8 @@ impl TriggerSystem {
     /// Run after player movement and before AI. This function is called only by
     /// the host/single-player simulation path; clients receive mover phase over
     /// replication and never evaluate or apply trigger commands locally.
-    #[cfg(test)]
-    pub(crate) fn run_authoritative_tick(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_authoritative_tick(
         &mut self,
         registry: &mut EntityRegistry,
         bridge: &TriggerVolumeBridge,

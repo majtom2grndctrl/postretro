@@ -962,7 +962,7 @@ pub const PLAYER_START_CLASSNAME: &str = "player_spawn";
 /// Tags from the `player_spawn` placement are passed directly to `try_spawn`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlayerSpawnResult {
-    pub(crate) spawned: usize,
+    pub spawned: usize,
 }
 
 pub fn spawn_from_player_starts(

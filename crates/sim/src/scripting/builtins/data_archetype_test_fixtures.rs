@@ -18,7 +18,7 @@ use postretro_scripting_core::data_descriptors::{
 
 /// A `MapEntity` placement with the given classname and raw KVP bag. Origin is a
 /// fixed non-zero point so spawned `Transform`s are distinguishable from defaults.
-pub(crate) fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
+pub fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
     let mut kv = HashMap::new();
     for (k, v) in kvps {
         kv.insert((*k).to_string(), (*v).to_string());
@@ -36,7 +36,7 @@ pub(crate) fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
 /// selects between a stateless mesh (model only) and a two-state animated
 /// mesh (`idle` default + `attack`), mirroring the validated descriptor shape
 /// the mesh parser produces.
-pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
+pub fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
 
     let (animations, default_state) = if animated {
@@ -161,7 +161,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
 
 /// A behavior-authored enemy descriptor: map-placeable mesh plus a graph that
 /// materializes `Brain` and `Agent`.
-pub(crate) fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
+pub fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
     descriptor.behavior = Some(sample_behavior_graph());
     descriptor

@@ -118,8 +118,8 @@ impl TriggerVolumeBridge {
         self.aabbs.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn insert_for_test(&mut self, id: EntityId, min: Vec3, max: Vec3) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_for_test(&mut self, id: EntityId, min: Vec3, max: Vec3) {
         self.aabbs.insert(id, (min, max));
     }
 }

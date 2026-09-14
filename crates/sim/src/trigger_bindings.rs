@@ -169,8 +169,8 @@ impl TriggerBindingTable {
     /// standalone table-only builder remains for literal-only test fixtures;
     /// real level installation must use this path so IR writes are validated
     /// against the live slot declarations once.
-    #[cfg(test)]
-    pub(crate) fn build_with_script_ctx(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_with_script_ctx(
         registry: &EntityRegistry,
         data_registry: &DataRegistry,
         script_ctx: &ScriptCtx,

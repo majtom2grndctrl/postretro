@@ -18,7 +18,7 @@ use postretro_net::wire::JoinSeedValue;
 // those individually would add indirection to its hot lifecycle paths without
 // reducing the singleton's meaningful footprint.
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum NetEndpoint {
+pub enum NetEndpoint {
     /// Listen server plus the host-side `EntityId -> NetworkId` allocator. The
     /// `NetServer` is boxed: it is by far the largest endpoint payload (the renet
     /// connection layer + netcode transport), so an unboxed variant would inflate
@@ -184,7 +184,7 @@ pub(crate) enum NetEndpoint {
 /// client retains it as one value so `session_id`, own seat, open-seat count, and
 /// seat connectivity cannot drift across separate presentation fields.
 #[derive(Debug, Default)]
-pub(crate) struct ClientSessionStatus {
+pub struct ClientSessionStatus {
     roster: Option<SessionRosterMessage>,
 }
 
@@ -203,7 +203,7 @@ impl ClientSessionStatus {
     }
 
     #[must_use]
-    pub(crate) fn local_seat(&self) -> Option<Seat> {
+    pub fn local_seat(&self) -> Option<Seat> {
         self.roster
             .as_ref()
             .and_then(|roster| roster.your_seat)
@@ -213,7 +213,7 @@ impl ClientSessionStatus {
 
 const SESSION_OPEN_SEATS_SLOT: &str = "session.openSeats";
 
-pub(crate) fn apply_client_session_roster(
+pub fn apply_client_session_roster(
     session_status: &mut ClientSessionStatus,
     slot_table: &mut SlotTable,
     roster: SessionRosterMessage,
@@ -232,27 +232,27 @@ pub(crate) fn apply_client_session_roster(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PendingSwitchDeclaration {
-    pub(crate) declaration_id: u32,
-    pub(crate) target_slot: u8,
+pub struct PendingSwitchDeclaration {
+    pub declaration_id: u32,
+    pub target_slot: u8,
     /// Slot the client actually presented as active when this local switch chain
     /// began. Older host outcomes may move the authoritative rollback point, but
     /// must not turn an unpresented intermediate target into last-weapon history.
-    pub(crate) held_origin_slot: usize,
+    pub held_origin_slot: usize,
     /// Host-authoritative active slot restored if this declaration is refused.
     /// Ordered predecessor outcomes rebase this without changing local history.
-    pub(crate) rollback_slot: usize,
-    pub(crate) rollback_last_weapon_slot: Option<usize>,
+    pub rollback_slot: usize,
+    pub rollback_last_weapon_slot: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SwitchOutcome {
+pub enum SwitchOutcome {
     Accepted(ServerSwitchAccepted),
     Refused(ServerSwitchRefused),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CurrentSwitchResolution {
+pub enum CurrentSwitchResolution {
     None,
     Accepted {
         last_weapon_slot: Option<usize>,
@@ -265,23 +265,23 @@ pub(crate) enum CurrentSwitchResolution {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct ClientApplyFrameOutcome {
-    pub(crate) materialized_remote_entity_presentation: bool,
-    pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
+pub struct ClientApplyFrameOutcome {
+    pub materialized_remote_entity_presentation: bool,
+    pub armed_local_pawn: Option<ClientArmedLocalPawn>,
     /// At least one replicated state-slot value was committed this frame.
-    pub(crate) replicated_state_changed: bool,
+    pub replicated_state_changed: bool,
     /// Host slot identity carried with the latest fresh owner-private cooldown.
-    pub(crate) owner_private_weapon_cooldown_slot: Option<usize>,
+    pub owner_private_weapon_cooldown_slot: Option<usize>,
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
-    pub(crate) mover_corrections: Vec<client::MoverCorrection>,
+    pub mover_corrections: Vec<client::MoverCorrection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClientArmedLocalPawn {
-    pub(crate) entity_id: EntityId,
+pub struct ClientArmedLocalPawn {
+    pub entity_id: EntityId,
     /// Canonical descriptor name, decoded from the replicated presentation classifier.
-    pub(crate) entity_class: Option<String>,
+    pub entity_class: Option<String>,
 }
 
 /// The production monotonic clock: the engine's `Instant` frame clock exposed as
@@ -303,14 +303,14 @@ impl MonotonicClock for EngineClock {
 /// Client-side time-sync state: the 5 Hz probe sender, the clock/jitter
 /// estimator (consumed by Task 6 interpolation), and the production monotonic
 /// clock both read through.
-pub(crate) struct ClientTimeSync {
+pub struct ClientTimeSync {
     pub(crate) clock: EngineClock,
     sender: TimeSyncSender,
     pub(crate) estimator: ClockEstimator,
 }
 
 impl ClientTimeSync {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             clock: EngineClock {
                 origin: std::time::Instant::now(),
@@ -335,7 +335,7 @@ impl ClientTimeSync {
 
     /// The smoothed server-tick estimate for the current local time, for the
     /// interpolation sampling path. `None` until the first echo has been folded in.
-    pub(crate) fn estimated_server_tick(&self) -> Option<f64> {
+    pub fn estimated_server_tick(&self) -> Option<f64> {
         self.estimator
             .is_initialized()
             .then(|| self.estimator.estimated_server_tick(&self.clock))
@@ -357,7 +357,7 @@ impl ClientTimeSync {
 /// prediction, state-crossing detection, and command draining are deliberately
 /// absent here; those operations have no meaningful target without a world.
 #[must_use = "world-less host lifecycle events must be handled by the engine"]
-pub(crate) enum WorldLessPoll {
+pub enum WorldLessPoll {
     /// Host-side gate verdicts and lifecycle transitions produced by this poll.
     Host(ServerPoll),
     /// A client transport advance plus every typed server Control message that
@@ -373,7 +373,7 @@ impl NetEndpoint {
     /// The roster's seat is session-scoped and selects a live value only; the
     /// persistence key remains the local durable player claim.
     #[must_use]
-    pub(crate) fn client_per_owner_save_context(&self) -> Option<(bool, bool, Option<Seat>)> {
+    pub fn client_per_owner_save_context(&self) -> Option<(bool, bool, Option<Seat>)> {
         let Self::Client {
             client,
             session_status,
@@ -392,7 +392,7 @@ impl NetEndpoint {
     /// Send a client-local switch declaration over reliable Control. The client
     /// transport refuses to queue it before participation, so an old level cannot
     /// leak a selection into a newly promoted pawn.
-    pub(crate) fn send_client_switch_declaration(
+    pub fn send_client_switch_declaration(
         &mut self,
         slot: u8,
         rollback_slot: usize,
@@ -421,10 +421,7 @@ impl NetEndpoint {
         }
     }
 
-    pub(crate) fn take_switch_outcome(
-        &mut self,
-        outcome: SwitchOutcome,
-    ) -> CurrentSwitchResolution {
+    pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
         let Self::Client {
             pending_switch_declarations,
             ..
@@ -441,7 +438,7 @@ impl NetEndpoint {
     /// (`NetServer::new`/`NetClient::new` contract). Client user data is carried
     /// unchanged into the immutable netcode authentication token. Returns the
     /// transport error for the caller to log and fall back to single-player.
-    pub(crate) fn from_role(
+    pub fn from_role(
         role: &NetRole,
         user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
     ) -> Result<Option<NetEndpoint>, String> {
@@ -512,7 +509,7 @@ impl NetEndpoint {
         }
     }
 
-    pub(crate) fn set_mod_identity(&mut self, id: String, version: String) {
+    pub fn set_mod_identity(&mut self, id: String, version: String) {
         match self {
             Self::Host { server, .. } => server.set_mod_identity(id, version),
             Self::Client { client, .. } => client.set_mod_identity(id, version),
@@ -522,7 +519,7 @@ impl NetEndpoint {
     /// A debug no-start-script session otherwise looks exactly like a stalled
     /// pending handshake. Emit the operator-facing warning once when a peer has
     /// actually arrived, rather than noisily at boot before anyone connects.
-    pub(crate) fn warn_once_if_mod_identity_missing(&mut self) {
+    pub fn warn_once_if_mod_identity_missing(&mut self) {
         let Self::Host {
             server,
             missing_identity_warned,
@@ -538,14 +535,14 @@ impl NetEndpoint {
         }
     }
 
-    pub(crate) fn set_mod_digest(&mut self, digest: [u8; 32]) {
+    pub fn set_mod_digest(&mut self, digest: [u8; 32]) {
         match self {
             Self::Host { server, .. } => server.set_mod_digest(Some(digest)),
             Self::Client { client, .. } => client.set_mod_digest(Some(digest)),
         }
     }
 
-    pub(crate) fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
+    pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
         match self {
             Self::Host { server, .. } => server.set_level_parity(level),
             Self::Client { client, .. } => client.set_level_parity(level),
@@ -554,13 +551,13 @@ impl NetEndpoint {
 
     /// Install the client-owned per-owner persistence seed to send with the
     /// next parity declaration. This is intentionally a no-op for hosts.
-    pub(crate) fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+    pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
         if let Self::Client { client, .. } = self {
             client.set_join_seed(slots);
         }
     }
 
-    pub(crate) fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
+    pub fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
         if let Self::Host { server, .. } = self {
             server.set_relevel_catalog_id(catalog_id);
         }
@@ -574,7 +571,7 @@ impl NetEndpoint {
     /// mutates it: world-less polling must not apply snapshots, simulate,
     /// predict, detect state crossings, or drain commands. Task 4's typed
     /// Control router and Task 7's demotion handling use this same borrow.
-    pub(crate) fn poll_world_less(
+    pub fn poll_world_less(
         &mut self,
         dt: Duration,
         registry: &mut EntityRegistry,
@@ -608,7 +605,7 @@ impl NetEndpoint {
     /// full baselines so unchanged acked remotes are not lost after the local registry
     /// is cleared. Replicated state-slot schema and baselines rebuild from the next
     /// installed level.
-    pub(crate) fn reset_level_scoped_client_state(&mut self) {
+    pub fn reset_level_scoped_client_state(&mut self) {
         let NetEndpoint::Client {
             client,
             replication,
@@ -635,7 +632,7 @@ impl NetEndpoint {
     /// Clear state whose entity ids belong to the old host level. This is separate
     /// from per-slot demotion cleanup: a level unload invalidates even host-owned
     /// and unowned replicated objects.
-    pub(crate) fn reset_level_scoped_host_state(&mut self) {
+    pub fn reset_level_scoped_host_state(&mut self) {
         let Self::Host {
             allocator,
             replication,
@@ -684,7 +681,7 @@ impl NetEndpoint {
         *client_pawn_presentation = RemoteInterpolationBuffer::default();
     }
 
-    pub(crate) fn reset_state_slot_schema(&mut self) {
+    pub fn reset_state_slot_schema(&mut self) {
         match self {
             Self::Host {
                 server,
@@ -698,7 +695,7 @@ impl NetEndpoint {
     /// Client demotion is not a normal unload reset: no repair requests are useful
     /// while the host intentionally holds the slot. Despawn mapped entities first so
     /// this is also correct for a following relevel unload.
-    pub(crate) fn demote_client_state(&mut self, registry: &mut EntityRegistry) {
+    pub fn demote_client_state(&mut self, registry: &mut EntityRegistry) {
         let Self::Client {
             replication,
             interpolation_delay,
@@ -720,7 +717,7 @@ impl NetEndpoint {
         pending_switch_declarations.clear();
     }
 
-    pub(crate) fn install_tuning_payload(
+    pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
         registry: &mut EntityRegistry,

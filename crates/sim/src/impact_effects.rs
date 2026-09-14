@@ -143,7 +143,18 @@ pub(crate) fn set_health(
 /// brain and agent ticks quiesce it for the authored removal window. An
 /// immediate despawn (or an elapsed queued despawn) makes it inert, clears the
 /// whole queue, and stages it for the one app-owned frame-end removal pass.
+#[cfg(not(feature = "test-support"))]
 pub(crate) fn despawn(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
+    despawn_inner(registry, target, after_ms);
+}
+
+/// Test-support access for netcode's cross-stage impact harness.
+#[cfg(feature = "test-support")]
+pub fn despawn(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
+    despawn_inner(registry, target, after_ms);
+}
+
+fn despawn_inner(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
     if let Some(after_ms) = after_ms {
         enqueue(
             registry,
@@ -576,28 +587,6 @@ mod tests {
             credit.contributor_ledger.entries()[0].source_id,
             "weapon.first"
         );
-    }
-
-    // Regression: host snapshots were collected before frame-end impact
-    // removals, briefly recreating terminally removed entities on clients.
-    #[test]
-    fn authoritative_snapshot_after_removal_omits_terminal_entity() {
-        let mut registry = EntityRegistry::new();
-        let target = health_target(&mut registry, 100.0);
-        let mut replicable = crate::netcode::ReplicableSet::new();
-        replicable.register(target);
-
-        despawn(&mut registry, target, None);
-        run_end_of_frame_removal_pass(&mut registry, |_, _| {});
-
-        let snapshots = crate::netcode::produce_owned_snapshots(
-            &registry,
-            &replicable,
-            &mut crate::netcode::NetworkIdAllocator::new(),
-            &crate::netcode::MovementOwners::new(),
-            &crate::netcode::HostCommandQueues::new(),
-        );
-        assert!(snapshots.is_empty());
     }
 
     #[test]

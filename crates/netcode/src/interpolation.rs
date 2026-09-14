@@ -127,7 +127,7 @@ pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64
 /// `clamp(50 ms + 2 × jitter + starvation_margin, 50 ms, 250 ms)`,
 /// rounded up to whole sim ticks.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct InterpolationDelayState {
+pub struct InterpolationDelayState {
     starvation_margin_micros: f64,
     last_render_server_tick: Option<f64>,
 }
@@ -540,7 +540,7 @@ fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Optio
 /// pose for a render target tick. Buffers are independent per entity — a sample for
 /// one `NetworkId` never affects another's bracketing search.
 #[derive(Debug, Default)]
-pub(crate) struct RemoteInterpolationBuffer {
+pub struct RemoteInterpolationBuffer {
     buffers: HashMap<NetworkId, EntityBuffer>,
 }
 
@@ -584,7 +584,7 @@ impl RemoteInterpolationBuffer {
     }
 
     /// Drop an entity's buffer (it despawned). Idempotent.
-    pub(crate) fn forget(&mut self, network_id: NetworkId) {
+    pub fn forget(&mut self, network_id: NetworkId) {
         self.buffers.remove(&network_id);
     }
 

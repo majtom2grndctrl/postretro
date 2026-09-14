@@ -534,17 +534,17 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
         &mut h.registry,
         enemy,
         enemy,
-        ProjectileLaunch {
-            knockback_impulse: Vec3::ZERO,
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
-            speed: 4.0,
-            radius: 0.1,
-            range: 8.0,
-            lifetime: 2.0,
-            damage: 10.0,
-            credit_source: "enemy.rifle".to_string(),
-            descriptor: ProjectileDescriptor {
+        ProjectileLaunch::for_test(
+            Vec3::ZERO,
+            Vec3::X,
+            4.0,
+            0.1,
+            8.0,
+            2.0,
+            10.0,
+            Vec3::ZERO,
+            "enemy.rifle".to_string(),
+            ProjectileDescriptor {
                 speed: 4.0,
                 radius: 0.1,
                 lifetime_ms: 2_000.0,
@@ -563,8 +563,8 @@ fn enemy_projectile_damages_connected_pawn_through_host_health_replication() {
                     impact_light: None,
                 },
             },
-            splash: None,
-        },
+            None,
+        ),
         None,
     )
     .expect("host enemy projectile has capacity to spawn");
@@ -677,17 +677,17 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
         &mut h.registry,
         enemy,
         enemy,
-        ProjectileLaunch {
-            knockback_impulse: Vec3::ZERO,
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
-            speed: 4.0,
-            radius: 0.1,
-            range: 8.0,
-            lifetime: 2.0,
-            damage: 10.0,
-            credit_source: "enemy.rocket".to_string(),
-            descriptor: ProjectileDescriptor {
+        ProjectileLaunch::for_test(
+            Vec3::ZERO,
+            Vec3::X,
+            4.0,
+            0.1,
+            8.0,
+            2.0,
+            10.0,
+            Vec3::ZERO,
+            "enemy.rocket".to_string(),
+            ProjectileDescriptor {
                 speed: 4.0,
                 radius: 0.1,
                 lifetime_ms: 2_000.0,
@@ -706,13 +706,13 @@ fn host_splash_damage_converges_to_connected_pawn_over_conditioned_health_replic
                     impact_light: None,
                 },
             },
-            splash: Some(SplashDescriptor {
+            Some(SplashDescriptor {
                 knockback: None,
                 radius: 2.0,
                 min_fraction: 0.0,
                 self_damage: true,
             }),
-        },
+        ),
         None,
     )
     .expect("host enemy splash projectile has capacity to spawn");

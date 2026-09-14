@@ -113,7 +113,7 @@ impl From<DamagedEnemyOverlayFact> for OverlayFactTuple {
 /// instance is keyed by stable `NetworkId`; the pool itself still uses the
 /// current local `EntityId` for drawing and anchor storage.
 #[derive(Debug, Default)]
-pub(crate) struct ClientOverlayFactState {
+pub struct ClientOverlayFactState {
     terminal_ids: HashMap<NetworkId, f64>,
     live_overlays: HashMap<NetworkId, ClientLiveOverlay>,
     pending_live_facts: HashMap<NetworkId, PendingClientOverlayFact>,
@@ -124,7 +124,7 @@ impl ClientOverlayFactState {
     /// Retire all ordering and identity facts at a level, participation, or
     /// overlay-authoring boundary. None of these ids or pending values may be
     /// interpreted against the next lifecycle's entity/template set.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.terminal_ids.clear();
         self.live_overlays.clear();
         self.pending_live_facts.clear();
@@ -211,7 +211,7 @@ struct HostLiveOverlay {
 /// joiner never enters it, because only a source currently owned by that client
 /// records a target.
 #[derive(Debug, Default)]
-pub(crate) struct HostOverlayFactTracker {
+pub struct HostOverlayFactTracker {
     live_overlays: HashMap<(u64, NetworkId), HostLiveOverlay>,
     last_sent: HashMap<(u64, NetworkId), OverlayFactTuple>,
     elapsed_seconds: f64,
@@ -219,7 +219,7 @@ pub(crate) struct HostOverlayFactTracker {
 
 impl HostOverlayFactTracker {
     /// Retire all level-local recipients and delivery suppression facts.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.live_overlays.clear();
         self.last_sent.clear();
         self.elapsed_seconds = 0.0;
@@ -227,7 +227,7 @@ impl HostOverlayFactTracker {
 
     /// Advance and prune each remote recipient's private overlay stream. This
     /// lifecycle is independent of the host renderer's local overlay pool.
-    pub(crate) fn begin_frame(
+    pub fn begin_frame(
         &mut self,
         frame_dt_seconds: f32,
         linger_seconds: f64,
@@ -246,7 +246,7 @@ impl HostOverlayFactTracker {
         self.prune_last_sent();
     }
 
-    pub(crate) fn tracked_entities(&self) -> impl Iterator<Item = EntityId> + '_ {
+    pub fn tracked_entities(&self) -> impl Iterator<Item = EntityId> + '_ {
         self.live_overlays.values().map(|live| live.entity)
     }
 
@@ -396,7 +396,7 @@ fn overlay_fact_message(enemy_id: NetworkId, fact: OverlayFactTuple) -> ServerPr
 /// Send the frame's changed host facts to the exact remote clients that
 /// damaged the still-tracked enemy. Presentation delivery is intentionally
 /// fire-and-forget: a failed send is a dropped cosmetic, never retained work.
-pub(crate) fn send_host_overlay_facts(
+pub fn send_host_overlay_facts(
     tracker: &mut HostOverlayFactTracker,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
@@ -415,7 +415,7 @@ pub(crate) fn send_host_overlay_facts(
 /// Drain the host's presentation intake once per frame and route each transient
 /// to exactly one screen. A remote pawn owner receives one unreliable packet;
 /// host-owned, absent, and non-pawn presenters remain host-local.
-pub(crate) fn route_host_presentation_spawns(
+pub fn route_host_presentation_spawns(
     registry: &mut EntityRegistry,
     server: &mut NetServer,
     owners: &MovementOwners,
@@ -436,7 +436,7 @@ pub(crate) fn route_host_presentation_spawns(
 /// not reuse presenter-keyed intake: a splash explosion belongs at a world
 /// point and reaches every participating remote observer except its predicted
 /// projectile owner.
-pub(crate) fn route_host_world_point_presentation_spawns(
+pub fn route_host_world_point_presentation_spawns(
     registry: &mut EntityRegistry,
     server: &mut NetServer,
     owners: &MovementOwners,
@@ -465,7 +465,7 @@ pub(crate) fn route_host_world_point_presentation_spawns(
 /// messages enter registry intake. Overlay facts update the keyed pool from
 /// host-authored values or wait briefly for an outrun entity baseline.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn ingest_client_presentation_messages(
+pub fn ingest_client_presentation_messages(
     registry: &mut EntityRegistry,
     messages: Vec<ServerPresentationMessage>,
     descriptors: &[EntityTypeDescriptor],
@@ -745,7 +745,7 @@ pub(crate) fn ingest_client_overlay_fact(
 /// Re-anchor live client overlays from the final interpolated remote pose. This
 /// never changes facts or the last-hit linger clock.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn update_client_overlay_anchors(
+pub fn update_client_overlay_anchors(
     registry: &EntityRegistry,
     descriptors: &[EntityTypeDescriptor],
     state: &mut ClientOverlayFactState,
@@ -928,7 +928,7 @@ mod tests {
 
     use super::*;
     use log::Level;
-    use parry3d::math::{Isometry, Point};
+    use parry3d::math::Point;
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::{
@@ -983,18 +983,15 @@ mod tests {
     }
 
     fn splash_wall_at_x(x: f32) -> crate::collision::CollisionWorld {
-        crate::collision::CollisionWorld {
-            mesh: TriMesh::new(
-                vec![
-                    Point::new(x, -2.0, -2.0),
-                    Point::new(x, 2.0, -2.0),
-                    Point::new(x, 2.0, 2.0),
-                    Point::new(x, -2.0, 2.0),
-                ],
-                vec![[0, 1, 2], [0, 2, 3]],
-            ),
-            isometry: Isometry::identity(),
-        }
+        crate::collision::CollisionWorld::from_trimesh_for_test(TriMesh::new(
+            vec![
+                Point::new(x, -2.0, -2.0),
+                Point::new(x, 2.0, -2.0),
+                Point::new(x, 2.0, 2.0),
+                Point::new(x, -2.0, 2.0),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        ))
     }
 
     fn connect_presentation_client(

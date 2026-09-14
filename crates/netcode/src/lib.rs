@@ -6,11 +6,18 @@
 
 #![deny(unsafe_code)]
 
-// The transplant intentionally preserves the established `crate::sim`,
-// `crate::scripting`, and sibling simulation paths until callers have been
-// rewritten to name `postretro_sim` directly. They remain down-edges from this
-// gameplay-replication crate.
-pub use postretro_sim::*;
+// Simulation dependencies stay private to this crate. The established internal
+// paths keep the moved modules readable without re-exporting sim's API from
+// the higher netcode layer.
+pub(crate) use postretro_sim::{
+    collision, impact_policy, kinematic_mover, movement, presentation_pool, scripting,
+    scripting_systems, sim, sprite_collection, weapon,
+};
+#[cfg(test)]
+pub(crate) use postretro_sim::{
+    frame_timing, impact_effects, spawner, trigger_bindings, trigger_commands, trigger_pools,
+    trigger_system,
+};
 extern crate self as netcode;
 
 use std::collections::VecDeque;
@@ -111,8 +118,6 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub use prediction::ClientPrediction;
-#[cfg(test)]
-pub(crate) use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
     route_host_presentation_spawns, route_host_world_point_presentation_spawns,
@@ -181,11 +186,10 @@ use postretro_net::wire::{
     WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
-use crate::collision::{self, CollisionWorld};
+use crate::collision::CollisionWorld;
 use crate::movement::{MovementCollisionSource, MovementEvents};
-use crate::scripting_systems;
 use crate::sim::SimCommand;
-use crate::weapon::{self, ActivationOutcome, WeaponImpact};
+use crate::weapon::{ActivationOutcome, WeaponImpact};
 use tuning_payload::decode_tuning_payload;
 
 /// Synchronize dirty pawn inventory changes into third-person presentation

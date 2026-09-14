@@ -194,7 +194,7 @@ Wrap primitive closures in `catch_unwind` at the FFI boundary. Caught panics sur
 
 ## 7. SDK Type Definitions
 
-Type-definition files are generated from the primitive registry via `cargo run -p postretro --bin gen-script-types`:
+Type-definition files are generated from the primitive registry via `cargo run -p postretro-sim --bin gen-script-types`:
 
 - `sdk/types/postretro.d.ts` — TypeScript declarations
 - `sdk/types/postretro.d.luau` — Luau type annotations

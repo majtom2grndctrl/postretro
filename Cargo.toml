@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/postretro",
+    "crates/ai",
     "crates/physics",
     "crates/sim",
     "crates/netcode",
@@ -183,6 +184,7 @@ postretro-scripting-core = { path = "crates/scripting-core" }
 postretro-ui = { path = "crates/ui" }
 postretro-net = { path = "crates/net" }
 postretro-physics = { path = "crates/physics" }
+postretro-ai = { path = "crates/ai" }
 postretro-sim = { path = "crates/sim" }
 postretro-netcode = { path = "crates/netcode" }
 postretro-test-log-capture = { path = "crates/test-log-capture" }

@@ -64,6 +64,7 @@ log.workspace = true
 env_logger.workspace = true
 
 # Workspace members
+postretro-ai.workspace = true
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader = { workspace = true }
 postretro-model = { workspace = true }

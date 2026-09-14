@@ -46,7 +46,7 @@ pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: Ent
 
 /// A damage target must carry positive finite health and have no terminal
 /// lifecycle commitment. Healthless presentation targets remain ineligible.
-pub(crate) fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
+pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(|health| !is_depleted(health))
@@ -56,7 +56,7 @@ pub(crate) fn is_damage_target_eligible(registry: &EntityRegistry, entity: Entit
 /// Shared pre-sweep gate for simulation systems that must stop an entity as
 /// soon as it is depleted or committed to removal. Health is optional: an
 /// entity without it remains active unless its deferred lifecycle is terminal.
-pub(crate) fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
+pub fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(is_depleted)

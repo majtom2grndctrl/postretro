@@ -6,7 +6,7 @@ mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
 // the primary production caller is the agent steering tick (`agent_steering`),
 // and combat positioning (`combat_positioning`) also queries it.
-pub(crate) use path::find_path;
+pub use path::find_path;
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
 // `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.
@@ -17,14 +17,14 @@ pub(crate) use path::find_path;
 mod bake_contract_tests;
 
 use glam::Vec3;
-use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 pub use postretro_foundation::NavAgentParams;
 
 /// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
 /// the pathfinding query (edge cost, heuristic) and downstream steering/AI so the
 /// engine has one definition of "ground distance".
-pub(crate) fn distance_xz(a: Vec3, b: Vec3) -> f32 {
+pub fn distance_xz(a: Vec3, b: Vec3) -> f32 {
     let dx = a.x - b.x;
     let dz = a.z - b.z;
     (dx * dx + dz * dz).sqrt()
@@ -174,6 +174,25 @@ impl NavGraph {
         }
     }
 
+    /// Recreate the immutable source section for the sim unit-test crate-identity
+    /// adapter. Production never serializes or rebuilds a graph per tick.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn to_section_for_test(&self) -> NavMeshSection {
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: self.grid.origin,
+            cell_size: self.grid.cell_size,
+            dim_x: self.grid.dim_x,
+            dim_z: self.grid.dim_z,
+            agent_radius: self.agent.radius,
+            agent_height: self.agent.height,
+            step_height: self.agent.step_height,
+            max_slope_deg: self.agent.max_slope_deg,
+            regions: self.regions.iter().map(|region| region.cell).collect(),
+            portals: self.portals.clone(),
+        }
+    }
+
     /// Grid header read-back. Navmesh query surface; no production caller in the
     /// default build (the navmesh debug overlay and tests read it).
     #[allow(dead_code)]
@@ -280,7 +299,7 @@ impl NavGraph {
     /// belong to": `find_path` resolves BOTH endpoints through it, and the
     /// steering replan gates use it so a target skirting in and out of the
     /// eroded band does not flap between "routable" and "off-mesh".
-    pub(crate) fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
+    pub fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
         if let Some(region) = self.region_at(position) {
             return Some(region);
         }
@@ -322,7 +341,7 @@ impl NavGraph {
     /// region component. This is deliberately weaker than [`find_path`]: it
     /// distinguishes a genuinely disconnected destination from a transient
     /// funnel-clearance refusal without rerunning a graph search.
-    pub(crate) fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
+    pub fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
         let Some(start_region) = self.resolve_region_at(start) else {
             return false;
         };

@@ -25,7 +25,7 @@ use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry
 /// want a fresh route — overflow waits for a later tick (the staleness gate
 /// keeps each waiting agent eligible). Sized for a handful of active pursuers
 /// per fixed tick; raise it only behind a measured pathfinding bottleneck.
-pub(crate) const REPLAN_BUDGET_PER_TICK: u32 = 4;
+pub const REPLAN_BUDGET_PER_TICK: u32 = 4;
 
 /// Ticks an agent must wait between path recomputations for the SAME
 /// destination. A live path is refreshed at most this often; a FAILED plan
@@ -33,7 +33,7 @@ pub(crate) const REPLAN_BUDGET_PER_TICK: u32 = 4;
 /// costs at most one replan per window rather than one every tick (the
 /// replan-starvation gate). A destination move bypasses this (resets the
 /// cooldown to 0), so a newly-issued order plans on the next tick.
-pub(crate) const REPLAN_STALENESS_TICKS: u32 = 30;
+pub const REPLAN_STALENESS_TICKS: u32 = 30;
 
 /// Arrival radius as a multiple of the agent capsule radius. The cursor advances
 /// to the next waypoint once the agent is within `ARRIVAL_RADIUS_FACTOR * radius`
@@ -90,7 +90,7 @@ const MANDATORY_EASING_PROGRESS_EPSILON: f32 = STUCK_PROGRESS_EPSILON * 0.05;
 const STEERING_ACCEL_PER_SPEED: f32 = 8.0;
 
 /// Maximum path-following heading rotation, in radians/sec.
-pub(crate) const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
+pub const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
 
 /// Corridor lookahead as a multiple of the agent capsule radius. This exceeds
 /// the waypoint-reached radius so agents can lead a corner, but stays below the
@@ -159,8 +159,8 @@ const SEPARATION_STRENGTH: f32 = 0.6;
 /// bound testable: it is the count of agents that actually recomputed a path
 /// this tick, which must never exceed [`REPLAN_BUDGET_PER_TICK`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct AgentTickResult {
-    pub(crate) replans: u32,
+pub struct AgentTickResult {
+    pub replans: u32,
 }
 
 /// Read-back of one agent's path-following state. The enemy-AI tick
@@ -192,24 +192,24 @@ pub(crate) struct AgentTickResult {
 /// state is transient by design: retries ride the replan cooldown plus the
 /// drift/topology/direct-routable admission clauses.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AgentPathState {
+pub struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
-    pub(crate) has_destination: bool,
+    pub has_destination: bool,
     /// The agent holds a non-empty path toward that destination.
-    pub(crate) has_path: bool,
+    pub has_path: bool,
     /// The agent reached its destination (within the arrival radius).
-    pub(crate) arrived: bool,
+    pub arrived: bool,
     /// The agent has a destination but pathfinding found no route to it AND it
     /// holds no path to keep following (see the struct doc: a failed refresh
     /// keeps the previous route, so `blocked` implies `!has_path`).
-    pub(crate) blocked: bool,
+    pub blocked: bool,
     /// XZ distance from the agent's current position to its destination.
     /// `0.0` when there is no destination.
-    pub(crate) distance_to_destination: f32,
+    pub distance_to_destination: f32,
     /// Current agent position (capsule center, world space).
-    pub(crate) position: Vec3,
+    pub position: Vec3,
     /// Live agent velocity (world space) after the last tick.
-    pub(crate) velocity: Vec3,
+    pub velocity: Vec3,
 }
 
 /// Set (or replace) an agent's destination.
@@ -234,7 +234,7 @@ pub(crate) struct AgentPathState {
 /// A non-finite `pos` is rejected as a silent no-op (matching `find_path`'s
 /// finiteness guard) so a NaN/inf target never enters the steering state. Also a
 /// silent no-op when the entity has no agent component.
-pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
+pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
     if !pos.is_finite() {
         return;
     }
@@ -252,7 +252,7 @@ pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, po
 /// Clear an agent's destination: drops the path and stops the agent (it keeps
 /// its grounded state but no longer steers). No-op when the entity has no agent
 /// component.
-pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
+pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
     };
@@ -274,7 +274,7 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
 /// Read one agent's path-following state. Returns `None` when the entity has no
 /// agent component (or is stale). The position is read from the agent's
 /// `Transform`; the rest from the agent component.
-pub(crate) fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPathState> {
+pub fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPathState> {
     let component = registry.get_component::<AgentComponent>(agent).ok()?;
     let position = registry
         .get_component::<Transform>(agent)
@@ -317,7 +317,7 @@ struct AgentSnapshot {
 ///
 /// Returns the count of agents that recomputed a path this tick — bounded by
 /// [`REPLAN_BUDGET_PER_TICK`].
-pub(crate) fn tick(
+pub fn tick(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     nav_graph: Option<&NavGraph>,

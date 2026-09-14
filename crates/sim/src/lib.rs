@@ -6,14 +6,14 @@
 #![deny(unsafe_code)]
 
 mod agent;
-mod agent_steering;
+pub mod agent_steering;
 pub mod ai_host;
 #[cfg(any(test, feature = "test-support"))]
 pub mod alloc_probe;
-mod combat_positioning;
+pub mod combat_positioning;
 mod fx;
 mod grant;
-mod health;
+pub mod health;
 pub mod impact_effects;
 pub mod impact_policy;
 pub mod mover_commands;

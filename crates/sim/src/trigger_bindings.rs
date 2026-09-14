@@ -163,8 +163,8 @@ impl TriggerBindingTable {
     /// event names add no binding here; manifest trigger events may still bind
     /// the edge. Unknown names warn once per trigger edge and do not fall back
     /// to a later drain-time lookup.
-    #[cfg(test)]
-    pub(crate) fn build(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build(
         registry: &EntityRegistry,
         data_registry: &DataRegistry,
         slot_table: &SlotTable,

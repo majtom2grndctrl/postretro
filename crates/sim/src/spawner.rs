@@ -367,7 +367,7 @@ mod tests {
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
-    use crate::scripting_systems::ai::run_ai_tick;
+    use postretro_ai::run_ai_tick;
 
     const TAG: &str = "closet";
 
@@ -601,7 +601,7 @@ mod tests {
             );
         }
 
-        let mut warned = crate::scripting_systems::ai::AiRuntime::new();
+        let mut warned = postretro_ai::AiRuntime::new();
         let dt_secs = 0.05;
         let windup_ticks = (seed / (dt_secs * 1000.0)).ceil() as usize;
         for tick in 1..windup_ticks {
@@ -640,7 +640,7 @@ mod tests {
                 .iter()
                 .map(|event| event.as_ref())
                 .collect::<Vec<_>>(),
-            vec![crate::scripting_systems::ai::ENEMY_ATTACK_EVENT],
+            vec![postretro_ai::ENEMY_ATTACK_EVENT],
             "the first post-windup eligible tick fires exactly once"
         );
         assert_eq!(

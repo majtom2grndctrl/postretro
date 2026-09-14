@@ -12,7 +12,7 @@ use postretro_entities::{
 };
 
 use crate::content_hash::{hash_f32, hash_f64, hash_ir_node, hash_len, hash_str, hash_u32};
-use crate::scripting_systems::ai::DEFAULT_RETALIATION_TOLERANCE;
+use postretro_ai::DEFAULT_RETALIATION_TOLERANCE;
 
 /// Produce a deterministic digest over factions and the mod-global trigger lanes.
 ///

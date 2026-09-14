@@ -2222,7 +2222,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         0.0,
         (0.0, 0.0),
         &mut progress,
-        &mut runtime,
+        crate::tick_runner!(&mut runtime),
         &[],
         &mut mover_states,
         &[],
@@ -2384,7 +2384,7 @@ impl FactionSentimentHarness {
             0.0,
             (0.0, 0.0),
             &mut self.progress,
-            &mut self.ai,
+            crate::tick_runner!(&mut self.ai),
             &[],
             &mut self.mover_states,
             &[],
@@ -2723,7 +2723,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         0.0,
         (0.0, 0.0),
         &mut progress,
-        &mut runtime,
+        crate::tick_runner!(&mut runtime),
         &[],
         &mut mover_states,
         &[],
@@ -7564,7 +7564,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
         "all brains read targetDied=false during the compute pass before damage lands"
     );
 
-    crate::scripting_systems::health::sweep_deaths(&mut registry);
+    crate::scripting_systems::health::sweep_deaths_for_test(&mut registry);
     assert!(
         registry
             .get_component::<HealthComponent>(pawn)
@@ -8812,10 +8812,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
 fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     use mlua::LuaSerdeExt as _;
 
-    const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
-    const BRAIN_LUAU_SRC: &str = include_str!("../../../../sdk/lib/brain.luau");
+    const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
     const ENTITIES_LUAU_SRC: &str =
-        include_str!("../../../../content/dev/scripts/reference-enemy.luau");
+        include_str!("../../../content/dev/scripts/reference-enemy.luau");
 
     let lua = mlua::Lua::new();
     let runtime: mlua::Table = lua

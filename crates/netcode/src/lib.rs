@@ -16,8 +16,11 @@ pub(crate) use postretro_sim::{
     trigger_system,
 };
 pub(crate) use postretro_sim::{
-    impact_policy, presentation_pool, scripting, scripting_systems, sim, sprite_collection, weapon,
+    impact_policy, presentation_pool, scripting, sim, sprite_collection, weapon,
 };
+pub(crate) mod scripting_systems {
+    pub(crate) use postretro_sim::scripting_systems::*;
+}
 extern crate self as netcode;
 
 use std::collections::VecDeque;

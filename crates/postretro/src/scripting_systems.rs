@@ -1,7 +1,7 @@
 //! Binary-side frame bridges plus the fixed-tick scripting handlers in sim.
 
 pub(crate) use postretro_sim::scripting_systems::{
-    ai, flash_decay, hit_zones, mesh_anim, particle_sim, reaction_scheduler, shake_decay,
+    flash_decay, hit_zones, mesh_anim, particle_sim, reaction_scheduler, shake_decay,
     slot_accumulators, system_reactions, trigger_volume_bridge, ui_proxy, vignette_decay,
 };
 

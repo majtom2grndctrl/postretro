@@ -1150,7 +1150,7 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         .entity_state_mut(id)
         .expect("spawned enemy carries entity state")
         .set(
-            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            postretro_foundation::FACTION_STATE_FIELD,
             crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
         );
     registry
@@ -1520,7 +1520,7 @@ fn spawn_driven_agent(
         .entity_state_mut(enemy)
         .expect("driven agent carries entity state")
         .set(
-            crate::scripting_systems::ai::FACTION_STATE_FIELD,
+            postretro_foundation::FACTION_STATE_FIELD,
             crate::scripting_systems::ai::ENEMY_DEFAULT_FACTION,
         );
     registry

@@ -1059,7 +1059,7 @@ pub fn client_receive_and_apply(
                 let walk_reference = descriptor.and_then(|descriptor| {
                     let mesh = descriptor.mesh.as_ref()?;
                     let graph = descriptor.behavior.as_ref()?;
-                    let locomotion = scripting_systems::ai::locomotion_animation(graph)?;
+                    let locomotion = postretro_foundation::locomotion_animation(graph)?;
                     let state = mesh.animations.get(locomotion)?;
                     let derived_travel_speed = hit_zone_store
                         .get(&postretro_model::ModelHandle::from(mesh.model.clone()))

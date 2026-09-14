@@ -382,7 +382,7 @@ pub fn run_ai_tick(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn run_ai_tick_with_navigation(
+pub(crate) fn run_ai_tick_with_navigation(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
     tick_dt: f32,
@@ -409,7 +409,7 @@ pub fn run_ai_tick_with_navigation(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn run_ai_tick_with_navigation_and_impact(
+pub(crate) fn run_ai_tick_with_navigation_and_impact(
     registry: &mut EntityRegistry,
     runtime: &mut AiRuntime,
     tick_dt: f32,

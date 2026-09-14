@@ -37,7 +37,7 @@ impl NavPath {
     /// Split into the parallel `(points, mandatory_waypoints)` vectors. The two
     /// are always equal length (see the `NavPath` invariant); consumers index
     /// them together.
-    pub fn into_parts(self) -> (Vec<Vec3>, Vec<bool>) {
+    pub(crate) fn into_parts(self) -> (Vec<Vec3>, Vec<bool>) {
         (self.points, self.mandatory_waypoints)
     }
 }

@@ -17,7 +17,9 @@ pub use path::find_path;
 mod bake_contract_tests;
 
 use glam::Vec3;
-use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
+#[cfg(any(test, feature = "test-support"))]
+use postretro_level_format::navmesh::NAVMESH_VERSION;
+use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
 
 pub use postretro_foundation::NavAgentParams;
 
@@ -299,7 +301,7 @@ impl NavGraph {
     /// belong to": `find_path` resolves BOTH endpoints through it, and the
     /// steering replan gates use it so a target skirting in and out of the
     /// eroded band does not flap between "routable" and "off-mesh".
-    pub fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
+    pub(crate) fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
         if let Some(region) = self.region_at(position) {
             return Some(region);
         }
@@ -341,7 +343,7 @@ impl NavGraph {
     /// region component. This is deliberately weaker than [`find_path`]: it
     /// distinguishes a genuinely disconnected destination from a transient
     /// funnel-clearance refusal without rerunning a graph search.
-    pub fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
+    pub(crate) fn endpoints_are_topologically_connected(&self, start: Vec3, goal: Vec3) -> bool {
         let Some(start_region) = self.resolve_region_at(start) else {
             return false;
         };
@@ -378,6 +380,12 @@ impl NavGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nav_graph_is_thread_shareable() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NavGraph>();
+    }
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavPortal, NavRegion};
 
     /// Single region, non-zero origin and cell size, so the cell→world decode

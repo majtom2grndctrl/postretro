@@ -9,8 +9,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
-use parry3d::math::Point;
-use parry3d::shape::TriMesh;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
@@ -349,15 +347,15 @@ fn provenance(name: &str) -> DescriptorProvenance {
 }
 
 fn wall(z: f32) -> CollisionWorld {
-    CollisionWorld::from_trimesh_for_test(TriMesh::new(
+    CollisionWorld::from_triangles_for_test(
         vec![
-            Point::new(-1.0, -1.0, z),
-            Point::new(1.0, -1.0, z),
-            Point::new(1.0, 1.0, z),
-            Point::new(-1.0, 1.0, z),
+            Vec3::new(-1.0, -1.0, z),
+            Vec3::new(1.0, -1.0, z),
+            Vec3::new(1.0, 1.0, z),
+            Vec3::new(-1.0, 1.0, z),
         ],
         vec![[0, 1, 2], [0, 2, 3]],
-    ))
+    )
 }
 
 fn authorization(events: &TickEvents) -> OpenAuthorizedShot {

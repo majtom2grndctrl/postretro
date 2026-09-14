@@ -32,6 +32,10 @@ pub(crate) fn is_depleted(health: &HealthComponent) -> bool {
 /// Whether deferred lifecycle state has committed this entity to removal.
 /// The registry id remains live until the frame-end pass, so consumers must
 /// inspect this state before applying a precomputed target outcome.
+///
+/// This is a narrow cross-crate read seam: netcode must reject late hit
+/// declarations for an entity whose deferred removal is already committed,
+/// even though the registry id remains live until the frame-end pass.
 pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<DeferredEffectComponent>(entity)
@@ -56,7 +60,7 @@ pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) ->
 /// Shared pre-sweep gate for simulation systems that must stop an entity as
 /// soon as it is depleted or committed to removal. Health is optional: an
 /// entity without it remains active unless its deferred lifecycle is terminal.
-pub fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
+pub(crate) fn is_quiescent(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(is_depleted)

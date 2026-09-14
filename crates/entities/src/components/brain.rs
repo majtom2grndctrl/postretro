@@ -5,13 +5,13 @@
 // cooldown, think stride, per-activity elapsed time).
 //
 // `components.behavior` is the ONE brain representation. The bound guard
-// programs derived from the graph deliberately live elsewhere — in the
-// evaluator's side-table in the binary — so they are never serialized and never
-// affect component equality.
+// programs derived from the graph deliberately live elsewhere — in
+// `postretro-ai`'s `AiRuntime` evaluator side-table — so they are never
+// serialized and never affect component equality.
 //
 // This module ships the brain DATA and its spawn-time animation validation. The
 // tick (transition evaluation, steering, damage, animation switching) lives in
-// `scripting/systems/ai/`.
+// `postretro-ai`'s `AiRuntime`.
 //
 // See: context/lib/entity_model.md §2 (engine components), §7b (engine-internal
 //      component, no script surface)
@@ -48,7 +48,7 @@ pub struct RecentAttacker {
 
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
 /// sits in. Seeded at spawn in the graph's `initial` state with every timer at
-/// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
+/// rest; the AI tick in `postretro-ai`'s `AiRuntime` drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrainComponent {
     /// Milliseconds since this entity last took positive finite damage. A fresh

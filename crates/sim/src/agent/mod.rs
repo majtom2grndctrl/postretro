@@ -13,10 +13,8 @@
 //      context/lib/entity_model.md §7 (collision)
 
 use glam::Vec3;
-use parry3d::math::{Point, Vector};
-use parry3d::shape::Capsule;
 
-use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 
 /// Iteration cap for the slide loop — bounds work when a capsule wedges into a
 /// corner. Matches the player substrate's budget; four projections resolve any
@@ -31,8 +29,8 @@ const SLIDE_ITERATIONS: u32 = 4;
 const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
 
 /// Vertical lift margin added on top of `step_height` when the step-up probe
-/// commits, so the lifted capsule clears the step's top edge without parry
-/// reporting an immediate skin-contact hit. Must exceed `SKIN_DISTANCE`.
+/// commits, so the engine-owned collision capsule clears the step's top edge
+/// without an immediate skin-contact hit. Must exceed `SKIN_DISTANCE`.
 const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 
@@ -60,16 +58,12 @@ pub(crate) struct AgentCapsule {
 }
 
 impl AgentCapsule {
-    /// Build the parry capsule. The capsule's `+Y` axis maps directly to world
+    /// Build the collision capsule. The capsule's `+Y` axis maps directly to world
     /// `+Y`, matching the `cast_capsule` / player-capsule convention; endpoints
     /// sit at `center ± half_height * Y`, the end-cap spheres extend `radius`
     /// beyond.
-    fn parry(&self) -> Capsule {
-        Capsule::new(
-            Point::new(0.0, -self.half_height, 0.0),
-            Point::new(0.0, self.half_height, 0.0),
-            self.radius,
-        )
+    fn collision_shape(&self) -> CollisionCapsule {
+        CollisionCapsule::new(self.radius, self.half_height)
     }
 }
 
@@ -108,7 +102,7 @@ pub(crate) fn collide_and_slide(
     gravity: f32,
     dt: f32,
 ) -> SlideResult {
-    let parry = capsule.parry();
+    let collision_shape = capsule.collision_shape();
 
     // Compose the tick velocity: steering horizontal + integrated gravity. The
     // horizontal Y is dropped — steering never authors vertical motion.
@@ -130,7 +124,7 @@ pub(crate) fn collide_and_slide(
     if velocity.y <= 0.0 {
         if let Some(lifted) = step_up_lift(
             world,
-            &parry,
+            collision_shape,
             capsule,
             current_pos,
             horiz,
@@ -152,13 +146,7 @@ pub(crate) fn collide_and_slide(
         if max_toi * max_toi < SLIDE_REMAINING_EPSILON_SQ {
             break;
         }
-        let hit = cast_capsule(
-            world,
-            Point::new(current_pos.x, current_pos.y, current_pos.z),
-            &parry,
-            Vector::new(dir.x, dir.y, dir.z),
-            max_toi,
-        );
+        let hit = cast_capsule(world, current_pos, collision_shape, dir, max_toi);
         match hit {
             None => {
                 current_pos += velocity * remaining_dt;
@@ -166,7 +154,7 @@ pub(crate) fn collide_and_slide(
             }
             Some(h) => {
                 let toi = h.time_of_impact.max(0.0);
-                let normal = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
+                let normal = h.normal;
                 let consumed = if speed > 0.0 {
                     toi / speed
                 } else {
@@ -199,7 +187,7 @@ pub(crate) fn collide_and_slide(
     // a wall corner. Only when not climbing (vertical velocity non-positive).
     let mut grounded = hit_floor;
     if velocity.y <= 1e-3 {
-        if let Some(snapped) = ground_stick(world, &parry, capsule, current_pos) {
+        if let Some(snapped) = ground_stick(world, collision_shape, capsule, current_pos) {
             current_pos = snapped;
             grounded = true;
         }
@@ -227,7 +215,7 @@ pub(crate) fn collide_and_slide(
 /// intra-tick vertical excursion.
 fn step_up_lift(
     world: &CollisionWorld,
-    parry: &Capsule,
+    collision_shape: CollisionCapsule,
     capsule: &AgentCapsule,
     current_pos: Vec3,
     horiz_vel: Vec3,
@@ -243,26 +231,14 @@ fn step_up_lift(
     let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
 
     // 1. Is a wall-like obstacle in front?
-    let probe = cast_capsule(
-        world,
-        Point::new(current_pos.x, current_pos.y, current_pos.z),
-        parry,
-        Vector::new(dir.x, dir.y, dir.z),
-        probe_dist,
-    )?;
-    if !(probe.time_of_impact < probe_dist && probe.normal2.y.abs() < COS_WALKABLE) {
+    let probe = cast_capsule(world, current_pos, collision_shape, dir, probe_dist)?;
+    if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < COS_WALKABLE) {
         return None;
     }
 
     // 2. Is the lifted capsule clear of the obstacle?
     let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
-    let lifted_clear = match cast_capsule(
-        world,
-        Point::new(lifted.x, lifted.y, lifted.z),
-        parry,
-        Vector::new(dir.x, dir.y, dir.z),
-        probe_dist,
-    ) {
+    let lifted_clear = match cast_capsule(world, lifted, collision_shape, dir, probe_dist) {
         None => true,
         Some(h) => h.time_of_impact >= probe_dist - SKIN_DISTANCE,
     };
@@ -275,13 +251,13 @@ fn step_up_lift(
     let sample = lifted + dir * forward_offset;
     let down = cast_capsule(
         world,
-        Point::new(sample.x, sample.y, sample.z),
-        parry,
-        Vector::new(0.0, -1.0, 0.0),
+        sample,
+        collision_shape,
+        Vec3::NEG_Y,
         step_height + 0.1,
     );
     match down {
-        Some(h) if h.normal2.y >= COS_WALKABLE => Some(lifted),
+        Some(h) if h.normal.y >= COS_WALKABLE => Some(lifted),
         _ => None,
     }
 }
@@ -293,7 +269,7 @@ fn step_up_lift(
 /// when the sweep reports a wall normal (capsule pressed against a wall).
 fn ground_stick(
     world: &CollisionWorld,
-    parry: &Capsule,
+    collision_shape: CollisionCapsule,
     capsule: &AgentCapsule,
     position: Vec3,
 ) -> Option<Vec3> {
@@ -304,14 +280,8 @@ fn ground_stick(
     let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
 
     // Swept down-cast: returns the toi from the capsule's lower hemisphere.
-    if let Some(h) = cast_capsule(
-        world,
-        Point::new(position.x, position.y, position.z),
-        parry,
-        Vector::new(0.0, -1.0, 0.0),
-        max_down,
-    ) {
-        if h.normal2.y >= COS_WALKABLE {
+    if let Some(h) = cast_capsule(world, position, collision_shape, Vec3::NEG_Y, max_down) {
+        if h.normal.y >= COS_WALKABLE {
             return Some(position - Vec3::new(0.0, h.time_of_impact, 0.0));
         }
     }
@@ -322,12 +292,7 @@ fn ground_stick(
     let half_height = capsule.half_height;
     let radius = capsule.radius;
     let ray_max = max_down + half_height + radius;
-    let ray = cast_ray(
-        world,
-        Point::new(position.x, position.y, position.z),
-        Vector::new(0.0, -1.0, 0.0),
-        ray_max,
-    )?;
+    let ray = cast_ray(world, position, Vec3::NEG_Y, ray_max)?;
     if ray.normal.y >= COS_WALKABLE {
         let target_gap = half_height + radius + SKIN_DISTANCE;
         let drop = ray.time_of_impact - target_gap;
@@ -341,7 +306,7 @@ fn ground_stick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
 
     /// Agent capsule fixture: 0.35 m radius, 1.8 m total height, 0.4 m step.
     /// half_height = 1.8/2 - 0.35 = 0.55.
@@ -362,29 +327,28 @@ mod tests {
     /// steered diagonally slides along it for the whole test rather than running
     /// off its end.
     fn floor_and_wall_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut points: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
 
         // Floor quad.
         let base = points.len() as u32;
-        points.push(Point::new(-50.0, 0.0, -50.0));
-        points.push(Point::new(50.0, 0.0, -50.0));
-        points.push(Point::new(50.0, 0.0, 50.0));
-        points.push(Point::new(-50.0, 0.0, 50.0));
+        points.push(Vec3::new(-50.0, 0.0, -50.0));
+        points.push(Vec3::new(50.0, 0.0, -50.0));
+        points.push(Vec3::new(50.0, 0.0, 50.0));
+        points.push(Vec3::new(-50.0, 0.0, 50.0));
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
 
         // Wall quad at x=2 (two-sided not needed: agent approaches from -X).
         let base = points.len() as u32;
-        points.push(Point::new(2.0, 0.0, -50.0));
-        points.push(Point::new(2.0, 4.0, -50.0));
-        points.push(Point::new(2.0, 4.0, 50.0));
-        points.push(Point::new(2.0, 0.0, 50.0));
+        points.push(Vec3::new(2.0, 0.0, -50.0));
+        points.push(Vec3::new(2.0, 4.0, -50.0));
+        points.push(Vec3::new(2.0, 4.0, 50.0));
+        points.push(Vec3::new(2.0, 0.0, 50.0));
         tris.push([base, base + 1, base + 2]);
         tris.push([base, base + 2, base + 3]);
 
-        let mesh = TriMesh::new(points, tris);
-        CollisionWorld::from_trimesh_for_test(mesh)
+        CollisionWorld::from_triangles_for_test(points, tris)
     }
 
     /// Resting height of a grounded capsule: its center sits
@@ -395,12 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_capsule_half_height_builds_centered_parry_capsule() {
+    fn agent_capsule_builds_engine_owned_collision_shape() {
         let capsule = agent_capsule();
-        let parry = capsule.parry();
-        assert!((parry.radius - 0.35).abs() < 1e-6);
-        assert!((parry.segment.a.y - (-0.55)).abs() < 1e-6);
-        assert!((parry.segment.b.y - 0.55).abs() < 1e-6);
+        let shape = capsule.collision_shape();
+        assert!((shape.radius - 0.35).abs() < 1e-6);
+        assert!((shape.half_height - 0.55).abs() < 1e-6);
     }
 
     #[test]

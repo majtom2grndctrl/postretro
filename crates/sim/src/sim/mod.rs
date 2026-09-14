@@ -16,10 +16,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::{EulerRot, Mat4, Vec3};
-use parry3d::math::{Point, Vector};
 
 use crate::agent_steering;
-use crate::ai_host::{AiHost, AiTickInputs, SimAiHost};
+use crate::ai_host::{AiTickInputs, AiTickResult, SimAiHost};
 use crate::collision::moving::{
     CombinedCollisionWorld, MoverCollider, MoverPoseSource, cast_ray_combined,
 };
@@ -413,7 +412,7 @@ pub struct TriggerCommandFire {
 }
 
 #[allow(clippy::too_many_arguments, dead_code)]
-pub fn simulate_tick(
+pub fn simulate_tick<AiResult>(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -422,12 +421,7 @@ pub fn simulate_tick(
     _legacy_active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
-    run_ai: impl FnMut(
-        &mut EntityRegistry,
-        f32,
-        AiTickInputs<'_>,
-        &mut dyn AiHost,
-    ) -> (Vec<Cow<'static, str>>, Vec<(EntityId, String)>),
+    run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -436,7 +430,10 @@ pub fn simulate_tick(
     tick_dt: f32,
     trigger_context: Option<TriggerTickContext<'_>>,
     on_impact: impl FnMut(&mut EntityRegistry),
-) -> TickEvents {
+) -> TickEvents
+where
+    AiResult: Into<AiTickResult>,
+{
     let mut touch_system = TouchSystem::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
@@ -476,7 +473,7 @@ pub fn simulate_tick(
 /// Headless callers retain the wrapper above and intentionally use the neutral
 /// camera; production local-player presentation passes the live camera aim here.
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_tick_with_presentation_aim(
+pub fn simulate_tick_with_presentation_aim<AiResult>(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -486,12 +483,7 @@ pub fn simulate_tick_with_presentation_aim(
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
-    mut run_ai: impl FnMut(
-        &mut EntityRegistry,
-        f32,
-        AiTickInputs<'_>,
-        &mut dyn AiHost,
-    ) -> (Vec<Cow<'static, str>>, Vec<(EntityId, String)>),
+    mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -509,7 +501,10 @@ pub fn simulate_tick_with_presentation_aim(
     trigger_context: Option<TriggerTickContext<'_>>,
     mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
-) -> TickEvents {
+) -> TickEvents
+where
+    AiResult: Into<AiTickResult>,
+{
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
@@ -748,18 +743,12 @@ pub fn simulate_tick_with_presentation_aim(
             },
             &mut host,
         )
+        .into()
     };
-    let ai = ai_result.0;
-    let enemy_projectile_spawns = ai_result
-        .1
-        .into_iter()
-        .map(
-            |(projectile, descriptor_class)| EnemyProjectilePresentationSpawn {
-                projectile,
-                descriptor_class,
-            },
-        )
-        .collect::<Vec<_>>();
+    let AiTickResult {
+        events: ai,
+        projectile_spawns: enemy_projectile_spawns,
+    } = ai_result;
 
     let post_movement_command = post_movement(&registry);
 
@@ -1468,16 +1457,11 @@ fn probe_foot(
 
     let ray_origin = foot_world + Vec3::Y * upward_allowance;
     let max_toi = upward_allowance + downward_reach;
-    let origin = Point::new(ray_origin.x, ray_origin.y, ray_origin.z);
-    let down = Vector::new(0.0, -1.0, 0.0);
+    let origin = ray_origin;
+    let down = Vec3::NEG_Y;
     // Static-only fast path; fold movers in only when present.
     let hit = if mover_colliders.is_empty() {
-        cast_ray(collision_world, origin, down, max_toi).map(|h| {
-            (
-                h.time_of_impact,
-                Vec3::new(h.normal.x, h.normal.y, h.normal.z),
-            )
-        })
+        cast_ray(collision_world, origin, down, max_toi).map(|h| (h.time_of_impact, h.normal))
     } else {
         cast_ray_combined(
             collision_world,
@@ -1567,7 +1551,7 @@ pub use host_movement::run_host_movement_tick;
 pub(crate) mod determinism_tests;
 #[cfg(test)]
 mod divergence_spike_tests;
-#[cfg(any(test, feature = "dev-tools"))]
+#[cfg(test)]
 pub(crate) mod predict_reconcile;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via

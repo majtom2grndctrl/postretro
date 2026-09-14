@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 
 use glam::Vec3;
-use parry3d::math::{Point, Vector};
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::provenance::DescriptorProvenance;
@@ -1082,9 +1081,9 @@ fn resolve_muzzle_launch_origin(
         && if projectile_radius > 0.0 {
             cast_sphere_exact(
                 collision_world,
-                Point::new(aim_origin.x, aim_origin.y, aim_origin.z),
+                aim_origin,
                 projectile_radius,
-                Vector::new(
+                Vec3::new(
                     muzzle_segment.x / muzzle_segment_length,
                     muzzle_segment.y / muzzle_segment_length,
                     muzzle_segment.z / muzzle_segment_length,
@@ -1187,16 +1186,10 @@ fn resolve_world_hit(
     collision_world: &CollisionWorld,
     range: f32,
 ) -> Option<WorldHit> {
-    cast_ray(
-        collision_world,
-        Point::new(origin.x, origin.y, origin.z),
-        Vector::new(direction.x, direction.y, direction.z),
-        range,
-    )
-    .map(|hit| WorldHit {
+    cast_ray(collision_world, origin, direction, range).map(|hit| WorldHit {
         toi: hit.time_of_impact,
         point: origin + direction * hit.time_of_impact,
-        normal: Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
+        normal: hit.normal,
     })
 }
 
@@ -1254,7 +1247,7 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::registry::{ComponentKind, Transform};
@@ -1517,35 +1510,35 @@ pub(crate) mod tests {
 
     pub(crate) fn wall_world_at(z: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(-1.0, -1.0, z),
-            Point::new(1.0, -1.0, z),
-            Point::new(1.0, 1.0, z),
-            Point::new(-1.0, 1.0, z),
+            Vec3::new(-1.0, -1.0, z),
+            Vec3::new(1.0, -1.0, z),
+            Vec3::new(1.0, 1.0, z),
+            Vec3::new(-1.0, 1.0, z),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn lateral_wall_world_at(x: f32) -> CollisionWorld {
         let points = vec![
-            Point::new(x, -1.0, -1.0),
-            Point::new(x, -1.0, 1.0),
-            Point::new(x, 1.0, 1.0),
-            Point::new(x, 1.0, -1.0),
+            Vec3::new(x, -1.0, -1.0),
+            Vec3::new(x, -1.0, 1.0),
+            Vec3::new(x, 1.0, 1.0),
+            Vec3::new(x, 1.0, -1.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn ground_world() -> CollisionWorld {
         let points = vec![
-            Point::new(-2.0, 0.0, -2.0),
-            Point::new(2.0, 0.0, -2.0),
-            Point::new(2.0, 0.0, 2.0),
-            Point::new(-2.0, 0.0, 2.0),
+            Vec3::new(-2.0, 0.0, -2.0),
+            Vec3::new(2.0, 0.0, -2.0),
+            Vec3::new(2.0, 0.0, 2.0),
+            Vec3::new(-2.0, 0.0, 2.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     #[test]

@@ -49,11 +49,13 @@ mod targeting;
 #[path = "ai_tests.rs"]
 mod ai_tests;
 
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use postretro_entities as __postretro_entities;
 pub(crate) use postretro_physics::collision;
 #[cfg(test)]
 pub(crate) use postretro_physics::{kinematic_mover, movement};
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use postretro_sim as __postretro_sim;
 pub(crate) use postretro_sim::{
@@ -80,9 +82,9 @@ use postretro_entities::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use postretro_entities::{FactionRegistry, FactionSentimentState};
-pub use postretro_foundation::{
-    ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD, locomotion_animation, rest_animation,
-};
+use postretro_foundation::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
+#[cfg(test)]
+use postretro_foundation::{locomotion_animation, rest_animation};
 use targeting::TargetPawn;
 
 #[cfg(test)]
@@ -292,15 +294,7 @@ impl Default for AiRuntime {
 macro_rules! tick_runner {
     ($runtime:expr) => {
         |registry, tick_dt, inputs, host| {
-            let result = $crate::run_ai_tick_with_host(registry, $runtime, tick_dt, inputs, host);
-            (
-                result.events,
-                result
-                    .projectile_spawns
-                    .into_iter()
-                    .map(|spawn| (spawn.projectile, spawn.descriptor_class))
-                    .collect(),
-            )
+            $crate::run_ai_tick_with_host(registry, $runtime, tick_dt, inputs, host)
         }
     };
 }
@@ -344,7 +338,7 @@ macro_rules! test_tick_runner {
                     .projectile_spawns
                     .into_iter()
                     .map(|spawn| (spawn.projectile, spawn.descriptor_class))
-                    .collect(),
+                    .collect::<Vec<_>>(),
             )
         }
     };
@@ -416,7 +410,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     inputs: AiTickInputs<'_>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> AiTickResult {
-    let mut host = SimAiHost::for_test(&mut on_impact);
+    let mut host = SimAiHost::new(&mut on_impact);
     run_ai_tick_with_host(registry, runtime, tick_dt, inputs, &mut host)
 }
 
@@ -428,7 +422,7 @@ pub fn run_ai_tick_with_host<H>(
     host: &mut H,
 ) -> AiTickResult
 where
-    H: AiHost + ?Sized,
+    H: AiHost,
 {
     let AiTickInputs {
         nav_graph,

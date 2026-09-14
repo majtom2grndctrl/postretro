@@ -6,8 +6,8 @@
 // names it may read are fixed here, in the VM-free foundation, because two
 // consumers need them and neither may depend on the other: the twin descriptor
 // parsers bind every authored guard at declaration time (against
-// `BrainValidationScope` below), while the engine's runtime `BrainScope` names
-// entity components and therefore lives in the binary. Both route name
+// `BrainValidationScope` below), while the engine's runtime `BrainScope` reads
+// entity components and therefore lives in `postretro-ai`. Both route name
 // resolution through `resolve_brain_input`, so the two namespaces are one
 // implementation and cannot drift.
 
@@ -174,7 +174,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 20] = [
 /// What a brain input name resolves to, independent of where the values live.
 ///
 /// This is the single resolution rule both the declaration-time
-/// [`BrainValidationScope`] and the binary's runtime `BrainScope` implement
+/// [`BrainValidationScope`] and `postretro-ai`'s runtime `BrainScope` implement
 /// their `resolve_input` on top of, so the two agree on every name by
 /// construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

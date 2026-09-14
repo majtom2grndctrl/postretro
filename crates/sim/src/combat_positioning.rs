@@ -33,7 +33,7 @@ const RING_DIRECTIONS: [Vec3; 8] = [
 ];
 const RADIAL_MULTIPLIERS: [f32; 3] = [1.0, 0.75, 1.25];
 pub const PATH_LENGTH_SCORE_WEIGHT: f32 = 0.05;
-pub const COMBAT_SLOT_SWITCH_MARGIN: f32 = 1.0;
+pub(crate) const COMBAT_SLOT_SWITCH_MARGIN: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CombatQuery<'a> {
@@ -187,7 +187,7 @@ pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatA
         .collect()
 }
 
-pub fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
+pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
     if !query.agent_pos.is_finite()
         || !query.target_pos.is_finite()
         || !query.enemy_eye_offset.is_finite()
@@ -324,8 +324,7 @@ fn compare_proposals(a: &CombatProposal, b: &CombatProposal) -> Ordering {
 mod tests {
     use super::*;
     use crate::nav::find_path;
-    use parry3d::math::Point;
-    use parry3d::shape::TriMesh;
+    use glam::Vec3;
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
     const EPS: f32 = 1.0e-4;
@@ -395,67 +394,67 @@ mod tests {
 
     fn floor_world() -> CollisionWorld {
         let points = vec![
-            Point::new(-20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, 20.0),
-            Point::new(-20.0, 0.0, 20.0),
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, 20.0),
+            Vec3::new(-20.0, 0.0, 20.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn floor_with_wall_at_west_candidate() -> CollisionWorld {
         let mut points = vec![
-            Point::new(-20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, 20.0),
-            Point::new(-20.0, 0.0, 20.0),
-            Point::new(3.0, 0.0, 4.0),
-            Point::new(3.0, 2.4, 4.0),
-            Point::new(3.0, 2.4, 6.0),
-            Point::new(3.0, 0.0, 6.0),
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, 20.0),
+            Vec3::new(-20.0, 0.0, 20.0),
+            Vec3::new(3.0, 0.0, 4.0),
+            Vec3::new(3.0, 2.4, 4.0),
+            Vec3::new(3.0, 2.4, 6.0),
+            Vec3::new(3.0, 0.0, 6.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(std::mem::take(&mut points), triangles))
+        CollisionWorld::from_triangles_for_test(std::mem::take(&mut points), triangles)
     }
 
     fn floor_with_los_wall() -> CollisionWorld {
         let points = vec![
-            Point::new(-20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, 20.0),
-            Point::new(-20.0, 0.0, 20.0),
-            Point::new(4.0, 0.0, 4.0),
-            Point::new(4.0, 3.0, 4.0),
-            Point::new(4.0, 3.0, 6.0),
-            Point::new(4.0, 0.0, 6.0),
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, 20.0),
+            Vec3::new(-20.0, 0.0, 20.0),
+            Vec3::new(4.0, 0.0, 4.0),
+            Vec3::new(4.0, 3.0, 4.0),
+            Vec3::new(4.0, 3.0, 6.0),
+            Vec3::new(4.0, 0.0, 6.0),
         ];
         let triangles = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn floor_with_target_los_cage() -> CollisionWorld {
         let points = vec![
-            Point::new(-20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, -20.0),
-            Point::new(20.0, 0.0, 20.0),
-            Point::new(-20.0, 0.0, 20.0),
-            Point::new(4.75, 0.0, 4.75),
-            Point::new(4.75, 3.0, 4.75),
-            Point::new(4.75, 3.0, 5.25),
-            Point::new(4.75, 0.0, 5.25),
-            Point::new(5.25, 0.0, 5.25),
-            Point::new(5.25, 3.0, 5.25),
-            Point::new(5.25, 3.0, 4.75),
-            Point::new(5.25, 0.0, 4.75),
-            Point::new(5.25, 0.0, 4.75),
-            Point::new(5.25, 3.0, 4.75),
-            Point::new(4.75, 3.0, 4.75),
-            Point::new(4.75, 0.0, 4.75),
-            Point::new(4.75, 0.0, 5.25),
-            Point::new(4.75, 3.0, 5.25),
-            Point::new(5.25, 3.0, 5.25),
-            Point::new(5.25, 0.0, 5.25),
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, 20.0),
+            Vec3::new(-20.0, 0.0, 20.0),
+            Vec3::new(4.75, 0.0, 4.75),
+            Vec3::new(4.75, 3.0, 4.75),
+            Vec3::new(4.75, 3.0, 5.25),
+            Vec3::new(4.75, 0.0, 5.25),
+            Vec3::new(5.25, 0.0, 5.25),
+            Vec3::new(5.25, 3.0, 5.25),
+            Vec3::new(5.25, 3.0, 4.75),
+            Vec3::new(5.25, 0.0, 4.75),
+            Vec3::new(5.25, 0.0, 4.75),
+            Vec3::new(5.25, 3.0, 4.75),
+            Vec3::new(4.75, 3.0, 4.75),
+            Vec3::new(4.75, 0.0, 4.75),
+            Vec3::new(4.75, 0.0, 5.25),
+            Vec3::new(4.75, 3.0, 5.25),
+            Vec3::new(5.25, 3.0, 5.25),
+            Vec3::new(5.25, 0.0, 5.25),
         ];
         let triangles = vec![
             [0u32, 1, 2],
@@ -469,7 +468,7 @@ mod tests {
             [16, 17, 18],
             [16, 18, 19],
         ];
-        CollisionWorld::from_trimesh_for_test(TriMesh::new(points, triangles))
+        CollisionWorld::from_triangles_for_test(points, triangles)
     }
 
     fn query<'a>(

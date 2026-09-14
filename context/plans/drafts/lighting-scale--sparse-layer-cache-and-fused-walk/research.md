@@ -188,3 +188,15 @@ tens of GB, sparse or not. So: selection final → graph and coloring → fused 
 - `animated_lm_weight_maps` entry size relative to the sparse layers; it is the likely
   runner-up after slimming, at chunk-rect rather than atlas grain.
 - The reach fraction on campaign-test.
+
+## Pinned orderings
+
+Reviewer-added. Each row is cited by one Acceptance row.
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Stride 2. The lightmap section memo hits and the shadowmask memo misses: an edit that changes only the selection (`entity_shadow_params`), a shadowmask memo the sweep evicted or corruption discarded while the section memo survived, or a shadowmask-only epoch bump. The section key folds every layer hash; the shadowmask key folds only the selected lights' (`section_input_hash`, `shadowmask_atlas_input_hash`) | The section hit means no fold runs and no partition is held in memory, so the fill has nothing to consume from the walk. The shadowmask memo must be probed before the lightmap stage decides whether to walk | Shadowmask bytes equal the cold section; no partition is re-baked; each selected partition is read at most once; no layer entry is read once the lightmap stage has ended |
+| P2 | The budget warning's figure. In stride 1 the lightmap stage writes a partition the shadowmask stage reads in the same build; an entry can also be read twice by one build | Written then read, or read then read, within one build | The entry counts once. A live set under budget raises no warning even when a per-call tally of reads plus writes would exceed it |
+| P3 | A `(light, layer)` pair the light reaches nowhere — a point light far from every chart on that layer. Common on multi-layer atlases; today's dense record is never empty and `validate_layer_partition` rejects a missing texel | Written with zero texels on the first build; read on the rerun | The rerun hits it and re-bakes nothing; validation accepts zero texels; the fold adds nothing; the light is absent from that layer's channels. A regression here re-bakes every empty pair on every build without any log line the thrash rows watch |
+| P4 | The signed-zero row's constructor. A directional light aimed straight down yields `to_light = (-0.0, 1.0, -0.0)` (`light_contribution_and_direction`, `normalize_or_zero` of the negated aim), so its weighted direction has `-0.0` components | That light first in global order; a point light out of range later | Composite bits equal the dense fold's. Both accumulators start at `+0.0`, so `+0.0 + -0.0 = +0.0` and the skipped light's implicit `+0.0` changes nothing |
+| P5 | Stride 1. A one-light edit of a light in the shadowmask selection | The lightmap fold reads every unaffected partition once; the shadowmask memo misses (its key folds the edited light's layer hash); `fill_cached_shadowmask_partitions` then reads every selected partition again | In stride 1 each unaffected *selected* partition is read twice, once per consumer; an unselected edit reads each once. Only stride 2 makes "exactly once" true for a selected edit |

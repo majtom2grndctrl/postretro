@@ -112,6 +112,9 @@ Byte identity — the contract; the existing gates pass today:
 - [ ] The byte-identity reference stays independent of the fused walk:
   `bake_monolithic_atlas_controlled` reaches no walk code, and a defect injected into the walk
   fails the cold gate instead of passing it. Without this the gate compares the walk to itself.
+- [ ] The frozen reference is compared against the cold stage output on the same two fixtures
+  the end-to-end row uses, so a walk defect that only real chart layouts expose cannot pass
+  walk-versus-walk.
 
 Reconstruction edges — both sides of each predicate:
 
@@ -122,7 +125,7 @@ Reconstruction edges — both sides of each predicate:
 - [ ] A texel at NaN visibility: present; composite bits equal the dense fold's; present in
   membership as today.
 - [ ] A weighted-direction component that is negative zero from one light, with a later light
-  in global order unreached, composites to the dense fold's bits.
+  in global order unreached, composites to the dense fold's bits (`research.md` P4).
 - [ ] Contributions at the two representable values straddling the coverage epsilon: lower
   absent, upper present, using the baker's own comparison.
 
@@ -139,6 +142,12 @@ Cache behaviour:
 - [ ] An entry written before this change is not read after it, for both epochs.
 - [ ] A build whose read-plus-written bytes exceed the budget ends with exactly one warning
   naming both figures; under budget, none; `--no-cache` and `--release`, none.
+- [ ] An entry the build writes and then reads, or reads twice, counts once toward the
+  warning's figure; a live set under budget raises no warning however many times its entries
+  were touched (`research.md` P2).
+- [ ] A light that reaches no texel on a layer writes a partition with zero texels; the rerun
+  hits it and re-bakes nothing, the fold adds nothing, and the light is absent from that
+  layer's channels (`research.md` P3).
 
 Stride 2 — order and fusion:
 
@@ -148,6 +157,10 @@ Stride 2 — order and fusion:
   no shadowmask section and fills no channel, bytes unchanged.
 - [ ] After the lightmap fold completes, no stage reads a layer entry, cold or warm. Asserted
   on captured log lines.
+- [ ] Lightmap section memo hit with shadowmask memo miss — a selection-only edit, or a
+  shadowmask memo lost while the section memo survived: the shadowmask section equals the cold
+  bytes, no partition is re-baked, each selected partition is read at most once, and no layer
+  entry is read after the lightmap stage ends (`research.md` P1).
 - [ ] Channel assignment is complete before the first texel of the fused walk, and the fill
   writes only into the assigned channel — two lights sharing a texel on a layer above zero
   still land in different channels.

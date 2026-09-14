@@ -1,7 +1,5 @@
-//! Synchronous engine effects exposed to the enemy-AI policy layer.
-//!
-//! AI keeps concrete read access to registry, navigation, and collision data.
-//! This host owns only effects whose ordering must remain inside one AI tick.
+//! Synchronous effects seam injected into enemy-AI policy during one simulation tick.
+//! See: context/lib/development_guide.md §Workspace · context/lib/entity_model.md §7c
 
 use postretro_entities::components::health::{DamageContext, apply_damage_with_context};
 use std::borrow::Cow;

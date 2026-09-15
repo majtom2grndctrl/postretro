@@ -74,6 +74,12 @@ impl StageProgress {
 /// advances independently reported progress counters.
 pub trait Reporter: Send + Sync {
     fn begin_stage(&self, id: StageId);
+    /// Begin a stage whose progress is live while another stage remains the
+    /// foreground work. Reporters without a foreground distinction use the
+    /// same behavior as `begin_stage`.
+    fn begin_background_stage(&self, id: StageId) {
+        self.begin_stage(id);
+    }
     fn declare_progress(&self, id: StageId, progress: StageProgress);
     fn finish_stage(&self, id: StageId);
     fn skip_stage(&self, id: StageId);
@@ -370,7 +376,7 @@ mod tests {
         let reporter = PlainReporter::new(Instant::now(), LogSink::default());
         reporter.begin_stage(StageId::LightmapBake);
         reporter.declare_progress(StageId::LightmapBake, StageProgress::with_total(4));
-        reporter.begin_stage(StageId::ShadowmaskAtlas);
+        reporter.begin_background_stage(StageId::ShadowmaskAtlas);
         reporter.declare_progress(StageId::ShadowmaskAtlas, StageProgress::with_total(2));
 
         let active_ids = reporter

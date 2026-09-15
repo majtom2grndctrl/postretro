@@ -1,7 +1,7 @@
 # lighting-scale--sparse-layer-cache-and-fused-walk — plan of record
 
 mode: resumable
-status: approved
+status: landed-with-gaps
 read at: a6ebb7938
 
 ## Corrections
@@ -9,6 +9,10 @@ read at: a6ebb7938
 - None. `d6e1c8b` is an ancestor of `a6ebb7938`, and `crates/level-compiler/src/`
   plus its tests have no changes between those revisions. The dependency work named by the
   brief is now on `main`; every cited Decision and Path symbol was re-read at `a6ebb7938`.
+- M4 cannot reach the fused shadowmask path at default quality on the 16 GiB Windows host:
+  the pre-existing SH-delta working-set gate refuses its 34.0 GiB projection first. On
+  2026-09-15 the owner deferred that unrelated full-quality capacity work and authorized
+  landing with this external proof outstanding.
 
 ## Delegated answers
 
@@ -26,37 +30,37 @@ read at: a6ebb7938
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 Warm composite equals cold direct lightmap before BC6H on two real-stage fixtures, including one multi-layer, across cold, warm-empty, and warm-hit | New `pipeline`/extracted-lightmap-stage end-to-end fixture gate comparing decoded pre-BC6H outputs for all three paths | achievable as stated |
-| A2 Uncompressed and BC6H encoded section modes remain byte-identical across the fold | Extend the A1 fixture matrix over both irradiance modes and compare `LightmapSection::to_bytes()` | achievable as stated |
-| A3 Whole-file one-worker/many-worker determinism and shadowmask identity across cold, warm miss, partition miss, and section hit | Existing worker/shadowmask determinism gates plus a new real-pipeline whole-file matrix with explicit worker counts and cache states | achievable as stated |
-| A4 Warm fallback with no layer-bearing lights emits one uncovered plane | Update and retain the all-SDF section-cache fallback gate at the extracted stage seam | achievable as stated |
-| A5 Byte-identity reference is independent of the fused walk while sharing only the named leaf kernels | Frozen `lightmap_reference` module plus an automated source/dependency guard proving it cannot call the walk entry point | achievable as stated |
-| A6 Frozen reference is compared with cold stage output on both A1 fixtures | Same two-fixture cold-stage-versus-reference gate used by A1 | achievable as stated |
-| A7 Unreached texel is absent, contributes nothing, and is absent from shadowmask membership | Sparse codec/reconstruction unit test through baker predicate, fold sink, and shadowmask sink | achievable as stated |
-| A8 Fully occluded texel is present with zero visibility, adds positive-zero terms, and writes channel byte zero | Sparse reconstruction/shadowmask edge test with a blocking trace | achievable as stated |
-| A9 NaN visibility stays present and matches dense-fold bits and membership semantics | Direct sparse-record bit-pattern test through both sinks | achievable as stated |
-| A10 Negative-zero weighted direction followed by an unreached light preserves dense-fold bits | Directional-light P4 regression test using baker math and ordered sparse fold | achievable as stated |
-| A11 Values immediately below/above the coverage epsilon are absent/present through the baker's own predicate | Extend the shared-threshold test with adjacent representable `f32` values and sparse writer assertions | achievable as stated |
-| A12 Named multi-layer fixture writes less than one tenth of the former dense layer bytes | Stage-cache test inventorying payload bytes written under `lightmap_layer` and comparing with `48 * covered_texels` | achievable as stated |
-| A13 No-edit reads no layer; one-light edit re-bakes only edited partitions; unaffected reads become exactly once after fusion | Test-only per-key/stage access counters exercised by no-edit, selected-edit, and unselected-edit real-stage runs | achievable as stated |
-| A14 Decodable out-of-covered-set, out-of-bounds, or non-increasing partitions soft-miss and re-bake | Replace exact-dense validation tests with sparse bounds/strict-monotonicity corruption matrix at the real cache caller | achievable as stated |
-| A15 Pre-change layer and section entries are unreadable after both epoch bumps | Pin the incremented layer/section epochs and seed entries under the prior versions in a cache miss test | achievable as stated |
-| A16 Over-budget live set emits exactly one warning naming read/written total and budget; under-budget/no-cache/release emit none | `postretro-test-log-capture` tests at the end-of-build reporting seam | achievable as stated |
-| A17 Repeated touches and write-then-read count each cache key once in the warning live set | Unit tests for deduplicated cache-access accounting plus under-budget repeated-touch regression | achievable as stated |
-| A18 A light reaching no texel writes and reuses an empty partition with no fold/channel effect | Multi-layer P3 real-cache regression with bake counter and output assertions | achievable as stated |
-| A19 Every SH-block stage completes before atlas preparation; density/scale edits hit SH-block memos and miss lightmap memos | Reporter event-order test plus `cache_cross_bake_tests` density/scale edit matrix, including moved `ChunkLightList` | achievable as stated |
-| A20 Cleared entity-shadow selection emits no shadowmask and fills no channel | Real-pipeline fixture forcing absent/unusable direct delta, with section bytes compared to the pre-fusion path | achievable as stated |
-| A21 No layer cache read occurs after Lightmap Bake, cold or warm | Stage-aware cache access instrumentation asserted after the fused stage returns | achievable as stated |
-| A22 Lightmap-section hit plus shadowmask miss reproduces cold bytes without rebake, reads each selected partition at most once, and performs no later reads | P1 integration matrix for selection-only rekey and deleted/corrupt shadowmask memo | achievable as stated |
-| A23 Channel assignment completes before the first fused texel and writes only assigned channels, including two overlapping lights above layer zero | Extend the assignment barrier test and add a multi-layer fused-fill channel test | achievable as stated |
-| A24 Lightmap and shadowmask each publish one accurate progress total without overshoot | Reporter/progress tests covering miss, hit, empty, dropped, and fused paths | achievable as stated |
-| A25 Build Summary order changes intentionally and TUI sections flatten to the same order with Atlas Preparation under World | Update the exact `planned_stage_contract_pins_order_labels_and_sdf_prediction` vector and `section_table_is_a_contiguous_total_partition` expectations | achievable as stated |
-| M1 Three-run campaign-test measurement after each stride records cache bytes, evictions, memo/group hits, and stage times | Integrating executor, scratch cache, default budget, empty/no-edit/one-light-edit runbook | manual-local |
-| M2 Injected fused-walk defect fails the cold reference gate | Integrating executor, temporary local mutation followed by restoration and rerun | manual-local |
-| M3 Post-fusion cold shadowmask costs graph plus encode with no retrace, and whole cold build is no slower than the recorded baseline | Integrating executor, verbose/timed campaign-test release run compared with research baseline | manual-local |
-| M4 Windows owner runs stress-warren hallway release bake at density 0.04 and captures peak working set | Owner, Windows, external runbook; required before landing and also closes the prior brief's pending rows | manual-external-blocking |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 Warm composite equals cold direct lightmap before BC6H on two real-stage fixtures, including one multi-layer, across cold, warm-empty, and warm-hit | New `pipeline`/extracted-lightmap-stage end-to-end fixture gate comparing decoded pre-BC6H outputs for all three paths | achievable as stated | pass — fused fixture matrix |
+| A2 Uncompressed and BC6H encoded section modes remain byte-identical across the fold | Extend the A1 fixture matrix over both irradiance modes and compare `LightmapSection::to_bytes()` | achievable as stated | pass — fused fixture matrix |
+| A3 Whole-file one-worker/many-worker determinism and shadowmask identity across cold, warm miss, partition miss, and section hit | Existing worker/shadowmask determinism gates plus a new real-pipeline whole-file matrix with explicit worker counts and cache states | achievable as stated | pass — worker and lifecycle matrices |
+| A4 Warm fallback with no layer-bearing lights emits one uncovered plane | Update and retain the all-SDF section-cache fallback gate at the extracted stage seam | achievable as stated | pass — all-SDF fallback gate |
+| A5 Byte-identity reference is independent of the fused walk while sharing only the named leaf kernels | Frozen `lightmap_reference` module plus an automated source/dependency guard proving it cannot call the walk entry point | achievable as stated | pass — source guard |
+| A6 Frozen reference is compared with cold stage output on both A1 fixtures | Same two-fixture cold-stage-versus-reference gate used by A1 | achievable as stated | pass — cold/reference matrix |
+| A7 Unreached texel is absent, contributes nothing, and is absent from shadowmask membership | Sparse codec/reconstruction unit test through baker predicate, fold sink, and shadowmask sink | achievable as stated | pass — sparse edge suite |
+| A8 Fully occluded texel is present with zero visibility, adds positive-zero terms, and writes channel byte zero | Sparse reconstruction/shadowmask edge test with a blocking trace | achievable as stated | pass — sparse edge suite |
+| A9 NaN visibility stays present and matches dense-fold bits and membership semantics | Direct sparse-record bit-pattern test through both sinks | achievable as stated | pass — sparse bit-pattern suite |
+| A10 Negative-zero weighted direction followed by an unreached light preserves dense-fold bits | Directional-light P4 regression test using baker math and ordered sparse fold | achievable as stated | pass — directional sparse regression |
+| A11 Values immediately below/above the coverage epsilon are absent/present through the baker's own predicate | Extend the shared-threshold test with adjacent representable `f32` values and sparse writer assertions | achievable as stated | pass — threshold regression |
+| A12 Named multi-layer fixture writes less than one tenth of the former dense layer bytes | Stage-cache test inventorying payload bytes written under `lightmap_layer` and comparing with `48 * covered_texels` | achievable as stated | pass — multi-layer payload gate |
+| A13 No-edit reads no layer; one-light edit re-bakes only edited partitions; unaffected reads become exactly once after fusion | Test-only per-key/stage access counters exercised by no-edit, selected-edit, and unselected-edit real-stage runs | achievable as stated | pass — cache lifecycle matrix |
+| A14 Decodable out-of-covered-set, out-of-bounds, or non-increasing partitions soft-miss and re-bake | Replace exact-dense validation tests with sparse bounds/strict-monotonicity corruption matrix at the real cache caller | achievable as stated | pass — corruption matrix |
+| A15 Pre-change layer and section entries are unreadable after both epoch bumps | Pin the incremented layer/section epochs and seed entries under the prior versions in a cache miss test | achievable as stated | pass — epoch miss gates |
+| A16 Over-budget live set emits exactly one warning naming read/written total and budget; under-budget/no-cache/release emit none | `postretro-test-log-capture` tests at the end-of-build reporting seam | achievable as stated | pass — reporting contract suite |
+| A17 Repeated touches and write-then-read count each cache key once in the warning live set | Unit tests for deduplicated cache-access accounting plus under-budget repeated-touch regression | achievable as stated | pass — live-set deduplication suite |
+| A18 A light reaching no texel writes and reuses an empty partition with no fold/channel effect | Multi-layer P3 real-cache regression with bake counter and output assertions | achievable as stated | pass — empty-partition regression |
+| A19 Every SH-block stage completes before atlas preparation; density/scale edits hit SH-block memos and miss lightmap memos | Reporter event-order test plus `cache_cross_bake_tests` density/scale edit matrix, including moved `ChunkLightList` | achievable as stated | pass — order and cache-cross-bake gates |
+| A20 Cleared entity-shadow selection emits no shadowmask and fills no channel | Real-pipeline fixture forcing absent/unusable direct delta, with section bytes compared to the pre-fusion path | achievable as stated | pass — cleared-selection regression |
+| A21 No layer cache read occurs after Lightmap Bake, cold or warm | Stage-aware cache access instrumentation asserted after the fused stage returns | achievable as stated | pass — production no-late-read gate |
+| A22 Lightmap-section hit plus shadowmask miss reproduces cold bytes without rebake, reads each selected partition at most once, and performs no later reads | P1 integration matrix for selection-only rekey and deleted/corrupt shadowmask memo | achievable as stated | pass — independent-memo matrix |
+| A23 Channel assignment completes before the first fused texel and writes only assigned channels, including two overlapping lights above layer zero | Extend the assignment barrier test and add a multi-layer fused-fill channel test | achievable as stated | pass — assignment barrier and layer-1 golden |
+| A24 Lightmap and shadowmask each publish one accurate progress total without overshoot | Reporter/progress tests covering miss, hit, empty, dropped, and fused paths | achievable as stated | pass — progress lifecycle suite |
+| A25 Build Summary order changes intentionally and TUI sections flatten to the same order with Atlas Preparation under World | Update the exact `planned_stage_contract_pins_order_labels_and_sdf_prediction` vector and `section_table_is_a_contiguous_total_partition` expectations | achievable as stated | pass — reporter/TUI order suites |
+| M1 Three-run campaign-test measurement after each stride records cache bytes, evictions, memo/group hits, and stage times | Integrating executor, scratch cache, default budget, empty/no-edit/one-light-edit runbook | manual-local | pass — both measurement rows recorded |
+| M2 Injected fused-walk defect fails the cold reference gate | Integrating executor, temporary local mutation followed by restoration and rerun | manual-local | pass — injected defect failed, restoration passed |
+| M3 Post-fusion cold shadowmask costs graph plus encode with no retrace, and whole cold build is no slower than the recorded baseline | Integrating executor, verbose/timed campaign-test release run compared with research baseline | manual-local | pass — 129.43 s cold run; 0.21 s shadowmask-owned work |
+| M4 Windows owner runs stress-warren hallway release bake at density 0.04 and captures peak working set | Owner, Windows, external runbook; required before landing and also closes the prior brief's pending rows | manual-external-blocking | outstanding — owner deferred; default run safely refused at the pre-existing SH-delta gate before fused lighting |
 
 ## Tasks
 
@@ -69,11 +73,11 @@ read at: a6ebb7938
 | 5 | Probe both lightmap and shadowmask memos before the walk, fuse cold lightmap, warm sparse writer/fold, and shadowmask fill into the shared per-chart walk, preserve the frozen reference, and prove P1/order/progress/no-late-read behavior | integrating executor | 4 | complete |
 | 6 | Run focused readiness checks and both post-stride measurement runbooks, including the injected-defect and cold no-retrace checks; record every automated and local-manual result | integrating executor | 5 | complete |
 | 7 | Run the required review-panel → fix-review-findings → focused-retest loop, then run `/preflight` once and prepare the Windows external runbook | integrating executor | 6 | complete |
-| 8 | Receive the owner's Windows stress result, update durable build-pipeline contracts and the AC result column, move the brief to `done/`, and land | integrating executor + owner | 7 | |
+| 8 | Receive the owner's Windows stress result, update durable build-pipeline contracts and the AC result column, move the brief to `done/`, and land | integrating executor + owner | 7 | complete with M4 deferred |
 
-## External runbook
+## Deferred external proof
 
-Before landing, the owner must run the final compiler on Windows against the hallway stress map at
+The original landing gate asked the owner to run the final compiler on Windows against the hallway stress map at
 lightmap density `0.04`, with the compiler's exact-build `--release` mode enabled, and report the
 exit code plus peak working set. From the repository root in PowerShell:
 
@@ -107,9 +111,11 @@ if (
 ) { exit 1 }
 ```
 
-Expected artifact: `%TEMP%\stress-warren-hallway-inspection-density-004.prl`. Save the final output
-line and confirm that the artifact exists and is non-empty. This external result is the only
-remaining landing gate and also closes the prior brief's pending Windows memory rows.
+Expected artifact: `%TEMP%\stress-warren-hallway-inspection-density-004.prl`. The 2026-09-15
+default-quality `xtask dist` attempt exited 1 before fused lighting: the pre-existing SH-delta gate
+projected 36,490,051,584 bytes against its 17,179,869,184-byte budget. The owner deferred this
+full-quality capacity work. A later run with enough SH-delta headroom, or a revised supported-quality
+recipe, can close M4 and the prior brief's pending Windows memory rows.
 
 ## Execution log
 
@@ -252,3 +258,15 @@ remaining landing gate and also closes the prior brief's pending Windows memory 
 - Required preflight: `cargo fmt --check` passes after applying rustfmt's two mechanical layout
   changes; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passes; the complete
   workspace `cargo test` passes. The Windows peak-working-set runbook above is ready for the owner.
+
+### Task 8 — complete with M4 deferred
+
+- The Windows default-quality `xtask dist` attempt reproduced the pre-existing direct-SH-delta
+  projection exactly and refused before allocating its dense payload. It therefore supplied no
+  fused-shadowmask peak measurement or output artifact.
+- The owner classified that unrelated full-quality capacity limit as deferred and authorized
+  landing with M4 outstanding. All automated and local-manual acceptance rows pass.
+- The post-review foreground/background TUI correction keeps ShadowmaskAtlas progress live without
+  highlighting it beside Lightmap Bake. The durable reporting contract records the distinction.
+- Final landing preflight on 2026-09-15: format, clippy with warnings denied, and the complete
+  workspace test suite pass.

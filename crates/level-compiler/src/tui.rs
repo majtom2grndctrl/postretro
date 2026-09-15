@@ -48,9 +48,12 @@ struct StepState {
     last_completed: usize,
     activity_index: usize,
     remaining_estimate: RemainingEstimate,
-    // Monotonic order in which this step most recently became active. Lets the
-    // progress readout follow the newest active stage when stages overlap.
+    // Monotonic order in which this step most recently became foreground.
+    // Lets nested foreground stages temporarily take focus from outer stages.
     begin_seq: u64,
+    // Background stages retain lifecycle and progress state without competing
+    // for the single foreground marker and progress readout.
+    background: bool,
 }
 
 impl StepState {
@@ -65,6 +68,7 @@ impl StepState {
             activity_index: 0,
             remaining_estimate: RemainingEstimate::default(),
             begin_seq: 0,
+            background: false,
         }
     }
 
@@ -178,35 +182,44 @@ impl TuiState {
         self.steps.iter_mut().find(|step| step.id == id)
     }
 
-    /// Mark a stage active and stamp it with the next begin sequence. The
-    /// orchestrator can hold several stages open at once (an outer selection
-    /// stage begins before its inner bake finishes), so the stamp records
-    /// which became active last.
     fn begin_step(&mut self, id: StageId) {
+        self.begin_step_with_role(id, false);
+    }
+
+    fn begin_background_step(&mut self, id: StageId) {
+        self.begin_step_with_role(id, true);
+    }
+
+    /// Mark a stage live and stamp it with the next begin sequence. Foreground
+    /// stages compete for focus by sequence; background stages never do.
+    fn begin_step_with_role(&mut self, id: StageId, background: bool) {
         let seq = self.next_begin_seq;
-        let mut stamped = false;
+        let mut began_foreground = false;
         if let Some(step) = self.step_mut(id) {
             step.status = StepStatus::Active;
             step.started = Some(Instant::now());
             step.activity_index = 0;
             step.last_completed = 0;
             step.remaining_estimate = RemainingEstimate::default();
-            step.begin_seq = seq;
-            stamped = true;
+            step.background = background;
+            if !background {
+                step.begin_seq = seq;
+                began_foreground = true;
+            }
         }
-        if stamped {
+        if began_foreground {
             self.next_begin_seq += 1;
         }
     }
 
-    /// The active step the progress readout follows: the most-recently-begun
-    /// one, so an overlapping inner bake takes the foot from its still-open
-    /// outer stage rather than the outer stage pinning it.
+    /// The foreground step the progress readout follows. A nested foreground
+    /// stage temporarily takes focus from its still-open outer stage, while a
+    /// background stage remains live without taking focus.
     fn active_index(&self) -> Option<usize> {
         self.steps
             .iter()
             .enumerate()
-            .filter(|(_, step)| step.status == StepStatus::Active)
+            .filter(|(_, step)| step.status == StepStatus::Active && !step.background)
             .max_by_key(|(_, step)| step.begin_seq)
             .map(|(index, _)| index)
     }
@@ -274,6 +287,10 @@ impl TuiReporter {
 impl Reporter for TuiReporter {
     fn begin_stage(&self, id: StageId) {
         self.lock().begin_step(id);
+    }
+
+    fn begin_background_stage(&self, id: StageId) {
+        self.lock().begin_background_step(id);
     }
 
     fn declare_progress(&self, id: StageId, progress: StageProgress) {
@@ -398,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn fused_lighting_tracks_both_live_progress_totals_in_summary_order() {
+    fn fused_lighting_tracks_background_progress_without_stealing_foreground() {
         let reporter = TuiReporter::new(
             &[
                 descriptor(StageId::LightmapBake),
@@ -410,7 +427,7 @@ mod tests {
         let shadowmask = StageProgress::with_total(5);
         reporter.begin_stage(StageId::LightmapBake);
         reporter.declare_progress(StageId::LightmapBake, lightmap.clone());
-        reporter.begin_stage(StageId::ShadowmaskAtlas);
+        reporter.begin_background_stage(StageId::ShadowmaskAtlas);
         reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask.clone());
         lightmap.completed_handle().store(3, Ordering::Relaxed);
         shadowmask.completed_handle().store(2, Ordering::Relaxed);
@@ -420,16 +437,41 @@ mod tests {
         assert_eq!(state.steps[0].progress.as_ref().unwrap().total(), Some(8));
         assert_eq!(state.steps[0].progress.as_ref().unwrap().completed(), 3);
         assert_eq!(state.steps[1].status, StepStatus::Active);
+        assert!(state.steps[1].background);
         assert_eq!(state.steps[1].progress.as_ref().unwrap().total(), Some(5));
         assert_eq!(state.steps[1].progress.as_ref().unwrap().completed(), 2);
         assert_eq!(
-            super::tui_progress::progress_text(&state.steps[1]).0,
-            "2/5   40%"
+            super::tui_progress::progress_text(&state.steps[0]).0,
+            "3/8   37%"
         );
         assert_eq!(
             state.steps[state.active_index().unwrap()].id,
-            StageId::ShadowmaskAtlas,
-            "the live TUI readout must expose shadowmask progress during fused work"
+            StageId::LightmapBake,
+            "background progress must not take foreground focus"
+        );
+    }
+
+    #[test]
+    fn failure_resolves_foreground_and_background_stages() {
+        let reporter = TuiReporter::new(
+            &[
+                descriptor(StageId::LightmapBake),
+                descriptor(StageId::ShadowmaskAtlas),
+            ],
+            LogSink::default(),
+        );
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.begin_background_stage(StageId::ShadowmaskAtlas);
+
+        reporter.finalize_failure();
+
+        let state = reporter.lock();
+        assert!(state.active_index().is_none());
+        assert!(
+            state
+                .steps
+                .iter()
+                .all(|step| step.status == StepStatus::Failed)
         );
     }
 

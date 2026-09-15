@@ -16,7 +16,9 @@ use crate::lightmap_bake::{
     Chart, CompositedAtlas, effective_direction_texel_scale, light_contribution_and_direction,
     light_texel_contribution_and_visibility, segment_clear, texel_seed,
 };
-use crate::map_data::{LightType, MapLight};
+#[cfg(test)]
+use crate::map_data::LightType;
+use crate::map_data::MapLight;
 use glam::DVec3;
 
 /// Bump when the per-light layer payload format or the single-light bake math
@@ -327,8 +329,9 @@ pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DV
 /// Mirrors `bake_face_chart`'s per-texel structure exactly but for a single
 /// light: same chart interior walk, same `texel_seed`, same
 /// `light_texel_contribution_and_visibility` helper (which shares the
-/// monolithic Lambert + soft-visibility math). Directional lights use this
-/// same path, producing a full-atlas (non-sparse) layer.
+/// monolithic Lambert + soft-visibility math). Directional lights are
+/// evaluated across every chart texel, but sparse records are emitted only for
+/// analytically reached, contributing samples.
 ///
 /// The sparse set is the subset of chart interiors reached by this light before
 /// visibility. The compositor derives atlas coverage and fallback normals from
@@ -1004,12 +1007,6 @@ pub fn section_input_hash(
     hasher.update(&[u8::from(uncompressed_irradiance)]);
     hasher.update(&direction_texel_scale.to_le_bytes());
     *hasher.finalize().as_bytes()
-}
-
-/// `true` for lights whose analytic reach spans every front-facing chart texel
-/// (directional); this predicate is informational for callers.
-pub fn is_full_atlas_light(light: &MapLight) -> bool {
-    matches!(light.light_type, LightType::Directional)
 }
 
 /// Padding applied by the per-light cache key's influence bound.
@@ -2121,12 +2118,6 @@ mod tests {
             slice_a, slice_b,
             "editing geometry outside the influence AABB must not change the slice hash"
         );
-    }
-
-    #[test]
-    fn directional_is_full_atlas_light() {
-        assert!(is_full_atlas_light(&directional_light()));
-        assert!(!is_full_atlas_light(&point_light([0.0, 1.0, 0.0], 5.0)));
     }
 
     // -----------------------------------------------------------------------

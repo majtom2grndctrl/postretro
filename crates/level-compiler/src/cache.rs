@@ -30,6 +30,8 @@ const HEADER_BYTES: usize = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES + HASH_BYTES
 /// the same filename.
 pub struct CacheKey {
     digest: [u8; HASH_BYTES],
+    #[cfg(test)]
+    stage_id: String,
 }
 
 impl CacheKey {
@@ -45,6 +47,8 @@ impl CacheKey {
         let digest = hasher.finalize();
         Self {
             digest: *digest.as_bytes(),
+            #[cfg(test)]
+            stage_id: stage_id.to_owned(),
         }
     }
 
@@ -61,12 +65,22 @@ pub struct StageCache {
     dir: Arc<PathBuf>,
     live_entries: Arc<Mutex<HashMap<[u8; HASH_BYTES], u64>>>,
     live_set_reported: Arc<AtomicBool>,
+    #[cfg(test)]
+    test_accesses: Arc<Mutex<HashMap<String, CacheTestAccess>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheLiveSet {
     pub entry_count: usize,
     pub total_bytes: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheTestAccess {
+    pub read_attempts: usize,
+    pub read_hits: usize,
+    pub writes: usize,
 }
 
 impl StageCache {
@@ -79,6 +93,8 @@ impl StageCache {
             dir: Arc::new(dir),
             live_entries: Arc::new(Mutex::new(HashMap::new())),
             live_set_reported: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            test_accesses: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -91,6 +107,8 @@ impl StageCache {
     /// long-stable entry (one whose inputs never change, so it is hit every
     /// build but never rewritten) from being evicted purely for being old.
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        #[cfg(test)]
+        self.record_test_read_attempt(key);
         let path = self.entry_path(key);
         let mut file = match fs::File::open(&path) {
             Ok(f) => f,
@@ -183,6 +201,8 @@ impl StageCache {
         }
 
         self.record_live_entry(key, HEADER_BYTES as u64 + declared_len as u64);
+        #[cfg(test)]
+        self.record_test_read_hit(key);
         Some(payload)
     }
 
@@ -227,7 +247,29 @@ impl StageCache {
             let _ = fs::remove_file(&tmp_path);
         } else {
             self.record_live_entry(key, HEADER_BYTES as u64 + payload_len);
+            #[cfg(test)]
+            self.record_test_write(key);
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cross-bake tests, not the library test target.
+    pub(crate) fn test_access(&self, stage_id: &str) -> CacheTestAccess {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(stage_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cross-bake tests, not the library test target.
+    pub(crate) fn clear_test_accesses(&self) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 
     /// Unique cache entries successfully read or written by this build.
@@ -395,6 +437,36 @@ impl StageCache {
         file.write_all(hash.as_bytes())?;
         file.sync_all()?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn record_test_read_attempt(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .read_attempts += 1;
+    }
+
+    #[cfg(test)]
+    fn record_test_read_hit(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .read_hits += 1;
+    }
+
+    #[cfg(test)]
+    fn record_test_write(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .writes += 1;
     }
 
     fn entry_path(&self, key: &CacheKey) -> PathBuf {

@@ -70,7 +70,8 @@ impl StageProgress {
 /// Exactly one terminal method must win: `finalize` commits/records a complete
 /// success summary for exactly-once presentation, while `finalize_failure`
 /// prints warnings without a partial success table. Implementations make
-/// repeated terminal calls no-ops.
+/// repeated terminal calls no-ops. Stages may overlap when one fused operation
+/// advances independently reported progress counters.
 pub trait Reporter: Send + Sync {
     fn begin_stage(&self, id: StageId);
     fn declare_progress(&self, id: StageId, progress: StageProgress);
@@ -92,10 +93,14 @@ struct Monitor {
     started: Instant,
 }
 
+struct ActiveStage {
+    id: StageId,
+    monitor: Monitor,
+}
+
 #[derive(Default)]
 struct PlainState {
-    active: Option<(StageId, Instant)>,
-    monitor: Option<Monitor>,
+    active: Vec<ActiveStage>,
 }
 
 /// Line-oriented reporter suitable for CI, pipes, and `xtask` output.
@@ -130,16 +135,15 @@ impl PlainReporter {
     /// reprinting an identical final line.
     fn start_monitor(
         &self,
-        state: &mut PlainState,
         label: &'static str,
         progress: StageProgress,
         started: Instant,
-    ) {
+    ) -> Monitor {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_progress = progress.clone();
         let logs = self.logs.clone();
-        state.monitor = Some(Monitor {
+        Monitor {
             stop,
             thread: thread::spawn(move || {
                 let mut previous = None;
@@ -161,20 +165,24 @@ impl PlainReporter {
             label,
             progress,
             started,
-        });
+        }
     }
 
-    fn stop_monitor(state: &mut PlainState) {
-        if let Some(monitor) = state.monitor.take() {
-            monitor.stop.store(true, Ordering::Release);
-            monitor.thread.thread().unpark();
-            let printed = monitor.thread.join().unwrap_or(None);
-            // Final line catches progress advanced since the last poll, but only
-            // when it differs from what the loop already rendered.
-            let snapshot = (monitor.progress.completed(), monitor.progress.total());
-            if snapshot.1.is_some() && printed != Some(snapshot) {
-                Self::print_progress(monitor.label, &monitor.progress, monitor.started.elapsed());
-            }
+    fn stop_monitor(monitor: Monitor) {
+        monitor.stop.store(true, Ordering::Release);
+        monitor.thread.thread().unpark();
+        let printed = monitor.thread.join().unwrap_or(None);
+        // Final line catches progress advanced since the last poll, but only
+        // when it differs from what the loop already rendered.
+        let snapshot = (monitor.progress.completed(), monitor.progress.total());
+        if snapshot.1.is_some() && printed != Some(snapshot) {
+            Self::print_progress(monitor.label, &monitor.progress, monitor.started.elapsed());
+        }
+    }
+
+    fn stop_all_monitors(state: &mut PlainState) {
+        for active in state.active.drain(..) {
+            Self::stop_monitor(active.monitor);
         }
     }
 
@@ -205,7 +213,7 @@ impl Drop for PlainReporter {
             .state
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::stop_monitor(state);
+        Self::stop_all_monitors(state);
         self.drain_logs();
         if needs_failure_summary {
             self.logs.print_warning_summary();
@@ -220,9 +228,7 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::stop_monitor(&mut state);
         let started = Instant::now();
-        state.active = Some((id, started));
         eprintln!(
             "{:>6.2}s  {}",
             self.started.elapsed().as_secs_f32(),
@@ -231,12 +237,10 @@ impl Reporter for PlainReporter {
         // Always-on drain: every stage gets a thread so buffered records surface
         // mid-stage, not only at the next stage boundary. Indeterminate progress
         // means no percentage line until `declare_progress` publishes a total.
-        self.start_monitor(
-            &mut state,
-            id.label(),
-            StageProgress::indeterminate(),
-            started,
-        );
+        state.active.push(ActiveStage {
+            id,
+            monitor: self.start_monitor(id.label(), StageProgress::indeterminate(), started),
+        });
     }
 
     fn declare_progress(&self, id: StageId, progress: StageProgress) {
@@ -244,15 +248,20 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some((active_id, stage_started)) = state.active else {
+        let Some(index) = state.active.iter().position(|active| active.id == id) else {
             return;
         };
-        if active_id != id {
-            return;
-        }
         // Swap the stage's drain-only monitor for one that also renders progress.
-        Self::stop_monitor(&mut state);
-        self.start_monitor(&mut state, id.label(), progress, stage_started);
+        let active = state.active.remove(index);
+        let stage_started = active.monitor.started;
+        Self::stop_monitor(active.monitor);
+        state.active.insert(
+            index,
+            ActiveStage {
+                id,
+                monitor: self.start_monitor(id.label(), progress, stage_started),
+            },
+        );
     }
 
     fn finish_stage(&self, id: StageId) {
@@ -260,9 +269,9 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.active.is_some_and(|(active, _)| active == id) {
-            Self::stop_monitor(&mut state);
-            state.active = None;
+        if let Some(index) = state.active.iter().position(|active| active.id == id) {
+            let active = state.active.remove(index);
+            Self::stop_monitor(active.monitor);
         }
         drop(state);
         self.drain_logs();
@@ -281,7 +290,7 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::stop_monitor(&mut state);
+        Self::stop_all_monitors(&mut state);
         drop(state);
         self.drain_logs();
 
@@ -302,8 +311,7 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::stop_monitor(&mut state);
-        state.active = None;
+        Self::stop_all_monitors(&mut state);
         drop(state);
         self.drain_logs();
         self.logs.print_warning_summary();
@@ -353,7 +361,32 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .active
-                .is_none()
+                .is_empty()
         );
+    }
+
+    #[test]
+    fn overlapping_stages_keep_both_progress_monitors_live() {
+        let reporter = PlainReporter::new(Instant::now(), LogSink::default());
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.declare_progress(StageId::LightmapBake, StageProgress::with_total(4));
+        reporter.begin_stage(StageId::ShadowmaskAtlas);
+        reporter.declare_progress(StageId::ShadowmaskAtlas, StageProgress::with_total(2));
+
+        let active_ids = reporter
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
+            .iter()
+            .map(|active| active.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            active_ids,
+            vec![StageId::LightmapBake, StageId::ShadowmaskAtlas]
+        );
+
+        reporter.finish_stage(StageId::LightmapBake);
+        reporter.finish_stage(StageId::ShadowmaskAtlas);
     }
 }

@@ -22,7 +22,7 @@ use crate::{
     resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
-mod lightmap_stage;
+pub(crate) mod lightmap_stage;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
@@ -1675,17 +1675,18 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
 
-    // Shadowmask memo probing, graph construction, and channel assignment must
-    // finish before the fused ray walk. Its progress is accumulated off-screen
-    // here, then reported in canonical stage order after Lightmap Bake; the
-    // returned timing counts only shadowmask-owned work and excludes shared rays.
-    let shadowmask_progress = StageProgress::indeterminate();
-    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
     let lightmap_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
     let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
+
+    // Shadowmask memo probing, graph construction, and channel assignment must
+    // finish before the fused ray walk. Both reporter stages stay live during
+    // the shared work; summary timing still charges only shadowmask-owned work.
+    reporter.begin_stage(StageId::ShadowmaskAtlas);
+    let shadowmask_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
+    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
     let fused_lighting = lightmap_stage::bake_fused_prepared(
         args,
         stage_cache.as_ref(),
@@ -1700,6 +1701,9 @@ fn run_after_parsing(
         &lightmap_config,
         prepared_atlas,
     )?;
+    if args.verbose {
+        log::info!("[Compiler] fused lightmap/shadowmask stage returned");
+    }
     let lightmap_stage::FusedLightingOutput {
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
@@ -1727,8 +1731,6 @@ fn run_after_parsing(
         lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
 
-    reporter.begin_stage(StageId::ShadowmaskAtlas);
-    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress);
     timings.push((StageId::ShadowmaskAtlas.label(), shadowmask_elapsed));
     if shadowmask_atlas_section.is_some() {
         reporter.finish_stage(StageId::ShadowmaskAtlas);
@@ -2017,6 +2019,9 @@ fn run_after_parsing(
         true,
     );
 
+    if let Some(cache) = stage_cache.as_ref() {
+        cache.warn_if_live_set_exceeds(args.cache_max_bytes);
+    }
     reporter.finalize(&timings, started.elapsed());
 
     Ok(())

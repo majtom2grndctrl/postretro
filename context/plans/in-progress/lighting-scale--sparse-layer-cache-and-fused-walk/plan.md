@@ -97,8 +97,14 @@ while (-not $process.HasExited) {
 }
 $process.WaitForExit()
 $peakMiB = [Math]::Round($peakBytes / 1MB, 1)
+$outputItem = Get-Item -LiteralPath $output -ErrorAction SilentlyContinue
 "exit_code=$($process.ExitCode) peak_working_set_bytes=$peakBytes peak_working_set_mib=$peakMiB output=$output"
-if ($process.ExitCode -ne 0 -or -not (Test-Path $output)) { exit 1 }
+if (
+    $process.ExitCode -ne 0 -or
+    $null -eq $outputItem -or
+    $outputItem -isnot [System.IO.FileInfo] -or
+    $outputItem.Length -le 0
+) { exit 1 }
 ```
 
 Expected artifact: `%TEMP%\stress-warren-hallway-inspection-density-004.prl`. Save the final output

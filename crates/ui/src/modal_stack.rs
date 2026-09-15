@@ -455,6 +455,13 @@ impl ModalStack {
         self.stack.last().map(|t| t.name.as_str())
     }
 
+    /// Whether a pushed instance named `name` is anywhere in the live stack.
+    /// Frontend presentation uses this ancestry check while one of its menus is
+    /// pushed above the root title tree.
+    pub fn contains_pushed(&self, name: &str) -> bool {
+        self.stack.iter().any(|tree| tree.name == name)
+    }
+
     /// The TOP tree's `text_entry_target` slot, when it declares one (M13
     /// Text-Entry, Task 3). `Some(slot)` is the "text entry is open" condition the
     /// App gates hardware-key routing on; `None` (empty stack, or a top tree with
@@ -669,6 +676,25 @@ mod tests {
         stack.pop();
         assert_eq!(stack.len(), 1);
         assert_eq!(stack.active_name(), Some("hud"));
+    }
+
+    #[test]
+    fn contains_pushed_keeps_frontend_root_visible_under_a_submenu() {
+        let mut stack = ModalStack::new();
+        register_pushable(&mut stack, "frontend.menuTree", capturing());
+        register_pushable(&mut stack, "frontend.options", capturing());
+
+        stack.push_named("frontend.menuTree", None);
+        stack.push_named("frontend.options", None);
+
+        assert_eq!(stack.active_name(), Some("frontend.options"));
+        assert!(stack.contains_pushed("frontend.menuTree"));
+        assert!(stack.contains_pushed("frontend.options"));
+
+        stack.pop();
+        assert_eq!(stack.active_name(), Some("frontend.menuTree"));
+        assert!(stack.contains_pushed("frontend.menuTree"));
+        assert!(!stack.contains_pushed("frontend.options"));
     }
 
     #[test]

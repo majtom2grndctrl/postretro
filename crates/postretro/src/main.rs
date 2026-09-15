@@ -484,6 +484,14 @@ fn apply_menu_camera_pose(
     frame_timing.hold_state(InterpolableState::new(position));
 }
 
+fn frontend_root_is_pushed(
+    modal_stack: &postretro_ui::modal_stack::ModalStack,
+    preferred_name: &str,
+) -> bool {
+    modal_stack.contains_pushed(preferred_name)
+        || modal_stack.contains_pushed(postretro_ui::demo::FRONTEND_MENU_NAME)
+}
+
 /// Collect the distinct, non-empty holder and attachment model handles currently
 /// in the registry, preserving first-seen order. GPU-free: this is the pure half
 /// of the level-load model sweep — the renderer's GPU upload happens in the
@@ -2292,12 +2300,13 @@ impl ApplicationHandler for App {
                 if let Some(session) = self.session.as_ref() {
                     session.scripting.scheduler.begin_frame();
                 }
+                let options_menu_was_open = self.options_menu_is_top();
 
                 if self.boot_state == BootState::Frontend {
                     // Frontend has no world but is not a peerless state: keep an
                     // installed endpoint alive before frontend-only game logic.
                     let _ = self.poll_world_less_transport(frame_dt);
-                    if !self.run_frontend_ui_logic(event_loop, frame_dt) {
+                    if !self.run_frontend_ui_logic(event_loop, frame_dt, options_menu_was_open) {
                         return;
                     }
                     self.render_frontend_frame(event_loop, now);
@@ -2522,7 +2531,8 @@ impl ApplicationHandler for App {
                 // Escape-from-gameplay) opens the registered `pauseMenu` only from
                 // an empty modal stack, closes it when it is active, and is ignored
                 // while another modal is active. A `nav.cancel` (Escape / B inside
-                // the menu) also closes only the active pause menu. The capture-mode
+                // the menu) closes the active pause menu or a frontend submenu,
+                // but never removes the frontend root. The capture-mode
                 // + cursor effect follows on this frame's `reconcile_ui_focus`
                 // below. The toggle flag is a punch-through from gameplay;
                 // `cancelled` rides the captured-intent queue.
@@ -2530,9 +2540,12 @@ impl ApplicationHandler for App {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
                 } else if focus_result.cancelled && !text_entry_consumed_nav {
+                    let close_frontend_submenu =
+                        self.frontend_menu_is_present() && !self.frontend_menu_is_top();
                     if let Some(session) = self.session.as_mut() {
                         if session.modal_stack.active_name()
                             == Some(postretro_ui::demo::PAUSE_MENU_NAME)
+                            || close_frontend_submenu
                         {
                             session.modal_stack.pop();
                         }
@@ -3463,6 +3476,8 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
+                self.update_player_options(frame_dt, options_menu_was_open);
+
                 // Connected-client per-owner persistence runs exactly after the
                 // second command drain: every fixed tick and same-frame crossing
                 // write has settled, and neither the SlotTable nor registry
@@ -3531,7 +3546,7 @@ impl ApplicationHandler for App {
                 // freezes lower UI layers, and releases the cursor (`InputFocus::Menu`);
                 // an empty/passthrough top hands input back to gameplay.
                 self.reconcile_ui_focus();
-                self.apply_frontend_menu_camera_pose_if_top();
+                self.apply_frontend_menu_camera_pose_if_present();
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -4376,9 +4391,9 @@ impl ApplicationHandler for App {
                     // cloned values, never the live `SlotTable`.
                     //
                     // Modal stack compose stays behind one helper so normal
-                    // gameplay gets always-on HUD/base layers, while a top
-                    // frontend menu suppresses those layers and presents only
-                    // the menu over its optional backdrop.
+                    // gameplay gets always-on HUD/base layers, while an active
+                    // frontend stack suppresses those layers and presents only
+                    // its root menu and pushed submenu over the optional backdrop.
                     let frontend_menu_name = session
                         .frontend
                         .as_ref()
@@ -4387,8 +4402,8 @@ impl ApplicationHandler for App {
                     // Reuse the `session` borrow taken at the top of this render
                     // block (the `particle_collections` borrow keeps it alive); a
                     // second `self.session.as_mut()` here would alias it.
-                    let frontend_menu_is_top =
-                        session.modal_stack.active_name() == Some(frontend_menu_name);
+                    let frontend_menu_is_present =
+                        frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
                     let ui_snapshot = Self::build_ui_read_snapshot(
                         &session.modal_stack,
                         &mut session.presentation_cells,
@@ -4396,7 +4411,7 @@ impl ApplicationHandler for App {
                         self.script_time,
                         session.ui_input_mode,
                         self.ui_focused_id.clone(),
-                        frontend_menu_is_top,
+                        frontend_menu_is_present,
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
 
@@ -4590,6 +4605,12 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(session) = self.session.as_mut() {
+            session
+                .options_bridge
+                .flush_on_clean_exit(&session.player_options, session.settings_path.as_deref());
+        }
+
         // Saving before declarations commit and restore completes could replace
         // a valid state file with an empty or default-only snapshot.
         //
@@ -5201,7 +5222,7 @@ impl App {
                 .modal_stack
                 .replace_with_frontend_menu(&menu_tree, postretro_ui::demo::FRONTEND_MENU_NAME)
         });
-        self.apply_frontend_menu_camera_pose_if_top();
+        self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
         presented.is_some()
     }
@@ -5239,7 +5260,79 @@ impl App {
         })
     }
 
-    fn apply_frontend_menu_camera_pose_if_top(&mut self) {
+    fn frontend_menu_is_present(&self) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        frontend_root_is_pushed(&session.modal_stack, self.frontend_menu_tree_name())
+    }
+
+    fn options_menu_is_top(&self) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.modal_stack.active_name() == Some(options::OPTIONS_MENU_TREE_NAME)
+        })
+    }
+
+    fn seed_options_menu_slots(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let crate::session::Session {
+            options_bridge,
+            player_options,
+            scripting,
+            ..
+        } = session;
+        options_bridge.seed_on_open(
+            &mut scripting.script_ctx.slot_table.borrow_mut(),
+            player_options,
+        );
+    }
+
+    /// Apply accepted option-slot writes after the frame's command drains.
+    /// Closing flushes only after those writes settle, so a change and Back in
+    /// the same frame cannot strand a pending value behind the debounce.
+    fn update_player_options(&mut self, frame_dt: f32, options_menu_was_open: bool) {
+        let fog_quality = {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let crate::session::Session {
+                options_bridge,
+                player_options,
+                input_system,
+                settings_path,
+                scripting,
+                ..
+            } = session;
+            let slot_table = scripting.script_ctx.slot_table.borrow();
+            options_bridge
+                .update(
+                    frame_dt,
+                    &slot_table,
+                    player_options,
+                    input_system,
+                    settings_path.as_deref(),
+                )
+                .fog_quality
+        };
+
+        if let Some(quality) = fog_quality {
+            self.apply_player_fog_quality(quality);
+        }
+
+        if options_menu_was_open && !self.options_menu_is_top() {
+            let session = self
+                .session
+                .as_mut()
+                .expect("options close requires an installed session");
+            session
+                .options_bridge
+                .flush_on_options_close(&session.player_options, session.settings_path.as_deref());
+        }
+    }
+
+    fn apply_frontend_menu_camera_pose_if_present(&mut self) {
         let Some(frontend) = self
             .session
             .as_ref()
@@ -5247,7 +5340,7 @@ impl App {
         else {
             return;
         };
-        if !self.frontend_menu_is_top() {
+        if !self.frontend_menu_is_present() {
             return;
         }
 
@@ -5261,10 +5354,10 @@ impl App {
         script_time: f64,
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
-        frontend_menu_is_top: bool,
+        frontend_menu_is_present: bool,
     ) -> postretro_ui::UiReadSnapshot {
         let slot_values = Self::build_ui_slot_snapshot(slot_table);
-        let mut trees: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_top {
+        let mut trees: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
             modal_stack.always_on_layers()
@@ -5373,7 +5466,12 @@ impl App {
         }
     }
 
-    fn run_frontend_ui_logic(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
+    fn run_frontend_ui_logic(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame_dt: f32,
+        options_menu_was_open: bool,
+    ) -> bool {
         // Defensive guard: session is present for all normal frontend calls
         // post-install, but a pre-install re-entry edge case could reach here
         // before the session is built. Return a neutral `true` in that case.
@@ -5476,10 +5574,12 @@ impl App {
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
-        if focus_result.cancelled && !text_entry_consumed_nav {
-            if let Some(session) = self.session.as_mut() {
-                session.modal_stack.pop();
-            }
+        if focus_result.cancelled
+            && !text_entry_consumed_nav
+            && !self.frontend_menu_is_top()
+            && let Some(session) = self.session.as_mut()
+        {
+            session.modal_stack.pop();
         }
         self.pending_menu_toggle = false;
 
@@ -5498,16 +5598,17 @@ impl App {
         if has_system_commands {
             self.dispatch_system_commands();
         }
+        self.update_player_options(frame_dt, options_menu_was_open);
         self.reconcile_ui_focus();
-        self.apply_frontend_menu_camera_pose_if_top();
+        self.apply_frontend_menu_camera_pose_if_present();
         self.poll_staged_manifest_results();
         true
     }
 
     fn render_frontend_frame(&mut self, event_loop: &ActiveEventLoop, frame_start: Instant) {
-        self.apply_frontend_menu_camera_pose_if_top();
+        self.apply_frontend_menu_camera_pose_if_present();
         self.reconcile_ui_focus();
-        let frontend_menu_is_top = self.frontend_menu_is_top();
+        let frontend_menu_is_present = self.frontend_menu_is_present();
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -5518,7 +5619,7 @@ impl App {
             self.script_time,
             session.ui_input_mode,
             self.ui_focused_id.clone(),
-            frontend_menu_is_top,
+            frontend_menu_is_present,
         );
 
         let Some(renderer) = self.renderer.as_mut() else {
@@ -5993,6 +6094,9 @@ impl App {
                     // text-entry commit path, then pops the entry. The capture mode
                     // lives on the registered tree's envelope (read after the drain by
                     // `reconcile_ui_focus`), not on the command.
+                    if tree == options::OPTIONS_MENU_TREE_NAME {
+                        self.seed_options_menu_slots();
+                    }
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.push_named(&tree, on_commit);
                     }
@@ -10931,6 +11035,31 @@ mod tests {
     }
 
     #[test]
+    fn frontend_root_remains_active_for_camera_hold_under_a_submenu() {
+        use postretro_ui::modal_stack::{ModalStack, ScopeTier};
+
+        let mut stack = ModalStack::new();
+        let tree = postretro_ui::demo::build_frontend_menu_descriptor();
+        stack
+            .registry_mut()
+            .register("frontend.menuTree", tree.clone(), ScopeTier::Mod, false);
+        stack
+            .registry_mut()
+            .register("frontend.options", tree, ScopeTier::Mod, false);
+        stack.push_named("frontend.menuTree", None);
+        stack.push_named("frontend.options", None);
+
+        assert_eq!(stack.active_name(), Some("frontend.options"));
+        assert!(
+            frontend_root_is_pushed(&stack, "frontend.menuTree"),
+            "a pushed frontend submenu must not release the frontend camera hold",
+        );
+
+        stack.clear_pushed();
+        assert!(!frontend_root_is_pushed(&stack, "frontend.menuTree"));
+    }
+
+    #[test]
     fn sim_catchup_pushes_interpolation_state_per_tick() {
         use std::cell::RefCell;
 
@@ -11844,6 +11973,26 @@ mod tests {
         }
     }
 
+    fn find_button<'a>(
+        widget: &'a postretro_ui::descriptor::Widget,
+        id: &str,
+    ) -> Option<&'a postretro_ui::descriptor::ButtonWidget> {
+        use postretro_ui::descriptor::Widget;
+
+        match widget {
+            Widget::Button(button) if button.id == id => Some(button),
+            Widget::VStack(container) | Widget::HStack(container) => container
+                .children
+                .iter()
+                .find_map(|child| find_button(child, id)),
+            Widget::Grid(grid) => grid
+                .children
+                .iter()
+                .find_map(|child| find_button(child, id)),
+            _ => None,
+        }
+    }
+
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -12200,6 +12349,84 @@ mod tests {
             button_action(&stack.entries()[0].descriptor.root, "pauseResume"),
             None,
             "fallback has no Resume button or reserved-action dependency",
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn production_title_and_options_trees_preserve_composed_control_contracts() {
+        use postretro_entities::ReactionDescriptor;
+        use postretro_ui::descriptor::{BindSource, PredicateValue};
+
+        if !install_scripts_build_next_to_current_exe() {
+            eprintln!("skipping: could not install scripts-build next to test binary");
+            return;
+        }
+
+        let mut rt = test_runtime();
+        rt.run_mod_init(&workspace_root().join("content/dev"))
+            .expect("development TypeScript mod entry bundles and initializes");
+        let manifest = rt.mod_manifest().expect("dev mod manifest exists");
+
+        let tree = |name: &str| {
+            &manifest
+                .ui_trees
+                .iter()
+                .find(|tree| tree.name == name)
+                .unwrap_or_else(|| panic!("dev manifest exports {name}"))
+                .tree
+        };
+        let title = tree("frontend.menuTree");
+        assert_eq!(
+            button_action(&title.root, "frontendPlay"),
+            Some("frontend.openPlay")
+        );
+        assert_eq!(
+            button_action(&title.root, "frontendOptions"),
+            Some("frontend.openOptions")
+        );
+        assert_eq!(
+            button_action(&title.root, "frontendExit"),
+            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION)
+        );
+        assert_eq!(
+            button_action(&tree("frontend.devLevelSelect").root, "levelSelectBack"),
+            Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
+        );
+
+        let options_tree = tree(options::OPTIONS_MENU_TREE_NAME);
+        assert_eq!(
+            button_action(&options_tree.root, "optionsBack"),
+            Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
+        );
+        let high = find_button(&options_tree.root, "optionsShadowHigh")
+            .expect("shadow high radio button is reachable in the options tree");
+        let checked = high.checked.as_ref().expect("radio exposes checked state");
+        assert_eq!(high.bind.as_ref(), Some(checked));
+        assert!(
+            high.style_ranges.is_some(),
+            "radio highlight is value-driven"
+        );
+        assert_eq!(
+            checked.source,
+            BindSource::Slot {
+                slot: "options.shadowQuality".into()
+            }
+        );
+        assert_eq!(checked.equals, Some(PredicateValue::String("high".into())));
+
+        let reaction = manifest
+            .reactions
+            .iter()
+            .find(|reaction| reaction.reaction.name == high.on_press)
+            .expect("shadow high button names a registered reaction");
+        let ReactionDescriptor::Primitive(primitive) = &reaction.reaction.descriptor else {
+            panic!("shadow high reaction is a primitive");
+        };
+        assert_eq!(primitive.primitive, "setState");
+        assert_eq!(
+            primitive.args,
+            serde_json::json!({ "slot": "options.shadowQuality", "value": "high" })
         );
     }
 
@@ -13466,8 +13693,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            12,
-            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
+            18,
+            "only the set player.health and default-valued reload-feedback + local weapon display + player.spread + screen effects + input.mode + ui.textEntry + six options slots appear",
         );
     }
 

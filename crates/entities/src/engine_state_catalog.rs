@@ -345,6 +345,8 @@ fn sdk_path_string(path: &[&str]) -> String {
 }
 
 const INPUT_MODE_VALUES: &[&str] = &["pointer", "focus"];
+const CROUCH_MODE_VALUES: &[&str] = &["hold", "toggle"];
+const QUALITY_VALUES: &[&str] = &["low", "medium", "high"];
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
@@ -547,6 +549,75 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "options.mouseSensitivity",
+        sdk_path: &["options", "mouseSensitivity"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.002),
+        range: Some(NumericRange {
+            min: f32::MIN_POSITIVE,
+            max: f32::MAX,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.invertY",
+        sdk_path: &["options", "invertY"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.viewFeelScale",
+        sdk_path: &["options", "viewFeelScale"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(1.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.crouchMode",
+        sdk_path: &["options", "crouchMode"],
+        value_type: EngineStateValueType::Enum {
+            values: CROUCH_MODE_VALUES,
+        },
+        default: EngineStateDefault::Enum("hold"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.shadowQuality",
+        sdk_path: &["options", "shadowQuality"],
+        value_type: EngineStateValueType::Enum {
+            values: QUALITY_VALUES,
+        },
+        default: EngineStateDefault::Enum("high"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "options.fogQuality",
+        sdk_path: &["options", "fogQuality"],
+        value_type: EngineStateValueType::Enum {
+            values: QUALITY_VALUES,
+        },
+        default: EngineStateDefault::Enum("medium"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
         sdk_path: &["ui", "textEntry"],
         value_type: EngineStateValueType::String,
@@ -724,6 +795,12 @@ mod tests {
             wire_names,
             vec![
                 "input.mode",
+                "options.crouchMode",
+                "options.fogQuality",
+                "options.invertY",
+                "options.mouseSensitivity",
+                "options.shadowQuality",
+                "options.viewFeelScale",
                 "player.ammo",
                 "player.ammoReserve",
                 "player.health",
@@ -749,6 +826,23 @@ mod tests {
             .unwrap();
         assert_eq!(ui_text_entry.sdk_path, &["ui", "textEntry"]);
         assert_eq!(ui_text_entry.capability, EngineStateCapability::Writable);
+
+        for wire_name in [
+            "options.mouseSensitivity",
+            "options.invertY",
+            "options.viewFeelScale",
+            "options.crouchMode",
+            "options.shadowQuality",
+            "options.fogQuality",
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(entry.capability, EngineStateCapability::Writable);
+            assert_eq!(entry.network, ReplicationScope::None);
+            assert!(!entry.persist, "PlayerOptions owns settings persistence");
+        }
 
         let player_max_health = entries
             .iter()

@@ -543,6 +543,11 @@ pub struct Renderer {
     /// the full renderer with the last committed profile after surface recovery.
     pub(super) bloom_render_profile: BloomRenderProfile,
 
+    /// Spot shadow-map resolution cached in boot state. Configuration updates
+    /// affect the next full-renderer construction or level install; they never
+    /// rebuild live GPU resources from the setter.
+    pub(super) spot_shadow_map_resolution: u32,
+
     /// Renderer-owned boot splash pass: clears the swapchain and draws the
     /// decoded logo as a single textured quad. Independent of the UI pass — the
     /// boot path uses it directly so first pixels reach the window before the

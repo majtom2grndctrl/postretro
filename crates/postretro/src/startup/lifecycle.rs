@@ -739,6 +739,13 @@ impl App {
             animated_baked_descriptor_indices,
             fgd_sample_float_count,
         ) = {
+            let shadow_quality = self
+                .session
+                .as_ref()
+                .expect("session installed before level install")
+                .player_options
+                .shadow_quality;
+            self.configure_player_shadow_quality(shadow_quality);
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {
@@ -1728,6 +1735,7 @@ mod tests {
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
+                options_bridge: options::OptionsBridge::new(),
                 player_options: options::PlayerOptions::default(),
                 settings_path: None,
                 frontend: None,

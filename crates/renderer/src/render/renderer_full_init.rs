@@ -20,6 +20,7 @@ pub(crate) fn build_full_renderer(
     has_multi_draw_indirect: bool,
     cube_array_supported: bool,
     bloom_render_profile: BloomRenderProfile,
+    spot_shadow_map_resolution: u32,
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
@@ -372,6 +373,7 @@ pub(crate) fn build_full_renderer(
         &sdf_shadow_pass.shadow_view,
         &depth_view,
         cube_sampling_view,
+        spot_shadow_map_resolution,
     );
     // Both selected-static and section-45 animated-baked candidates use the
     // fixed-projection promoted cache. Construction precedes mesh/kinematic
@@ -379,30 +381,29 @@ pub(crate) fn build_full_renderer(
     // an animated-only map.
     let promoted_depth_cache = (!entity_shadow_indices.is_empty()
         || !animated_baked_candidates.is_empty())
-    .then(|| PromotedDepthCache::new(device, cube_array_supported));
+    .then(|| PromotedDepthCache::new(device, cube_array_supported, spot_shadow_map_resolution));
     let dynamic_depth_cache = DynamicDepthCacheGpu::new(
         device,
         dynamic_depth_cache::DynamicCacheAllocation::for_lights(
             &shadow_candidate_lights,
             cube_array_supported,
         ),
+        spot_shadow_map_resolution,
     );
     {
-        use crate::lighting::spot_shadow::{
-            SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION, SHADOW_POOL_SIZE,
-        };
-        // Depth32Float = 4 B/texel; MiB = bytes >> 20. Derived from the consts
-        // so the log can't drift from the actual pool size (was a stale literal).
+        use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, SHADOW_POOL_SIZE};
+        // Depth32Float = 4 B/texel; MiB = bytes >> 20. Derived from the fixed
+        // slot count and configured resolution so diagnostics match allocation.
         let vram_mib = (SHADOW_POOL_SIZE as u64
-            * SHADOW_MAP_RESOLUTION as u64
-            * SHADOW_MAP_RESOLUTION as u64
+            * spot_shadow_map_resolution as u64
+            * spot_shadow_map_resolution as u64
             * 4)
             >> 20;
         log::info!(
             "[Renderer] Spot shadow pool initialized ({} × {}×{} {:?} = {} MiB VRAM)",
             SHADOW_POOL_SIZE,
-            SHADOW_MAP_RESOLUTION,
-            SHADOW_MAP_RESOLUTION,
+            spot_shadow_map_resolution,
+            spot_shadow_map_resolution,
             SHADOW_DEPTH_FORMAT,
             vram_mib,
         );

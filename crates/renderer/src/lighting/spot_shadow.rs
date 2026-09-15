@@ -14,8 +14,8 @@ pub const SHADOW_POOL_SIZE: usize = 96;
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Resolution (per side) of each square shadow map in the pool.
-pub const SHADOW_MAP_RESOLUTION: u32 = 1024;
+/// Default resolution (per side) of each square shadow map in the pool.
+pub const DEFAULT_SPOT_SHADOW_MAP_RESOLUTION: u32 = 1024;
 
 /// Size of the `array<mat4x4<f32>, SHADOW_POOL_SIZE>` storage buffer consumed
 /// by the forward shader at `@group(5) @binding(2)`.
@@ -31,7 +31,9 @@ pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
 /// (the fragment shader gates on the per-light slot sentinel so those
 /// stale entries are never sampled).
 pub struct SpotShadowPool {
-    /// Array texture with SHADOW_POOL_SIZE layers, each SHADOW_MAP_RESOLUTION×SHADOW_MAP_RESOLUTION.
+    /// Resolution shared by the live pool and its spot depth caches.
+    pub resolution: u32,
+    /// Array texture with SHADOW_POOL_SIZE layers, each `resolution × resolution`.
     /// Held for ownership — actual access goes through `views` and `bind_group`.
     #[allow(dead_code)]
     pub array_texture: wgpu::Texture,
@@ -200,7 +202,7 @@ impl SpotShadowPool {
     /// Allocate the shadow-map pool at renderer init.
     ///
     /// Creates a single array texture with `SHADOW_POOL_SIZE` layers,
-    /// each `SHADOW_MAP_RESOLUTION × SHADOW_MAP_RESOLUTION` Depth32Float,
+    /// each `resolution × resolution` Depth32Float,
     /// along with the sampler, matrix buffer, and bind group that the
     /// forward shader's `@group(5)` layout expects.
     ///
@@ -221,12 +223,13 @@ impl SpotShadowPool {
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
         point_cube_view: Option<&wgpu::TextureView>,
+        resolution: u32,
     ) -> Self {
         let array_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
             size: wgpu::Extent3d {
-                width: SHADOW_MAP_RESOLUTION,
-                height: SHADOW_MAP_RESOLUTION,
+                width: resolution,
+                height: resolution,
                 depth_or_array_layers: SHADOW_POOL_SIZE as u32,
             },
             mip_level_count: 1,
@@ -298,6 +301,7 @@ impl SpotShadowPool {
         );
 
         Self {
+            resolution,
             array_texture,
             views,
             array_view,

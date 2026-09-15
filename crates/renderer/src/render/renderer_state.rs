@@ -5,6 +5,22 @@
 use super::*;
 
 impl Renderer {
+    /// Configure the square spot shadow-map resolution used by the next full
+    /// renderer construction or level install. This only updates boot state: it
+    /// deliberately does not rebuild live GPU resources from the setter.
+    pub fn set_spot_shadow_map_resolution(&mut self, resolution: u32) {
+        if resolution == 0 {
+            log::warn!("[Renderer] Ignoring zero spot shadow-map resolution");
+            return;
+        }
+        self.spot_shadow_map_resolution = resolution;
+    }
+
+    /// Spot shadow-map resolution retained for the next full construction.
+    pub fn spot_shadow_map_resolution(&self) -> u32 {
+        self.spot_shadow_map_resolution
+    }
+
     /// Update the static bloom style used by the next scene frame. The value is
     /// retained in boot state so a later full-renderer rebuild keeps the active
     /// profile rather than silently returning to the default.

@@ -89,7 +89,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 1 | Seed world gravity from the level's authored value (before scripts run) |
 | 2 | Texture upload from `.prm` sidecars |
 | 3 | UV normalize using uploaded texture dimensions |
-| 4 | Geometry upload (vertex/index buffers) |
+| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed) |
 | 5 | World mesh spawn (see seam note below) |
 | 6 | Light bridge: one light entity per map-authored light |
 | 7 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
@@ -144,12 +144,12 @@ Frontend is a no-level steady state. Renderer and audio may exist, but world, co
 
 Frontend is **not** a peerless state. A net endpoint outlives every level, so a host can sit in Frontend with clients connected — the ordinary condition between maps, not an edge case — and the transport is polled from world-less frames to keep it alive (`networking.md` §Transport contract). Unloading clears the host's installed level parity, which demotes those peers rather than leaving them participating against a torn-down world.
 
-The mod frontend hub is the player-facing menu flow. A committed `frontend` manifest block names the menu tree, required static menu camera pose, and optional background level catalog id. With no background level, the menu sits over the world-less Frontend state. With one, the menu is pushed first, then the background catalog id loads as the only active level; UI capture suppresses gameplay controls and the menu camera pose is held every frame. If the named menu tree is missing, the engine fallback frontend menu is pushed before any backdrop load starts. Starting a catalog map clears pushed menus, unloads any backdrop, and loads the selected map. `returnToFrontend()` and `ui.quitToMenu` share the return path: present the frontend menu, unload active level, then reload the declared backdrop if present.
+The mod frontend hub is the player-facing menu flow. A committed `frontend` manifest block names the menu tree, required static menu camera pose, and optional background level catalog id. With no background level, the menu sits over the world-less Frontend state. With one, the menu is pushed first, then the background catalog id loads as the only active level; UI capture suppresses gameplay controls and the menu camera pose is held every frame. The root may push title-owned submenus without releasing that hold or re-enabling HUD/gameplay presentation. Back/cancel pops only the submenu; Start/menu input cannot disturb an already-open frontend modal. If the named menu tree is missing, the engine fallback frontend menu is pushed before any backdrop load starts. Starting a catalog map clears pushed menus, unloads any backdrop, and loads the selected map. `returnToFrontend()` and `ui.quitToMenu` share the return path: present the frontend menu, unload active level, then reload the declared backdrop if present.
 
 ## 5. Shutdown
 
 - A close request or Escape exits the event loop.
-- On clean exit, teardown saves persistent mod-state slots best-effort, releases level sounds (mirrors texture release on unload), then drops renderer and window.
+- On clean exit, teardown first flushes any pending `PlayerOptions` debounce, then saves persistent mod-state slots best-effort, releases level sounds (mirrors texture release on unload), and drops renderer and window.
 - Abnormal termination may lose writes made since the last successful save.
 - `App` holds `App.session` (which owns `script_ctx`, the scripting registries, audio, and all session-lifetime state) until the event loop returns and the process ends.
 
@@ -161,7 +161,7 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 
 | Scope | Cleared on |
 |-------|-----------|
-| Session-lifetime core (primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries, input/UI/modal group, options, frontend, net endpoint, audio) | Process exit only. Owned by `Session`, built once post-first-pixel by `Session::build` (not pre-window), then held for the whole run via `App.session`; never recreated. Survives platform suspend. |
+| Session-lifetime core (primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries, input/UI/modal group, `PlayerOptions` + options bridge, frontend, net endpoint, audio) | Process exit only. Owned by `Session`, built once post-first-pixel by `Session::build` (not pre-window), then held for the whole run via `App.session`; never recreated. Survives platform suspend. |
 | `data_registry.entities` (entity-type descriptors from `ModManifest.entities`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.global_reactions` / `global_crossings` / `global_trigger_events` / `global_trigger_pools` (definitions from `ModManifest.reactions` / `crossings` / `triggerEvents` / `triggerPools`) | Engine-global. Survive level unload; survive platform suspend. |

@@ -255,7 +255,7 @@ impl Renderer {
                     plan.cache_layer as u32,
                     &full.spot_shadow_pool.array_texture,
                     slot,
-                    crate::lighting::spot_shadow::SHADOW_MAP_RESOLUTION,
+                    full.spot_shadow_pool.resolution,
                 );
                 let view = &full.spot_shadow_pool.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

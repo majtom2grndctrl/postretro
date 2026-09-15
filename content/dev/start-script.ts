@@ -45,7 +45,13 @@ import {
   spreadReticle,
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
-import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
+import {
+  devLevelSelectMenu,
+  frontendMenu,
+  frontendReactions,
+  mapCatalog,
+  optionsMenu,
+} from "./scripts/frontend-menu";
 import {
   ammoOnKill,
   combatDummyLifecycle,
@@ -90,7 +96,15 @@ export default defineMod({
       pitch: -0.08,
     },
   },
-  uiTrees: [hud, spreadReticle, reloadMeterTree, pauseMenu, frontendMenu],
+  uiTrees: [
+    hud,
+    spreadReticle,
+    reloadMeterTree,
+    pauseMenu,
+    frontendMenu,
+    devLevelSelectMenu,
+    optionsMenu,
+  ],
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
   presentationTemplates: [damageNumber, damagedEnemyBar],

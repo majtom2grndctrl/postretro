@@ -191,6 +191,11 @@ pub(crate) struct Session {
     /// See: context/lib/player_options.md
     pub(crate) player_options: options::PlayerOptions,
 
+    /// Generation-aware working-copy bridge for the writable `options.*`
+    /// slots. Session ownership preserves pending debounce state across level
+    /// unloads and renderer suspend/resume.
+    pub(crate) options_bridge: options::OptionsBridge,
+
     /// Resolved `settings.toml` path. Inner `Option` is genuine runtime absence:
     /// `None` when the platform exposes no config directory (the engine then runs
     /// on in-memory defaults without persistence). Held for the future M13
@@ -547,6 +552,7 @@ impl Session {
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             player_options,
+            options_bridge: options::OptionsBridge::new(),
             settings_path,
             // Committed by mod-init later this same install frame; engine/default
             // frontend until then.

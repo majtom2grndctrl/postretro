@@ -33,19 +33,19 @@ Options persist as `settings.toml` in the platform config directory (e.g. `~/.co
 
 ## 3. Boot Position
 
-Player options load at engine init (Phase 0), before `InputSystem` is constructed. The loaded options seed input preferences (sensitivity, invert-Y) at startup. On first boot (no file present), the engine writes defaults atomically before continuing. Session construction also generates and atomically persists the missing device identity, including for an existing valid settings file created before that field shipped.
+Player options load during post-first-pixel `Session::build`, before the session's `InputSystem` is constructed. The loaded options seed input preferences (sensitivity, invert-Y) at startup. On first boot (no file present), the engine writes defaults atomically before continuing. Session construction also generates and atomically persists the missing device identity, including for an existing valid settings file created before that field shipped.
 
-No save-on-change occurs at runtime until the E13 settings menu is wired. The boot defaults/identity writes are the only save calls before that.
+The runtime options bridge saves accepted menu changes after a deterministic 250 ms settle window. Closing the options menu or exiting cleanly flushes a pending write synchronously; failures warn, preserve the in-memory value and existing file, and a later change retries through the same atomic path.
 
 ---
 
 ## 4. E13 Settings Menu Seam
 
-`PlayerOptions` is the store the settings menu reads and writes. The options module ships the store and its boot wiring; the menu ships the UI, controls, and save-on-change triggers. These are distinct deliverables.
+`PlayerOptions` is the store the settings menu reads and writes. The dev title screen opens `frontend.options`, whose six controls cover mouse sensitivity, invert-Y, view-feel scale, crouch mode, shadow quality, and fog quality.
 
-**Seam mechanism (in build).** The menu never writes `PlayerOptions` directly — the UI module originates no store write (`ui.md` §3). The engine exposes writable `options.*` slots on `getGameState()`, seeded from `PlayerOptions` when the menu opens; controls write them via `setState` at the game-logic stage; an app-side options bridge observes a changed slot, updates the matching `PlayerOptions` field, applies it to the owning subsystem, and saves on change through the atomic save path. The slot is the UI-facing working copy; `PlayerOptions` / `settings.toml` is the authoritative persisted home, re-seeded into the slots on each open (not a live two-way sync).
+**Seam mechanism.** The menu never writes `PlayerOptions` directly — the UI module originates no store write (`ui.md` §3). The engine exposes writable, non-persisted `options.*` slots on `getGameState()`, seeded from the current in-memory `PlayerOptions` when the menu opens. Controls write them via `setState` at the game-logic stage; the session-owned options bridge observes write generations once per app frame, updates only the matching `PlayerOptions` field, applies live input/fog effects through their owners, and schedules the settled atomic save. The slots are UI-facing working copies; `PlayerOptions` / `settings.toml` remains the authoritative persisted home, re-seeded into the slots on every open rather than maintained as a continuous two-way sync.
 
-**Graphics quality lives here.** Player-facing graphics-quality tiers (e.g. shadow, fog) are `PlayerOptions` fields, not a separate renderer-side store — they are player preference under the two-store boundary (§1). The renderer's own applied state is reached from the store through an app-side translation chokepoint; the renderer stays sole GPU owner. Whether a tier applies live or on reload is per-setting: a live renderer setter where one exists, or a value re-seeded at renderer full-init. Runtime tunability is bounded by what the renderer can change without shader permutation — some quality knobs are fixed at build (WGSL-pinned) and cannot vary at runtime.
+**Graphics quality lives here.** Player-facing graphics-quality tiers are `PlayerOptions` fields, not a renderer-side store. `shadow_quality` maps low/medium/high to 512/768/1024 spot-shadow pixels (default high); its setter changes CPU boot state only, and full renderer construction or the next level geometry install rebuilds the spot pool and resolution-coupled caches. `fog_quality` maps low/medium/high to 1.0/0.5/0.25 ray-march step size (default medium) and applies live through `Renderer::set_fog_step_size`; full init re-applies it. Fog quality never overrides the map-owned `fog_pixel_scale`. Both translations live at the app render-profile chokepoint, so UI and option storage never own GPU work.
 
 ---
 
@@ -57,7 +57,6 @@ No save-on-change occurs at runtime until the E13 settings menu is wired. The bo
 
 ## 6. Non-Goals
 
-- **UI.** The E13 settings menu is a separate deliverable.
 - **Keybind remapping.** Same conceptual home, separate spec (conflict detection, gamepad maps).
-- **Scripting surface.** `PlayerOptions` is engine-internal config — no SDK types, no `.d.ts`/`.d.luau`, no drift test.
+- **Direct scripting access to the persisted store.** `PlayerOptions` and its Rust enums remain engine-internal; scripts receive only typed `options.*` state refs generated from the engine-state catalog, never the TOML store or save API.
 - **Game-save store.** Separate spec.

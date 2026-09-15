@@ -3,7 +3,7 @@
 use glam::Mat4;
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
-use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, SHADOW_MAP_RESOLUTION};
+use crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT;
 
 pub(super) const DYNAMIC_SPOT_CACHE_LAYERS: usize = 3;
 pub(super) const DYNAMIC_CUBE_CACHE_SLOTS: usize = 4;
@@ -176,6 +176,7 @@ impl DynamicCacheAllocation {
 pub(super) struct DynamicDepthCacheGpu {
     pub state: DynamicDepthCache,
     allocation: DynamicCacheAllocation,
+    spot_shadow_map_resolution: u32,
     pub spot_texture: Option<wgpu::Texture>,
     spot_views: Vec<wgpu::TextureView>,
     pub cube_texture: Option<wgpu::Texture>,
@@ -183,12 +184,16 @@ pub(super) struct DynamicDepthCacheGpu {
 }
 
 impl DynamicDepthCacheGpu {
-    pub fn new(device: &wgpu::Device, allocation: DynamicCacheAllocation) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        allocation: DynamicCacheAllocation,
+        spot_shadow_map_resolution: u32,
+    ) -> Self {
         let spot_texture = allocation.spot.then(|| {
             cache_texture(
                 device,
                 "Dynamic Spot World Depth Cache",
-                SHADOW_MAP_RESOLUTION,
+                spot_shadow_map_resolution,
                 DYNAMIC_SPOT_CACHE_LAYERS,
             )
         });
@@ -205,6 +210,7 @@ impl DynamicDepthCacheGpu {
         Self {
             state: DynamicDepthCache::default(),
             allocation,
+            spot_shadow_map_resolution,
             spot_texture,
             spot_views,
             cube_texture,
@@ -212,9 +218,16 @@ impl DynamicDepthCacheGpu {
         }
     }
 
-    pub fn reset_level(&mut self, device: &wgpu::Device, allocation: DynamicCacheAllocation) {
-        if self.allocation != allocation {
-            *self = Self::new(device, allocation);
+    pub fn reset_level(
+        &mut self,
+        device: &wgpu::Device,
+        allocation: DynamicCacheAllocation,
+        spot_shadow_map_resolution: u32,
+    ) {
+        if self.allocation != allocation
+            || self.spot_shadow_map_resolution != spot_shadow_map_resolution
+        {
+            *self = Self::new(device, allocation, spot_shadow_map_resolution);
         } else {
             self.state.reset_level();
         }

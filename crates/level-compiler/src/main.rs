@@ -466,14 +466,18 @@ fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
     }
 }
 
-fn run_with_cache_report<T>(
+// Successful pipelines report immediately before reporter finalization. Keep
+// the outer handle only so early errors retain the same cache-budget warning.
+fn run_with_failure_cache_report<T>(
     stage_cache: Option<cache::StageCache>,
     budget_bytes: u64,
     run: impl FnOnce(Option<cache::StageCache>) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let report_handle = stage_cache.clone();
     let result = run(stage_cache);
-    if let Some(cache) = report_handle {
+    if result.is_err()
+        && let Some(cache) = report_handle
+    {
         cache.warn_if_live_set_exceeds(budget_bytes);
     }
     result
@@ -525,9 +529,10 @@ fn main() -> anyhow::Result<()> {
             let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
             let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
-            let result = run_with_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
-                pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
-            });
+            let result =
+                run_with_failure_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
+                    pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
+                });
             if result.is_err() {
                 reporter::Reporter::finalize_failure(reporter.as_ref());
             }
@@ -574,7 +579,7 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     let bake = move |reporter, governor| {
-                        run_with_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
+                        run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
                                 stage_cache,
@@ -591,7 +596,7 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
-                        run_with_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
+                        run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
                                 stage_cache,
@@ -2674,8 +2679,26 @@ mod tests {
         use postretro_test_log_capture::LogCapture;
 
         let capture = LogCapture::start();
-        run_with_cache_report(None, 0, |_| Ok(())).unwrap();
+        run_with_failure_cache_report(None, 0, |_| Ok(())).unwrap();
         capture.assert_not_logged(Level::Warn, "[cache] build read/wrote");
+    }
+
+    #[test]
+    fn failed_build_cache_report_seam_retains_over_budget_warning() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+
+        let dir = unique_temp_dir("failed-cache-report");
+        let cache = cache::StageCache::new(&dir).expect("create failed-build cache");
+        cache.put(&cache::CacheKey::new("test", 1, b"failure"), b"payload");
+        let capture = LogCapture::start();
+
+        let result: anyhow::Result<()> =
+            run_with_failure_cache_report(Some(cache), 0, |_| anyhow::bail!("expected failure"));
+
+        assert!(result.is_err());
+        capture.assert_logged_once(Level::Warn, "[cache] build read/wrote");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// `--release` and `--no-cache` together parse without error (identical

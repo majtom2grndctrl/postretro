@@ -18,7 +18,7 @@ use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::{MapData, MapLight, ShadowType};
 use crate::shadowmask_bake;
 
-pub(super) struct FusedLightingOutput {
+pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
@@ -40,7 +40,7 @@ pub(super) fn prepare(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn bake_fused_prepared(
+pub(crate) fn bake_fused_prepared(
     args: &Args,
     stage_cache: Option<&StageCache>,
     lightmap_control: &BakeControl,

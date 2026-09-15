@@ -398,6 +398,42 @@ mod tests {
     }
 
     #[test]
+    fn fused_lighting_tracks_both_live_progress_totals_in_summary_order() {
+        let reporter = TuiReporter::new(
+            &[
+                descriptor(StageId::LightmapBake),
+                descriptor(StageId::ShadowmaskAtlas),
+            ],
+            LogSink::default(),
+        );
+        let lightmap = StageProgress::with_total(8);
+        let shadowmask = StageProgress::with_total(5);
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.declare_progress(StageId::LightmapBake, lightmap.clone());
+        reporter.begin_stage(StageId::ShadowmaskAtlas);
+        reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask.clone());
+        lightmap.completed_handle().store(3, Ordering::Relaxed);
+        shadowmask.completed_handle().store(2, Ordering::Relaxed);
+
+        let state = reporter.lock();
+        assert_eq!(state.steps[0].status, StepStatus::Active);
+        assert_eq!(state.steps[0].progress.as_ref().unwrap().total(), Some(8));
+        assert_eq!(state.steps[0].progress.as_ref().unwrap().completed(), 3);
+        assert_eq!(state.steps[1].status, StepStatus::Active);
+        assert_eq!(state.steps[1].progress.as_ref().unwrap().total(), Some(5));
+        assert_eq!(state.steps[1].progress.as_ref().unwrap().completed(), 2);
+        assert_eq!(
+            super::tui_progress::progress_text(&state.steps[1]).0,
+            "2/5   40%"
+        );
+        assert_eq!(
+            state.steps[state.active_index().unwrap()].id,
+            StageId::ShadowmaskAtlas,
+            "the live TUI readout must expose shadowmask progress during fused work"
+        );
+    }
+
+    #[test]
     fn log_scroll_pages_and_clamps_at_both_ends() {
         let mut scroll = LogScroll::default();
         assert_eq!(scroll.paragraph_offset(30, 5, 0), 25);

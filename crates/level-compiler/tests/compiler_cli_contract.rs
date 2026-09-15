@@ -142,6 +142,10 @@ fn run_compiler(args: &[&str]) -> Output {
         .expect("spawn prl-build")
 }
 
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
+}
+
 fn assert_success(output: &Output, jobs: usize) {
     assert!(
         output.status.success(),
@@ -224,6 +228,81 @@ fn captured_streams_reject_forced_tui_without_terminal_controls() {
         stderr.contains("--tui requires stdin, stdout, and stderr to all be attached to terminals"),
         "forced TUI failure must explain the terminal requirement:\n{stderr}",
     );
+}
+
+// Regression: successful plain builds finalized their warning tally before
+// reporting an over-budget cache live set.
+#[test]
+fn successful_plain_cache_budget_warning_precedes_exact_final_tally() {
+    let workspace = workspace_root();
+    let input = workspace.join("content/dev/maps/wedge-shared-plane.map");
+    let temp = TempBuildDir::new();
+    let cache_dir = temp.0.join("cache");
+
+    let run = |name: &str, cache_budget: &str, build_mode: Option<&str>| {
+        let output_path = temp.0.join(format!("{name}.prl"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        command
+            // Isolate the cache-reporting contract from fixture diagnostics
+            // such as the warm-SH approximation and missing-light warnings.
+            .env("RUST_LOG", "off,prl_build::cache=warn")
+            .arg(&input)
+            .arg("-o")
+            .arg(&output_path)
+            .arg("--no-tui")
+            .arg("--cache-dir")
+            .arg(&cache_dir)
+            .arg("--cache-max-size")
+            .arg(cache_budget)
+            .arg("-j")
+            .arg("1");
+        if let Some(build_mode) = build_mode {
+            command.arg(build_mode);
+        }
+        command.output().expect("spawn cache-reporting prl-build")
+    };
+
+    let over_budget = run("over-budget", "1", None);
+    assert_success(&over_budget, 1);
+    let over_stdout = String::from_utf8_lossy(&over_budget.stdout);
+    let over_stderr = String::from_utf8_lossy(&over_budget.stderr);
+    assert_eq!(warning_count(&over_stdout), 1);
+    assert_eq!(
+        count_occurrences(&over_stdout, "[cache] build read/wrote"),
+        1,
+        "the final warning history must contain one cache-budget record:\n{over_stdout}"
+    );
+    assert_eq!(
+        count_occurrences(&over_stderr, "[cache] build read/wrote"),
+        1,
+        "the live plain stream must emit the cache-budget record once:\n{over_stderr}"
+    );
+
+    for (name, budget, mode) in [
+        ("under-budget", "2GiB", None),
+        ("no-cache", "1", Some("--no-cache")),
+        ("release", "1", Some("--release")),
+    ] {
+        let output = run(name, budget, mode);
+        assert_success(&output, 1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            warning_count(&stdout),
+            0,
+            "{name} must finish with a silent warning tally:\n{stdout}"
+        );
+        assert_eq!(
+            count_occurrences(&stdout, "[cache] build read/wrote"),
+            0,
+            "{name} final warning history must omit the cache-budget warning:\n{stdout}"
+        );
+        assert_eq!(
+            count_occurrences(&stderr, "[cache] build read/wrote"),
+            0,
+            "{name} live stream must omit the cache-budget warning:\n{stderr}"
+        );
+    }
 }
 
 fn summary_labels(stdout: &str) -> Vec<&str> {
@@ -335,6 +414,12 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
             }),
             "{name} non-TTY stderr must contain a discrete lightmap percent/ETA progress line:\n{stderr}",
         );
+        assert!(
+            stderr.lines().any(|line| {
+                line.contains("ShadowmaskAtlas:") && line.contains('%') && line.contains("ETA")
+            }),
+            "{name} non-TTY stderr must contain live shadowmask percent/ETA progress:\n{stderr}",
+        );
     }
     assert_eq!(
         warning_counts[0], warning_counts[1],
@@ -342,12 +427,11 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     );
 }
 
-// Regression: shadowmask reporting and later packing once lived far enough
-// from lightmap composition that a second layer-cache traversal could hide
-// after the fused stage had returned.
+// Regression: a second layer-cache traversal could hide after the fused stage
+// returned because later-stage reporting did not identify that exact boundary.
 #[test]
 #[ignore = "one cold and one warm full-pipeline prl-build bake; run on demand with -- --ignored"]
-fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
+fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
     let workspace = workspace_root();
     let fixture = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
     assert!(
@@ -363,7 +447,10 @@ fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
     let cold_stderr = String::from_utf8_lossy(&cold.stderr);
     let cold_shadow_stage = cold_stderr
         .find("Shadowmask atlas bake...")
-        .expect("cold build must reach the post-lightmap shadowmask stage");
+        .expect("cold build must publish live shadowmask progress");
+    let cold_fused_return = cold_stderr
+        .find("[Compiler] fused lightmap/shadowmask stage returned")
+        .expect("cold build must publish the exact fused-return sentinel");
     let cold_packing_stage = cold_stderr
         .find("Packing and writing...")
         .expect("cold build must reach the later packing stage");
@@ -372,8 +459,8 @@ fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
         "the cache-disabled cold path must never attempt a layer-cache read:\n{cold_stderr}"
     );
     assert!(
-        cold_shadow_stage < cold_packing_stage,
-        "the cold proof must traverse shadowmask reporting before later packing"
+        cold_shadow_stage < cold_fused_return && cold_fused_return < cold_packing_stage,
+        "the cold fused-return sentinel must follow live shadowmask work and precede packing"
     );
 
     let cache_dir = temp.0.join("cache");
@@ -395,13 +482,16 @@ fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
     let warm_stderr = String::from_utf8_lossy(&warm.stderr);
     let shadow_stage = warm_stderr
         .find("Shadowmask atlas bake...")
-        .expect("warm build must reach the post-lightmap shadowmask stage");
+        .expect("warm build must publish live shadowmask progress");
+    let fused_return = warm_stderr
+        .find("[Compiler] fused lightmap/shadowmask stage returned")
+        .expect("warm build must publish the exact fused-return sentinel");
     let packing_stage = warm_stderr
         .find("Packing and writing...")
         .expect("warm build must reach the later packing stage");
     assert!(
-        shadow_stage < packing_stage,
-        "shadowmask reporting must precede packing"
+        shadow_stage < fused_return && fused_return < packing_stage,
+        "the warm fused-return sentinel must follow live shadowmask work and precede packing"
     );
 
     let layer_accesses: Vec<_> = warm_stderr
@@ -417,12 +507,22 @@ fn full_pipeline_stops_layer_cache_reads_before_shadow_and_packing_stages() {
         "the irradiance-format change must miss the whole lightmap memo:\n{warm_stderr}"
     );
     assert!(
+        warm_stderr.contains("[cache] shadowmask_atlas hit"),
+        "the irradiance-format change must leave the shadowmask memo keyed identically:\n{warm_stderr}"
+    );
+    assert!(
         warm_stderr.contains("[cache] lightmap_layer hit"),
         "the irradiance-format change must retain and read an unchanged layer cache entry:\n{warm_stderr}"
     );
     assert!(
-        layer_accesses.iter().all(|&offset| offset < shadow_stage),
-        "all warm layer-cache probes must finish inside Lightmap Bake, before later shadow/packing flow:\n{warm_stderr}"
+        !warm_stderr.contains("[cache] lightmap_layer miss"),
+        "the section-only re-key must not invalidate any layer partition:\n{warm_stderr}"
+    );
+    assert!(
+        layer_accesses
+            .iter()
+            .all(|&offset| shadow_stage < offset && offset < fused_return),
+        "every warm layer-cache probe must occur inside the fused stage, before its exact return sentinel:\n{warm_stderr}"
     );
 
     let warm_bytes = std::fs::read(temp.0.join("warm.prl")).expect("read warm pipeline output");

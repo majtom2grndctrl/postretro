@@ -41,18 +41,10 @@ pub(crate) struct OptionsApplyEffects {
 }
 
 /// Deterministic, session-lifetime synchronization state for `options.*`.
+#[derive(Default)]
 pub(crate) struct OptionsBridge {
     observed: ObservedGenerations,
     save_remaining_seconds: Option<f32>,
-}
-
-impl Default for OptionsBridge {
-    fn default() -> Self {
-        Self {
-            observed: ObservedGenerations::default(),
-            save_remaining_seconds: None,
-        }
-    }
 }
 
 impl OptionsBridge {

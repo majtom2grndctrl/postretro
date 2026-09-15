@@ -1,7 +1,7 @@
 # title-and-options-screen — plan of record
 
 mode: compact
-status: active
+status: landed-with-gaps
 read at: e36e86b57
 
 ## Corrections
@@ -55,4 +55,11 @@ read at: e36e86b57
 | 2 | Complete the option-slot bridge for invert-Y, view-feel, crouch, fog, and shadow; add graphics enums and persistence/error coverage. | integrating executor | 1 | complete |
 | 3 | Thread shadow resolution through renderer full construction and apply fog/shadow profiles only through the app render-profile chokepoint, including rebuild ordering tests. | integrating executor | 2 | complete |
 | 4 | Author the dev title/options trees and composed controls/reactions; preserve frontend camera hold across owned submenus and add script/UI contract coverage. | integrating executor | 1, 2 | complete |
-| 5 | Integrate both frame paths and clean exit, run focused gates, review/fix loop, final preflight, durable context update, and landing table. | integrating executor | 3, 4 | in review |
+| 5 | Integrate both frame paths and clean exit, run focused gates, review/fix loop, final preflight, durable context update, and landing table. | integrating executor | 3, 4 | complete |
+
+## Landing record
+
+- Implementation checkpoint: `acfb6a130` (`Build title and options screens`).
+- Review panel: correctness, contract, hygiene, and adversarial passes found no functional defects. Six stale comments were corrected; the post-fix focused gate passed.
+- Final preflight (2026-09-15): `cargo fmt --check` passed; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passed after deriving `Default` for `OptionsBridge`; full `cargo test` passed.
+- Landing status is `landed-with-gaps`: A1–A14 have automated proof; M1–M12 remain owner-run visual/in-engine checks because this execution did not exercise an interactive GPU/input session or mutate the owner's real config directory.

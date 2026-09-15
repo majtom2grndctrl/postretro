@@ -21,14 +21,15 @@ use crate::{
     map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density,
     resolve_prm_root_via_cargo, resolve_sh_density_fidelity, resolve_texture_root,
 };
+
+pub(crate) mod lightmap_stage;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_visibility_bake,
     chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake, entity_shadow_select,
-    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer,
-    map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake,
-    sh_coarsen, sh_density, sh_group, shadowmask_bake, texture_mips, texture_validation,
-    trigger_volumes, visibility,
+    fog_cell_masks, geometry, kinematic_geometry, light_namespaces, lightmap_bake, map_data,
+    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze, sh_bake, sh_coarsen,
+    sh_density, sh_group, texture_mips, texture_validation, trigger_volumes, visibility,
 };
 
 /// Resolve an open-edge sample to its assembly provenance, when the source
@@ -85,7 +86,6 @@ pub enum StageId {
     BvhBuild,
     CellVisibility,
     NavMesh,
-    LightmapBake,
     ShBake,
     DeltaShBake,
     DirectShBake,
@@ -93,8 +93,10 @@ pub enum StageId {
     EntityShadowLights,
     DirectShDeltaBake,
     BillboardDirectScatterBake,
-    ShadowmaskAtlas,
     ChunkLightList,
+    AtlasPreparation,
+    LightmapBake,
+    ShadowmaskAtlas,
     AnimatedLightChunks,
     AnimatedWeightMaps,
     SdfAtlasBake,
@@ -122,7 +124,6 @@ impl StageId {
             Self::BvhBuild => "BVH Build",
             Self::CellVisibility => "Cell Visibility",
             Self::NavMesh => "NavMesh",
-            Self::LightmapBake => "Lightmap Bake",
             Self::ShBake => "SH Bake",
             Self::DeltaShBake => "Delta SH Bake",
             Self::DirectShBake => "Direct SH Bake",
@@ -130,8 +131,10 @@ impl StageId {
             Self::EntityShadowLights => "EntityShadowLights",
             Self::DirectShDeltaBake => "Direct SH Delta Bake",
             Self::BillboardDirectScatterBake => "Billboard Direct Scatter Bake",
-            Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::ChunkLightList => "ChunkLightList",
+            Self::AtlasPreparation => "Atlas Preparation",
+            Self::LightmapBake => "Lightmap Bake",
+            Self::ShadowmaskAtlas => "ShadowmaskAtlas",
             Self::AnimatedLightChunks => "AnimLightChunks",
             Self::AnimatedWeightMaps => "AnimWeightMaps",
             Self::SdfAtlasBake => "SDF Atlas Bake",
@@ -151,7 +154,6 @@ impl StageId {
             Self::BvhBuild => "BVH build...",
             Self::CellVisibility => "Cell visibility bake...",
             Self::NavMesh => "NavMesh bake...",
-            Self::LightmapBake => "Lightmap bake...",
             Self::ShBake => "SH volume bake...",
             Self::DeltaShBake => "Delta SH volume bake...",
             Self::DirectShBake => "Direct SH volume bake...",
@@ -159,8 +161,10 @@ impl StageId {
             Self::EntityShadowLights => "Entity shadow light selection...",
             Self::DirectShDeltaBake => "Direct SH delta volume bake...",
             Self::BillboardDirectScatterBake => "Billboard direct scatter bake...",
-            Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::ChunkLightList => "Chunk light list bake...",
+            Self::AtlasPreparation => "Atlas preparation...",
+            Self::LightmapBake => "Lightmap bake...",
+            Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
             Self::AnimatedLightChunks => "Animated light chunks...",
             Self::AnimatedWeightMaps => "Animated light weight maps...",
             Self::SdfAtlasBake => "SDF atlas bake...",
@@ -170,7 +174,7 @@ impl StageId {
     }
 }
 
-pub(crate) const ORDERED_STAGES: [StageId; 24] = [
+pub(crate) const ORDERED_STAGES: [StageId; 25] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -180,7 +184,6 @@ pub(crate) const ORDERED_STAGES: [StageId; 24] = [
     StageId::BvhBuild,
     StageId::CellVisibility,
     StageId::NavMesh,
-    StageId::LightmapBake,
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,
@@ -188,8 +191,10 @@ pub(crate) const ORDERED_STAGES: [StageId; 24] = [
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
     StageId::BillboardDirectScatterBake,
-    StageId::ShadowmaskAtlas,
     StageId::ChunkLightList,
+    StageId::AtlasPreparation,
+    StageId::LightmapBake,
+    StageId::ShadowmaskAtlas,
     StageId::AnimatedLightChunks,
     StageId::AnimatedWeightMaps,
     StageId::SdfAtlasBake,
@@ -867,10 +872,6 @@ fn run_after_parsing(
         navmesh_section.is_some(),
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
-    let lightmap_progress = StageProgress::indeterminate();
-    reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
-    let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
@@ -880,315 +881,6 @@ fn run_after_parsing(
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
     };
-    let final_lightmap_density;
-    let lightmap_bake_output = if let Some(ref cache) = stage_cache {
-        // Warm path: two-level lightmap cache. First checks a memoized composited
-        // `LightmapSection`; on a hit (no-edit rebuild) it skips the layer reads,
-        // composite, dilate, and BC6H encode entirely. On a section-cache miss it
-        // falls through to the per-light layer cache — each unchanged light's layer
-        // hits, only edited lights re-bake — then composites/dilates/encodes. Either
-        // way the composite equals the monolithic `bake_face_chart` output bit-for-bit,
-        // so the only difference from the cold path is cache reuse, not different output.
-        // The multi-bin packer opens new array layers instead of failing on
-        // atlas area, so there is no density-coarsening retry — prepare once at
-        // the fixed density.
-        let density = lightmap_config.lightmap_density;
-        let prepared = lightmap_bake::prepare_atlas(
-            &mut geo_result,
-            &static_baked_lights,
-            density,
-            &map_data.lightmap_scale_regions,
-        )
-        .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
-        final_lightmap_density = density;
-
-        // Mirror `bake_lightmap`'s placeholder branch: with no static lights or no
-        // packed placements there is nothing to composite, so emit a placeholder
-        // section while still returning the planned charts/placements for the
-        // downstream animated-light passes.
-        if static_baked_lights.is_empty() || prepared.placements.is_empty() {
-            lightmap_bake::LightmapBakeOutput {
-                section: postretro_level_format::lightmap::LightmapSection::placeholder(),
-                charts: prepared.charts,
-                placements: prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-                layer_count: prepared.layer_count,
-            }
-        } else {
-            let shared = lightmap_layer::SharedAtlas {
-                charts: &prepared.charts,
-                placements: &prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-            };
-            // Direct-lightmap light set: global `static_lights` order with `Sdf`
-            // shadow-type lights dropped, exactly as the monolithic `bake_lightmap`
-            // does — so the composited layer sum reproduces the cold bake.
-            let layer_lights: Vec<&map_data::MapLight> = static_baked_lights
-                .entries()
-                .iter()
-                .map(|e| e.light)
-                .filter(|l| l.shadow_type != map_data::ShadowType::Sdf)
-                .collect();
-            let warm_lightmap_total = prepared.placements.len().saturating_mul(layer_lights.len());
-            lightmap_control.publish_total(warm_lightmap_total);
-
-            // Compute every `(atlas layer, light)` cache fingerprint up front
-            // (cheap — no blob reads). The layer-major, global-light-order fold
-            // is both the section memo input and the exact production work
-            // order. Target layer is part of every layer key, so same-light
-            // partitions cannot collide.
-            let mut layer_input_hashes =
-                Vec::with_capacity(prepared.layer_count as usize * layer_lights.len());
-            for target_layer in 0..prepared.layer_count {
-                for light in &layer_lights {
-                    layer_input_hashes.push(lightmap_layer::layer_input_hash(
-                        light,
-                        &shared,
-                        &bvh_primitives,
-                        &geo_result,
-                        density,
-                        args.soft_shadow_samples,
-                        target_layer,
-                    ));
-                }
-            }
-
-            // Second-level cache: memoize the composited `LightmapSection` so a
-            // no-edit rebuild does one section decode and skips the layer reads,
-            // composite, dilate, and BC6H encode entirely. The section bytes are
-            // a pure function of the folded inputs (proven byte-identical by the
-            // existing determinism gate), so caching them cannot perturb output.
-            let section_input_hash = lightmap_layer::section_input_hash(
-                &layer_input_hashes,
-                &shared,
-                density,
-                lightmap_config.uncompressed_irradiance,
-                lightmap_config.direction_texel_scale,
-            );
-            let section_key = cache::CacheKey::new(
-                "lightmap_section",
-                lightmap_layer::LIGHTMAP_SECTION_VERSION,
-                &section_input_hash,
-            );
-
-            // A `from_bytes` failure on a present entry is treated as a miss
-            // (warn + recompose), mirroring the layer codec's corruption handling.
-            let expected_section_layer_count = if layer_lights.is_empty() {
-                1
-            } else {
-                prepared.layer_count
-            };
-            let cached_section = cache.get(&section_key).and_then(|bytes| {
-                match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
-                    Ok(section) => match lightmap_layer::validate_cached_lightmap_section(
-                        &section,
-                        &shared,
-                        expected_section_layer_count,
-                        density,
-                        lightmap_config.uncompressed_irradiance,
-                        lightmap_config.direction_texel_scale,
-                    ) {
-                        Ok(()) => Some(section),
-                        Err(reason) => {
-                            log::warn!(
-                                "[Compiler] lightmap_section cache entry does not match current atlas ({reason}), recomposing"
-                            );
-                            None
-                        }
-                    },
-                    Err(err) => {
-                        log::warn!("[Compiler] corrupt lightmap section, recomposing: {err}");
-                        None
-                    }
-                }
-            });
-
-            let section = match cached_section {
-                Some(section) => {
-                    log::info!("[cache] lightmap_section hit");
-                    // Serial lightmap work ignores the core throttle, but every
-                    // cache unit still honors pause before reporting completion.
-                    lightmap_control.governor().checkpoint();
-                    lightmap_control.advance(warm_lightmap_total);
-                    section
-                }
-                None => {
-                    log::info!("[cache] lightmap_section miss");
-                    let section = if layer_lights.is_empty() {
-                        // Preserve the established all-Sdf fallback exactly:
-                        // it is one uncovered plane, not one per prepared
-                        // atlas layer.
-                        let mut fallback = lightmap_layer::composite_layers(
-                            &[],
-                            prepared.atlas_width,
-                            prepared.atlas_height,
-                        );
-                        fallback.dilate();
-                        fallback.encode_section(
-                            density,
-                            lightmap_config.uncompressed_irradiance,
-                            lightmap_config.direction_texel_scale,
-                        )
-                    } else {
-                        let mut irradiance = Vec::new();
-                        let mut direction = Vec::new();
-                        for target_layer in 0..prepared.layer_count {
-                            let target_chart_count = prepared
-                                .placements
-                                .iter()
-                                .filter(|placement| placement.layer == target_layer)
-                                .count();
-                            // The accumulator and each cache partition are
-                            // scoped to one atlas plane. Fold lights strictly
-                            // in the pre-existing global order.
-                            let mut accumulator =
-                                lightmap_layer::IncrementalLayerAccumulator::zeroed(
-                                    prepared.atlas_width,
-                                    prepared.atlas_height,
-                                );
-                            let hash_offset = target_layer as usize * layer_lights.len();
-                            for (light, input_hash) in layer_lights.iter().zip(
-                                &layer_input_hashes[hash_offset..hash_offset + layer_lights.len()],
-                            ) {
-                                let layer_key = cache::CacheKey::new(
-                                    "lightmap_layer",
-                                    lightmap_layer::LAYER_FORMAT_VERSION,
-                                    input_hash,
-                                );
-                                let cached_partition = cache
-                                    .get(&layer_key)
-                                    .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
-                                    .and_then(|partition| {
-                                        match lightmap_layer::validate_layer_partition(
-                                            &partition,
-                                            &shared,
-                                            target_layer,
-                                        ) {
-                                            Ok(()) => Some(partition),
-                                            Err(reason) => {
-                                                log::warn!(
-                                                    "[Compiler] lightmap_layer cache entry does not match target layer {target_layer} ({reason}), re-baking"
-                                                );
-                                                None
-                                            }
-                                        }
-                                    });
-                                let partition = match cached_partition {
-                                    Some(partition) => {
-                                        if args.verbose {
-                                            log::info!("[cache] lightmap_layer hit");
-                                        }
-                                        lightmap_control.governor().checkpoint();
-                                        lightmap_control.advance(target_chart_count);
-                                        partition
-                                    }
-                                    None => {
-                                        if args.verbose {
-                                            log::info!("[cache] lightmap_layer miss");
-                                        }
-                                        let partition = lightmap_layer::bake_light_layer_controlled(
-                                            light,
-                                            &shared,
-                                            &bvh,
-                                            &bvh_primitives,
-                                            &geo_result,
-                                            target_layer,
-                                            args.soft_shadow_samples,
-                                            &lightmap_control,
-                                        );
-                                        cache.put(&layer_key, &partition.to_bytes());
-                                        partition
-                                    }
-                                };
-                                accumulator.fold_partition(&partition, target_layer);
-                                // Make the cache partition's lifetime explicit:
-                                // the next cache read/bake cannot overlap this
-                                // one light/layer contribution in memory.
-                                drop(partition);
-                            }
-                            let mut plane = accumulator.finish();
-                            plane.dilate();
-                            let (mut layer_irradiance, mut layer_direction) =
-                                lightmap_bake::encode_atlas_layer(
-                                    &plane,
-                                    lightmap_config.uncompressed_irradiance,
-                                    lightmap_config.direction_texel_scale,
-                                );
-                            irradiance.append(&mut layer_irradiance);
-                            direction.append(&mut layer_direction);
-                        }
-                        lightmap_bake::assemble_layered_section(
-                            prepared.atlas_width,
-                            prepared.atlas_height,
-                            prepared.layer_count,
-                            density,
-                            lightmap_config.uncompressed_irradiance,
-                            lightmap_config.direction_texel_scale,
-                            irradiance,
-                            direction,
-                        )
-                    };
-                    cache.put(&section_key, &section.to_bytes());
-                    section
-                }
-            };
-
-            lightmap_bake::LightmapBakeOutput {
-                section,
-                charts: prepared.charts,
-                placements: prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-                layer_count: prepared.layer_count,
-            }
-        }
-    } else {
-        // Cold / exact path (`--no-cache`): one-layer incremental bake, the
-        // shippable source of truth. The monolithic whole-atlas bake is test-only.
-        // No layer reads/writes. The multi-bin packer opens new array layers instead
-        // of failing on atlas area, so there is no density-coarsening retry — bake
-        // once at the fixed density.
-        let density = lightmap_config.lightmap_density;
-        final_lightmap_density = density;
-        let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &mut geo_result,
-            lights: &static_baked_lights,
-            scale_regions: &map_data.lightmap_scale_regions,
-        };
-        lightmap_bake::bake_lightmap_controlled(
-            &mut lm_ctx,
-            &lightmap_bake::LightmapConfig {
-                lightmap_density: density,
-                area_sample_count: args.soft_shadow_samples,
-                uncompressed_irradiance: args.uncompressed_irradiance,
-                direction_texel_scale: args.direction_texel_scale,
-            },
-            &lightmap_control,
-        )
-        .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
-    };
-    let lightmap_bake::LightmapBakeOutput {
-        section: lightmap_section,
-        charts: face_charts,
-        placements: face_placements,
-        atlas_width,
-        atlas_height,
-        layer_count: static_atlas_layer_count,
-    } = lightmap_bake_output;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::LightmapBake,
-        stage_start,
-        !static_baked_lights.is_empty() && !face_placements.is_empty(),
-    );
-    if args.verbose {
-        lightmap_bake::log_stats(&lightmap_section, static_light_count);
-    }
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
@@ -1937,57 +1629,9 @@ fn run_after_parsing(
         }
     }
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
-    // Shadowmask layers now bake charts in parallel. They must share the live
-    // governor, but not the completed LightmapBake progress stage: that stage
-    // has already finished and its published total covers different work.
-    let shadowmask_progress = StageProgress::indeterminate();
-    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
-    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-    let shadowmask_atlas_section = if delta_sections.entity_shadow_lights.is_some() {
-        let shared = lightmap_layer::SharedAtlas {
-            charts: &face_charts,
-            placements: &face_placements,
-            atlas_width,
-            atlas_height,
-        };
-        shadowmask_bake::bake_shadowmask_atlas_cached(
-            delta_sections.entity_shadow_lights.as_ref(),
-            &alpha_lights_ns,
-            &shared,
-            &bvh,
-            &bvh_primitives,
-            &geo_result,
-            final_lightmap_density,
-            args.soft_shadow_samples,
-            stage_cache.as_ref(),
-            &shadowmask_control,
-        )
-    } else {
-        None
-    };
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::ShadowmaskAtlas,
-        stage_start,
-        shadowmask_atlas_section.is_some(),
-    );
-    if args.verbose {
-        if let Some(ref section) = shadowmask_atlas_section {
-            log::info!(
-                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
-                section.width,
-                section.height,
-                section.layer_count,
-                section.channels.len(),
-                section.data.len(),
-            );
-        } else {
-            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
-        }
-    }
-
+    // This graph bake intentionally runs before atlas preparation. Its geometry
+    // reads are position-only; observing pre-UV geometry keeps density and
+    // scale-region edits from churning an otherwise identical whole-section key.
     let stage_start = begin_stage(reporter.as_ref(), StageId::ChunkLightList);
     let chunk_light_list_section = {
         let inputs = chunk_light_list_bake::ChunkLightListInputs {
@@ -2014,6 +1658,100 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
+    let prepared_atlas = lightmap_stage::prepare(
+        &map_data,
+        &mut geo_result,
+        &static_baked_lights,
+        &lightmap_config,
+    )?;
+    let final_lightmap_density = lightmap_config.lightmap_density;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::AtlasPreparation,
+        stage_start,
+        !prepared_atlas.charts.is_empty(),
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
+    let lightmap_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
+    let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
+
+    // Shadowmask memo probing, graph construction, and channel assignment must
+    // finish before the fused ray walk. Lightmap remains the foreground stage
+    // while shadowmask progress advances in the background; summary timing
+    // still charges only shadowmask-owned work.
+    reporter.begin_background_stage(StageId::ShadowmaskAtlas);
+    let shadowmask_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
+    let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
+    let fused_lighting = lightmap_stage::bake_fused_prepared(
+        args,
+        stage_cache.as_ref(),
+        &lightmap_control,
+        &shadowmask_control,
+        &mut geo_result,
+        &static_baked_lights,
+        &alpha_lights_ns,
+        delta_sections.entity_shadow_lights.as_ref(),
+        &bvh,
+        &bvh_primitives,
+        &lightmap_config,
+        prepared_atlas,
+    )?;
+    if args.verbose {
+        log::info!("[Compiler] fused lightmap/shadowmask stage returned");
+    }
+    let lightmap_stage::FusedLightingOutput {
+        lightmap: lightmap_bake_output,
+        shadowmask: shadowmask_atlas_section,
+        shadowmask_elapsed,
+    } = fused_lighting;
+    let lightmap_bake::LightmapBakeOutput {
+        section: lightmap_section,
+        charts: face_charts,
+        placements: face_placements,
+        atlas_width,
+        atlas_height,
+        layer_count: static_atlas_layer_count,
+    } = lightmap_bake_output;
+    let fused_elapsed = stage_start.elapsed();
+    timings.push((
+        StageId::LightmapBake.label(),
+        fused_elapsed.saturating_sub(shadowmask_elapsed),
+    ));
+    if !static_baked_lights.is_empty() && !face_placements.is_empty() {
+        reporter.finish_stage(StageId::LightmapBake);
+    } else {
+        reporter.skip_stage(StageId::LightmapBake);
+    }
+    if args.verbose {
+        lightmap_bake::log_stats(&lightmap_section, static_light_count);
+    }
+
+    timings.push((StageId::ShadowmaskAtlas.label(), shadowmask_elapsed));
+    if shadowmask_atlas_section.is_some() {
+        reporter.finish_stage(StageId::ShadowmaskAtlas);
+    } else {
+        reporter.skip_stage(StageId::ShadowmaskAtlas);
+    }
+    if args.verbose {
+        if let Some(ref section) = shadowmask_atlas_section {
+            log::info!(
+                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
+                section.width,
+                section.height,
+                section.layer_count,
+                section.channels.len(),
+                section.data.len(),
+            );
+        } else {
+            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+        }
+    }
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
@@ -2084,13 +1822,9 @@ fn run_after_parsing(
         // construction) are deterministic given geometry + lights + density — the
         // section bytes faithfully capture those derived inputs.
         //
-        // Deliberate divergence from the lightmap/sh stages: those hash a
-        // pre-bake geometry clone, but this hashes the post-mutation `geo_result`.
-        // That's correct here — the weight-map bake consumes the mutated geometry,
-        // and the mutations (`split_shared_vertices`, UV assignment) are
-        // idempotent and deterministic, so post-mutation geometry is a stable
-        // function of the inputs. Do not "fix" this to a pre-bake clone; it would
-        // hash geometry the bake doesn't actually consume.
+        // Weight maps run after atlas preparation and consume `geo_result` with
+        // split vertices and assigned atlas UVs. Hash that same prepared geometry
+        // so the cache key matches the bake inputs.
         let wm_input_hash = {
             let mut buf = postcard::to_allocvec(&animated_chunk_lights)
                 .expect("postcard serialize animated_chunk_lights");
@@ -2286,6 +2020,9 @@ fn run_after_parsing(
         true,
     );
 
+    if let Some(cache) = stage_cache.as_ref() {
+        cache.warn_if_live_set_exceeds(args.cache_max_bytes);
+    }
     reporter.finalize(&timings, started.elapsed());
 
     Ok(())
@@ -2947,8 +2684,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 24);
-        assert_eq!(with_sdf.len(), 24);
+        assert_eq!(without_sdf.len(), 25);
+        assert_eq!(with_sdf.len(), 25);
         assert_eq!(
             without_sdf
                 .iter()
@@ -2964,7 +2701,6 @@ mod tests {
                 (StageId::BvhBuild, "BVH Build"),
                 (StageId::CellVisibility, "Cell Visibility"),
                 (StageId::NavMesh, "NavMesh"),
-                (StageId::LightmapBake, "Lightmap Bake"),
                 (StageId::ShBake, "SH Bake"),
                 (StageId::DeltaShBake, "Delta SH Bake"),
                 (StageId::DirectShBake, "Direct SH Bake"),
@@ -2975,8 +2711,10 @@ mod tests {
                     StageId::BillboardDirectScatterBake,
                     "Billboard Direct Scatter Bake",
                 ),
-                (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
                 (StageId::ChunkLightList, "ChunkLightList"),
+                (StageId::AtlasPreparation, "Atlas Preparation"),
+                (StageId::LightmapBake, "Lightmap Bake"),
+                (StageId::ShadowmaskAtlas, "ShadowmaskAtlas"),
                 (StageId::AnimatedLightChunks, "AnimLightChunks"),
                 (StageId::AnimatedWeightMaps, "AnimWeightMaps"),
                 (StageId::SdfAtlasBake, "SDF Atlas Bake"),
@@ -2996,6 +2734,31 @@ mod tests {
             .expect("planned stages include SDF atlas bake");
         assert!(!without_sdf[sdf_index].predicted_present);
         assert!(with_sdf[sdf_index].predicted_present);
+
+        let stage_index = |id| {
+            without_sdf
+                .iter()
+                .position(|stage| stage.id == id)
+                .expect("stage is planned")
+        };
+        let atlas_index = stage_index(StageId::AtlasPreparation);
+        for sh_stage in [
+            StageId::ShBake,
+            StageId::DeltaShBake,
+            StageId::DirectShBake,
+            StageId::AnimatedDirectShBake,
+            StageId::EntityShadowLights,
+            StageId::DirectShDeltaBake,
+            StageId::BillboardDirectScatterBake,
+            StageId::ChunkLightList,
+        ] {
+            assert!(
+                stage_index(sh_stage) < atlas_index,
+                "{sh_stage:?} must complete before atlas preparation"
+            );
+        }
+        assert!(atlas_index < stage_index(StageId::LightmapBake));
+        assert!(stage_index(StageId::LightmapBake) < stage_index(StageId::ShadowmaskAtlas));
     }
 
     #[test]

@@ -22,7 +22,7 @@ const PARSE_STAGES: &[StageId] = &[
     StageId::DataScript,
     StageId::TextureValidation,
 ];
-const WORLD_STAGES: &[StageId] = &[
+const WORLD_GEOMETRY_STAGES: &[StageId] = &[
     StageId::Partitioning,
     StageId::Visibility,
     StageId::Geometry,
@@ -30,8 +30,7 @@ const WORLD_STAGES: &[StageId] = &[
     StageId::CellVisibility,
     StageId::NavMesh,
 ];
-const LIGHTING_STAGES: &[StageId] = &[
-    StageId::LightmapBake,
+const SH_LIGHTING_STAGES: &[StageId] = &[
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,
@@ -39,8 +38,11 @@ const LIGHTING_STAGES: &[StageId] = &[
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
     StageId::BillboardDirectScatterBake,
+];
+const ATLAS_WORLD_STAGES: &[StageId] = &[StageId::ChunkLightList, StageId::AtlasPreparation];
+const LIGHTMAP_LIGHTING_STAGES: &[StageId] = &[
+    StageId::LightmapBake,
     StageId::ShadowmaskAtlas,
-    StageId::ChunkLightList,
     StageId::AnimatedLightChunks,
     StageId::AnimatedWeightMaps,
 ];
@@ -57,11 +59,19 @@ const STEP_SECTIONS: &[StepSection] = &[
     },
     StepSection {
         label: "World",
-        stages: WORLD_STAGES,
+        stages: WORLD_GEOMETRY_STAGES,
     },
     StepSection {
         label: "Lighting",
-        stages: LIGHTING_STAGES,
+        stages: SH_LIGHTING_STAGES,
+    },
+    StepSection {
+        label: "World",
+        stages: ATLAS_WORLD_STAGES,
+    },
+    StepSection {
+        label: "Lighting",
+        stages: LIGHTMAP_LIGHTING_STAGES,
     },
     StepSection {
         label: "Pack",
@@ -81,7 +91,7 @@ enum StepRow<'a> {
 }
 
 impl StepRow<'_> {
-    fn line(&self) -> Line<'static> {
+    fn line(&self, foreground: Option<StageId>) -> Line<'static> {
         match self {
             Self::Spacer => Line::default(),
             Self::Header {
@@ -99,7 +109,7 @@ impl StepRow<'_> {
                     Span::raw(" "),
                 ])
             }
-            Self::Step(step) => step_line(step),
+            Self::Step(step) => step_line(step, Some(step.id) == foreground),
         }
     }
 
@@ -150,7 +160,7 @@ pub(super) fn draw_steps(frame: &mut ratatui::Frame<'_>, area: Rect, state: &Tui
         .iter()
         .skip(offset)
         .take(visible)
-        .map(StepRow::line)
+        .map(|row| row.line(active.map(|step| step.id)))
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), sections[0]);
 
@@ -259,8 +269,13 @@ pub(super) fn active_scroll_offset(total: usize, visible: usize, active: Option<
         .min(total.saturating_sub(visible))
 }
 
-pub(super) fn step_line(step: &StepState) -> Line<'static> {
-    let (marker, style) = step_marker(step.status, step.activity_index);
+pub(super) fn step_line(step: &StepState, foreground: bool) -> Line<'static> {
+    let displayed_status = if step.status == StepStatus::Active && !foreground {
+        StepStatus::Pending
+    } else {
+        step.status
+    };
+    let (marker, style) = step_marker(displayed_status, step.activity_index);
     Line::from(vec![
         Span::raw("  "),
         Span::styled(format!("{marker} "), style),
@@ -325,6 +340,21 @@ mod tests {
             .collect()
     }
 
+    fn rendered_step_color(state: &TuiState, id: StageId) -> Option<Color> {
+        let foreground = state
+            .active_index()
+            .and_then(|index| state.steps.get(index))
+            .map(|step| step.id);
+        step_rows(state)
+            .into_iter()
+            .find(|row| matches!(row, StepRow::Step(step) if step.id == id))
+            .expect("stage must be visible in the open section")
+            .line(foreground)
+            .spans[2]
+            .style
+            .fg
+    }
+
     #[test]
     fn section_table_is_a_contiguous_total_partition() {
         let flattened = STEP_SECTIONS
@@ -346,6 +376,10 @@ mod tests {
             section_index(StageId::EntityShadowLights),
             section_index(StageId::DirectShDeltaBake)
         );
+        assert_eq!(
+            STEP_SECTIONS[section_index(StageId::AtlasPreparation).unwrap()].label,
+            "World"
+        );
     }
 
     #[test]
@@ -354,10 +388,25 @@ mod tests {
         state.begin_step(StageId::EntityShadowLights);
         state.begin_step(StageId::DirectShDeltaBake);
         let text = rendered(&mut state, 40, 30);
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/7"));
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
         assert!(!text.contains("Parse 0/3\nParsing"));
+
+        // Only the newest foreground stage is highlighted; its open outer
+        // stage stays muted.
+        assert_eq!(
+            rendered_step_color(&state, StageId::EntityShadowLights),
+            Some(MUTED)
+        );
+        assert_eq!(
+            rendered_step_color(&state, StageId::DirectShDeltaBake),
+            Some(PRIMARY)
+        );
+
+        state.step_mut(StageId::DirectShDeltaBake).unwrap().status = StepStatus::Done;
+        let foreground = state.active_index().expect("outer stage regains focus");
+        assert_eq!(state.steps[foreground].id, StageId::EntityShadowLights);
     }
 
     #[test]
@@ -367,7 +416,9 @@ mod tests {
         let text = rendered(&mut state, 40, 30);
         assert!(text.contains("Parse 0/3"));
         assert!(text.contains("World 0/6"));
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/7"));
+        assert!(text.contains("World 0/2"));
+        assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("Pack 0/3"));
         assert!(text.contains("Lightmap Bake"));
     }
@@ -390,12 +441,52 @@ mod tests {
             }
         ));
         assert!(matches!(rows[5], StepRow::Spacer));
-        assert!(matches!(rows[6], StepRow::Step(_)));
+        assert!(matches!(rows[6], StepRow::Header { label: "World", .. }));
+        assert!(matches!(rows[7], StepRow::Spacer));
+        assert!(matches!(
+            rows[8],
+            StepRow::Header {
+                label: "Lighting",
+                ..
+            }
+        ));
+        assert!(matches!(rows[9], StepRow::Spacer));
+        assert!(matches!(rows[10], StepRow::Step(_)));
 
-        let StepRow::Step(step) = &rows[6] else {
+        let StepRow::Step(step) = &rows[10] else {
             unreachable!("the open section separates its header from the first step");
         };
-        assert_eq!(step_line(step).spans[0].content, "  ");
+        assert_eq!(step_line(step, true).spans[0].content, "  ");
+    }
+
+    #[test]
+    fn fused_background_stage_stays_muted_while_its_progress_is_live() {
+        let reporter = super::super::TuiReporter::new(
+            &[
+                descriptor(StageId::LightmapBake),
+                descriptor(StageId::ShadowmaskAtlas),
+            ],
+            LogSink::default(),
+        );
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.begin_background_stage(StageId::ShadowmaskAtlas);
+
+        let state = reporter.lock();
+        let foreground = state.steps[state.active_index().unwrap()].id;
+        let lightmap = state
+            .steps
+            .iter()
+            .find(|step| step.id == StageId::LightmapBake)
+            .unwrap();
+        let shadowmask = state
+            .steps
+            .iter()
+            .find(|step| step.id == StageId::ShadowmaskAtlas)
+            .unwrap();
+
+        assert_eq!(foreground, StageId::LightmapBake);
+        assert_eq!(rendered_step_color(&state, lightmap.id), Some(PRIMARY));
+        assert_eq!(rendered_step_color(&state, shadowmask.id), Some(MUTED));
     }
 
     #[test]
@@ -417,14 +508,26 @@ mod tests {
             StageId::AnimatedDirectShBake,
             StageId::EntityShadowLights,
             StageId::DirectShDeltaBake,
-            StageId::AnimatedLightChunks,
-            StageId::AnimatedWeightMaps,
+            StageId::BillboardDirectScatterBake,
         ] {
             state.step_mut(stage).unwrap().status = StepStatus::Skipped;
             assert_eq!(open_section(&state), Some(2));
         }
+        for stage in [StageId::ChunkLightList, StageId::AtlasPreparation] {
+            state.step_mut(stage).unwrap().status = StepStatus::Skipped;
+            assert_eq!(open_section(&state), Some(3));
+        }
+        for stage in [
+            StageId::LightmapBake,
+            StageId::ShadowmaskAtlas,
+            StageId::AnimatedLightChunks,
+            StageId::AnimatedWeightMaps,
+        ] {
+            state.step_mut(stage).unwrap().status = StepStatus::Skipped;
+            assert_eq!(open_section(&state), Some(4));
+        }
         state.step_mut(StageId::TextureMips).unwrap().status = StepStatus::Skipped;
-        assert_eq!(open_section(&state), Some(3));
+        assert_eq!(open_section(&state), Some(5));
     }
 
     #[test]
@@ -450,7 +553,7 @@ mod tests {
             step.status = StepStatus::Done;
         }
         let text = rendered(&mut state, 40, 30);
-        assert_eq!(open_section(&state), Some(3));
+        assert_eq!(open_section(&state), Some(5));
         assert!(text.contains("Pack 3/3"));
         assert!(!text.contains(ACTIVITY_FRAMES[0]));
     }
@@ -501,7 +604,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(text.contains("Lighting 0/12"));
+        assert!(text.contains("Lighting 0/4"));
         assert!(text.contains("!   Lightmap Bake"));
     }
 

@@ -1,5 +1,5 @@
 // Compiler subprocess contracts for reporter selection, plain output, and deterministic bakes.
-// See: context/plans/in-progress/level-compiler-tui/index.md
+// See: context/lib/build_pipeline.md §Progress reporting, controls, and logging
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -18,15 +18,19 @@ const SUMMARY_LABELS: &[&str] = &[
     "Visibility",
     "Geometry",
     "BVH Build",
+    "Cell Visibility",
     "NavMesh",
-    "Lightmap Bake",
     "SH Bake",
     "Delta SH Bake",
     "Direct SH Bake",
+    "Animated Direct SH Bake",
     "EntityShadowLights",
     "Direct SH Delta Bake",
-    "ShadowmaskAtlas",
+    "Billboard Direct Scatter Bake",
     "ChunkLightList",
+    "Atlas Preparation",
+    "Lightmap Bake",
+    "ShadowmaskAtlas",
     "AnimLightChunks",
     "AnimWeightMaps",
     "TextureMips",
@@ -90,6 +94,37 @@ fn compile_fixture_with_irradiance_format(
     command.output().expect("spawn prl-build")
 }
 
+fn compile_fixture_for_layer_cache_order(
+    input: &Path,
+    output: &Path,
+    cache_dir: Option<&Path>,
+    uncompressed_irradiance: bool,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    command
+        .env("RUST_LOG", "info")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .arg("--no-tui")
+        .arg("--verbose")
+        .arg("--sh-probe-spacing")
+        .arg("4")
+        .arg("--lightmap-density")
+        .arg("0.25")
+        .arg("-j")
+        .arg("1");
+    if uncompressed_irradiance {
+        command.arg("--uncompressed-irradiance");
+    }
+    if let Some(cache_dir) = cache_dir {
+        command.arg("--cache-dir").arg(cache_dir);
+    } else {
+        command.arg("--no-cache");
+    }
+    command.output().expect("spawn prl-build")
+}
+
 fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let bytes = std::fs::read(output).expect("read compiled PRL");
     let mut cursor = Cursor::new(bytes);
@@ -105,6 +140,10 @@ fn run_compiler(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("spawn prl-build")
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
 }
 
 fn assert_success(output: &Output, jobs: usize) {
@@ -191,6 +230,81 @@ fn captured_streams_reject_forced_tui_without_terminal_controls() {
     );
 }
 
+// Regression: successful plain builds finalized their warning tally before
+// reporting an over-budget cache live set.
+#[test]
+fn successful_plain_cache_budget_warning_precedes_exact_final_tally() {
+    let workspace = workspace_root();
+    let input = workspace.join("content/dev/maps/wedge-shared-plane.map");
+    let temp = TempBuildDir::new();
+    let cache_dir = temp.0.join("cache");
+
+    let run = |name: &str, cache_budget: &str, build_mode: Option<&str>| {
+        let output_path = temp.0.join(format!("{name}.prl"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        command
+            // Isolate the cache-reporting contract from fixture diagnostics
+            // such as the warm-SH approximation and missing-light warnings.
+            .env("RUST_LOG", "off,prl_build::cache=warn")
+            .arg(&input)
+            .arg("-o")
+            .arg(&output_path)
+            .arg("--no-tui")
+            .arg("--cache-dir")
+            .arg(&cache_dir)
+            .arg("--cache-max-size")
+            .arg(cache_budget)
+            .arg("-j")
+            .arg("1");
+        if let Some(build_mode) = build_mode {
+            command.arg(build_mode);
+        }
+        command.output().expect("spawn cache-reporting prl-build")
+    };
+
+    let over_budget = run("over-budget", "1", None);
+    assert_success(&over_budget, 1);
+    let over_stdout = String::from_utf8_lossy(&over_budget.stdout);
+    let over_stderr = String::from_utf8_lossy(&over_budget.stderr);
+    assert_eq!(warning_count(&over_stdout), 1);
+    assert_eq!(
+        count_occurrences(&over_stdout, "[cache] build read/wrote"),
+        1,
+        "the final warning history must contain one cache-budget record:\n{over_stdout}"
+    );
+    assert_eq!(
+        count_occurrences(&over_stderr, "[cache] build read/wrote"),
+        1,
+        "the live plain stream must emit the cache-budget record once:\n{over_stderr}"
+    );
+
+    for (name, budget, mode) in [
+        ("under-budget", "2GiB", None),
+        ("no-cache", "1", Some("--no-cache")),
+        ("release", "1", Some("--release")),
+    ] {
+        let output = run(name, budget, mode);
+        assert_success(&output, 1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            warning_count(&stdout),
+            0,
+            "{name} must finish with a silent warning tally:\n{stdout}"
+        );
+        assert_eq!(
+            count_occurrences(&stdout, "[cache] build read/wrote"),
+            0,
+            "{name} final warning history must omit the cache-budget warning:\n{stdout}"
+        );
+        assert_eq!(
+            count_occurrences(&stderr, "[cache] build read/wrote"),
+            0,
+            "{name} live stream must omit the cache-budget warning:\n{stderr}"
+        );
+    }
+}
+
 fn summary_labels(stdout: &str) -> Vec<&str> {
     let mut lines = stdout
         .lines()
@@ -259,7 +373,7 @@ fn warning_count(stdout: &str) -> usize {
 #[ignore = "two cold prl-build bakes; run on demand with -- --ignored"]
 fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
     let workspace = workspace_root();
-    let input = workspace.join("content/dev/maps/test_animated_weight_maps_single.map");
+    let input = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
     assert!(input.is_file(), "fixture map missing: {}", input.display());
 
     let temp = TempBuildDir::new();
@@ -300,10 +414,125 @@ fn plain_cli_is_deterministic_and_preserves_progress_summary_contracts() {
             }),
             "{name} non-TTY stderr must contain a discrete lightmap percent/ETA progress line:\n{stderr}",
         );
+        assert!(
+            stderr.lines().any(|line| {
+                line.contains("ShadowmaskAtlas:") && line.contains('%') && line.contains("ETA")
+            }),
+            "{name} non-TTY stderr must contain live shadowmask percent/ETA progress:\n{stderr}",
+        );
     }
     assert_eq!(
         warning_counts[0], warning_counts[1],
         "throttling must not change the warning tally",
+    );
+}
+
+// Regression: a second layer-cache traversal could hide after the fused stage
+// returned because later-stage reporting did not identify that exact boundary.
+#[test]
+#[ignore = "one cold and one warm full-pipeline prl-build bake; run on demand with -- --ignored"]
+fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
+    let workspace = workspace_root();
+    let fixture = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(
+        fixture.is_file(),
+        "fixture map missing: {}",
+        fixture.display()
+    );
+
+    let temp = TempBuildDir::new();
+    let cold =
+        compile_fixture_for_layer_cache_order(&fixture, &temp.0.join("cold.prl"), None, false);
+    assert_success(&cold, 1);
+    let cold_stderr = String::from_utf8_lossy(&cold.stderr);
+    let cold_shadow_stage = cold_stderr
+        .find("Shadowmask atlas bake...")
+        .expect("cold build must publish live shadowmask progress");
+    let cold_fused_return = cold_stderr
+        .find("[Compiler] fused lightmap/shadowmask stage returned")
+        .expect("cold build must publish the exact fused-return sentinel");
+    let cold_packing_stage = cold_stderr
+        .find("Packing and writing...")
+        .expect("cold build must reach the later packing stage");
+    assert!(
+        !cold_stderr.contains("[cache] lightmap_layer "),
+        "the cache-disabled cold path must never attempt a layer-cache read:\n{cold_stderr}"
+    );
+    assert!(
+        cold_shadow_stage < cold_fused_return && cold_fused_return < cold_packing_stage,
+        "the cold fused-return sentinel must follow live shadowmask work and precede packing"
+    );
+
+    let cache_dir = temp.0.join("cache");
+    let seeded = compile_fixture_for_layer_cache_order(
+        &fixture,
+        &temp.0.join("seeded.prl"),
+        Some(&cache_dir),
+        false,
+    );
+    assert_success(&seeded, 1);
+
+    let warm = compile_fixture_for_layer_cache_order(
+        &fixture,
+        &temp.0.join("warm.prl"),
+        Some(&cache_dir),
+        true,
+    );
+    assert_success(&warm, 1);
+    let warm_stderr = String::from_utf8_lossy(&warm.stderr);
+    let shadow_stage = warm_stderr
+        .find("Shadowmask atlas bake...")
+        .expect("warm build must publish live shadowmask progress");
+    let fused_return = warm_stderr
+        .find("[Compiler] fused lightmap/shadowmask stage returned")
+        .expect("warm build must publish the exact fused-return sentinel");
+    let packing_stage = warm_stderr
+        .find("Packing and writing...")
+        .expect("warm build must reach the later packing stage");
+    assert!(
+        shadow_stage < fused_return && fused_return < packing_stage,
+        "the warm fused-return sentinel must follow live shadowmask work and precede packing"
+    );
+
+    let layer_accesses: Vec<_> = warm_stderr
+        .match_indices("[cache] lightmap_layer ")
+        .map(|(offset, _)| offset)
+        .collect();
+    assert!(
+        !layer_accesses.is_empty(),
+        "the re-keyed warm section must exercise layer-cache probes:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stderr.contains("[cache] lightmap_section miss"),
+        "the irradiance-format change must miss the whole lightmap memo:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stderr.contains("[cache] shadowmask_atlas hit"),
+        "the irradiance-format change must leave the shadowmask memo keyed identically:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stderr.contains("[cache] lightmap_layer hit"),
+        "the irradiance-format change must retain and read an unchanged layer cache entry:\n{warm_stderr}"
+    );
+    assert!(
+        !warm_stderr.contains("[cache] lightmap_layer miss"),
+        "the section-only re-key must not invalidate any layer partition:\n{warm_stderr}"
+    );
+    assert!(
+        layer_accesses
+            .iter()
+            .all(|&offset| shadow_stage < offset && offset < fused_return),
+        "every warm layer-cache probe must occur inside the fused stage, before its exact return sentinel:\n{warm_stderr}"
+    );
+
+    let warm_bytes = std::fs::read(temp.0.join("warm.prl")).expect("read warm pipeline output");
+    let mut warm_cursor = Cursor::new(warm_bytes);
+    let warm_meta = read_container(&mut warm_cursor).expect("decode warm pipeline output");
+    assert!(
+        warm_meta
+            .find_section(SectionId::ShadowmaskAtlas as u32)
+            .is_some(),
+        "the warm proof fixture must exercise and pack ShadowmaskAtlas"
     );
 }
 

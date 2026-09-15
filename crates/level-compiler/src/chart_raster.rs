@@ -46,7 +46,7 @@ pub fn chart_interior_dims(chart: &Chart) -> (i32, i32) {
 /// World-space position of the texel at interior coordinates `(tx, ty)` within
 /// `chart`, where `(tx, ty)` are in `[0, interior_w) × [0, interior_h)`.
 ///
-/// Matches `lightmap_bake::bake_face_chart`'s per-texel derivation exactly —
+/// Matches the frozen lightmap reference's per-texel derivation exactly —
 /// both bakers route their world-position lookups through this function so
 /// they agree on texel centres at chunk boundaries.
 pub fn chart_texel_world_position(

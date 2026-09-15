@@ -1199,6 +1199,14 @@ declare module "postretro" {
     readonly input: {
       readonly mode: ComputedRef<"pointer" | "focus">;
     };
+    readonly options: {
+      readonly crouchMode: Ref<"hold" | "toggle">;
+      readonly fogQuality: Ref<"low" | "medium" | "high">;
+      readonly invertY: Ref<boolean>;
+      readonly mouseSensitivity: Ref<number>;
+      readonly shadowQuality: Ref<"low" | "medium" | "high">;
+      readonly viewFeelScale: Ref<number>;
+    };
     readonly player: {
       readonly ammo: ComputedRef<number>;
       readonly ammoReserve: ComputedRef<number>;

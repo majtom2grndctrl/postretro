@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::DEFAULT_MOUSE_SENSITIVITY;
 
+mod bridge;
+
+pub(crate) use bridge::OptionsBridge;
+
+/// Registered dev-mod options tree whose open/close boundaries seed and flush
+/// the session-owned settings bridge.
+pub(crate) const OPTIONS_MENU_TREE_NAME: &str = "frontend.options";
+
 /// Filename written into the platform config directory.
 const SETTINGS_FILENAME: &str = "settings.toml";
 const DEFAULT_SCROLL_NOTCH_PIXELS: f32 = 120.0;
@@ -32,6 +40,83 @@ pub enum CrouchMode {
     /// Crouch intent is active only while the button is held (level signal).
     #[default]
     Hold,
+}
+
+impl CrouchMode {
+    fn slot_value(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Toggle => "toggle",
+        }
+    }
+
+    fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "hold" => Some(Self::Hold),
+            "toggle" => Some(Self::Toggle),
+            _ => None,
+        }
+    }
+}
+
+/// Spot-shadow allocation tier. Changes persist on settle but apply only when
+/// the renderer performs a full initialization or installs the next level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+}
+
+impl ShadowQuality {
+    fn slot_value(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
+/// Volumetric-fog ray-march density tier. Smaller step sizes produce a denser,
+/// higher-quality march and can be applied live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FogQuality {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl FogQuality {
+    fn slot_value(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    fn from_slot_value(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
 }
 
 /// Per-human runtime preferences, persisted as TOML.
@@ -71,6 +156,15 @@ pub struct PlayerOptions {
     #[serde(default)]
     pub crouch_mode: CrouchMode,
 
+    /// Spot-shadow map resolution tier, applied on renderer full-init or the
+    /// next level install.
+    #[serde(default)]
+    pub shadow_quality: ShadowQuality,
+
+    /// Volumetric-fog march density tier, applied live and on renderer full-init.
+    #[serde(default)]
+    pub fog_quality: FogQuality,
+
     /// Optional local override for the mod's cycle-selection dwell. `None`
     /// preserves the mod policy; an explicit zero selects immediately.
     #[serde(default)]
@@ -107,6 +201,8 @@ impl Default for PlayerOptions {
             invert_y: default_invert_y(),
             view_feel_scale: default_view_feel_scale(),
             crouch_mode: CrouchMode::default(),
+            shadow_quality: ShadowQuality::default(),
+            fog_quality: FogQuality::default(),
             switch_cycle_dwell_ms: None,
             scroll_notch_pixels: default_scroll_notch_pixels(),
         }
@@ -251,6 +347,8 @@ mod tests {
             b.view_feel_scale
         );
         assert_eq!(a.crouch_mode, b.crouch_mode);
+        assert_eq!(a.shadow_quality, b.shadow_quality);
+        assert_eq!(a.fog_quality, b.fog_quality);
         assert_eq!(a.switch_cycle_dwell_ms, b.switch_cycle_dwell_ms);
         assert!(
             (a.scroll_notch_pixels - b.scroll_notch_pixels).abs() < EPSILON,
@@ -268,6 +366,8 @@ mod tests {
             invert_y: true,
             view_feel_scale: 0.5,
             crouch_mode: CrouchMode::Toggle,
+            shadow_quality: ShadowQuality::Low,
+            fog_quality: FogQuality::High,
             switch_cycle_dwell_ms: Some(250),
             scroll_notch_pixels: 96.0,
         };
@@ -300,6 +400,8 @@ mod tests {
             invert_y: true,
             view_feel_scale: 0.25,
             crouch_mode: CrouchMode::Toggle,
+            shadow_quality: ShadowQuality::Medium,
+            fog_quality: FogQuality::Low,
             switch_cycle_dwell_ms: Some(400),
             scroll_notch_pixels: 100.0,
         };
@@ -349,6 +451,8 @@ mod tests {
             invert_y: false,
             view_feel_scale: 0.75,
             crouch_mode: CrouchMode::Toggle,
+            shadow_quality: ShadowQuality::Low,
+            fog_quality: FogQuality::High,
             switch_cycle_dwell_ms: Some(500),
             scroll_notch_pixels: 80.0,
         };
@@ -435,6 +539,39 @@ mod tests {
 
         let loaded = PlayerOptions::load(&path);
         assert_eq!(loaded.crouch_mode, CrouchMode::Toggle);
+    }
+
+    #[test]
+    fn player_options_graphics_quality_roundtrips_and_defaults() {
+        let original = PlayerOptions {
+            shadow_quality: ShadowQuality::Low,
+            fog_quality: FogQuality::High,
+            ..PlayerOptions::default()
+        };
+        let serialized = toml::to_string_pretty(&original).unwrap();
+        assert!(serialized.contains("shadow_quality = \"low\""));
+        assert!(serialized.contains("fog_quality = \"high\""));
+
+        let restored: PlayerOptions = toml::from_str(&serialized).unwrap();
+        assert_eq!(restored.shadow_quality, ShadowQuality::Low);
+        assert_eq!(restored.fog_quality, FogQuality::High);
+
+        let absent: PlayerOptions = toml::from_str("invert_y = true\n").unwrap();
+        assert_eq!(absent.shadow_quality, ShadowQuality::High);
+        assert_eq!(absent.fog_quality, FogQuality::Medium);
+    }
+
+    #[test]
+    fn load_returns_defaults_and_preserves_file_when_graphics_quality_is_unknown() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let invalid = "invert_y = true\nshadow_quality = \"ultra\"\nfog_quality = \"medium\"\n";
+        fs::write(&path, invalid).unwrap();
+
+        let loaded = PlayerOptions::load(&path);
+
+        assert_options_eq(&loaded, &PlayerOptions::default());
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
     }
 
     #[test]

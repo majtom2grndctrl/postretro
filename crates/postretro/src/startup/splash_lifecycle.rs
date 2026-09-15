@@ -196,6 +196,17 @@ impl App {
     /// the surface was recreated — the renderer's `ensure_full_ready` no-ops when
     /// already full-ready, so the steady boot path pays nothing on re-entry.
     fn finish_renderer_full_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let (shadow_quality, fog_quality) = self
+            .session
+            .as_ref()
+            .map(|session| {
+                (
+                    session.player_options.shadow_quality,
+                    session.player_options.fog_quality,
+                )
+            })
+            .unwrap_or_default();
+        self.configure_player_shadow_quality(shadow_quality);
         let Some(renderer) = self.renderer.as_mut() else {
             return true;
         };
@@ -204,6 +215,7 @@ impl App {
             event_loop.exit();
             return false;
         }
+        self.apply_player_fog_quality(fog_quality);
         self.boot_timings.record("renderer_full_init_complete");
         true
     }

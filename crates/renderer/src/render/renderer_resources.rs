@@ -6,6 +6,10 @@ use super::renderer_types::PromotedBakedLightState;
 use super::smoke::SpriteCollectionAssetSource;
 use super::*;
 
+fn spot_shadow_pool_needs_rebuild(current: u32, requested: u32) -> bool {
+    current != requested
+}
+
 /// Discard the cull-split per-frame mover inputs when level geometry changes.
 fn clear_kinematic_mover_frame_state(
     draws: &mut Vec<kinematic_brush::KinematicMoverInstance>,
@@ -124,6 +128,7 @@ impl Renderer {
             device,
             queue,
             has_multi_draw_indirect,
+            spot_shadow_map_resolution,
             full,
             ..
         } = self;
@@ -131,6 +136,31 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let has_multi_draw_indirect = *has_multi_draw_indirect;
+        let requested_spot_resolution = *spot_shadow_map_resolution;
+
+        // Shadow quality is a level-boundary setting: changing the option only
+        // updates renderer boot state, and the next geometry install rebuilds
+        // the live spot pool and all resolution-coupled caches together.
+        if spot_shadow_pool_needs_rebuild(
+            full.spot_shadow_pool.resolution,
+            requested_spot_resolution,
+        ) {
+            let cube_array_supported = full.cube_shadow_pool.is_some();
+            let spot_shadow_bgl = SpotShadowPool::bind_group_layout(device, cube_array_supported);
+            let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+            full.spot_shadow_pool = SpotShadowPool::new(
+                device,
+                &spot_shadow_bgl,
+                &full.sdf_shadow_pass.shadow_view,
+                &full.depth_view,
+                cube_sampling_view,
+                requested_spot_resolution,
+            );
+            // Reallocated below using the new resolution if this level has a
+            // promoted-cache source. Dropping it first prevents a same-shape
+            // reset from retaining the previous texture dimensions.
+            full.promoted_depth_cache = None;
+        }
 
         let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
 
@@ -279,6 +309,7 @@ impl Renderer {
             full.promoted_depth_cache = Some(PromotedDepthCache::new(
                 device,
                 full.cube_shadow_pool.is_some(),
+                full.spot_shadow_pool.resolution,
             ));
         }
         full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
@@ -293,6 +324,7 @@ impl Renderer {
                 &shadow_candidate_lights,
                 full.cube_shadow_pool.is_some(),
             ),
+            full.spot_shadow_pool.resolution,
         );
         full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
         full.dynamic_depth_cache_diagnostics = Default::default();
@@ -670,6 +702,18 @@ impl Renderer {
                 full.bvh_leaves.len(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod quality_boundary_tests {
+    use super::spot_shadow_pool_needs_rebuild;
+
+    #[test]
+    fn spot_shadow_quality_rebuilds_only_when_level_boundary_resolution_changes() {
+        assert!(!spot_shadow_pool_needs_rebuild(1024, 1024));
+        assert!(spot_shadow_pool_needs_rebuild(1024, 512));
+        assert!(spot_shadow_pool_needs_rebuild(512, 768));
     }
 }
 

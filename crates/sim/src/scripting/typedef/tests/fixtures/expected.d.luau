@@ -1198,6 +1198,14 @@ export type GameStateRefs = {
   input: {
     mode: ComputedRef<"pointer" | "focus">,
   },
+  options: {
+    crouchMode: Ref<"hold" | "toggle">,
+    fogQuality: Ref<"low" | "medium" | "high">,
+    invertY: Ref<boolean>,
+    mouseSensitivity: Ref<number>,
+    shadowQuality: Ref<"low" | "medium" | "high">,
+    viewFeelScale: Ref<number>,
+  },
   player: {
     ammo: ComputedRef<number>,
     ammoReserve: ComputedRef<number>,

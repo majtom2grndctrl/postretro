@@ -99,6 +99,8 @@ impl Renderer {
             has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile: BloomRenderProfile::default(),
+            spot_shadow_map_resolution:
+                crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION,
             boot_splash: Some(boot_splash),
             // Full renderer is built on the first `finish_full_init` /
             // `ensure_full_ready`, after the boot splash has presented.
@@ -131,6 +133,8 @@ impl Renderer {
         // swapchain formats a windowed surface happens to advertise.
         let capture_format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let bloom_render_profile = BloomRenderProfile::default();
+        let spot_shadow_map_resolution =
+            crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION;
         let full = build_full_renderer(
             &device,
             &queue,
@@ -140,6 +144,7 @@ impl Renderer {
             has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile,
+            spot_shadow_map_resolution,
         )?;
         Ok(Self {
             device,
@@ -162,6 +167,7 @@ impl Renderer {
             has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile,
+            spot_shadow_map_resolution,
             boot_splash: None,
             full: Some(Box::new(full)),
         })
@@ -186,6 +192,7 @@ impl Renderer {
             self.has_multi_draw_indirect,
             self.cube_array_supported,
             self.bloom_render_profile,
+            self.spot_shadow_map_resolution,
         )?;
         self.full = Some(Box::new(full));
         log::info!("[Renderer] Full renderer initialization complete");

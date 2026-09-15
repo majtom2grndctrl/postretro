@@ -801,6 +801,39 @@ mod tests {
     }
 
     #[test]
+    fn new_registers_writable_engine_option_slots() {
+        let table = SlotTable::new();
+
+        for name in [
+            "options.mouseSensitivity",
+            "options.invertY",
+            "options.viewFeelScale",
+            "options.crouchMode",
+            "options.shadowQuality",
+            "options.fogQuality",
+        ] {
+            let slot = table.get(name).expect("engine option slot exists");
+            assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+            assert!(!slot.schema.readonly, "{name} must be writable");
+            assert!(!slot.schema.persist, "PlayerOptions persists {name}");
+            assert_eq!(slot.schema.network, ReplicationScope::None);
+        }
+
+        assert_eq!(
+            table.get("options.crouchMode").unwrap().schema.slot_type,
+            SlotType::Enum {
+                values: vec!["hold".into(), "toggle".into()]
+            }
+        );
+        assert_eq!(
+            table.get("options.shadowQuality").unwrap().schema.slot_type,
+            SlotType::Enum {
+                values: vec!["low".into(), "medium".into(), "high".into()]
+            }
+        );
+    }
+
+    #[test]
     fn namespace_insert_is_atomic_on_slot_collision() {
         let mut table = SlotTable::new();
         table

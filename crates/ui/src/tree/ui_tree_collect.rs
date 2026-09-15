@@ -400,6 +400,7 @@ fn collect_node(
             style_state,
             predicate_bind,
             predicate_scope,
+            ..
         }) => {
             // A bound text node resolves its drawn string from the slot
             // snapshot (through the optional `{}` format template); an absent

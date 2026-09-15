@@ -113,6 +113,7 @@ pub fn build_node(
                         // not a predicate (the predicate path is the button's).
                         predicate_bind: None,
                         predicate_scope: None,
+                        last_predicate_resolved: None,
                     },
                 )
                 .expect("taffy leaf creation must succeed")
@@ -239,6 +240,7 @@ fn build_button(
                 // styleRanges value (resolved to 0.0/1.0 at draw build).
                 predicate_bind: button.bind.clone(),
                 predicate_scope,
+                last_predicate_resolved: None,
             },
         )
         .expect("taffy leaf creation must succeed")
@@ -287,6 +289,7 @@ fn build_slider(
                 // A slider's value display binds a numeric slot, not a predicate.
                 predicate_bind: None,
                 predicate_scope: None,
+                last_predicate_resolved: None,
             },
         )
         .expect("taffy leaf creation must succeed")

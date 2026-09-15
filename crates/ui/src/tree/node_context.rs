@@ -95,6 +95,10 @@ pub enum NodeContext {
         /// nearest declaring `localState` scope for a `{ local }` predicate.
         predicate_bind: Option<Predicate>,
         predicate_scope: Option<String>,
+        /// Last predicate value observed by the retained diff. Only populated
+        /// when `predicate_bind` and `style_ranges` are both present; a 0↔1
+        /// change invalidates draw data without dirtying layout.
+        last_predicate_resolved: Option<f32>,
     },
     /// Solid-fill panel quad, optionally framed by a 9-slice `border`. `fill`
     /// stays linear `[f32; 4]` — no sRGB conversion on the quad path. Carried by

@@ -462,23 +462,44 @@ impl UiTree {
                 Some(NodeContext::Text {
                     content,
                     bind_scope,
-                    bind: Some(bind),
+                    bind,
                     last_resolved,
                     tween,
+                    style_ranges,
+                    predicate_bind,
+                    predicate_scope,
+                    last_predicate_resolved,
                     ..
                 }) => {
-                    if drive_text_binding(
-                        bind,
-                        bind_scope.as_deref(),
-                        content,
-                        last_resolved,
-                        tween,
-                        slot_values,
-                        cell_values,
-                        time_seconds,
-                    ) {
-                        diff.content_changed = true;
-                        dirty_text.push(node);
+                    if let Some(bind) = bind {
+                        if drive_text_binding(
+                            bind,
+                            bind_scope.as_deref(),
+                            content,
+                            last_resolved,
+                            tween,
+                            slot_values,
+                            cell_values,
+                            time_seconds,
+                        ) {
+                            diff.content_changed = true;
+                            dirty_text.push(node);
+                        }
+                    }
+                    if style_ranges.is_some()
+                        && let Some(predicate) = predicate_bind
+                    {
+                        let resolved = resolve_predicate(
+                            &predicate.source,
+                            predicate.equals.as_ref(),
+                            predicate_scope.as_deref(),
+                            slot_values,
+                            cell_values,
+                        );
+                        if *last_predicate_resolved != Some(resolved) {
+                            *last_predicate_resolved = Some(resolved);
+                            diff.appearance_changed = true;
+                        }
                     }
                 }
                 Some(NodeContext::Panel {

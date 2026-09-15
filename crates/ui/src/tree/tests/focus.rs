@@ -451,6 +451,75 @@ fn button_predicate_bind_drives_style_ranges_highlight() {
     );
 }
 
+// Regression: option radio highlights stayed stale until the menu was closed and reopened.
+#[test]
+fn retained_button_predicate_change_repaints_selection_without_relayout() {
+    let tree = anchored(hstack(
+        6.0,
+        0.0,
+        Align::Start,
+        vec![
+            predicate_button(
+                "shadow.low",
+                pred(
+                    "options.shadowQuality",
+                    Some(PredicateValue::String("low".into())),
+                ),
+            ),
+            predicate_button(
+                "shadow.high",
+                pred(
+                    "options.shadowQuality",
+                    Some(PredicateValue::String("high".into())),
+                ),
+            ),
+        ],
+    ));
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+    let mut slots = HashMap::from([(
+        "options.shadowQuality".to_string(),
+        SlotValue::Enum("low".into()),
+    )]);
+
+    let first =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 0.0);
+    assert_eq!(ui.recompute_count(), 1, "first frame computes layout once");
+    assert_eq!(ui.draw_rebuild_count(), 1, "first frame builds draw data");
+    assert_eq!(first.texts[0].color, srgb_of([0.0, 1.0, 1.0, 1.0]));
+    assert_eq!(first.texts[1].color, srgb_of([0.2, 0.2, 0.2, 1.0]));
+
+    slots.insert(
+        "options.shadowQuality".to_string(),
+        SlotValue::Enum("high".into()),
+    );
+    let changed =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 1.0);
+    assert_eq!(
+        ui.recompute_count(),
+        1,
+        "predicate-only appearance changes must not relayout",
+    );
+    assert_eq!(
+        ui.draw_rebuild_count(),
+        2,
+        "the changed predicate rebuilds cached draw data",
+    );
+    assert_eq!(changed.texts[0].color, srgb_of([0.2, 0.2, 0.2, 1.0]));
+    assert_eq!(changed.texts[1].color, srgb_of([0.0, 1.0, 1.0, 1.0]));
+
+    let settled =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &no_cells(), 2.0);
+    assert_eq!(ui.recompute_count(), 1, "settled frame still skips layout");
+    assert_eq!(
+        ui.draw_rebuild_count(),
+        2,
+        "unchanged predicate reuses cached draw data",
+    );
+    assert_eq!(settled.texts[0].color, changed.texts[0].color);
+    assert_eq!(settled.texts[1].color, changed.texts[1].color);
+}
+
 /// A button declaring `selected`/`checked` predicates and a `disabled` bit, for
 /// the focus-rect a11y readback test.
 fn a11y_button(

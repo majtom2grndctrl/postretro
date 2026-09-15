@@ -1681,9 +1681,10 @@ fn run_after_parsing(
     let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
 
     // Shadowmask memo probing, graph construction, and channel assignment must
-    // finish before the fused ray walk. Both reporter stages stay live during
-    // the shared work; summary timing still charges only shadowmask-owned work.
-    reporter.begin_stage(StageId::ShadowmaskAtlas);
+    // finish before the fused ray walk. Lightmap remains the foreground stage
+    // while shadowmask progress advances in the background; summary timing
+    // still charges only shadowmask-owned work.
+    reporter.begin_background_stage(StageId::ShadowmaskAtlas);
     let shadowmask_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);

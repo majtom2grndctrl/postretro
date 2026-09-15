@@ -91,7 +91,7 @@ enum StepRow<'a> {
 }
 
 impl StepRow<'_> {
-    fn line(&self) -> Line<'static> {
+    fn line(&self, foreground: Option<StageId>) -> Line<'static> {
         match self {
             Self::Spacer => Line::default(),
             Self::Header {
@@ -109,7 +109,7 @@ impl StepRow<'_> {
                     Span::raw(" "),
                 ])
             }
-            Self::Step(step) => step_line(step),
+            Self::Step(step) => step_line(step, Some(step.id) == foreground),
         }
     }
 
@@ -160,7 +160,7 @@ pub(super) fn draw_steps(frame: &mut ratatui::Frame<'_>, area: Rect, state: &Tui
         .iter()
         .skip(offset)
         .take(visible)
-        .map(StepRow::line)
+        .map(|row| row.line(active.map(|step| step.id)))
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), sections[0]);
 
@@ -269,8 +269,13 @@ pub(super) fn active_scroll_offset(total: usize, visible: usize, active: Option<
         .min(total.saturating_sub(visible))
 }
 
-pub(super) fn step_line(step: &StepState) -> Line<'static> {
-    let (marker, style) = step_marker(step.status, step.activity_index);
+pub(super) fn step_line(step: &StepState, foreground: bool) -> Line<'static> {
+    let displayed_status = if step.status == StepStatus::Active && !foreground {
+        StepStatus::Pending
+    } else {
+        step.status
+    };
+    let (marker, style) = step_marker(displayed_status, step.activity_index);
     Line::from(vec![
         Span::raw("  "),
         Span::styled(format!("{marker} "), style),
@@ -335,6 +340,21 @@ mod tests {
             .collect()
     }
 
+    fn rendered_step_color(state: &TuiState, id: StageId) -> Option<Color> {
+        let foreground = state
+            .active_index()
+            .and_then(|index| state.steps.get(index))
+            .map(|step| step.id);
+        step_rows(state)
+            .into_iter()
+            .find(|row| matches!(row, StepRow::Step(step) if step.id == id))
+            .expect("stage must be visible in the open section")
+            .line(foreground)
+            .spans[2]
+            .style
+            .fg
+    }
+
     #[test]
     fn section_table_is_a_contiguous_total_partition() {
         let flattened = STEP_SECTIONS
@@ -372,6 +392,21 @@ mod tests {
         assert!(text.contains("EntityShadowLights"));
         assert!(text.contains("Direct SH Delta Bake"));
         assert!(!text.contains("Parse 0/3\nParsing"));
+
+        // Only the newest foreground stage is highlighted; its open outer
+        // stage stays muted.
+        assert_eq!(
+            rendered_step_color(&state, StageId::EntityShadowLights),
+            Some(MUTED)
+        );
+        assert_eq!(
+            rendered_step_color(&state, StageId::DirectShDeltaBake),
+            Some(PRIMARY)
+        );
+
+        state.step_mut(StageId::DirectShDeltaBake).unwrap().status = StepStatus::Done;
+        let foreground = state.active_index().expect("outer stage regains focus");
+        assert_eq!(state.steps[foreground].id, StageId::EntityShadowLights);
     }
 
     #[test]
@@ -421,7 +456,37 @@ mod tests {
         let StepRow::Step(step) = &rows[10] else {
             unreachable!("the open section separates its header from the first step");
         };
-        assert_eq!(step_line(step).spans[0].content, "  ");
+        assert_eq!(step_line(step, true).spans[0].content, "  ");
+    }
+
+    #[test]
+    fn fused_background_stage_stays_muted_while_its_progress_is_live() {
+        let reporter = super::super::TuiReporter::new(
+            &[
+                descriptor(StageId::LightmapBake),
+                descriptor(StageId::ShadowmaskAtlas),
+            ],
+            LogSink::default(),
+        );
+        reporter.begin_stage(StageId::LightmapBake);
+        reporter.begin_background_stage(StageId::ShadowmaskAtlas);
+
+        let state = reporter.lock();
+        let foreground = state.steps[state.active_index().unwrap()].id;
+        let lightmap = state
+            .steps
+            .iter()
+            .find(|step| step.id == StageId::LightmapBake)
+            .unwrap();
+        let shadowmask = state
+            .steps
+            .iter()
+            .find(|step| step.id == StageId::ShadowmaskAtlas)
+            .unwrap();
+
+        assert_eq!(foreground, StageId::LightmapBake);
+        assert_eq!(rendered_step_color(&state, lightmap.id), Some(PRIMARY));
+        assert_eq!(rendered_step_color(&state, shadowmask.id), Some(MUTED));
     }
 
     #[test]

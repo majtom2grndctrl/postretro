@@ -4,7 +4,10 @@
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use std::{collections::HashMap, fmt};
 
 /// Default LRU size budget for the on-disk stage cache, in bytes (2 GiB).
 /// Pruned down to this at build start unless `--cache-max-size` overrides it.
@@ -27,6 +30,8 @@ const HEADER_BYTES: usize = ENTRY_MAGIC.len() + LENGTH_PREFIX_BYTES + HASH_BYTES
 /// the same filename.
 pub struct CacheKey {
     digest: [u8; HASH_BYTES],
+    #[cfg(test)]
+    stage_id: String,
 }
 
 impl CacheKey {
@@ -42,6 +47,8 @@ impl CacheKey {
         let digest = hasher.finalize();
         Self {
             digest: *digest.as_bytes(),
+            #[cfg(test)]
+            stage_id: stage_id.to_owned(),
         }
     }
 
@@ -53,8 +60,27 @@ impl CacheKey {
 
 /// Directory-backed cache. `put` writes atomically; `get` validates the
 /// format marker, length prefix, and blake3 digest before returning the payload.
+#[derive(Clone)]
 pub struct StageCache {
-    dir: PathBuf,
+    dir: Arc<PathBuf>,
+    live_entries: Arc<Mutex<HashMap<[u8; HASH_BYTES], u64>>>,
+    live_set_reported: Arc<AtomicBool>,
+    #[cfg(test)]
+    test_accesses: Arc<Mutex<HashMap<String, CacheTestAccess>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheLiveSet {
+    pub entry_count: usize,
+    pub total_bytes: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheTestAccess {
+    pub read_attempts: usize,
+    pub read_hits: usize,
+    pub writes: usize,
 }
 
 impl StageCache {
@@ -63,7 +89,13 @@ impl StageCache {
     pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
         let dir = path.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir: Arc::new(dir),
+            live_entries: Arc::new(Mutex::new(HashMap::new())),
+            live_set_reported: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            test_accesses: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Load and validate an entry. Missing entries return `None` silently.
@@ -75,6 +107,8 @@ impl StageCache {
     /// long-stable entry (one whose inputs never change, so it is hit every
     /// build but never rewritten) from being evicted purely for being old.
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        #[cfg(test)]
+        self.record_test_read_attempt(key);
         let path = self.entry_path(key);
         let mut file = match fs::File::open(&path) {
             Ok(f) => f,
@@ -166,6 +200,9 @@ impl StageCache {
             return None;
         }
 
+        self.record_live_entry(key, HEADER_BYTES as u64 + declared_len as u64);
+        #[cfg(test)]
+        self.record_test_read_hit(key);
         Some(payload)
     }
 
@@ -208,7 +245,61 @@ impl StageCache {
                 final_path.display()
             );
             let _ = fs::remove_file(&tmp_path);
+        } else {
+            self.record_live_entry(key, HEADER_BYTES as u64 + payload_len);
+            #[cfg(test)]
+            self.record_test_write(key);
         }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cross-bake tests, not the library test target.
+    pub(crate) fn test_access(&self, stage_id: &str) -> CacheTestAccess {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(stage_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed by binary-only cross-bake tests, not the library test target.
+    pub(crate) fn clear_test_accesses(&self) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    /// Unique cache entries successfully read or written by this build.
+    pub fn live_set(&self) -> CacheLiveSet {
+        let entries = self
+            .live_entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        CacheLiveSet {
+            entry_count: entries.len(),
+            total_bytes: entries.values().copied().fold(0u64, u64::saturating_add),
+        }
+    }
+
+    /// Warn once when this build's deduplicated read/write live set is larger
+    /// than the configured cache budget. Reporting never prunes or changes the
+    /// build; it only explains why the next build may need to evict hot entries.
+    pub fn warn_if_live_set_exceeds(&self, budget_bytes: u64) {
+        let live = self.live_set();
+        if live.total_bytes <= budget_bytes
+            || self.live_set_reported.swap(true, AtomicOrdering::AcqRel)
+        {
+            return;
+        }
+        log::warn!(
+            "[cache] build read/wrote {} across {} unique entries, exceeding cache budget {}; the next build may evict entries used by this build",
+            ByteCount(live.total_bytes),
+            live.entry_count,
+            ByteCount(budget_bytes),
+        );
     }
 
     /// Evict least-recently-used entries until the cache directory's total size
@@ -228,7 +319,7 @@ impl StageCache {
     /// touched. `*.tmp` files (in-flight `put` stages) are skipped so a
     /// concurrent write is never corrupted.
     pub fn prune_to_budget(&self, max_bytes: u64) {
-        let read_dir = match fs::read_dir(&self.dir) {
+        let read_dir = match fs::read_dir(self.dir.as_path()) {
             Ok(rd) => rd,
             Err(err) => {
                 log::warn!(
@@ -348,8 +439,53 @@ impl StageCache {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn record_test_read_attempt(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .read_attempts += 1;
+    }
+
+    #[cfg(test)]
+    fn record_test_read_hit(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .read_hits += 1;
+    }
+
+    #[cfg(test)]
+    fn record_test_write(&self, key: &CacheKey) {
+        self.test_accesses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.stage_id.clone())
+            .or_default()
+            .writes += 1;
+    }
+
     fn entry_path(&self, key: &CacheKey) -> PathBuf {
         self.dir.join(key.as_filename())
+    }
+
+    fn record_live_entry(&self, key: &CacheKey, bytes: u64) {
+        self.live_entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key.digest, bytes);
+    }
+}
+
+struct ByteCount(u64);
+
+impl fmt::Display for ByteCount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} ({})", self.0, human_bytes(self.0))
     }
 }
 
@@ -435,6 +571,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -467,6 +605,66 @@ mod tests {
         let loaded = cache.get(&key).expect("entry should be present");
         assert_eq!(loaded, payload);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_set_counts_each_read_or_written_key_once() {
+        let dir = fresh_temp_dir("live_set_dedup");
+        let cache = StageCache::new(&dir).unwrap();
+        let first = CacheKey::new("lightmap_layer", 6, b"first");
+        let second = CacheKey::new("lightmap_section", 3, b"second");
+        cache.put(&first, b"1234");
+        cache.put(&first, b"1234");
+        assert_eq!(cache.get(&first), Some(b"1234".to_vec()));
+        cache.put(&second, b"12345678");
+        assert_eq!(cache.get(&second), Some(b"12345678".to_vec()));
+
+        assert_eq!(
+            cache.live_set(),
+            CacheLiveSet {
+                entry_count: 2,
+                total_bytes: (HEADER_BYTES * 2 + 12) as u64,
+            }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_set_warning_is_exactly_once_and_names_total_and_budget() {
+        let dir = fresh_temp_dir("live_set_warning");
+        let cache = StageCache::new(&dir).unwrap();
+        let key = CacheKey::new("lightmap_layer", 6, b"large");
+        cache.put(&key, &[0; 32]);
+        let total = (HEADER_BYTES + 32) as u64;
+        let budget = total - 1;
+        let capture = LogCapture::start();
+
+        cache.warn_if_live_set_exceeds(budget);
+        cache.warn_if_live_set_exceeds(budget);
+
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!("[cache] build read/wrote {total} ({})", human_bytes(total)),
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!("exceeding cache budget {budget} ({})", human_bytes(budget)),
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_set_under_budget_is_silent() {
+        let dir = fresh_temp_dir("live_set_under_budget");
+        let cache = StageCache::new(&dir).unwrap();
+        let key = CacheKey::new("lightmap_layer", 6, b"small");
+        cache.put(&key, b"payload");
+        let capture = LogCapture::start();
+
+        cache.warn_if_live_set_exceeds(u64::MAX);
+
+        capture.assert_not_logged(Level::Warn, "[cache] build read/wrote");
         let _ = fs::remove_dir_all(&dir);
     }
 

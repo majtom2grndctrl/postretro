@@ -462,7 +462,7 @@ mod tests {
     fn render_step(step: &StepState) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(30, 1)).unwrap();
         terminal
-            .draw(|frame| frame.render_widget(Paragraph::new(step_line(step)), frame.area()))
+            .draw(|frame| frame.render_widget(Paragraph::new(step_line(step, true)), frame.area()))
             .unwrap();
         terminal
             .backend()
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn log_records_match_pending_stage_color_and_emphasize_only_warning_prefixes() {
-        let pending = step_line(&StepState::new(descriptor(StageId::Parsing)));
+        let pending = step_line(&StepState::new(descriptor(StageId::Parsing)), false);
         let pending_foreground = pending.spans[1].style.fg;
         let info = log_line(&record("ordinary message"));
         let warn = log_line(&warning("warning message"));
@@ -1018,7 +1018,7 @@ mod tests {
             .find(|step| step.id == StageId::LightmapBake)
             .unwrap();
         assert_eq!(failed.status, StepStatus::Failed);
-        let rendered = step_line(failed);
+        let rendered = step_line(failed, false);
         assert_eq!(rendered.spans[0].content, "  ");
         assert_eq!(rendered.spans[1].content, "!   ");
         assert_eq!(rendered.spans[2].content, "Lightmap Bake");

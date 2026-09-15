@@ -26,14 +26,21 @@ use crate::animated_direct_sh_bake::{
     AnimatedDirectShBakeInputs, bake_animated_direct_sh_delta_volumes_controlled_with_tally,
 };
 use crate::bake_control::BakeControl;
+use crate::billboard_direct_scatter_bake::{
+    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_ID,
+    BillboardDirectScatterBakeInputs,
+    bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled,
+    bake_billboard_direct_scatter_volume_cached_controlled,
+};
 use crate::bvh_build::build_bvh;
 use crate::cache::StageCache;
 use crate::cell_visibility_bake::{
     CELL_VISIBILITY_STAGE_VERSION, cell_visibility_bake_cached, cell_visibility_cache_key,
 };
 use crate::chunk_light_list_bake::{
-    CHUNK_LIGHT_LIST_STAGE_VERSION, ChunkLightListInputs, bake_chunk_light_list_cached,
-    chunk_light_list_cache_key, chunk_light_list_cache_key_with_version,
+    CHUNK_LIGHT_LIST_STAGE_ID, CHUNK_LIGHT_LIST_STAGE_VERSION, ChunkLightListInputs,
+    bake_chunk_light_list_cached, chunk_light_list_cache_key,
+    chunk_light_list_cache_key_with_version,
 };
 use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
 use crate::delta_sections::{DeltaSectionConfig, PostBakeDeltaSections};
@@ -43,17 +50,22 @@ use crate::delta_sh_bake::{
 };
 use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
 use crate::direct_sh_bake::{
-    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DirectBakeInputs,
-    bake_direct_sh_delta_volumes_controlled_with_tally,
+    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DIRECT_SH_STAGE_ID, DirectBakeInputs,
+    bake_direct_sh_delta_volumes_controlled_with_tally, bake_direct_sh_volume_cached_controlled,
 };
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights, StaticBakedLights};
-use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight, ShadowType};
+use crate::lightmap_bake;
+use crate::map_data::{
+    FalloffModel, LightAnimation, LightType, MapLight, MapLightmapScaleRegion, ShadowType,
+};
 use crate::partition::{Aabb, BspLeaf, BspTree};
+use crate::pipeline::lightmap_stage;
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
 use crate::sh_bake::{ShBakeCtx, ShConfig};
+use crate::sh_group::SH_GROUP_STAGE_ID;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -624,6 +636,268 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
         placeholder
     );
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// Regression: hash-only coverage never exercised the SH and lightmap memo callers.
+#[test]
+fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
+    let (dir, cache) = fresh_cache("pre_atlas_density_scale");
+    run_pre_atlas_and_fused_cache_fixture(&cache, 0.5, &[]);
+    for stage_id in PRE_ATLAS_MEMO_STAGE_IDS {
+        let access = cache.test_access(stage_id);
+        assert!(
+            access.read_attempts > 0 && access.writes > 0,
+            "baseline must seed the real {stage_id} memo: {access:?}"
+        );
+        assert_eq!(
+            access.read_hits, 0,
+            "fresh {stage_id} cache unexpectedly hit"
+        );
+    }
+    assert_real_lightmap_section_miss(&cache, "baseline");
+
+    cache.clear_test_accesses();
+    run_pre_atlas_and_fused_cache_fixture(&cache, 0.25, &[]);
+    assert_pre_atlas_memos_hit_without_rewrite(&cache, "density edit");
+    assert_real_lightmap_section_miss(&cache, "density edit");
+
+    let region = MapLightmapScaleRegion {
+        min: [-10.0; 3],
+        max: [10.0; 3],
+        planes: Vec::new(),
+        scale: 2.0,
+    };
+    cache.clear_test_accesses();
+    run_pre_atlas_and_fused_cache_fixture(&cache, 0.5, &[region]);
+    assert_pre_atlas_memos_hit_without_rewrite(&cache, "scale-region edit");
+    assert_real_lightmap_section_miss(&cache, "scale-region edit");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const PRE_ATLAS_MEMO_STAGE_IDS: [&str; 8] = [
+    SH_GROUP_STAGE_ID,
+    INDIRECT_DELTA_SH_STAGE_ID,
+    DIRECT_SH_STAGE_ID,
+    ANIMATED_DIRECT_DELTA_SH_STAGE_ID,
+    DIRECT_SH_DELTA_STAGE_ID,
+    BILLBOARD_DIRECT_SCATTER_STAGE_ID,
+    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID,
+    CHUNK_LIGHT_LIST_STAGE_ID,
+];
+
+fn assert_pre_atlas_memos_hit_without_rewrite(cache: &StageCache, edit: &str) {
+    for stage_id in PRE_ATLAS_MEMO_STAGE_IDS {
+        let access = cache.test_access(stage_id);
+        assert!(access.read_attempts > 0, "{edit} did not probe {stage_id}");
+        assert_eq!(
+            access.read_hits, access.read_attempts,
+            "{edit} must hit every {stage_id} memo: {access:?}"
+        );
+        assert_eq!(
+            access.writes, 0,
+            "{edit} must not rewrite {stage_id}: {access:?}"
+        );
+    }
+}
+
+fn assert_real_lightmap_section_miss(cache: &StageCache, build: &str) {
+    let section = cache.test_access("lightmap_section");
+    assert_eq!(
+        section.read_attempts, 1,
+        "{build} must probe one section memo"
+    );
+    assert_eq!(section.read_hits, 0, "{build} section memo must miss");
+    assert_eq!(
+        section.writes, 1,
+        "{build} must publish the recomposed section"
+    );
+
+    let layers = cache.test_access("lightmap_layer");
+    assert!(
+        layers.read_attempts > 0,
+        "{build} must traverse real layer callers"
+    );
+    assert_eq!(layers.read_hits, 0, "{build} layer inputs must be re-keyed");
+    assert_eq!(
+        layers.writes, layers.read_attempts,
+        "{build} must replace every re-keyed layer partition"
+    );
+}
+
+fn run_pre_atlas_and_fused_cache_fixture(
+    cache: &StageCache,
+    lightmap_density: f32,
+    scale_regions: &[MapLightmapScaleRegion],
+) {
+    let lights = delta_lights();
+    let mut geometry = cube_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("pre-atlas fixture BVH");
+    let tree = empty_tree();
+    let exterior = HashSet::new();
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    let alpha_lights = AlphaLightsNs::from_lights(&lights);
+    let sh_config = ShConfig { probe_spacing: 2.0 };
+    let selection = EntityShadowLightsSection {
+        light_indices: vec![0, 1],
+    };
+
+    {
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        crate::sh_group::bake_sh_volume_grouped_controlled(
+            &sh_ctx,
+            &sh_config,
+            Some(cache),
+            &control(),
+        );
+
+        let indirect_inputs = DeltaBakeInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &animated_lights,
+        };
+        let (indirect, _) = bake_delta_sh_volumes_controlled_with_tally(
+            &indirect_inputs,
+            &sh_config,
+            Some(cache),
+            &control(),
+        );
+        assert!(
+            indirect.is_some(),
+            "fixture must exercise indirect delta memos"
+        );
+
+        let direct_inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        bake_direct_sh_volume_cached_controlled(
+            &direct_inputs,
+            &sh_config,
+            Some(cache),
+            &control(),
+        );
+
+        let animated_inputs = AnimatedDirectShBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            animated_lights: &animated_lights,
+        };
+        let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
+            &animated_inputs,
+            &sh_config,
+            Some(cache),
+            &control(),
+        );
+        let animated_direct =
+            animated_direct.expect("fixture must exercise animated-direct delta memos");
+
+        let (direct_delta, _) = bake_direct_sh_delta_volumes_controlled_with_tally(
+            &direct_inputs,
+            &sh_config,
+            &alpha_lights,
+            &selection,
+            Some(cache),
+            &control(),
+        );
+        assert!(
+            direct_delta.is_some(),
+            "fixture must exercise direct-delta memos"
+        );
+
+        let scatter_inputs = BillboardDirectScatterBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            animated_lights: &animated_lights,
+        };
+        assert!(
+            bake_billboard_direct_scatter_volume_cached_controlled(
+                &scatter_inputs,
+                &sh_config,
+                true,
+                Some(cache),
+                &control(),
+            )
+            .is_some(),
+            "fixture must exercise the static scatter memo"
+        );
+        assert!(
+            bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
+                &scatter_inputs,
+                &sh_config,
+                &animated_direct,
+                Some(cache),
+                &control(),
+            )
+            .is_some(),
+            "fixture must exercise the animated scatter memo"
+        );
+
+        let chunk_inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            lights: &alpha_lights,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        bake_chunk_light_list_cached(&chunk_inputs, 8.0, 64, Some(cache))
+            .expect("fixture chunk-light-list bake");
+    }
+
+    let prepared = lightmap_bake::prepare_atlas(
+        &mut geometry,
+        &static_lights,
+        lightmap_density,
+        scale_regions,
+    )
+    .expect("fixture atlas preparation");
+    let args = crate::parse_args_from(
+        ["fixture.map", "--verbose", "--soft-shadow-samples", "4"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("fixture arguments");
+    let config = lightmap_bake::LightmapConfig {
+        lightmap_density,
+        area_sample_count: 4,
+        uncompressed_irradiance: true,
+        direction_texel_scale: lightmap_bake::DIRECTION_TEXEL_SCALE,
+    };
+    let output = lightmap_stage::bake_fused_prepared(
+        &args,
+        Some(cache),
+        &control(),
+        &control(),
+        &mut geometry,
+        &static_lights,
+        &alpha_lights,
+        Some(&selection),
+        &bvh,
+        &primitives,
+        &config,
+        prepared,
+    )
+    .expect("fixture fused lighting stage");
+    assert!(
+        output.shadowmask.is_some(),
+        "fixture must traverse fused shadowmask packing"
+    );
 }
 
 #[test]

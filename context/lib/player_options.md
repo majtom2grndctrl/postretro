@@ -41,7 +41,11 @@ No save-on-change occurs at runtime until the E13 settings menu is wired. The bo
 
 ## 4. E13 Settings Menu Seam
 
-`PlayerOptions` is the store the E13 settings menu reads and writes. The options module ships the store and its boot wiring; the menu ships the UI, controls, and save-on-change triggers. These are distinct deliverables.
+`PlayerOptions` is the store the settings menu reads and writes. The options module ships the store and its boot wiring; the menu ships the UI, controls, and save-on-change triggers. These are distinct deliverables.
+
+**Seam mechanism (in build).** The menu never writes `PlayerOptions` directly — the UI module originates no store write (`ui.md` §3). The engine exposes writable `options.*` slots on `getGameState()`, seeded from `PlayerOptions` when the menu opens; controls write them via `setState` at the game-logic stage; an app-side options bridge observes a changed slot, updates the matching `PlayerOptions` field, applies it to the owning subsystem, and saves on change through the atomic save path. The slot is the UI-facing working copy; `PlayerOptions` / `settings.toml` is the authoritative persisted home, re-seeded into the slots on each open (not a live two-way sync).
+
+**Graphics quality lives here.** Player-facing graphics-quality tiers (e.g. shadow, fog) are `PlayerOptions` fields, not a separate renderer-side store — they are player preference under the two-store boundary (§1). The renderer's own applied state is reached from the store through an app-side translation chokepoint; the renderer stays sole GPU owner. Whether a tier applies live or on reload is per-setting: a live renderer setter where one exists, or a value re-seeded at renderer full-init. Runtime tunability is bounded by what the renderer can change without shader permutation — some quality knobs are fixed at build (WGSL-pinned) and cannot vary at runtime.
 
 ---
 

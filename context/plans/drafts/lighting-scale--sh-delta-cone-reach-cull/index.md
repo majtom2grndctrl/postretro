@@ -57,16 +57,41 @@ byte-for-byte identical to today's.
 ### Automated
 - [ ] `stress-warren-hallway-inspection.map` compiles to completion within the default
   `--sh-delta-working-set-max-size` (16 GiB); today it is refused.
+- [ ] The first-slice measured post-cull working-set projection for the warren is recorded in
+  `research.md`; if it does not clear the default 16 GiB, the shortfall is reported (a Phase-2
+  / budget-note owner call) rather than the default being raised.
+- [ ] `DEFAULT_MAX_WORKING_SET_BYTES` stays exactly 16 GiB (constant/grep guard), so the
+  compile-success row proves the cone cull admitted the warren — not a raised budget.
 - [ ] On a spot-light fixture, the cone-culled CSR equals the CSR left after
   `drop_direct_zero_entries` runs on the unculled bake — the cull removes exactly the zero
   set, nothing more.
+- [ ] The plan-phase direct CSR that feeds the working-set gate equals the id-41 bake's CSR
+  (offsets and flat light list); a fixture where they would otherwise differ is caught, so the
+  gate cannot admit on a small plan while the bake materializes a larger dense set.
 - [ ] A fixture that emits id-41 (and one that emits id-45) produces a byte-identical `.prl`
-  before and after this change, cold and warm cache; SHA-256 recorded in `research.md`.
-- [ ] The id-27 indirect CSR is unchanged by this change (transport-awareness: bounce is not
-  cone-clamped).
+  before and after this change, cold and warm cache; SHA-256 recorded in `research.md`, beside
+  the pinned BC6H run-to-run determinism assumption (research.md R8).
+- [ ] The id-27 indirect CSR is unchanged by this change, including for an animated spot light
+  that also appears in id-45 (bounce is never cone-clamped; transport is per-decompose-call)
+  (research.md R5).
+- [ ] `DIRECT_SH_STAGE_VERSION` (and the delta stage version) advance with the reach-cull
+  change: a warm cache written by the pre-change binary misses cleanly, and two warm builds
+  under the new predicate emit byte-identical `.prl` (research.md R7).
+
+**Cone boundary (conservative — never exclude a cell any of whose probes are in-cone)**
 - [ ] Edge — a spot whose outer cone lies entirely outside a candidate cell's AABB: that cell
   is absent from the direct CSR. A light every one of whose cells is culled: one canonical
-  entry is retained. A cell with zero id-34-valid probes: skipped.
+  entry is retained (research.md R4). A cell with zero id-34-valid probes: skipped.
+- [ ] Edge — a spot whose cone-frustum only grazes a cell's AABB with no id-34-valid probe
+  strictly in-cone: the cell is absent, or kept-then-removed by `drop_direct_zero_entries` —
+  never emitted with nonzero payload, and never excluded when a valid probe is in-cone
+  (research.md R2).
+- [ ] A cell with ≥1 id-34-valid probe in-cone and ≥1 out-of-cone is retained in the direct
+  CSR, emitted payload byte-identical to today (research.md R3).
+
+**Regression guards**
+- [ ] A `light_sun` (Directional) is never cone-culled: it retains every affinity cell
+  overlapping the world AABB, and its id-35/id-41 contribution is byte-identical (research.md R6).
 
 ## Path
 - **Seams.** `cells_for_light` / `light_aabb` / `cell_range` (`affinity_grid.rs`);

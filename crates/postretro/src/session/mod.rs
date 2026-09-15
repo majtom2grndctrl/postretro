@@ -198,10 +198,9 @@ pub(crate) struct Session {
 
     /// Resolved `settings.toml` path. Inner `Option` is genuine runtime absence:
     /// `None` when the platform exposes no config directory (the engine then runs
-    /// on in-memory defaults without persistence). Held for the future M13
-    /// settings menu's save path; no reader yet.
+    /// on in-memory defaults without persistence). `OptionsBridge` uses this path
+    /// for debounced, options-close, and clean-exit saves.
     /// See: context/lib/player_options.md
-    #[allow(dead_code)]
     pub(crate) settings_path: Option<PathBuf>,
 
     /// Currently committed mod frontend declaration. Successful staged mod-init
@@ -367,10 +366,10 @@ impl Session {
     pub(crate) fn build(raw_args: &[String], boot_timings: &mut StartupTimings) -> Result<Self> {
         // 1. Player options load first so the loaded look preferences seed the
         //    `InputSystem` constructed below. On first boot (no file present),
-        //    write defaults so the human gets an editable starting file — the only
-        //    `save` call until the M13 settings menu lands. A missing config dir
-        //    or a save failure is logged, not fatal: boot proceeds on in-memory
-        //    defaults. See: context/lib/player_options.md §3.
+        //    write defaults so the human gets an editable starting file. Runtime
+        //    changes save after the debounce window and flush on options close or
+        //    clean exit. A missing config dir or save failure is logged, not fatal:
+        //    boot proceeds on in-memory defaults. See: context/lib/player_options.md §3.
         let settings_path = options::settings_path();
         let player_options = load_player_options(settings_path.as_deref());
 

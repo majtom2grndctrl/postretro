@@ -8,7 +8,7 @@ use glam::Mat4;
 use postretro_lighting::light_space_matrix;
 pub use postretro_lighting::{NO_SHADOW_SLOT, SHADOW_NEAR_CLIP};
 
-/// Number of shadow-map slots in the pool. Re-tunable.
+/// Fixed shadow-map slot count. Must match the WGSL light-space matrix array; change both together.
 pub const SHADOW_POOL_SIZE: usize = 96;
 
 /// Depth format for shadow maps.

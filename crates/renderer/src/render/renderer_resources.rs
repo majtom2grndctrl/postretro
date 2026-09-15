@@ -455,10 +455,10 @@ impl Renderer {
         // buffers. The forward `lighting_bind_group` above is rebuilt for the same
         // reason; this mirrors it for the mesh pass so a level swap does not leave
         // the mesh group-2 bind group dangling at the prior level's buffers.
-        // b5–b8 re-reference the SAME pool-owned shadow resources (stable for the
-        // renderer's lifetime — the pools are never recreated), supplied here so the
-        // shadow bindings rebind alongside the reallocated b0–b4. The cube view is
-        // `Some` iff `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
+        // b5–b8 re-reference the current pool-owned shadow resources. Supplying
+        // them here rebinds the mesh pass after reallocated b0–b4 buffers or any
+        // level-boundary pool replacement. The cube view is `Some` iff
+        // `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
         let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
         let promoted_spot_cache = full
             .promoted_depth_cache

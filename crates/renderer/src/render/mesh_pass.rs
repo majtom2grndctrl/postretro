@@ -1412,10 +1412,9 @@ impl MeshPass {
     /// iff `self.cube_array_supported` (the `Some`-iff-layout invariant). Passing
     /// `Some` on a no-cube layout (or `None` on a cube layout) is a bind-group /
     /// layout mismatch wgpu rejects; the assert below pins the invariant before the
-    /// GPU sees it. The pool resources are stable for the renderer's lifetime (the
-    /// pools are built once in `Renderer::new` and never recreated — not on resize,
-    /// not on level load), so these b5–b8 references only ever rebind here alongside
-    /// the b0–b4 reallocation rebind on level load.
+    /// GPU sees it. A level install may reallocate the spot pool for a pending
+    /// shadow-quality change, so rebuild this group against the current pool resources
+    /// after each level install/reallocation, alongside the b0–b4 rebind.
     #[allow(clippy::too_many_arguments)]
     pub fn rebuild_light_bind_group(
         &mut self,

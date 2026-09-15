@@ -484,13 +484,12 @@ pub(crate) fn build_full_renderer(
     // (b1), and forward's scripted-descriptor (b2) / anim-sample (b3) buffers.
     // Rebuilt on level load wherever those buffers reallocate (see
     // `set_geometry`).
-    // b5–b8 alias the SAME pool-owned shadow resources forward binds at its
-    // group 5: the spot pool's D2-array depth view (b5), its comparison
-    // sampler (b6), its light-space-matrices uniform buffer (b7), and the cube
-    // pool's `CubeArray` sampling view (b8 — `Some` iff `cube_array_supported`,
-    // the `Some`-iff-layout invariant). These pool resources are stable for the
-    // renderer's lifetime (the pools are never recreated), so they only ever
-    // rebind here alongside the b0–b4 reallocation rebind on level load.
+    // b5–b8 initially bind the SAME pool-owned shadow resources forward uses at
+    // group 5: the spot pool's D2-array depth view (b5), comparison sampler
+    // (b6), and light-space-matrices buffer (b7), plus the cube pool's
+    // `CubeArray` sampling view (b8 — `Some` iff `cube_array_supported`, the
+    // `Some`-iff-layout invariant). A later level install rebinds these entries
+    // when it replaces the spot pool for a pending quality change.
     let promoted_spot_cache = promoted_depth_cache
         .as_ref()
         .map(PromotedDepthCache::spot_sampled_view)

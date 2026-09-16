@@ -411,24 +411,55 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
         3,
         "the generated script targets exactly three of the six animated warren lights:\n{diagnostic}",
     );
-    for section in [
-        "DeltaShVolumes (id 27) dense",
-        "DirectShDeltaVolumes (id 41) dense",
-        "AnimatedDirectShDeltaVolumes (id 45) dense",
-    ] {
-        assert!(
-            diagnostic.contains(section),
-            "projection must report {section}:\n{diagnostic}",
+    let dense_bytes = |section: &str| {
+        let marker = format!("{section} dense ");
+        assert_eq!(
+            count_occurrences(&diagnostic, &marker),
+            1,
+            "projection must report {section} exactly once:\n{diagnostic}",
         );
-    }
-    let peak_marker = "estimated peak ";
-    let peak = diagnostic
-        .split(peak_marker)
-        .nth(1)
-        .and_then(|tail| tail.split_whitespace().next())
-        .and_then(|bytes| bytes.parse::<u64>().ok())
-        .expect("projection diagnostic must expose its estimated peak bytes");
-    assert!(peak > 0, "the warren projection must remain non-empty");
+        diagnostic
+            .split_once(&marker)
+            .and_then(|(_, tail)| tail.split_once(" bytes"))
+            .and_then(|(bytes, _)| bytes.parse::<u64>().ok())
+            .unwrap_or_else(|| {
+                panic!("projection must report dense bytes after `{marker}`:\n{diagnostic}")
+            })
+    };
+    assert_eq!(dense_bytes("DeltaShVolumes (id 27)"), 363_184_128);
+    assert_eq!(dense_bytes("DirectShDeltaVolumes (id 41)"), 1_616_615_424);
+    assert_eq!(
+        dense_bytes("AnimatedDirectShDeltaVolumes (id 45)"),
+        202_033_152
+    );
+
+    let refusal_marker = "SH delta working-set gate refused before dense baking: estimated peak ";
+    assert_eq!(
+        count_occurrences(&diagnostic, refusal_marker),
+        1,
+        "projection must emit one pre-base-SH refusal diagnostic:\n{diagnostic}",
+    );
+    let refusal = diagnostic
+        .split_once(refusal_marker)
+        .map(|(_, refusal)| refusal)
+        .expect("projection diagnostic must expose its refusal details");
+    let (peak, refusal) = refusal
+        .split_once(" bytes exceeds budget 0 bytes (")
+        .and_then(|(peak, tail)| peak.parse::<u64>().ok().map(|peak| (peak, tail)))
+        .expect("projection refusal must expose the zero-budget estimated peak");
+    assert_eq!(peak, 6_545_498_112);
+    let (cumulative, copy_chain_factor) = refusal
+        .split_once(" cumulative dense bytes × copy-chain factor ")
+        .and_then(|(cumulative, factor)| {
+            cumulative.parse::<u64>().ok().zip(
+                factor
+                    .split_once(')')
+                    .and_then(|(factor, _)| factor.parse::<u64>().ok()),
+            )
+        })
+        .expect("projection refusal must expose cumulative dense bytes and copy-chain factor");
+    assert_eq!(cumulative, 2_181_832_704);
+    assert_eq!(copy_chain_factor, 3);
     assert!(
         !diagnostic.contains("SH volume bake..."),
         "zero-budget projection must refuse before the base-SH ray stage:\n{diagnostic}",

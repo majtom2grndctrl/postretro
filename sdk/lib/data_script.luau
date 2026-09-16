@@ -351,7 +351,7 @@ export type LevelManifest = {
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
-  -- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
+  -- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   -- entries are logged and skipped.
   uiTrees: {ModUiTree}?,

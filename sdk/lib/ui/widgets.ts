@@ -925,6 +925,13 @@ export function resolveReactionName(value: unknown, factory: string): string {
 
 // --- Slider -----------------------------------------------------------------
 
+export type SliderValueDisplay = {
+  min: number;
+  max: number;
+  suffix?: string;
+  decimalPlaces?: number;
+};
+
 /**
  * Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot). Name-XOR
  * (M13 G2): exactly one of `label` / `labelledBy` is required, mirroring
@@ -936,6 +943,8 @@ export type SliderProps = {
   min: number;
   max: number;
   step: number;
+  /** Maps the raw slider range into a presentation-only numeric readout. */
+  valueDisplay?: SliderValueDisplay;
   capturesNav?: string[];
   focusNeighbors?: FocusNeighborsProp;
   disabled?: boolean;
@@ -980,6 +989,28 @@ export function Slider(props: SliderProps): WidgetDescriptor {
   out.min = props.min;
   out.max = props.max;
   out.step = props.step;
+  if (props.valueDisplay !== undefined) {
+    requireObject(props.valueDisplay, "Slider.valueDisplay");
+    requireFiniteNumber(props.valueDisplay.min, "valueDisplay.min", "Slider");
+    requireFiniteNumber(props.valueDisplay.max, "valueDisplay.max", "Slider");
+    const display: Record<string, unknown> = {
+      min: props.valueDisplay.min,
+      max: props.valueDisplay.max,
+    };
+    if (props.valueDisplay.suffix !== undefined) {
+      requireString(props.valueDisplay.suffix, "valueDisplay.suffix", "Slider");
+      if (props.valueDisplay.suffix.length > 0) display.suffix = props.valueDisplay.suffix;
+    }
+    if (props.valueDisplay.decimalPlaces !== undefined) {
+      const places = props.valueDisplay.decimalPlaces;
+      requireFiniteNumber(places, "valueDisplay.decimalPlaces", "Slider");
+      if (!Number.isInteger(places) || places < 0 || places > 6) {
+        throw new Error("Slider: `valueDisplay.decimalPlaces` must be an integer between 0 and 6");
+      }
+      display.decimalPlaces = places;
+    }
+    out.valueDisplay = display;
+  }
   if (props.capturesNav !== undefined) {
     if (!Array.isArray(props.capturesNav)) {
       throw new Error("Slider: `capturesNav` must be a string array");

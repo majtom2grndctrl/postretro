@@ -31,8 +31,8 @@ pub enum ScopeTier {
 }
 
 /// One registered tree plus its registration attributes: whether it composes as
-/// an always-on base layer every frame (the HUD case) rather than only when
-/// pushed onto the modal stack.
+/// an always-on base layer every frame (the HUD case), and whether it visually
+/// occludes lower pushed entries while retained on the modal stack.
 #[derive(Debug, Clone)]
 struct RegisteredTree {
     descriptor: AnchoredTree,
@@ -41,6 +41,9 @@ struct RegisteredTree {
     /// A base/always-on layer NEVER captures input or takes focus — that derives
     /// from the pushed modal stack alone (see `ModalStack`).
     always_on: bool,
+    /// When pushed, visually occlude lower pushed entries without removing
+    /// them. Popping this entry reveals the retained lower entry again.
+    hide_below: bool,
 }
 
 #[derive(Debug, Default)]
@@ -116,6 +119,17 @@ impl UiTreeRegistry {
         tier: ScopeTier,
         always_on: bool,
     ) {
+        self.register_with_presentation(name, tree, tier, always_on, false);
+    }
+
+    fn register_with_presentation(
+        &mut self,
+        name: impl Into<String>,
+        tree: AnchoredTree,
+        tier: ScopeTier,
+        always_on: bool,
+        hide_below: bool,
+    ) {
         let name = name.into();
         let entry = self.trees.entry(name.clone()).or_default();
         if tier == ScopeTier::Mod && entry.mod_scope.is_none() && entry.engine.is_some() {
@@ -128,6 +142,7 @@ impl UiTreeRegistry {
             RegisteredTree {
                 descriptor: tree,
                 always_on,
+                hide_below,
             },
         );
     }
@@ -145,9 +160,10 @@ impl UiTreeRegistry {
             name,
             tree,
             always_on,
+            hide_below,
         } in trees
         {
-            self.register(name, tree, tier, always_on);
+            self.register_with_presentation(name, tree, tier, always_on, hide_below);
         }
     }
 
@@ -162,6 +178,13 @@ impl UiTreeRegistry {
             .get(name)
             .and_then(TieredRegisteredTree::resolved)
             .map(|(tier, t)| (tier, &t.descriptor))
+    }
+
+    fn resolve_pushable(&self, name: &str) -> Option<(ScopeTier, &AnchoredTree, bool)> {
+        self.trees
+            .get(name)
+            .and_then(TieredRegisteredTree::resolved)
+            .map(|(tier, tree)| (tier, &tree.descriptor, tree.hide_below))
     }
 
     /// The always-on trees, each as a base-layer snapshot entry. The compose step
@@ -234,6 +257,7 @@ struct StackedTree {
     descriptor: AnchoredTree,
     tier: ScopeTier,
     on_commit: Option<String>,
+    hide_below: bool,
 }
 
 /// The gameplay-UI modal stack: a registry of named trees plus the live stack of
@@ -281,9 +305,11 @@ impl ModalStack {
             name,
             tree,
             always_on,
+            hide_below,
         } in trees
         {
-            self.registry.register(name, tree, tier, always_on);
+            self.registry
+                .register_with_presentation(name, tree, tier, always_on, hide_below);
         }
     }
 
@@ -326,7 +352,7 @@ impl ModalStack {
     /// always-on overlays), engine-tier first, then mod-tier, then level-tier,
     /// each in a deterministic per-name order. The compose step appends these as
     /// the bottom layers of the per-frame snapshot, with pushed modal entries
-    /// (`entries`) on top.
+    /// (`visible_entries`) on top.
     ///
     /// CAPTURE/FOCUS INVARIANT: these are draw-only base layers — they are NOT on
     /// the pushed modal stack, which is the SOLE source of `top_capture_mode` /
@@ -342,10 +368,10 @@ impl ModalStack {
     /// carried onto the entry so the App can fire it from the text-entry commit
     /// path.
     pub fn push_named(&mut self, name: &str, on_commit: Option<String>) {
-        let Some((tier, descriptor)) = self
+        let Some((tier, descriptor, hide_below)) = self
             .registry
-            .resolve_with_tier(name)
-            .map(|(tier, descriptor)| (tier, descriptor.clone()))
+            .resolve_pushable(name)
+            .map(|(tier, descriptor, hide_below)| (tier, descriptor.clone(), hide_below))
         else {
             log::warn!(
                 "[UI] pushTree('{name}') — no tree registered under that name; ignoring (no panic)"
@@ -357,6 +383,7 @@ impl ModalStack {
             descriptor,
             tier,
             on_commit,
+            hide_below,
         });
     }
 
@@ -365,10 +392,10 @@ impl ModalStack {
     /// and engine fallback menus suppress gameplay through the existing modal
     /// capture path even if an authored tree omitted `captureMode`.
     pub(crate) fn push_named_capturing(&mut self, name: &str) -> bool {
-        let Some((tier, mut descriptor)) = self
+        let Some((tier, mut descriptor, hide_below)) = self
             .registry
-            .resolve_with_tier(name)
-            .map(|(tier, descriptor)| (tier, descriptor.clone()))
+            .resolve_pushable(name)
+            .map(|(tier, descriptor, hide_below)| (tier, descriptor.clone(), hide_below))
         else {
             log::warn!("[UI] frontend menu '{name}' is not registered; ignoring (no panic)");
             return false;
@@ -379,6 +406,7 @@ impl ModalStack {
             descriptor,
             tier,
             on_commit: None,
+            hide_below,
         });
         true
     }
@@ -415,6 +443,7 @@ impl ModalStack {
             descriptor,
             tier: ScopeTier::Engine,
             on_commit: None,
+            hide_below: false,
         });
     }
 
@@ -481,11 +510,34 @@ impl ModalStack {
         self.stack.last().and_then(|t| t.on_commit.as_deref())
     }
 
-    /// The live stack as snapshot entries, bottom→top. The App prepends the
-    /// always-on HUD entry (the bottom-most gameplay UI layer) ahead of these
-    /// modal overlays when composing the per-frame snapshot.
+    /// Every retained live-stack entry, bottom→top. This is the ownership view:
+    /// hidden lower entries remain here so app-side presentation state stays
+    /// alive until the entry is actually popped.
     pub fn entries(&self) -> Vec<UiTreeEntry> {
-        self.stack
+        Self::snapshot_entries(&self.stack)
+    }
+
+    /// Borrow every retained pushed descriptor for ownership reconciliation
+    /// without cloning snapshot entries on the per-frame path.
+    pub fn retained_descriptors(&self) -> impl Iterator<Item = &AnchoredTree> {
+        self.stack.iter().map(|tree| &tree.descriptor)
+    }
+
+    /// The live-stack entries that should draw, bottom→top. The last
+    /// `hideBelow` entry becomes the visible floor while earlier entries remain
+    /// retained in [`Self::entries`]. The App prepends always-on layers ahead of
+    /// these modal overlays, so `hideBelow` never suppresses a HUD/base layer.
+    pub fn visible_entries(&self) -> Vec<UiTreeEntry> {
+        let first_visible = self
+            .stack
+            .iter()
+            .rposition(|tree| tree.hide_below)
+            .unwrap_or(0);
+        Self::snapshot_entries(&self.stack[first_visible..])
+    }
+
+    fn snapshot_entries(stack: &[StackedTree]) -> Vec<UiTreeEntry> {
+        stack
             .iter()
             .map(|t| UiTreeEntry {
                 name: t.name.clone(),
@@ -532,6 +584,7 @@ mod tests {
                 gap: SpacingValue::Literal(0.0),
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
+                width: None,
                 fill: None,
                 border: None,
                 id: None,
@@ -756,6 +809,46 @@ mod tests {
         // The top entry carries the capturing mode; the bottom passes through.
         assert_eq!(snapshot.trees[0].capture_mode, CaptureMode::Passthrough);
         assert_eq!(snapshot.trees[1].capture_mode, CaptureMode::Capture);
+    }
+
+    #[test]
+    fn hide_below_omits_lower_pushed_trees_until_pop() {
+        let mut stack = ModalStack::new();
+        stack
+            .registry_mut()
+            .register("hud", passthrough(), ScopeTier::Engine, true);
+        register_pushable(&mut stack, "title", capturing());
+        stack.register_script_trees(
+            [RegisteredUiTree {
+                name: "options".to_string(),
+                tree: capturing(),
+                always_on: false,
+                hide_below: true,
+            }],
+            ScopeTier::Mod,
+        );
+
+        stack.push_named("title", None);
+        stack.push_named("options", None);
+
+        assert!(stack.contains_pushed("title"));
+        assert_eq!(stack.entries().len(), 2, "both entries stay retained");
+        assert_eq!(stack.visible_entries().len(), 1);
+        assert_eq!(stack.visible_entries()[0].name, "options");
+        let mut composed = stack.always_on_layers();
+        composed.extend(stack.visible_entries());
+        assert_eq!(
+            composed
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hud", "options"],
+            "hideBelow affects pushed entries without suppressing base layers"
+        );
+
+        stack.pop();
+        assert_eq!(stack.entries().len(), 1);
+        assert_eq!(stack.entries()[0].name, "title");
     }
 
     #[test]
@@ -1013,6 +1106,7 @@ mod tests {
             name: name.to_string(),
             tree: identified(CaptureMode::Passthrough, root_id),
             always_on,
+            hide_below: false,
         }
     }
 

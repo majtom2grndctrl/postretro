@@ -23,10 +23,9 @@ use super::widget_meta::{
 
 impl UiTree {
     /// Export the flat hit-test / focus rect list for this tree against the
-    /// descriptor it was built from. Walks the descriptor tree and the taffy tree
-    /// in lockstep (they are structurally 1:1 — `build_node` maps each widget to
-    /// exactly one node, children in order) so each focusable node's authored or
-    /// auto-generated id pairs with its computed device-pixel rect.
+    /// descriptor it was built from. Walks descriptor nodes with their matching
+    /// outer taffy nodes in lockstep; private visual descendants (such as a
+    /// slider's track and readout) remain inside that outer focus rect.
     ///
     /// Uses the SAME device-pixel projection as the draw (`project_rect`,
     /// `canvas_origin`, `device_scale`) so a hit lands on exactly the rect drawn.

@@ -837,13 +837,18 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModUiTree")
-        .doc("A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time.")
+        .doc("A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and stack-presentation flags. A malformed entry is logged and skipped at load time.")
         .field("name", "String", "Registry name the render path resolves the tree by. Required.")
         .field("tree", "AnchoredTree", "The placement envelope + widget tree (the value produced by the `Tree` factory). Required.")
         .field(
             "alwaysOn?",
             "bool",
             "Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.",
+        )
+        .field(
+            "hideBelow?",
+            "bool",
+            "Whether pushing this tree hides lower pushed trees while retaining them for pop/back navigation. Optional; defaults to false.",
         )
         .finish();
     registry

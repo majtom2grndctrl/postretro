@@ -449,12 +449,16 @@ pub fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
 /// frame" case). Present: format the value to a string and, if `bind.format` is
 /// `Some(template)`, substitute its single `{}` with that string; with no format,
 /// the value's bare string is drawn.
+/// When `presentation` is present and the source resolves to a number, map and
+/// format that number for display only. Non-numeric values preserve the ordinary
+/// Text fallback behavior.
 pub fn resolve_text(
     bind: Option<&TextBind>,
     bind_scope: Option<&str>,
     fallback: &str,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
+    presentation: Option<&super::node_context::NumberPresentation>,
 ) -> String {
     let Some(bind) = bind else {
         return fallback.to_string();
@@ -462,12 +466,31 @@ pub fn resolve_text(
     let Some(value) = lookup_bound(&bind.source, bind_scope, slot_values, cell_values) else {
         return fallback.to_string();
     };
-    let rendered = slot_value_string(value, bind.decimal_places);
+    let rendered = presented_slot_value_string(value, bind.decimal_places, presentation);
     match &bind.format {
         // Single-placeholder substitution; multi-value templates are out of
         // scope, so only the first `{}` is replaced.
         Some(template) => template.replacen("{}", &rendered, 1),
         None => rendered,
+    }
+}
+
+pub(crate) fn presented_slot_value_string(
+    value: &SlotValue,
+    decimal_places: Option<u8>,
+    presentation: Option<&super::node_context::NumberPresentation>,
+) -> String {
+    match (value, presentation) {
+        (SlotValue::Number(value), Some(presentation)) => {
+            let mapped = presentation.map(*value);
+            let mut rendered = slot_value_string(
+                &SlotValue::Number(mapped),
+                presentation.decimal_places.or(decimal_places),
+            );
+            rendered.push_str(&presentation.suffix);
+            rendered
+        }
+        _ => slot_value_string(value, decimal_places),
     }
 }
 

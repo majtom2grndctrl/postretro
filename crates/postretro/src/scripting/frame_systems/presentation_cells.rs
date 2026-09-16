@@ -1,8 +1,8 @@
 // App-side presentation-cell store backing `ui.createLocalState()`.
 // A presentation-only map keyed by `(scopeId, cellName)`, seeded from
-// a tree's declared `localState` initials when its scope is first composed,
+// a tree's declared `localState` initials when its scope is first retained,
 // written by the `CellWrite` system reaction at the game-logic stage, and
-// reconciled (cleared) against the composed-scope-id set each frame. Published
+// reconciled (cleared) against the retained-scope-id set each frame. Published
 // onto the UI read snapshot as `cell_values` so a `{ local }` bind resolves
 // against the live cell value without the descriptor (compared by the retained
 // reuse gate) ever changing.
@@ -21,14 +21,14 @@ use postretro_ui::tree::CellValues;
 /// The app-side presentation-cell store. Keyed by `(scopeId, cellName)`; values
 /// are the same `SlotValue` shapes a `{ local }` bind resolves. Presentation-only
 /// and engine-frame-scoped — it is seeded from declared initials, written by the
-/// `CellWrite` reaction, and pruned when a scope is no longer composed.
+/// `CellWrite` reaction, and pruned when its owning tree is no longer retained.
 #[derive(Debug, Default)]
 pub(crate) struct PresentationCellStore {
     cells: HashMap<(String, String), SlotValue>,
     /// Scope ids that have already been seeded this engine run. Seeding from the
-    /// declared initials happens exactly once per scope id: re-composing the same
+    /// declared initials happens exactly once per scope id: reconciling the same
     /// scope (a structurally-identical retained-diff reuse) must NOT reset a cell a
-    /// `.set()` already changed. A scope dropping out of the composed set clears
+    /// `.set()` already changed. A scope dropping out of the retained set clears
     /// this so a later re-introduction re-seeds from initials.
     seeded: HashSet<String>,
 }
@@ -52,7 +52,7 @@ impl PresentationCellStore {
     }
 
     /// Seed a scope's declared cells from `local_state` the FIRST time the scope is
-    /// composed. Idempotent per scope id (tracked in `seeded`): a second compose of
+    /// retained. Idempotent per scope id (tracked in `seeded`): a second pass over
     /// the same scope is a no-op, so a `.set()` value is never clobbered by a
     /// re-seed. An individual cell is only seeded when absent, so a write that
     /// landed before the first seed (same-frame ordering) also survives.
@@ -68,14 +68,15 @@ impl PresentationCellStore {
         }
     }
 
-    /// Reconcile the store against the set of scope ids composed this frame
-    /// (gathered at the `main.rs` compose step): seed any newly-composed scope from
+    /// Reconcile the store against the set of scope ids retained this frame
+    /// (gathered at the `main.rs` stack/snapshot seam): seed any newly-retained scope from
     /// its declared initials, and DROP every cell whose scope id is no longer
     /// present. A scope's disappearance clears both its cells and its seeded mark,
     /// so a later re-introduction re-seeds fresh.
     ///
-    /// `trees` are the frame's composed descriptor trees (every modal-stack +
-    /// always-on layer); the walk collects each `localState` scope declaration.
+    /// `trees` are the frame's retained descriptor trees (every pushed entry,
+    /// including visually occluded ones, plus composed always-on layers); the
+    /// walk collects each `localState` scope declaration.
     pub(crate) fn reconcile(&mut self, trees: &[&AnchoredTree]) {
         let mut declarations: HashMap<String, &LocalState> = HashMap::new();
         for tree in trees {
@@ -85,7 +86,7 @@ impl PresentationCellStore {
             collect_local_states(&tree.root, &mut declarations);
         }
 
-        // Seed newly-composed scopes (idempotent per scope id).
+        // Seed newly-retained scopes (idempotent per scope id).
         // Sort for deterministic seed-warn ordering and stable behavior.
         let mut scopes: Vec<&String> = declarations.keys().collect();
         scopes.sort();
@@ -93,7 +94,7 @@ impl PresentationCellStore {
             self.seed_scope(declarations[scope]);
         }
 
-        // Drop cells whose declaring scope is no longer composed.
+        // Drop cells whose declaring scope is no longer retained.
         let present: HashSet<&str> = declarations.keys().map(String::as_str).collect();
         self.cells
             .retain(|(scope, _), _| present.contains(scope.as_str()));
@@ -142,7 +143,7 @@ fn cell_init_to_slot_value(init: &CellInit) -> SlotValue {
 }
 
 /// Depth-first collect every container's `localState` declaration under `widget`,
-/// keyed by scope id. A duplicate scope id across the composed trees keeps the
+/// keyed by scope id. A duplicate scope id across the retained trees keeps the
 /// first seen (deterministic via the caller's iteration order); duplicate scope
 /// ids are an authoring concern, not an engine error.
 fn collect_local_states<'a>(widget: &'a Widget, out: &mut HashMap<String, &'a LocalState>) {
@@ -201,6 +202,7 @@ mod tests {
                 gap: SpacingValue::Literal(0.0),
                 padding: SpacingValue::Literal(0.0),
                 align: Align::Start,
+                width: None,
                 fill: None,
                 border: None,
                 id: None,
@@ -237,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_seeds_declared_initials_on_first_compose() {
+    fn reconcile_seeds_declared_initials_when_first_retained() {
         let mut store = PresentationCellStore::new();
         let tree = scoped_tree("counter", &[("count", CellInit::Number(7.0))]);
         store.reconcile(&[&tree]);
@@ -249,12 +251,12 @@ mod tests {
     }
 
     #[test]
-    fn write_updates_cell_and_survives_reseed_on_recompose() {
+    fn write_updates_cell_and_survives_reconcile() {
         let mut store = PresentationCellStore::new();
         let tree = scoped_tree("counter", &[("count", CellInit::Number(0.0))]);
         store.reconcile(&[&tree]);
         store.write("counter".into(), "count".into(), SlotValue::Number(42.0));
-        // Recomposing the same scope (a structurally-identical reuse) must NOT
+        // Reconciling the same scope (a structurally-identical reuse) must NOT
         // reset the written cell back to its declared initial.
         store.reconcile(&[&tree]);
         assert_eq!(
@@ -266,12 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn cell_is_discarded_when_scope_no_longer_composed() {
+    fn cell_is_discarded_when_scope_no_longer_retained() {
         let mut store = PresentationCellStore::new();
         let tree = scoped_tree("counter", &[("count", CellInit::Number(3.0))]);
         store.reconcile(&[&tree]);
         store.write("counter".into(), "count".into(), SlotValue::Number(9.0));
-        // The scope drops out of the composed set: its cells clear.
+        // The scope drops out of the retained set: its cells clear.
         store.reconcile(&[]);
         assert!(store.snapshot().is_empty());
         // Re-introducing the scope re-seeds from initials (not the stale write).
@@ -287,7 +289,7 @@ mod tests {
     #[test]
     fn cell_survives_hide_show_because_reconcile_walks_the_descriptor() {
         // M13 G2 Task 2b: a `visibleWhen` flip hides a subtree via `Display::None`
-        // in the render walks ONLY — the descriptor stays composed, so `reconcile`
+        // in the render walks ONLY — the descriptor stays retained, so `reconcile`
         // (which walks `tree.root`, the descriptor, NOT the visible/taffy tree)
         // keeps the scope present and never tears down its `localState` cells. A
         // value written before a hide survives the hidden frames and is intact when
@@ -297,7 +299,7 @@ mod tests {
         store.reconcile(&[&tree]);
         store.write("panel".into(), "count".into(), SlotValue::Number(99.0));
 
-        // "Hidden" frames: the descriptor is still composed (visibility is a render
+        // "Hidden" frames: the descriptor is still retained (visibility is a render
         // concern the store never sees), so reconcile keeps the cell intact.
         store.reconcile(&[&tree]);
         store.reconcile(&[&tree]);
@@ -315,7 +317,7 @@ mod tests {
 
     #[test]
     fn write_before_first_seed_survives_same_frame_seed() {
-        // A `.set()` that lands before the scope's first compose/seed must not be
+        // A `.set()` that lands before the scope's first reconcile/seed must not be
         // clobbered by the seed (seeding only fills absent cells).
         let mut store = PresentationCellStore::new();
         store.write("counter".into(), "count".into(), SlotValue::Number(5.0));

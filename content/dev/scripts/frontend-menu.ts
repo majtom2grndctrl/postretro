@@ -8,6 +8,7 @@ import {
   Button,
   CLOSE_DIALOG_ACTION,
   EXIT_TO_DESKTOP_ACTION,
+  Grid,
   HStack,
   Slider,
   Text,
@@ -203,15 +204,24 @@ function radioChoice(id: string, label: string, checked: Predicate, onPress: str
   });
 }
 
-function optionRow(label: string, choices: ReturnType<typeof Button>[]) {
-  return VStack({ gap: 4, align: "stretch", role: "group" }, [
-    Text({ content: label, fontSize: 14 }),
-    HStack({ gap: 6, align: "stretch" }, choices),
+function optionLabel(id: string, label: string, note?: string) {
+  return VStack({ gap: 2, align: "start", role: "group" }, [
+    Text({ id, content: label, fontSize: 14 }),
+    ...(note === undefined ? [] : [Text({ content: note, fontSize: 11, color: COLOR_MUTED })]),
   ]);
+}
+
+function optionValue(control: ReturnType<typeof Button> | ReturnType<typeof Slider>) {
+  return HStack({ align: "center" }, [control]);
+}
+
+function optionChoices(choices: ReturnType<typeof Button>[]) {
+  return optionValue(HStack({ gap: 6, align: "stretch" }, choices));
 }
 
 export const optionsMenu = defineUiTree({
   name: OPTIONS_MENU_NAME,
+  hideBelow: true,
   tree: Tree(
     {
       anchor: "center",
@@ -223,100 +233,121 @@ export const optionsMenu = defineUiTree({
     },
     VStack(
       {
-        gap: 10,
-        padding: 18,
+        gap: 20,
+        padding: 24,
         align: "stretch",
+        width: 640,
         fill: COLOR_PANEL,
         focus: { policy: "linear", wrap: true },
       },
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
-        Slider({
-          id: "optionsMouseSensitivity",
-          label: "MOUSE SENSITIVITY",
-          bind: options.mouseSensitivity,
-          min: 0.0005,
-          max: 0.01,
-          step: 0.0005,
-          capturesNav: ["nav.left", "nav.right"],
-        }),
-        optionRow("INVERT Y", [
-          radioChoice(
-            "optionsInvertYOff",
-            "OFF",
-            stateEquals(options.invertY, false),
-            "frontend.options.invertY.off",
-          ),
-          radioChoice(
-            "optionsInvertYOn",
-            "ON",
-            stateEquals(options.invertY, true),
-            "frontend.options.invertY.on",
-          ),
+        VStack({ gap: 10, align: "stretch", role: "group" }, [
+          Text({ content: "CONTROLS", fontSize: 12, color: COLOR_MUTED }),
+          Grid({ gap: 12, align: "stretch", cols: 2 }, [
+            optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
+            optionValue(
+              Slider({
+                id: "optionsMouseSensitivity",
+                labelledBy: "optionsMouseSensitivityLabel",
+                bind: options.mouseSensitivity,
+                min: 0.0005,
+                max: 0.01,
+                step: 0.0005,
+                valueDisplay: { min: 1, max: 100, suffix: "%", decimalPlaces: 0 },
+                capturesNav: ["nav.left", "nav.right"],
+              }),
+            ),
+            optionLabel("optionsInvertYLabel", "INVERT Y"),
+            optionChoices([
+              radioChoice(
+                "optionsInvertYOff",
+                "OFF",
+                stateEquals(options.invertY, false),
+                "frontend.options.invertY.off",
+              ),
+              radioChoice(
+                "optionsInvertYOn",
+                "ON",
+                stateEquals(options.invertY, true),
+                "frontend.options.invertY.on",
+              ),
+            ]),
+            optionLabel("optionsViewFeelScaleLabel", "VIEW FEEL"),
+            optionValue(
+              Slider({
+                id: "optionsViewFeelScale",
+                labelledBy: "optionsViewFeelScaleLabel",
+                bind: options.viewFeelScale,
+                min: 0,
+                max: 1,
+                step: 0.1,
+                capturesNav: ["nav.left", "nav.right"],
+              }),
+            ),
+            optionLabel("optionsCrouchModeLabel", "CROUCH MODE"),
+            optionChoices([
+              radioChoice(
+                "optionsCrouchHold",
+                "HOLD",
+                stateEquals(options.crouchMode, "hold"),
+                "frontend.options.crouchMode.hold",
+              ),
+              radioChoice(
+                "optionsCrouchToggle",
+                "TOGGLE",
+                stateEquals(options.crouchMode, "toggle"),
+                "frontend.options.crouchMode.toggle",
+              ),
+            ]),
+          ]),
         ]),
-        Slider({
-          id: "optionsViewFeelScale",
-          label: "VIEW FEEL",
-          bind: options.viewFeelScale,
-          min: 0,
-          max: 1,
-          step: 0.1,
-          capturesNav: ["nav.left", "nav.right"],
-        }),
-        optionRow("CROUCH MODE", [
-          radioChoice(
-            "optionsCrouchHold",
-            "HOLD",
-            stateEquals(options.crouchMode, "hold"),
-            "frontend.options.crouchMode.hold",
-          ),
-          radioChoice(
-            "optionsCrouchToggle",
-            "TOGGLE",
-            stateEquals(options.crouchMode, "toggle"),
-            "frontend.options.crouchMode.toggle",
-          ),
-        ]),
-        optionRow("SHADOW QUALITY", [
-          radioChoice(
-            "optionsShadowLow",
-            "LOW",
-            stateEquals(options.shadowQuality, "low"),
-            "frontend.options.shadowQuality.low",
-          ),
-          radioChoice(
-            "optionsShadowMedium",
-            "MEDIUM",
-            stateEquals(options.shadowQuality, "medium"),
-            "frontend.options.shadowQuality.medium",
-          ),
-          radioChoice(
-            "optionsShadowHigh",
-            "HIGH",
-            stateEquals(options.shadowQuality, "high"),
-            "frontend.options.shadowQuality.high",
-          ),
-        ]),
-        Text({ content: "Applies after reload", fontSize: 11, color: COLOR_MUTED }),
-        optionRow("FOG QUALITY", [
-          radioChoice(
-            "optionsFogLow",
-            "LOW",
-            stateEquals(options.fogQuality, "low"),
-            "frontend.options.fogQuality.low",
-          ),
-          radioChoice(
-            "optionsFogMedium",
-            "MEDIUM",
-            stateEquals(options.fogQuality, "medium"),
-            "frontend.options.fogQuality.medium",
-          ),
-          radioChoice(
-            "optionsFogHigh",
-            "HIGH",
-            stateEquals(options.fogQuality, "high"),
-            "frontend.options.fogQuality.high",
-          ),
+        VStack({ gap: 10, align: "stretch", role: "group" }, [
+          Text({ content: "GRAPHICS", fontSize: 12, color: COLOR_MUTED }),
+          Grid({ gap: 12, align: "stretch", cols: 2 }, [
+            optionLabel("optionsShadowQualityLabel", "SHADOW QUALITY", "Applies after reload"),
+            optionChoices([
+              radioChoice(
+                "optionsShadowLow",
+                "LOW",
+                stateEquals(options.shadowQuality, "low"),
+                "frontend.options.shadowQuality.low",
+              ),
+              radioChoice(
+                "optionsShadowMedium",
+                "MEDIUM",
+                stateEquals(options.shadowQuality, "medium"),
+                "frontend.options.shadowQuality.medium",
+              ),
+              radioChoice(
+                "optionsShadowHigh",
+                "HIGH",
+                stateEquals(options.shadowQuality, "high"),
+                "frontend.options.shadowQuality.high",
+              ),
+            ]),
+            optionLabel("optionsFogQualityLabel", "FOG QUALITY"),
+            optionChoices([
+              radioChoice(
+                "optionsFogLow",
+                "LOW",
+                stateEquals(options.fogQuality, "low"),
+                "frontend.options.fogQuality.low",
+              ),
+              radioChoice(
+                "optionsFogMedium",
+                "MEDIUM",
+                stateEquals(options.fogQuality, "medium"),
+                "frontend.options.fogQuality.medium",
+              ),
+              radioChoice(
+                "optionsFogHigh",
+                "HIGH",
+                stateEquals(options.fogQuality, "high"),
+                "frontend.options.fogQuality.high",
+              ),
+            ]),
+          ]),
         ]),
         Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
       ],

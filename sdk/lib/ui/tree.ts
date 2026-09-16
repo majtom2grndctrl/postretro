@@ -78,6 +78,7 @@ export type UiTreeRegistrationProps<Name extends string = string> = {
   name: Name;
   tree: AnchoredTreeDescriptor;
   alwaysOn?: boolean;
+  hideBelow?: boolean;
 };
 
 export type UiTreeRegistration<Name extends string = string> =
@@ -202,7 +203,7 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
 
 /**
  * Define a named UI-tree registration while preserving the manifest wire shape:
- * `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
+ * `{ name, tree, alwaysOn?, hideBelow? }`. Pure builder; registration still happens only
  * when the returned object is included in `ModManifest.uiTrees`.
  */
 export function defineUiTree<const Name extends string>(
@@ -221,6 +222,9 @@ export function defineUiTree<const Name extends string>(
   if (registration.alwaysOn !== undefined && typeof registration.alwaysOn !== "boolean") {
     throw new Error("defineUiTree: `alwaysOn` must be a boolean when present");
   }
+  if (registration.hideBelow !== undefined && typeof registration.hideBelow !== "boolean") {
+    throw new Error("defineUiTree: `hideBelow` must be a boolean when present");
+  }
 
   const out: import("postretro").ModUiTree = {
     name: registration.name,
@@ -228,6 +232,9 @@ export function defineUiTree<const Name extends string>(
   };
   if (registration.alwaysOn !== undefined) {
     out.alwaysOn = registration.alwaysOn;
+  }
+  if (registration.hideBelow !== undefined) {
+    out.hideBelow = registration.hideBelow;
   }
   return out as UiTreeRegistration<Name>;
 }

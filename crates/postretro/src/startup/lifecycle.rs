@@ -3130,6 +3130,7 @@ mod tests {
                     name: "newMenu".to_string(),
                     tree: postretro_ui::demo::build_frontend_menu_descriptor(),
                     always_on: false,
+                    hide_below: false,
                 }],
                 presentation_templates: Vec::new(),
                 presentation_overlays: Vec::new(),

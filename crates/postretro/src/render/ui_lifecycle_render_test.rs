@@ -76,6 +76,7 @@ fn registered(name: &str, tree: AnchoredTree, always_on: bool) -> RegisteredUiTr
         name: name.to_string(),
         tree,
         always_on,
+        hide_below: false,
     }
 }
 
@@ -465,6 +466,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
             gap: SpacingValue::Literal(0.0),
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
+            width: None,
             fill: None,
             border: None,
             id: None,

@@ -27,6 +27,40 @@ fn js_bridge_converts_all_kinds_tree_and_reserializes_byte_identically() {
 }
 
 #[test]
+fn stack_width_crosses_both_runtime_bridges() {
+    let js = eval_js(
+        r#"({ anchor: "center", offset: [0, 0], root: { kind: "vstack", gap: 0, padding: 0, align: "stretch", width: 960, children: [] } })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { anchor = "center", offset = {0, 0}, root = { kind = "vstack", gap = 0, padding = 0, align = "stretch", width = 960, children = {} } }"#,
+        |value| anchored_tree_from_lua_value(value).unwrap(),
+    );
+
+    for tree in [js, lua] {
+        let Widget::VStack(root) = tree.root else {
+            panic!("root must be a vstack")
+        };
+        assert_eq!(root.width, Some(960.0));
+    }
+}
+
+#[test]
+fn stack_width_rejects_non_positive_values_in_both_runtime_bridges() {
+    let js = eval_js(
+        r#"({ anchor: "center", offset: [0, 0], root: { kind: "vstack", gap: 0, padding: 0, align: "stretch", width: 0, children: [] } })"#,
+        |ctx, value| anchored_tree_from_js_value(ctx, value),
+    );
+    let lua = eval_lua(
+        r#"return { anchor = "center", offset = {0, 0}, root = { kind = "vstack", gap = 0, padding = 0, align = "stretch", width = -1, children = {} } }"#,
+        anchored_tree_from_lua_value,
+    );
+
+    assert!(js.is_err());
+    assert!(lua.is_err());
+}
+
+#[test]
 fn js_bridge_parses_local_state_scope_and_local_bind() {
     // M13 G1b, Task 5: the G1a bridge must read a container's `localState`
     // declaration (scope + cells) AND a descendant `{ local }` bind, and the

@@ -112,6 +112,34 @@ fn nested_hstack_in_vstack_distributes_inner_row_along_x() {
 }
 
 #[test]
+fn stack_authored_width_establishes_a_fixed_layout_canvas() {
+    let mut root = vstack(0.0, 12.0, Align::Stretch, vec![text("OPTIONS", 20.0)]);
+    let Widget::VStack(container) = &mut root else {
+        unreachable!("vstack helper returns a vstack")
+    };
+    container.width = Some(960.0);
+    let tree = AnchoredTree {
+        anchor: Anchor::Center,
+        offset: [0.0, 0.0],
+        root,
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    };
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+    ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+    let layout = ui.taffy.layout(ui.root).unwrap();
+    assert!(
+        approx(layout.size.width, 960.0),
+        "authored stack width is the full logical-reference width"
+    );
+}
+
+#[test]
 fn spacer_maps_to_flex_grow_and_emits_no_draw_payload() {
     // A row of `text — spacer — text`: the spacer is a pure layout node
     // (flex_grow, no `NodeContext`) that sits between the two leaves without
@@ -335,6 +363,7 @@ fn container_backdrop_quad_rects_snap_to_integer_device_pixels() {
         gap: SpacingValue::Literal(7.0),
         padding: SpacingValue::Literal(5.0),
         align: Align::Start,
+        width: None,
         fill: Some(ColorValue::Literal([0.2, 0.4, 0.6, 1.0])),
         border: None,
         id: None,
@@ -380,6 +409,7 @@ fn container_backdrop_draws_beneath_children_sized_to_full_rect() {
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(10.0),
         align: Align::Start,
+        width: None,
         fill: Some(ColorValue::Literal([0.1, 0.2, 0.3, 1.0])),
         border: None,
         id: None,

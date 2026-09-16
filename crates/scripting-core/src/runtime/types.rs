@@ -110,7 +110,7 @@ pub struct ModManifestResult {
     /// `EntityTypeDescriptor`, whose `faction` field is resolved f32 storage.
     pub entity_faction_names: Vec<Option<String>>,
     /// UI trees registered via the mod manifest's `uiTrees` field (each a name +
-    /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
+    /// `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
     /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot caller in `main.rs`.
     pub ui_trees: Vec<RegisteredUiTree>,

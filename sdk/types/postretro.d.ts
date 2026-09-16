@@ -912,7 +912,7 @@ declare module "postretro" {
     jumpBufferMs?: number;
   };
 
-  /** A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time. */
+  /** A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and stack-presentation flags. A malformed entry is logged and skipped at load time. */
   export type ModUiTree = {
     /** Registry name the render path resolves the tree by. Required. */
     name: string;
@@ -920,6 +920,8 @@ declare module "postretro" {
     tree: AnchoredTreeDescriptor;
     /** Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false. */
     alwaysOn?: boolean;
+    /** Whether pushing this tree hides lower pushed trees while retaining them for pop/back navigation. Optional; defaults to false. */
+    hideBelow?: boolean;
   };
 
   /** One map listed in `ModManifest.maps`. Use `defineMapCatalog([...])` for a typed construction site; the returned array keeps this exact wire shape. The catalog is committed during mod init and is available before any level loads. */
@@ -1047,7 +1049,7 @@ declare module "postretro" {
     sentiment?: ReadonlyArray<FactionSentimentDescriptor>;
     /** Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it. */
     factionSentimentDecay?: number;
-    /** Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot. */
+    /** Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
@@ -1625,7 +1627,7 @@ declare module "postretro" {
     crossings?: CrossingDescriptor[];
     triggerEvents?: TriggerEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
-    /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
+    /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
 
@@ -2294,7 +2296,8 @@ declare module "postretro/ui" {
   /** Build an interactive button descriptor. Pure; activation is resolved by the app at runtime. */
   export function Button(props: ButtonProps): WidgetDescriptor;
   /** Props for `Slider`. `bind` must be writable numeric state/local cell. `min`, `max`, and `step` are finite numbers; navigation clamps writes into `[min, max]`. Exactly one of `label` or `labelledBy` is required. */
-  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  export type SliderValueDisplay = { min: number; max: number; suffix?: string; decimalPlaces?: number };
+  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; valueDisplay?: SliderValueDisplay; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
   /** Build an interactive slider descriptor. */
   export function Slider(props: SliderProps): WidgetDescriptor;
   /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
@@ -2316,8 +2319,8 @@ declare module "postretro/ui" {
 
   export type FocusKind = "linear" | "spatial";
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
-  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, and optional `localState` declares presentation-only cells scoped to this container. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, `width` fixes the stack width in logical-reference pixels, and optional `localState` declares presentation-only cells scoped to this container. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
   export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a vertical stack descriptor. `children` is positional, not a prop. */
@@ -2334,8 +2337,8 @@ declare module "postretro/ui" {
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
-  /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD. */
-  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
+  /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD; `hideBelow` visually occludes retained lower pushed trees. */
+  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean; hideBelow?: boolean };
   export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
   /** Build a UI-tree registration object. Pure; include the result in `ModManifest.uiTrees` or `setupLevel().uiTrees` to register it. */
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;

@@ -11,10 +11,10 @@ use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::draw::{
-    bar_max_value, bar_slot_value, bind_target_name, resolve_panel_fill, resolve_text,
-    slot_value_string,
+    bar_max_value, bar_slot_value, bind_target_name, presented_slot_value_string,
+    resolve_panel_fill, resolve_text,
 };
-use super::node_context::RingScalar;
+use super::node_context::{NumberPresentation, RingScalar};
 use super::predicate::lookup_bound;
 use super::style::{TweenState, apply, lerp_rgba};
 
@@ -67,13 +67,21 @@ pub fn drive_text_binding(
     content: &str,
     last_resolved: &mut Option<String>,
     tween: &mut Option<TweenState<f32>>,
+    number_presentation: Option<&NumberPresentation>,
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
     now: f64,
 ) -> bool {
     let Some(cfg) = bind.tween.as_ref() else {
         // No tween config: the untweened path, byte-for-byte as before.
-        let resolved = resolve_text(Some(bind), bind_scope, content, slot_values, cell_values);
+        let resolved = resolve_text(
+            Some(bind),
+            bind_scope,
+            content,
+            slot_values,
+            cell_values,
+            number_presentation,
+        );
         let changed = last_resolved.as_deref() != Some(resolved.as_str());
         if changed {
             *last_resolved = Some(resolved);
@@ -88,7 +96,11 @@ pub fn drive_text_binding(
             let target = *n;
             let display =
                 drive_tween_f32(tween, cfg.from, target, cfg.duration_ms, cfg.easing, now);
-            let display = slot_value_string(&SlotValue::Number(display), bind.decimal_places);
+            let display = presented_slot_value_string(
+                &SlotValue::Number(display),
+                bind.decimal_places,
+                number_presentation,
+            );
             match &bind.format {
                 Some(template) => template.replacen("{}", &display, 1),
                 None => display,
@@ -108,7 +120,14 @@ pub fn drive_text_binding(
             // the old segment. If a numeric value returns with the same target,
             // it must begin a fresh tween rather than resume stale display state.
             *tween = None;
-            resolve_text(Some(bind), bind_scope, content, slot_values, cell_values)
+            resolve_text(
+                Some(bind),
+                bind_scope,
+                content,
+                slot_values,
+                cell_values,
+                number_presentation,
+            )
         }
     };
 

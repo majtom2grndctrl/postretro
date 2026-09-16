@@ -2570,15 +2570,17 @@ export default defineMod({
 });
 ```
 
-- **`uiTrees`** — each entry is `{ name, tree, alwaysOn? }`. `name` is how the
+- **`uiTrees`** — each entry is `{ name, tree, alwaysOn?, hideBelow? }`. `name` is how the
   engine resolves the tree (and how a `showDialog` / `openMenu` reaction targets
   it). `alwaysOn: true` composes the tree as a base layer every frame (the HUD
   case); the default (`false`) means the tree only shows when pushed onto the
-  modal stack. A mod tree registered under an engine built-in's name **shadows**
-  it. `defineUiTree({ name, tree, alwaysOn? })` is the SDK helper for building
-  this same manifest entry without changing the wire shape. Omitting the mod tree
-  later reveals the engine fallback with the same name. Already-pushed modals
-  keep their cloned descriptor until closed.
+  modal stack. `hideBelow: true` hides lower pushed trees while retaining their
+  navigation and presentation state, so popping restores the prior tree; it does
+  not hide always-on base layers. A mod tree registered under an engine built-in's
+  name **shadows** it. `defineUiTree({ name, tree, alwaysOn?, hideBelow? })` is the
+  SDK helper for building this same manifest entry without changing the wire
+  shape. Omitting the mod tree later reveals the engine fallback with the same
+  name. Already-pushed modals keep their cloned descriptor until closed.
 - **`theme`** — per-token overrides merged over the engine default: only the
   tokens you name change; everything else keeps its default. Unknown tokens
   referenced by a widget degrade visibly (unknown color → magenta, unknown font →

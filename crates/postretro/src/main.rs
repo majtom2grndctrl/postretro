@@ -5357,17 +5357,21 @@ impl App {
         frontend_menu_is_present: bool,
     ) -> postretro_ui::UiReadSnapshot {
         let slot_values = Self::build_ui_slot_snapshot(slot_table);
-        let mut trees: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
+        let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
             modal_stack.always_on_layers()
         };
-        trees.extend(modal_stack.entries());
-
-        let composed_trees: Vec<&postretro_ui::descriptor::AnchoredTree> =
-            trees.iter().map(|entry| &entry.descriptor).collect();
-        presentation_cells.reconcile(&composed_trees);
+        let retained_trees: Vec<&postretro_ui::descriptor::AnchoredTree> = base_layers
+            .iter()
+            .map(|entry| &entry.descriptor)
+            .chain(modal_stack.retained_descriptors())
+            .collect();
+        presentation_cells.reconcile(&retained_trees);
         let cell_values = presentation_cells.snapshot();
+
+        let mut trees = base_layers;
+        trees.extend(modal_stack.visible_entries());
 
         let ring_id = if modal_stack.top_capture_mode()
             == postretro_ui::descriptor::CaptureMode::Capture
@@ -10934,6 +10938,7 @@ mod tests {
                     gap: SpacingValue::Literal(0.0),
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
+                    width: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -11993,6 +11998,26 @@ mod tests {
         }
     }
 
+    fn find_slider<'a>(
+        widget: &'a postretro_ui::descriptor::Widget,
+        id: &str,
+    ) -> Option<&'a postretro_ui::descriptor::SliderWidget> {
+        use postretro_ui::descriptor::Widget;
+
+        match widget {
+            Widget::Slider(slider) if slider.id == id => Some(slider),
+            Widget::VStack(container) | Widget::HStack(container) => container
+                .children
+                .iter()
+                .find_map(|child| find_slider(child, id)),
+            Widget::Grid(grid) => grid
+                .children
+                .iter()
+                .find_map(|child| find_slider(child, id)),
+            _ => None,
+        }
+    }
+
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -12233,7 +12258,7 @@ mod tests {
             &[],
             None,
             &[],
-            InputMode::Focus,
+            input::InputMode::Focus,
             0.0,
         );
         assert_eq!(initial.focused.as_deref(), Some("pauseResume"));
@@ -12243,7 +12268,7 @@ mod tests {
             &[NavIntent::Confirm],
             None,
             &[],
-            InputMode::Focus,
+            input::InputMode::Focus,
             0.0,
         );
         let keyboard_action = focus_button_action(&focus_rects, &keyboard_confirm);
@@ -12255,7 +12280,7 @@ mod tests {
             &[],
             None,
             &[],
-            InputMode::Focus,
+            input::InputMode::Focus,
             0.0,
         );
         let gamepad_confirm = gamepad_focus.tick(
@@ -12356,7 +12381,7 @@ mod tests {
     #[test]
     fn production_title_and_options_trees_preserve_composed_control_contracts() {
         use postretro_entities::ReactionDescriptor;
-        use postretro_ui::descriptor::{BindSource, PredicateValue};
+        use postretro_ui::descriptor::{BindSource, PredicateValue, Widget};
 
         if !install_scripts_build_next_to_current_exe() {
             eprintln!("skipping: could not install scripts-build next to test binary");
@@ -12394,7 +12419,61 @@ mod tests {
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
         );
 
-        let options_tree = tree(options::OPTIONS_MENU_TREE_NAME);
+        let options_registration = manifest
+            .ui_trees
+            .iter()
+            .find(|tree| tree.name == options::OPTIONS_MENU_TREE_NAME)
+            .expect("dev manifest exports options registration");
+        assert!(
+            options_registration.hide_below,
+            "options visually occludes the retained title menu"
+        );
+        let options_tree = &options_registration.tree;
+        let Widget::VStack(options_root) = &options_tree.root else {
+            panic!("options root is a vstack")
+        };
+        assert_eq!(options_root.width, Some(640.0));
+        let options_grids: Vec<_> = options_root
+            .children
+            .iter()
+            .filter_map(|section| match section {
+                Widget::VStack(section) => section.children.iter().find_map(|child| match child {
+                    Widget::Grid(grid) => Some(grid),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            options_grids.len(),
+            2,
+            "controls and graphics use separate visual groups"
+        );
+        assert!(options_grids.iter().all(|grid| grid.cols == 2));
+        assert_eq!(options_grids[0].children.len(), 8);
+        assert_eq!(options_grids[1].children.len(), 4);
+        assert!(
+            options_grids
+                .iter()
+                .flat_map(|grid| &grid.children)
+                .all(|child| !matches!(child, Widget::Spacer(_))),
+            "label and control columns have no empty tracks"
+        );
+        let sensitivity = find_slider(&options_tree.root, "optionsMouseSensitivity")
+            .expect("mouse sensitivity slider is reachable in the options tree");
+        assert_eq!(sensitivity.label, None);
+        assert_eq!(
+            sensitivity.labelled_by.as_deref(),
+            Some("optionsMouseSensitivityLabel")
+        );
+        let display = sensitivity
+            .value_display
+            .as_ref()
+            .expect("mouse sensitivity exposes presentation units");
+        assert!((display.min - 1.0).abs() <= f32::EPSILON);
+        assert!((display.max - 100.0).abs() <= f32::EPSILON);
+        assert_eq!(display.suffix, "%");
+        assert_eq!(display.decimal_places, Some(0));
         assert_eq!(
             button_action(&options_tree.root, "optionsBack"),
             Some(postretro_ui::actions::CLOSE_DIALOG_ACTION)
@@ -12446,6 +12525,7 @@ mod tests {
                     gap: SpacingValue::Literal(0.0),
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
+                    width: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -12674,6 +12754,7 @@ mod tests {
                     gap: SpacingValue::Literal(0.0),
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
+                    width: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -12692,6 +12773,7 @@ mod tests {
                 role: None,
             },
             always_on: true,
+            hide_below: false,
         }
     }
 
@@ -13870,6 +13952,134 @@ mod tests {
                 .iter()
                 .all(|(name, _)| !name.starts_with("counter.")),
             "slot table must have no entries under the `counter` namespace after a CellWrite",
+        );
+    }
+
+    #[test]
+    fn hide_below_keeps_occluded_tree_cells_alive_until_pop() {
+        use postretro_entities::{SlotTable, SlotValue};
+        use postretro_scripting_core::data_descriptors::RegisteredUiTree;
+        use postretro_ui::descriptor::{
+            Align, AnchoredTree, CaptureMode, CellInit, ContainerWidget, LocalState, SpacingValue,
+            Widget,
+        };
+        use postretro_ui::layout::Anchor;
+        use postretro_ui::modal_stack::{ModalStack, ScopeTier};
+        use scripting_systems::presentation_cells::PresentationCellStore;
+        use std::collections::BTreeMap;
+
+        fn tree(local_state: Option<LocalState>) -> AnchoredTree {
+            AnchoredTree {
+                anchor: Anchor::Center,
+                offset: [0.0, 0.0],
+                root: Widget::VStack(ContainerWidget {
+                    gap: SpacingValue::Literal(0.0),
+                    padding: SpacingValue::Literal(0.0),
+                    align: Align::Start,
+                    width: None,
+                    fill: None,
+                    border: None,
+                    id: None,
+                    focus_neighbors: Default::default(),
+                    focus: None,
+                    restore_on_return: false,
+                    local_state,
+                    visible_when: None,
+                    role: None,
+                    children: Vec::new(),
+                }),
+                capture_mode: CaptureMode::Capture,
+                initial_focus: None,
+                text_entry_target: None,
+                accessible_name: None,
+                role: None,
+            }
+        }
+
+        let title_state = LocalState {
+            scope: "title".to_string(),
+            cells: BTreeMap::from([("selection".to_string(), CellInit::Number(7.0))]),
+        };
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            [
+                RegisteredUiTree {
+                    name: "title".to_string(),
+                    tree: tree(Some(title_state)),
+                    always_on: false,
+                    hide_below: false,
+                },
+                RegisteredUiTree {
+                    name: "options".to_string(),
+                    tree: tree(None),
+                    always_on: false,
+                    hide_below: true,
+                },
+            ],
+            ScopeTier::Mod,
+        );
+        let mut cells = PresentationCellStore::new();
+        let slots = SlotTable::new();
+
+        stack.push_named("title", None);
+        App::build_ui_read_snapshot(
+            &stack,
+            &mut cells,
+            &slots,
+            0.0,
+            input::InputMode::Focus,
+            None,
+            false,
+        );
+        cells.write(
+            "title".to_string(),
+            "selection".to_string(),
+            SlotValue::Number(42.0),
+        );
+
+        stack.push_named("options", None);
+        let occluded = App::build_ui_read_snapshot(
+            &stack,
+            &mut cells,
+            &slots,
+            0.0,
+            input::InputMode::Focus,
+            None,
+            false,
+        );
+        assert_eq!(
+            occluded
+                .trees
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["options"],
+        );
+        assert_eq!(
+            occluded
+                .cell_values
+                .get(&("title".to_string(), "selection".to_string())),
+            Some(&SlotValue::Number(42.0)),
+            "the visually occluded title remains a presentation-state owner",
+        );
+
+        stack.pop();
+        let restored = App::build_ui_read_snapshot(
+            &stack,
+            &mut cells,
+            &slots,
+            0.0,
+            input::InputMode::Focus,
+            None,
+            false,
+        );
+        assert_eq!(restored.trees[0].name, "title");
+        assert_eq!(
+            restored
+                .cell_values
+                .get(&("title".to_string(), "selection".to_string())),
+            Some(&SlotValue::Number(42.0)),
+            "popping options restores the title without reseeding its local state",
         );
     }
 }

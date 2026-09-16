@@ -911,7 +911,7 @@ export type ForgivenessParams = {
   jumpBufferMs: number?,
 }
 
---- A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and the `alwaysOn` registration flag. A malformed entry is logged and skipped at load time.
+--- A UI tree registered through `ModManifest.uiTrees` (or `LevelManifest.uiTrees`). Pairs a registry `name` with an `AnchoredTree` placement envelope and stack-presentation flags. A malformed entry is logged and skipped at load time.
 export type ModUiTree = {
   --- Registry name the render path resolves the tree by. Required.
   name: string,
@@ -919,6 +919,8 @@ export type ModUiTree = {
   tree: AnchoredTreeDescriptor,
   --- Whether the tree composes as a per-frame base layer (e.g. the HUD: always rendered) rather than only when explicitly pushed onto the modal stack. Optional; defaults to false.
   alwaysOn: boolean?,
+  --- Whether pushing this tree hides lower pushed trees while retaining them for pop/back navigation. Optional; defaults to false.
+  hideBelow: boolean?,
 }
 
 --- One map listed in `ModManifest.maps`. Use `defineMapCatalog([...])` for a typed construction site; the returned array keeps this exact wire shape. The catalog is committed during mod init and is available before any level loads.
@@ -1046,7 +1048,7 @@ export type ModManifest = {
   sentiment: {FactionSentimentDescriptor}?,
   --- Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.
   factionSentimentDecay: number?,
-  --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
+  --- Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
@@ -1833,7 +1835,7 @@ export type LevelManifest = {
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
-  --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
+  --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
   uiTrees: {ModUiTree}?,
@@ -2205,7 +2207,8 @@ export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predica
 export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
 
 --- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
-export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+export type SliderValueDisplay = { min: number, max: number, suffix: string?, decimalPlaces: number? }
+export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, valueDisplay: SliderValueDisplay?, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
 
 --- State binding for a readonly numeric `Bar`. Stamped facts are accepted only
 --- inside `definePresentationTemplate`; ordinary UI trees reject them during
@@ -2239,10 +2242,11 @@ export type FocusKind = "linear" | "spatial"
 --- events inside the container.
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
---- defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the
+--- defaults to `"start"`; `width` fixes the stack width in logical-reference
+--- pixels; optional `fill`/`border` draw a backdrop behind the
 --- arranged children. Stack containers may declare `localState`; stack and grid
 --- containers both accept `visibleWhen` and `role`.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
 --- flow row-major across columns; grid currently has no backdrop fill/border
 --- and no `localState`.
@@ -2265,8 +2269,8 @@ export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: W
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
 export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
---- manifest entry shape `{ name, tree, alwaysOn? }`.
-export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
+--- manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`.
+export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean?, hideBelow: boolean? }
 --- A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
 

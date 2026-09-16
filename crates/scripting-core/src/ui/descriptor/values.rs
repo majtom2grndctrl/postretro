@@ -208,7 +208,7 @@ pub enum CellInit {
 /// a stable id (author-supplied or SDK-stabilized) addressable from BOTH the app
 /// stage (cell writes) and the render stage (`{ local }` bind resolution). `cells`
 /// maps each cell name to its declared initial value, used to seed the app-side
-/// cell store the first time this scope is composed.
+/// cell store the first time this scope is retained.
 ///
 /// This is presentation-only state — NOT the authoritative store (`ui.md` §3/§6):
 /// no schema, no persistence, no dotted-name namespace. `cells` is a `BTreeMap`

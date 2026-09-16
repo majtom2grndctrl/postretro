@@ -3,7 +3,7 @@
 // Pure serde data — no rendering, no taffy, no retained tree.
 // See: context/lib/ui.md
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use super::super::style_ranges::StyleRanges;
 use super::accessibility::Role;
@@ -277,6 +277,15 @@ pub struct ContainerWidget {
     pub gap: SpacingValue,
     pub padding: SpacingValue,
     pub align: Align,
+    /// Optional fixed width in logical-reference pixels. Omission preserves
+    /// content-driven sizing; authored widths let composed layouts establish a
+    /// stable horizontal canvas for grids, spacers, and stretched children.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_stack_width"
+    )]
+    pub width: Option<f32>,
     /// Optional backdrop fill (linear RGBA), drawn beneath the children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<ColorValue>,
@@ -311,6 +320,22 @@ pub struct ContainerWidget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     pub children: Vec<Widget>,
+}
+
+pub(crate) fn validate_stack_width(width: Option<f32>) -> Result<Option<f32>, String> {
+    match width {
+        Some(value) if !value.is_finite() || value <= 0.0 => {
+            Err("stack `width` must be a finite number greater than zero".to_string())
+        }
+        _ => Ok(width),
+    }
+}
+
+fn deserialize_optional_stack_width<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    validate_stack_width(Option::<f32>::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
 /// Grid container. Like a stack but flows `children` across a fixed number of
@@ -445,7 +470,9 @@ pub struct ButtonWidget {
 /// Interactive slider (M13 Goal F, Task 4). Focusable; nav steps it captures
 /// (`captures_nav`, e.g. `["nav.left", "nav.right"]`) adjust its value by `step`
 /// within `[min, max]` and emit a `setState` write to the bound slot on the N+1
-/// frame. The slider renders its accessible name and current numeric value as text.
+/// frame. The slider renders a filled track, thumb, and current numeric value;
+/// an inline `label`, when supplied, is rendered beside that value. A
+/// `labelledBy` reference supplies the accessible name without duplicating it.
 ///
 /// `bind` follows the `PanelBind`/`TextBind` shape (`BindSource` + optional tween).
 /// `id` is required for the same reason as `ButtonWidget::id` — nav-capture and
@@ -469,6 +496,11 @@ pub struct SliderWidget {
     pub min: f32,
     pub max: f32,
     pub step: f32,
+    /// Optional presentation-only mapping for the visible value. The slider
+    /// continues to read and write the raw `[min, max]` range; only its text
+    /// readout is linearly mapped into this range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_display: Option<SliderValueDisplay>,
     /// Nav wire names this slider consumes (e.g. `["nav.left", "nav.right"]`).
     /// An array, NOT a bool — a slider gives the named nav intents first refusal,
     /// stepping its value instead of moving focus. Absent/empty means the slider
@@ -489,6 +521,65 @@ pub struct SliderWidget {
     /// Optional a11y role override (M13 G2). See `TextWidget::role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+}
+
+/// Presentation-only numeric range for a [`SliderWidget`] readout. The source
+/// range is the slider's authored `[min, max]`; these endpoints define the
+/// displayed range without changing the bound slot or interaction step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "SliderValueDisplayWire"
+)]
+pub struct SliderValueDisplay {
+    pub min: f32,
+    pub max: f32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suffix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimal_places: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SliderValueDisplayWire {
+    min: f32,
+    max: f32,
+    #[serde(default)]
+    suffix: String,
+    #[serde(default)]
+    decimal_places: Option<u8>,
+}
+
+impl TryFrom<SliderValueDisplayWire> for SliderValueDisplay {
+    type Error = String;
+
+    fn try_from(wire: SliderValueDisplayWire) -> Result<Self, Self::Error> {
+        let display = Self {
+            min: wire.min,
+            max: wire.max,
+            suffix: wire.suffix,
+            decimal_places: wire.decimal_places,
+        };
+        display.validate()?;
+        Ok(display)
+    }
+}
+
+impl SliderValueDisplay {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !self.min.is_finite() || !self.max.is_finite() {
+            return Err("`slider.valueDisplay.min` and `.max` must be finite numbers".to_string());
+        }
+        if self.decimal_places.is_some_and(|places| places > 6) {
+            return Err(
+                "`slider.valueDisplay.decimalPlaces` must be an integer between 0 and 6"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Bind source for a `slider` widget: either a `{ slot }` dotted store name or a

@@ -233,9 +233,11 @@ fn collect_node(
         Some(NodeContext::Bar {
             bind_scope,
             bind,
+            min,
             max,
             fill,
             background,
+            thumb,
             exit_fade: _,
             last_resolved,
             last_max_resolved: _,
@@ -279,8 +281,9 @@ fn collect_node(
                     bar_max_value(max, slot_values),
                 ),
             };
-            let fraction = if max_value > 0.0 {
-                (value / max_value).clamp(0.0, 1.0)
+            let range = max_value - *min;
+            let fraction = if range > 0.0 {
+                ((value - *min) / range).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -309,6 +312,20 @@ fn collect_node(
             if fill_width > 0.0 {
                 let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
                 data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
+            }
+            if let Some(mut thumb_color) = *thumb {
+                if let Some((alpha, _, _)) = exit {
+                    thumb_color[3] *= alpha;
+                }
+                let thumb_width = (4.0 * scale).max(2.0).min(rect[2]);
+                let center = rect[0] + rect[2] * fraction;
+                let thumb_x =
+                    (center - thumb_width * 0.5).clamp(rect[0], rect[0] + rect[2] - thumb_width);
+                data.push_quad(UiInstance::panel(
+                    [thumb_x.round(), rect[1], thumb_width.round(), rect[3]],
+                    thumb_color,
+                    [0.0; 4],
+                ));
             }
         }
         Some(NodeContext::Ring {
@@ -394,6 +411,7 @@ fn collect_node(
             family,
             bind_scope,
             bind,
+            number_presentation,
             last_resolved,
             tween,
             style_ranges,
@@ -423,6 +441,7 @@ fn collect_node(
                     content,
                     slot_values,
                     cell_values,
+                    number_presentation.as_ref(),
                 ),
             };
             // styleRanges overrides the run's color: the bound

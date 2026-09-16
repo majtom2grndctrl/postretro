@@ -36,6 +36,13 @@ export type RingBindProp = (ComputedRef<number> | LocalBindRef) & { tween: Numbe
 --- Presentation-only linear map for a bound `Ring.radius`.
 export type RingRadiusRange = { inputMax: number, min: number, max: number }
 
+export type SliderValueDisplay = {
+  min: number,
+  max: number,
+  suffix: string?,
+  decimalPlaces: number?,
+}
+
 export type RingProps = {
   diameter: number,
   radius: number | RingBindProp,
@@ -664,6 +671,30 @@ function UiWidgetsSdk.Slider(props: any): WidgetDescriptor
   out.min = props.min
   out.max = props.max
   out.step = props.step
+  if props.valueDisplay ~= nil then
+    requireObject(props.valueDisplay, "Slider.valueDisplay")
+    requireFiniteNumber(props.valueDisplay.min, "valueDisplay.min", "Slider")
+    requireFiniteNumber(props.valueDisplay.max, "valueDisplay.max", "Slider")
+    local display: { [string]: any } = {
+      min = props.valueDisplay.min,
+      max = props.valueDisplay.max,
+    }
+    if props.valueDisplay.suffix ~= nil then
+      requireString(props.valueDisplay.suffix, "valueDisplay.suffix", "Slider")
+      if #props.valueDisplay.suffix > 0 then
+        display.suffix = props.valueDisplay.suffix
+      end
+    end
+    if props.valueDisplay.decimalPlaces ~= nil then
+      local places = props.valueDisplay.decimalPlaces
+      requireFiniteNumber(places, "valueDisplay.decimalPlaces", "Slider")
+      if places % 1 ~= 0 or places < 0 or places > 6 then
+        error("Slider: `valueDisplay.decimalPlaces` must be an integer between 0 and 6")
+      end
+      display.decimalPlaces = places
+    end
+    out.valueDisplay = display
+  end
   if props.capturesNav ~= nil then
     if type(props.capturesNav) ~= "table" then
       error("Slider: `capturesNav` must be a string array")

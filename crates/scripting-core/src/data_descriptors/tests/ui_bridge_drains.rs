@@ -331,7 +331,9 @@ fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {
                 { kind: "button", id: "resume", label: "Resume", onPress: "resumeGame",
                   focusNeighbors: { down: "vol" } },
                 { kind: "slider", id: "vol", label: "Volume", bind: { slot: "audio.master" },
-                  min: 0.0, max: 1.0, step: 0.1, capturesNav: ["nav.left", "nav.right"] },
+                  min: 0.0, max: 1.0, step: 0.1,
+                  valueDisplay: { min: 1.0, max: 100.0, suffix: "%", decimalPlaces: 0 },
+                  capturesNav: ["nav.left", "nav.right"] },
                 { kind: "bar", bind: { slot: "player.health" }, max: 100.0,
                   fill: "ok", background: [0.1, 0.1, 0.1, 1.0],
                   styleRanges: { max: 100.0, entries: [ { upTo: 0.25, color: "critical" }, { color: "ok" } ] } }
@@ -344,8 +346,40 @@ fn js_bridge_capture_envelope_and_interactive_widgets_round_trip() {
     assert_eq!(tree.capture_mode, CaptureMode::Capture);
     assert_eq!(tree.initial_focus.as_deref(), Some("resume"));
 
-    let expected = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":"m","padding":"s","align":"center","focus":"linear","children":[{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame","focusNeighbors":{"down":"vol"}},{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]},{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":"ok","background":[0.1,0.1,0.1,1.0],"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}]},"captureMode":"capture","initialFocus":"resume"}"#;
+    let expected = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":"m","padding":"s","align":"center","focus":"linear","children":[{"kind":"button","id":"resume","label":"Resume","onPress":"resumeGame","focusNeighbors":{"down":"vol"}},{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"valueDisplay":{"min":1.0,"max":100.0,"suffix":"%","decimalPlaces":0},"capturesNav":["nav.left","nav.right"]},{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":"ok","background":[0.1,0.1,0.1,1.0],"styleRanges":{"max":100.0,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}]},"captureMode":"capture","initialFocus":"resume"}"#;
     assert_eq!(serde_json::to_string(&tree).unwrap(), expected);
+}
+
+#[test]
+fn luau_bridge_preserves_slider_value_display_mapping() {
+    const WIDGETS_SRC: &str = include_str!("../../../../../sdk/lib/ui/widgets.luau");
+    let lua = mlua::Lua::new();
+    install_ui_theme_token_validator(&lua);
+    let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().expect("widgets module");
+    lua.globals().set("W", widgets).unwrap();
+    let value: mlua::Value = lua
+        .load(
+            r#"return {
+                anchor = "center", offset = {0, 0},
+                root = W.Slider({
+                    id = "mouse", label = "Sensitivity",
+                    bind = { slot = "options.mouseSensitivity" },
+                    min = 0.0005, max = 0.01, step = 0.0005,
+                    valueDisplay = { min = 1, max = 100, suffix = "%", decimalPlaces = 0 },
+                }),
+            }"#,
+        )
+        .eval()
+        .expect("valid slider tree");
+    let tree = anchored_tree_from_lua_value(value).expect("bridge must convert");
+    let Widget::Slider(slider) = tree.root else {
+        panic!("root must be a slider");
+    };
+    let display = slider.value_display.expect("valueDisplay survives bridge");
+    assert!((display.min - 1.0).abs() <= f32::EPSILON);
+    assert!((display.max - 100.0).abs() <= f32::EPSILON);
+    assert_eq!(display.suffix, "%");
+    assert_eq!(display.decimal_places, Some(0));
 }
 
 #[test]
@@ -600,7 +634,7 @@ fn level_manifest_js_drains_ui_trees() {
         r#"({
             reactions: [],
             uiTrees: [
-                { name: "objective", alwaysOn: true,
+                { name: "objective", alwaysOn: true, hideBelow: true,
                   tree: { anchor: "top", offset: [0.0, 8.0],
                           root: { kind: "spacer", flexGrow: 1.0 } } },
             ],
@@ -610,6 +644,7 @@ fn level_manifest_js_drains_ui_trees() {
     assert_eq!(manifest.ui_trees.len(), 1);
     assert_eq!(manifest.ui_trees[0].name, "objective");
     assert!(manifest.ui_trees[0].always_on);
+    assert!(manifest.ui_trees[0].hide_below);
 }
 
 #[test]
@@ -636,7 +671,7 @@ fn level_manifest_luau_drains_ui_trees() {
             r#"return {
                 reactions = {},
                 uiTrees = {
-                    { name = "objective", alwaysOn = true,
+                    { name = "objective", alwaysOn = true, hideBelow = true,
                       tree = { anchor = "top", offset = { 0, 8 },
                                root = { kind = "spacer", flexGrow = 1 } } },
                 },
@@ -648,6 +683,7 @@ fn level_manifest_luau_drains_ui_trees() {
     assert_eq!(manifest.ui_trees.len(), 1);
     assert_eq!(manifest.ui_trees[0].name, "objective");
     assert!(manifest.ui_trees[0].always_on);
+    assert!(manifest.ui_trees[0].hide_below);
 }
 
 #[test]

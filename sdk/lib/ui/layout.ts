@@ -54,6 +54,8 @@ type ContainerCommonProps = {
 
 /** Props for `VStack`/`HStack`. A stack may carry a backdrop `fill`/`border`. */
 export type StackProps = ContainerCommonProps & {
+  /** Fixed width in logical-reference pixels. Omit for content-driven sizing. */
+  width?: number;
   fill?: WidgetColor;
   border?: BorderProp;
   localState?: { scope: string; cells: Record<string, number | boolean | string | [number, number, number, number]> };
@@ -360,7 +362,12 @@ function buildStack(
   const kids = validateChildren(children, factory);
 
   const out: WidgetDescriptor = { kind, gap, padding, align };
-  // fill/border come before the common tail in the Rust struct order.
+  if (props.width !== undefined) {
+    requireFiniteNumber(props.width, "width", factory);
+    if (props.width <= 0) throw new Error(`${factory}: \`width\` must be greater than 0`);
+    out.width = props.width;
+  }
+  // width/fill/border come before the common tail in the Rust struct order.
   if (props.fill !== undefined) out.fill = validateColor(props.fill, "fill", factory);
   if (props.border !== undefined) out.border = validateBorder(props.border, factory);
   const localState = validateLocalState(props.localState, factory);

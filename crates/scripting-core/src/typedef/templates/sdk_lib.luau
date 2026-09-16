@@ -594,7 +594,7 @@ export type LevelManifest = {
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
-  --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
+  --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
   uiTrees: {ModUiTree}?,
@@ -1124,7 +1124,8 @@ export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, rep
 declare function Button(props: ButtonProps): WidgetDescriptor
 
 --- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
-export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
+export type SliderValueDisplay = { min: number, max: number, suffix: string?, decimalPlaces: number? }
+export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, valueDisplay: SliderValueDisplay?, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
 --- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
 declare function Slider(props: SliderProps): WidgetDescriptor
 
@@ -1166,10 +1167,11 @@ export type FocusKind = "linear" | "spatial"
 --- events inside the container.
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
---- defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the
+--- defaults to `"start"`; `width` fixes the stack width in logical-reference
+--- pixels; optional `fill`/`border` draw a backdrop behind the
 --- arranged children. Stack containers may declare `localState`; stack and grid
 --- containers both accept `visibleWhen` and `role`.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, width: number?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
 --- flow row-major across columns; grid currently has no backdrop fill/border
 --- and no `localState`.
@@ -1200,8 +1202,8 @@ export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, r
 --- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
 declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
---- manifest entry shape `{ name, tree, alwaysOn? }`.
-export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
+--- manifest entry shape `{ name, tree, alwaysOn?, hideBelow? }`.
+export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean?, hideBelow: boolean? }
 --- A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
 --- Pure helper for defining a named UI-tree registration. Registration still

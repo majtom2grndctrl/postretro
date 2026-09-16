@@ -96,3 +96,11 @@ two post-change warm runs:
 The expected cold/warm whole-file difference is isolated to approximate base
 SH content (including id 35); direct-delta ids 41/45 remain identical across
 both modes.
+
+## Final gate
+
+- Multi-lens review found and closed numerical-conservatism gaps at large or
+  non-finite coordinates, the dependent id-47 billboard-scatter cache epoch,
+  and documentation drift. The post-fix focused suites all passed.
+- Final preflight passed formatting, clippy with warnings denied, all workspace
+  tests, and all doc tests.

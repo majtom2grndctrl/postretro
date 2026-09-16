@@ -1,7 +1,7 @@
 # lighting-scale--sh-delta-cone-reach-cull — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: 6c4946ac4
 
 ## Corrections
@@ -41,4 +41,16 @@ read at: 6c4946ac4
 | 1 | Regenerate the warren with deterministic animated coverage, capture pre-change cold/warm identity baselines and the zero-cap projection, add the thinnest direct-only conservative cone predicate, then remeasure the projection to falsify or confirm the 16 GiB premise | integrating executor | — | complete — default-spacing peak is 5,968,926,720 bytes |
 | 2 | Harden transport separation, id-41 canonical retention, plan/bake CSR identity, cache epoch bumps, and focused cone-boundary/directional/id-27 regression coverage | integrating executor | 1 | complete — focused suite green |
 | 3 | Run named cold/warm byte-identity fixtures and the admitted warren compile; record hashes, projection, and exact automated results in `research.md` and this plan | integrating executor | 2 | complete — hashes match and admitted warren build completed |
-| 4 | Run readiness checks, review/fix/retest loop, final preflight, update durable lighting/build contracts, and land the brief | integrating executor | 3 | in progress — review fixes and focused gate complete |
+| 4 | Run readiness checks, review/fix/retest loop, final preflight, update durable lighting/build contracts, and land the brief | integrating executor | 3 | complete — all review findings fixed; fmt, clippy, workspace tests, and doc tests green |
+
+## Final verification
+
+- Review panel traced direct, animated, and cache consumers. Its findings were
+  resolved by evaluating cone reach in the bake's `f32` domain, normalizing the
+  cone axis with an outward tolerance, retaining non-finite/degenerate cells,
+  advancing the static billboard-scatter epoch, and correcting durable notes.
+- Focused regressions passed for affinity geometry, direct and animated direct
+  SH, billboard scatter, plan/bake CSR mismatch detection, and cache epochs.
+- Final preflight passed `cargo fmt --all --check`, `cargo clippy
+  --target-dir target/preflight-clippy -- -D warnings`, the full workspace
+  `cargo test`, and all doc tests.

@@ -33,6 +33,7 @@ export type UiTreeRegistration = {
   name: string,
   tree: WidgetDescriptor,
   alwaysOn: boolean?,
+  hideBelow: boolean?,
 }
 
 local UiTreeSdk = {}
@@ -151,7 +152,7 @@ function UiTreeSdk.Tree(props: any, root: any): WidgetDescriptor
 end
 
 --- Define a named UI-tree registration while preserving the manifest wire shape:
---- `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
+--- `{ name, tree, alwaysOn?, hideBelow? }`. Pure builder; registration still happens only
 --- when the returned table is included in `ModManifest.uiTrees`.
 function UiTreeSdk.defineUiTree(registration: any): UiTreeRegistration
   requireObject(registration, "defineUiTree")
@@ -165,6 +166,9 @@ function UiTreeSdk.defineUiTree(registration: any): UiTreeRegistration
   if registration.alwaysOn ~= nil and type(registration.alwaysOn) ~= "boolean" then
     error("defineUiTree: `alwaysOn` must be a boolean when present")
   end
+  if registration.hideBelow ~= nil and type(registration.hideBelow) ~= "boolean" then
+    error("defineUiTree: `hideBelow` must be a boolean when present")
+  end
 
   local out: UiTreeRegistration = {
     name = registration.name,
@@ -172,6 +176,9 @@ function UiTreeSdk.defineUiTree(registration: any): UiTreeRegistration
   }
   if registration.alwaysOn ~= nil then
     out.alwaysOn = registration.alwaysOn
+  end
+  if registration.hideBelow ~= nil then
+    out.hideBelow = registration.hideBelow
   end
   return out
 end

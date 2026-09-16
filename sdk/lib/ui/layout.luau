@@ -340,7 +340,14 @@ local function buildStack(kind: string, factory: string, props: any, children: a
   local kids = validateChildren(children, factory)
 
   local out: { [string]: any } = { kind = kind, gap = gap, padding = padding, align = align }
-  -- fill/border come before the common tail in the Rust struct order.
+  if props.width ~= nil then
+    requireFiniteNumber(props.width, "width", factory)
+    if props.width <= 0 then
+      error(`{factory}: \`width\` must be greater than 0`)
+    end
+    out.width = props.width
+  end
+  -- width/fill/border come before the common tail in the Rust struct order.
   if props.fill ~= nil then
     out.fill = validateColor(props.fill, "fill", factory)
   end

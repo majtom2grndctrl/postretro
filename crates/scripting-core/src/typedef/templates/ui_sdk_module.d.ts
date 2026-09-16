@@ -178,7 +178,8 @@ declare module "postretro/ui" {
   /** Build an interactive button descriptor. Pure; activation is resolved by the app at runtime. */
   export function Button(props: ButtonProps): WidgetDescriptor;
   /** Props for `Slider`. `bind` must be writable numeric state/local cell. `min`, `max`, and `step` are finite numbers; navigation clamps writes into `[min, max]`. Exactly one of `label` or `labelledBy` is required. */
-  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  export type SliderValueDisplay = { min: number; max: number; suffix?: string; decimalPlaces?: number };
+  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; valueDisplay?: SliderValueDisplay; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
   /** Build an interactive slider descriptor. */
   export function Slider(props: SliderProps): WidgetDescriptor;
   /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
@@ -200,8 +201,8 @@ declare module "postretro/ui" {
 
   export type FocusKind = "linear" | "spatial";
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
-  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, and optional `localState` declares presentation-only cells scoped to this container. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, `width` fixes the stack width in logical-reference pixels, and optional `localState` declares presentation-only cells scoped to this container. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; width?: number; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
   /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
   export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
   /** Build a vertical stack descriptor. `children` is positional, not a prop. */
@@ -218,8 +219,8 @@ declare module "postretro/ui" {
   export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
-  /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD. */
-  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
+  /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD; `hideBelow` visually occludes retained lower pushed trees. */
+  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean; hideBelow?: boolean };
   export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
   /** Build a UI-tree registration object. Pure; include the result in `ModManifest.uiTrees` or `setupLevel().uiTrees` to register it. */
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;

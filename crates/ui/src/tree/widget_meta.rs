@@ -214,13 +214,13 @@ fn widget_visible_when(widget: &Widget) -> Option<&Predicate> {
 }
 
 /// Harvest reactive-visibility state in lockstep with the just-built taffy tree
-/// (M13 G2, Task 2b). Walks the descriptor and the taffy graph together — they are
-/// structurally 1:1 (`build_node` maps each widget to exactly one node, children in
-/// order) — and records a `VisibilityState` for every node carrying a `visibleWhen`
-/// predicate. Each predicate carries its nearest enclosing `localState` scope so a
-/// `{ local }` predicate resolves against the same scope the draw/focus walks use;
-/// a `{ slot }` predicate carries `None`. Nodes with no `visibleWhen` never enter
-/// the map and stay visible.
+/// (M13 G2, Task 2b). `build_node` maps each descriptor widget to one outer taffy
+/// node, with descriptor children kept in order; a widget may privately compose
+/// draw-only descendants beneath that outer node. Records a `VisibilityState` for
+/// every descriptor node carrying a `visibleWhen` predicate. Each predicate carries
+/// its nearest enclosing `localState` scope so a `{ local }` predicate resolves
+/// against the same scope the draw/focus walks use; a `{ slot }` predicate carries
+/// `None`. Nodes with no `visibleWhen` never enter the map and stay visible.
 pub fn harvest_visibility(
     taffy: &TaffyTree<NodeContext>,
     widget: &Widget,

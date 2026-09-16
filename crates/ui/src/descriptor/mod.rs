@@ -217,6 +217,13 @@ mod tests {
     }
 
     #[test]
+    fn stack_width_round_trips_in_logical_reference_pixels() {
+        let json = r#"{"kind":"vstack","gap":0.0,"padding":0.0,"align":"stretch","width":960.0,"children":[]}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+    }
+
+    #[test]
     fn bound_text_round_trips_with_tween() {
         // A `text` bind carrying a `tween` keeps its camelCase wire form
         // byte-for-byte. Field order inside tween: durationMs, easing, from.

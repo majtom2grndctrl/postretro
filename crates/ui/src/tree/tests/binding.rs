@@ -9,6 +9,7 @@ fn bound_panel_in_stack(fill: [f32; 4], slot: &str) -> Widget {
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
+        width: None,
         fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
         border: None,
         id: None,

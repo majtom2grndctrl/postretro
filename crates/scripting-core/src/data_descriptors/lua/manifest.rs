@@ -725,7 +725,7 @@ pub fn presentation_template_from_lua(
     Ok(template)
 }
 
-/// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from Luau.
+/// Parse a single registered-tree entry (`{ name, tree, alwaysOn?, hideBelow? }`) from Luau.
 /// The `tree` field is converted via the G1a `anchored_tree_from_lua_value`
 /// bridge. Returns a named [`DescriptorError`] (never panics) on malformed input.
 pub fn registered_ui_tree_from_lua(value: LuaValue) -> Result<RegisteredUiTree, DescriptorError> {
@@ -737,10 +737,12 @@ pub fn registered_ui_tree_from_lua(value: LuaValue) -> Result<RegisteredUiTree, 
     }
     let tree = anchored_tree_from_lua_value(tree_val)?;
     let always_on = get_optional_bool_lua(&table, "alwaysOn")?.unwrap_or(false);
+    let hide_below = get_optional_bool_lua(&table, "hideBelow")?.unwrap_or(false);
     Ok(RegisteredUiTree {
         name,
         tree,
         always_on,
+        hide_below,
     })
 }
 

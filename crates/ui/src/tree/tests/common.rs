@@ -22,8 +22,8 @@ pub use crate::descriptor::{
     Align, AnchoredTree, BarExitFade, BarMax, BarMaxStateRef, BarWidget, BindSource, BoundScalar,
     ButtonWidget, CaptureMode, ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget,
     LocalState, PanelBind, PanelTween, PanelWidget, Predicate, PredicateValue, RingRadiusRange,
-    RingWidget, ScalarValue, SliderBind, SliderWidget, SpacerWidget, SpacingValue, TextBind,
-    TextTween, TextWidget, Widget,
+    RingWidget, ScalarValue, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget,
+    SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 pub use crate::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 pub use crate::style_ranges::{StyleEntry, StyleRanges};
@@ -87,6 +87,7 @@ pub fn vstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Wi
         gap: SpacingValue::Literal(gap),
         padding: SpacingValue::Literal(padding),
         align,
+        width: None,
         fill: None,
         border: None,
         id: None,
@@ -105,6 +106,7 @@ pub fn hstack(gap: f32, padding: f32, align: Align, children: Vec<Widget>) -> Wi
         gap: SpacingValue::Literal(gap),
         padding: SpacingValue::Literal(padding),
         align,
+        width: None,
         fill: None,
         border: None,
         id: None,
@@ -163,6 +165,7 @@ pub fn tweened_panel_in_stack(fill: [f32; 4], slot: &str, tween: PanelTween) -> 
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Stretch,
+        width: None,
         fill: Some(ColorValue::Literal([0.0, 0.0, 0.0, 1.0])),
         border: None,
         id: None,

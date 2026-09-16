@@ -10,6 +10,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         gap: SpacingValue::Literal(10.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
+        width: None,
         fill: None,
         border: None,
         id: None,
@@ -68,6 +69,7 @@ fn focus_export_auto_generates_ids_from_tree_position() {
         gap: SpacingValue::Literal(0.0),
         padding: SpacingValue::Literal(0.0),
         align: Align::Start,
+        width: None,
         fill: None,
         border: None,
         id: None,
@@ -130,6 +132,7 @@ fn slider(id: &str, slot: &str, captures: &[&str]) -> Widget {
         min: 0.0,
         max: 1.0,
         step: 0.1,
+        value_display: None,
         captures_nav: captures.iter().map(|s| s.to_string()).collect(),
         focus_neighbors: Default::default(),
         disabled: false,
@@ -230,6 +233,28 @@ fn slider_label_uses_literal_white_default_color() {
         srgb_of(INTERACTIVE_LABEL_COLOR),
         "slider label uses the renderer-owned literal white default",
     );
+}
+
+#[test]
+fn labelled_by_slider_renders_value_without_an_empty_label_prefix() {
+    let mut value_only = slider("sensitivity", "options.mouseSensitivity", &[]);
+    let Widget::Slider(slider) = &mut value_only else {
+        unreachable!("slider helper returns a slider")
+    };
+    slider.label = None;
+    slider.labelled_by = Some("sensitivityLabel".into());
+    let tree = anchored(value_only);
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+    let data = ui.build_draw_data(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("options.mouseSensitivity", 0.002),
+    );
+
+    assert_eq!(data.texts.len(), 1);
+    assert_eq!(data.texts[0].content, "0.002");
 }
 
 // --- M13 G2: predicate resolution + a11y state + FocusRect.disabled ---

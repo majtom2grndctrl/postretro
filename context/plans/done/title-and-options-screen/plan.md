@@ -60,6 +60,9 @@ read at: e36e86b57
 ## Landing record
 
 - Implementation checkpoint: `acfb6a130` (`Build title and options screens`).
+- Post-landing owner iteration: `68e762859` made composed option selection styles reactive within the open menu. The current follow-up adds an improvised visual slider with a raw-to-`1%–100%` presentation mapping, a grouped 640px two-column options layout, and `hideBelow` modal presentation so Options visually replaces the retained title menu. Pointer dragging remains intentionally deferred to a dedicated brief because it crosses input capture, slider track hit geometry, raw-value mapping, and continuous-write behavior.
 - Review panel: correctness, contract, hygiene, and adversarial passes found no functional defects. Six stale comments were corrected; the post-fix focused gate passed.
+- Follow-up review/fix loop: the panel caught presentation-cell ownership being coupled to the visible draw list and inconsistent raw fixed-width validation. The fixes separate retained ownership from visible composition, add an occlusion/pop state regression, validate width at the JS/Luau/serde boundaries, and synchronize public docs and generated typedefs.
 - Final preflight (2026-09-15): `cargo fmt --check` passed; `cargo clippy --target-dir target/preflight-clippy -- -D warnings` passed after deriving `Default` for `OptionsBridge`; full `cargo test` passed.
+- Follow-up final preflight (2026-09-15): `cargo fmt --check`, full-workspace `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, and full `cargo test` all passed.
 - Landing status is `landed-with-gaps`: A1–A14 have automated proof; M1–M12 remain owner-run visual/in-engine checks because this execution did not exercise an interactive GPU/input session or mutate the owner's real config directory.

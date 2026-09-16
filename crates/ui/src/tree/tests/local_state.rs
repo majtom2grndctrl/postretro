@@ -19,6 +19,7 @@ fn scoped_local_tree(scope_id: &str, cell: &str) -> AnchoredTree {
             gap: SpacingValue::Literal(0.0),
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
+            width: None,
             fill: None,
             border: None,
             id: None,

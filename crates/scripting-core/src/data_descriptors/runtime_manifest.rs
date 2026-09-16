@@ -18,8 +18,8 @@ use super::{
     TriggerPoolDescriptor,
 };
 
-/// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
-/// registration attribute. Drained from `ModManifest.uiTrees` (mod scope) and
+/// A script-registered UI tree: a named [`AnchoredTree`] plus its stack
+/// presentation attributes. Drained from `ModManifest.uiTrees` (mod scope) and
 /// `setupLevel()` (level scope) returns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegisteredUiTree {
@@ -30,6 +30,10 @@ pub struct RegisteredUiTree {
     /// `alwaysOn` registration attribute: a tree that stays resolvable even when
     /// it is not on top of the modal stack. Defaults to `false` when absent.
     pub always_on: bool,
+    /// `hideBelow` registration attribute: when this tree is pushed, lower
+    /// pushed trees stay retained but are omitted from the composed draw list.
+    /// Defaults to `false` when absent.
+    pub hide_below: bool,
 }
 
 /// Renderer-consumed definition for one passive, world-anchored transient.

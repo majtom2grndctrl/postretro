@@ -865,7 +865,7 @@ pub fn presentation_template_from_js<'js>(
     Ok(template)
 }
 
-/// Parse a single registered-tree entry (`{ name, tree, alwaysOn? }`) from JS.
+/// Parse a single registered-tree entry (`{ name, tree, alwaysOn?, hideBelow? }`) from JS.
 /// The `tree` field is converted via the G1a `anchored_tree_from_js_value`
 /// bridge. Returns a named [`DescriptorError`] (never panics) on malformed input.
 pub fn registered_ui_tree_from_js<'js>(
@@ -882,10 +882,12 @@ pub fn registered_ui_tree_from_js<'js>(
     let tree_val: JsValue = obj.get("tree").map_err(js_err)?;
     let tree = anchored_tree_from_js_value(ctx, tree_val)?;
     let always_on = get_optional_bool_js(&obj, "alwaysOn")?.unwrap_or(false);
+    let hide_below = get_optional_bool_js(&obj, "hideBelow")?.unwrap_or(false);
     Ok(RegisteredUiTree {
         name,
         tree,
         always_on,
+        hide_below,
     })
 }
 

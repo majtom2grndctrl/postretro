@@ -223,6 +223,7 @@ impl PresentationTemplateLayout {
                     content,
                     bind_scope,
                     bind: Some(bind),
+                    number_presentation,
                     last_resolved,
                     tween,
                     ..
@@ -233,6 +234,7 @@ impl PresentationTemplateLayout {
                         content,
                         last_resolved,
                         tween,
+                        number_presentation.as_ref(),
                         slot_values,
                         cell_values,
                         time_seconds,
@@ -430,6 +432,7 @@ mod tests {
             gap: SpacingValue::Literal(5.0),
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
+            width: None,
             fill: None,
             border: None,
             id: None,

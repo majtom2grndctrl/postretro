@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 
 use taffy::prelude::{
-    Display, FlexDirection, NodeId, Size, Style, TaffyTree, evenly_sized_tracks, length,
+    AlignItems, Display, FlexDirection, NodeId, Size, Style, TaffyTree, evenly_sized_tracks, length,
 };
 
 use super::super::descriptor::{
@@ -16,7 +16,7 @@ use super::super::descriptor::{
 use super::super::style_ranges::StyleEffectState;
 use super::super::theme::UiTheme;
 
-use super::node_context::{NodeContext, RingScalar};
+use super::node_context::{NodeContext, NumberPresentation, RingScalar};
 use super::style::{
     build_node_style_ranges, container_base_style, resolve_border, resolve_color, resolve_font,
     resolve_spacing,
@@ -102,6 +102,7 @@ pub fn build_node(
                         family: resolve_font(font, theme),
                         bind_scope: bind_scope_for(bind.as_ref().map(|b| &b.source), scope),
                         bind: bind.clone(),
+                        number_presentation: None,
                         last_resolved: None,
                         // Tween state is born on the first numeric resolution, not
                         // at build: the fresh path never tweens, and the retained
@@ -232,6 +233,7 @@ fn build_button(
                 // A button label is static text — no slot bind, tween, or format.
                 bind_scope: None,
                 bind: None,
+                number_presentation: None,
                 last_resolved: None,
                 tween: None,
                 style_ranges,
@@ -246,12 +248,9 @@ fn build_button(
         .expect("taffy leaf creation must succeed")
 }
 
-/// Build an interactive `slider` leaf. Renders `label` plus
-/// the current numeric value as one text run: it binds the slot through a
-/// synthesized `"<label>: {}"` format so the value display reuses the existing
-/// bound-text resolution + tween machinery (the slider's bind tween eases the
-/// shown number). The focusable marker + nav-capture/value-step ride the
-/// focus-rect export, not the draw payload.
+/// Build an interactive slider as one focusable layout node with internal track
+/// and value-readout children. The descriptor/focus walk still sees the outer
+/// node as the Slider; the private children only provide visual composition.
 fn build_slider(
     taffy: &mut TaffyTree<NodeContext>,
     slider: &SliderWidget,
@@ -261,7 +260,11 @@ fn build_slider(
     // Synthesize a text bind so the value display rides the bound-text path:
     // `content` is the fallback (label with no value yet), `format` injects the
     // resolved number after the label. The slider's bind tween carries through.
-    let format = format!("{}: {{}}", slider.label.as_deref().unwrap_or_default());
+    let format = slider
+        .label
+        .as_deref()
+        .map(|label| format!("{label}: {{}}"))
+        .unwrap_or_else(|| "{}".to_string());
     let bind = TextBind {
         source: slider.bind.source.clone(),
         format: Some(format),
@@ -272,7 +275,47 @@ fn build_slider(
         BindSource::Local { .. } => scope.map(str::to_string),
         BindSource::Slot { .. } | BindSource::Fact { .. } => None,
     };
-    taffy
+    let number_presentation = slider
+        .value_display
+        .as_ref()
+        .map(|display| NumberPresentation {
+            input_min: slider.min,
+            input_max: slider.max,
+            output_min: display.min,
+            output_max: display.max,
+            suffix: display.suffix.clone(),
+            decimal_places: display.decimal_places,
+        });
+    let track = taffy
+        .new_leaf_with_context(
+            Style {
+                size: Size {
+                    width: length(180.0_f32),
+                    height: length(8.0_f32),
+                },
+                ..Default::default()
+            },
+            NodeContext::Bar {
+                bind_scope: bind_scope.clone(),
+                bind: slider.bind.clone(),
+                min: slider.min,
+                max: super::super::descriptor::BarMax::Literal(slider.max),
+                fill: resolve_color(
+                    &super::super::descriptor::ColorValue::Token("focus.ring".to_string()),
+                    theme,
+                ),
+                background: [0.08, 0.11, 0.16, 1.0],
+                thumb: Some(INTERACTIVE_LABEL_COLOR),
+                exit_fade: None,
+                last_resolved: None,
+                last_max_resolved: None,
+                tween: None,
+                style_ranges: None,
+                style_state: RefCell::new(StyleEffectState::default()),
+            },
+        )
+        .expect("taffy slider track creation must succeed");
+    let value = taffy
         .new_leaf_with_context(
             Style::default(),
             NodeContext::Text {
@@ -282,6 +325,7 @@ fn build_slider(
                 family: resolve_font(&None, theme),
                 bind_scope,
                 bind: Some(bind),
+                number_presentation,
                 last_resolved: None,
                 tween: None,
                 style_ranges: None,
@@ -292,7 +336,22 @@ fn build_slider(
                 last_predicate_resolved: None,
             },
         )
-        .expect("taffy leaf creation must succeed")
+        .expect("taffy slider value creation must succeed");
+    taffy
+        .new_with_children(
+            Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::Center),
+                gap: Size {
+                    width: length(12.0_f32),
+                    height: length(0.0_f32),
+                },
+                ..Default::default()
+            },
+            &[track, value],
+        )
+        .expect("taffy slider composition creation must succeed")
 }
 
 /// Build a passive horizontal `bar` leaf. Carries an explicit
@@ -326,9 +385,11 @@ fn build_bar(
             NodeContext::Bar {
                 bind_scope,
                 bind: bar.bind.clone(),
+                min: 0.0,
                 max: bar.max.clone(),
                 fill: resolve_color(&bar.fill, theme),
                 background: resolve_color(&bar.background, theme),
+                thumb: None,
                 exit_fade: bar.exit_fade.clone(),
                 last_resolved: None,
                 last_max_resolved: None,
@@ -449,7 +510,7 @@ fn build_stack(
     // Resolve the spacing tokens to scalar `f32` BEFORE `container_base_style` —
     // its resolved-scalar signature stays unchanged; resolution is the only seam
     // that moved (an unknown token degrades to 0.0 + one warn via `resolve_spacing`).
-    let style = Style {
+    let mut style = Style {
         display: Display::Flex,
         flex_direction: direction,
         ..container_base_style(
@@ -458,6 +519,15 @@ fn build_stack(
             container.align,
         )
     };
+    match container.width {
+        Some(width) if width.is_finite() && width > 0.0 => {
+            style.size.width = length(width);
+        }
+        Some(width) => {
+            log::warn!("[UI] stack width must be finite and greater than zero; ignoring {width}");
+        }
+        None => {}
+    }
     let node = taffy
         .new_with_children(style, &children)
         .expect("taffy container creation must succeed");

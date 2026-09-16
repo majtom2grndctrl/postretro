@@ -22,10 +22,12 @@ pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,
 };
+pub(crate) use widgets::validate_stack_width;
 pub use widgets::{
     AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
     GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, RingRadiusRange,
-    RingWidget, SliderBind, SliderWidget, SpacerWidget, TextBind, TextWidget, Widget,
+    RingWidget, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, TextBind, TextWidget,
+    Widget,
 };
 
 #[cfg(test)]
@@ -59,6 +61,18 @@ mod tests {
         let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
         let reserialized = serde_json::to_string(&tree).expect("must serialize");
         assert_eq!(reserialized, json);
+    }
+
+    #[test]
+    fn stack_width_must_be_positive_at_the_serde_boundary() {
+        for width in ["0.0", "-1.0"] {
+            let json = format!(
+                r#"{{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","width":{width},"children":[]}}"#
+            );
+            let result: Result<Widget, _> = serde_json::from_str(&json);
+            assert!(result.is_err(), "width {width} must be rejected");
+        }
+        assert!(validate_stack_width(Some(f32::NAN)).is_err());
     }
 
     #[test]
@@ -581,6 +595,27 @@ mod tests {
     }
 
     #[test]
+    fn slider_round_trips_presentation_only_value_display() {
+        let json = r#"{"kind":"slider","id":"mouse","label":"Sensitivity","bind":{"slot":"options.mouseSensitivity"},"min":0.0005,"max":0.01,"step":0.0005,"valueDisplay":{"min":1.0,"max":100.0,"suffix":"%","decimalPlaces":0}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        let Widget::Slider(slider) = &widget else {
+            panic!("expected slider");
+        };
+        let display = slider.value_display.as_ref().expect("display mapping");
+        assert!((display.min - 1.0).abs() <= f32::EPSILON);
+        assert!((display.max - 100.0).abs() <= f32::EPSILON);
+        assert_eq!(display.suffix, "%");
+        assert_eq!(display.decimal_places, Some(0));
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+    }
+
+    #[test]
+    fn slider_value_display_rejects_out_of_range_precision() {
+        let json = r#"{"kind":"slider","id":"mouse","label":"Sensitivity","bind":{"slot":"options.mouseSensitivity"},"min":0.0005,"max":0.01,"step":0.0005,"valueDisplay":{"min":1.0,"max":100.0,"decimalPlaces":7}}"#;
+        assert!(serde_json::from_str::<Widget>(json).is_err());
+    }
+
+    #[test]
     fn slider_omits_empty_captures_nav_and_supports_bind_tween() {
         // No capturesNav and no tween: both keys omitted.
         let plain = r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1}"#;
@@ -746,8 +781,8 @@ mod tests {
             ),
             // Slider() with capturesNav.
             (
-                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
-                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"valueDisplay":{"min":1,"max":100,"suffix":"%","decimalPlaces":0},"capturesNav":["nav.left","nav.right"]}"#,
+                r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0.0,"max":1.0,"step":0.1,"valueDisplay":{"min":1.0,"max":100.0,"suffix":"%","decimalPlaces":0},"capturesNav":["nav.left","nav.right"]}"#,
             ),
             // Bar() plain.
             (

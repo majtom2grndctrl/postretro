@@ -220,6 +220,7 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
             gap: SpacingValue::Token("no.such.spacing".into()),
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
+            width: None,
             fill: None,
             border: None,
             id: None,

@@ -239,7 +239,7 @@ pub struct UiReadSnapshot {
     /// store the same way `slot_values` flows from the slot table - so a `{ local }`
     /// bind resolves against the live cell value without the descriptor (compared
     /// by the retained reuse gate) ever changing. Empty on the splash path and
-    /// whenever no `localState` scope composes.
+    /// whenever no retained tree owns a `localState` scope.
     pub cell_values: tree::CellValues,
     /// Deterministic frame time in seconds, accumulated from per-frame `dt`
     /// (`App::script_time`) - NEVER wall-clock. Stays `f64` end-to-end to match

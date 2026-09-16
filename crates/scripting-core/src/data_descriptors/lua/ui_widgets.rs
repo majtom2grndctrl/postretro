@@ -2,7 +2,9 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
-use crate::ui::descriptor::{BarExitFade, RingRadiusRange};
+use crate::ui::descriptor::{
+    BarExitFade, RingRadiusRange, SliderValueDisplay, validate_stack_width,
+};
 
 // --- Lua UI deserialization -------------------------------------------------
 
@@ -118,6 +120,8 @@ pub fn container_widget_from_lua(table: &Table) -> Result<ContainerWidget, Descr
         gap: spacing_value_from_lua(table, "gap")?,
         padding: spacing_value_from_lua(table, "padding")?,
         align: parse_align(&get_required_string_lua(table, "align")?)?,
+        width: validate_stack_width(get_optional_f32_lua(table, "width")?)
+            .map_err(|reason| DescriptorError::InvalidShape { reason })?,
         fill: color_value_opt_from_lua(table, "fill")?,
         border: border_from_lua(table, "border")?,
         id: get_optional_string_lua(table, "id")?,
@@ -225,12 +229,46 @@ pub fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorE
         min: get_required_f32_lua(table, "min")?,
         max: get_required_f32_lua(table, "max")?,
         step: get_required_f32_lua(table, "step")?,
+        value_display: slider_value_display_from_lua(table)?,
         captures_nav: string_array_from_lua(table, "capturesNav")?,
         focus_neighbors: focus_neighbors_from_lua(table)?,
         disabled: get_optional_bool_lua(table, "disabled")?.unwrap_or(false),
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
     })
+}
+
+fn slider_value_display_from_lua(
+    table: &Table,
+) -> Result<Option<SliderValueDisplay>, DescriptorError> {
+    let Some(display) = optional_table_lua(table, "valueDisplay")? else {
+        return Ok(None);
+    };
+    let decimal_places = get_optional_f32_lua(&display, "decimalPlaces")?;
+    let decimal_places = match decimal_places {
+        Some(value)
+            if value.is_finite() && value.fract() == 0.0 && (0.0..=6.0).contains(&value) =>
+        {
+            Some(value as u8)
+        }
+        Some(_) => {
+            return Err(DescriptorError::InvalidShape {
+                reason: "`slider.valueDisplay.decimalPlaces` must be an integer between 0 and 6"
+                    .to_string(),
+            });
+        }
+        None => None,
+    };
+    let display = SliderValueDisplay {
+        min: get_required_f32_lua(&display, "min")?,
+        max: get_required_f32_lua(&display, "max")?,
+        suffix: get_optional_string_lua(&display, "suffix")?.unwrap_or_default(),
+        decimal_places,
+    };
+    display
+        .validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(Some(display))
 }
 
 pub fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {

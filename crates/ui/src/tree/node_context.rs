@@ -13,6 +13,30 @@ use super::super::descriptor::{
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
 
+/// Runtime-only linear mapping from a bound numeric value into a formatted
+/// presentation value. Slider interaction continues to use the raw source
+/// range; this mapping is consumed only by the text draw path.
+#[derive(Debug, Clone)]
+pub struct NumberPresentation {
+    pub input_min: f32,
+    pub input_max: f32,
+    pub output_min: f32,
+    pub output_max: f32,
+    pub suffix: String,
+    pub decimal_places: Option<u8>,
+}
+
+impl NumberPresentation {
+    pub fn map(&self, value: f32) -> f32 {
+        let span = self.input_max - self.input_min;
+        if !span.is_finite() || span == 0.0 {
+            return self.output_min;
+        }
+        let normalized = ((value - self.input_min) / span).clamp(0.0, 1.0);
+        self.output_min + normalized * (self.output_max - self.output_min)
+    }
+}
+
 /// One resolved radial scalar. Literals are immutable draw values; a bound
 /// scalar retains the descriptor source plus presentation-local display state.
 ///
@@ -64,6 +88,9 @@ pub enum NodeContext {
         /// draw step both select the same registered face. See `resolve_font`.
         family: String,
         bind: Option<TextBind>,
+        /// Optional presentation-only numeric map. Used by Slider's synthesized
+        /// value readout; ordinary Text nodes leave it absent.
+        number_presentation: Option<NumberPresentation>,
         /// The nearest declaring `localState` scope id resolved at build time, for
         /// a `{ local }` bind. `None` for a `{ slot }`/`{ fact }` bind or a
         /// local bind with no enclosing scope (the latter degrades to "absent").
@@ -141,16 +168,22 @@ pub enum NodeContext {
     /// renderer; the tree records the key so the draw step can group by it.
     Image { asset: String },
     /// Horizontal value bar. Draws a `background` quad filling
-    /// its laid-out rect, then a `fill` quad whose width is `value/max` clamped to
-    /// `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased
+    /// its laid-out rect, then a `fill` quad whose width is normalized across
+    /// `[min, max]` and clamped to `[0, 1]` of the rect width. `value` resolves from `bind`'s slot (the eased
     /// display fraction on the retained tweened path, via `last_resolved`); a
     /// styleRanges map recolors the fill the same way bound text/panel do. Passive
     /// (never focusable activation); `bind`'s tween eases the displayed fraction.
     Bar {
         bind: SliderBind,
+        /// Lower endpoint used when normalizing the fill fraction. Authored Bar
+        /// widgets use zero; Slider's internal track uses its raw minimum.
+        min: f32,
         max: BarMax,
         fill: [f32; 4],
         background: [f32; 4],
+        /// Optional thumb tint for Slider's internal track. Plain Bar widgets
+        /// remain background + fill only.
+        thumb: Option<[f32; 4]>,
         /// Optional retained exit policy. Only a Bar carries this narrow
         /// lifecycle presentation behavior; it is not a generic opacity API.
         exit_fade: Option<BarExitFade>,

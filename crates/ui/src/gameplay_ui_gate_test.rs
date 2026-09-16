@@ -88,6 +88,7 @@ fn composite_fixture() -> AnchoredTree {
             gap: SpacingValue::Literal(8.0),
             padding: SpacingValue::Literal(6.0),
             align: Align::Start,
+            width: None,
             // Backdrop fill makes the outer container emit a panel quad sized to
             // its content (the canonical quad-producing path now that bare panels
             // have no intrinsic size).
@@ -105,6 +106,7 @@ fn composite_fixture() -> AnchoredTree {
                     gap: SpacingValue::Literal(10.0),
                     padding: SpacingValue::Literal(0.0),
                     align: Align::Start,
+                    width: None,
                     fill: None,
                     border: None,
                     id: None,
@@ -301,6 +303,7 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
             gap: SpacingValue::Literal(0.0),
             padding: SpacingValue::Literal(0.0),
             align: Align::Start,
+            width: None,
             fill: None,
             border: None,
             id: None,

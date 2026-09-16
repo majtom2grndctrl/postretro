@@ -24,6 +24,7 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::portals::Portal;
+use crate::sh_bake::spot_cone_parameters;
 
 /// Edge length of an affinity cell, in base SH probes, per axis.
 ///
@@ -82,6 +83,39 @@ pub struct AffinityReachInputs<'a> {
     pub probe_spacing: f32,
 }
 
+/// Transport semantics for one affinity decomposition. Direct transport may
+/// discard cells provably outside a spotlight's authored outer cone; indirect
+/// transport must retain the falloff cube because bounced light leaves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffinityTransport {
+    Indirect,
+    Direct,
+}
+
+/// Reach policy layered over the shared falloff/portal decomposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AffinityReachPolicy {
+    pub transport: AffinityTransport,
+    /// Id 41 must keep the same final cube-reach cell that the exact-zero drop
+    /// policy uses as a selected light's canonical representation.
+    pub retain_canonical_cell: bool,
+}
+
+impl AffinityReachPolicy {
+    pub const INDIRECT: Self = Self {
+        transport: AffinityTransport::Indirect,
+        retain_canonical_cell: false,
+    };
+    pub const DIRECT: Self = Self {
+        transport: AffinityTransport::Direct,
+        retain_canonical_cell: false,
+    };
+    pub const SELECTED_DIRECT: Self = Self {
+        transport: AffinityTransport::Direct,
+        retain_canonical_cell: true,
+    };
+}
+
 /// Result of the affinity decomposition.
 pub struct AffinityDecomposition {
     /// Affinity grid dimensions = `ceil(base_dims / AFFINITY_FACTOR)`, per axis.
@@ -122,7 +156,7 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
         .iter()
         .map(|e| e.light)
         .collect();
-    decompose_affinity_for_lights(&reach, &lights)
+    decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::INDIRECT)
 }
 
 /// Light-list-generic affinity decomposition: the same two-stage reach test
@@ -134,6 +168,7 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
 pub fn decompose_affinity_for_lights(
     inputs: &AffinityReachInputs<'_>,
     lights: &[&MapLight],
+    policy: AffinityReachPolicy,
 ) -> AffinityDecomposition {
     let (base_min, base_max) = world_aabb(inputs.geometry_vertices);
     let base_dims = grid_dimensions(base_min, base_max, inputs.probe_spacing);
@@ -176,6 +211,7 @@ pub fn decompose_affinity_for_lights(
                 affinity_cell_meters,
                 inputs,
                 reachable.as_ref(),
+                policy,
             )
         })
         .collect();
@@ -238,6 +274,7 @@ fn cells_for_light(
     affinity_cell_meters: f64,
     inputs: &AffinityReachInputs<'_>,
     reachable: Option<&HashSet<usize>>,
+    policy: AffinityReachPolicy,
 ) -> Vec<u32> {
     let (light_min, light_max) = light_aabb(light, world_aabb_d);
 
@@ -249,6 +286,7 @@ fn cells_for_light(
     let hi = cell_range(light_max, base_min, affinity_cell_meters, affinity_dims);
 
     let mut cells = Vec::new();
+    let mut canonical = None;
     let nx = affinity_dims[0] as usize;
     let ny = affinity_dims[1] as usize;
     for z in lo[2]..=hi[2] {
@@ -272,11 +310,63 @@ fn cells_for_light(
                         continue;
                     }
                 }
-                cells.push((x + y * nx + z * nx * ny) as u32);
+                let cell = (x + y * nx + z * nx * ny) as u32;
+                if policy.retain_canonical_cell {
+                    canonical = Some(cell);
+                }
+                if policy.transport == AffinityTransport::Direct {
+                    let cell_min = DVec3::new(
+                        base_min.x + x as f64 * affinity_cell_meters,
+                        base_min.y + y as f64 * affinity_cell_meters,
+                        base_min.z + z as f64 * affinity_cell_meters,
+                    );
+                    let cell_max = cell_min + DVec3::splat(affinity_cell_meters);
+                    if !direct_light_may_reach_cell(light, cell_min, cell_max) {
+                        continue;
+                    }
+                }
+                cells.push(cell);
             }
         }
     }
+
+    if let Some(canonical) = canonical
+        && cells.last().copied() != Some(canonical)
+    {
+        cells.push(canonical);
+    }
     cells
+}
+
+/// Conservative finite-cone test. The sphere encloses the complete cell AABB;
+/// if any probe can receive nonzero direct radiance, that sphere necessarily
+/// overlaps both the padded falloff sphere and the authored outer cone.
+fn direct_light_may_reach_cell(light: &MapLight, cell_min: DVec3, cell_max: DVec3) -> bool {
+    if light.light_type != LightType::Spot {
+        return true;
+    }
+    let (axis, _, cos_outer) = spot_cone_parameters(light);
+    let axis = DVec3::new(axis.x as f64, axis.y as f64, axis.z as f64);
+    if !axis.is_finite() || axis.length_squared() < 1.0e-12 || !cos_outer.is_finite() {
+        return true;
+    }
+
+    let center = (cell_min + cell_max) * 0.5;
+    let radius = (cell_max - cell_min).length() * 0.5;
+    let to_center = center - light.origin;
+    let distance = to_center.length();
+    let padded_reach = (light.falloff_range + AABB_PADDING_METERS).max(0.01) as f64;
+    if distance - radius > padded_reach {
+        return false;
+    }
+    if distance <= radius {
+        return true;
+    }
+
+    let center_angle = axis.dot(to_center / distance).clamp(-1.0, 1.0).acos();
+    let angular_radius = (radius / distance).clamp(0.0, 1.0).asin();
+    let outer_angle = (cos_outer as f64).clamp(-1.0, 1.0).acos();
+    center_angle <= outer_angle + angular_radius
 }
 
 /// Clamp a world coordinate to an inclusive affinity-cell index per axis.
@@ -461,6 +551,15 @@ mod tests {
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
+    }
+
+    fn spot_light(origin: DVec3, range: f32, direction: [f32; 3], outer: f32) -> MapLight {
+        let mut light = animated_point_light(origin, range);
+        light.light_type = LightType::Spot;
+        light.cone_angle_inner = Some(outer * 0.5);
+        light.cone_angle_outer = Some(outer);
+        light.cone_direction = Some(direction);
+        light
     }
 
     fn empty_tree() -> BspTree {
@@ -654,6 +753,123 @@ mod tests {
         let result = decompose_affinity(&inputs);
         // Bypassed filter → same 8-cell block as the empty-tree subset test.
         assert_eq!(result.per_light_cells[0].len(), 8);
+    }
+
+    #[test]
+    fn direct_spot_cell_test_rejects_only_spheres_outside_the_outer_cone() {
+        let light = spot_light(DVec3::ZERO, 10.0, [1.0, 0.0, 0.0], 15.0f32.to_radians());
+
+        assert!(!direct_light_may_reach_cell(
+            &light,
+            DVec3::new(4.0, 4.0, 0.0),
+            DVec3::new(5.0, 5.0, 1.0),
+        ));
+        assert!(!direct_light_may_reach_cell(
+            &light,
+            DVec3::new(-5.0, 0.0, 0.0),
+            DVec3::new(-4.0, 1.0, 1.0),
+        ));
+
+        // The cell straddles the cone: its axis-side edge is in-cone while its
+        // far corner is out. The enclosing-sphere test must conservatively keep it.
+        assert!(direct_light_may_reach_cell(
+            &light,
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(5.0, 1.0, 1.0),
+        ));
+    }
+
+    #[test]
+    fn direct_and_indirect_spot_decompositions_use_separate_transport_reach() {
+        let verts = cube_vertices();
+        let exterior: HashSet<usize> = HashSet::new();
+        let tree = empty_tree();
+        let lights = vec![spot_light(
+            DVec3::ZERO,
+            20.0,
+            [1.0, 0.0, 0.0],
+            12.0f32.to_radians(),
+        )];
+        let animated = AnimatedBakedLights::from_lights(&lights);
+        let indirect = decompose_affinity(&AffinityInputs {
+            geometry_vertices: &verts,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            animated_lights: &animated,
+            probe_spacing: 1.0,
+        });
+        let reach = AffinityReachInputs {
+            geometry_vertices: &verts,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            probe_spacing: 1.0,
+        };
+        let direct_lights = [&lights[0]];
+        let direct =
+            decompose_affinity_for_lights(&reach, &direct_lights, AffinityReachPolicy::DIRECT);
+
+        assert_eq!(
+            indirect.per_light_cells[0].len(),
+            indirect.affinity_cell_count()
+        );
+        assert!(direct.per_light_cells[0].len() < indirect.per_light_cells[0].len());
+        assert!(!direct.per_light_cells[0].is_empty());
+    }
+
+    #[test]
+    fn selected_direct_spot_retains_the_unculled_canonical_cell() {
+        let verts = cube_vertices();
+        let exterior: HashSet<usize> = HashSet::new();
+        let tree = empty_tree();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &verts,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            probe_spacing: 1.0,
+        };
+        let light = spot_light(
+            DVec3::new(20.0, 0.0, 0.0),
+            20.0,
+            [1.0, 0.0, 0.0],
+            5.0f32.to_radians(),
+        );
+        let lights = [&light];
+
+        let cube = decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::INDIRECT);
+        let selected =
+            decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::SELECTED_DIRECT);
+
+        assert_eq!(
+            selected.per_light_cells[0],
+            vec![*cube.per_light_cells[0].last().unwrap()]
+        );
+    }
+
+    #[test]
+    fn directional_direct_reach_retains_the_whole_world_grid() {
+        let verts = cube_vertices();
+        let exterior: HashSet<usize> = HashSet::new();
+        let tree = empty_tree();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &verts,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            portals: &[],
+            probe_spacing: 1.0,
+        };
+        let mut light = animated_point_light(DVec3::ZERO, 1.0);
+        light.light_type = LightType::Directional;
+        light.cone_direction = Some([0.0, -1.0, 0.0]);
+        let lights = [&light];
+
+        let direct = decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::DIRECT);
+        assert_eq!(
+            direct.per_light_cells[0].len(),
+            direct.affinity_cell_count()
+        );
     }
 
     // --- CSR inversion -----------------------------------------------------

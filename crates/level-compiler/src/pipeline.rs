@@ -10,7 +10,7 @@ use postretro_level_format::delta_sh_volumes::{PROBES_PER_CELL, delta_probe_f16_
 use postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
 use crate::affinity_grid::{
-    AffinityInputs, AffinityReachInputs, build_csr, decompose_affinity,
+    AffinityInputs, AffinityReachInputs, AffinityReachPolicy, build_csr, decompose_affinity,
     decompose_affinity_for_lights,
 };
 use crate::bake_control::BakeControl;
@@ -284,6 +284,24 @@ impl DeltaCsrPlan {
         );
         &self.affinity_lights
     }
+}
+
+fn ensure_bake_csr_matches_plan(
+    label: &'static str,
+    plan: &DeltaCsrPlan,
+    bake_offsets: &[u32],
+    bake_lights: &[u32],
+) -> anyhow::Result<()> {
+    if plan.affinity_offsets != bake_offsets || plan.affinity_lights != bake_lights {
+        anyhow::bail!(
+            "{label} plan/bake CSR divergence: plan has {} offsets and {} entries; bake has {} offsets and {} entries",
+            plan.affinity_offsets.len(),
+            plan.affinity_lights.len(),
+            bake_offsets.len(),
+            bake_lights.len(),
+        );
+    }
+    Ok(())
 }
 
 /// CSR-only inputs for one delta bake's dense working-set projection.
@@ -1020,7 +1038,8 @@ fn run_after_parsing(
             portals: &generated_portals,
             probe_spacing: sh_config.probe_spacing,
         };
-        let decomposition = decompose_affinity_for_lights(&reach, &animated_lights);
+        let decomposition =
+            decompose_affinity_for_lights(&reach, &animated_lights, AffinityReachPolicy::DIRECT);
         let (affinity_offsets, affinity_lights) = build_csr(
             &decomposition.per_light_cells,
             decomposition.affinity_cell_count(),
@@ -1070,7 +1089,11 @@ fn run_after_parsing(
             portals: &generated_portals,
             probe_spacing: sh_config.probe_spacing,
         };
-        let decomposition = decompose_affinity_for_lights(&reach, &selected_lights);
+        let decomposition = decompose_affinity_for_lights(
+            &reach,
+            &selected_lights,
+            AffinityReachPolicy::SELECTED_DIRECT,
+        );
         let (affinity_offsets, affinity_lights) = build_csr(
             &decomposition.per_light_cells,
             decomposition.affinity_cell_count(),
@@ -1284,6 +1307,19 @@ fn run_after_parsing(
                     &direct_sh_delta_control,
                 )
             });
+    match raw_direct_sh_delta_volumes_section.as_ref() {
+        Some((section, _)) => ensure_bake_csr_matches_plan(
+            "DirectShDeltaVolumes (id 41)",
+            &direct_plan,
+            &section.affinity_offsets,
+            &section.affinity_lights,
+        )?,
+        None if direct_plan.affinity_lights.is_empty() => {}
+        None => anyhow::bail!(
+            "DirectShDeltaVolumes (id 41) plan/bake CSR divergence: plan has {} entries but the bake emitted no section",
+            direct_plan.affinity_lights.len(),
+        ),
+    }
     let direct_sh_delta_elapsed = stage_start.elapsed();
 
     let (entity_shadow_lights_section, direct_sh_delta_volumes_section, direct_sh_delta_stats) =
@@ -2272,6 +2308,22 @@ mod tests {
     use glam::DVec3;
     use log::Level;
     use postretro_test_log_capture::LogCapture;
+
+    #[test]
+    fn direct_delta_plan_bake_csr_divergence_is_caught() {
+        let plan = DeltaCsrPlan::from_csr(vec![0, 1, 2], vec![3, 7]);
+        ensure_bake_csr_matches_plan("DirectShDeltaVolumes (id 41)", &plan, &[0, 1, 2], &[3, 7])
+            .expect("identical CSRs must pass");
+
+        let error = ensure_bake_csr_matches_plan(
+            "DirectShDeltaVolumes (id 41)",
+            &plan,
+            &[0, 1, 2],
+            &[3, 8],
+        )
+        .expect_err("a changed flat light list must fail the plan/bake gate");
+        assert!(error.to_string().contains("plan/bake CSR divergence"));
+    }
 
     #[test]
     fn delta_working_set_gate_refuses_three_cumulative_40_percent_bakes() {

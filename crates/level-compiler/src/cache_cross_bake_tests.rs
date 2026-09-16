@@ -50,8 +50,9 @@ use crate::delta_sh_bake::{
 };
 use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
 use crate::direct_sh_bake::{
-    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DIRECT_SH_STAGE_ID, DirectBakeInputs,
-    bake_direct_sh_delta_volumes_controlled_with_tally, bake_direct_sh_volume_cached_controlled,
+    DIRECT_SH_DELTA_STAGE_ID, DIRECT_SH_DELTA_STAGE_VERSION, DIRECT_SH_STAGE_ID,
+    DIRECT_SH_STAGE_VERSION, DirectBakeInputs, bake_direct_sh_delta_volumes_controlled_with_tally,
+    bake_direct_sh_volume_cached_controlled,
 };
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::governor::Governor;
@@ -1336,4 +1337,12 @@ fn five_stage_version_bumps_miss_then_hit() {
     cache.put(&bumped_chunk, b"bumped");
     assert_eq!(cache.get(&bumped_chunk), Some(b"bumped".to_vec()));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cone_reach_cache_versions_only_invalidate_direct_stages() {
+    assert_eq!(DIRECT_SH_STAGE_VERSION, 4);
+    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 2);
+    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 2);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 1);
 }

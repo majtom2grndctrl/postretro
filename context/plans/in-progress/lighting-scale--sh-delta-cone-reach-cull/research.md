@@ -3,14 +3,15 @@
 Ephemeral. Grounding and pinned orderings behind `index.md`. Symbols and counts as
 of e36e86b; they drift — the brief states only what survives.
 
-## Illustrative scale — stress-warren-hallway-inspection (estimated, not measured this session)
+## Illustrative scale — stress-warren-hallway-inspection
 
 - As committed: 338 promotable spots (`_bake_only 0`, `_shadow_type static_light_map`, 48°
   outer cone, `_falloff_range 1024` ≈ 26 m); 0 animated lights → the OOM is purely id-41.
 - Pre-cull dense (id-41 alone): 659,904 `(affinity-cell, light)` CSR entries × 18,432 B/entry
   ≈ 12 GB (matches the `lighting-scale--compile-peak-ram` decomposition).
-- Cone-vs-cube solid-angle estimate ≈ 10× fewer id-41 entries — **unmeasured**. The first
-  slice measures the post-cull projection with `--sh-delta-working-set-max-size 0`.
+- The cone-vs-cube solid-angle estimate of ≈10× fewer id-41 entries did not hold. The
+  production planner measured a 29% id-41 dense-byte reduction at the practical 10 m
+  probe spacing and a post-cull 5.97 GB projected peak at the default 1 m spacing.
 - The fixture is being regenerated with a nonzero animated-light share (owner decision), which
   activates id-45 (animated-direct, cone-cullable) and id-27 (indirect, **cube reach, not
   cone-cullable** — bounce leaves the cone). The first-slice measurement is over all three
@@ -27,6 +28,18 @@ of e36e86b; they drift — the brief states only what survives.
   the normal 3× copy-chain factor: id 27 = 1,990,656; id 41 = 46,227,456;
   id 45 = 1,990,656. This coarse-spacing control was already below 16 GiB and
   is not the brief's default-1m risk measurement.
+- Post-cull control with the same 10 m / 0.25 settings projected 35,260,416
+  cumulative dense bytes and 105,781,248 bytes at 3×: id 27 = 1,990,656
+  (unchanged), id 41 = 32,864,256 (29% below the 46,227,456-byte control),
+  and id 45 = 405,504 (80% below the 1,990,656-byte control).
+- Post-cull at the default 1 m SH probe spacing, the production CSR planner
+  projected 1,989,642,240 cumulative dense bytes and a 5,968,926,720-byte
+  peak at the normal 3× factor: id 27 = 363,184,128; id 41 = 1,616,283,648;
+  id 45 = 10,174,464. This is 11,210,942,464 bytes below the unchanged
+  16 GiB default gate. The measurement used a temporary, uncommitted bypass
+  of the base-SH ray bake so the real post-selection CSR planner and gate could
+  run without materializing unrelated base irradiance; the bypass was removed
+  immediately after capture and is absent from the implementation.
 - Pre-change `campaign-test.map` whole-PRL SHA-256 baselines (current compiler,
   before cone reach): cold `--no-cache` =
   `56aaa1a77eeac66f57bf34902e3d7097c2f0aa68a5e639736ed0b38904224671`;

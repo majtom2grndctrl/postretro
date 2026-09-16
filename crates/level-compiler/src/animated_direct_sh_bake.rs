@@ -2,7 +2,8 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::affinity_grid::{
-    AFFINITY_FACTOR, AffinityReachInputs, build_csr, csr_entry_cells, decompose_affinity_for_lights,
+    AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
+    decompose_affinity_for_lights,
 };
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
@@ -32,7 +33,7 @@ const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delta_sh_subblock";
 
 /// Bump when the animated-direct sub-block computation or its key inputs change.
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 1;
+pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 2;
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
 /// shared SH context, keeping section-45 sub-blocks coincident with base probes.
@@ -112,9 +113,10 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    // Direct reach clips to each light's falloff-sphere AABB, then portal-floods
-    // from its source leaf; spotlight cones intentionally do not clip this cull.
-    let decomposition = decompose_affinity_for_lights(&reach, &lights);
+    // The animated runtime cone is frozen at the authored rest direction, the
+    // same direction this direct bake evaluates, so direct reach may clip cells
+    // that cannot intersect that outer cone.
+    let decomposition = decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::DIRECT);
     let affinity_dims = decomposition.affinity_dims;
     let (affinity_offsets, affinity_lights) = build_csr(
         &decomposition.per_light_cells,

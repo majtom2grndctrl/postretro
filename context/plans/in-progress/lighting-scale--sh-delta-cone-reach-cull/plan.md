@@ -33,7 +33,7 @@ read at: 6c4946ac4
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Regenerate the warren with deterministic animated coverage, capture pre-change cold/warm identity baselines and the zero-cap projection, add the thinnest direct-only conservative cone predicate, then remeasure the projection to falsify or confirm the 16 GiB premise | integrating executor | — | in progress |
+| 1 | Regenerate the warren with deterministic animated coverage, capture pre-change cold/warm identity baselines and the zero-cap projection, add the thinnest direct-only conservative cone predicate, then remeasure the projection to falsify or confirm the 16 GiB premise | integrating executor | — | in progress — fixture and pre-change baselines committed first |
 | 2 | Harden transport separation, id-41 canonical retention, plan/bake CSR identity, cache epoch bumps, and focused cone-boundary/directional/id-27 regression coverage | integrating executor | 1 | pending |
 | 3 | Run named cold/warm byte-identity fixtures and the admitted warren compile; record hashes, projection, and exact automated results in `research.md` and this plan | integrating executor | 2 | pending |
 | 4 | Run readiness checks, review/fix/retest loop, final preflight, update durable lighting/build contracts, and land the brief | integrating executor | 3 | pending |

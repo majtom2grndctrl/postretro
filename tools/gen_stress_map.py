@@ -97,11 +97,12 @@ feature-heavy map.
   coarser 0.5 and the packer aborts (0.25 clears it, under the atlas cap).
 * Static room-lighting contract. When room lights are enabled, the normal
   contract is four baked spotlights plus one dim bake-only point light per room.
-  `--preset warren` uses that contract with static lights only. Animated
-  coverage lights are an explicit opt-in and remain promotable because a script
-  must be able to address them. Dynamic lighting remains available through the
-  explicit `--lights dynamic` / `mixed` stress modes; lift-car lights are always
-  dynamic because they move with their carrier.
+  `--preset warren` uses that contract and deterministically consumes the six-light
+  animation budget so the fixture exercises both indirect and direct animated SH
+  deltas. Animated coverage lights remain promotable because a script must be able
+  to address them. Dynamic lighting remains available through the explicit
+  `--lights dynamic` / `mixed` stress modes; lift-car lights are always dynamic
+  because they move with their carrier.
 
 Usage
 -----
@@ -1635,7 +1636,9 @@ def main(argv):
             grid=[6, 5, 3], lights="static", spot_frac=1.0, light_every=1,
             door_prob=0.3, shaft_prob=0.6, lights_per_room=4, crates=1,
             arenas=1, enemies=12, weapons=6, doors=6, door_activation="use",
-            lifts=2, monster_closets=3, animated_frac=0.0,
+            # The hard cap keeps this at six lights; a 1.0 fraction makes the
+            # committed torture fixture deterministic rather than seed-lucky.
+            lifts=2, monster_closets=3, animated_frac=1.0,
         ),
     }
 

@@ -256,6 +256,32 @@ struct DeltaCsrPlan {
     affinity_lights: Vec<u32>,
 }
 
+struct PlannedDeltaBakes {
+    entity_shadow_lights:
+        Option<postretro_level_format::entity_shadow_lights::EntityShadowLightsSection>,
+    entity_shadow_lights_elapsed: Duration,
+    indirect: DeltaCsrPlan,
+    direct: DeltaCsrPlan,
+    direct_static_indices: Vec<u64>,
+    animated_direct: DeltaCsrPlan,
+}
+
+/// Inputs shared by the pre-base-SH delta CSR planning pass.
+struct DeltaBakePlanInputs<'a, 'lights> {
+    bvh: &'a bvh::bvh::Bvh<f32, 3>,
+    bvh_primitives: &'a [bvh_build::BvhPrimitive],
+    geometry: &'a geometry::GeometryResult,
+    tree: &'a partition::BspTree,
+    exterior_leaves: &'a std::collections::HashSet<usize>,
+    portals: &'a [portals::Portal],
+    static_baked_lights: &'a light_namespaces::StaticBakedLights<'lights>,
+    animated_baked_lights: &'a light_namespaces::AnimatedBakedLights<'lights>,
+    alpha_lights: &'a light_namespaces::AlphaLightsNs<'lights>,
+    entity_shadow_params: map_data::EntityShadowParams,
+    probe_spacing: f32,
+    mutable_descriptors: &'a crate::delta_drop_policy::ScriptMutableDescriptorSlots,
+}
+
 impl DeltaCsrPlan {
     fn empty() -> Self {
         Self {
@@ -283,6 +309,154 @@ impl DeltaCsrPlan {
             "plan-phase CSR offsets must remain aligned with the flat light list"
         );
         &self.affinity_lights
+    }
+}
+
+/// Build the production delta CSR plans without materializing base or delta SH
+/// payloads. The working-set gate calls this before the base-SH ray bake so a
+/// zero-budget diagnostic remains a cheap, current-policy projection.
+fn plan_delta_bakes(inputs: DeltaBakePlanInputs<'_, '_>) -> PlannedDeltaBakes {
+    let entity_shadow_lights_started = Instant::now();
+    let entity_shadow_lights = if inputs.static_baked_lights.is_empty() {
+        None
+    } else {
+        let selection_inputs = entity_shadow_select::EntityShadowSelectionInputs {
+            bvh: inputs.bvh,
+            primitives: inputs.bvh_primitives,
+            geometry: inputs.geometry,
+            static_lights: inputs.static_baked_lights,
+            alpha_lights: inputs.alpha_lights,
+            params: inputs.entity_shadow_params,
+        };
+        let section = entity_shadow_select::select_entity_shadow_lights(&selection_inputs);
+        (!section.light_indices.is_empty()).then_some(section)
+    };
+    let entity_shadow_lights_elapsed = entity_shadow_lights_started.elapsed();
+
+    let geometry_vertices: Vec<[f32; 3]> = inputs
+        .geometry
+        .geometry
+        .vertices
+        .iter()
+        .map(|vertex| vertex.position)
+        .collect();
+    let indirect = if inputs.animated_baked_lights.is_empty() || geometry_vertices.is_empty() {
+        DeltaCsrPlan::empty()
+    } else {
+        let decomposition = decompose_affinity(&AffinityInputs {
+            geometry_vertices: &geometry_vertices,
+            tree: inputs.tree,
+            exterior_leaves: inputs.exterior_leaves,
+            portals: inputs.portals,
+            animated_lights: inputs.animated_baked_lights,
+            probe_spacing: inputs.probe_spacing,
+        });
+        let (affinity_offsets, affinity_lights) = build_csr(
+            &decomposition.per_light_cells,
+            decomposition.affinity_cell_count(),
+        );
+        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
+    };
+
+    let animated_direct = if inputs.animated_baked_lights.is_empty() || geometry_vertices.is_empty()
+    {
+        DeltaCsrPlan::empty()
+    } else {
+        let animated_lights: Vec<_> = inputs
+            .animated_baked_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .collect();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &geometry_vertices,
+            tree: inputs.tree,
+            exterior_leaves: inputs.exterior_leaves,
+            portals: inputs.portals,
+            probe_spacing: inputs.probe_spacing,
+        };
+        let policies = animated_direct_sh_bake::animated_direct_reach_policies(
+            animated_lights.len(),
+            inputs.mutable_descriptors,
+        );
+        let decomposition = crate::affinity_grid::decompose_affinity_for_lights_with_policies(
+            &reach,
+            &animated_lights,
+            &policies,
+        );
+        let (affinity_offsets, affinity_lights) = build_csr(
+            &decomposition.per_light_cells,
+            decomposition.affinity_cell_count(),
+        );
+        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
+    };
+
+    let (direct, direct_static_indices) = if geometry_vertices.is_empty() {
+        (DeltaCsrPlan::empty(), Vec::new())
+    } else if let Some(selection) = entity_shadow_lights.as_ref() {
+        // Id 41's CSR uses selection-slot indices. Preserve the parallel static
+        // indices only for the pre-bake diagnostic histogram.
+        let source_by_alpha = inputs
+            .alpha_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(alpha_index, entry)| (alpha_index as u32, entry.source_index))
+            .collect::<HashMap<_, _>>();
+        let direct_by_source = inputs
+            .static_baked_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.light.shadow_type == map_data::ShadowType::StaticLightMap)
+            .map(|(static_index, entry)| (entry.source_index, (entry.light, static_index as u64)))
+            .collect::<HashMap<_, _>>();
+        let selected: Vec<_> = selection
+            .light_indices
+            .iter()
+            .filter_map(|alpha_index| {
+                source_by_alpha
+                    .get(alpha_index)
+                    .and_then(|source_index| direct_by_source.get(source_index))
+                    .copied()
+            })
+            .collect();
+        let selected_lights: Vec<_> = selected.iter().map(|(light, _)| *light).collect();
+        let selected_static_indices = selected
+            .iter()
+            .map(|(_, static_index)| *static_index)
+            .collect();
+        let reach = AffinityReachInputs {
+            geometry_vertices: &geometry_vertices,
+            tree: inputs.tree,
+            exterior_leaves: inputs.exterior_leaves,
+            portals: inputs.portals,
+            probe_spacing: inputs.probe_spacing,
+        };
+        let decomposition = decompose_affinity_for_lights(
+            &reach,
+            &selected_lights,
+            AffinityReachPolicy::SELECTED_DIRECT,
+        );
+        let (affinity_offsets, affinity_lights) = build_csr(
+            &decomposition.per_light_cells,
+            decomposition.affinity_cell_count(),
+        );
+        (
+            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights),
+            selected_static_indices,
+        )
+    } else {
+        (DeltaCsrPlan::empty(), Vec::new())
+    };
+
+    PlannedDeltaBakes {
+        entity_shadow_lights,
+        entity_shadow_lights_elapsed,
+        indirect,
+        direct,
+        direct_static_indices,
+        animated_direct,
     }
 }
 
@@ -653,6 +827,14 @@ fn run_after_parsing(
     let animated_baked_lights =
         light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
     let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
+    let raw_slot_for_map_light =
+        animated_baked_lights.slot_for_source_lights(map_data.lights.len());
+    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
+        &map_data.lights,
+        membership_manifest.as_ref(),
+        &raw_slot_for_map_light,
+        animated_baked_lights.len(),
+    );
 
     if static_baked_lights.is_empty() {
         log::warn!(
@@ -899,13 +1081,6 @@ fn run_after_parsing(
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
     };
-    let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
-    let sh_progress = StageProgress::indeterminate();
-    reporter.declare_progress(StageId::ShBake, sh_progress.clone());
-    let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
-    if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
-        anyhow::bail!("light animation validation failed: {msg}");
-    }
     let sh_config = sh_bake::ShConfig {
         probe_spacing: args.probe_spacing,
     };
@@ -919,6 +1094,78 @@ fn run_after_parsing(
         animated_lights: &animated_baked_lights,
         total_light_count: map_data.lights.len(),
     };
+    if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
+        anyhow::bail!("light animation validation failed: {msg}");
+    }
+
+    // Plan and gate every delta CSR before the expensive base-SH ray bake.
+    // A zero-byte budget is therefore a cheap real-map projection command that
+    // still uses the exact membership, selection, and reach policies production
+    // will materialize.
+    let planned_deltas = plan_delta_bakes(DeltaBakePlanInputs {
+        bvh: &bvh,
+        bvh_primitives: &bvh_primitives,
+        geometry: &geo_result,
+        tree: &result.tree,
+        exterior_leaves: &exterior_leaves,
+        portals: &generated_portals,
+        static_baked_lights: &static_baked_lights,
+        animated_baked_lights: &animated_baked_lights,
+        alpha_lights: &alpha_lights_ns,
+        entity_shadow_params: map_data.entity_shadow_params,
+        probe_spacing: sh_config.probe_spacing,
+        mutable_descriptors: &script_mutable_descriptor_slots,
+    });
+    let subblock_f16_len = PROBES_PER_CELL
+        .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
+        .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
+    let delta_working_set_projection = match gate_delta_working_set(
+        [
+            DeltaCsrProjectionInput {
+                label: "DeltaShVolumes (id 27)",
+                affinity_lights: planned_deltas.indirect.affinity_lights(),
+                static_indices: None,
+            },
+            DeltaCsrProjectionInput {
+                label: "DirectShDeltaVolumes (id 41)",
+                affinity_lights: planned_deltas.direct.affinity_lights(),
+                static_indices: Some(&planned_deltas.direct_static_indices),
+            },
+            DeltaCsrProjectionInput {
+                label: "AnimatedDirectShDeltaVolumes (id 45)",
+                affinity_lights: planned_deltas.animated_direct.affinity_lights(),
+                static_indices: None,
+            },
+        ],
+        subblock_f16_len,
+        args.delta_section_config.max_working_set_bytes,
+        delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
+    ) {
+        Ok(projection) => projection,
+        Err(error @ DeltaWorkingSetGateError::BudgetExceeded(_)) => {
+            if let DeltaWorkingSetGateError::BudgetExceeded(projection) = &error {
+                log::info!(
+                    "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, refused",
+                    projection.estimated_peak_bytes,
+                    projection.budget_bytes,
+                );
+            }
+            return Err(anyhow::Error::new(error));
+        }
+        Err(error) => return Err(anyhow::Error::new(error)),
+    };
+    log_delta_working_set_projection(&delta_working_set_projection, args.verbose);
+
+    let raw_entity_shadow_lights_section = planned_deltas.entity_shadow_lights;
+    let entity_shadow_lights_elapsed = planned_deltas.entity_shadow_lights_elapsed;
+    let indirect_plan = planned_deltas.indirect;
+    let direct_plan = planned_deltas.direct;
+    let animated_direct_plan = planned_deltas.animated_direct;
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
+    let sh_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ShBake, sh_progress.clone());
+    let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
     let mut sh_volume_section = if let Some(ref cache) = stage_cache {
         // Warm path: per-probe-group SH. Each group bakes/loads a cached
         // entry over its probe subset with a bounded reaching-light set, then the
@@ -933,22 +1180,12 @@ fn run_after_parsing(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
-    // Keep the raw MapData-indexed descriptor lookup for compiler-only delta
-    // policy. Runtime map lights come from compact AlphaLights (`_bake_only`
-    // omitted), so the emitted table is remapped exactly once below.
-    let raw_slot_for_map_light = sh_volume_section.slot_for_map_light.clone();
-    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
-        &map_data.lights,
-        membership_manifest.as_ref(),
-        &raw_slot_for_map_light,
-        animated_baked_lights.len(),
-    );
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
     // once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
-        alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
+        alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as
     // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
     // records format-independent; final v10 packing/BC6H encoding happens only
@@ -982,182 +1219,6 @@ fn run_after_parsing(
         sh_bake::log_stats(&sh_volume_section);
     }
 
-    // Plan every delta CSR before any of their dense f16 payloads are
-    // materialized. The direct selection has no dependency on the base-direct
-    // payload, so use its real content predicate instead of waiting for id 35.
-    let entity_shadow_lights_started = Instant::now();
-    let raw_entity_shadow_lights_section = if static_baked_lights.is_empty() {
-        None
-    } else {
-        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            static_lights: &static_baked_lights,
-            alpha_lights: &alpha_lights_ns,
-            params: map_data.entity_shadow_params,
-        };
-        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
-        (!section.light_indices.is_empty()).then_some(section)
-    };
-    let entity_shadow_lights_elapsed = entity_shadow_lights_started.elapsed();
-
-    let geometry_vertices: Vec<[f32; 3]> = geo_result
-        .geometry
-        .vertices
-        .iter()
-        .map(|vertex| vertex.position)
-        .collect();
-    let indirect_plan =
-        if animated_baked_lights.is_empty() || geo_result.geometry.vertices.is_empty() {
-            DeltaCsrPlan::empty()
-        } else {
-            let decomposition = decompose_affinity(&AffinityInputs {
-                geometry_vertices: &geometry_vertices,
-                tree: &result.tree,
-                exterior_leaves: &exterior_leaves,
-                portals: &generated_portals,
-                animated_lights: &animated_baked_lights,
-                probe_spacing: sh_config.probe_spacing,
-            });
-            let (affinity_offsets, affinity_lights) = build_csr(
-                &decomposition.per_light_cells,
-                decomposition.affinity_cell_count(),
-            );
-            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
-        };
-    let animated_direct_plan = if animated_baked_lights.is_empty()
-        || geo_result.geometry.vertices.is_empty()
-        || sh_volume_section.grid_dimensions == [0, 0, 0]
-    {
-        DeltaCsrPlan::empty()
-    } else {
-        let animated_lights: Vec<_> = animated_baked_lights
-            .entries()
-            .iter()
-            .map(|entry| entry.light)
-            .collect();
-        let reach = AffinityReachInputs {
-            geometry_vertices: &geometry_vertices,
-            tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
-            portals: &generated_portals,
-            probe_spacing: sh_config.probe_spacing,
-        };
-        let policies = animated_direct_sh_bake::animated_direct_reach_policies(
-            animated_lights.len(),
-            &script_mutable_descriptor_slots,
-        );
-        let decomposition = crate::affinity_grid::decompose_affinity_for_lights_with_policies(
-            &reach,
-            &animated_lights,
-            &policies,
-        );
-        let (affinity_offsets, affinity_lights) = build_csr(
-            &decomposition.per_light_cells,
-            decomposition.affinity_cell_count(),
-        );
-        DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights)
-    };
-    let (direct_plan, direct_plan_static_indices) = if geo_result.geometry.vertices.is_empty()
-        || sh_volume_section.grid_dimensions == [0, 0, 0]
-    {
-        (DeltaCsrPlan::empty(), Vec::new())
-    } else if let Some(selection) = raw_entity_shadow_lights_section.as_ref() {
-        // This reproduces the direct-delta baker's selection-index mapping:
-        // id 41's CSR is indexed by selection slot, with static indices only
-        // retained here for the pre-bake diagnostic.
-        let source_by_alpha = alpha_lights_ns
-            .entries()
-            .iter()
-            .enumerate()
-            .map(|(alpha_index, entry)| (alpha_index as u32, entry.source_index))
-            .collect::<HashMap<_, _>>();
-        let direct_by_source = static_baked_lights
-            .entries()
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.light.shadow_type == map_data::ShadowType::StaticLightMap)
-            .map(|(static_index, entry)| (entry.source_index, (entry.light, static_index as u64)))
-            .collect::<HashMap<_, _>>();
-        let selected: Vec<_> = selection
-            .light_indices
-            .iter()
-            .filter_map(|alpha_index| {
-                source_by_alpha
-                    .get(alpha_index)
-                    .and_then(|source_index| direct_by_source.get(source_index))
-                    .copied()
-            })
-            .collect();
-        let selected_lights: Vec<_> = selected.iter().map(|(light, _)| *light).collect();
-        let selected_static_indices = selected
-            .iter()
-            .map(|(_, static_index)| *static_index)
-            .collect();
-        let reach = AffinityReachInputs {
-            geometry_vertices: &geometry_vertices,
-            tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
-            portals: &generated_portals,
-            probe_spacing: sh_config.probe_spacing,
-        };
-        let decomposition = decompose_affinity_for_lights(
-            &reach,
-            &selected_lights,
-            AffinityReachPolicy::SELECTED_DIRECT,
-        );
-        let (affinity_offsets, affinity_lights) = build_csr(
-            &decomposition.per_light_cells,
-            decomposition.affinity_cell_count(),
-        );
-        (
-            DeltaCsrPlan::from_csr(affinity_offsets, affinity_lights),
-            selected_static_indices,
-        )
-    } else {
-        (DeltaCsrPlan::empty(), Vec::new())
-    };
-    let subblock_f16_len = PROBES_PER_CELL
-        .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
-        .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
-    let delta_working_set_projection = match gate_delta_working_set(
-        [
-            DeltaCsrProjectionInput {
-                label: "DeltaShVolumes (id 27)",
-                affinity_lights: indirect_plan.affinity_lights(),
-                static_indices: None,
-            },
-            DeltaCsrProjectionInput {
-                label: "DirectShDeltaVolumes (id 41)",
-                affinity_lights: direct_plan.affinity_lights(),
-                static_indices: Some(&direct_plan_static_indices),
-            },
-            DeltaCsrProjectionInput {
-                label: "AnimatedDirectShDeltaVolumes (id 45)",
-                affinity_lights: animated_direct_plan.affinity_lights(),
-                static_indices: None,
-            },
-        ],
-        subblock_f16_len,
-        args.delta_section_config.max_working_set_bytes,
-        delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
-    ) {
-        Ok(projection) => projection,
-        Err(error @ DeltaWorkingSetGateError::BudgetExceeded(_)) => {
-            if let DeltaWorkingSetGateError::BudgetExceeded(projection) = &error {
-                log::info!(
-                    "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, refused",
-                    projection.estimated_peak_bytes,
-                    projection.budget_bytes,
-                );
-            }
-            return Err(anyhow::Error::new(error));
-        }
-        Err(error) => return Err(anyhow::Error::new(error)),
-    };
-    log_delta_working_set_projection(&delta_working_set_projection, args.verbose);
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::DeltaShBake);
     let delta_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DeltaShBake, delta_sh_progress.clone());
@@ -1179,6 +1240,19 @@ fn run_after_parsing(
             &delta_sh_control,
         )
     };
+    match delta_sh_volumes_section.as_ref() {
+        Some(section) => ensure_bake_csr_matches_plan(
+            "DeltaShVolumes (id 27)",
+            &indirect_plan,
+            &section.affinity_offsets,
+            &section.affinity_lights,
+        )?,
+        None if indirect_plan.affinity_lights.is_empty() => {}
+        None => anyhow::bail!(
+            "DeltaShVolumes (id 27) plan/bake CSR divergence: plan has {} entries but the bake emitted no section",
+            indirect_plan.affinity_lights.len(),
+        ),
+    }
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -1270,6 +1344,19 @@ fn run_after_parsing(
             &animated_direct_sh_control,
         )
     };
+    match animated_direct_sh_delta_volumes_section.as_ref() {
+        Some(section) => ensure_bake_csr_matches_plan(
+            "AnimatedDirectShDeltaVolumes (id 45)",
+            &animated_direct_plan,
+            &section.affinity_offsets,
+            &section.affinity_lights,
+        )?,
+        None if animated_direct_plan.affinity_lights.is_empty() => {}
+        None => anyhow::bail!(
+            "AnimatedDirectShDeltaVolumes (id 45) plan/bake CSR divergence: plan has {} entries but the bake emitted no section",
+            animated_direct_plan.affinity_lights.len(),
+        ),
+    }
     finish_stage(
         &mut timings,
         reporter.as_ref(),

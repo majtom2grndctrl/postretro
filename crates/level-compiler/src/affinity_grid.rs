@@ -59,10 +59,9 @@ pub struct AffinityInputs<'a> {
 /// portal / spacing context as [`AffinityInputs`], but with the light set passed
 /// as a plain `&[&MapLight]` slice instead of an `AnimatedBakedLights` envelope.
 ///
-/// The direct-at-probe SH bake (`direct_sh_bake.rs`) runs the SAME two-stage
-/// reach test (falloff-sphere AABB clip + portal-reachability flood) over its
-/// STATIC light set, so it reuses this core rather than reimplementing the cull.
-/// `decompose_affinity` (the animated-delta path) is a thin wrapper over this.
+/// The shared reach test clips by falloff, floods through portals, and may
+/// reject direct spotlight cells outside the authored cone. The direct-at-probe
+/// SH bake (`direct_sh_bake.rs`) reuses this core for its static light set.
 pub struct AffinityReachInputs<'a> {
     pub geometry_vertices: &'a [[f32; 3]],
     pub tree: &'a BspTree,
@@ -120,9 +119,8 @@ impl AffinityReachPolicy {
 pub struct AffinityDecomposition {
     /// Affinity grid dimensions = `ceil(base_dims / AFFINITY_FACTOR)`, per axis.
     pub affinity_dims: [u32; 3],
-    /// Per animated light (outer index aligned with
-    /// `AnimatedBakedLights::entries()`), the affinity-cell linear indices the
-    /// light reaches. Linearized x-fastest: `idx = x + y*dx + z*dx*dy`.
+    /// Per input light, in the caller's light-index space, the affinity-cell
+    /// linear indices it reaches. Linearized x-fastest: `idx = x + y*dx + z*dx*dy`.
     pub per_light_cells: Vec<Vec<u32>>,
 }
 
@@ -134,8 +132,8 @@ impl AffinityDecomposition {
     }
 }
 
-/// Decompose each animated light into the affinity cells its (AABB ∩
-/// portal-reachable region) overlaps.
+/// Decompose each animated light into affinity cells selected by the indirect
+/// falloff-and-portal policy.
 ///
 /// The base SH volume covers the world vertex AABB at `probe_spacing`; the
 /// affinity grid covers that same AABB at `AFFINITY_FACTOR ×` coarser. For each
@@ -159,12 +157,10 @@ pub fn decompose_affinity(inputs: &AffinityInputs<'_>) -> AffinityDecomposition 
     decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::INDIRECT)
 }
 
-/// Light-list-generic affinity decomposition: the same two-stage reach test
-/// (falloff-sphere AABB clip + portal-reachability flood) as [`decompose_affinity`],
-/// but over an arbitrary `&[&MapLight]` slice in caller order. The
-/// direct-at-probe SH bake (`direct_sh_bake.rs`) consumes this over its STATIC
-/// light set; `decompose_affinity` is a thin wrapper over it for the animated
-/// delta path. `per_light_cells[i]` aligns with `lights[i]`.
+/// Light-list-generic affinity decomposition over an arbitrary `&[&MapLight]`
+/// slice in caller order. Policy selects indirect falloff-and-portal reach or
+/// direct reach with spotlight-cone rejection. `per_light_cells[i]` preserves
+/// `lights[i]`'s caller-defined index space.
 pub fn decompose_affinity_for_lights(
     inputs: &AffinityReachInputs<'_>,
     lights: &[&MapLight],
@@ -401,7 +397,22 @@ fn direct_light_may_reach_cell(light: &MapLight, cell_min: DVec3, cell_max: DVec
     }
 
     let center = (cell_min + cell_max) * 0.5;
-    let radius = (cell_max - cell_min).length() * 0.5;
+    // The rounded midpoint can lie off-center at large coordinates. Measure
+    // every rounded corner from that exact center so every f32 probe position
+    // within the cell remains inside this conservative sphere.
+    let radius = [
+        Vec3::new(cell_min.x, cell_min.y, cell_min.z),
+        Vec3::new(cell_min.x, cell_min.y, cell_max.z),
+        Vec3::new(cell_min.x, cell_max.y, cell_min.z),
+        Vec3::new(cell_min.x, cell_max.y, cell_max.z),
+        Vec3::new(cell_max.x, cell_min.y, cell_min.z),
+        Vec3::new(cell_max.x, cell_min.y, cell_max.z),
+        Vec3::new(cell_max.x, cell_max.y, cell_min.z),
+        Vec3::new(cell_max.x, cell_max.y, cell_max.z),
+    ]
+    .into_iter()
+    .map(|corner| (corner - center).length())
+    .fold(0.0_f32, f32::max);
     let to_center = center - origin;
     let distance = to_center.length();
     let padded_reach = (light.falloff_range + AABB_PADDING_METERS).max(0.01);
@@ -853,6 +864,25 @@ mod tests {
             &light,
             DVec3::new(100_000_010.0, 100_000_003.0, 0.0),
             DVec3::new(100_000_010.0, 100_000_003.0, 0.0),
+        ));
+    }
+
+    #[test]
+    fn direct_spot_cell_test_keeps_a_rounded_large_coordinate_cell_corner() {
+        let light = spot_light(
+            DVec3::new(16_777_220.0, 0.0, 0.0),
+            2.4,
+            [-1.0, 0.0, 0.0],
+            15.0f32.to_radians(),
+        );
+
+        // This is the cone culler's full x cell. Its f32 midpoint rounds down
+        // to 16_777_216, while the upper corner remains 16_777_218. That corner
+        // is an on-axis f32 probe within the light's falloff and must be kept.
+        assert!(direct_light_may_reach_cell(
+            &light,
+            DVec3::new(16_777_216.0, 0.0, 0.0),
+            DVec3::new(16_777_218.0, 0.0, 0.0),
         ));
     }
 

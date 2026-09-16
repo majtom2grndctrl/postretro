@@ -278,6 +278,7 @@ fn bake_deltas_with_controls(
         sh_ctx: &sh_ctx,
         portals: &[],
         animated_lights: &animated_lights,
+        mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
     };
     let direct_inputs = DirectBakeInputs {
         sh_ctx: &sh_ctx,
@@ -357,6 +358,7 @@ fn bake_animated_delta_pair(
         sh_ctx: &sh_ctx,
         portals: &[],
         animated_lights: &animated_lights,
+        mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
     };
     let config = ShConfig { probe_spacing: 1.0 };
     let (indirect, indirect_tally) =
@@ -797,6 +799,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
         };
         let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,

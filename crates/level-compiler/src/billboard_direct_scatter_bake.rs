@@ -35,7 +35,7 @@ use crate::sh_group::geometry_content_hash;
 /// Cache stage for dense, normal-free static billboard scatter.
 pub const BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "billboard_direct_scatter";
 /// Bump only when the static scatter calculation or its cached payload changes.
-pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 2;
+pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
 
 /// Cache stage for dense, normal-free animated billboard scatter deltas.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard_direct_scatter";

@@ -937,6 +937,12 @@ fn run_after_parsing(
     // policy. Runtime map lights come from compact AlphaLights (`_bake_only`
     // omitted), so the emitted table is remapped exactly once below.
     let raw_slot_for_map_light = sh_volume_section.slot_for_map_light.clone();
+    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
+        &map_data.lights,
+        membership_manifest.as_ref(),
+        &raw_slot_for_map_light,
+        animated_baked_lights.len(),
+    );
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
@@ -1038,8 +1044,15 @@ fn run_after_parsing(
             portals: &generated_portals,
             probe_spacing: sh_config.probe_spacing,
         };
-        let decomposition =
-            decompose_affinity_for_lights(&reach, &animated_lights, AffinityReachPolicy::DIRECT);
+        let policies = animated_direct_sh_bake::animated_direct_reach_policies(
+            animated_lights.len(),
+            &script_mutable_descriptor_slots,
+        );
+        let decomposition = crate::affinity_grid::decompose_affinity_for_lights_with_policies(
+            &reach,
+            &animated_lights,
+            &policies,
+        );
         let (affinity_offsets, affinity_lights) = build_csr(
             &decomposition.per_light_cells,
             decomposition.affinity_cell_count(),
@@ -1248,6 +1261,7 @@ fn run_after_parsing(
             sh_ctx: &sh_ctx,
             portals: &generated_portals,
             animated_lights: &animated_baked_lights,
+            mutable_descriptors: &script_mutable_descriptor_slots,
         };
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
@@ -1373,12 +1387,6 @@ fn run_after_parsing(
     // The three delta bakes meet at one owned compiler-only seam. Exact-zero
     // drop observes the dense bake output; valid-probe compaction then rewrites
     // id 41 to the id-34-valid local tiles before the payload cap is applied.
-    let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
-        &map_data.lights,
-        membership_manifest.as_ref(),
-        &raw_slot_for_map_light,
-        animated_baked_lights.len(),
-    );
     let mut delta_sections = delta_sections::PostBakeDeltaSections::new(
         args.delta_section_config,
         delta_sh_volumes_section,

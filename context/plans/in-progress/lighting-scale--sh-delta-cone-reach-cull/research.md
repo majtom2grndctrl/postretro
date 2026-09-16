@@ -5,14 +5,15 @@ of e36e86b; they drift — the brief states only what survives.
 
 ## Illustrative scale — stress-warren-hallway-inspection
 
-- As committed: 338 promotable spots (`_bake_only 0`, `_shadow_type static_light_map`, 48°
-  outer cone, `_falloff_range 1024` ≈ 26 m); 0 animated lights → the OOM is purely id-41.
+- Pre-regeneration baseline (e36e86b): 338 promotable spots (`_bake_only 0`, `_shadow_type
+  static_light_map`, 48° outer cone, `_falloff_range 1024` ≈ 26 m); 0 animated lights → the
+  OOM was purely id-41.
 - Pre-cull dense (id-41 alone): 659,904 `(affinity-cell, light)` CSR entries × 18,432 B/entry
   ≈ 12 GB (matches the `lighting-scale--compile-peak-ram` decomposition).
 - The cone-vs-cube solid-angle estimate of ≈10× fewer id-41 entries did not hold. The
   production planner measured a 29% id-41 dense-byte reduction at the practical 10 m
   probe spacing and a post-cull 5.97 GB projected peak at the default 1 m spacing.
-- The fixture is being regenerated with a nonzero animated-light share (owner decision), which
+- The fixture was regenerated with a nonzero animated-light share (owner decision), which
   activates id-45 (animated-direct, cone-cullable) and id-27 (indirect, **cube reach, not
   cone-cullable** — bounce leaves the cone). The first-slice measurement is over all three
   active sections, not id-41 alone; an id-27-dominated shortfall is Phase 2's bound.
@@ -40,6 +41,10 @@ of e36e86b; they drift — the brief states only what survives.
   of the base-SH ray bake so the real post-selection CSR planner and gate could
   run without materializing unrelated base irradiance; the bypass was removed
   immediately after capture and is absent from the implementation.
+- The admitted end-to-end warren build completed under the unchanged default
+  16 GiB gate with `--sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache`.
+  It finished in 297.96 s and emitted a 66 MiB PRL with SHA-256
+  `1c470f92d151bf0e65e1b4f9aecc9bc35edd019f2f0267eae45fc987456beab7`.
 - Pre-change `campaign-test.map` whole-PRL SHA-256 baselines (current compiler,
   before cone reach): cold `--no-cache` =
   `56aaa1a77eeac66f57bf34902e3d7097c2f0aa68a5e639736ed0b38904224671`;
@@ -47,6 +52,12 @@ of e36e86b; they drift — the brief states only what survives.
   `84d57c5f11836241712eaea6b6327fb7f2250475e1c0033ebf4fc792dc77ce06`.
   The hashes differ because warm base indirect SH is intentionally approximate;
   each mode is compared only with the same mode after the reach change.
+- The first post-change cold comparison exposed an existing exception to id-45
+  exact-zero dropping: script-mutable animated descriptor slots deliberately
+  retain cube-reach zero records for future curve replacement. Cone-clipping
+  those slots changed ids 45 and 48. The final policy therefore leaves only
+  script-mutable id-45 slots unclipped; ordinary animated spots (including all
+  six warren lights) remain cone-clipped. A focused policy regression pins this.
 
 ## Pinned orderings
 
@@ -63,5 +74,25 @@ of e36e86b; they drift — the brief states only what survives.
 
 ## SHA-256 (byte-identity fixtures)
 
-Recorded at implementation: `<id-41 fixture .prl>` and `<id-45 fixture .prl>`, cold and warm,
-before and after the change. Populated by the executor.
+`campaign-test.map` exercises ids 27, 35, 41, 45, and 48. Whole-file hashes are
+identical before/after within each supported bake mode:
+
+- exact cold (`--no-cache`), pre and post:
+  `56aaa1a77eeac66f57bf34902e3d7097c2f0aa68a5e639736ed0b38904224671`
+- approximate warm, pre, first post run against the old cache, and second post
+  run against the updated cache:
+  `84d57c5f11836241712eaea6b6327fb7f2250475e1c0033ebf4fc792dc77ce06`
+
+Relevant section hashes are also identical before/after and stable across the
+two post-change warm runs:
+
+| section | cold SHA-256 | warm SHA-256 |
+|---|---|---|
+| id 35 | `17391eb88ec87dc6e761831b61f1b7e7eb927b475c7cf76b5f747fae4ae77ad5` | `f36809994d3f04afd36962cd9b96ef2aef8e26006dda46b4c6ba26f41f0ffeff` |
+| id 41 | `21c159e9ca7a7f08b391d707333868aa5288b7c37a4fc255897c54937890da11` | same as cold |
+| id 45 | `5cb1ea6c70329a877e02da1dd9c866cd33e4c4cc34044ce2146bd62eee261257` | same as cold |
+| id 48 | `185423fbb38e52f2f7a844d91dde692ab12bed46851455b664cf6deceab91607` | same as cold |
+
+The expected cold/warm whole-file difference is isolated to approximate base
+SH content (including id 35); direct-delta ids 41/45 remain identical across
+both modes.

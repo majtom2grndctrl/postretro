@@ -43,12 +43,21 @@ default gate, and the emitted `.prl` is byte-for-byte identical to today's for t
   cone-cullable, so the first-slice measurement includes it; if id-27 alone pushes the map
   over budget, that bound is Phase 2's, not this brief's.
 - **Byte-identical emitted output.** The cull removes exactly the zero set
-  `drop_direct_zero_entries` (`delta_drop_policy.rs`) removes today. That policy's
-  keep-one-canonical-entry-per-selection-index rule sees only *baked* entries; because the
-  cull removes cells at decomposition, retention for a light every one of whose cells is
-  culled must move into the reach predicate / CSR build (mechanism in Open questions). Fits
-  the epic's acceptance-only posture — no format, section, value, or order change. Load-time /
+  `drop_direct_zero_entries` (`delta_drop_policy.rs`) removes today. Fits the epic's
+  acceptance-only posture — no format, section, value, or order change. Load-time /
   compiler-internal only.
+- **Canonical-entry retention moves into the cull — preserving an existing invariant, not
+  inventing one.** Every id-40-selected light must emit exactly one canonical id-41 entry even
+  when its entire baked contribution is zero. This is *required*, not incidental: a promoted
+  light's baked far-LOD direct-SH can legitimately be zero (its cone reaches no valid probe)
+  while its runtime near-tier shadow-pool term is not, so the zero entry is the crossfade's
+  "baked contribution is zero here, use the runtime term" slot — dropping the light from id-40
+  would remove real runtime entity shadowing. Today the invariant emerges from cube reach
+  (always ≥1 cell) + the drop policy retaining one canonical entry per selection index. The
+  cone cull breaks the first half, so it must retain — for a selected light it would fully
+  cull — **the same canonical entry `drop_direct_zero_entries` keeps today** (not merely some
+  cell, or the bytes diverge), keeping the emitted CSR byte-identical and the id-40/id-41
+  all-or-nothing contract intact. Not by changing id-40 selection.
 - **Shared decompose is authoritative.** The id-41 bake recomputes its own CSR rather than
   consuming the plan's (`direct_sh_bake.rs`); the cull lives in the shared predicate, and an
   assertion pins plan CSR == bake CSR so the two cannot diverge (a divergence would let the
@@ -127,10 +136,6 @@ default gate, and the emitted `.prl` is byte-for-byte identical to today's for t
   the measured post-cull peak rather than silently bumping the default.
 
 ## Open questions
-- Where does canonical-entry retention happen for an id-41-selected light whose every cell is
-  cone-culled? The drop policy sees only baked entries, so a fully-culled selection would emit
-  no entry and id-40/id-41 clear at load. — owner — **blocks build**. Recommended: the reach
-  predicate / CSR build retains one canonical cell per id-41 selection index before `build_csr`.
 - Exact conservative cone-frustum-vs-AABB test form (half-angle vs cell corners, padding) —
   **delegated**: the executor picks the test and reports it in the plan of record; the
   contract is "superset of the nonzero set, never excludes an in-cone cell."

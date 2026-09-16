@@ -16,6 +16,25 @@ of e36e86b; they drift — the brief states only what survives.
   cone-cullable** — bounce leaves the cone). The first-slice measurement is over all three
   active sections, not id-41 alone; an id-27-dominated shortfall is Phase 2's bound.
 
+## Implementation measurements
+
+- Regenerated fixture (`tools/gen_stress_map.py --preset warren`) has 763 static
+  baked lights: 678 spots, 85 points, 344 runtime-present/promotable lights, and
+  exactly 6 animated spotlights (the generator's bounded animation budget).
+- Pre-cull control at the fixture's practical documented settings
+  (`--sh-probe-spacing 10.0 --lightmap-density 0.25`, cold, zero working-set
+  budget) projected 50,208,768 cumulative dense bytes and 150,626,304 bytes at
+  the normal 3× copy-chain factor: id 27 = 1,990,656; id 41 = 46,227,456;
+  id 45 = 1,990,656. This coarse-spacing control was already below 16 GiB and
+  is not the brief's default-1m risk measurement.
+- Pre-change `campaign-test.map` whole-PRL SHA-256 baselines (current compiler,
+  before cone reach): cold `--no-cache` =
+  `56aaa1a77eeac66f57bf34902e3d7097c2f0aa68a5e639736ed0b38904224671`;
+  cache-enabled empty-cache build =
+  `84d57c5f11836241712eaea6b6327fb7f2250475e1c0033ebf4fc792dc77ce06`.
+  The hashes differ because warm base indirect SH is intentionally approximate;
+  each mode is compared only with the same mode after the reach change.
+
 ## Pinned orderings
 
 | id | scenario | ordering pinned | expected outcome |

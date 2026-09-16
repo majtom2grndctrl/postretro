@@ -99,6 +99,34 @@ class DoorAndClosetAuthoringTests(unittest.TestCase):
 
 
 class RoomLightingTests(unittest.TestCase):
+    def test_warren_animation_budget_emits_both_animation_sources(self):
+        lights = []
+        budget = [GENERATOR.ANIMATED_LIGHT_CAP]
+        scripted = 0
+        for room in range(2):
+            _, room_scripted = GENERATOR.emit_room_lights(
+                lights, room * 2048, room * 2048 + 1024, 0, 1024, 0, 512, [],
+                GENERATOR.random.Random(room + 1), "static", 4, 1, 1.0, 1.0,
+                len(lights), budget,
+            )
+            scripted += room_scripted
+
+        animated = [
+            light for light in lights
+            if any(
+                "brightness_curve" in line or GENERATOR.SCRIPT_LIGHT_TAG in line
+                for line in light
+            )
+        ]
+        self.assertEqual(len(animated), GENERATOR.ANIMATED_LIGHT_CAP)
+        self.assertGreater(scripted, 0)
+        self.assertTrue(any(
+            any("brightness_curve" in line for line in light) for light in animated
+        ))
+        self.assertTrue(any(
+            any(GENERATOR.SCRIPT_LIGHT_TAG in line for line in light) for light in animated
+        ))
+
     def test_static_room_contract_is_four_spots_and_one_dim_bake_only_point(self):
         lights = []
         added, scripted = GENERATOR.emit_room_lights(

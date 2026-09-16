@@ -2,7 +2,13 @@
 import { defineReaction, spawner, world } from "postretro";
 
 export function setupLevel(_ctx: unknown) {
+  const lights = world.query({ component: "light", tag: "warren_script_pulse" });
   const reactions = [
+    defineReaction("levelLoad", {
+      sequence: lights.flatMap((light) =>
+        light.pulse({ min: 0.2, max: 1.0, periodMs: 1400 }),
+      ),
+    }),
     defineReaction("warren.closet.0.spawn",
       spawner({ tag: "warren_closet_spawner_0" }).fire(),
     ),

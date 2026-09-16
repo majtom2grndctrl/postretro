@@ -3,10 +3,11 @@
 
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
-    decompose_affinity_for_lights,
+    decompose_affinity_for_lights_with_policies,
 };
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
+use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
 use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::MapLight;
@@ -41,6 +42,22 @@ pub struct AnimatedDirectShBakeInputs<'a, 'b> {
     pub sh_ctx: &'a ShBakeCtx<'b>,
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'b>,
+    pub mutable_descriptors: &'a ScriptMutableDescriptorSlots,
+}
+
+pub(crate) fn animated_direct_reach_policies(
+    light_count: usize,
+    mutable_descriptors: &ScriptMutableDescriptorSlots,
+) -> Vec<AffinityReachPolicy> {
+    (0..light_count)
+        .map(|slot| {
+            if mutable_descriptors.animated_direct_contains(slot as u32) {
+                AffinityReachPolicy::DIRECT_UNCLIPPED
+            } else {
+                AffinityReachPolicy::DIRECT
+            }
+        })
+        .collect()
 }
 
 /// Bake sparse, unit-radiance direct transport for every animated baked light.
@@ -113,10 +130,11 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    // The animated runtime cone is frozen at the authored rest direction, the
-    // same direction this direct bake evaluates, so direct reach may clip cells
-    // that cannot intersect that outer cone.
-    let decomposition = decompose_affinity_for_lights(&reach, &lights, AffinityReachPolicy::DIRECT);
+    // Immutable animated slots use the authored rest-direction cone evaluated
+    // by this bake. Script-mutable slots keep historical cube reach because the
+    // exact-zero policy reserves their records for future curve replacement.
+    let policies = animated_direct_reach_policies(lights.len(), inputs.mutable_descriptors);
+    let decomposition = decompose_affinity_for_lights_with_policies(&reach, &lights, &policies);
     let affinity_dims = decomposition.affinity_dims;
     let (affinity_offsets, affinity_lights) = build_csr(
         &decomposition.per_light_cells,
@@ -464,13 +482,29 @@ mod tests {
             animated_lights: &animated_lights,
             total_light_count: lights.len(),
         };
+        let mutable_descriptors = ScriptMutableDescriptorSlots::empty(animated_lights.len());
         let inputs = AnimatedDirectShBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            mutable_descriptors: &mutable_descriptors,
         };
         bake_animated_direct_sh_delta_volumes(&inputs, &ShConfig { probe_spacing: 1.0 })
             .expect("animated light and geometry must emit section 45")
+    }
+
+    #[test]
+    fn script_mutable_slots_keep_unclipped_direct_reach() {
+        let mut mutable = ScriptMutableDescriptorSlots::empty(2);
+        mutable.animated_direct[1] = true;
+
+        assert_eq!(
+            animated_direct_reach_policies(2, &mutable),
+            vec![
+                AffinityReachPolicy::DIRECT,
+                AffinityReachPolicy::DIRECT_UNCLIPPED,
+            ]
+        );
     }
 
     fn subblock_for(

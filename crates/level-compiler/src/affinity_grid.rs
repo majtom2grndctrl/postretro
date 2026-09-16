@@ -1,24 +1,9 @@
-// Affinity-grid decomposition for animated-light delta SH volumes.
-//
-// Produces, per animated light, the coarse "affinity cells" the light's delta
-// contribution should be stored at. An affinity cell is a cube of
-// AFFINITY_FACTOR^3 base SH probes. The compose pass later reads one per-cell
-// light list per workgroup so its threads only touch lights that reach the
-// region — instead of looping over every animated light at every probe.
-//
-// This module only computes the in-memory decomposition (`per_light_cells` +
-// dims). It does not change the delta wire format; `delta_sh_bake` consumes
-// this structure to build the CSR index and bake the sparse sub-blocks.
-//
-// Reachability reuses the SAME inline per-light portal flood-fill pattern as
-// `chunk_light_list_bake` (BFS over the `Portal` adjacency graph seeded at the
-// light's containing leaf), including the solid/exterior-seed bypass.
-//
-// See: context/lib/build_pipeline.md §DeltaShVolumes (id 27)
+// Shared affinity decomposition for SH sections ids 27, 35, 41, and 45.
+// See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::{LightType, MapLight};
@@ -53,6 +38,9 @@ pub(crate) const AABB_PADDING_METERS: f32 = 0.5;
 /// value — if they diverge, affinity cells cover a different volume than the
 /// baked sub-blocks, producing silently wrong culling for directional lights.
 const DIRECTIONAL_FALLBACK_RANGE_METERS: f32 = 100.0;
+
+/// Outward cone slack for f32 coordinate and transcendental roundoff.
+const CONE_BOUNDARY_TOLERANCE_RADIANS: f32 = 1.0e-4;
 
 /// Inputs for the affinity decomposition. The base SH volume's AABB and probe
 /// spacing must match the base `bake_sh_volume` call so affinity cells align
@@ -96,6 +84,10 @@ pub enum AffinityTransport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AffinityReachPolicy {
     pub transport: AffinityTransport,
+    /// Script-mutable animated-direct slots preserve their established cube
+    /// reach so exact-zero records reserved by the post-bake policy remain
+    /// byte-identical. Other direct transports enable the cone clamp.
+    cone_cull_spots: bool,
     /// Id 41 must keep the same final cube-reach cell that the exact-zero drop
     /// policy uses as a selected light's canonical representation.
     pub retain_canonical_cell: bool,
@@ -104,14 +96,22 @@ pub struct AffinityReachPolicy {
 impl AffinityReachPolicy {
     pub const INDIRECT: Self = Self {
         transport: AffinityTransport::Indirect,
+        cone_cull_spots: false,
+        retain_canonical_cell: false,
+    };
+    pub const DIRECT_UNCLIPPED: Self = Self {
+        transport: AffinityTransport::Direct,
+        cone_cull_spots: false,
         retain_canonical_cell: false,
     };
     pub const DIRECT: Self = Self {
         transport: AffinityTransport::Direct,
+        cone_cull_spots: true,
         retain_canonical_cell: false,
     };
     pub const SELECTED_DIRECT: Self = Self {
         transport: AffinityTransport::Direct,
+        cone_cull_spots: true,
         retain_canonical_cell: true,
     };
 }
@@ -170,6 +170,21 @@ pub fn decompose_affinity_for_lights(
     lights: &[&MapLight],
     policy: AffinityReachPolicy,
 ) -> AffinityDecomposition {
+    decompose_affinity_for_lights_with_policies(inputs, lights, &vec![policy; lights.len()])
+}
+
+/// Per-light policy variant used by animated direct SH: script-mutable slots
+/// retain the historical cube reach while immutable slots use cone reach.
+pub fn decompose_affinity_for_lights_with_policies(
+    inputs: &AffinityReachInputs<'_>,
+    lights: &[&MapLight],
+    policies: &[AffinityReachPolicy],
+) -> AffinityDecomposition {
+    assert_eq!(
+        lights.len(),
+        policies.len(),
+        "every affinity light needs one reach policy"
+    );
     let (base_min, base_max) = world_aabb(inputs.geometry_vertices);
     let base_dims = grid_dimensions(base_min, base_max, inputs.probe_spacing);
     let affinity_dims = [
@@ -201,7 +216,8 @@ pub fn decompose_affinity_for_lights(
 
     let per_light_cells = lights
         .iter()
-        .map(|&light| {
+        .zip(policies)
+        .map(|(&light, &policy)| {
             let reachable = reachable_leaves(light, inputs, &adjacency);
             cells_for_light(
                 light,
@@ -314,7 +330,7 @@ fn cells_for_light(
                 if policy.retain_canonical_cell {
                     canonical = Some(cell);
                 }
-                if policy.transport == AffinityTransport::Direct {
+                if policy.cone_cull_spots {
                     let cell_min = DVec3::new(
                         base_min.x + x as f64 * affinity_cell_meters,
                         base_min.y + y as f64 * affinity_cell_meters,
@@ -338,24 +354,65 @@ fn cells_for_light(
     cells
 }
 
-/// Conservative finite-cone test. The sphere encloses the complete cell AABB;
-/// if any probe can receive nonzero direct radiance, that sphere necessarily
-/// overlaps both the padded falloff sphere and the authored outer cone.
+/// Conservative f32-cone test. The sphere encloses the complete cell AABB in
+/// the same coordinate domain as the direct probe bake. Invalid state retains.
 fn direct_light_may_reach_cell(light: &MapLight, cell_min: DVec3, cell_max: DVec3) -> bool {
     if light.light_type != LightType::Spot {
         return true;
     }
-    let (axis, _, cos_outer) = spot_cone_parameters(light);
-    let axis = DVec3::new(axis.x as f64, axis.y as f64, axis.z as f64);
-    if !axis.is_finite() || axis.length_squared() < 1.0e-12 || !cos_outer.is_finite() {
+
+    if !light.origin.is_finite()
+        || !light.falloff_range.is_finite()
+        || !cell_min.is_finite()
+        || !cell_max.is_finite()
+    {
+        return true;
+    }
+    let origin = Vec3::new(
+        light.origin.x as f32,
+        light.origin.y as f32,
+        light.origin.z as f32,
+    );
+    let cell_min = Vec3::new(cell_min.x as f32, cell_min.y as f32, cell_min.z as f32);
+    let cell_max = Vec3::new(cell_max.x as f32, cell_max.y as f32, cell_max.z as f32);
+    if !origin.is_finite()
+        || !cell_min.is_finite()
+        || !cell_max.is_finite()
+        || cell_min.x > cell_max.x
+        || cell_min.y > cell_max.y
+        || cell_min.z > cell_max.z
+    {
+        return true;
+    }
+
+    let (shared_axis, cos_inner, cos_outer) = spot_cone_parameters(light);
+    if !shared_axis.is_finite() || !cos_inner.is_finite() || !cos_outer.is_finite() {
+        return true;
+    }
+    let axis_length_squared = shared_axis.length_squared();
+    if !axis_length_squared.is_finite() || axis_length_squared < 1.0e-12 {
+        return true;
+    }
+    // `spot_cone_parameters` supplies the baker's f32 axis; normalize it again
+    // after the shared conversion so this sphere test uses a unit cone axis.
+    let axis = shared_axis / axis_length_squared.sqrt();
+    if !axis.is_finite() {
         return true;
     }
 
     let center = (cell_min + cell_max) * 0.5;
     let radius = (cell_max - cell_min).length() * 0.5;
-    let to_center = center - light.origin;
+    let to_center = center - origin;
     let distance = to_center.length();
-    let padded_reach = (light.falloff_range + AABB_PADDING_METERS).max(0.01) as f64;
+    let padded_reach = (light.falloff_range + AABB_PADDING_METERS).max(0.01);
+    if !center.is_finite()
+        || !radius.is_finite()
+        || !to_center.is_finite()
+        || !distance.is_finite()
+        || !padded_reach.is_finite()
+    {
+        return true;
+    }
     if distance - radius > padded_reach {
         return false;
     }
@@ -365,8 +422,11 @@ fn direct_light_may_reach_cell(light: &MapLight, cell_min: DVec3, cell_max: DVec
 
     let center_angle = axis.dot(to_center / distance).clamp(-1.0, 1.0).acos();
     let angular_radius = (radius / distance).clamp(0.0, 1.0).asin();
-    let outer_angle = (cos_outer as f64).clamp(-1.0, 1.0).acos();
-    center_angle <= outer_angle + angular_radius
+    let outer_angle = cos_outer.clamp(-1.0, 1.0).acos();
+    if !center_angle.is_finite() || !angular_radius.is_finite() || !outer_angle.is_finite() {
+        return true;
+    }
+    center_angle <= outer_angle + angular_radius + CONE_BOUNDARY_TOLERANCE_RADIANS
 }
 
 /// Clamp a world coordinate to an inclusive affinity-cell index per axis.
@@ -776,6 +836,39 @@ mod tests {
             &light,
             DVec3::new(4.0, 0.0, 0.0),
             DVec3::new(5.0, 1.0, 1.0),
+        ));
+    }
+
+    #[test]
+    fn direct_spot_cell_test_uses_f32_probe_coordinates_at_large_offsets() {
+        let light = spot_light(
+            DVec3::new(100_000_000.0, 100_000_000.0, 0.0),
+            20.0,
+            [1.0, 0.0, 0.0],
+            15.0f32.to_radians(),
+        );
+        // In f64 this point is 16.7 degrees from +X and lies outside the cone.
+        // The direct probe bake rounds it to (origin + 8, origin, 0), on-axis.
+        assert!(direct_light_may_reach_cell(
+            &light,
+            DVec3::new(100_000_010.0, 100_000_003.0, 0.0),
+            DVec3::new(100_000_010.0, 100_000_003.0, 0.0),
+        ));
+    }
+
+    #[test]
+    fn direct_spot_cell_test_retains_non_finite_origin() {
+        let light = spot_light(
+            DVec3::new(f64::NAN, 0.0, 0.0),
+            10.0,
+            [1.0, 0.0, 0.0],
+            15.0f32.to_radians(),
+        );
+
+        assert!(direct_light_may_reach_cell(
+            &light,
+            DVec3::new(4.0, 4.0, 0.0),
+            DVec3::new(5.0, 5.0, 1.0),
         ));
     }
 

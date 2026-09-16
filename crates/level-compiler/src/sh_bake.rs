@@ -868,12 +868,15 @@ fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
 
 /// Must match `cone_attenuation` in `forward.wgsl` — Hermite cubic smoothstep
 /// so direct and indirect agree along the cone fringe.
-fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
+pub(crate) fn spot_cone_parameters(light: &MapLight) -> (Vec3, f32, f32) {
     let dir = Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
     let inner = light.cone_angle_inner.unwrap_or(0.0);
     let outer = light.cone_angle_outer.unwrap_or(inner + 0.01);
-    let cos_outer = outer.cos();
-    let cos_inner = inner.cos();
+    (dir, inner.cos(), outer.cos())
+}
+
+fn spot_cone_attenuation(light: &MapLight, light_to_surface: Vec3) -> f32 {
+    let (dir, cos_inner, cos_outer) = spot_cone_parameters(light);
     let cos_theta = dir.dot(light_to_surface.normalize_or_zero());
     smoothstep(cos_outer, cos_inner, cos_theta)
 }

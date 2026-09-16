@@ -50,7 +50,8 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use rayon::prelude::*;
 
 use crate::affinity_grid::{
-    AFFINITY_FACTOR, AffinityReachInputs, build_csr, csr_entry_cells, decompose_affinity_for_lights,
+    AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
+    decompose_affinity_for_lights,
 };
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
@@ -72,7 +73,7 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// assembly, the reach cull, atlas packing, or cached section payload layout).
 /// Versions independently from the indirect SH stages and from the
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
-pub const DIRECT_SH_STAGE_VERSION: u32 = 3;
+pub const DIRECT_SH_STAGE_VERSION: u32 = 4;
 
 /// Cache stage id for raw entity-shadow direct-delta `(affinity cell, light)`
 /// sub-blocks. It stays distinct from the base direct-SH section and the other
@@ -82,7 +83,7 @@ pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
 /// Bump when the raw direct-delta sub-block computation or its cache-key inputs
 /// change. This epoch is independent from both the base direct-SH cache and the
 /// on-disk direct-delta section format.
-pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 1;
+pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 2;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -188,7 +189,8 @@ pub(crate) fn build_reach_index(
         portals: inputs.portals,
         probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, direct_lights);
+    let decomposition =
+        decompose_affinity_for_lights(&reach, direct_lights, AffinityReachPolicy::DIRECT);
     let cell_count = decomposition.affinity_cell_count();
 
     // Invert per_light_cells (light → cells) into cell → lights, once. Iterating
@@ -351,6 +353,29 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
     Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
     DeltaShCacheTally,
 ) {
+    bake_direct_sh_delta_volumes_with_reach_policy(
+        inputs,
+        config,
+        alpha_lights,
+        entity_shadow_lights,
+        cache,
+        control,
+        AffinityReachPolicy::SELECTED_DIRECT,
+    )
+}
+
+fn bake_direct_sh_delta_volumes_with_reach_policy(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+    reach_policy: AffinityReachPolicy,
+) -> (
+    Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
+    DeltaShCacheTally,
+) {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
     {
@@ -383,7 +408,7 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, &selected_lights);
+    let decomposition = decompose_affinity_for_lights(&reach, &selected_lights, reach_policy);
     let affinity_dims = decomposition.affinity_dims;
     let affinity_cell_count = decomposition.affinity_cell_count();
     let (affinity_offsets, affinity_lights) =
@@ -923,7 +948,8 @@ pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) ->
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, &direct_lights);
+    let decomposition =
+        decompose_affinity_for_lights(&reach, &direct_lights, AffinityReachPolicy::DIRECT);
 
     let total_cells = decomposition.affinity_cell_count();
     let probes_per_cell = (AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR) as usize;
@@ -1162,6 +1188,69 @@ mod tests {
             tags: vec![],
             shadow_type: ShadowType::StaticLightMap,
         }
+    }
+
+    fn static_spot_light(
+        origin: DVec3,
+        range: f32,
+        direction: [f32; 3],
+        outer_degrees: f32,
+    ) -> MapLight {
+        let mut light = static_point_light(origin, range, [1.0, 0.8, 0.6]);
+        light.light_type = LightType::Spot;
+        light.cone_angle_inner = Some((outer_degrees * 0.5).to_radians());
+        light.cone_angle_outer = Some(outer_degrees.to_radians());
+        light.cone_direction = Some(direction);
+        light
+    }
+
+    fn bake_single_selected_spot(
+        light: MapLight,
+        reach_policy: AffinityReachPolicy,
+    ) -> DirectShDeltaVolumesSection {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![light];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+
+        bake_direct_sh_delta_volumes_with_reach_policy(
+            &inputs,
+            &ShConfig { probe_spacing: 0.5 },
+            &alpha_lights,
+            &selected,
+            None,
+            &control,
+            reach_policy,
+        )
+        .0
+        .expect("selected spotlight must retain at least its canonical entry")
+        .0
     }
 
     /// Decode an RGBA16F atlas blob back into f16-bit RGBA texels.
@@ -1705,6 +1794,46 @@ mod tests {
             !delta.affinity_lights.contains(&2),
             "AlphaLights index 2 must not appear in affinity_lights"
         );
+    }
+
+    #[test]
+    fn cone_culled_direct_delta_matches_post_drop_cube_reach_bytes() {
+        let light = static_spot_light(DVec3::new(2.0, 2.5, 2.0), 10.0, [0.0, -1.0, 0.0], 12.0);
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let cone = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+
+        assert!(
+            cone.affinity_lights.len() < cube.affinity_lights.len(),
+            "the fixture must exercise at least one outside-cone cell"
+        );
+        let (cube_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cube);
+        let (cone_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cone);
+        assert_eq!(cone_dropped.to_bytes(), cube_dropped.to_bytes());
+    }
+
+    #[test]
+    fn fully_cone_culled_direct_delta_keeps_drop_policies_canonical_cell() {
+        let light = static_spot_light(DVec3::new(2.0, 10.0, 2.0), 20.0, [0.0, 1.0, 0.0], 5.0);
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let cone = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+        let (cube_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cube);
+        let (cone_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cone);
+
+        assert_eq!(cone.affinity_lights.len(), 1);
+        assert_eq!(cone_dropped.affinity_lights.len(), 1);
+        assert_eq!(cone_dropped.to_bytes(), cube_dropped.to_bytes());
+    }
+
+    #[test]
+    fn directional_direct_delta_is_byte_identical_to_cube_reach() {
+        let mut light = static_point_light(DVec3::new(2.0, 2.5, 2.0), 10.0, [1.0, 0.8, 0.6]);
+        light.light_type = LightType::Directional;
+        light.cone_direction = Some([0.0, -1.0, 0.0]);
+
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let direct = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+
+        assert_eq!(direct.to_bytes(), cube.to_bytes());
     }
 
     #[test]

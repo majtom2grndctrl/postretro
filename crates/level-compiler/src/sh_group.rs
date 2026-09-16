@@ -734,19 +734,15 @@ pub fn bake_sh_volume_grouped_controlled(
 /// reimplementation of the monolithic bake's descriptor/slot logic, not a call
 /// into it; byte-identity is pinned by `full_light_set_grouped_equals_monolithic`.
 fn build_shell(inputs: &ShBakeCtx<'_>) -> ShVolumeShell {
-    use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
     let animation_descriptors = inputs
         .animated_lights
         .entries()
         .iter()
         .map(|e| crate::sh_bake::animation_descriptor_for_light(e.light))
         .collect();
-    let mut slot_for_map_light = vec![ANIMATED_SLOT_NONE; inputs.total_light_count];
-    for (slot, entry) in inputs.animated_lights.entries().iter().enumerate() {
-        if entry.source_index < slot_for_map_light.len() {
-            slot_for_map_light[entry.source_index] = slot as u32;
-        }
-    }
+    let slot_for_map_light = inputs
+        .animated_lights
+        .slot_for_source_lights(inputs.total_light_count);
     ShVolumeShell {
         animation_descriptors,
         slot_for_map_light,

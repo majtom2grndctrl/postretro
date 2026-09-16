@@ -12,7 +12,8 @@ of e36e86b; they drift — the brief states only what survives.
   ≈ 12 GB (matches the `lighting-scale--compile-peak-ram` decomposition).
 - The cone-vs-cube solid-angle estimate of ≈10× fewer id-41 entries did not hold. The
   production planner measured a 29% id-41 dense-byte reduction at the practical 10 m
-  probe spacing and a post-cull 5.97 GB projected peak at the default 1 m spacing.
+  probe spacing. The earlier 5.97 GB default-spacing aggregate used the superseded
+  all-cone id-45 policy.
 - The fixture was regenerated with a nonzero animated-light share (owner decision), which
   activates id-45 (animated-direct, cone-cullable) and id-27 (indirect, **cube reach, not
   cone-cullable** — bounce leaves the cone). The first-slice measurement is over all three
@@ -23,24 +24,39 @@ of e36e86b; they drift — the brief states only what survives.
 - Regenerated fixture (`tools/gen_stress_map.py --preset warren`) has 763 static
   baked lights: 678 spots, 85 points, 344 runtime-present/promotable lights, and
   exactly 6 animated spotlights (the generator's bounded animation budget).
+  Three carry authored KVP curves and remain immutable. The generated data
+  script targets the other three by `warren_script_pulse`, making their id-45
+  descriptor slots script-mutable.
 - Pre-cull control at the fixture's practical documented settings
   (`--sh-probe-spacing 10.0 --lightmap-density 0.25`, cold, zero working-set
   budget) projected 50,208,768 cumulative dense bytes and 150,626,304 bytes at
   the normal 3× copy-chain factor: id 27 = 1,990,656; id 41 = 46,227,456;
   id 45 = 1,990,656. This coarse-spacing control was already below 16 GiB and
   is not the brief's default-1m risk measurement.
-- Post-cull control with the same 10 m / 0.25 settings projected 35,260,416
-  cumulative dense bytes and 105,781,248 bytes at 3×: id 27 = 1,990,656
-  (unchanged), id 41 = 32,864,256 (29% below the 46,227,456-byte control),
-  and id 45 = 405,504 (80% below the 1,990,656-byte control).
-- Post-cull at the default 1 m SH probe spacing, the production CSR planner
-  projected 1,989,642,240 cumulative dense bytes and a 5,968,926,720-byte
-  peak at the normal 3× factor: id 27 = 363,184,128; id 41 = 1,616,283,648;
-  id 45 = 10,174,464. This is 11,210,942,464 bytes below the unchanged
-  16 GiB default gate. The measurement used a temporary, uncommitted bypass
-  of the base-SH ray bake so the real post-selection CSR planner and gate could
-  run without materializing unrelated base irradiance; the bypass was removed
-  immediately after capture and is absent from the implementation.
+- The historical all-cone post-cull control at the same 10 m / 0.25 settings
+  projected 35,260,416 cumulative dense bytes and 105,781,248 bytes at 3×:
+  id 27 = 1,990,656, id 41 = 32,864,256, and id 45 = 405,504. The id-41
+  reduction remains valid. The aggregate and id-45 value are superseded because
+  three final-policy id-45 slots use cube reach.
+- The earlier default-1m projection reported 1,989,642,240 cumulative dense
+  bytes and a 5,968,926,720-byte peak at the normal 3× factor. It treated all
+  six id-45 spotlights as cone-clipped. That assumption is not the final policy:
+  the three script-targeted slots use `DIRECT_UNCLIPPED`. The old aggregate and
+  its id-45 10,174,464-byte component are superseded, not current evidence.
+- Production now plans and gates all three CSRs before the base-SH ray bake.
+  The ignored CLI regression exercises that exact path with script membership
+  applied and a zero-byte budget. At the default 1 m probe spacing, the final
+  policy projects 2,181,832,704 cumulative dense bytes and a 6,545,498,112-byte
+  peak at the normal 3x factor: id 27 = 363,184,128; id 41 = 1,616,615,424;
+  id 45 = 202,033,152. This is 10,634,371,072 bytes below the unchanged 16 GiB
+  default gate. Reproduce it with:
+
+  ```bash
+  RUST_LOG=info cargo test -p postretro-level-compiler \
+    --test compiler_cli_contract \
+    warren_zero_budget_projects_current_membership_before_base_sh_bake \
+    -- --ignored --nocapture
+  ```
 - The admitted end-to-end warren build completed under the unchanged default
   16 GiB gate with `--sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache`.
   It finished in 297.96 s and emitted a 66 MiB PRL with SHA-256
@@ -56,8 +72,9 @@ of e36e86b; they drift — the brief states only what survives.
   exact-zero dropping: script-mutable animated descriptor slots deliberately
   retain cube-reach zero records for future curve replacement. Cone-clipping
   those slots changed ids 45 and 48. The final policy therefore leaves only
-  script-mutable id-45 slots unclipped; ordinary animated spots (including all
-  six warren lights) remain cone-clipped. A focused policy regression pins this.
+  script-mutable id-45 slots unclipped. In the warren, three script-targeted
+  lights are unclipped and three KVP-animated lights remain cone-clipped. A
+  focused policy regression pins this split.
 
 ## Pinned orderings
 
@@ -67,7 +84,7 @@ of e36e86b; they drift — the brief states only what survives.
 | R2 | Spot cone-frustum grazes / clips a corner of a cell AABB, but no id-34-valid probe of that cell is strictly in-cone. | Conservative test resolves a tangent overlap before any tile is baked. | Cell MAY be kept (superset is legal); `drop_direct_zero_entries` then removes it. Never emitted with nonzero bytes; never excluded if any valid probe is in-cone. |
 | R3 | One cell straddles the cone: ≥1 id-34-valid probe strictly in-cone, ≥1 out-of-cone. | Conservative-keep vs exact-cull at a cell mixing zero and nonzero probes. | Cell retained in the direct CSR; emitted payload byte-identical (in-cone probes bake nonzero, out-of-cone bake exact zero, handled by valid-probe compaction). |
 | R4 | An id-41-selected static-direct light every one of whose affinity cells is cone-culled. | Canonical-entry retention occurs at the cull (reach predicate / CSR build), not solely in `drop_direct_zero_entries`; the retained entry is the SAME canonical cell `drop_direct_zero_entries` keeps today. | Exactly one canonical entry for that selection index survives in emitted `affinity_lights`, byte-identical to today's canonical pick; id-40/id-41 all-or-nothing contract holds. A promoted light's baked far-LOD may legitimately be zero while its runtime near-tier term is not, so the entry is semantically required — the light stays promoted. |
-| R5 | One animated spot light contributing to BOTH id-27 (indirect) and id-45 (animated direct). | Transport is per-decompose-call: id-27 (`decompose_affinity`) stays cube; id-45's `decompose_affinity_for_lights` becomes cone. | For that light, id-27 CSR byte-identical (cube reach) while id-45 CSR cone-clamped. id-45 is in Phase 1 scope (owner decision); the executor reverses the `animated_direct_sh_bake.rs` intentional-no-clip comment after confirming the frozen rest-direction cone matches the bake. |
+| R5 | One animated spot light contributing to BOTH id-27 (indirect) and id-45 (animated direct). | Transport is per bake: id-27 stays cube; immutable id-45 uses cone reach; script-mutable id-45 retains cube reach. | The focused dual-transport bake proves id-27 and mutable id-45 emit identical CSR topology, while immutable id-45 drops outside-cone cells. |
 | R6 | A `light_sun` (`LightType::Directional`, `cone_angle_*` = None). | Directional lights bypass the cone clamp entirely; reach stays whole-world. | Every affinity cell overlapping the directional world-AABB retained; id-35/id-41 sun bytes byte-identical. |
 | R7 | Warm-cache build after the cull, and a cull-affecting edit (e.g. widening a spot cone). | Stage-version bump vs per-`(cell,light)` delta cache key vs base-direct cache key. | Two warm builds under the new predicate byte-identical; a cone-widening edit re-keys affected `(cell,light)` sub-blocks (miss) and reuses the rest (hit); a warm cache written by the pre-change binary is invalidated via the stage-version bump. |
 | R8 | Two independent runs of the BC6H encode over identical input tiles for the at-rest sections entering the byte-identity comparison. | Run-to-run BC6H determinism is an assumption under the byte-identity ACs; pin it beside the SHA-256. | id-35 base direct (`encode_direct_section_bc6h`) and id-34 base BC6H are bitwise stable run-to-run for identical input. id-22 lightmap is BC6H but exempt from byte-identity, so the `.prl` hash must exclude/tolerate it. NB: id-41/id-45 delta payloads are f16 (`delta_subblocks`), not BC6H — the BC6H at-rest section in scope is id-35. |
@@ -102,5 +119,7 @@ both modes.
 - Multi-lens review found and closed numerical-conservatism gaps at large or
   non-finite coordinates, the dependent id-47 billboard-scatter cache epoch,
   and documentation drift. The post-fix focused suites all passed.
-- Final preflight passed formatting, clippy with warnings denied, all workspace
-  tests, and all doc tests.
+- The second curated review produced two must-fix and six should-fix findings.
+  All were resolved. The post-fix branch passed formatting, clippy with warnings
+  denied, all workspace tests, all doc tests, focused module tests, and the
+  ignored current-policy warren projection gate.

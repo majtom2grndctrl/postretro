@@ -507,6 +507,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn animated_spot_bakes_cube_indirect_and_policy_selected_direct_transport() {
+        let mut light = animated_light(DVec3::new(-1.5, 0.0, 0.0));
+        light.light_type = LightType::Spot;
+        light.falloff_range = 20.0;
+        light.cone_angle_inner = Some(6.0_f32.to_radians());
+        light.cone_angle_outer = Some(12.0_f32.to_radians());
+        light.cone_direction = Some([1.0, 0.0, 0.0]);
+        let lights = vec![light];
+
+        let geometry = cube_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("test geometry must build a BVH");
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let indirect = crate::delta_sh_bake::bake_delta_sh_volumes(
+            &crate::delta_sh_bake::DeltaBakeInputs {
+                bvh: &bvh,
+                primitives: &primitives,
+                geometry: &geometry,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                portals: &[],
+                animated_lights: &animated_lights,
+            },
+            &config,
+        )
+        .expect("animated spot must emit id 27");
+
+        let immutable = ScriptMutableDescriptorSlots::empty(animated_lights.len());
+        let clipped_direct = bake_animated_direct_sh_delta_volumes(
+            &AnimatedDirectShBakeInputs {
+                sh_ctx: &sh_ctx,
+                portals: &[],
+                animated_lights: &animated_lights,
+                mutable_descriptors: &immutable,
+            },
+            &config,
+        )
+        .expect("animated spot must emit cone-clipped id 45");
+
+        let mut mutable = ScriptMutableDescriptorSlots::empty(animated_lights.len());
+        mutable.animated_direct[0] = true;
+        let unclipped_direct = bake_animated_direct_sh_delta_volumes(
+            &AnimatedDirectShBakeInputs {
+                sh_ctx: &sh_ctx,
+                portals: &[],
+                animated_lights: &animated_lights,
+                mutable_descriptors: &mutable,
+            },
+            &config,
+        )
+        .expect("script-mutable animated spot must emit cube-reach id 45");
+
+        assert_eq!(
+            indirect.affinity_offsets, unclipped_direct.affinity_offsets,
+            "id 27 and script-mutable id 45 must share cube-reach CSR offsets",
+        );
+        assert_eq!(
+            indirect.affinity_lights, unclipped_direct.affinity_lights,
+            "id 27 and script-mutable id 45 must share cube-reach CSR light indices",
+        );
+        assert!(
+            clipped_direct.affinity_lights.len() < indirect.affinity_lights.len(),
+            "immutable id 45 must drop outside-cone cells while id 27 stays cube-reach",
+        );
+    }
+
     fn subblock_for(
         section: &AnimatedDirectShDeltaVolumesSection,
         affinity_cell: usize,

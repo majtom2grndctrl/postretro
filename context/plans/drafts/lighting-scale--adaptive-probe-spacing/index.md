@@ -28,6 +28,8 @@ Phase 1 rows are honesty gates (pass/fail) or measured findings (measure-and-rep
 Phase 1
 - [ ] With the projection enabled, the emitted `.prl` of a gate fixture is byte-identical to a bake without `--sh-analyze` (regression guard on the byte-preserving analyzer).
 - [ ] On a constructed brick field: eight aligned same-level bricks whose node reconstruction passes the gate merge; a group with one failing member, one member holding a delta entry, one partial brick, a protected brick, or a misaligned origin does not; after merging, no face-adjacent participating bricks differ by more than one level; with the maximum scale set to 0 the projection equals the shipped classification histogram.
+- [ ] On a constructed field of eight aligned scale-1 nodes (each already merged from bricks) whose combined reconstruction passes the gate: they merge into one scale-2 node; a block with one member pinned to scale 0 by a delta entry, protection, or a failed gate does not merge to scale 2, exercising the merge recursion beyond the single brick-to-node pass (research `R-DIR2`).
+- [ ] The `--sh-density-force-scale <0..3>` flag exists beside `--sh-density-force-level`, rejects a value outside `0..3`, and (grep gate: negative existence) appears in no FGD entity definition and no player-options schema.
 Phase 2
 - [ ] id 34 v11 and id 35 v4 round-trip; each rejects with its own named error: scale above the maximum, members of one node disagreeing on level or scale, a node origin not aligned to its scale, a node reaching outside the grid or over a partial brick, L0 with nonzero scale, an L1 node with no valid corner, and a brick with a delta entry at nonzero scale (loader and compiler share the validator).
 - [ ] A v10 id 34 or v3 id 35 aborts the load with the named recompile error; no degrade.
@@ -36,6 +38,7 @@ Phase 2
 - [ ] No sampler pipeline gains a binding; the forward fragment texture inventory is unchanged; every compose BGL stays ≤ 8 storage buffers (regression guard on the budget tests).
 - [ ] Every brick with an id-41 entry is stamped scale 0 (the crossfade guard), asserted on a fixture with selected static lights.
 - [ ] An animated directional light (`light_sun` with `style`/`*_curve`/`_animated`) is normalized to static with a build warning naming the entity, and the bake then coarsens identically to its static equivalent; asserted on a fixture pairing a static and an animated `light_sun` over an open volume.
+- [ ] A `light_sun` carrying no authored animation KVPs but marked animated by a data-script light-membership manifest is normalized to static with a build warning naming the entity, identically to an authored `style`/`*_curve`/`_animated` `light_sun`; asserted on a fixture pairing a script-targeted and a KVP-animated `light_sun` over an open volume (research `R-DIR1`).
 - [ ] The bake summary reports the node histogram by scale and level and the bricks pinned to scale 0 by delta entries and by protection.
 Phase 3
 - [ ] For constructed level/scale/validity fields, the sampler's node-local corner slots and weights at every scale equal the shared reconstruction definition; a cell with all eight corners in one L1 node takes the whole-cell path with ≤ 8 taps; no cell touches more than 8 distinct tiles.

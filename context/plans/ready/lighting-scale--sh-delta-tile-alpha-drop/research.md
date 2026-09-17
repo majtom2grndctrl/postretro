@@ -37,6 +37,7 @@ row moves in the one change.
 | `synthesize_l2_mean_tile` (`delta_sections.rs`) | writer + `tile_texels = probe_stride / COUNT` | literal push of alpha |
 | `EmittedDeltaSectionRef::new` / `decode_interior`; `emitted_reconstruction_error_by_cell` (`delta_sections.rs`) | readers | `× DELTA_TILE_TEXEL_F16_COUNT` |
 | `DenseDirectView::new` / `decode_valid_entry` (`sh_runtime_envelope_scoring.rs`) | reader | `× DELTA_TILE_TEXEL_F16_COUNT` |
+| `DeltaView` / `DenseDeltaView` (`from_indirect`/`from_direct`/`from_anim_direct` via `check_delta`, `probe_f16_stride`, `probe_stride`, `decode_entry_local`, border accumulation, size-sweep estimate) (`sh_analyze.rs`) | coarsening classifier decode + byte sweep (id 27/41/45) | literal `× 4` at `:157,:183,:320,:353,:826` and `tile²×4×2` byte estimate at `:942` — must move to the constant, NOT auto-following |
 | `rgb_payload_is_zero` (`delta_drop_policy.rs`) | reader | `chunks_exact(4)` |
 | `delta_entry_offsets`, `resolve_delta_f16_offset` (`render-cpu/sh_compose.rs`) | compaction meta | take `delta_probe_f16_stride()` — follow |
 | `reconstruct_delta_probe_tile`, `DeltaProbeReconstructionContext` doc (`render-cpu/sh_compose.rs`) | CPU reference | `i = base + t * 4` literal |
@@ -84,10 +85,11 @@ half 107 inside the tile — no read past the tile.
 |----|----------|-----------------|------------------|
 | R1 | A `.prl` written before this change is loaded by the new binary. | Section version check precedes any payload length identity. | Rejected with the section's named "recompile the .prl" error; no length-mismatch or panic path is reached. |
 | R2 | The same bake serialized RGBA (old) and RGB (new); both decoded by their own reader. | Identity is per reconstructed tile, compared as f16 bit patterns, after compaction and at each level. | Bit-equal at L0, L1 kept corner, L1 dropped-valid (trilinear of kept corners), L2 mean. The L2 mean is re-encoded from RGB in both cases, so its f16 rounding is unchanged. |
-| R3 | One site keeps the old multiplier while the constant is 3. | Fixture channels distinct per texel and per probe (e.g. R = texel index, G = probe rank, B = entry). | The lagging site reads a neighbour's channel and the identity row fails; a fixture with uniform channels would not detect it. |
-| R4 | Odd texel index; first texel of a probe at odd/even kept rank; texel 35 of a tile. | Word-packed read vs. half-indexed CPU reference. | Same R, G, B; no read outside the tile's 108 halves. |
+| R3 | One site keeps the old multiplier, or a compose shader swaps the multiplier but keeps the fixed even-offset two-word unpack, while the stride is 3. | Fixture channels distinct per texel and per probe (e.g. R = texel index, G = probe rank, B = entry); the source guard checks both the texel multiplier and the parity-select read against the format constant. | The lagging site reads a neighbour's channel and the identity row fails; a shader that keeps the even-offset unpack misreads every odd texel and fails the guard; a fixture with uniform channels would not detect it. |
+| R4 | Odd texel index; first texel of a probe at odd/even kept rank; texel 35 of a tile. | Rust port of the word-packed read vs. half-indexed CPU reference (the shipped WGSL packed read has no headless harness); the shipped WGSL is pinned to that port by the R3 guard, E20 is its on-GPU proof. | Same R, G, B; no read outside the tile's 108 halves. |
 | R5 | Warm cache populated by the pre-change binary; then two warm builds on the new binary. | Stage-version bump vs. `decode_subblock` length rejection. | Every pre-change entry is a miss by key (not by length); second warm build is a full hit and byte-identical to the first. |
 | R6 | Cone-reach-cull lands before or after this brief. | Each brief's byte-identity baseline is taken at the format version in effect. | No cross-brief byte comparison; stage versions bump once per landing. |
+| R7 | adaptive-probe-spacing lands before or after this brief; both edit the shared SH compose grid uniform / octahedral sampler. | Neither brief compares delta bytes against the other's base format; the second to land re-verifies the delta compose reads its per-texel stride from the format constant, not a literal. | No cross-brief byte comparison; the shared compose/sampler code carries one stride source after both land. |
 
 ## Rival shapes considered
 

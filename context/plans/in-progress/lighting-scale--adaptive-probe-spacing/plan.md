@@ -23,11 +23,11 @@ read at: c269dd906
 
 | AC | Proof | Status |
 |---|---|---|
-| P1-A1 analyzer is byte-preserving | Focused compiler integration test comparing emitted fixture `.prl` bytes with and without `--sh-analyze` | achievable as stated |
-| P1-A2 one-scale merge eligibility, blockers, smoothing, and max-scale-0 parity | Constructed hierarchy-classifier unit tests over aligned bricks, delta/protection/partial/misaligned blockers, adjacency, and shipped histogram parity | achievable as stated |
-| P1-A3 recursive scale-2 merge and blockers | `R-DIR2` constructed hierarchy unit tests over eight pre-merged scale-1 nodes | achievable as stated |
-| P1-A4 recursive no-merge re-smoothing without level promotion | `R-DIR2` no-merge unit test asserting adjacency bound and monotone levels after the k=2 pass | achievable as stated |
-| P1-A5 `--sh-density-force-scale` parses 0..3 only and has no author/player surface | CLI parser tests plus negative `rg` gate over FGD and player-options schemas | achievable as stated |
+| P1-A1 analyzer is byte-preserving | Focused compiler integration test comparing emitted fixture `.prl` bytes with and without `--sh-analyze` | passed — `sh_analysis_is_byte_preserving_for_compiled_prl` |
+| P1-A2 one-scale merge eligibility, blockers, smoothing, and max-scale-0 parity | Constructed hierarchy-classifier unit tests over aligned bricks, delta/protection/partial/misaligned blockers, adjacency, and shipped histogram parity | passed — four `sh_hierarchy::tests` plus analyzer max-scale-0 parity assertion |
+| P1-A3 recursive scale-2 merge and blockers | `R-DIR2` constructed hierarchy unit tests over eight pre-merged scale-1 nodes | passed — `recursive_scale_two_merge_requires_all_scale_one_children` |
+| P1-A4 recursive no-merge re-smoothing without level promotion | `R-DIR2` no-merge unit test asserting adjacency bound and monotone levels after the k=2 pass | passed — `recursive_no_merge_keeps_face_level_bound_without_raising_levels` |
+| P1-A5 `--sh-density-force-scale` parses 0..3 only and has no author/player surface | CLI parser tests plus negative `rg` gate over FGD and player-options schemas | passed — parser range test and compile-time negative existence test |
 | P2-A1 id 34 v11/id 35 v4 round-trip and named hierarchy rejects | Format unit tests for scale range, node agreement/alignment/containment/partial rules, L0 scale, L1 corner validity, and delta scale ceiling through the shared validator | achievable as stated |
 | P2-A2 stale v10/v3 sections hard-fail with recompile errors | Version-reject unit tests for both section decoders and loader propagation | achievable as stated |
 | P2-A3 forced scale respects delta, partial, and protection ceilings and loads | Focused compiler fixture test for `R-FORCE` followed by loader round-trip | achievable as stated |
@@ -50,7 +50,7 @@ read at: c269dd906
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Add the byte-preserving hierarchy projection, recursive merge model, seam/error reporting, and `--sh-density-force-scale`; prove all Phase 1 automated rows with focused tests | integrating executor | — | pending |
+| 1 | Add the byte-preserving hierarchy projection, recursive merge model, seam/error reporting, and `--sh-density-force-scale`; prove all Phase 1 automated rows with focused tests | integrating executor | — | complete — byte-preserving CLI fixture, recursive topology/blocker tests, parser/surface tests, and touched-target clippy pass |
 | 2 | Measure `stress-warren-hallway-inspection-mini.map` locally, record results, resolve maximum scale, 2:1 balance, and the Phase 3 decision, and preserve the full hallway-inspection map for the Windows runbook | integrating executor | 1 | pending |
 | 3 | Introduce the shared node-aware reconstruction/stored-set contract, id 34 v11/id 35 v4 wire fields, shared validator, node prefix sum, scale ceilings, and format/loader rejection tests | integrating executor | 2 | pending |
 | 4 | Integrate bottom-up hierarchy classification and forced-scale clamping into the compiler; pack id 34/id 35 node payloads; normalize authored animated directional lights; extend summaries and determinism/compatibility tests | integrating executor | 3 | pending |

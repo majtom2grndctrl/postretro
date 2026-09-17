@@ -125,6 +125,55 @@ fn compile_fixture_for_layer_cache_order(
     command.output().expect("spawn prl-build")
 }
 
+#[test]
+fn sh_analysis_is_byte_preserving_for_compiled_prl() {
+    let workspace = workspace_root();
+    let input = workspace.join("content/dev/maps/specular-shadowmask-capture.map");
+    assert!(input.is_file(), "fixture map missing: {}", input.display());
+
+    let temp = TempBuildDir::new();
+    let baseline = temp.0.join("baseline.prl");
+    let analyzed = temp.0.join("analyzed.prl");
+    let analysis_json = temp.0.join("analysis.json");
+    let common = |output: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        command
+            .arg(&input)
+            .arg("-o")
+            .arg(output)
+            .arg("--no-cache")
+            .arg("--no-tui")
+            .arg("--uncompressed-irradiance")
+            .arg("--sh-probe-spacing")
+            .arg("4")
+            .arg("--lightmap-density")
+            .arg("0.25")
+            .arg("-j")
+            .arg("1");
+        command
+    };
+
+    let baseline_build = common(&baseline)
+        .output()
+        .expect("spawn baseline prl-build");
+    assert_success(&baseline_build, 1);
+    let analyzed_build = common(&analyzed)
+        .arg("--sh-analyze")
+        .arg("--sh-analyze-out")
+        .arg(&analysis_json)
+        .arg("--sh-density-force-scale")
+        .arg("3")
+        .output()
+        .expect("spawn analyzed prl-build");
+    assert_success(&analyzed_build, 1);
+    assert!(analysis_json.is_file(), "analysis JSON was not written");
+    assert_eq!(
+        std::fs::read(&baseline).expect("read baseline PRL"),
+        std::fs::read(&analyzed).expect("read analyzed PRL"),
+        "--sh-analyze and its force-scale measurement must not change emitted bytes",
+    );
+}
+
 fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let bytes = std::fs::read(output).expect("read compiled PRL");
     let mut cursor = Cursor::new(bytes);

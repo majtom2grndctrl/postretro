@@ -1232,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_tabs_expose_spatial_and_triggers_without_extra_action() {
+    fn diagnostics_tabs_expose_all_registered_tabs_without_extra_action() {
         assert_eq!(
             DiagnosticsTab::ALL,
             [
@@ -1241,11 +1241,13 @@ mod tests {
                 DiagnosticsTab::Performance,
                 DiagnosticsTab::Spatial,
                 DiagnosticsTab::Agents,
+                DiagnosticsTab::Doors,
                 DiagnosticsTab::Triggers,
             ],
         );
         assert_eq!(DiagnosticsTab::Spatial.label(), "Spatial");
         assert_eq!(DiagnosticsTab::Agents.label(), "Agents");
+        assert_eq!(DiagnosticsTab::Doors.label(), "Doors");
         assert_eq!(DiagnosticsTab::Triggers.label(), "Triggers");
     }
 

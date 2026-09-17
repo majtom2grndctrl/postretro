@@ -114,11 +114,13 @@ by exactly 25%. The whole file fell by 3,826,651 bytes; the three payloads accou
 changed. Section-internal versions were verified as 5/3/3 before and 6/4/4 after, guarding
 against accidentally comparing two builds from the same compiler.
 
-The dev-tools footprint log could not be captured because the pre-existing
-`DiagnosticsTab::ALL` array-length mismatch prevents a dev-tools renderer build. Storage
-bytes above are nevertheless exact: the loader retains the decoded `Vec<u16>` and the
-renderer uploads that slice verbatim (the no-clone source guard pins this path), and all
-three payload byte counts are already four-byte aligned.
+The stale `DiagnosticsTab::ALL` regression assertion that prevented a dev-tools renderer
+build was repaired after this measurement pass. Its exact focused dev-tools test could not be
+rebuilt locally because the filesystem had only 239 MiB free and the cold feature build ran out
+of space while compiling `postretro-ui`; it awaits a machine with sufficient capacity. Storage
+bytes above are nevertheless exact: the loader retains the decoded `Vec<u16>` and the renderer
+uploads that slice verbatim (the no-clone source guard pins this path), and all three payload
+byte counts are already four-byte aligned.
 
 For the same cold before/after artifacts, sections 34, 35, and 48 were byte-identical:
 

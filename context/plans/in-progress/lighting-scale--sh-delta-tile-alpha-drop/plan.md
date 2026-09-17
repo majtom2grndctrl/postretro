@@ -18,16 +18,16 @@ read at: 29e8611c6
 
 | AC | Proof | Status | Result |
 |---|---|---|---|
-| A1 Three-half round trip, old length rejection, and stale-version recompile errors for ids 27/41/45 | Focused `postretro-level-format` section tests | achievable as stated | pending |
-| A2 Id-41 composed-atlas f16 identity at L0, L1 kept, L1 dropped-valid, and L2 | New delta RGB identity integration test over compiler emission and CPU reconstruction | achievable as stated | pending |
-| A3 Id-45 and id-27 composed-atlas f16 identity at all coarsening levels | Same identity integration test fixtures for animated-direct and indirect sections | achievable as stated | pending |
-| A4 Stride lockstep through format, compaction, emitted view, envelope view, CPU decoder, entry drop, and all compose shaders | Distinct-channel fixture plus shader source guard | achievable as stated | pending |
-| A5 Odd-half alignment through packed reader at odd texels, kept ranks, and tile tail | Rust packed-word reader parity test plus shader source guard | achievable as stated | pending |
-| A6 Entry dropping and coarsening decisions unchanged for ids 27/41/45 | Before/after-layout decision fixtures retaining identical entry sets, levels, and validity masks | achievable as stated | pending |
-| A7 Working-set and raw-cap summaries use 13,824 B while defaults stay unchanged | Compiler pipeline projection/cap tests and renderer compose-footprint test | achievable as stated | pending |
-| A8 Cache epochs invalidate old keys and new warm builds are byte-identical | Delta cache-key tests, stage-version pin, and cross-bake warm determinism tests | achievable as stated | pending |
-| A9 No new runtime RAM copy | Source gate over loader decode and renderer verbatim upload paths | achievable as stated | pending |
-| A10 Adaptive landing-order guard | Shader source guards derive multiplier from the format-fed grid stride; no base/delta cross-format byte baseline | achievable as stated | pending |
+| A1 Three-half round trip, old length rejection, and stale-version recompile errors for ids 27/41/45 | Focused `postretro-level-format` section tests | achievable as stated | pass: 47 delta tests plus 3 old-RGBA-length tests |
+| A2 Id-41 composed-atlas f16 identity at L0, L1 kept, L1 dropped-valid, and L2 | New delta RGB identity integration test over compiler emission and CPU reconstruction | achievable as stated | pass: `rgb_payload_reconstructs_bit_identically_for_ids_27_41_45_at_all_levels` |
+| A3 Id-45 and id-27 composed-atlas f16 identity at all coarsening levels | Same identity integration test fixtures for animated-direct and indirect sections | achievable as stated | pass: same three-section identity test |
+| A4 Stride lockstep through format, compaction, emitted view, envelope view, CPU decoder, entry drop, and all compose shaders | Distinct-channel fixture plus shader source guard | achievable as stated | pass: 79 compiler delta tests, render-cpu reconstruction tests, three-shader guard |
+| A5 Odd-half alignment through packed reader at odd texels, kept ranks, and tile tail | Rust packed-word reader parity test plus shader source guard | achievable as stated | pass: `word_packed_rgb_reader_matches_half_indexed_reference_at_odd_offsets` plus shader guard |
+| A6 Entry dropping and coarsening decisions unchanged for ids 27/41/45 | Before/after-layout decision fixtures retaining identical entry sets, levels, and validity masks | achievable as stated | pass: legacy/new zero-decision parity plus output-identity and compiler drop/coarsen suites |
+| A7 Working-set and raw-cap summaries use 13,824 B while defaults stay unchanged | Compiler pipeline projection/cap tests and renderer compose-footprint test | achievable as stated | partial: compiler delta suite passes; renderer dev-tools test is blocked by unrelated DiagnosticsTab array-length compile error |
+| A8 Cache epochs invalidate old keys and new warm builds are byte-identical | Delta cache-key tests, stage-version pin, and cross-bake warm determinism tests | achievable as stated | pass: previous-version miss/current-version repeated hit, epoch pin, and cross-bake locality/determinism |
+| A9 No new runtime RAM copy | Source gate over loader decode and renderer verbatim upload paths | achievable as stated | pass: `delta_loader_and_upload_paths_add_no_payload_clone` |
+| A10 Adaptive landing-order guard | Shader source guards derive multiplier from the format-fed grid stride; no base/delta cross-format byte baseline | achievable as stated | pass: `all_delta_compose_shaders_derive_rgb_stride_and_select_odd_half_parity` |
 | M1 Real-map disk/payload/storage size row | `campaign-test` plus resolved id-45 map; compiler summaries, dev-tools footprint log, and file sizes recorded in `research.md` | manual-measurement | pending |
 | M2 E20 promoted animated-light capture is pixel-identical before/after | Owner, same-adapter before/after E20 capture | manual-visual | pending |
 | R1 Base atlases ids 34/35 byte-identical | Existing base-section bytes captured on the same focused bake fixtures before and after | achievable as stated | pending |
@@ -37,7 +37,7 @@ read at: 29e8611c6
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Prove the highest-risk id-41 slice end to end: RGB wire stride/version, direct writer, compaction/reconstruction, packed CPU reader, direct compose shader, and identity/odd-half tests | integrating executor | — | active |
-| 2 | Extend the RGB layout to ids 27/45 and every shared writer, classifier, envelope, entry-drop, compose, and shader consumer; bump all remaining section/stage versions | integrating executor | 1 | pending |
-| 3 | Close the cross-cutting acceptance matrix: lockstep/source/RAM guards, cache proofs, decision-equivalence fixtures, footprint/gate updates, and untouched base/scatter regressions | integrating executor | 2 | pending |
+| 1 | Prove the highest-risk id-41 slice end to end: RGB wire stride/version, direct writer, compaction/reconstruction, packed CPU reader, direct compose shader, and identity/odd-half tests | integrating executor | — | done — focused format/render-cpu/renderer tests pass |
+| 2 | Extend the RGB layout to ids 27/45 and every shared writer, classifier, envelope, entry-drop, compose, and shader consumer; bump all remaining section/stage versions | integrating executor | 1 | done — compiler delta suite passes 79 tests |
+| 3 | Close the cross-cutting acceptance matrix: lockstep/source/RAM guards, cache proofs, decision-equivalence fixtures, footprint/gate updates, and untouched base/scatter regressions | integrating executor | 2 | active |
 | 4 | Run focused verification, review/fix loop, final preflight, and populate every automated result; prepare and execute the real-map/manual runbook where locally possible | integrating executor | 3 | pending |

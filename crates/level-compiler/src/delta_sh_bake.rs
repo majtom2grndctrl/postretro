@@ -16,7 +16,7 @@
 //     `affinity_lights` (the animated-light indices touching that cell).
 //   - `delta_subblocks` is index-parallel to `affinity_lights`: one dense
 //     64-probe sub-block per CSR entry, x-fastest in-cell order
-//     `local = lx + ly*4 + lz*16`; each probe slot is one row-major RGBA16F
+//     `local = lx + ly*4 + lz*16`; each probe slot is one row-major RGB16F
 //     octahedral tile matching the base irradiance atlas tile geometry.
 //
 // The runtime compose pass reads one per-cell light list per workgroup and adds
@@ -40,7 +40,7 @@ use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE,
-    DeltaShVolumesSection, PROBES_PER_CELL,
+    DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection, PROBES_PER_CELL,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -84,7 +84,7 @@ const DIRECTIONAL_FALLBACK_RANGE_METERS: f64 = 100.0;
 pub(crate) const INDIRECT_DELTA_SH_STAGE_ID: &str = "indirect_delta_sh_subblock";
 
 /// Bump when the indirect-delta sub-block computation or its key inputs change.
-pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 1;
+pub(crate) const INDIRECT_DELTA_SH_STAGE_VERSION: u32 = 2;
 
 /// Inputs for the delta SH bake. Mirrors `sh_bake::ShBakeCtx` (same BVH,
 /// same geometry, same BSP tree) plus the animated-light envelope and the
@@ -279,7 +279,7 @@ pub fn log_stats(section: &DeltaShVolumesSection) {
 
 /// Bake one dense 64-probe sub-block for `(cell, light)`. Returns the
 /// flat probe payload (`PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE` halves):
-/// one RGBA16F octahedral tile per probe, x-fastest in-cell order.
+/// one RGB16F octahedral tile per probe, x-fastest in-cell order.
 ///
 /// Per-probe clip (see module doc): cell inclusion is portal-granular; affinity
 /// decomposition already dropped cells the light can't reach through portals.
@@ -345,10 +345,9 @@ fn bake_subblock(
 
         let base = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
         for (texel_index, texel) in tile.iter().enumerate() {
-            let dst = base + texel_index * 4;
-            // alpha channel (texel.rgba[3]) is set to f16(1.0) for packing-path symmetry with
-            // base tiles; sh_compose.wgsl reads only delta.rgb (alpha unused downstream).
-            out[dst..dst + 4].copy_from_slice(&texel.rgba);
+            let dst = base + texel_index * DELTA_TILE_TEXEL_F16_COUNT;
+            out[dst..dst + DELTA_TILE_TEXEL_F16_COUNT]
+                .copy_from_slice(&texel.rgba[..DELTA_TILE_TEXEL_F16_COUNT]);
         }
     }
 
@@ -751,7 +750,10 @@ mod tests {
             DEFAULT_IRRADIANCE_TILE_DIMENSION,
             DEFAULT_IRRADIANCE_TILE_BORDER,
         );
-        let expected: Vec<u16> = expected_tile.iter().flat_map(|texel| texel.rgba).collect();
+        let expected: Vec<u16> = expected_tile
+            .iter()
+            .flat_map(|texel| texel.rgba[..DELTA_TILE_TEXEL_F16_COUNT].iter().copied())
+            .collect();
         let stored = &section.delta_subblocks[slot..slot + DEFAULT_DELTA_PROBE_F16_STRIDE];
         assert_eq!(
             stored,

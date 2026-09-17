@@ -59,7 +59,7 @@ struct GridFrame {
 
 @group(1) @binding(18) var<uniform> grid: GridDims;
 @group(1) @binding(19) var<uniform> grid_frame: GridFrame;
-// Sparse delta payload: valid-probe octahedral tiles per CSR entry, RGBA16F
+// Sparse delta payload: valid-probe octahedral tiles per CSR entry, RGB16F
 // texels packed two f16 halves per `u32`; `unpack2x16float` returns `(low,
 // high)` matching the bake's even/odd channel order.
 @group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
@@ -195,13 +195,20 @@ fn read_delta_texel(
     tile_texel: vec2<u32>,
 ) -> vec4<f32> {
     let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
+    let texel_f16_count = grid.delta_probe_f16_stride
+        / (grid.tile_dimension * grid.tile_dimension);
     let half_base = entry_delta_f16_offset(entry)
         + probe_rank * grid.delta_probe_f16_stride
-        + texel_index * 4u;
+        + texel_index * texel_f16_count;
     let word_base = half_base / 2u;
-    let rg = unpack2x16float(delta_subblocks[word_base]);
-    let ba = unpack2x16float(delta_subblocks[word_base + 1u]);
-    return vec4<f32>(rg.x, rg.y, ba.x, ba.y);
+    let first = unpack2x16float(delta_subblocks[word_base]);
+    let second = unpack2x16float(delta_subblocks[word_base + 1u]);
+    let rgb = select(
+        vec3<f32>(first.x, first.y, second.x),
+        vec3<f32>(first.y, second.x, second.y),
+        (half_base & 1u) != 0u,
+    );
+    return vec4<f32>(rgb, 0.0);
 }
 
 fn local_probe_coord(local_probe: u32) -> vec3<u32> {

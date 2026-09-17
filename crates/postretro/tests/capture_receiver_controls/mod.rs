@@ -155,7 +155,7 @@ fn animated_direct_control_preserves_other_lights_and_section_layout() {
         cell_levels: vec![0, 0],
         affinity_offsets: vec![0, 2, 3],
         affinity_lights: vec![0, 1, 0],
-        delta_subblocks: vec![0x3c00; 4 * 6 * 6 * 4],
+        delta_subblocks: vec![0x3c00; 4 * 6 * 6 * 3],
     };
     let mut expected = section.clone();
     let stride = section.delta_probe_f16_stride();

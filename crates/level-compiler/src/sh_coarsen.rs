@@ -534,6 +534,7 @@ pub(crate) fn classify_direct_levels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 
     const L0: u8 = 0;
     const L1: u8 = 1;
@@ -901,13 +902,12 @@ mod tests {
     /// Direct-delta section (id 41) for a single all-valid affinity cell whose
     /// per-local-probe RGB delta is `f(local)`.
     fn direct_delta_from(f: impl Fn(usize) -> f32) -> DirectShDeltaVolumesSection {
-        let mut sub = vec![0u16; PROBES_PER_CELL * 4];
+        let mut sub = vec![0u16; PROBES_PER_CELL * DELTA_TILE_TEXEL_F16_COUNT];
         for local in 0..PROBES_PER_CELL {
             let h = f32_to_f16_bits(f(local));
-            sub[local * 4] = h; // R
-            sub[local * 4 + 1] = h; // G
-            sub[local * 4 + 2] = h; // B
-            // A left at 0.
+            sub[local * DELTA_TILE_TEXEL_F16_COUNT] = h; // R
+            sub[local * DELTA_TILE_TEXEL_F16_COUNT + 1] = h; // G
+            sub[local * DELTA_TILE_TEXEL_F16_COUNT + 2] = h; // B
         }
         DirectShDeltaVolumesSection {
             affinity_factor: 4,
@@ -925,11 +925,12 @@ mod tests {
     /// Direct-delta section for one x-row of all-valid affinity cells, with a
     /// spatially uniform RGB delta per cell.
     fn direct_delta_row(values: &[f32]) -> DirectShDeltaVolumesSection {
-        let mut sub = Vec::with_capacity(values.len() * PROBES_PER_CELL * 4);
+        let mut sub =
+            Vec::with_capacity(values.len() * PROBES_PER_CELL * DELTA_TILE_TEXEL_F16_COUNT);
         for &value in values {
             let h = f32_to_f16_bits(value);
             for _ in 0..PROBES_PER_CELL {
-                sub.extend([h, h, h, 0]);
+                sub.extend([h, h, h]);
             }
         }
         DirectShDeltaVolumesSection {

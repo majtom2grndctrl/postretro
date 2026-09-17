@@ -16,7 +16,7 @@ use crate::sh_reconstruct::{Level, stored_delta_tiles};
 /// Section-internal version, written as the first byte of the payload. Bumped
 /// whenever the on-disk layout changes so the loader can reject stale `.prl`
 /// files instead of silently misreading them.
-pub const DELTA_SH_VOLUMES_VERSION: u8 = 5;
+pub const DELTA_SH_VOLUMES_VERSION: u8 = 6;
 
 /// Affinity cell edge length in base SH probes. An affinity cell is a 4×4×4
 /// cube of base probes. Locked to the compose pass `@workgroup_size(4,4,4)`.
@@ -33,11 +33,11 @@ pub const PROBES_PER_CELL: usize = 64;
 /// with the exact id-34 valid-probe mask for every cell.
 pub const ALL_VALID_PROBE_MASK: u64 = u64::MAX;
 
-/// Number of f16 channels per octahedral irradiance texel: RGBA16F.
-pub const DELTA_TILE_TEXEL_F16_COUNT: usize = 4;
+/// Number of f16 channels per octahedral irradiance texel: RGB16F.
+pub const DELTA_TILE_TEXEL_F16_COUNT: usize = 3;
 
 /// Default on-disk / GPU-buffer stride of one probe tile in f16 halves:
-/// 6 × 6 RGBA16F texels.
+/// 6 × 6 RGB16F texels.
 pub const DEFAULT_DELTA_PROBE_F16_STRIDE: usize = (DEFAULT_IRRADIANCE_TILE_DIMENSION as usize)
     * (DEFAULT_IRRADIANCE_TILE_DIMENSION as usize)
     * DELTA_TILE_TEXEL_F16_COUNT;
@@ -45,7 +45,7 @@ pub const DEFAULT_DELTA_PROBE_F16_STRIDE: usize = (DEFAULT_IRRADIANCE_TILE_DIMEN
 /// Default byte stride of one serialized probe tile.
 pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 
-/// Delta SH volumes section (ID 27), version 5.
+/// Delta SH volumes section (ID 27), version 6.
 ///
 /// Sparse CSR layout keyed by affinity cell. An affinity cell is a 4×4×4 cube
 /// of base SH probes (`affinity_factor`). `affinity_dims = ceil(base_dims / 4)`
@@ -66,7 +66,7 @@ pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 5)
+///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 6)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      animated_light_count
@@ -78,10 +78,10 @@ pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 ///   u32 × (affinity_cell_count + 1)     affinity_offsets (CSR; last = list len)
 ///   u32 × affinity_offsets[-1]          affinity_lights (flat light indices)
 ///   f16 × Σ(entry e) stored_delta_tiles(cell_levels[cell(e)], valid_probe_masks[cell(e)])
-///       × tile_dimension × tile_dimension × 4
+///       × tile_dimension × tile_dimension × 3
 ///                                       delta_subblocks (one compact kept-probe
 ///                                       sub-block per CSR entry; each probe = one
-///                                       RGBA16F octahedral irradiance tile)
+///                                       RGB16F octahedral irradiance tile)
 /// ```
 ///
 /// Empty animated-light case: `affinity_offsets = [0; affinity_cell_count + 1]`,
@@ -118,9 +118,9 @@ pub struct DeltaShVolumesSection {
     pub affinity_lights: Vec<u32>,
     /// Flat probe payload, length
     /// `Σ(entry e) stored_delta_tiles(cell_levels[cell(e)], valid_probe_masks[cell(e)]) ×
-    /// tile_dimension × tile_dimension × 4`. One compact kept-probe
+    /// tile_dimension × tile_dimension × 3`. One compact kept-probe
     /// sub-block per CSR entry, index-parallel to `affinity_lights`, stored as
-    /// row-major RGBA16F octahedral tiles.
+    /// row-major RGB16F octahedral tiles.
     pub delta_subblocks: Vec<u16>,
 }
 
@@ -399,7 +399,7 @@ impl DeltaShVolumesSection {
         }
         if o != data.len() {
             return Err(invalid_data(format!(
-                "delta sh volumes has {} trailing byte(s)",
+                "delta sh volumes delta sub-block length mismatch: {} trailing byte(s)",
                 data.len() - o
             )));
         }
@@ -890,6 +890,33 @@ mod tests {
             Some(payload.len()),
             "level-aware payload identity must equal the stored payload length"
         );
+    }
+
+    #[test]
+    fn rejects_previous_rgba_delta_subblock_length() {
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_subblock(5),
+        };
+        let mut bytes = section.to_bytes();
+        bytes.extend(std::iter::repeat_n(
+            0u8,
+            PROBES_PER_CELL
+                * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize
+                * DEFAULT_IRRADIANCE_TILE_DIMENSION as usize
+                * 2,
+        ));
+
+        let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
+        assert!(err.to_string().contains("delta sub-block length mismatch"));
     }
 
     #[test]

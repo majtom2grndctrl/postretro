@@ -538,7 +538,7 @@ fn compact_dense_valid_probe_payload(
 }
 
 /// Synthesize the L2 brick-mean tile for one dense delta entry, encoded as an
-/// f16 RGBA tile. The mean is taken over the entry's own VALID probe tiles using
+/// f16 RGB tile. The mean is taken over the entry's own VALID probe tiles using
 /// [`reconstruct_l2_tile`] — the exact definition the classifier measured L2
 /// error against and the render-cpu golden reads back — not a per-channel average
 /// rolled here. The caller guarantees `validity != 0`, so the mean is defined.
@@ -564,13 +564,11 @@ fn synthesize_l2_mean_tile(dense_entry: &[u16], validity: u64, probe_stride: usi
     }
     let mean = reconstruct_l2_tile(&valid_tiles, tile_texels)
         .expect("a non-empty valid probe set yields an L2 brick mean");
-    let valid_alpha = f32_to_f16_bits(1.0);
     let mut encoded = Vec::with_capacity(probe_stride);
     for texel in mean {
         encoded.push(f32_to_f16_bits(texel.x));
         encoded.push(f32_to_f16_bits(texel.y));
         encoded.push(f32_to_f16_bits(texel.z));
-        encoded.push(valid_alpha);
     }
     encoded
 }
@@ -1101,9 +1099,8 @@ mod tests {
 
     fn block(rgb: [f32; 3]) -> Vec<u16> {
         let mut payload = Vec::with_capacity(ENTRY_STRIDE);
-        for _ in 0..ENTRY_STRIDE / 4 {
+        for _ in 0..ENTRY_STRIDE / DELTA_TILE_TEXEL_F16_COUNT {
             payload.extend(rgb.map(f32_to_f16_bits));
-            payload.push(f32_to_f16_bits(1.0));
         }
         payload
     }
@@ -1703,20 +1700,18 @@ mod tests {
         assert!(message.contains("by 1 bytes"));
     }
 
-    /// A dense delta entry whose named local probe tiles carry a constant RGB
-    /// (alpha 1.0); every other probe tile is left zero. Lets an L2 test pin
+    /// A dense delta entry whose named local probe tiles carry a constant RGB;
+    /// every other probe tile is left zero. Lets an L2 test pin
     /// known distinct per-probe values.
     fn dense_entry_with_probe_rgb(values: &[(usize, [f32; 3])]) -> Vec<u16> {
         let mut payload = vec![0u16; ENTRY_STRIDE];
-        let alpha = f32_to_f16_bits(1.0);
         for &(local, rgb) in values {
             let base = local * DEFAULT_DELTA_PROBE_F16_STRIDE;
-            for texel in 0..DEFAULT_DELTA_PROBE_F16_STRIDE / 4 {
-                let i = base + texel * 4;
+            for texel in 0..DEFAULT_DELTA_PROBE_F16_STRIDE / DELTA_TILE_TEXEL_F16_COUNT {
+                let i = base + texel * DELTA_TILE_TEXEL_F16_COUNT;
                 payload[i] = f32_to_f16_bits(rgb[0]);
                 payload[i + 1] = f32_to_f16_bits(rgb[1]);
                 payload[i + 2] = f32_to_f16_bits(rgb[2]);
-                payload[i + 3] = alpha;
             }
         }
         payload
@@ -1805,7 +1800,7 @@ mod tests {
         );
 
         // Golden brick mean via the shared reconstruction, over the same tiles.
-        let tile_texels = DEFAULT_DELTA_PROBE_F16_STRIDE / 4;
+        let tile_texels = DEFAULT_DELTA_PROBE_F16_STRIDE / DELTA_TILE_TEXEL_F16_COUNT;
         let mut valid_tiles: [Option<Vec<glam::Vec3>>; PROBES_PER_CELL] =
             std::array::from_fn(|_| None);
         for &(local, rgb) in &values {
@@ -1816,7 +1811,7 @@ mod tests {
 
         // Decode the emitted representative tile and compare to the mean.
         for texel in 0..tile_texels {
-            let i = texel * 4;
+            let i = texel * DELTA_TILE_TEXEL_F16_COUNT;
             let rgb = glam::Vec3::new(
                 crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i]),
                 crate::sh_bake::f16_bits_to_f32(compacted.delta_subblocks[i + 1]),

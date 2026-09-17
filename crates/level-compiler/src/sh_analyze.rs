@@ -55,7 +55,7 @@ use std::path::Path;
 
 use glam::Vec3;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::delta_sh_volumes::{DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::octahedral::irradiance_array_tile_location;
@@ -155,7 +155,7 @@ impl<'a> DeltaView<'a> {
         offsets: &'a [u32],
         subblocks: &'a [u16],
     ) -> Self {
-        let probe_f16_stride = tile_dimension * tile_dimension * 4;
+        let probe_f16_stride = tile_dimension * tile_dimension * DELTA_TILE_TEXEL_F16_COUNT;
         let mut entry_payload_offsets = Vec::new();
         let mut payload_offset = 0usize;
         for (offsets, &valid_probe_mask) in offsets.windows(2).zip(valid_probe_masks) {
@@ -180,7 +180,7 @@ impl<'a> DeltaView<'a> {
     }
 
     fn probe_f16_stride(&self) -> usize {
-        self.tile_dimension * self.tile_dimension * 4
+        self.tile_dimension * self.tile_dimension * DELTA_TILE_TEXEL_F16_COUNT
     }
     fn subblock_stride(&self) -> usize {
         PROBES_PER_CELL * self.probe_f16_stride()
@@ -317,7 +317,7 @@ impl<'a> DenseDeltaView<'a> {
     }
 
     fn probe_stride(&self) -> usize {
-        self.tile_dimension * self.tile_dimension * 4
+        self.tile_dimension * self.tile_dimension * DELTA_TILE_TEXEL_F16_COUNT
     }
 
     fn interior_texels(&self) -> usize {
@@ -350,7 +350,7 @@ impl<'a> DenseDeltaView<'a> {
         let mut tile = Vec::with_capacity(self.interior_texels());
         for y in self.tile_border..self.tile_dimension - self.tile_border {
             for x in self.tile_border..self.tile_dimension - self.tile_border {
-                let i = start + (y * self.tile_dimension + x) * 4;
+                let i = start + (y * self.tile_dimension + x) * DELTA_TILE_TEXEL_F16_COUNT;
                 tile.push(Vec3::new(
                     f16_bits_to_f32(self.subblocks[i]),
                     f16_bits_to_f32(self.subblocks[i + 1]),
@@ -823,7 +823,8 @@ pub(crate) fn accumulate_delta_for_cell(
             };
             for iy in 0..interior {
                 for ix in 0..interior {
-                    let full = ((border + iy) * tile_dim + (border + ix)) * 4;
+                    let full =
+                        ((border + iy) * tile_dim + (border + ix)) * DELTA_TILE_TEXEL_F16_COUNT;
                     let idx = probe_base + full;
                     if idx + 3 >= view.subblocks.len() {
                         continue;
@@ -939,7 +940,7 @@ pub fn run_analysis(inputs: &AnalyzeInputs<'_>) -> AnalysisReport {
 
     // Byte accumulators, per (level assignment) for the sweep, per section.
     // We accumulate stored-tile counts; bytes = tiles * probe_tile_bytes.
-    let probe_tile_bytes = (tile_dim * tile_dim * 4 * 2) as u64; // RGBA16F full tile
+    let probe_tile_bytes = (tile_dim * tile_dim * DELTA_TILE_TEXEL_F16_COUNT * 2) as u64;
 
     // Section byte lines.
     let mut base_uniform_tiles = 0u64;
@@ -2533,7 +2534,7 @@ mod tests {
 
     #[test]
     fn delta_views_preserve_all_valid_dense_payload_bytes_for_all_section_ids() {
-        let probe_f16_stride = 6 * 6 * 4;
+        let probe_f16_stride = 6 * 6 * DELTA_TILE_TEXEL_F16_COUNT;
         let payload = all_valid_payload(2, probe_f16_stride);
         let indirect = DeltaShVolumesSection {
             affinity_factor: 4,
@@ -2581,15 +2582,15 @@ mod tests {
         let mask = (1u64 << 0) | (1u64 << 2) | (1u64 << 5);
         let masks = [mask];
         let offsets = [0, 2];
-        let payload = vec![0; 2 * 3 * 4];
+        let payload = vec![0; 2 * 3 * DELTA_TILE_TEXEL_F16_COUNT];
         let view = DeltaView::new([1, 1, 1], 1, &masks, &offsets, &payload);
 
         assert_eq!(view.resolve_probe_f16_offset(0, 0, 0), Some(0));
-        assert_eq!(view.resolve_probe_f16_offset(0, 0, 2), Some(4));
-        assert_eq!(view.resolve_probe_f16_offset(0, 0, 5), Some(8));
-        assert_eq!(view.resolve_probe_f16_offset(0, 1, 0), Some(12));
-        assert_eq!(view.resolve_probe_f16_offset(0, 1, 2), Some(16));
-        assert_eq!(view.resolve_probe_f16_offset(0, 1, 5), Some(20));
+        assert_eq!(view.resolve_probe_f16_offset(0, 0, 2), Some(3));
+        assert_eq!(view.resolve_probe_f16_offset(0, 0, 5), Some(6));
+        assert_eq!(view.resolve_probe_f16_offset(0, 1, 0), Some(9));
+        assert_eq!(view.resolve_probe_f16_offset(0, 1, 2), Some(12));
+        assert_eq!(view.resolve_probe_f16_offset(0, 1, 5), Some(15));
         assert_eq!(view.resolve_probe_f16_offset(0, 0, 1), None);
         assert_eq!(view.resolve_probe_f16_offset(0, 1, 63), None);
     }
@@ -2632,7 +2633,7 @@ mod tests {
             cell_levels: vec![0u8; 1],
             affinity_offsets: vec![0, 1],
             affinity_lights: vec![0],
-            delta_subblocks: vec![0; 4],
+            delta_subblocks: vec![0; DELTA_TILE_TEXEL_F16_COUNT],
         };
         let validity = [1];
         let thresholds = [0.0];
@@ -2655,12 +2656,12 @@ mod tests {
             .iter()
             .find(|section| section.id == 41)
             .expect("id 41 accounting must be present");
-        assert_eq!(direct_bytes.compacted_bytes, 8);
+        assert_eq!(direct_bytes.compacted_bytes, 6);
         assert_eq!(direct_bytes.exact_zero_dropped_bytes, 0);
-        assert_eq!(direct_bytes.coarsen_all_l1_bytes, 8);
-        assert_eq!(direct_bytes.coarsen_all_l2_bytes, 8);
+        assert_eq!(direct_bytes.coarsen_all_l1_bytes, 6);
+        assert_eq!(direct_bytes.coarsen_all_l2_bytes, 6);
         assert_eq!(report.exact_zero_entry_fraction, 1.0);
-        assert_eq!(report.sweep[0].projected_bytes, 24);
+        assert_eq!(report.sweep[0].projected_bytes, 18);
     }
 
     #[test]
@@ -2671,14 +2672,14 @@ mod tests {
             (1u64 << 1) | (1u64 << 4) | (1u64 << 7),
         ];
         let offsets = [0, 2, 3, 4];
-        let payload = vec![0; 28];
+        let payload = vec![0; 21];
         let view = DeltaView::new([3, 1, 1], 1, &masks, &offsets, &payload);
 
-        assert_eq!(view.entry_payload_offsets, vec![0, 8, 16, 16, 28]);
-        assert_eq!(view.resolve_probe_f16_offset(0, 1, 3), Some(12));
-        assert_eq!(view.entry_payload_range(2), Some(16..16));
+        assert_eq!(view.entry_payload_offsets, vec![0, 6, 12, 12, 21]);
+        assert_eq!(view.resolve_probe_f16_offset(0, 1, 3), Some(9));
+        assert_eq!(view.entry_payload_range(2), Some(12..12));
         assert_eq!(view.resolve_probe_f16_offset(1, 2, 0), None);
-        assert_eq!(view.resolve_probe_f16_offset(2, 3, 7), Some(24));
+        assert_eq!(view.resolve_probe_f16_offset(2, 3, 7), Some(18));
     }
 
     #[test]

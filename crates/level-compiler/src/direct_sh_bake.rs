@@ -35,7 +35,7 @@ use crate::bake_control::BakeControl;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
-    PROBES_PER_CELL as FORMAT_PROBES_PER_CELL, delta_probe_f16_stride,
+    DELTA_TILE_TEXEL_F16_COUNT, PROBES_PER_CELL as FORMAT_PROBES_PER_CELL, delta_probe_f16_stride,
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
@@ -82,7 +82,7 @@ pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
 /// Bump when the raw direct-delta sub-block computation or its cache-key inputs
 /// change. This epoch is independent from both the base direct-SH cache and the
 /// on-disk direct-delta section format.
-pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 2;
+pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 3;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -677,7 +677,7 @@ fn bake_direct_delta_subblock(
                     pack_octahedral_irradiance_tile(&[0.0; 27], false, TILE_DIMENSION, TILE_BORDER)
                 };
                 for texel in tile {
-                    out.extend_from_slice(&texel.rgba);
+                    out.extend_from_slice(&texel.rgba[..DELTA_TILE_TEXEL_F16_COUNT]);
                 }
             }
         }
@@ -1367,7 +1367,7 @@ mod tests {
         let affinity_x = delta.affinity_dims[0];
         let affinity_y = delta.affinity_dims[1];
         let tile_dim = delta.tile_dimension as usize;
-        let probe_stride = tile_dim * tile_dim * 4;
+        let probe_stride = tile_dim * tile_dim * DELTA_TILE_TEXEL_F16_COUNT;
         let subblock_stride = FORMAT_PROBES_PER_CELL * probe_stride;
         let mut entry_index = 0usize;
 
@@ -1407,11 +1407,12 @@ mod tests {
                             let probe_base = subblock_base + local_probe * probe_stride;
                             for tile_y in 0..tile_dim {
                                 for tile_x in 0..tile_dim {
-                                    let src = probe_base + (tile_y * tile_dim + tile_x) * 4;
+                                    let src = probe_base
+                                        + (tile_y * tile_dim + tile_x) * DELTA_TILE_TEXEL_F16_COUNT;
                                     let dst_x = origin[0] as usize + tile_x;
                                     let dst_y = origin[1] as usize + tile_y;
                                     let dst = dst_y * base.atlas_dimensions[0] as usize + dst_x;
-                                    for (channel, out) in atlas[dst].iter_mut().enumerate() {
+                                    for (channel, out) in atlas[dst][..3].iter_mut().enumerate() {
                                         *out += f16_to_f32(delta.delta_subblocks[src + channel]);
                                     }
                                 }

@@ -24,11 +24,11 @@ read at: 29e8611c6
 | A4 Stride lockstep through format, compaction, emitted view, envelope view, CPU decoder, entry drop, and all compose shaders | Distinct-channel fixture plus shader source guard | achievable as stated | pass: 79 compiler delta tests, render-cpu reconstruction tests, three-shader guard |
 | A5 Odd-half alignment through packed reader at odd texels, kept ranks, and tile tail | Rust packed-word reader parity test plus shader source guard | achievable as stated | pass: `word_packed_rgb_reader_matches_half_indexed_reference_at_odd_offsets` plus shader guard |
 | A6 Entry dropping and coarsening decisions unchanged for ids 27/41/45 | Before/after-layout decision fixtures retaining identical entry sets, levels, and validity masks | achievable as stated | pass: legacy/new zero-decision parity plus output-identity and compiler drop/coarsen suites |
-| A7 Working-set and raw-cap summaries use 13,824 B while defaults stay unchanged | Compiler pipeline projection/cap tests and renderer compose-footprint test | achievable as stated | partial: compiler delta suite passes; the repaired dev-tools regression test awaits a machine with enough disk for its cold feature build, then the manual footprint log |
+| A7 Working-set and raw-cap summaries use 13,824 B while defaults stay unchanged | Compiler pipeline projection/cap tests and renderer compose-footprint test | achievable as stated | pass: compiler delta suite and same-adapter Windows footprint capture; ids 27/41/45 exactly match the 25% reduction rows |
 | A8 Cache epochs invalidate old keys and new warm builds are byte-identical | Delta cache-key tests, stage-version pin, and cross-bake warm determinism tests | achievable as stated | pass: previous-version miss/current-version repeated hit, epoch pin, and cross-bake locality/determinism |
 | A9 No new runtime RAM copy | Source gate over loader decode and renderer verbatim upload paths | achievable as stated | pass: compose builders now own metadata only; `delta_loader_and_upload_paths_add_no_payload_clone` covers loader → render-cpu → all three renderer staging paths |
 | A10 Adaptive landing-order guard | Shader source guards derive multiplier from the format-fed grid stride; no base/delta cross-format byte baseline | achievable as stated | pass: `all_delta_compose_shaders_derive_rgb_stride_and_select_odd_half_parity` |
-| M1 Real-map disk/payload/storage size row | `campaign-test` plus resolved id-45 map; compiler summaries, dev-tools footprint log, and file sizes recorded in `research.md` | manual-measurement | partial: exact cold artifact and verbatim-upload sizes recorded; dev-tools log remains to be captured |
+| M1 Real-map disk/payload/storage size row | `campaign-test` plus resolved id-45 map; compiler summaries, dev-tools footprint log, and file sizes recorded in `research.md` | manual-measurement | pass: same Windows 11/Vulkan adapter capture confirms all three storage rows exactly |
 | M2 E20 promoted animated-light capture is pixel-identical before/after | Owner, same-adapter before/after E20 capture | manual-visual | pending |
 | R1 Base atlases ids 34/35 byte-identical | Existing base-section bytes captured on the same focused bake fixtures before and after | achievable as stated | pass: campaign-test cold artifacts match byte-for-byte; hashes recorded in `research.md` |
 | R2 Billboard scatter section 48 byte-identical | Existing section-48 bytes captured on the same focused animated fixture before and after | achievable as stated | pass: campaign-test cold artifacts match byte-for-byte; hash recorded in `research.md` |
@@ -55,16 +55,9 @@ read at: 29e8611c6
 
 ## External runbook
 
-Two manual rows block landing. Do not move this brief to `done/` until both are recorded.
+One manual row blocks landing. Do not move this brief to `done/` until it is recorded.
 
-1. **Dev-tools storage log (M1/A7).** The stale `DiagnosticsTab::ALL` regression assertion
-   was repaired. On a machine with enough disk for the dev-tools build, launch the pre-change
-   and branch `campaign-test.prl` artifacts with `--features dev-tools` and capture
-   the once-per-load compose footprint lines for ids 27, 41, and 45. Confirm the logged
-   delta-subblock bytes match the exact artifact/upload rows in `research.md`:
-   7,032,672 → 5,274,504; 2,075,328 → 1,556,496; and
-   6,198,624 → 4,648,968.
-2. **Same-adapter E20 capture (M2).** Use commit `29e8611c6` as the before binary and this
+1. **Same-adapter E20 capture (M2).** Use commit `29e8611c6` as the before binary and this
    branch as the after binary, each with its correspondingly baked `spawner-test.prl`. Build
    both with `--features capture`. For both captures use the camera constants from
    `spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest`, force

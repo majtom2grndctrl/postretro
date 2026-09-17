@@ -114,13 +114,23 @@ by exactly 25%. The whole file fell by 3,826,651 bytes; the three payloads accou
 changed. Section-internal versions were verified as 5/3/3 before and 6/4/4 after, guarding
 against accidentally comparing two builds from the same compiler.
 
-The stale `DiagnosticsTab::ALL` regression assertion that prevented a dev-tools renderer
-build was repaired after this measurement pass. Its exact focused dev-tools test could not be
-rebuilt locally because the filesystem had only 239 MiB free and the cold feature build ran out
-of space while compiling `postretro-ui`; it awaits a machine with sufficient capacity. Storage
-bytes above are nevertheless exact: the loader retains the decoded `Vec<u16>` and the renderer
-uploads that slice verbatim (the no-clone source guard pins this path), and all three payload
-byte counts are already four-byte aligned.
+## Windows dev-tools capture
+
+M1/A7 passed on Windows 11. Before commit `29e8611c` and after commit `ce92389e` ran on the
+same NVIDIA GeForce GTX 1660 SUPER through Vulkan (vendor `0x10de`, device `0x21c4`, driver
+NVIDIA 616.92). Each worktree compiled and ran its own `campaign-test.prl`; the input-map
+SHA-256 was identical in both: `7DFDE79E6F9E73A91E988A173875932AB1C432D6BE501FD90932222171F5B323`.
+
+| Section | Storage `delta_subblocks` before | after | Ratio |
+|---|---:|---:|---:|
+| 27 indirect | 7,032,672 B | 5,274,504 B | 75.0000% |
+| 41 direct | 2,075,328 B | 1,556,496 B | 75.0000% |
+| 45 animated | 6,198,624 B | 4,648,968 B | 75.0000% |
+
+All after values exactly match the artifact and upload rows above. The logs also contain one
+initial empty compose (`delta_subblocks` 4 B, total 32 B); it precedes map data and is not a
+graded section. The automation stopped the engine after all three lines appeared; its later
+stray-process sweep may return non-zero after the process tree is already gone.
 
 For the same cold before/after artifacts, sections 34, 35, and 48 were byte-identical:
 

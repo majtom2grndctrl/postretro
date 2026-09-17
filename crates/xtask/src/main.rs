@@ -1374,9 +1374,11 @@ fn print_help() {
                                 --write the committed snapshot, --check its freshness,\n\
                                 --mermaid the diagram, or query --rdeps / --deps of a crate\n\
            dist                 Build a host-native standalone distribution payload\n\
-           sdk-dist             Build a host-native modder SDK bundle: authoring engine\n\
-                                (debug + dev-tools), prl-build/scripts-build compilers,\n\
-                                sdk/docs/tools, base content, and the mod tree with sources\n\n\
+           sdk-dist             Build a host-native content-complete modder SDK bundle:\n\
+                                baked maps + materials (playable out of the box) plus the\n\
+                                authoring engine (debug + dev-tools), prl-build/scripts-build\n\
+                                compilers, sdk/docs/tools, base content, and the mod tree\n\
+                                with sources (edit and reload)\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

@@ -1,9 +1,11 @@
 # Modding with the Postretro SDK
 
-The **SDK bundle** is a self-contained modding kit: everything you need to
-author new content for a Postretro mod and iterate on it, without cloning
-this repository or installing Rust. It's produced by `sdk-dist`, a sibling of
-the `dist` command described in [docs/distribution.md](distribution.md).
+The **SDK bundle** is a self-contained, content-complete modding kit:
+everything you need to **play** a Postretro mod *and* keep editing it, without
+cloning this repository or installing Rust. The maps ship baked, so it runs on
+arrival; the sources and compilers ship too, so you can change anything and
+rebake. It's produced by `sdk-dist`, a sibling of the `dist` command described
+in [docs/distribution.md](distribution.md).
 
 ## SDK bundle vs. player payload
 
@@ -12,16 +14,18 @@ different audiences:
 
 | | `dist` (player payload) | `sdk-dist` (SDK bundle) |
 |---|---|---|
-| Audience | Someone who plays the game | Someone who authors content for it |
+| Audience | Someone who plays the game | Someone who plays **and** authors it |
+| Playable on arrival | Yes | Yes (maps ship baked) |
 | Engine build | Release | **Debug**, built with `--features dev-tools` |
-| Levels | Baked `.prl` only | Source `.map` **and** the compiler to bake them |
-| Scripts | Baked `.js`/`.luau` only | Source `.ts`/`.luau` **and** the compiler |
+| Levels | Baked `.prl` only | Baked `.prl` **and** source `.map` + the compiler |
+| Scripts | Baked `.js`/`.luau` only | Baked **and** source `.ts`/`.luau` + the compiler |
 | TrenchBroom FGD, TS typings, docs, tools | Not included | Included |
 | Folder name | `<package name>` | `<package name>-sdk` |
+| Size | Lean | Larger (debug engine + sources + tools) |
 
-If you just want to hand someone a finished mod to play, use `dist`. If you
-want to hand someone (including future-you) the ability to keep editing the
-mod, use `sdk-dist`.
+Both are playable folders. `dist` is the lean build to hand to players. Use
+`sdk-dist` when the recipient (including future-you) should also be able to
+keep editing the mod — it's a superset, at the cost of size.
 
 ## Producing a bundle
 
@@ -54,12 +58,14 @@ want the bundle to run on. See "Build on the operating system you will ship
 for" in [docs/distribution.md](distribution.md) for why cross-compilation
 isn't supported.
 
-**It does not bake levels or strip sources.** Unlike `dist`, `sdk-dist` skips
-level baking and does not run the player payload's source-exclusion filter
-over the mod tree. The mod's `.map` and `.ts` sources ship as-is, alongside
-the compilers needed to turn them into `.prl`/`.js`. If a build stops
-partway through, the bundle root carries the same `.dist-incomplete` marker
-`dist` uses — see "If a build stops partway through" in
+**It bakes the levels *and* ships the sources.** `sdk-dist` runs the same
+level and material bakes as `dist`, so the bundle is playable the moment it's
+unpacked — but it does *not* run the player payload's source-exclusion filter
+over the mod tree, so the `.map`/`.ts` sources ship beside the freshly baked
+`.prl`/`.js`, together with the compilers needed to rebake them. That's the
+content-complete part: play now, or edit and rebake. If a build stops partway
+through, the bundle root carries the same `.dist-incomplete` marker `dist`
+uses — see "If a build stops partway through" in
 [docs/distribution.md](distribution.md) for how to read and recover from it.
 
 ## Bundle layout
@@ -76,15 +82,26 @@ partway through, the bundle root carries the same `.dist-incomplete` marker
                              weapon-mounts.md, diagnostics.md, distribution.md
   tools/                     Python asset helpers (see tools/README.md)
   content/base/              UI descriptors + splash, copied verbatim
-  content/<mod>/             your mod's tree, INCLUDING SOURCE .map and .ts files
+  content/<mod>/             your mod's tree: SOURCE .map/.ts beside the freshly
+                             baked maps/*.prl and the emitted start-script.js
+  baked/materials/           .prm material sidecars (so the baked maps render)
   README.md                  generated quickstart for this bundle
 ```
 
-`content/<mod>/` ships everything you'd expect to keep editing: `maps/*.map`,
-`scripts/`, `start-script.ts`/`.luau`, models, and other assets. Build
-byproducts that are safe to regenerate — `.build-caches`, `maps/autosave/`,
-stale generated `.prl`/`.js` — are left out; regenerate them locally with the
-tools below.
+`content/<mod>/` ships both halves: the baked outputs the engine loads to play
+(`maps/*.prl`, the emitted `start-script.js`) and the sources you keep editing
+(`maps/*.map`, `scripts/`, `start-script.ts`/`.luau`, models, other assets).
+Only genuinely regenerable junk is dropped — `.build-caches`, `maps/autosave/`,
+and any *stale* committed `.prl`/`.js` (the bake produces fresh ones).
+
+## Play it first
+
+The maps are already baked, so before editing anything you can just run it.
+From the bundle root (cwd must be the bundle root so content paths resolve):
+
+```bash
+./postretro
+```
 
 ## The authoring loop
 
@@ -147,9 +164,10 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
 
 ## Shipping a finished mod
 
-The SDK bundle is for authoring, not for players — it carries sources, a
-debug engine, and developer tooling. Once your mod is ready to hand to
-players, build a player payload instead:
+The SDK bundle is playable, but it's heavy — a debug engine, sources, and
+developer tooling. Once your mod is ready to hand to players, build the lean
+player payload instead (release engine, baked content only, no sources or
+tools):
 
 ```bash
 cargo run -p xtask -- dist

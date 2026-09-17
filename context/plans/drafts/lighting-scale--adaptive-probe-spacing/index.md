@@ -2,7 +2,7 @@
 
 Brief · resumable · reads: `context/lib/rendering_pipeline.md` §4 "Variable base-probe density", `context/lib/build_pipeline.md` §PRL section IDs (ids 34/35), `context/lib/experimental_spikes.md` · read at 4f9e5c5
 
-> **Build order (lighting-scale footprint / peak-RAM track):** `sh-delta-cone-reach-cull` → `sh-delta-tile-alpha-drop` → **3 — this brief** → `sh-delta-cell-major-two-pass-bake` (Phase 2, conditional). Follows cone-reach-cull: this brief's Phase-1 measurement must run against the post-cull delta footprint, because the cull changes which bricks carry a delta entry and this brief pins any delta-bearing brick to scale 0 ("The delta ceiling extends to scale"). Independent of alpha-drop on the wire (base id-34/35 vs delta id-27/41/45); coordinate only on the shared SH compose/sampler code.
+> **Build order (lighting-scale footprint track):** `sh-delta-cone-reach-cull` (Phase 1) has **shipped to `main`**; footprint chain is `sh-delta-tile-alpha-drop` → **this brief**. Its Phase-1 measurement runs against the **landed** post-cull delta footprint, because the cull changed which bricks carry a delta entry and this brief pins any delta-bearing brick to scale 0 ("The delta ceiling extends to scale"). Independent of alpha-drop on the wire (base id-34/35 vs delta id-27/41/45); coordinate only on the shared SH compose/sampler code.
 
 ## Problem
 

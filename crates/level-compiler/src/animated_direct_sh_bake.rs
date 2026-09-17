@@ -2,10 +2,12 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::affinity_grid::{
-    AFFINITY_FACTOR, AffinityReachInputs, build_csr, csr_entry_cells, decompose_affinity_for_lights,
+    AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
+    decompose_affinity_for_lights_with_policies,
 };
 use crate::bake_control::BakeControl;
 use crate::cache::StageCache;
+use crate::delta_drop_policy::ScriptMutableDescriptorSlots;
 use crate::delta_sh_cache::{DeltaShCacheInputs, DeltaShCacheTally, bake_or_load_delta_subblocks};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::map_data::MapLight;
@@ -32,7 +34,7 @@ const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delta_sh_subblock";
 
 /// Bump when the animated-direct sub-block computation or its key inputs change.
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 1;
+pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 2;
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
 /// shared SH context, keeping section-45 sub-blocks coincident with base probes.
@@ -40,6 +42,22 @@ pub struct AnimatedDirectShBakeInputs<'a, 'b> {
     pub sh_ctx: &'a ShBakeCtx<'b>,
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'b>,
+    pub mutable_descriptors: &'a ScriptMutableDescriptorSlots,
+}
+
+pub(crate) fn animated_direct_reach_policies(
+    light_count: usize,
+    mutable_descriptors: &ScriptMutableDescriptorSlots,
+) -> Vec<AffinityReachPolicy> {
+    (0..light_count)
+        .map(|slot| {
+            if mutable_descriptors.animated_direct_contains(slot as u32) {
+                AffinityReachPolicy::DIRECT_UNCLIPPED
+            } else {
+                AffinityReachPolicy::DIRECT
+            }
+        })
+        .collect()
 }
 
 /// Bake sparse, unit-radiance direct transport for every animated baked light.
@@ -112,9 +130,11 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    // Direct reach clips to each light's falloff-sphere AABB, then portal-floods
-    // from its source leaf; spotlight cones intentionally do not clip this cull.
-    let decomposition = decompose_affinity_for_lights(&reach, &lights);
+    // Immutable animated slots use the authored rest-direction cone evaluated
+    // by this bake. Script-mutable slots keep historical cube reach because the
+    // exact-zero policy reserves their records for future curve replacement.
+    let policies = animated_direct_reach_policies(lights.len(), inputs.mutable_descriptors);
+    let decomposition = decompose_affinity_for_lights_with_policies(&reach, &lights, &policies);
     let affinity_dims = decomposition.affinity_dims;
     let (affinity_offsets, affinity_lights) = build_csr(
         &decomposition.per_light_cells,
@@ -462,13 +482,109 @@ mod tests {
             animated_lights: &animated_lights,
             total_light_count: lights.len(),
         };
+        let mutable_descriptors = ScriptMutableDescriptorSlots::empty(animated_lights.len());
         let inputs = AnimatedDirectShBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            mutable_descriptors: &mutable_descriptors,
         };
         bake_animated_direct_sh_delta_volumes(&inputs, &ShConfig { probe_spacing: 1.0 })
             .expect("animated light and geometry must emit section 45")
+    }
+
+    #[test]
+    fn script_mutable_slots_keep_unclipped_direct_reach() {
+        let mut mutable = ScriptMutableDescriptorSlots::empty(2);
+        mutable.animated_direct[1] = true;
+
+        assert_eq!(
+            animated_direct_reach_policies(2, &mutable),
+            vec![
+                AffinityReachPolicy::DIRECT,
+                AffinityReachPolicy::DIRECT_UNCLIPPED,
+            ]
+        );
+    }
+
+    #[test]
+    fn animated_spot_bakes_cube_indirect_and_policy_selected_direct_transport() {
+        let mut light = animated_light(DVec3::new(-1.5, 0.0, 0.0));
+        light.light_type = LightType::Spot;
+        light.falloff_range = 20.0;
+        light.cone_angle_inner = Some(6.0_f32.to_radians());
+        light.cone_angle_outer = Some(12.0_f32.to_radians());
+        light.cone_direction = Some([1.0, 0.0, 0.0]);
+        let lights = vec![light];
+
+        let geometry = cube_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("test geometry must build a BVH");
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let indirect = crate::delta_sh_bake::bake_delta_sh_volumes(
+            &crate::delta_sh_bake::DeltaBakeInputs {
+                bvh: &bvh,
+                primitives: &primitives,
+                geometry: &geometry,
+                tree: &tree,
+                exterior_leaves: &exterior,
+                portals: &[],
+                animated_lights: &animated_lights,
+            },
+            &config,
+        )
+        .expect("animated spot must emit id 27");
+
+        let immutable = ScriptMutableDescriptorSlots::empty(animated_lights.len());
+        let clipped_direct = bake_animated_direct_sh_delta_volumes(
+            &AnimatedDirectShBakeInputs {
+                sh_ctx: &sh_ctx,
+                portals: &[],
+                animated_lights: &animated_lights,
+                mutable_descriptors: &immutable,
+            },
+            &config,
+        )
+        .expect("animated spot must emit cone-clipped id 45");
+
+        let mut mutable = ScriptMutableDescriptorSlots::empty(animated_lights.len());
+        mutable.animated_direct[0] = true;
+        let unclipped_direct = bake_animated_direct_sh_delta_volumes(
+            &AnimatedDirectShBakeInputs {
+                sh_ctx: &sh_ctx,
+                portals: &[],
+                animated_lights: &animated_lights,
+                mutable_descriptors: &mutable,
+            },
+            &config,
+        )
+        .expect("script-mutable animated spot must emit cube-reach id 45");
+
+        assert_eq!(
+            indirect.affinity_offsets, unclipped_direct.affinity_offsets,
+            "id 27 and script-mutable id 45 must share cube-reach CSR offsets",
+        );
+        assert_eq!(
+            indirect.affinity_lights, unclipped_direct.affinity_lights,
+            "id 27 and script-mutable id 45 must share cube-reach CSR light indices",
+        );
+        assert!(
+            clipped_direct.affinity_lights.len() < indirect.affinity_lights.len(),
+            "immutable id 45 must drop outside-cone cells while id 27 stays cube-reach",
+        );
     }
 
     fn subblock_for(

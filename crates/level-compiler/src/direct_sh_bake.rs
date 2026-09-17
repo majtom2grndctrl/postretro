@@ -19,16 +19,15 @@
 // then after all lights apply_cosine_lobe_rgb and pack into the octahedral atlas.
 //
 // Per-probe light-reach culling: before the per-probe shadow-ray pass, each
-// probe's reaching-light set is derived from the SAME two-stage reach test the
-// delta bake uses (falloff-sphere AABB clip + portal-reachability flood, via
-// `affinity_grid::decompose_affinity_for_lights`). That yields a per-LIGHT→cell
+// probe's reaching-light set is derived from the SAME reach cull the direct
+// delta bake uses (falloff-sphere AABB clip, portal-reachability flood, and
+// policy-enabled spotlight-cone cull via `affinity_grid::decompose_affinity_for_lights`).
+// That yields a per-LIGHT→cell
 // CSR; this module inverts it ONCE into cell→lights, then maps each probe to its
 // affinity cell to read its reaching-light set. A culled light is provably
 // zero-contribution at that probe, so baked coefficients stay byte-identical to an
-// unculled bake. The byte-identity guarantee is exact for the falloff-AABB stage
-// (culled lights are out of range everywhere they were dropped), and matches the
-// delta bake's portal-reach assumption for the flood stage (the same disjoint-reach
-// contract both modules share).
+// unculled bake. The falloff and cone stages reject only cells outside the light's
+// reach; the portal stage shares the delta bake's disjoint-reach contract.
 //
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
@@ -50,7 +49,8 @@ use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use rayon::prelude::*;
 
 use crate::affinity_grid::{
-    AFFINITY_FACTOR, AffinityReachInputs, build_csr, csr_entry_cells, decompose_affinity_for_lights,
+    AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
+    decompose_affinity_for_lights,
 };
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
@@ -72,7 +72,7 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// assembly, the reach cull, atlas packing, or cached section payload layout).
 /// Versions independently from the indirect SH stages and from the
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
-pub const DIRECT_SH_STAGE_VERSION: u32 = 3;
+pub const DIRECT_SH_STAGE_VERSION: u32 = 4;
 
 /// Cache stage id for raw entity-shadow direct-delta `(affinity cell, light)`
 /// sub-blocks. It stays distinct from the base direct-SH section and the other
@@ -82,7 +82,7 @@ pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
 /// Bump when the raw direct-delta sub-block computation or its cache-key inputs
 /// change. This epoch is independent from both the base direct-SH cache and the
 /// on-disk direct-delta section format.
-pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 1;
+pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 2;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -135,7 +135,8 @@ pub(crate) fn static_direct_lights<'a>(
     (lights, global_indices)
 }
 
-/// Per-probe reaching-light index lists, derived from the two-stage reach test.
+/// Per-probe reaching-light index lists, derived from falloff, portal, and
+/// spotlight-cone reach culling.
 ///
 /// `decompose_affinity_for_lights` produces a per-LIGHT→affinity-cell CSR
 /// (`per_light_cells`). We invert it ONCE into cell→light-list, then map each
@@ -188,7 +189,8 @@ pub(crate) fn build_reach_index(
         portals: inputs.portals,
         probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, direct_lights);
+    let decomposition =
+        decompose_affinity_for_lights(&reach, direct_lights, AffinityReachPolicy::DIRECT);
     let cell_count = decomposition.affinity_cell_count();
 
     // Invert per_light_cells (light → cells) into cell → lights, once. Iterating
@@ -351,6 +353,29 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
     Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
     DeltaShCacheTally,
 ) {
+    bake_direct_sh_delta_volumes_with_reach_policy(
+        inputs,
+        config,
+        alpha_lights,
+        entity_shadow_lights,
+        cache,
+        control,
+        AffinityReachPolicy::SELECTED_DIRECT,
+    )
+}
+
+fn bake_direct_sh_delta_volumes_with_reach_policy(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+    reach_policy: AffinityReachPolicy,
+) -> (
+    Option<(DirectShDeltaVolumesSection, DirectDeltaBakeStats)>,
+    DeltaShCacheTally,
+) {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
     {
@@ -383,7 +408,7 @@ pub(crate) fn bake_direct_sh_delta_volumes_controlled_with_tally(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, &selected_lights);
+    let decomposition = decompose_affinity_for_lights(&reach, &selected_lights, reach_policy);
     let affinity_dims = decomposition.affinity_dims;
     let affinity_cell_count = decomposition.affinity_cell_count();
     let (affinity_offsets, affinity_lights) =
@@ -831,8 +856,8 @@ fn direct_cache_key(
 /// The cold `--no-cache` path passes `cache == None` and runs the exact uncached
 /// bake (matching the indirect cold path).
 ///
-/// The cull is the STRICT provably-zero falloff+portal test in BOTH warm and cold
-/// modes — it does NOT inherit warm SH's lossy bounded-light dilation — so the
+/// The cull is the STRICT provably-zero falloff+portal+spot-cone test in BOTH warm
+/// and cold modes — it does NOT inherit warm SH's lossy bounded-light dilation — so the
 /// bake output is byte-identical whether or not a cache is present.
 pub fn bake_direct_sh_volume_cached(
     inputs: &DirectBakeInputs<'_, '_>,
@@ -900,7 +925,7 @@ pub fn bake_direct_sh_volume_cached_controlled(
 /// Log a per-light cull-savings summary mirroring `delta_sh_bake::log_per_light_culling`:
 /// for each static-direct light, the probe count reachable through the cull (its
 /// affinity cells × probes-per-cell) vs the full probe grid. Returns the number of
-/// lights culled to zero probes (used by tests to assert AC 11's culled-count > 0).
+/// lights culled to zero probes for the portal/falloff regression test.
 pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) -> usize {
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
@@ -923,15 +948,15 @@ pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) ->
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    let decomposition = decompose_affinity_for_lights(&reach, &direct_lights);
+    let decomposition =
+        decompose_affinity_for_lights(&reach, &direct_lights, AffinityReachPolicy::DIRECT);
 
     let total_cells = decomposition.affinity_cell_count();
     let probes_per_cell = (AFFINITY_FACTOR * AFFINITY_FACTOR * AFFINITY_FACTOR) as usize;
     let full_probes = layout.total_probes();
-    // A light is "culled" when the falloff-AABB + portal reach test drops at least
-    // one affinity cell for it — the probes in the dropped cells are PROVABLY
-    // zero-contribution (out of falloff range or unreachable through the portal
-    // graph), so the baked coefficients match an unculled bake there exactly.
+    // A light is "culled" when falloff, portal reach, or spotlight-cone rejection
+    // drops an affinity cell. Dropped probes are provably zero-contribution: out
+    // of range, outside the cone, or unreachable through the portal graph.
     let mut culled_count = 0usize;
     for (i, cells) in decomposition.per_light_cells.iter().enumerate() {
         let reach_probes = cells.len() * probes_per_cell;
@@ -1164,6 +1189,69 @@ mod tests {
         }
     }
 
+    fn static_spot_light(
+        origin: DVec3,
+        range: f32,
+        direction: [f32; 3],
+        outer_degrees: f32,
+    ) -> MapLight {
+        let mut light = static_point_light(origin, range, [1.0, 0.8, 0.6]);
+        light.light_type = LightType::Spot;
+        light.cone_angle_inner = Some((outer_degrees * 0.5).to_radians());
+        light.cone_angle_outer = Some(outer_degrees.to_radians());
+        light.cone_direction = Some(direction);
+        light
+    }
+
+    fn bake_single_selected_spot(
+        light: MapLight,
+        reach_policy: AffinityReachPolicy,
+    ) -> DirectShDeltaVolumesSection {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![light];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+
+        bake_direct_sh_delta_volumes_with_reach_policy(
+            &inputs,
+            &ShConfig { probe_spacing: 0.5 },
+            &alpha_lights,
+            &selected,
+            None,
+            &control,
+            reach_policy,
+        )
+        .0
+        .expect("selected spotlight must retain at least its canonical entry")
+        .0
+    }
+
     /// Decode an RGBA16F atlas blob back into f16-bit RGBA texels.
     fn decode_atlas(section: &DirectShVolumeSection) -> Vec<[u16; 4]> {
         section
@@ -1382,8 +1470,8 @@ mod tests {
         );
     }
 
-    /// AC 11: culling drops at least one provably-zero light, AND culled vs
-    /// unculled bytes are EQUAL.
+    /// Portal/falloff regression: culling drops a provably-zero light while
+    /// preserving byte-identical output.
     ///
     /// The two bakes share the SAME compact geometry and the SAME two-leaf BSP
     /// split at x=2. They differ ONLY in the portal list: the unculled reference
@@ -1487,7 +1575,7 @@ mod tests {
         let culled_count = log_cull_savings(&inputs_culled, &config);
         assert!(
             culled_count > 0,
-            "AC 11 requires the cull scene to drop at least one provably-zero light",
+            "portal/falloff regression requires a provably-zero light to be culled",
         );
 
         let culled = bake_direct_sh_volume(&inputs_culled, &config).to_bytes();
@@ -1705,6 +1793,46 @@ mod tests {
             !delta.affinity_lights.contains(&2),
             "AlphaLights index 2 must not appear in affinity_lights"
         );
+    }
+
+    #[test]
+    fn cone_culled_direct_delta_matches_post_drop_cube_reach_bytes() {
+        let light = static_spot_light(DVec3::new(2.0, 2.5, 2.0), 10.0, [0.0, -1.0, 0.0], 12.0);
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let cone = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+
+        assert!(
+            cone.affinity_lights.len() < cube.affinity_lights.len(),
+            "the fixture must exercise at least one outside-cone cell"
+        );
+        let (cube_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cube);
+        let (cone_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cone);
+        assert_eq!(cone_dropped.to_bytes(), cube_dropped.to_bytes());
+    }
+
+    #[test]
+    fn fully_cone_culled_direct_delta_keeps_drop_policies_canonical_cell() {
+        let light = static_spot_light(DVec3::new(2.0, 10.0, 2.0), 20.0, [0.0, 1.0, 0.0], 5.0);
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let cone = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+        let (cube_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cube);
+        let (cone_dropped, _) = crate::delta_drop_policy::drop_direct_zero_entries(&cone);
+
+        assert_eq!(cone.affinity_lights.len(), 1);
+        assert_eq!(cone_dropped.affinity_lights.len(), 1);
+        assert_eq!(cone_dropped.to_bytes(), cube_dropped.to_bytes());
+    }
+
+    #[test]
+    fn directional_direct_delta_is_byte_identical_to_cube_reach() {
+        let mut light = static_point_light(DVec3::new(2.0, 2.5, 2.0), 10.0, [1.0, 0.8, 0.6]);
+        light.light_type = LightType::Directional;
+        light.cone_direction = Some([0.0, -1.0, 0.0]);
+
+        let cube = bake_single_selected_spot(light.clone(), AffinityReachPolicy::INDIRECT);
+        let direct = bake_single_selected_spot(light, AffinityReachPolicy::SELECTED_DIRECT);
+
+        assert_eq!(direct.to_bytes(), cube.to_bytes());
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 Brief · compact · Epic: compile-time peak RAM · reads: `context/lib/build_pipeline.md` §PRL section IDs, `context/lib/rendering_pipeline.md` §4 · read at e36e86b
 
+> **Build order (lighting-scale footprint / peak-RAM track):** **Phase 1 — shipped to `main`.** The post-cull warren peak is ~6.5 GB at 1 m spacing, within the unchanged 16 GiB gate (warren compiles, ~66 MiB PRL), so the peak-RAM problem is solved and `sh-delta-cell-major-two-pass-bake` (Phase 2) is **not currently needed**. The remaining **footprint** chain builds on this landed post-cull format: `sh-delta-tile-alpha-drop` → `adaptive-probe-spacing` (id-41 still emits ~1.6 GB post-cull, so the footprint work stands).
+
 ## Problem
 Developer-raised, from the `lighting-scale--compile-peak-ram` gate. `prl-build` refuses
 `content/dev/maps/stress-warren-hallway-inspection.map` — the map that exists to expose

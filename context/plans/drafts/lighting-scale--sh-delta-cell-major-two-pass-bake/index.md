@@ -2,6 +2,8 @@
 
 Brief · resumable · Epic: compile-time peak RAM · reads: `context/lib/build_pipeline.md` §Compiler pipeline, `context/lib/rendering_pipeline.md` §4 · read at e36e86b
 
+> **Build order (lighting-scale peak-RAM track):** Phase 2 — **not currently needed.** Its gating condition has resolved: `sh-delta-cone-reach-cull` (Phase 1) **shipped to `main`** and cleared the 16 GiB peak-RAM gate on its own (post-cull warren ~6.5 GB at 1 m spacing, ~66 MiB PRL). Retained as a contingency only if a future, larger map's projection exceeds the gate; do not build otherwise.
+
 ## Problem
 Anticipated need, following `lighting-scale--sh-delta-cone-reach-cull` (Phase 1). Phase 1
 makes `stress-warren-hallway-inspection` compile because its lights are cones whose

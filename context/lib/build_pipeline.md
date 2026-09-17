@@ -515,6 +515,16 @@ That scan is the whole of the visibility. A catalog path assembled at runtime ra
 
 Each resolved level bakes from `<mod_root>/maps/<stem>.map` at default flags. A manifest `[[recipes]]` entry exists for a level whose source or compiler flags that default cannot infer; it is keyed by output path, and a recipe matching no scanned literal is reported as an orphan rather than passing silently.
 
+### SDK bundle (modder distribution)
+
+Distribution has two outputs under `dist/`: the player payload (`dist`, above) and the modder SDK bundle (`cargo run -p xtask -- sdk-dist`). Both bake the maps — the SDK bundle is **content-complete**: it runs the same level and material bakes as the player payload, so it is playable on arrival, and *additionally* ships what authoring needs. The invariant that separates them is subtraction, not baking: the player payload carries only released runtime artifacts, while the SDK bundle is a superset that also carries the compilers, the SDK, the docs, and the mod's `.map`/`.ts` sources beside the baked output. A recipient of the player payload can only play; a recipient of the SDK bundle can play or edit-and-rebake.
+
+**The SDK engine is a debug build with `--features dev-tools`, never `--release`.** One engine both plays the baked maps and authors. TS startup auto-compile and TS/Luau hot reload are gated on debug builds, not on the `dev-tools` feature — the feature only adds the debug inspector overlay, and a release engine links no TypeScript compiler at all (`scripting.md` §8), so it cannot serve an edit-and-reload authoring loop. The bundle needs both bits set: debug for the compile/hot-reload loop, the feature for the inspector.
+
+Bundle root is `<package name>-sdk` under `dist/`, sibling to the player payload's `<package name>` root; the `-sdk` suffix is what keeps the two from colliding under the same output directory. Beyond the baked levels, baked materials, and base content the player payload also holds, the bundle carries the authoring engine, `bin/prl-build` and `bin/scripts-build` (both built `--release`, since only the engine's TS pipeline needs debug), `sdk/`, `docs/`, `tools/`, and the mod tree whole — its `.map`/`.ts` sources beside the freshly baked `.prl` and the emitted entry `.js`, never run through the player payload's source-excluding filter.
+
+It reuses the player payload's bake stages (model-texture bake, per-level `prl-build --release`, materials copy) and its containment and completion-gate machinery: whole-tree, output-root containment under `dist/` (§Output-root containment), and `.dist-incomplete` tracking the outstanding level bakes while the root is assembled (§Completion gate). The same host-builds-for-host native-toolchain constraint applies (above): a bundle's binaries are as host-specific as the player payload's.
+
 ---
 
 ## Non-Goals

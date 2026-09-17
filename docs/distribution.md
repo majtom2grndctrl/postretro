@@ -4,6 +4,23 @@
 launcher, content, baked levels, and baked material sidecars. You can give that
 folder to someone who does not have this repository, Rust, or any build tools.
 
+## Player payload vs. SDK bundle
+
+`dist` (this doc) produces a lean **player payload**: a release engine plus
+baked content, meant to be run, not edited. If you instead want to hand
+someone the ability to keep editing a mod — TrenchBroom files, script sources,
+the level/script compilers, and a debug engine that hot-reloads — use
+`sdk-dist`, the **content-complete SDK bundle**. It bakes the same content (so
+it's still playable out of the box) and additionally ships the sources and
+tools:
+
+```bash
+cargo run -p xtask -- sdk-dist
+```
+
+See [docs/modding.md](modding.md) for the SDK bundle's contents and authoring
+workflow.
+
 ## Build on the operating system you will ship for
 
 Postretro distributions are host-native. Run `dist` on Windows to produce a

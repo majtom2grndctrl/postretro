@@ -173,6 +173,26 @@ fn sh_analysis_is_byte_preserving_for_compiled_prl() {
         .expect("spawn analyzed prl-build");
     assert_success(&analyzed_build, 1);
     assert!(analysis_json.is_file(), "analysis JSON was not written");
+    let analysis: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&analysis_json).expect("read analysis JSON"))
+            .expect("parse analysis JSON");
+    let emitted = analysis
+        .get("emitted_reconstruction")
+        .expect("analysis must include the final emitted reconstruction report");
+    assert_eq!(
+        emitted
+            .get("failing_nodes")
+            .and_then(|value| value.as_u64()),
+        Some(0),
+        "classified hierarchy nodes must all remain inside the production gate",
+    );
+    assert!(
+        emitted
+            .get("nodes")
+            .and_then(|value| value.as_array())
+            .is_some_and(|nodes| !nodes.is_empty()),
+        "emitted reconstruction JSON must include node-granularity records",
+    );
     assert_eq!(
         std::fs::read(&baseline).expect("read baseline PRL"),
         std::fs::read(&analyzed).expect("read analyzed PRL"),

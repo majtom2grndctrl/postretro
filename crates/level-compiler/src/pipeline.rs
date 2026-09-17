@@ -1641,6 +1641,7 @@ fn run_after_parsing(
             args,
             sh_analyze_base_indirect.as_ref(),
             sh_analyze_base_direct.as_ref(),
+            &density_classification,
             sh_analyze_dense_deltas
                 .as_ref()
                 .map(|dense| sh_analyze::DenseDeltaSections {
@@ -2314,6 +2315,7 @@ fn run_sh_analysis(
     args: &Args,
     base_indirect: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     base_direct: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    density_classification: &sh_density::DensityClassification,
     dense_deltas: Option<sh_analyze::DenseDeltaSections<'_>>,
     delta_indirect: Option<&postretro_level_format::delta_sh_volumes::DeltaShVolumesSection>,
     delta_direct: Option<
@@ -2361,6 +2363,8 @@ fn run_sh_analysis(
     if let Some(dense) = dense_deltas {
         match sh_analyze::run_emitted_reconstruction_analysis(
             &inputs,
+            &density_classification.levels,
+            &density_classification.scales,
             dense.indirect,
             dense.direct,
             dense.animated_direct,

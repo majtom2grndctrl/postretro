@@ -545,7 +545,7 @@ fn draw_volumes_tab(
                 ui.radio_value(
                     &mut sh_state.marker_mode,
                     MarkerMode::DensityLevel,
-                    "Density level",
+                    "Density / scale",
                 );
                 ui.radio_value(&mut sh_state.marker_mode, MarkerMode::Uniform, "Uniform");
                 ui.radio_value(
@@ -554,6 +554,9 @@ fn draw_volumes_tab(
                     "Irradiance",
                 );
             });
+            if sh_state.marker_mode == MarkerMode::DensityLevel {
+                ui.label("L0 green · L1 yellow · L2 blue; paler = larger node");
+            }
 
             ui.label("Marker scale");
             ui.add(egui::Slider::new(

@@ -732,8 +732,8 @@ pub struct Args {
     /// after all base + delta SH bakes are available. Measurement only — it
     /// emits log/JSON diagnostics and changes no emitted `.prl` bytes.
     sh_analyze: bool,
-    /// Destination path for the machine-readable per-brick + aggregate SH
-    /// analysis JSON. `None` with `sh_analyze` set defaults to
+    /// Destination path for the machine-readable per-brick, per-node, and
+    /// aggregate SH analysis JSON. `None` with `sh_analyze` set defaults to
     /// `<output>.sh-analysis.json`. Ignored when `sh_analyze` is false.
     sh_analyze_out: Option<PathBuf>,
     /// Protection-volume stand-in for SH coarsening and analysis. Each entry is a
